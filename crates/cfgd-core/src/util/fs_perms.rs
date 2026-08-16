@@ -54,6 +54,27 @@ pub fn file_permissions_mode(_metadata: &std::fs::Metadata) -> Option<u32> {
     None
 }
 
+/// Get Unix permission mode bits INCLUDING the setuid/setgid/sticky bits.
+/// Returns None on Windows.
+///
+/// [`file_permissions_mode`] masks to `0o777`, which is what drift comparison
+/// against a declared `permissions:` wants for the common case. Two callers need
+/// the full `0o7777` instead: a backup sidecar, which must reproduce the file it
+/// preserves rather than a de-fanged copy of it, and the module-file convergence
+/// check, which compares against a declared mode `parse_octal_mode` already
+/// accepts up to `0o7777` — masked to `0o777`, a declared `4755` can never equal
+/// the actual mode, so the short-circuit is disabled for the life of the file.
+#[cfg(unix)]
+pub fn file_permissions_mode_full(metadata: &std::fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(metadata.permissions().mode() & 0o7777)
+}
+
+#[cfg(windows)]
+pub fn file_permissions_mode_full(_metadata: &std::fs::Metadata) -> Option<u32> {
+    None
+}
+
 /// Parse an octal Unix permission string (e.g. "600", "0755", "0o644") into mode bits.
 /// Rejects values above 0o7777 (the valid permission + special-bit range).
 pub fn parse_octal_mode(s: &str) -> Result<u32, crate::errors::ConfigError> {

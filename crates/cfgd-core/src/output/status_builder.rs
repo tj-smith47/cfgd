@@ -11,6 +11,7 @@ use std::time::Duration;
 use super::Role;
 use super::component::StatusLabel;
 use super::renderer::{Renderer, StatusFields, Writer, finalize_subject};
+use super::theme::ThemedStyle;
 
 /// Builder for one Status line. Commits on Drop.
 ///
@@ -28,6 +29,9 @@ pub struct StatusBuilder<'p> {
     pub(crate) duration: Option<Duration>,
     pub(crate) target: Option<PathBuf>,
     pub(crate) label: Option<StatusLabel>,
+    pub(crate) marker: Option<StatusLabel>,
+    pub(crate) subject_style: Option<ThemedStyle>,
+    pub(crate) detail_style: Option<ThemedStyle>,
     /// Lifetime parameter binding to either Printer or SectionGuard.
     pub(crate) _phantom: std::marker::PhantomData<&'p ()>,
 }
@@ -52,8 +56,18 @@ impl<'p> StatusBuilder<'p> {
             duration: None,
             target: None,
             label: None,
+            marker: None,
+            subject_style: None,
+            detail_style: None,
             _phantom: std::marker::PhantomData,
         }
+    }
+
+    /// Paint the SUBJECT with `style`. Crate-private: the theme is `output/`'s
+    /// to own, so the only caller is `SectionGuard::action_status`.
+    pub(crate) fn with_subject_style(mut self, style: Option<ThemedStyle>) -> Self {
+        self.subject_style = style;
+        self
     }
 
     pub fn detail(mut self, text: impl Into<String>) -> Self {
@@ -63,6 +77,24 @@ impl<'p> StatusBuilder<'p> {
 
     pub fn detail_opt(mut self, text: Option<&str>) -> Self {
         self.detail = text.map(|s| s.to_string());
+        self
+    }
+
+    /// A detail that is trailing METADATA: rendered `theme.muted`. The plain
+    /// `detail` / `detail_opt` pair stays the right form for an error and for
+    /// tool output, which the reader has to act on rather than skim past.
+    pub fn detail_muted(mut self, text: impl Into<String>) -> Self {
+        self.detail = Some(text.into());
+        self.detail_style = Some(self.renderer.theme.muted.clone());
+        self
+    }
+
+    pub fn detail_muted_opt(mut self, text: Option<&str>) -> Self {
+        self.detail = text.map(|s| s.to_string());
+        self.detail_style = self
+            .detail
+            .is_some()
+            .then(|| self.renderer.theme.muted.clone());
         self
     }
 
@@ -83,6 +115,19 @@ impl<'p> StatusBuilder<'p> {
     /// The label always renders at end-of-subject — the API cannot embed
     /// styled segments mid-subject, which would break the outer role color
     /// via the inner SGR reset.
+    /// A leading styled marker naming the hook a script body belongs to
+    /// (`postApply`), rendered as `postApply: <body>`. The colon is the
+    /// caller's; the role is not — it is always `Role::Accent`, because which
+    /// slot a marker paints in is a theme mapping rather than a per-call-site
+    /// choice.
+    pub fn marker(mut self, text: impl Into<String>) -> Self {
+        self.marker = Some(StatusLabel {
+            role: Role::Accent,
+            text: text.into(),
+        });
+        self
+    }
+
     pub fn label(mut self, role: Role, text: impl Into<String>) -> Self {
         self.label = Some(StatusLabel {
             role,
@@ -98,7 +143,12 @@ impl Drop for StatusBuilder<'_> {
         // renderer-owned label SGR (foreign `\x1b[0m` in a captured error
         // would otherwise prematurely close the role styling at the inner
         // reset). The label SGR is appended after sanitation so it survives.
-        self.subject = finalize_subject(&self.renderer.theme, &self.subject, self.label.as_ref());
+        self.subject = finalize_subject(
+            &self.renderer.theme,
+            &self.subject,
+            self.marker.as_ref(),
+            self.label.as_ref(),
+        );
         let detail = self.detail.as_deref();
         let target = self.target.as_deref();
         self.renderer.render_status(
@@ -110,6 +160,8 @@ impl Drop for StatusBuilder<'_> {
                 detail,
                 duration: self.duration,
                 target,
+                subject_style: self.subject_style.clone(),
+                detail_style: self.detail_style.clone(),
             },
         );
     }
@@ -129,6 +181,21 @@ mod tests {
         let buf = Arc::new(Mutex::new(String::new()));
         (
             Arc::new(Renderer::new(Theme::default(), Verbosity::Normal)),
+            buf,
+        )
+    }
+
+    /// `build`'s styled sibling, for the tests whose subject IS the escapes a
+    /// role emits. A renderer's theme carries its own colour decision, so a
+    /// test that asserts on SGR placement asks for one here rather than hoping
+    /// the terminal the suite was invoked from supplied it.
+    fn build_colored() -> (Arc<Renderer>, Arc<Mutex<String>>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        (
+            Arc::new(Renderer::new(
+                Theme::default().with_colors(true),
+                Verbosity::Normal,
+            )),
             buf,
         )
     }
@@ -164,15 +231,8 @@ mod tests {
     /// reset closing the label's color cannot be followed by any further
     /// outer-role-styled text. Visible composition: "<glyph> <subject> <label>".
     #[test]
-    #[serial]
     fn label_appends_at_end_of_subject() {
-        let _restore_no_color = std::env::var("NO_COLOR").ok();
-        unsafe {
-            std::env::remove_var("NO_COLOR");
-        }
-        let _guard = crate::output::test_support::ColorsEnabledGuard::set(true);
-
-        let (r, buf) = build();
+        let (r, buf) = build_colored();
         let sink = sink_for(&buf);
         let b = StatusBuilder::new(r, sink, 0, Role::Warn, "subject text")
             .label(Role::Secondary, "[meta]");
@@ -202,12 +262,6 @@ mod tests {
             tail_visible.trim().is_empty(),
             "no visible content may follow the label's inner reset; tail_visible={tail_visible:?}, line={line:?}"
         );
-
-        unsafe {
-            if let Some(v) = _restore_no_color {
-                std::env::set_var("NO_COLOR", v);
-            }
-        }
     }
 
     /// Foreign ANSI carried in a caller-supplied subject (e.g. a captured
@@ -217,7 +271,6 @@ mod tests {
     /// escapes cannot paint trailing characters.
     #[cfg(feature = "test-helpers")]
     #[test]
-    #[serial]
     fn subject_strips_foreign_ansi_before_role_styling() {
         use crate::output::Printer;
 
@@ -243,7 +296,6 @@ mod tests {
     /// shape must match.
     #[cfg(feature = "test-helpers")]
     #[test]
-    #[serial]
     fn doc_subject_strips_foreign_ansi_before_role_styling() {
         use crate::output::{Doc, Printer};
 
@@ -258,5 +310,54 @@ mod tests {
         );
         let visible = strip_ansi(&raw);
         assert!(visible.contains("subject with foo"), "got: {visible:?}");
+    }
+
+    /// `detail_style` paints the detail slot and nothing else. `None` — every
+    /// existing call site — must emit a detail carrying no SGR of its own, or
+    /// the seam would silently restyle output it was added beside.
+    /// Serial because dracula's slots carry an RGB triple, so every render
+    /// below asks `supports_truecolor()` — which reads `COLORTERM` /
+    /// `NO_COLOR` — and the expected detail is rendered separately from the
+    /// two captures it is compared against.
+    #[test]
+    #[serial]
+    fn detail_style_paints_only_the_detail_slot() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let muted_detail = theme.muted.apply_to("unchanged").to_string();
+
+        let render = |muted: bool| {
+            let buf = Arc::new(Mutex::new(String::new()));
+            let r = Arc::new(Renderer::new(
+                Theme::from_preset("dracula").with_colors(true),
+                Verbosity::Normal,
+            ));
+            let b = StatusBuilder::new(r, sink_for(&buf), 0, Role::Skipped, "nvim");
+            drop(if muted {
+                b.detail_muted("unchanged")
+            } else {
+                b.detail("unchanged")
+            });
+            buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        };
+
+        let plain = render(false);
+        let muted = render(true);
+
+        // Same visible line either way.
+        assert_eq!(strip_ansi(&plain), strip_ansi(&muted));
+        // The subject half is byte-identical: the seam reaches the detail only.
+        let split = |s: &str| {
+            s.split_once(" — ")
+                .map(|(head, tail)| (head.to_string(), tail.to_string()))
+                .expect("detail separator missing")
+        };
+        let (plain_head, plain_tail) = split(&plain);
+        let (muted_head, muted_tail) = split(&muted);
+        assert_eq!(plain_head, muted_head, "the subject slot was restyled");
+        assert_eq!(muted_tail.trim_end(), muted_detail);
+        assert!(
+            !plain_tail.contains('\x1b'),
+            "an unstyled detail must carry no SGR: {plain_tail:?}"
+        );
     }
 }

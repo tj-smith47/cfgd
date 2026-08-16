@@ -10,11 +10,11 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local};
 
+use crate::backup::BackupUnit;
 use crate::backup::schedule::BackupSchedule;
-use crate::backup::{BackupUnit, run_backup};
 use crate::config::{self, BackupSpec, CfgdConfig};
 use crate::errors::Result;
-use crate::output::{Printer, Role, collapse_to_subject_line};
+use crate::output::{Printer, Role};
 use crate::reconciler::ReconcileContext;
 use crate::state::StateStore;
 
@@ -27,6 +27,10 @@ const MAX_MISSED_CATCHUP: u32 = 1000;
 /// enough not to spin, short enough that a schedule which only fails for a
 /// transient reason recovers on its own.
 const SCHEDULE_STALL_RETRY: Duration = Duration::from_secs(3600);
+
+/// The `Trigger` row a scheduled fire's header carries — what woke this run,
+/// in the same slot the reconcile tick names its drift trigger in.
+const SCHEDULE_TRIGGER: &str = "schedule";
 
 /// How long a degraded resolution waits before re-resolving.
 ///
@@ -445,7 +449,8 @@ impl BackupTimers {
                 tracing::warn!(
                     backup = %task.spec.name,
                     missed_fires = missed,
-                    "backup: schedule elapsed while the daemon was busy — skipped the missed fire(s)"
+                    "backup: schedule elapsed while the daemon was busy — skipped the missed {}",
+                    crate::plural_noun(missed as usize, "fire")
                 );
             }
             due.push((task.profile_name.clone(), task.spec.clone()));
@@ -558,78 +563,112 @@ pub(super) fn resolve_backup_tasks(
     })
 }
 
-/// Run one scheduled backup. Blocking; the loop dispatches it through
-/// `spawn_blocking_with_test_home`.
+/// Run every due scheduled backup as ONE run: a `Backup` header, the `Backups`
+/// pseudo-phase with a `backup:<name>` group per unit, and a rollup.
 ///
-/// Failures never propagate: `run_backup` records an operational failure in the
-/// returned row, and the `Err` arm (a state-store write) is a storage problem
-/// for one unit, not a reason to take the daemon's timer branch down.
+/// Blocking; the loop dispatches it through `spawn_blocking_with_test_home`.
+/// The rendering itself belongs to [`crate::backup::run_backup_group`], which
+/// `cfgd backup run` and apply's pending backups also call — a scheduled fire
+/// that looked different from a hand-run would be the same unit described two
+/// ways. What stays here is the daemon's own concerns: opening the state store
+/// and the `tracing` lines a background run leaves behind for an operator who
+/// was not watching the terminal.
+///
+/// Failures never propagate: an operational failure lands in the unit's row,
+/// and a state-store failure is one unit's storage problem rather than a reason
+/// to take the daemon's timer branch down.
 ///
 /// `abort` is the daemon's shutdown flag. Without it a `preBackup` hook that
 /// stops a database keeps running after SIGTERM until its own timeout, so a
 /// `systemctl stop cfgd` (or a container's stop grace period) waits minutes on
 /// a hook nobody is going to consume the result of.
-pub(super) fn run_scheduled_backup(
-    spec: &BackupSpec,
+pub(super) fn run_scheduled_backups(
+    due: &[(String, BackupSpec)],
+    config_path: &Path,
     config_dir: &Path,
-    profile_name: &str,
     state_dir: &Path,
     printer: &Printer,
     abort: &crate::AbortFlag,
 ) {
+    if due.is_empty() {
+        return;
+    }
     let store = match StateStore::open_in_dir(state_dir) {
         Ok(s) => s,
         Err(e) => {
             tracing::error!(
-                backup = %spec.name,
                 error = %e,
-                "scheduled backup: state store error — run skipped"
+                "scheduled backup: state store error — runs skipped"
             );
             return;
         }
     };
 
-    let unit = BackupUnit::new(spec, config_dir, profile_name, state_dir)
-        .with_context(ReconcileContext::Reconcile)
-        .with_abort(abort);
-    let subject = format!("backup '{}'", spec.name);
-    match run_backup(&unit, &store, printer) {
-        Ok(record) => {
-            crate::backup::report_backup_record(printer, &record);
-            match &record.error {
+    let units: Vec<BackupUnit<'_>> = due
+        .iter()
+        .map(|(profile_name, spec)| {
+            BackupUnit::new(spec, config_dir, profile_name, state_dir)
+                .with_context(ReconcileContext::Reconcile)
+                .with_abort(abort)
+        })
+        .collect();
+
+    // A due set can span profiles — one timer set covers the whole config — and
+    // the header has one profile row, so naming the first unit's profile would
+    // attribute every other unit to a profile that never declared it. A
+    // heterogeneous set omits the row instead.
+    let single_profile = due
+        .first()
+        .map(|(profile, _)| profile.as_str())
+        .filter(|first| due.iter().all(|(profile, _)| profile == first));
+
+    let ctx = crate::reconciler::RunContext {
+        title: crate::reconciler::RunTitle::Backup,
+        config_path: Some(config_path),
+        profile: single_profile,
+        modules: &[],
+        trigger: Some(SCHEDULE_TRIGGER),
+    };
+    let run = crate::reconciler::ApplyRun::backups(ctx, &units, &store);
+    let reports = match run.execute_backups(printer) {
+        Ok((_, reports)) => reports,
+        Err(e) => {
+            tracing::error!(error = %e, "scheduled backup: run could not be rendered");
+            return;
+        }
+    };
+
+    // The reports the run just handed back, never a re-read of the store: a
+    // `latest_backup_run` lookup returns whatever ran LAST, so a unit skipped
+    // for a held lock but backed up an hour ago would be journalled as a run
+    // that completed here and did not.
+    debug_assert_eq!(
+        due.len(),
+        reports.len(),
+        "one report per due unit, in unit order"
+    );
+    for ((_, spec), report) in due.iter().zip(&reports) {
+        match (&report.skipped, &report.error, &report.record) {
+            (Some(holder), _, _) => {
+                tracing::info!(backup = %spec.name, holder = %holder, "scheduled backup skipped: the unit is already running elsewhere");
+            }
+            (None, Some(e), _) => {
+                tracing::warn!(backup = %spec.name, error = %e, "scheduled backup: the run could not be recorded");
+            }
+            (None, None, Some(record)) => match &record.error {
                 Some(e) => {
                     tracing::warn!(backup = %record.name, error = %e, "scheduled backup completed with errors");
                 }
                 None => {
                     tracing::info!(backup = %record.name, "scheduled backup completed");
                 }
+            },
+            // Unreachable while `run_backup_group` fills exactly one of the
+            // three: a report with none of them is a unit whose outcome was
+            // lost, which is worth a line rather than silence.
+            (None, None, None) => {
+                tracing::warn!(backup = %spec.name, "scheduled backup produced no outcome");
             }
-        }
-        // A hand-run (`cfgd backup run`) or an apply is inside this unit right
-        // now. The engine allows one writer per unit, and the fire is dropped
-        // rather than queued: by the time the other run finishes, the snapshot
-        // it took is the one this fire would have duplicated.
-        Err(crate::errors::CfgdError::Backup(crate::errors::BackupError::Busy {
-            holder, ..
-        })) => {
-            printer
-                .status(Role::Skipped, subject)
-                .detail(format!("already running ({holder})"));
-            tracing::info!(
-                backup = %spec.name,
-                holder = %holder,
-                "scheduled backup skipped: the unit is already running elsewhere"
-            );
-        }
-        Err(e) => {
-            printer
-                .status(Role::Fail, subject)
-                .detail(collapse_to_subject_line(&e));
-            tracing::error!(
-                backup = %spec.name,
-                error = %e,
-                "scheduled backup could not be recorded"
-            );
         }
     }
 }

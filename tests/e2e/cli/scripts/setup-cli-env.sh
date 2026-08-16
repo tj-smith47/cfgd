@@ -102,6 +102,14 @@ C="--config $CONF --state-dir $STATE --no-color"
 # Allow file:// source URLs for E2E test repos (dev/test only)
 export CFGD_ALLOW_LOCAL_SOURCES=1
 
+# Every cache read/write stays inside the scratch tree. Without this, source
+# clones land in the operator's real ~/.cache/cfgd/sources — where a stale
+# clone from an earlier run (keyed by source NAME alone) redirects this run's
+# fetches at whatever origin that clone recorded. CFGD_CACHE_DIR is the
+# verbatim highest-precedence seam on every OS (XDG only folds in on Linux).
+export CFGD_CACHE_DIR="$CLI_SCRATCH/cfgd-cache"
+mkdir -p "$CFGD_CACHE_DIR"
+
 # Source repo (shared across all domain files via CLI_SCRATCH)
 SOURCE_REPO="$CLI_SCRATCH/source-repo"
 if [ ! -d "$SOURCE_REPO/.git" ]; then

@@ -6,15 +6,19 @@ use std::process::Command;
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::PackageManager;
+use cfgd_core::output::Role;
+use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    any_system_manager_available, bootstrap_via_system_manager, brew_available, brew_cmd,
-    resolve_tool_with_fallbacks, run_pkg_cmd_live, tool_cmd_with_resolver,
+    MediatedArms, bootstrap_brew_arm, bootstrap_via_system_manager, detect_go_bootstrap_method,
+    resolve_tool_with_fallbacks, run_pkg_cmd_live, system_manager_arms, tool_cmd_with_resolver,
 };
 
 pub struct GoInstallManager;
+
+/// What a mediator installs to deliver the Go toolchain: brew calls it `go`,
+/// every system manager calls it `golang`.
+const GO_MEDIATED: MediatedArms = system_manager_arms(Some("go"), &["golang"]);
 
 fn go_fallbacks() -> Vec<PathBuf> {
     let mut fallbacks = vec![
@@ -48,24 +52,32 @@ impl PackageManager for GoInstallManager {
         go_available()
     }
 
-    fn can_bootstrap(&self) -> bool {
-        any_system_manager_available()
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        // The toolchain lands on the system PATH whichever manager installs it,
+        // so the plan creates no directory of its own.
+        //
+        // Feasibility and method come from ONE probe of the mediators
+        // `bootstrap` can actually spawn — brew, then apt/dnf/zypper. Asking a
+        // wider question (is ANY system manager present?) and then naming a
+        // fallback answered `via dnf` on a winget-only Windows host: a
+        // mediator that cannot run, which under a binding plan is a guaranteed
+        // failure rather than a provision. `go` has no bootstrap arm of its
+        // own, so when none of them is present there is no plan.
+        detect_go_bootstrap_method().map(BootstrapPlan::new)
     }
 
-    fn bootstrap(&self, printer: &Printer) -> Result<()> {
-        if brew_available() {
-            let result = printer
-                .run(brew_cmd().args(["install", "go"]), "Installing Go via brew")
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "go".into(),
-                    message: format!("brew install go failed: {}", e),
-                })?;
-            if result.status.success() {
-                return Ok(());
-            }
+    fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
+        // Returns false without running brew when the plan named a system
+        // manager, and errors rather than falling through when it named brew.
+        if bootstrap_brew_arm(cx, "go", GO_MEDIATED.brew.unwrap_or("go"))? {
+            return Ok(());
         }
 
-        bootstrap_via_system_manager(printer, "golang", "go")
+        bootstrap_via_system_manager(cx, GO_MEDIATED.system[0], "go")
+    }
+
+    fn mediated_packages(&self, via: &str) -> Option<Vec<String>> {
+        GO_MEDIATED.packages_for(via)
     }
 
     fn installed_packages(
@@ -93,7 +105,7 @@ impl PackageManager for GoInstallManager {
             let install_path = go_install_path(pkg);
             let label = format!("go install {}", install_path);
             run_pkg_cmd_live(
-                cx.printer,
+                cx,
                 "go",
                 go_cmd().args(["install", &install_path]),
                 &label,
@@ -130,19 +142,13 @@ impl PackageManager for GoInstallManager {
                 })?;
             let bin_path = bin_dir.join(bin_name);
             if bin_path.exists() {
-                cx.printer
-                    .status_simple(Role::Info, format!("removing {}", bin_path.posix()));
+                cx.report(Role::Info, "go", format!("removing {}", bin_path.posix()));
                 std::fs::remove_file(&bin_path).map_err(|e| PackageError::UninstallFailed {
                     manager: "go".into(),
                     message: format!("failed to remove {}: {}", bin_path.posix(), e),
                 })?;
             }
         }
-        Ok(())
-    }
-
-    fn update(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        // go install pkg@latest re-installs to update; no separate update command
         Ok(())
     }
 
@@ -222,7 +228,6 @@ pub(super) fn parse_go_module_version(output: &str) -> Option<String> {
 mod tests {
     use cfgd_core::providers::PackageManager;
 
-    use super::super::shared::any_system_manager_available;
     use super::*;
 
     #[test]
@@ -231,13 +236,56 @@ mod tests {
         assert_eq!(mgr.name(), "go");
     }
 
+    /// A bootstrap is an action like any other, so under a caller-owned status
+    /// its shell-out settles no line of its own. `go`'s brew arm is the one
+    /// that reached `Printer::run` directly instead of going through `pkg_run`,
+    /// which rendered the bootstrap twice: once as the window's own line and
+    /// once as the tree's.
+    #[cfg(unix)]
     #[test]
-    fn go_install_manager_update_is_noop() {
-        let mgr = GoInstallManager;
-        let printer = cfgd_core::test_helpers::test_printer();
-        let state = cfgd_core::test_helpers::test_state();
-        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-        mgr.update(&cx).unwrap();
+    #[serial_test::serial]
+    fn caller_owned_bootstrap_settles_no_line_of_its_own() {
+        let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+        let settled = |transcript: &str| {
+            cfgd_core::test_helpers::settled_status_lines(&cfgd_core::output::strip_ansi(
+                transcript,
+            ))
+            .len()
+        };
+
+        let notes = cfgd_core::providers::NoteSink::default();
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        GoInstallManager
+            .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context_with_notes(
+                &printer, &notes,
+            ))
+            .expect("brew shim exits 0");
+        let standalone = buf.lock().unwrap().clone();
+        assert_eq!(
+            settled(&standalone),
+            1,
+            "standalone, the window IS the bootstrap's only line: {standalone}"
+        );
+
+        let owned_notes = cfgd_core::providers::NoteSink::default();
+        let (owned_printer, owned_buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        GoInstallManager
+            .bootstrap(
+                &cfgd_core::test_helpers::test_bootstrap_context_with_notes(
+                    &owned_printer,
+                    &owned_notes,
+                )
+                .caller_owns_status(),
+            )
+            .expect("brew shim exits 0");
+        let owned = owned_buf.lock().unwrap().clone();
+        assert_eq!(
+            settled(&owned),
+            0,
+            "the reconciler renders the bootstrap's line; the window must settle silently: {owned}"
+        );
     }
 
     #[test]
@@ -306,10 +354,43 @@ mod tests {
         assert_eq!(parse_go_module_version(output), Some("0.15.3".to_string()));
     }
 
+    /// A plan's method is BINDING at execution, so `go` may only be planned
+    /// through a mediator this host can spawn — and must not be dropped while
+    /// one is present. Ground truth is spelled out here rather than read back
+    /// from the detector, and probes the same seams the bootstrap spawns from.
     #[test]
-    fn go_install_manager_can_bootstrap_checks_cascade() {
-        let mgr = GoInstallManager;
-        assert_eq!(mgr.can_bootstrap(), any_system_manager_available());
+    fn go_is_planned_only_through_a_mediator_this_host_can_actually_run() {
+        let runnable = |tool: &str| {
+            cfgd_core::command_available_with_seam(
+                &format!("CFGD_{}_BIN", tool.to_uppercase().replace('-', "_")),
+                tool,
+            )
+        };
+        let brew = super::super::shared::brew_available();
+        match GoInstallManager.bootstrap_plan() {
+            Some(plan) => {
+                // `bootstrap` installs the toolchain through brew or a system
+                // manager, which put `go` on the system PATH — nothing to declare.
+                let ok = match plan.method.as_str() {
+                    "brew" => brew,
+                    "apt" => runnable("apt-get"),
+                    "dnf" => runnable("dnf"),
+                    "zypper" => runnable("zypper"),
+                    other => panic!("go planned through an unknown mediator: {other}"),
+                };
+                assert!(
+                    ok,
+                    "a plan may only name a mediator this host can run, got {}",
+                    plan.method
+                );
+                assert!(plan.requires.is_empty());
+                assert!(plan.creates_path_dirs.is_empty());
+            }
+            None => assert!(
+                !brew && !["apt-get", "dnf", "zypper"].into_iter().any(runnable),
+                "a runnable mediator must not be answered with no plan"
+            ),
+        }
     }
 
     #[test]
@@ -318,15 +399,6 @@ mod tests {
         let mgr = GoInstallManager;
         let available = mgr.is_available();
         assert_eq!(available, go_available());
-    }
-
-    #[test]
-    fn go_update_returns_ok() {
-        let mgr = GoInstallManager;
-        let printer = cfgd_core::test_helpers::test_printer();
-        let state = cfgd_core::test_helpers::test_state();
-        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-        mgr.update(&cx).unwrap();
     }
 
     // --- scan_go_bin_dir ---
@@ -498,16 +570,20 @@ mod tests {
 
         #[test]
         #[serial]
-        fn go_update_is_noop_no_command_spawned() {
+        fn refreshing_the_index_declares_none_and_spawns_nothing() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
-            GoInstallManager.update(&cx).expect("Ok");
+            assert!(
+                !GoInstallManager.has_index(),
+                "every install resolves against the remote, so there is no index to refresh"
+            );
+            GoInstallManager.refresh_index(&cx).expect("Ok");
             assert_eq!(
                 s.invocation_count(),
                 0,
-                "go update is a documented no-op (re-install pinned at @latest is the convention)"
+                "a manager with no index must spawn nothing under a refresh"
             );
         }
 
@@ -662,7 +738,7 @@ mod tests {
             let s = ToolShim::install("CFGD_BREW_BIN", 0, "", "");
             let p = test_printer();
             GoInstallManager
-                .bootstrap(&p)
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
                 .expect("bootstrap Ok via brew shim");
             assert!(
                 s.argv_log().contains("install go"),

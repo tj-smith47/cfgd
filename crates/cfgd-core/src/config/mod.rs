@@ -55,13 +55,15 @@ pub use profile_spec::{
     AptSpec, BackupSpec, BrewSpec, CargoSpec, CustomManagerSpec, EncryptionConstraint,
     EncryptionMode, EncryptionSpec, EnvScope, FileStrategy, FilesSpec, FlatpakSpec,
     ManagedFileSpec, MergeSpec, NpmSpec, PackagesSpec, PatchFormat, PatchSpec, ProfileDocument,
-    ProfileMetadata, ProfileSpec, ScriptSpec, SecretSpec, SnapSpec, render_backup_name_pattern,
-    validate_backup_specs, validate_managed_file_specs, validate_secret_specs,
+    ProfileMetadata, ProfileSpec, ScriptSpec, SecretSpec, SnapSpec, SystemSettings,
+    render_backup_name_pattern, validate_backup_specs, validate_managed_file_specs,
+    validate_secret_specs,
 };
 pub(crate) use profile_spec::{profile_spec_from_value, validate_backup_name};
 pub use resolve::{
-    ALL_MANAGER_NAMES, LayerPolicy, MergedProfile, PackageClaim, ProfileLayer, ResolvedProfile,
-    desired_packages_for, desired_packages_for_spec, resolve_profile,
+    ALL_MANAGER_NAMES, LOCAL_LAYER, LayerPolicy, MergedProfile, PackageClaim, ProfileLayer,
+    ResolvedProfile, desired_packages_for, desired_packages_for_spec, merge_layers,
+    resolve_profile,
 };
 pub use root::{
     CfgdConfig, ConfigMetadata, ConfigSpec, SkillUpdateConfig, SkillUpdatePolicy, UpdateConfig,

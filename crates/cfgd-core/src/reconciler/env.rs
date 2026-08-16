@@ -1,11 +1,9 @@
 use std::collections::HashSet;
 
-use crate::PathDisplayExt;
 use crate::config::{EnvScope, MergedProfile};
 use crate::errors::Result;
 use crate::modules::ResolvedModule;
-use crate::output::{Printer, Role};
-use crate::providers::PackageManager;
+use crate::output::Printer;
 use crate::state::StateStore;
 
 use super::env_engine::{EnvHostProbe, EnvPlatform, EnvTarget, env_targets};
@@ -14,24 +12,27 @@ use super::format::LIVE_SESSION_RESOURCE_ID;
 use super::types::{Action, EnvAction};
 use super::verify::merge_module_env_aliases;
 
-/// PATH directories cfgd recorded when it bootstrapped a package manager,
-/// narrowed to the managers the desired state still names and deduped.
+/// PATH directories cfgd recorded as its own for a package manager, narrowed
+/// to the managers the desired state still names and deduped.
 ///
-/// A bootstrapped manager (Homebrew, an npm global prefix) installs binaries
-/// into a directory no login shell has on PATH yet. Feeding those directories
-/// into the generated env file — rather than appending to it out of band right
-/// after `bootstrap()` — gives the file a single writer, so the wholesale
-/// rewrite on the second apply still holds them.
+/// A manager cfgd provisioned (Homebrew, an npm global prefix) installs
+/// binaries into a directory no login shell has on PATH yet. Feeding those
+/// directories into the generated env file — rather than appending to it out of
+/// band right after `bootstrap()` — gives the file a single writer, so the
+/// wholesale rewrite on the second apply still holds them.
 ///
 /// The directories come from the state store and never from a live
-/// `PackageManager::path_dirs()` probe. That probe touches the machine: npm's
-/// creates the global prefix directory, and brew's answer depends on which
-/// prefix already exists, so before bootstrap it names the wrong one on Apple
-/// Silicon. Reading a value recorded at bootstrap keeps planning and
-/// verification free of both.
+/// `PackageManager::path_dirs()` call. That call can touch the machine: npm's
+/// spawns npm to ask where its global prefix is, which every reconcile tick
+/// would then pay for. Reading a recorded value keeps planning and verification
+/// free of it.
 ///
-/// Only a manager cfgd itself bootstrapped has a record, so a brew the user
-/// installed contributes nothing and earns no rc-file write.
+/// A record exists for a manager cfgd bootstrapped AND for one whose install
+/// had to create a prefix of its own (`PackageManager::created_path_dirs`) —
+/// the discriminator is who created the directory, not who installed the
+/// manager. So cfgd's own `~/.npm-global` reaches the env file under a
+/// user-installed npm, while a brew the user installed contributes nothing and
+/// earns no rc-file write, because nothing under it is cfgd's to publish.
 ///
 /// Filtering to the still-named managers lets a manager dropped from the config
 /// age out of the generated file instead of lingering forever.
@@ -76,8 +77,8 @@ pub(super) fn recorded_managed_env_files(state: &StateStore) -> Vec<String> {
     }
 }
 
-/// Every PATH directory cfgd recorded when it bootstrapped a package manager,
-/// with no narrowing to the desired state.
+/// Every PATH directory cfgd recorded as its own for a package manager, with
+/// no narrowing to the desired state.
 ///
 /// Lifecycle scripts take this unfiltered view where the generated env file
 /// takes the narrowed one. The env file is a durable artifact a login shell
@@ -116,42 +117,6 @@ fn collect_recorded_path_dirs(state: &StateStore, keep: Option<&HashSet<String>>
 }
 
 impl<'a> super::Reconciler<'a> {
-    /// Capture the PATH directories `pm` contributes, immediately after it was
-    /// bootstrapped successfully.
-    ///
-    /// This is the only place the reconciler probes `path_dirs()`, and it is the
-    /// one instant the probe is trustworthy: the manager exists as of this call,
-    /// so it reports the prefix it actually installed into instead of guessing
-    /// from whatever happened to be on disk beforehand.
-    ///
-    /// A failed record does not fail the apply — the manager is installed either
-    /// way — but it does leave the PATH entry unwritten, so it is logged.
-    pub(super) fn record_bootstrap_path_dirs(&self, pm: &dyn PackageManager, printer: &Printer) {
-        let cx = crate::providers::PackageContext {
-            printer,
-            state: self.state,
-        };
-        // The directories land in shell files that a Git-Bash and a PowerShell
-        // session on the same Windows host both read, and in a state row those
-        // reads are compared against.
-        let dirs: Vec<String> = pm
-            .path_dirs(&cx)
-            .iter()
-            .map(|dir| crate::to_posix_string(std::path::Path::new(dir)))
-            .collect();
-        // Registered before the state write, and unconditionally: the very next
-        // action in this apply may be an install through a binary that just
-        // landed in one of these directories, and a failed state write is no
-        // reason to leave the running process unable to find it.
-        crate::register_bootstrapped_path_dirs(&dirs);
-        if let Err(e) = self.state.record_bootstrapped_path_dirs(pm.name(), &dirs) {
-            tracing::warn!(
-                "cannot record PATH directories for bootstrapped {}: {e}",
-                pm.name()
-            );
-        }
-    }
-
     /// Plan env file generation from merged profile + module env vars and aliases.
     /// Returns (actions, warnings) — warnings for shell rc conflicts.
     ///
@@ -335,7 +300,11 @@ impl<'a> super::Reconciler<'a> {
             .collect()
     }
 
-    pub(super) fn apply_env_action(action: &EnvAction, printer: &Printer) -> Result<String> {
+    pub(super) fn apply_env_action(
+        action: &EnvAction,
+        printer: &Printer,
+        notes: &crate::providers::NoteSink,
+    ) -> Result<String> {
         match action {
             EnvAction::WriteEnvFile { path, content } => {
                 if super::env_files::read_managed_baseline(path).as_ref() == Some(content) {
@@ -347,7 +316,6 @@ impl<'a> super::Reconciler<'a> {
                 }
                 crate::ensure_parent_dir(path)?;
                 crate::atomic_write_resolved_str(path, content)?;
-                printer.status_simple(Role::Ok, format!("Wrote {}", path.posix()));
                 // Resource-id key, not display: `to_posix_string` folds on every
                 // host (unlike `posix()`, a no-op on unix), so this matches the
                 // id `format_action_description` derives for the same path.
@@ -366,28 +334,23 @@ impl<'a> super::Reconciler<'a> {
                 super::env_files::guard_rc_write(rc_path, &existing)?;
                 crate::ensure_parent_dir(rc_path)?;
                 crate::atomic_write_resolved_str(rc_path, &content)?;
-                printer.status_simple(
-                    Role::Ok,
-                    format!("Injected source line into {}", rc_path.posix()),
-                );
                 Ok(format!("env:inject:{}", crate::to_posix_string(rc_path)))
             }
             EnvAction::RefreshLiveSession { vars } => {
-                let changed = crate::refresh_session_env(vars, printer);
-                if changed == 0 {
+                let refresh = crate::refresh_session_env(vars);
+                for failure in refresh.failures {
+                    notes.report(printer, crate::output::Role::Warn, failure);
+                }
+                if refresh.changed == 0 {
                     return Ok(format!(
                         "{LIVE_SESSION_RESOURCE_ID}{}",
                         super::apply::ENV_SKIPPED_SUFFIX
                     ));
                 }
-                printer.status_simple(
-                    Role::Ok,
-                    format!("Refreshed {changed} live session variable(s)"),
-                );
-                // The count belongs in the status line above, never in the id:
-                // the same surface reached twice in one apply (Env phase, then
-                // the late regeneration) would otherwise return two different
-                // ids and be recorded as two separate results.
+                // The changed count is not the id: the same surface reached
+                // twice in one apply (Env phase, then the late regeneration)
+                // would otherwise return two different ids and be recorded as
+                // two separate results.
                 Ok(LIVE_SESSION_RESOURCE_ID.to_string())
             }
         }

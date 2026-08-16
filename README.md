@@ -4,7 +4,7 @@
 
 # cfgd
 
-Declare your entire machine — packages, dotfiles, system settings, secrets — with composable profiles and shareable, cross-platform modules.
+Declare your entire machine (packages, dotfiles, system settings, secrets) with composable profiles and shareable, cross-platform modules.
 
 [![CI](https://github.com/tj-smith47/cfgd/actions/workflows/ci.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/ci.yml)
 [![E2E](https://github.com/tj-smith47/cfgd/actions/workflows/e2e.yml/badge.svg)](https://github.com/tj-smith47/cfgd/actions/workflows/e2e.yml)
@@ -14,11 +14,11 @@ Declare your entire machine — packages, dotfiles, system settings, secrets —
 
 <img src="demo/cfgd-demo.gif" width="1320" alt="cfgd installing a Neovim setup on a bare Ubuntu container in one command">
 
-*A bare `ubuntu:24.04` container with no Neovim, no Homebrew and no config. One `cfgd init` later, `nvim` opens a fully configured LazyVim. Recorded with [VHS](https://github.com/charmbracelet/vhs) — `task demo` reproduces it.*
+*A bare `ubuntu:24.04` container with no Neovim, no Homebrew and no config. One `cfgd init` later, `nvim` opens a fully configured LazyVim. Recorded with [VHS](https://github.com/charmbracelet/vhs).*
 
 </div>
 
-> **Status:** Alpha — APIs may change.
+> **Status:** Alpha. APIs may change.
 
 ---
 
@@ -36,11 +36,11 @@ Declare your entire machine — packages, dotfiles, system settings, secrets —
 
 ## What is cfgd
 
-Most dotfile managers track files. `cfgd` enables you to manage your entire machine. You declare packages, files, secrets, and system settings in version-controlled YAML. `cfgd` diffs what you want against what you have, builds a plan, and reconciles — continuously. If something drifts, it's detected and corrected.
+Most dotfile managers track files. `cfgd` enables you to manage your entire machine. You declare packages, files, secrets, and system settings in version-controlled YAML. `cfgd` diffs what you want against what you have, builds a plan, and reconciles continuously. If something drifts, it's detected and corrected.
 
 ## How It Works
 
-**Profiles** declare your machine's desired state — packages, files, system settings. They compose via inheritance — share a common base across machines, then specialize per context. See [docs/profiles.md](docs/profiles.md).
+**Profiles** declare your machine's desired state: packages, files, system settings. They compose via inheritance: share a common base across machines, then specialize per context. See [docs/profiles.md](docs/profiles.md).
 
 ```
              base
@@ -52,7 +52,7 @@ Most dotfile managers track files. `cfgd` enables you to manage your entire mach
 
 **Modules** are shareable, self-contained config packages. Install someone else's dev environment or publish your own. Cross-platform package resolution picks the right manager automatically. See [docs/modules.md](docs/modules.md).
 
-**Reconciliation** continuously ensures machines match their declared state. Drift is detected, reported, and optionally auto-corrected. Failed actions don't abort — they're logged and skipped. See [docs/reconciliation.md](docs/reconciliation.md).
+**Reconciliation** continuously ensures machines match their declared state. Drift is detected, reported, and optionally auto-corrected. Failed actions don't abort; they're logged and skipped. See [docs/reconciliation.md](docs/reconciliation.md).
 
 ## Quick Start
 
@@ -84,30 +84,30 @@ cfgd completion fish | source   # config.fish
 
 ## Why cfgd exists
 
-I recently switched jobs, and spent the last week of my old job backing up scripts and dotfiles, parsing out company specific info, and composing a tarball to transfer. At the new job, I spent another few days getting my new machine reconfigured. Over time, I gradually discovering things I'd forgotten, as well as some things (e.g., System Settings) that I thought would have been nice to have included in the backup. This all felt very manual and incomplete, and I thought there needed to be a better way; I should just be able to clone a repo and have my entire workstation — packages, scripts, dotfiles, system settings - feel familiar again. And even better, to keep aspects of that feeling in sync betweeen my home and work laptops (parts of it, at least).
+I recently switched jobs, and spent the last week of my old job backing up scripts and dotfiles, parsing out company specific info, and composing a tarball to transfer. At the new job, I spent another few days getting my new machine reconfigured. Over time, I gradually discovered things I'd forgotten, as well as some things (e.g., System Settings) that I thought would have been nice to have included in the backup. This all felt very manual and incomplete, and I thought there needed to be a better way; I should just be able to clone a repo and have my entire workstation (packages, scripts, dotfiles, system settings) feel familiar again. And even better, to keep aspects of that feeling in sync between my home and work laptops (parts of it, at least).
 
 Another inspiring aspect had to do with working in devcontainers. At my previous company I had set up custom scripts to inject dotfiles into the devcontainer so a user could replicate their dev environment inside the container once they shell in. At minimum, I wanted my full neovim editor setup available in any ephemeral container without having to modify the devcontainer config in every team's repository I worked in just to accommodate my setup. I needed something that could bootstrap my config into any environment from the outside, regardless of which / whose repo I was working in. Plus, I had some coworkers in need of education about the superiority of vim-motions, and wanted a quick and easy way to share my exact setup, down to the alias.
 
-`cfgd` was architected by a platform / infrastructure engineer, and borrows from the best ideas across practices:
+`cfgd` borrows from the best ideas across practices:
 
-- **Kubernetes** — declarative reconciliation loop, KRM resource model
-- **Terraform** — plan/apply workflow, state tracking, drift detection
-- **Puppet** — continuous enforcement via daemon, module ecosystem
-- **Nix** — reproducible machine state from a single source of truth
-- **Ansible** — YAML-driven config management, idempotent task execution
-- **Kustomize** — layered overrides and patches
-- **chezmoi** — dotfile management
+- **Kubernetes**: declarative reconciliation loop, KRM resource model
+- **Terraform**: plan/apply workflow, state tracking, drift detection
+- **Puppet**: continuous enforcement via daemon, module ecosystem
+- **Nix**: reproducible machine state from a single source of truth
+- **Ansible**: YAML-driven config management, idempotent task execution
+- **Kustomize**: layered overrides and patches
+- **chezmoi**: dotfile management
 
 ## Shareable Modules
 
-This is my favorite feature; a single, packaged, works anywhere in no time at all config file for a tool.
+This is my favorite feature: a single packaged config for a tool that works anywhere.
 
 ```sh
 cfgd module create my-dev-env
 cfgd profile update --module community/nvim
 ```
 
-A module declares packages with cross-platform resolution, config files, shell env's and aliases, and lifecycle scripts:
+A module declares packages with cross-platform resolution, config files, shell environment variables and aliases, and lifecycle scripts:
 
 ```yaml
 apiVersion: cfgd.io/v1alpha1
@@ -155,7 +155,7 @@ See [docs/modules.md](docs/modules.md) for the full spec including git file sour
 | | **cfgd** | [chezmoi](https://chezmoi.io) | [Nix Home Manager](https://nix-community.github.io/home-manager/) | [Ansible](https://docs.ansible.com/) | [Puppet](https://www.puppet.com/) |
 |---|---|---|---|---|---|
 | **Focus** | Full machine state | Dotfiles | Dotfiles + packages (Nix) | General automation | Server/infra state |
-| **Packages** | **15 managers** | None | Nix only | Any (via tasks) | Any (via providers) |
+| **Packages** | **18 managers** | None | Nix only | Any (via tasks) | Any (via providers) |
 | **Drift detection** | **Continuous (daemon)** | Manual | On rebuild | Manual | Continuous (agent) |
 | **Cross-platform resolution** | **Per-package manager mapping** | N/A | Nix-only | Per-task conditionals | Per-OS Hiera data |
 | **Shareable modules** | **First-class** | Templates only | Flakes | Roles (Galaxy) | Forge (server-oriented) |
@@ -163,38 +163,38 @@ See [docs/modules.md](docs/modules.md) for the full spec including git file sour
 | **Infrastructure** | **Single binary, zero servers** | Single binary | Nix daemon | SSH (or AWX) | PuppetServer + PuppetDB + CA |
 | **Learning curve** | YAML + CLI | Go templates | Nix language | YAML + Jinja2 | Puppet DSL (Ruby) |
 
-Puppet is the closest philosophical match — declarative state, continuous enforcement, module ecosystem. If that model clicked for you but standing up a JVM server and writing a Ruby-era DSL to manage your dotfiles in 2026 doesn't, `cfgd` is what that idea looks like rebuilt from scratch for developer workstations.
+Puppet is the closest philosophical match: declarative state, continuous enforcement, module ecosystem. If that model clicked for you but standing up a JVM server and writing a Ruby-era DSL to manage your dotfiles in 2026 doesn't, `cfgd` is what that idea looks like rebuilt from scratch for developer workstations.
 
 `cfgd` is a good fit when you want: one-liners for cross-platform machine bootstrapping, shareable dev environment modules, continuous reconciliation between machines or subscribed sources, or team config distribution with policy enforcement.
 
 ## Features
 
 **For developers:**
-- [One-command bootstrap](docs/bootstrap.md) — `cfgd init --from <repo> --apply` on a new machine, done
-- [AI-guided generation](docs/ai-generate.md) — `cfgd generate` scans your system and builds profiles/modules; MCP server for AI editor integration
-- [MCP server](docs/ai-generate.md#serving-the-cli-itself) — `cfgd mcp` serves the CLI itself as tools, so an assistant can reconcile a machine, not just write config for one
-- [Authoring skills](docs/skill.md) — `cfgd skill install` teaches your coding agent (Claude Code, Gemini, Copilot, Codex, Cursor) to author high-quality cfgd resources
-- [Shareable modules](docs/modules.md) — cross-platform dev environment packages with dependency resolution and registries
-- [15 package managers](docs/packages.md) — brew, apt, dnf, pacman, cargo, npm, pipx, snap, and more, with automatic platform-aware resolution
-- [Secrets](docs/secrets.md) — SOPS/age encryption + 1Password, Bitwarden, HashiCorp Vault; secret-backed environment variables
-- [Tera templates](docs/templates.md) — render dotfiles with variables, OS detection, custom functions
-- [Continuous drift detection](docs/daemon.md) — daemon watches for changes, auto-syncs, notifies or auto-corrects
+- [One-command bootstrap](docs/bootstrap.md): `cfgd init --from <repo> --apply` on a new machine
+- [AI-guided generation](docs/ai-generate.md): `cfgd generate` scans your system and builds profiles/modules; MCP server for AI editor integration
+- [MCP server](docs/ai-generate.md#serving-the-cli-itself): `cfgd mcp` serves the CLI itself as tools, so an assistant can reconcile a machine, not just write config for one
+- [Authoring skills](docs/skill.md): `cfgd skill install` teaches your coding agent (Claude Code, Gemini, Copilot, Codex, Cursor) to author high-quality cfgd resources
+- [Shareable modules](docs/modules.md): cross-platform dev environment packages with dependency resolution and registries
+- [18 package managers](docs/packages.md): brew, apt, dnf, pacman, cargo, npm, pipx, snap, and more, with automatic platform-aware resolution
+- [Secrets](docs/secrets.md): SOPS/age encryption + 1Password, Bitwarden, HashiCorp Vault; secret-backed environment variables
+- [Tera templates](docs/templates.md): render dotfiles with variables, OS detection, custom functions
+- [Continuous drift detection](docs/daemon.md): daemon watches for changes, auto-syncs, notifies or auto-corrects
 
 **For platform & infrastructure engineers:**
-- [Multi-source config](docs/sources.md) — publish team baselines with policy tiers (locked/required/recommended/optional)
-- [Kubernetes operator](docs/operator.md) — CRDs for MachineConfig, ConfigPolicy, DriftAlert; admission webhook; device gateway with fleet dashboard
-- [Node configuration](docs/system-configurators.md) — sysctl, kernel modules, containerd, kubelet, AppArmor, seccomp, certificates
-- [CSI driver](docs/operator.md) — OCI-based module injection into pods via volumes
-- [Crossplane integration](docs/team-config.md) — TeamConfig XR for self-service team environment distribution
-- [kubectl plugin](docs/operator.md) — `kubectl cfgd debug/exec/inject/status` for node inspection
+- [Multi-source config](docs/sources.md): publish team baselines with policy tiers (locked/required/recommended/optional)
+- [Kubernetes operator](docs/operator.md): CRDs for MachineConfig, ConfigPolicy, DriftAlert; admission webhook; device gateway with fleet dashboard
+- [Node configuration](docs/system-configurators.md): sysctl, kernel modules, containerd, kubelet, AppArmor, seccomp, certificates
+- [CSI driver](docs/operator.md): OCI-based module injection into pods via volumes
+- [Crossplane integration](docs/team-config.md): TeamConfig XR for self-service team environment distribution
+- [kubectl plugin](docs/operator.md): `kubectl cfgd debug/exec/inject/status` for node inspection
 
 **For security & compliance:**
-- [Compliance snapshots](docs/spec/config.md#speccompliance) — continuous machine state capture with JSON/YAML export for Vanta, Drata, or custom integrations
-- [Key provisioning](docs/system-configurators.md) — declarative SSH key generation, GPG key management, and git signing configuration
-- [Encryption enforcement](docs/spec/profile.md) — per-file encryption requirements with SOPS/age backend validation
-- [Policy enforcement](docs/sources.md) — locked files, required packages, encryption constraints on target paths
-- [Drift remediation](docs/daemon.md) — daemon detects and auto-corrects configuration drift with per-module policies
-- [Fleet visibility](docs/operator.md) — device gateway aggregates compliance scores across enrolled machines
+- [Compliance snapshots](docs/spec/config.md#speccompliance): continuous machine state capture with JSON/YAML export for Vanta, Drata, or custom integrations
+- [Key provisioning](docs/system-configurators.md): declarative SSH key generation, GPG key management, and git signing configuration
+- [Encryption enforcement](docs/spec/profile.md): per-file encryption requirements with SOPS/age backend validation
+- [Policy enforcement](docs/sources.md): locked files, required packages, encryption constraints on target paths
+- [Drift remediation](docs/daemon.md): daemon detects and auto-corrects configuration drift with per-module policies
+- [Fleet visibility](docs/operator.md): device gateway aggregates compliance scores across enrolled machines
 
 ## Documentation
 
@@ -218,12 +218,15 @@ Puppet is the closest philosophical match — declarative state, continuous enfo
 | [Installation](docs/installation.md) | All install channels (Homebrew, install script, winget, scoop, chocolatey, cargo, direct download) |
 | [Bootstrap](docs/bootstrap.md) | `cfgd init` flow, apply options, install script |
 | [AI Generate](docs/ai-generate.md) | AI-guided config generation, both MCP servers (`mcp-server` for authoring, `mcp` for driving the CLI) |
-| [Authoring Skills](docs/skill.md) | `cfgd skill` installer, provider target matrix, the quality bar, generate-vs-skill |
-| [Releasing](docs/releasing.md) | CI-cut release pipeline, pre-release checklist, done-definition, failure recovery |
+| [Authoring Skills](docs/skill.md) | `cfgd skill` installer, supported agent providers, choosing between generate and skills |
+| [Releasing](docs/releasing.md) | CI-cut release pipeline, pre-release checklist, failure recovery |
+| [Image Pack](docs/image-pack.md) | Packing a directory into an OCI image volume, signing, pinning deployments |
+| [Multi-Tenancy](docs/multi-tenancy.md) | Namespace isolation and tenant boundaries for the operator |
+| [Lifecycle Scripts](docs/lifecycle-scripts.md) | `run:` resolution, hook phases, timeouts, interactive scripts |
 
 ## Distribution
 
-In addition to publishing binaries to [GitHub Releases](https://github.com/tj-smith47/cfgd/releases) (Linux, macOS, Windows — amd64 + arm64), each release also publishes to:
+In addition to publishing binaries to [GitHub Releases](https://github.com/tj-smith47/cfgd/releases) (Linux, macOS, Windows; amd64 + arm64), each release also publishes to:
 
 | Channel | Artifact |
 |---|---|
@@ -232,7 +235,7 @@ In addition to publishing binaries to [GitHub Releases](https://github.com/tj-sm
 | [AUR](https://aur.archlinux.org/packages/cfgd) | `yay -S cfgd` (Arch Linux; builds from source) |
 | [GHCR](https://ghcr.io/tj-smith47) | Docker images: `cfgd`, `cfgd-operator`, `cfgd-csi` |
 | [Helm](chart/cfgd/) | `helm install cfgd oci://ghcr.io/tj-smith47/charts/cfgd` |
-| [Krew](manifests/krew/) | `kubectl krew install cfgd` — the [kubectl plugin](docs/operator.md) for debugging nodes, exec'ing into agent pods, and inspecting fleet status |
+| [Krew](manifests/krew/) | `kubectl krew install cfgd` (the [kubectl plugin](docs/operator.md) for node debugging and fleet inspection) |
 | [OLM](ecosystem/olm/) | Operator bundle for OLM-managed clusters |
 | [Crossplane](function-cfgd/) | `function-cfgd` composition function for [team config distribution](docs/team-config.md) |
 
@@ -240,8 +243,8 @@ In addition to publishing binaries to [GitHub Releases](https://github.com/tj-sm
 
 | Integration | Description |
 |---|---|
-| [cfgd Setup](ecosystem/github-actions/setup/) | GitHub Action — bootstrap a runner with a module from your config repo |
-| [cfgd Plan](ecosystem/github-actions/plan/) | GitHub Action — run `cfgd plan` on PRs, post the diff as a comment |
+| [cfgd Setup](ecosystem/github-actions/setup/) | GitHub Action: bootstrap a runner with a module from your config repo |
+| [cfgd Plan](ecosystem/github-actions/plan/) | GitHub Action: run `cfgd plan` on PRs, post the diff as a comment |
 | [GitLab CI](ecosystem/gitlab/) | Includable `.cfgd-ci.yml` template with `.cfgd-plan` and `.cfgd-apply` jobs |
 | [Tekton](ecosystem/tekton/) | `cfgd-apply` Task for Tekton Pipelines |
 

@@ -2,6 +2,40 @@ use rusqlite::params;
 
 use super::*;
 
+/// Every column an `ALTER TABLE … ADD COLUMN` migration introduces, keyed by
+/// the index of the migration that adds it.
+///
+/// SQLite has no idempotent `ADD COLUMN`: replaying one raises
+/// `duplicate column name`, which aborts and rolls back the whole migration
+/// batch. So a fixture reproducing an older database has to reproduce its
+/// SCHEMA too, not just its `schema_version` row.
+const ADDED_COLUMNS: &[(usize, &str, &str)] = &[
+    (3, "apply_journal", "script_output"),
+    (14, "apply_journal", "completion_index"),
+];
+
+/// Present `store` as the database it was at `version`, so reopening replays
+/// every migration from `version` on exactly as a real upgrade would.
+///
+/// Winding the version row back alone is not enough — see [`ADDED_COLUMNS`].
+fn rewind_schema_version(store: &StateStore, version: usize) {
+    for (added_at, table, column) in ADDED_COLUMNS {
+        if *added_at >= version {
+            store
+                .conn
+                .execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {column}"))
+                .unwrap_or_else(|e| panic!("cannot un-add {table}.{column}: {e}"));
+        }
+    }
+    store
+        .conn
+        .execute(
+            "UPDATE schema_version SET version = ?1",
+            params![version as i64],
+        )
+        .unwrap();
+}
+
 #[test]
 fn open_in_memory() {
     let store = StateStore::open_in_memory().unwrap();
@@ -658,6 +692,195 @@ fn upsert_config_source_updates_on_conflict() {
 
 // --- Pending decision tests ---
 
+/// The resource path of every withholding decision, in row order.
+fn withheld_resources(store: &StateStore) -> Vec<String> {
+    store
+        .withheld_decisions()
+        .expect("read withholding decisions")
+        .into_iter()
+        .map(|d| d.resource)
+        .collect()
+}
+
+#[test]
+fn withheld_paths_cover_both_states_that_keep_a_resource_off_the_machine() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "k9s")
+        .unwrap();
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.stern",
+            "recommended",
+            "install",
+            "st",
+        )
+        .unwrap();
+    store
+        .upsert_pending_decision("acme", "files.~/.zshrc", "recommended", "install", "rc")
+        .unwrap();
+    store
+        .resolve_decision("packages.brew.stern", "rejected")
+        .unwrap();
+    store
+        .resolve_decision("files.~/.zshrc", "accepted")
+        .unwrap();
+
+    let mut withheld = withheld_resources(&store);
+    withheld.sort();
+    assert_eq!(
+        withheld,
+        vec![
+            "packages.brew.k9s".to_string(),
+            "packages.brew.stern".to_string()
+        ],
+        "awaiting and declined both withhold; only an accepted decision releases its resource"
+    );
+}
+
+#[test]
+fn accepting_a_resource_that_was_once_rejected_releases_it() {
+    // A source update re-asks about an item the operator declined earlier
+    // (`docs/sources.md`: "Rejection doesn't persist across source versions"),
+    // so a resource can carry a resolved rejection AND a newer decision. The
+    // newest answer is the one that counts — otherwise accepting the fresh
+    // decision would be silently overruled by the stale rejection.
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "v1")
+        .unwrap();
+    store
+        .resolve_decision("packages.brew.k9s", "rejected")
+        .unwrap();
+    store
+        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "v2")
+        .unwrap();
+    assert_eq!(
+        withheld_resources(&store),
+        vec!["packages.brew.k9s".to_string()],
+        "the fresh decision withholds while it is unanswered"
+    );
+
+    store
+        .resolve_decision("packages.brew.k9s", "accepted")
+        .unwrap();
+    assert!(
+        withheld_resources(&store).is_empty(),
+        "the stale rejection must not outlive the answer that replaced it"
+    );
+}
+
+#[test]
+fn record_auto_accepted_resolves_the_open_row_with_auto_provenance() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "recommended packages.cargo.bat (from acme)",
+        )
+        .unwrap();
+    store
+        .record_auto_accepted_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "recommended packages.cargo.bat (from acme) — auto-accepted: already installed",
+        )
+        .unwrap();
+
+    assert!(
+        withheld_resources(&store).is_empty(),
+        "an auto-accepted resolution releases the resource"
+    );
+    let (resolution, resolved_at, summary): (Option<String>, Option<String>, String) = store
+        .conn
+        .query_row(
+            "SELECT resolution, resolved_at, summary FROM pending_decisions
+                 WHERE source = 'acme' AND resource = 'packages.cargo.bat'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        resolution.as_deref(),
+        Some(super::RESOLUTION_AUTO_ACCEPTED),
+        "distinguishable from an operator's `accepted`"
+    );
+    assert!(resolved_at.is_some());
+    assert!(summary.contains("auto-accepted: already installed"));
+}
+
+#[test]
+fn record_auto_accepted_with_no_open_row_inserts_once() {
+    // No row existed (nothing had asked yet): the provenance still lands, as
+    // an already-resolved row — and re-observing the same fact on the next
+    // run is a no-op, not a history row per tick.
+    let store = StateStore::open_in_memory().unwrap();
+    let summary = "recommended packages.cargo.bat (from acme) — auto-accepted: already installed";
+    for _ in 0..2 {
+        store
+            .record_auto_accepted_decision(
+                "acme",
+                "packages.cargo.bat",
+                "recommended",
+                "install",
+                summary,
+            )
+            .unwrap();
+    }
+
+    let count: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM pending_decisions
+                 WHERE source = 'acme' AND resource = 'packages.cargo.bat'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "idempotent for an unchanged observation");
+    assert!(store.pending_decisions().unwrap().is_empty());
+    assert!(withheld_resources(&store).is_empty());
+    assert!(
+        store.has_decision("acme", "packages.cargo.bat").unwrap(),
+        "the provenance row exists for `status` to explain"
+    );
+}
+
+#[test]
+fn discarding_a_removed_source_leaves_no_lasting_exclusion() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "k9s")
+        .unwrap();
+    store
+        .upsert_pending_decision(
+            "other",
+            "packages.brew.bat",
+            "recommended",
+            "install",
+            "bat",
+        )
+        .unwrap();
+
+    assert_eq!(store.discard_decisions_for_source("acme").unwrap(), 1);
+    assert_eq!(
+        withheld_resources(&store),
+        vec!["packages.brew.bat".to_string()],
+        "an unsubscribed source stops withholding the paths it named"
+    );
+    assert_eq!(
+        store.pending_decisions().unwrap().len(),
+        1,
+        "only the removed source's rows are gone"
+    );
+}
+
 #[test]
 fn upsert_and_list_pending_decisions() {
     let store = StateStore::open_in_memory().unwrap();
@@ -955,19 +1178,21 @@ fn journal_lifecycle() {
     let j1 = store
         .journal_begin(apply_id, 0, "files", "create", "/home/user/.bashrc", None)
         .unwrap();
-    store.journal_complete(j1, Some("hash123"), None).unwrap();
+    store
+        .journal_complete(j1, 0, Some("hash123"), None)
+        .unwrap();
 
     let j2 = store
         .journal_begin(apply_id, 1, "files", "update", "/home/user/.zshrc", None)
         .unwrap();
-    store.journal_fail(j2, "permission denied").unwrap();
+    store.journal_fail(j2, 1, "permission denied").unwrap();
 
     // Script action with captured output
     let j3 = store
         .journal_begin(apply_id, 2, "scripts", "run", "setup.sh", None)
         .unwrap();
     store
-        .journal_complete(j3, None, Some("installed deps\nall good"))
+        .journal_complete(j3, 2, None, Some("installed deps\nall good"))
         .unwrap();
 
     // journal_entries returns all entries (ordered by action_index), including
@@ -1088,7 +1313,7 @@ fn update_apply_status_works() {
 #[test]
 fn schema_version_advances_to_migration_count() {
     let store = StateStore::open_in_memory().unwrap();
-    let version = store.schema_version();
+    let version = store.schema_version().unwrap();
     assert_eq!(
         version,
         super::MIGRATIONS.len(),
@@ -1158,14 +1383,18 @@ fn compliance_snapshot_roundtrip() {
     let store = StateStore::open_in_memory().unwrap();
     let snapshot = make_test_snapshot();
 
-    let json = serde_json::to_string(&snapshot).unwrap();
-    let hash = crate::sha256_hex(json.as_bytes());
+    let (json, hash) = crate::compliance::snapshot_content_hash(&snapshot).unwrap();
 
-    store.store_compliance_snapshot(&snapshot, &hash).unwrap();
+    store.store_compliance_snapshot(&snapshot).unwrap();
 
-    // Retrieve by latest hash
+    // The stored hash is the content digest of the stored JSON — the invariant
+    // migration 14's rehash statement restores for rows written earlier.
     let latest = store.latest_compliance_hash().unwrap().unwrap();
     assert_eq!(latest, hash);
+    assert_eq!(
+        latest,
+        crate::compliance::snapshot_json_content_hash(&json).unwrap()
+    );
 
     // Retrieve full snapshot by history
     let history = store.compliance_history(None, 10).unwrap();
@@ -1194,14 +1423,17 @@ fn compliance_latest_hash_returns_most_recent() {
 
     let mut s1 = make_test_snapshot();
     s1.timestamp = "2026-01-01T00:00:00Z".into();
-    store.store_compliance_snapshot(&s1, "hash1").unwrap();
+    store.store_compliance_snapshot(&s1).unwrap();
 
     let mut s2 = make_test_snapshot();
     s2.timestamp = "2026-01-02T00:00:00Z".into();
-    store.store_compliance_snapshot(&s2, "hash2").unwrap();
+    store.store_compliance_snapshot(&s2).unwrap();
 
     let latest = store.latest_compliance_hash().unwrap().unwrap();
-    assert_eq!(latest, "hash2");
+    assert_eq!(
+        latest,
+        crate::compliance::snapshot_content_hash(&s2).unwrap().1
+    );
 }
 
 #[test]
@@ -1210,15 +1442,15 @@ fn compliance_prune_removes_old_snapshots() {
 
     let mut s1 = make_test_snapshot();
     s1.timestamp = "2026-01-01T00:00:00Z".into();
-    store.store_compliance_snapshot(&s1, "hash1").unwrap();
+    store.store_compliance_snapshot(&s1).unwrap();
 
     let mut s2 = make_test_snapshot();
     s2.timestamp = "2026-01-15T00:00:00Z".into();
-    store.store_compliance_snapshot(&s2, "hash2").unwrap();
+    store.store_compliance_snapshot(&s2).unwrap();
 
     let mut s3 = make_test_snapshot();
     s3.timestamp = "2026-02-01T00:00:00Z".into();
-    store.store_compliance_snapshot(&s3, "hash3").unwrap();
+    store.store_compliance_snapshot(&s3).unwrap();
 
     // Prune everything before Feb
     let deleted = store
@@ -1236,15 +1468,15 @@ fn compliance_history_with_since() {
 
     let mut s1 = make_test_snapshot();
     s1.timestamp = "2026-01-01T00:00:00Z".into();
-    store.store_compliance_snapshot(&s1, "h1").unwrap();
+    store.store_compliance_snapshot(&s1).unwrap();
 
     let mut s2 = make_test_snapshot();
     s2.timestamp = "2026-01-10T00:00:00Z".into();
-    store.store_compliance_snapshot(&s2, "h2").unwrap();
+    store.store_compliance_snapshot(&s2).unwrap();
 
     let mut s3 = make_test_snapshot();
     s3.timestamp = "2026-01-20T00:00:00Z".into();
-    store.store_compliance_snapshot(&s3, "h3").unwrap();
+    store.store_compliance_snapshot(&s3).unwrap();
 
     let history = store
         .compliance_history(Some("2026-01-05T00:00:00Z"), 10)
@@ -1507,58 +1739,23 @@ fn migration_6_rebuilds_source_applies_preserving_rows_and_enabling_cascade() {
     // source_applies row whose FK lacks ON DELETE CASCADE. Reopening runs
     // migration 6, which must (a) preserve the existing row through the table
     // rebuild and (b) leave the FK with ON DELETE CASCADE so removal works.
+    //
+    // The fixture REPLAYS the first five migrations rather than declaring the
+    // schema by hand, because reopening replays the entire tail and a later
+    // migration touching a table the hand-written DDL forgot would fail on a
+    // shape no real version-5 database has. Replaying is also what produces the
+    // cascade-less `source_applies` this test is about — migration 6 is the one
+    // that adds ON DELETE CASCADE.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     {
         let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        for migration in &MIGRATIONS[..5] {
+            conn.execute_batch(migration).unwrap();
+        }
         conn.execute_batch(
-            "PRAGMA foreign_keys=ON;
-             CREATE TABLE applies (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL, profile TEXT NOT NULL,
-                plan_hash TEXT NOT NULL, status TEXT NOT NULL, summary TEXT);
-             CREATE TABLE config_sources (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE, origin_url TEXT NOT NULL,
-                origin_branch TEXT NOT NULL DEFAULT 'main', last_fetched TEXT,
-                last_commit TEXT, source_version TEXT, pinned_version TEXT,
-                status TEXT NOT NULL DEFAULT 'active');
-             CREATE TABLE source_applies (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source_id INTEGER NOT NULL, apply_id INTEGER NOT NULL,
-                source_commit TEXT NOT NULL,
-                FOREIGN KEY (source_id) REFERENCES config_sources(id),
-                FOREIGN KEY (apply_id) REFERENCES applies(id));
-             CREATE TABLE drift_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL, resource_type TEXT NOT NULL,
-                resource_id TEXT NOT NULL, expected TEXT, actual TEXT,
-                source TEXT NOT NULL DEFAULT 'local', resolved_by INTEGER,
-                FOREIGN KEY (resolved_by) REFERENCES applies(id));
-             CREATE TABLE file_backups (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                apply_id INTEGER NOT NULL, file_path TEXT NOT NULL,
-                content_hash TEXT NOT NULL, content BLOB NOT NULL,
-                permissions INTEGER, was_symlink INTEGER NOT NULL DEFAULT 0,
-                symlink_target TEXT, oversized INTEGER NOT NULL DEFAULT 0,
-                backed_up_at TEXT NOT NULL,
-                FOREIGN KEY (apply_id) REFERENCES applies(id));
-             CREATE TABLE managed_resources (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                resource_type TEXT NOT NULL, resource_id TEXT NOT NULL,
-                source TEXT NOT NULL DEFAULT 'local', last_hash TEXT,
-                last_applied INTEGER, uninstall_cmd TEXT,
-                UNIQUE(resource_type, resource_id),
-                FOREIGN KEY (last_applied) REFERENCES applies(id));
-             CREATE TABLE module_file_manifest (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                module_name TEXT NOT NULL, file_path TEXT NOT NULL,
-                content_hash TEXT NOT NULL, strategy TEXT NOT NULL,
-                last_applied INTEGER,
-                UNIQUE(module_name, file_path),
-                FOREIGN KEY (last_applied) REFERENCES applies(id));
-             CREATE TABLE schema_version (version INTEGER NOT NULL);
-             INSERT INTO schema_version (version) VALUES (5);
+            "UPDATE schema_version SET version = 5;
              INSERT INTO config_sources (id, name, origin_url) VALUES (1, 'acme', 'u');
              INSERT INTO applies (id, timestamp, profile, plan_hash, status)
                 VALUES (1, 't', 'default', 'h', 'success');
@@ -1645,10 +1842,7 @@ fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
         // Hardcoded, not `MIGRATIONS.len() - 1`: this test means "replay the
         // id-shape sweep", so appending a later migration must not silently
         // re-point it at the new tail.
-        store
-            .conn
-            .execute("UPDATE schema_version SET version = 8", [])
-            .unwrap();
+        rewind_schema_version(&store, 8);
     }
 
     let state = StateStore::open(&path).unwrap();
@@ -1684,10 +1878,10 @@ fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = crate::test_helpers::make_empty_resolved();
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: ["nvim", "zsh"]
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &crate::reconciler::Owner::profile("test"),
+            ["nvim", "zsh"]
                 .into_iter()
                 .map(|name| {
                     Action::Module(ModuleAction {
@@ -1699,7 +1893,7 @@ fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
                     })
                 })
                 .collect(),
-        }],
+        )],
         warnings: vec![],
     };
     let printer = crate::test_helpers::test_printer();
@@ -1709,7 +1903,7 @@ fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&crate::reconciler::PhaseFilter::Phase(PhaseName::Modules)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -1776,10 +1970,7 @@ fn migration_10_folds_windows_file_path_keys_and_spares_unix_backslash_names() {
         store
             .upsert_module_file("zsh", r"/home/me/od\d.zshrc", "h3", "Copy", apply_id)
             .unwrap();
-        store
-            .conn
-            .execute("UPDATE schema_version SET version = 9", [])
-            .unwrap();
+        rewind_schema_version(&store, 9);
     }
 
     let state = StateStore::open(&path).unwrap();
@@ -2041,16 +2232,16 @@ fn journal_entries_after_apply_returns_completed_desc() {
     let j1 = store
         .journal_begin(apply2, 0, "Packages", "install", "brew:curl", None)
         .unwrap();
-    store.journal_complete(j1, None, None).unwrap();
+    store.journal_complete(j1, 0, None, None).unwrap();
     let j2 = store
         .journal_begin(apply2, 1, "Packages", "install", "brew:wget", None)
         .unwrap();
-    store.journal_complete(j2, None, None).unwrap();
+    store.journal_complete(j2, 1, None, None).unwrap();
     // A failed entry should NOT be returned
     let j3 = store
         .journal_begin(apply2, 2, "Packages", "install", "brew:vim", None)
         .unwrap();
-    store.journal_fail(j3, "package not found").unwrap();
+    store.journal_fail(j3, 2, "package not found").unwrap();
 
     let entries = store.journal_entries_after_apply(apply1).unwrap();
     assert_eq!(
@@ -2058,11 +2249,113 @@ fn journal_entries_after_apply_returns_completed_desc() {
         2,
         "should return only completed entries, not failed"
     );
-    // Results are ordered by apply_id DESC, action_index DESC
+    // Results are ordered by apply_id DESC, completion_index DESC
     assert_eq!(entries[0].resource_id, "brew:wget");
     assert_eq!(entries[1].resource_id, "brew:curl");
     assert_eq!(entries[0].status, "completed");
     assert_eq!(entries[1].status, "completed");
+}
+
+#[test]
+fn journal_entries_after_apply_reports_in_completion_order_not_plan_order() {
+    // Two lanes: the action at plan position 0 finishes LAST, which is exactly
+    // what `action_index DESC` misreports once dispatch stops following plan
+    // order.
+    let store = StateStore::open_in_memory().unwrap();
+    let apply1 = store
+        .record_apply("default", "hash1", ApplyStatus::Success, None)
+        .unwrap();
+    let apply2 = store
+        .record_apply("default", "hash2", ApplyStatus::Success, None)
+        .unwrap();
+
+    let slow = store
+        .journal_begin(apply2, 0, "Packages", "install", "brew:slow", None)
+        .unwrap();
+    let quick = store
+        .journal_begin(apply2, 1, "Packages", "install", "apt:quick", None)
+        .unwrap();
+    store.journal_complete(quick, 0, None, None).unwrap();
+    store.journal_complete(slow, 1, None, None).unwrap();
+
+    let entries = store.journal_entries_after_apply(apply1).unwrap();
+    let ids: Vec<&str> = entries.iter().map(|e| e.resource_id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["brew:slow", "apt:quick"],
+        "most-recent-first means the last FINISH, not the last plan position"
+    );
+}
+
+#[test]
+fn journal_complete_always_pairs_completion_index_with_completed_status() {
+    // `journal_entries_after_apply` filters to `status = 'completed'` and
+    // orders by `completion_index` with no NULL fallback; that is only sound
+    // because `journal_complete` is the sole writer of `status = 'completed'`
+    // and it sets `completion_index` in the same `UPDATE`. A `pending` row
+    // (a run killed before collection) never reaches this query at all — the
+    // `WHERE` clause excludes it before ordering is evaluated.
+    let store = StateStore::open_in_memory().unwrap();
+    let apply1 = store
+        .record_apply("default", "hash1", ApplyStatus::Success, None)
+        .unwrap();
+    let apply2 = store
+        .record_apply("default", "hash2", ApplyStatus::Success, None)
+        .unwrap();
+
+    let completed = store
+        .journal_begin(apply2, 0, "Packages", "install", "brew:done", None)
+        .unwrap();
+    store.journal_complete(completed, 0, None, None).unwrap();
+    // Left pending — never collected, so it must stay excluded.
+    store
+        .journal_begin(apply2, 1, "Packages", "install", "brew:stuck", None)
+        .unwrap();
+
+    let entries = store.journal_entries_after_apply(apply1).unwrap();
+    assert_eq!(
+        entries.len(),
+        1,
+        "a pending row must not surface via journal_entries_after_apply"
+    );
+    assert_eq!(entries[0].resource_id, "brew:done");
+    assert_eq!(
+        entries[0].completion_index,
+        Some(0),
+        "journal_complete always writes completion_index alongside status"
+    );
+}
+
+#[test]
+fn completion_index_backfills_every_historical_row_from_its_plan_position() {
+    // Every historical apply WAS sequential, so completion order was plan
+    // order — which is what makes the backfill exact rather than a guess.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        let apply_id = store
+            .record_apply("default", "hash", ApplyStatus::Success, None)
+            .unwrap();
+        for (index, resource) in [(0usize, "brew:curl"), (1, "brew:wget"), (2, "brew:vim")] {
+            let id = store
+                .journal_begin(apply_id, index, "Packages", "install", resource, None)
+                .unwrap();
+            store.journal_complete(id, index, None, None).unwrap();
+        }
+        rewind_schema_version(&store, 14);
+    }
+
+    let store = StateStore::open(&path).unwrap();
+    let entries = store.journal_entries(1).unwrap();
+    assert_eq!(entries.len(), 3);
+    for entry in &entries {
+        assert_eq!(
+            entry.completion_index,
+            Some(entry.action_index),
+            "the backfill reproduces the sequential run's completion order"
+        );
+    }
 }
 
 // --- concurrent in-memory stores ---
@@ -2087,10 +2380,41 @@ fn concurrent_in_memory_stores_are_independent() {
 #[test]
 fn schema_version_after_open() {
     let store = StateStore::open_in_memory().unwrap();
-    let version = store.schema_version();
+    let version = store.schema_version().unwrap();
     assert!(
         version >= 4,
         "schema version should be at least 4 after migrations: got {version}"
+    );
+}
+
+#[test]
+fn schema_version_read_error_propagates_instead_of_replaying_migrations() {
+    // A `schema_version` table that EXISTS but has lost its row is not a
+    // fresh database (a fresh database is one that never created the table
+    // at all) — it is exactly the transient/corrupt-read shape the fix
+    // guards. `StateStore::open` must surface an error rather than folding
+    // it to `0` and replaying every migration, several of which are
+    // non-idempotent `ALTER TABLE ... ADD COLUMN` and abort on replay with
+    // "duplicate column name".
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        store
+            .conn
+            .execute("DELETE FROM schema_version", [])
+            .unwrap();
+    }
+
+    let message = match StateStore::open(&path) {
+        Ok(_) => {
+            panic!("a schema_version table with no row must error, not silently read as version 0")
+        }
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        !message.contains("duplicate column name"),
+        "a genuine read failure must be reported as itself, not surface as a replayed migration's own failure: {message}"
     );
 }
 
@@ -2108,10 +2432,7 @@ fn migration_13_reaches_a_database_already_past_the_backup_runs_insertion_point(
     {
         let store = StateStore::open(&path).unwrap();
         store.conn.execute("DROP TABLE backup_runs", []).unwrap();
-        store
-            .conn
-            .execute("UPDATE schema_version SET version = 12", [])
-            .unwrap();
+        rewind_schema_version(&store, 12);
     }
 
     let state = StateStore::open(&path).unwrap();
@@ -2119,7 +2440,257 @@ fn migration_13_reaches_a_database_already_past_the_backup_runs_insertion_point(
         state.backup_runs("any").unwrap().is_empty(),
         "backup_runs must exist and be readable after replaying the tail migration"
     );
-    assert_eq!(state.schema_version() as usize, MIGRATIONS.len());
+    assert_eq!(state.schema_version().unwrap(), MIGRATIONS.len());
+}
+
+fn doubled_prefix_snapshot(key: &str) -> crate::compliance::ComplianceSnapshot {
+    use crate::compliance::{
+        ComplianceCheck, ComplianceSnapshot, ComplianceStatus, ComplianceSummary, MachineInfo,
+    };
+    ComplianceSnapshot {
+        timestamp: crate::utc_now_iso8601(),
+        machine: MachineInfo {
+            hostname: "host".to_string(),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+        },
+        profile: "default".to_string(),
+        sources: vec![],
+        checks: vec![ComplianceCheck {
+            category: "system".to_string(),
+            key: Some(key.to_string()),
+            status: ComplianceStatus::Violation,
+            ..Default::default()
+        }],
+        summary: ComplianceSummary {
+            compliant: 0,
+            warning: 0,
+            violation: 1,
+        },
+    }
+}
+
+#[test]
+fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+
+    {
+        let store = StateStore::open(&path).unwrap();
+        let apply_id = store
+            .record_apply("default", "h", ApplyStatus::Success, None)
+            .unwrap();
+
+        // Ids as the self-prefixing configurators wrote them.
+        store
+            .upsert_managed_resource(
+                "system",
+                "sshKeys.sshKeys.default.exists",
+                "local",
+                None,
+                Some(apply_id),
+            )
+            .unwrap();
+        store
+            .record_drift(
+                "system",
+                "seccomp.seccomp.default-audit",
+                Some("present"),
+                Some("missing"),
+                "local",
+            )
+            .unwrap();
+        store
+            .journal_begin(
+                apply_id,
+                0,
+                "System",
+                "system",
+                "kubelet.kubelet.maxPods",
+                None,
+            )
+            .unwrap();
+        store
+            .store_compliance_snapshot(&doubled_prefix_snapshot(
+                "apparmor.apparmor.test-profile.file",
+            ))
+            .unwrap();
+        // A row whose stored hash does not describe its stored JSON — the shape
+        // every snapshot the daemon wrote before the hash derivation was unified
+        // carries, and one the public API can no longer produce.
+        let (stale_json, _) = crate::compliance::snapshot_content_hash(&doubled_prefix_snapshot(
+            "cert.kubelet-client.cert.mode",
+        ))
+        .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO compliance_snapshots (timestamp, content_hash, snapshot_json,
+                    summary_compliant, summary_warning, summary_violation)
+                 VALUES ('2026-01-01T00:00:00Z', 'stale-hash', ?1, 0, 0, 1)",
+                rusqlite::params![stale_json],
+            )
+            .unwrap();
+        // A snapshot that will not parse: the rehash must leave its hash alone
+        // rather than fail, which inside the runner's EXCLUSIVE transaction
+        // would roll the whole migration back and leave the store unopenable.
+        store
+            .conn
+            .execute(
+                "INSERT INTO compliance_snapshots (timestamp, content_hash, snapshot_json,
+                    summary_compliant, summary_warning, summary_violation)
+                 VALUES ('2026-01-01T00:00:01Z', 'corrupt-row-hash', '{not json', 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+
+        // Controls. A configurator whose key prefix merely RESEMBLES its name
+        // (`certificates` → `cert.…`) is not doubled; a longer name sharing the
+        // doubled prefix's opening (`containerd.containerdx`) has no second
+        // segment boundary; a lowercased twin proves the match is case-SENSITIVE
+        // (SQLite's LIKE is not, GLOB is); and a non-`system` row proves the
+        // rewrite is scoped by resource type rather than by id shape alone.
+        store
+            .upsert_managed_resource(
+                "system",
+                "certificates.cert.kubelet-client.cert",
+                "local",
+                None,
+                Some(apply_id),
+            )
+            .unwrap();
+        store
+            .upsert_managed_resource(
+                "system",
+                "containerd.containerdx",
+                "local",
+                None,
+                Some(apply_id),
+            )
+            .unwrap();
+        store
+            .upsert_managed_resource(
+                "system",
+                "sshkeys.sshkeys.default.exists",
+                "local",
+                None,
+                Some(apply_id),
+            )
+            .unwrap();
+        store
+            .record_drift(
+                "file",
+                "seccomp.seccomp.default-audit",
+                None,
+                Some("modified"),
+                "local",
+            )
+            .unwrap();
+
+        // Hardcoded, not `MIGRATIONS.len() - 1`: this test means "replay the
+        // id-undoubling rewrite", so appending a later migration must not
+        // silently re-point it at the new tail.
+        rewind_schema_version(&store, 13);
+    }
+
+    let state = StateStore::open(&path).unwrap();
+
+    let ids: Vec<String> = state
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.resource_type == "system")
+        .map(|r| r.resource_id)
+        .collect();
+    assert!(
+        ids.contains(&"sshKeys.default.exists".to_string()),
+        "the doubled managed_resources id must be rewritten: {ids:?}"
+    );
+    assert!(
+        ids.contains(&"certificates.cert.kubelet-client.cert".to_string())
+            && ids.contains(&"containerd.containerdx".to_string())
+            && ids.contains(&"sshkeys.sshkeys.default.exists".to_string()),
+        "no control id may be rewritten: {ids:?}"
+    );
+
+    let drift: Vec<(String, String)> = state
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|d| (d.resource_type, d.resource_id))
+        .collect();
+    assert!(
+        drift.contains(&("system".to_string(), "seccomp.default-audit".to_string())),
+        "the doubled drift id must be rewritten: {drift:?}"
+    );
+    assert!(
+        drift.contains(&(
+            "file".to_string(),
+            "seccomp.seccomp.default-audit".to_string()
+        )),
+        "a non-system drift row must be left alone: {drift:?}"
+    );
+
+    let journal_ids: Vec<String> = state
+        .journal_entries(1)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.resource_id)
+        .collect();
+    assert_eq!(journal_ids, vec!["kubelet.maxPods".to_string()]);
+
+    let rewritten = state
+        .compliance_history(None, 10)
+        .unwrap()
+        .into_iter()
+        // The deliberately-corrupt row does not deserialize; every other row must.
+        .filter_map(|row| state.get_compliance_snapshot(row.id).ok().flatten())
+        .map(|snapshot| snapshot.checks[0].key.clone().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(rewritten.len(), 2);
+    assert!(
+        rewritten.contains(&"apparmor.test-profile.file".to_string()),
+        "the doubled compliance check key must be rewritten: {rewritten:?}"
+    );
+    assert!(
+        rewritten.contains(&"cert.kubelet-client.cert.mode".to_string()),
+        "an undoubled check key must survive verbatim: {rewritten:?}"
+    );
+
+    // Every row's hash must describe the row: the rewritten snapshot because its
+    // JSON moved, and the stale-hash row because nothing else ever repairs it.
+    let hashes: Vec<(String, String)> = state
+        .conn
+        .prepare("SELECT content_hash, snapshot_json FROM compliance_snapshots")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(hashes.len(), 3);
+    for (hash, json) in &hashes {
+        match crate::compliance::snapshot_json_content_hash(json) {
+            Ok(derived) => assert_eq!(
+                hash, &derived,
+                "content_hash must be re-derived from the stored JSON"
+            ),
+            Err(_) => assert_eq!(
+                hash, "corrupt-row-hash",
+                "an unparseable snapshot must keep the hash it had"
+            ),
+        }
+    }
+
+    assert_eq!(state.schema_version().unwrap(), MIGRATIONS.len());
+}
+
+#[test]
+fn migration_14_is_a_no_op_on_a_fresh_store() {
+    let store = StateStore::open_in_memory().unwrap();
+    assert_eq!(store.schema_version().unwrap(), MIGRATIONS.len());
+    assert!(store.managed_resources().unwrap().is_empty());
+    assert!(store.unresolved_drift().unwrap().is_empty());
+    assert!(store.compliance_history(None, 10).unwrap().is_empty());
 }
 
 // --- get_apply by id ---
@@ -2495,6 +3066,58 @@ fn bootstrap_path_dirs_replaces_an_earlier_record_for_the_same_manager() {
 }
 
 #[test]
+fn adding_a_created_dir_keeps_the_recorded_dirs_and_their_order() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_bootstrapped_path_dirs(
+            "brew",
+            &[
+                "/opt/homebrew/bin".to_string(),
+                "/opt/homebrew/sbin".to_string(),
+            ],
+        )
+        .unwrap();
+    store
+        .add_bootstrapped_path_dirs("brew", &["/opt/homebrew/opt/bin".to_string()])
+        .unwrap();
+    // Adding one the row already holds must not move it or repeat it: the env
+    // file built from this row is hashed and compared every tick.
+    store
+        .add_bootstrapped_path_dirs("brew", &["/opt/homebrew/bin".to_string()])
+        .unwrap();
+
+    assert_eq!(
+        store.bootstrapped_managers().unwrap(),
+        vec![(
+            "brew".to_string(),
+            vec![
+                "/opt/homebrew/bin".to_string(),
+                "/opt/homebrew/sbin".to_string(),
+                "/opt/homebrew/opt/bin".to_string(),
+            ]
+        )]
+    );
+}
+
+#[test]
+fn adding_a_created_dir_for_an_unrecorded_manager_starts_the_row() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .add_bootstrapped_path_dirs("npm", &["/home/u/.npm-global/bin".to_string()])
+        .unwrap();
+
+    // The user installed npm themselves, so no bootstrap ever wrote a row —
+    // the prefix cfgd made still has to reach the generated env file.
+    assert_eq!(
+        store.bootstrapped_managers().unwrap(),
+        vec![(
+            "npm".to_string(),
+            vec!["/home/u/.npm-global/bin".to_string()]
+        )]
+    );
+}
+
+#[test]
 fn bootstrap_path_dirs_orders_managers_deterministically() {
     let store = StateStore::open_in_memory().unwrap();
     store
@@ -2679,4 +3302,87 @@ fn forget_package_manager_prefix_is_scoped_per_manager() {
         store.package_manager_prefix("pipx").unwrap(),
         Some(("/home/u/.local/pipx".to_string(), false))
     );
+}
+
+#[test]
+fn journal_entry_is_file_work_covers_module_file_deploys() {
+    let entry = |phase: &str, action_type: &str, resource_id: &str| JournalEntry {
+        id: 1,
+        apply_id: 1,
+        action_index: 0,
+        completion_index: Some(0),
+        phase: phase.to_string(),
+        action_type: action_type.to_string(),
+        resource_id: resource_id.to_string(),
+        pre_state: None,
+        post_state: None,
+        status: "success".to_string(),
+        error: None,
+        started_at: String::new(),
+        completed_at: None,
+        script_output: None,
+    };
+
+    // The three original disjuncts.
+    assert!(entry("files", "file", "~/.gitconfig").is_file_work());
+    assert!(entry("modules", "file", "~/.tmux.conf").is_file_work());
+    assert!(entry("modules", "unknown", "file:~/.vimrc").is_file_work());
+
+    // Module file deploys journal as module:<name>:files:<n> — action_type
+    // "module", id "<name>:files:<n>". Their writes are restored from
+    // file_backups, so rollback must not list them as unrecoverable.
+    assert!(entry("modules", "module", "nvim:files:3").is_file_work());
+
+    // Other module verbs stay non-file work.
+    assert!(!entry("modules", "module", "nvim:script").is_file_work());
+    assert!(!entry("modules", "module", "nvim:skip").is_file_work());
+    assert!(!entry("modules", "module", "nvim:packages:fd,rg").is_file_work());
+    assert!(!entry("packages", "package", "apt:install:sl").is_file_work());
+
+    // Env write/inject rows journal as action_type "env" with the target
+    // path as the id (the write/inject verb is dropped by the two-colon
+    // parse). Their pre-states are captured through `action_target_path`
+    // into file_backups, so rollback restores them and must not list them
+    // as unrecoverable.
+    assert!(entry("env", "env", "/home/u/.cfgd.env").is_file_work());
+    assert!(entry("env", "env", "~/.bashrc").is_file_work());
+
+    // The one env row with no file behind it: the live-session refresh
+    // (`env:session:refresh` parses to id "refresh"). Session-manager state
+    // has no backup, so it stays in the unrecoverable report.
+    assert!(!entry("env", "env", "refresh").is_file_work());
+}
+
+#[test]
+fn is_file_work_classifies_by_resource_identity_not_phase() {
+    let entry = |phase: &str, action_type: &str, resource_id: &str| JournalEntry {
+        id: 1,
+        apply_id: 1,
+        action_index: 0,
+        completion_index: Some(0),
+        phase: phase.to_string(),
+        action_type: action_type.to_string(),
+        resource_id: resource_id.to_string(),
+        pre_state: None,
+        post_state: None,
+        status: "success".to_string(),
+        error: None,
+        started_at: String::new(),
+        completed_at: None,
+        script_output: None,
+    };
+
+    // A module's encryption/strategy skip is planned into the `files` phase and
+    // writes nothing. Under a phase term it would be reported as restorable
+    // file work and rollback would claim to have undone a write that never
+    // happened.
+    assert!(!entry("files", "module", "nvim:skip").is_file_work());
+    assert!(!entry("files", "package", "brew:install:fd").is_file_work());
+    assert!(!entry("files", "script", "post:setup.sh").is_file_work());
+
+    // The identity terms answer the same in the re-routed phase as they did in
+    // `modules`, which is the whole point of keying on identity.
+    assert!(entry("files", "module", "nvim:files:3").is_file_work());
+    assert!(entry("packages", "file", "~/.gitconfig").is_file_work());
+    assert!(entry("post-scripts", "unknown", "file:~/.vimrc").is_file_work());
 }

@@ -5,15 +5,18 @@ use super::types::ComplianceHistoryRow;
 use crate::errors::{Result, StateError};
 
 impl StateStore {
-    /// Store a compliance snapshot. The caller provides the content hash
-    /// (typically `sha256_hex` of the serialized JSON).
+    /// Store a compliance snapshot.
+    ///
+    /// The content hash is derived here rather than accepted from the caller, so
+    /// `content_hash` is always the SHA-256 of the `snapshot_json` beside it. A
+    /// caller-supplied hash let the two writers of this table hash different
+    /// serializations of the same snapshot, and nothing could tell a stale hash
+    /// from a genuine change.
     pub fn store_compliance_snapshot(
         &self,
         snapshot: &crate::compliance::ComplianceSnapshot,
-        hash: &str,
     ) -> Result<()> {
-        let json = serde_json::to_string(snapshot)
-            .map_err(|e| StateError::Database(format!("failed to serialize snapshot: {}", e)))?;
+        let (json, hash) = crate::compliance::snapshot_content_hash(snapshot)?;
         self.conn.execute(
             "INSERT INTO compliance_snapshots (timestamp, content_hash, snapshot_json, summary_compliant, summary_warning, summary_violation)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",

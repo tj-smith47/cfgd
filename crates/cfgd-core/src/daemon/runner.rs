@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use super::backup::{
-    BackupReloadSummary, BackupTimers, DegradedReason, resolve_backup_tasks, run_scheduled_backup,
+    BackupReloadSummary, BackupTimers, DegradedReason, resolve_backup_tasks, run_scheduled_backups,
 };
 use super::reconcile::{ReconcileCtx, handle_reconcile};
 use super::sync::{handle_compliance_snapshot, handle_sync, handle_version_check};
@@ -49,8 +49,19 @@ pub(super) struct DaemonLoopContext {
     pub printer: Arc<Printer>,
     /// When set, `handle_reconcile` uses this directory instead of the
     /// platform default state dir. Tests pass a tempdir here so the loop
-    /// never touches `~/.local/state/cfgd/`.
+    /// never touches `~/.local/state/cfgd/`. The production loop ALWAYS sets
+    /// it — `run_daemon_with` materializes the scope default so every
+    /// downstream site agrees on one path — which is why it cannot double as
+    /// "the operator overrode the state dir": that fact rides
+    /// [`Self::explicit_state_dir`].
     pub state_dir_override: Option<PathBuf>,
+    /// Whether the OPERATOR passed `--state-dir` (captured before the default
+    /// is materialized into `state_dir_override`). Bringing your own state
+    /// dir is what makes a foreign config authoritative over the store it
+    /// sweeps and mints into, so the ownership gate reads THIS bit — reading
+    /// `state_dir_override.is_some()` instead made every production tick an
+    /// owner of whatever store the scope default resolved.
+    pub explicit_state_dir: bool,
     /// Managed file targets the profile declares. A file-watch event records
     /// drift only when its path is one of these; config/source/`.git` paths
     /// trigger a reconcile but are not drift.
@@ -184,7 +195,10 @@ pub(super) async fn handle_file_change_tick(
     if is_managed {
         let store = match ctx.state_dir_override.as_deref() {
             Some(dir) => StateStore::open_in_dir(dir),
-            None => StateStore::open_default(),
+            // `None` means startup's scope-default materialization failed;
+            // re-derive for the daemon's own scope so a system daemon never
+            // records drift into the per-user store.
+            None => StateStore::open_default_for(ctx.scope),
         };
         match store {
             Ok(store) => {
@@ -219,6 +233,7 @@ pub(super) async fn handle_file_change_tick(
         let notify_drift = ctx.notify_on_drift;
         let hk = Arc::clone(&ctx.hooks);
         let state_dir = ctx.state_dir_override.clone();
+        let explicit = ctx.explicit_state_dir;
         let printer = Arc::clone(&ctx.printer);
         let scope = ctx.scope;
         let abort = Arc::clone(&ctx.abort);
@@ -232,6 +247,7 @@ pub(super) async fn handle_file_change_tick(
                     notify_on_drift: notify_drift,
                     hooks: &*hk,
                     state_dir_override: state_dir.as_deref(),
+                    explicit_state_dir: explicit,
                     printer: &printer,
                     module_filter: None,
                     auto_apply_override: None,
@@ -275,6 +291,7 @@ pub(super) async fn handle_reconcile_tick(
             let notify_drift = ctx.notify_on_drift;
             let hk = Arc::clone(&ctx.hooks);
             let state_dir = ctx.state_dir_override.clone();
+            let explicit = ctx.explicit_state_dir;
             let printer = Arc::clone(&ctx.printer);
             let scope = ctx.scope;
             let abort = Arc::clone(&ctx.abort);
@@ -288,6 +305,7 @@ pub(super) async fn handle_reconcile_tick(
                         notify_on_drift: notify_drift,
                         hooks: &*hk,
                         state_dir_override: state_dir.as_deref(),
+                        explicit_state_dir: explicit,
                         printer: &printer,
                         module_filter: None,
                         auto_apply_override: None,
@@ -319,6 +337,7 @@ pub(super) async fn handle_reconcile_tick(
             let notify_drift = ctx.notify_on_drift;
             let hk = Arc::clone(&ctx.hooks);
             let state_dir = ctx.state_dir_override.clone();
+            let explicit = ctx.explicit_state_dir;
             let printer = Arc::clone(&ctx.printer);
             let module_name = entity_name.clone();
             let scope = ctx.scope;
@@ -333,6 +352,7 @@ pub(super) async fn handle_reconcile_tick(
                         notify_on_drift: notify_drift,
                         hooks: &*hk,
                         state_dir_override: state_dir.as_deref(),
+                        explicit_state_dir: explicit,
                         printer: &printer,
                         module_filter: Some(&module_name),
                         auto_apply_override: Some(task_auto_apply),
@@ -500,27 +520,29 @@ pub(super) async fn handle_backup_tick(
         return Ok(());
     };
 
-    for (profile_name, spec) in due {
+    for (_, spec) in &due {
         tracing::info!(backup = %spec.name, "scheduled backup tick");
-        let printer = Arc::clone(&ctx.printer);
-        let abort = Arc::clone(&ctx.abort);
-        let config_dir = config_dir.clone();
-        let state_dir = state_dir.clone();
-        crate::spawn_blocking_with_test_home(move || {
-            run_scheduled_backup(
-                &spec,
-                &config_dir,
-                &profile_name,
-                &state_dir,
-                &printer,
-                &abort,
-            );
-        })
-        .await
-        .map_err(|e| DaemonError::WatchError {
-            message: format!("backup task failed: {}", e),
-        })?;
     }
+    // One dispatch for the whole due set, not one per unit: the fire renders as
+    // a single run — header, `Backups` pseudo-phase, rollup — and a per-unit
+    // dispatch would print that skeleton once per unit.
+    let printer = Arc::clone(&ctx.printer);
+    let abort = Arc::clone(&ctx.abort);
+    let config_path = ctx.config_path.clone();
+    crate::spawn_blocking_with_test_home(move || {
+        run_scheduled_backups(
+            &due,
+            &config_path,
+            &config_dir,
+            &state_dir,
+            &printer,
+            &abort,
+        );
+    })
+    .await
+    .map_err(|e| DaemonError::WatchError {
+        message: format!("backup task failed: {}", e),
+    })?;
     Ok(())
 }
 
@@ -546,8 +568,17 @@ pub(super) async fn handle_compliance_tick(ctx: &DaemonLoopContext) -> Result<()
         let cc2 = cc.clone();
         let sd = ctx.state_dir_override.clone();
         let scope = ctx.scope;
+        let printer = Arc::clone(&ctx.printer);
         crate::spawn_blocking_with_test_home(move || {
-            handle_compliance_snapshot(&cp, po.as_deref(), &*hk, &cc2, sd.as_deref(), scope);
+            handle_compliance_snapshot(
+                &cp,
+                po.as_deref(),
+                &*hk,
+                &cc2,
+                sd.as_deref(),
+                scope,
+                &printer,
+            );
         })
         .await
         .map_err(|e| DaemonError::WatchError {
@@ -598,7 +629,12 @@ pub(super) fn apply_sighup_reload(
         "Reloading configuration (SIGHUP) — timer intervals and backup schedules only; other fields require restart",
     );
     match config::load_config(&ctx.config_path) {
-        Ok(new_cfg) => {
+        Ok(mut new_cfg) => {
+            // Operator-triggered, not timer-driven: a SIGHUP is a discrete
+            // reload the operator asked for, the daemon analog of a fresh CLI
+            // invocation re-reading a changed file, not a periodic tick that
+            // would repeat the same notice on every reconcile interval.
+            new_cfg.drain_deprecations(printer);
             let (new_reconcile, new_sync) = compute_sighup_intervals(&new_cfg);
             let mut changed = Vec::new();
             if let Some(d) = new_reconcile {
@@ -631,8 +667,9 @@ pub(super) fn apply_sighup_reload(
                 printer.status_simple(
                     Role::Warn,
                     format!(
-                        "Backup schedules NOT reloaded: config did not fully resolve — keeping the {} running schedule(s), retrying automatically",
-                        backup_timers.len()
+                        "Backup schedules NOT reloaded: config did not fully resolve — keeping the {} running {}, retrying automatically",
+                        backup_timers.len(),
+                        crate::plural_noun(backup_timers.len(), "schedule")
                     ),
                 );
             }

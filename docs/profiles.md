@@ -204,11 +204,13 @@ cfgd writes a managed `~/.cfgd.env` and wires it into the user's shells and sess
 
 `spec.env` is **per-user**. For system-wide (all-users, privileged) variables, use [`spec.system.environment`](system-configurators.md). See the [profile spec](spec/profile.md#specenvscope) for the full target list and the dotfile-safety rules.
 
-The same file also carries the `PATH` entries of any package manager **cfgd bootstrapped for you**
-— so a profile with no `env` at all still gets a `~/.cfgd.env` and its source lines when cfgd
-installs Homebrew, and `brew`'s binaries are reachable from the next shell without you editing a
-dotfile. A manager that was already on the machine is left alone: cfgd only wires up what it
-installed. cfgd prints a `Shell environment changed` reminder after any apply that touched either.
+The same file also carries every `PATH` entry **cfgd created for a package manager**, so a
+profile with no `env` at all still gets a `~/.cfgd.env` and its source lines when cfgd installs
+Homebrew, and `brew`'s binaries are reachable from the next shell without you editing a dotfile.
+The test is who made the directory, not who installed the manager: a manager that was already on
+the machine keeps its own locations untouched, while a prefix cfgd had to create for it (npm's
+`$HOME/.npm-global`, when npm's own prefix is not writable) is exported like any other. cfgd
+prints a `Shell environment changed` reminder after any apply that touched either.
 
 ### Example: make `EDITOR` reach everywhere
 
@@ -222,17 +224,27 @@ spec:
 ```
 
 ```console
-$ cfgd apply
-  ✓ Wrote ~/.cfgd.env
-  ✓ Injected source line into ~/.bashrc
-  ✓ Injected source line into ~/.zshenv
-  ✓ Injected source line into ~/.profile
-  ✓ Wrote ~/.config/environment.d/cfgd.conf
-  ✓ Refreshed 1 live session variable(s)
+$ cfgd apply --yes
+Apply
+  Config   /home/you/.config/cfgd/cfgd.yaml
+  Profile  envdemo
+  Phases   Prerequisites
+  Actions  6 planned
+
+Phase: Prerequisites
+  cfgd:env
+    ✓ write /home/you/.cfgd.env
+    ✓ inject source line into /home/you/.bashrc
+    ✓ inject source line into /home/you/.zshenv
+    ✓ inject source line into /home/you/.profile
+    ✓ write /home/you/.config/environment.d/cfgd.conf
+  cfgd:session
+    ✓ publish 1 var to the session manager
+
+✓ Apply complete — 6 actions succeeded (0.3s)
 
 Shell environment changed
-  - run: source ~/.cfgd.env
-  - or open a new shell
+  ⚠ run `source ~/.cfgd.env` — or open a new shell
 
 # Now every entry point sees it — no re-login:
 $ ssh localhost 'echo $EDITOR'            # non-interactive ssh command
@@ -242,6 +254,11 @@ nvim
 $ systemctl --user show-environment | grep EDITOR
 EDITOR=nvim                                # systemd --user units + Wayland GUI
 ```
+
+The two owner groups separate what is durable from what is not: `cfgd:env` writes the files
+a future shell reads, `cfgd:session` pushes the same values into the session manager you are
+already logged into. A host with no live user session reports that group's action as
+unchanged and carries the reason as a warning under it — the files are still correct.
 
 To opt out of the broader surfaces, narrow the scope — e.g. `envScope: Interactive` restores the
 classic "interactive shells only" behavior, writing just `~/.cfgd.env` + the `~/.bashrc`/`~/.zshrc`

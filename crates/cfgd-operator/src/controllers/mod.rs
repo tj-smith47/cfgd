@@ -329,8 +329,9 @@ pub(super) fn build_drift_alert_conditions(
             "False",
             "DriftActive",
             format!(
-                "Drift active on device {} — {} detail(s)",
-                device_id, details_count
+                "Drift active on device {} — {}",
+                device_id,
+                cfgd_core::pluralize(details_count, "detail")
             ),
         )
     };

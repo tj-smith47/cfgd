@@ -6,7 +6,7 @@
 // Dependency rules: depends on config/, errors/, platform/, providers/ (trait only).
 // Must NOT import files/, packages/, secrets/, reconciler/, state/, daemon/.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::Serialize;
@@ -116,7 +116,7 @@ pub struct ResolvedModule {
     pub aliases: Vec<ShellAlias>,
     /// System configurator settings declared by this module.
     /// Deep-merged into the profile system map during reconciliation; module wins on conflict.
-    pub system: HashMap<String, serde_yaml::Value>,
+    pub system: crate::config::SystemSettings,
     pub pre_apply_scripts: Vec<crate::config::ScriptEntry>,
     pub post_apply_scripts: Vec<crate::config::ScriptEntry>,
     pub pre_reconcile_scripts: Vec<crate::config::ScriptEntry>,
@@ -154,7 +154,7 @@ impl ResolvedModule {
             files: Vec::new(),
             env: Vec::new(),
             aliases: Vec::new(),
-            system: HashMap::new(),
+            system: BTreeMap::new(),
             pre_apply_scripts: Vec::new(),
             post_apply_scripts: Vec::new(),
             pre_reconcile_scripts: Vec::new(),

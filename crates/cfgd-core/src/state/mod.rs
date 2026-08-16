@@ -20,6 +20,7 @@ mod pending_config;
 mod sources;
 mod types;
 
+pub use decisions::RESOLUTION_AUTO_ACCEPTED;
 pub use package_prefix::PackageManagerPrefixRecord;
 pub use pending_config::{
     PENDING_CONFIG_FILENAME, clear_pending_server_config, load_pending_server_config,
@@ -339,7 +340,143 @@ const MIGRATIONS: &[&str] = &[
     );
 
     CREATE INDEX IF NOT EXISTS idx_backup_runs_name ON backup_runs (name);",
+    // Migration 14: undouble the configurator name in persisted `system` ids.
+    // Six configurators prefixed their OWN name into `SystemDrift::key` while
+    // the reconciler composes `system:<configurator>.<key>` around it, so every
+    // id they wrote carried the name twice (`sshKeys.sshKeys.default.exists`).
+    // The id is what drift resolution, `resolve_drift_not_in` and the status
+    // view match on, so leaving the old rows behind would strand each one as a
+    // permanently-unresolved drift event beside its corrected twin.
+    // Rewritten rather than deleted: unlike migration 9's shape change, the row
+    // still names a resource cfgd manages, and `drift_events` carries the
+    // observation history that a DELETE would forfeit.
+    // The SET drops the first dot-segment — exactly the duplicated name —
+    // instead of REPLACE, which would also rewrite a repeat later in the key.
+    // GLOB, not LIKE: LIKE is ASCII-case-insensitive in SQLite, and these
+    // prefixes are the configurators' exact-case names.
+    // `UPDATE OR REPLACE` on managed_resources guards UNIQUE(resource_type,
+    // resource_id), which the ordering argues is unreachable: `StateStore::open`
+    // migrates before any write, so a corrected row cannot be written into a
+    // store still below version 14, and the positional gate never replays this
+    // once it is past. It stays because plain UPDATE would abort — and roll back
+    // — the whole migration on a store whose schema_version was hand-edited or
+    // restored from a partial backup, bricking every later open. The row REPLACE
+    // drops is the corrected twin of the one being rewritten; both name the same
+    // resource and the next apply re-derives it.
+    // `compliance_snapshots` is included because `compliance diff` matches two
+    // snapshots on each check's `key`, so an un-rewritten snapshot would report
+    // every affected check as removed-and-re-added across the fix. Only the
+    // identifier moves; status/value/detail — the observation itself — are
+    // untouched. The anchor is `"key":"` with no spaces because
+    // `store_compliance_snapshot` serializes compactly, and serde escapes an
+    // embedded quote as `\"`, so the literal can only match a real member name;
+    // `ComplianceCheck.key` is the only member named `key` in the snapshot.
+    // This arm alone is not scoped by category, unlike the three `system` id
+    // rewrites: the substitution is per-substring rather than per-check, so a
+    // category predicate would not narrow it. Nothing else builds a check `key`
+    // as `<configurator>.<drift key>`, which is what makes the six anchors safe.
+    // The final statement re-derives `content_hash` through the write path's own
+    // `snapshot_json_content_hash`, so a migrated row carries exactly the digest
+    // a fresh write of the same content would produce. Every row is rehashed,
+    // not just the rewritten ones: rows written before that derivation was
+    // unified hashed a different serialization — and hashed the collection
+    // timestamp, which the digest now excludes — so they hold a value the write
+    // path can never mint again, and the sole consumer
+    // (`latest_compliance_hash`, a change detector) reads it against a
+    // freshly-derived one.
+    r#"UPDATE OR REPLACE managed_resources
+          SET resource_id = substr(resource_id, instr(resource_id, '.') + 1)
+        WHERE resource_type = 'system'
+          AND (resource_id GLOB 'sshKeys.sshKeys.*'
+            OR resource_id GLOB 'gpgKeys.gpgKeys.*'
+            OR resource_id GLOB 'seccomp.seccomp.*'
+            OR resource_id GLOB 'apparmor.apparmor.*'
+            OR resource_id GLOB 'containerd.containerd.*'
+            OR resource_id GLOB 'kubelet.kubelet.*');
+
+      UPDATE drift_events
+          SET resource_id = substr(resource_id, instr(resource_id, '.') + 1)
+        WHERE resource_type = 'system'
+          AND (resource_id GLOB 'sshKeys.sshKeys.*'
+            OR resource_id GLOB 'gpgKeys.gpgKeys.*'
+            OR resource_id GLOB 'seccomp.seccomp.*'
+            OR resource_id GLOB 'apparmor.apparmor.*'
+            OR resource_id GLOB 'containerd.containerd.*'
+            OR resource_id GLOB 'kubelet.kubelet.*');
+
+      UPDATE apply_journal
+          SET resource_id = substr(resource_id, instr(resource_id, '.') + 1)
+        WHERE action_type = 'system'
+          AND (resource_id GLOB 'sshKeys.sshKeys.*'
+            OR resource_id GLOB 'gpgKeys.gpgKeys.*'
+            OR resource_id GLOB 'seccomp.seccomp.*'
+            OR resource_id GLOB 'apparmor.apparmor.*'
+            OR resource_id GLOB 'containerd.containerd.*'
+            OR resource_id GLOB 'kubelet.kubelet.*');
+
+      UPDATE compliance_snapshots
+          SET snapshot_json = REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                snapshot_json,
+                '"key":"sshKeys.sshKeys.',       '"key":"sshKeys.'),
+                '"key":"gpgKeys.gpgKeys.',       '"key":"gpgKeys.'),
+                '"key":"seccomp.seccomp.',       '"key":"seccomp.'),
+                '"key":"apparmor.apparmor.',     '"key":"apparmor.'),
+                '"key":"containerd.containerd.', '"key":"containerd.'),
+                '"key":"kubelet.kubelet.',       '"key":"kubelet.')
+        WHERE snapshot_json GLOB '*"key":"sshKeys.sshKeys.*'
+           OR snapshot_json GLOB '*"key":"gpgKeys.gpgKeys.*'
+           OR snapshot_json GLOB '*"key":"seccomp.seccomp.*'
+           OR snapshot_json GLOB '*"key":"apparmor.apparmor.*'
+           OR snapshot_json GLOB '*"key":"containerd.containerd.*'
+           OR snapshot_json GLOB '*"key":"kubelet.kubelet.*';
+
+      UPDATE compliance_snapshots
+          SET content_hash = cfgd_compliance_content_hash(snapshot_json, content_hash);"#,
+    // `action_index` is where an action sits in the run's plan; once package
+    // work runs in per-manager lanes that stops being the order the actions
+    // finished in, and the order they finished in stops being recoverable from
+    // the schema at all. The backfill is exact rather than a guess: every
+    // historical apply was sequential, so completion order WAS plan order.
+    // A reporting and forensics column — the restore reads `file_backups`,
+    // never the journal.
+    "ALTER TABLE apply_journal ADD COLUMN completion_index INTEGER;
+     UPDATE apply_journal SET completion_index = action_index;",
 ];
+
+/// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable
+/// from migration SQL.
+///
+/// A migration that rewrites a stored snapshot has to re-derive the digest
+/// stored beside it, and that digest is not a hash of the stored bytes: it
+/// ignores the collection timestamp those bytes carry, so that an unchanged
+/// machine hashes equal across collections. SQLite can express neither the
+/// SHA-256 nor the normalization, so the write path's own derivation is
+/// registered as a scalar function and the migration stays a plain SQL
+/// statement — the alternative is a typed side-channel in the runner, which
+/// would make migration order depend on Rust code rather than on the array.
+///
+/// `current_hash` is the passthrough for a `snapshot_json` that will not parse:
+/// a corrupt row keeps the digest it had rather than failing the function,
+/// which inside the runner's EXCLUSIVE transaction would roll back the whole
+/// migration and leave the store unopenable for good.
+///
+/// Deterministic and innocuous: same input, same output, no side effects, so
+/// SQLite may cache and reorder calls freely.
+fn register_sql_functions(conn: &Connection) -> Result<()> {
+    use rusqlite::functions::FunctionFlags;
+    conn.create_scalar_function(
+        "cfgd_compliance_content_hash",
+        2,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let snapshot_json = ctx.get_raw(0).as_str()?;
+            let current_hash = ctx.get_raw(1).as_str()?;
+            Ok(crate::compliance::snapshot_json_content_hash(snapshot_json)
+                .unwrap_or_else(|_| current_hash.to_owned()))
+        },
+    )?;
+    Ok(())
+}
 
 /// SQLite-backed state store for cfgd.
 pub struct StateStore {
@@ -351,6 +488,16 @@ impl StateStore {
     /// Uses `~/.local/state/cfgd/state.db`.
     pub fn open_default() -> Result<Self> {
         Self::open_in_dir(&default_state_dir()?)
+    }
+
+    /// Open or create the state store at `scope`'s default location — the
+    /// fallback for a daemon path whose materialized state dir is absent:
+    /// re-deriving from scope either lands on the same directory the loop
+    /// would have carried or fails the same way the materialization did,
+    /// where an unqualified [`Self::open_default`] would silently hand a
+    /// system-scope daemon the per-user store.
+    pub fn open_default_for(scope: crate::Scope) -> Result<Self> {
+        Self::open_in_dir(&default_state_dir_for(scope)?)
     }
 
     /// Open or create the canonical [`STATE_DB_FILENAME`] DB inside `dir`,
@@ -378,6 +525,7 @@ impl StateStore {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        register_sql_functions(&conn)?;
 
         let mut store = Self { conn };
         store.run_migrations()?;
@@ -388,10 +536,23 @@ impl StateStore {
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+        register_sql_functions(&conn)?;
 
         let mut store = Self { conn };
         store.run_migrations()?;
         Ok(store)
+    }
+
+    /// Remove the `backup_runs` table so the next write to it fails.
+    ///
+    /// The seam for a caller's state-store-failure arm, which in production is
+    /// reached only by a refused write (a full disk, a locked or corrupt DB)
+    /// and is otherwise untestable: the connection is private to this module,
+    /// so a consumer's test cannot break the schema by hand.
+    #[cfg(test)]
+    pub(crate) fn drop_backup_runs_table(&self) -> Result<()> {
+        self.conn.execute("DROP TABLE backup_runs", [])?;
+        Ok(())
     }
 
     fn run_migrations(&mut self) -> Result<()> {
@@ -403,7 +564,11 @@ impl StateStore {
                 message: format!("failed to acquire migration lock: {e}"),
             })?;
 
-        let current_version = self.schema_version();
+        let current_version = self.schema_version().inspect_err(|_| {
+            if let Err(rb) = self.conn.execute_batch("ROLLBACK") {
+                tracing::error!("rollback after schema_version read failure also failed: {rb}");
+            }
+        })?;
 
         for (i, migration) in MIGRATIONS.iter().enumerate() {
             if i >= current_version {
@@ -444,13 +609,30 @@ impl StateStore {
         Ok(())
     }
 
-    fn schema_version(&self) -> usize {
-        self.conn
-            .query_row("SELECT version FROM schema_version", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .map(|v| v as usize)
-            .unwrap_or(0)
+    /// The applied-migration count, or `0` for a database that has never run
+    /// one. A read failure (locked, corrupt, mid-crash file) must propagate
+    /// rather than fold to `0`: several migrations are `ALTER TABLE ... ADD
+    /// COLUMN`, which is not idempotent, so a spurious `0` here makes
+    /// [`Self::run_migrations`] replay them against a database that already
+    /// has the column and abort with "duplicate column name" — turning a
+    /// transient read error into a permanent open failure. The only
+    /// legitimate `0` is "the `schema_version` table itself does not exist
+    /// yet", checked directly rather than inferred from whatever error a
+    /// missing table happens to raise.
+    fn schema_version(&self) -> Result<usize> {
+        let table_exists: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )?;
+        if table_exists == 0 {
+            return Ok(0);
+        }
+
+        let version: i64 =
+            self.conn
+                .query_row("SELECT version FROM schema_version", [], |row| row.get(0))?;
+        Ok(version as usize)
     }
 }
 

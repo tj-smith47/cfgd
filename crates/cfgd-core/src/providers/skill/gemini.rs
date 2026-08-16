@@ -161,12 +161,14 @@ mod tests {
     #[serial_test::serial]
     fn user_detect_reflects_home_gemini_dir() {
         let home = tempfile::tempdir().expect("tempdir");
+        let _path_lock = crate::test_helpers::path_env_mutation_guard();
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
         crate::with_test_home(home.path(), || {
-            // No ~/.gemini and (in CI) no `gemini` on PATH → Absent. When the host
-            // happens to have a real `gemini` binary, detection is Present via the
-            // PATH probe; the dir-creation half of the contract is still asserted
-            // below regardless.
-            if !command_available("gemini") {
+            {
+                // PATH emptied rather than read: on a host that happens to
+                // carry a real `gemini`, detection answers Present from the
+                // binary and the no-directory arm never runs.
+                let _empty = crate::test_helpers::EnvVarGuard::set("PATH", "");
                 assert_eq!(
                     GeminiProvider.detect(SkillScope::User),
                     Detection::Absent,

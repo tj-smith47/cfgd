@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn backup_unknown_name_maps_to_not_found() {
         let err = CfgdError::Backup(crate::errors::BackupError::UnknownName {
-            name: "openlist-db".into(),
+            name: "notes-db".into(),
             valid: vec!["photos".into()],
         });
         assert_eq!(exit_code_for_error(&err), ExitCode::NotFound);

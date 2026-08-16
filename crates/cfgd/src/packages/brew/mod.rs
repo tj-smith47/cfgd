@@ -8,12 +8,12 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::PackageManager;
+use cfgd_core::output::Role;
+use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    brew_available, brew_cmd, brew_path_dirs, install_batch_then_per_package, run_pkg_cmd,
-    run_pkg_cmd_live,
+    brew_available, brew_cmd, brew_path_dirs, command_failure_reason,
+    install_batch_then_per_package, pkg_run, run_pkg_cmd, run_pkg_cmd_live,
 };
 
 pub struct BrewManager;
@@ -80,11 +80,13 @@ impl PackageManager for BrewTapManager {
         brew_available()
     }
 
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        // A sub-manager has no bootstrap of its own: `brew` provisions the one
+        // binary all three share.
+        None
     }
 
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         Ok(())
     }
 
@@ -103,7 +105,7 @@ impl PackageManager for BrewTapManager {
         for tap in taps {
             let label = format!("brew tap {}", tap);
             run_pkg_cmd_live(
-                cx.printer,
+                cx,
                 "brew-tap",
                 brew_cmd().args(["tap", tap]),
                 &label,
@@ -121,18 +123,13 @@ impl PackageManager for BrewTapManager {
         for tap in taps {
             let label = format!("brew untap {}", tap);
             run_pkg_cmd_live(
-                cx.printer,
+                cx,
                 "brew-tap",
                 brew_cmd().args(["untap", tap]),
                 &label,
                 "uninstall",
             )?;
         }
-        Ok(())
-    }
-
-    fn update(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        // Taps are repository references, not versioned packages; nothing to update
         Ok(())
     }
 
@@ -155,11 +152,13 @@ impl PackageManager for BrewCaskManager {
         brew_available()
     }
 
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        // A sub-manager has no bootstrap of its own: `brew` provisions the one
+        // binary all three share.
+        None
     }
 
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         Ok(())
     }
 
@@ -175,7 +174,7 @@ impl PackageManager for BrewCaskManager {
         casks: &[String],
         cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<()> {
-        install_batch_then_per_package(cx.printer, "brew-cask", casks, |pkgs| {
+        install_batch_then_per_package(cx, "brew-cask", casks, |pkgs| {
             let mut cmd = brew_cmd();
             cmd.arg("install").arg("--cask").args(pkgs);
             cmd
@@ -193,17 +192,12 @@ impl PackageManager for BrewCaskManager {
         }
         let label = format!("brew uninstall --cask {}", casks.join(" "));
         run_pkg_cmd_live(
-            cx.printer,
+            cx,
             "brew-cask",
             brew_cmd().arg("uninstall").arg("--cask").args(casks),
             &label,
             "uninstall",
         )?;
-        Ok(())
-    }
-
-    fn update(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        // Cask updates are handled by `brew upgrade`; no separate cask update command
         Ok(())
     }
 
@@ -236,16 +230,22 @@ impl PackageManager for BrewManager {
         brew_available()
     }
 
-    fn can_bootstrap(&self) -> bool {
-        true
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        // `curl` is named, not gated on: the installer needs it, but brew has
+        // always offered to provision itself regardless, and narrowing that here
+        // would drop the manager instead of reporting the missing tool.
+        Some(
+            BootstrapPlan::new("homebrew installer")
+                .requiring(["curl"])
+                .creating(brew_path_dirs()),
+        )
     }
 
-    fn bootstrap(&self, printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         let install_url = "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh";
 
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             // Linuxbrew-as-root: create linuxbrew user, install as that user
-            printer.status_simple(Role::Info, "Creating linuxbrew system user");
             let user_status = Command::new("useradd")
                 .args([
                     "--system",
@@ -267,47 +267,56 @@ impl PackageManager for BrewManager {
                 }
                 .into());
             }
+            if user_status.success() {
+                cx.report(Role::Info, "brew", "created the 'linuxbrew' system user");
+            }
 
-            let result = printer
-                .run(
-                    Command::new("sudo")
-                        .args(["-u", "linuxbrew", "bash", "-c"])
-                        .arg(format!(
-                            "NONINTERACTIVE=1 /bin/bash -c \"$(curl -fsSL {})\"",
-                            install_url
-                        )),
-                    "Installing Homebrew as linuxbrew user",
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "brew".into(),
-                    message: format!("homebrew install failed: {}", e),
-                })?;
+            let result = pkg_run(
+                cx,
+                Command::new("sudo")
+                    .args(["-u", "linuxbrew", "bash", "-c"])
+                    .arg(format!(
+                        "NONINTERACTIVE=1 /bin/bash -c \"$(curl -fsSL {})\"",
+                        install_url
+                    )),
+                "Installing Homebrew as linuxbrew user",
+            )
+            .map_err(|e| PackageError::BootstrapFailed {
+                manager: "brew".into(),
+                message: format!("homebrew install failed: {}", e),
+            })?;
             if !result.status.success() {
                 return Err(PackageError::BootstrapFailed {
                     manager: "brew".into(),
-                    message: "homebrew install script failed".into(),
+                    message: format!(
+                        "homebrew install script failed: {}",
+                        command_failure_reason(&result)
+                    ),
                 }
                 .into());
             }
 
             // PATH for brew commands will be augmented via brew_cmd()
         } else {
-            let result = printer
-                .run(
-                    Command::new("bash").arg("-c").arg(format!(
-                        "NONINTERACTIVE=1 /bin/bash -c \"$(curl -fsSL {})\"",
-                        install_url
-                    )),
-                    "Installing Homebrew",
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "brew".into(),
-                    message: format!("homebrew install failed: {}", e),
-                })?;
+            let result = pkg_run(
+                cx,
+                Command::new("bash").arg("-c").arg(format!(
+                    "NONINTERACTIVE=1 /bin/bash -c \"$(curl -fsSL {})\"",
+                    install_url
+                )),
+                "Installing Homebrew",
+            )
+            .map_err(|e| PackageError::BootstrapFailed {
+                manager: "brew".into(),
+                message: format!("homebrew install failed: {}", e),
+            })?;
             if !result.status.success() {
                 return Err(PackageError::BootstrapFailed {
                     manager: "brew".into(),
-                    message: "homebrew install script failed".into(),
+                    message: format!(
+                        "homebrew install script failed: {}",
+                        command_failure_reason(&result)
+                    ),
                 }
                 .into());
             }
@@ -334,7 +343,7 @@ impl PackageManager for BrewManager {
         packages: &[String],
         cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<()> {
-        install_batch_then_per_package(cx.printer, "brew", packages, |pkgs| {
+        install_batch_then_per_package(cx, "brew", packages, |pkgs| {
             let mut cmd = brew_cmd();
             cmd.arg("install").args(pkgs);
             cmd
@@ -352,7 +361,7 @@ impl PackageManager for BrewManager {
         }
         let label = format!("brew uninstall {}", packages.join(" "));
         run_pkg_cmd_live(
-            cx.printer,
+            cx,
             "brew",
             brew_cmd().arg("uninstall").args(packages),
             &label,
@@ -361,9 +370,13 @@ impl PackageManager for BrewManager {
         Ok(())
     }
 
-    fn update(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
-            cx.printer,
+            cx,
             "brew",
             brew_cmd().arg("update"),
             "brew update",
@@ -399,7 +412,15 @@ impl PackageManager for BrewManager {
         &self,
         _cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
-        let output = run_pkg_cmd("brew", brew_cmd().args(["list", "--versions"]), "list")?;
+        // `--formulae` pins the same population `installed_packages` lists
+        // (`brew list --formulae -1`), so the planner's versioned enumeration
+        // and the identity one can never disagree about what is installed —
+        // casks stay with the separate brew-cask manager either way.
+        let output = run_pkg_cmd(
+            "brew",
+            brew_cmd().args(["list", "--formulae", "--versions"]),
+            "list",
+        )?;
         Ok(parse_brew_versions(&String::from_utf8_lossy(
             &output.stdout,
         )))

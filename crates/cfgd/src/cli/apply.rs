@@ -1,6 +1,5 @@
 use super::*;
 
-use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Role};
 
 /// Terminal outcome of an apply run: the final status plus, when a signal
@@ -31,6 +30,79 @@ impl ApplyOutcome {
 fn downgrade_to_partial(status: &mut cfgd_core::state::ApplyStatus) {
     if matches!(status, cfgd_core::state::ApplyStatus::Success) {
         *status = cfgd_core::state::ApplyStatus::Partial;
+    }
+}
+
+/// The CLI's binding of the run skeleton to `Reconciler::apply`.
+///
+/// The apply lock is taken here rather than around the run because the run
+/// prompts for confirmation before it calls this: holding an exclusive lock
+/// across an interactive prompt would block a concurrent apply for as long as
+/// the user takes to answer. The guard is stored on the executor so it lives as
+/// long as the borrow does — through the `spec.backups[]` units that run after
+/// the reconciler returns.
+pub(in crate::cli) struct ReconcilerExecutor<'a> {
+    reconciler: &'a Reconciler<'a>,
+    resolved: &'a ResolvedProfile,
+    config_dir: &'a std::path::Path,
+    phase_filter: Option<&'a PhaseFilter>,
+    modules: &'a [modules::ResolvedModule],
+    context: ReconcileContext,
+    skip_scripts: bool,
+    shell_override: Option<cfgd_core::config::ScriptShell>,
+    abort: &'a cfgd_core::AbortFlag,
+    lock_dir: PathBuf,
+    lock: Option<cfgd_core::FileLockGuard>,
+}
+
+impl<'a> ReconcilerExecutor<'a> {
+    /// The executor a caller with no scoping flags builds — `cfgd init --apply`
+    /// and `cfgd module create --apply`, which apply exactly what they just
+    /// scaffolded: no phase filter, no `--skip-scripts`, no shell override.
+    pub(in crate::cli) fn unscoped(
+        reconciler: &'a Reconciler<'a>,
+        resolved: &'a ResolvedProfile,
+        config_dir: &'a std::path::Path,
+        modules: &'a [modules::ResolvedModule],
+        abort: &'a cfgd_core::AbortFlag,
+        lock_dir: PathBuf,
+    ) -> Self {
+        Self {
+            reconciler,
+            resolved,
+            config_dir,
+            phase_filter: None,
+            modules,
+            context: ReconcileContext::Apply,
+            skip_scripts: false,
+            shell_override: None,
+            abort,
+            lock_dir,
+            lock: None,
+        }
+    }
+}
+
+impl reconciler::RunExecutor for ReconcilerExecutor<'_> {
+    fn apply(
+        &mut self,
+        plan: &reconciler::Plan,
+        printer: &cfgd_core::output::Printer,
+    ) -> cfgd_core::errors::Result<cfgd_core::reconciler::ApplyResult> {
+        // Prevent concurrent applies (see helpers::run_state_dir).
+        self.lock = Some(cfgd_core::acquire_apply_lock(&self.lock_dir)?);
+        self.reconciler.apply(
+            plan,
+            self.resolved,
+            self.config_dir,
+            printer,
+            self.phase_filter,
+            self.modules,
+            self.context,
+            self.skip_scripts,
+            self.shell_override,
+            self.abort,
+        )
     }
 }
 
@@ -111,56 +183,24 @@ pub fn run_apply(
     let skip = &args.skip;
     let only = &args.only;
     let module_filter = args.module.as_deref();
-    if dry_run {
-        printer.heading("Plan");
-    } else {
-        printer.heading("Apply");
-    }
 
     let config_dir = config_dir(cli);
 
-    // When --module is set, try loading profile but fall back to empty if none configured
-    let (cfg, resolved) = if let Some(mod_name) = module_filter {
-        match load_config_and_profile(cli) {
-            Ok((cfg, profile_name, resolved)) => {
-                printer.kv_block([
-                    ("Config".to_string(), cli.config.display_posix()),
-                    ("Profile".to_string(), profile_name),
-                ]);
-                (cfg, resolved)
-            }
-            Err(e) => {
-                tracing::debug!("profile load failed, using module-only mode: {}", e);
-                let cfg =
-                    config::load_config(&cli.config).unwrap_or_else(|_| config::minimal_config());
-                let resolved =
-                    empty_resolved_profile(mod_name, &active_profile_name(cli, Some(&cfg)));
-                printer.kv_block([
-                    ("Config".to_string(), cli.config.display_posix()),
-                    ("Profile".to_string(), "(module-only)".to_string()),
-                ]);
-                (cfg, resolved)
-            }
-        }
-    } else {
-        let (cfg, profile_name, resolved) = load_config_and_profile(cli)?;
-        printer.kv_block([
-            ("Config".to_string(), cli.config.display_posix()),
-            ("Profile".to_string(), profile_name),
-        ]);
-        (cfg, resolved)
-    };
+    // When --module is set, try loading profile but fall back to empty if none
+    // configured. The header these rows belong to is rendered once the plan is
+    // final — it states the phase and action counts — so the profile label is
+    // carried down rather than printed here. A module-only run resolved no
+    // profile, so it carries none and the header omits the row.
+    let (cfg, resolved, profile_label, config_parsed) =
+        load_config_and_profile_module_scoped(cli, printer, module_filter)?;
 
     // Open state only after config discovery so a missing config (or an
     // unresolvable home) surfaces before any state.db is created — otherwise a
     // NoConfig exit would leave an orphan state directory behind.
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
 
     let mut registry = build_registry_with_config(Some(&cfg));
     registry.set_system_config_dir(&config_dir);
-
-    // `ApplyPhase` (clap ValueEnum) is already validated at parse time.
-    let phase_filter: Option<PhaseName> = args.phase.map(apply_phase_to_phase_name);
 
     // Compose with sources (network refresh) and resolve modules through the one
     // desired-state resolver every command shares, so apply and the read paths
@@ -187,6 +227,14 @@ pub fn run_apply(
         &effective_resolved.merged.packages.custom,
     ));
 
+    // `PhaseArg`'s base phase is clap-validated; a selector combined with
+    // `--phase modules` is the one combination `resolve_phase_filter` still
+    // has to reject at runtime (see its doc comment). Resolved only now that
+    // `registry` carries every custom manager too, so a selector naming one
+    // validates against the same vocabulary the plan itself will match.
+    let phase_filter: Option<PhaseFilter> =
+        resolve_phase_filter(args.phase.clone(), &registry, printer)?;
+
     // If --module is set, skip profile-level packages/files
     let module_only = module_filter.is_some();
 
@@ -202,8 +250,13 @@ pub fn run_apply(
 
     // In dry-run mode we don't need secret providers wired up — just plan files for display.
     // In apply mode we wire up the full file manager with secret providers.
-    let (pkg_actions, file_actions, dry_run_fm) = if module_only {
-        (Vec::new(), Vec::new(), None)
+    let (pkg_actions, file_actions, dry_run_fm, actual_packages) = if module_only {
+        (
+            Vec::new(),
+            Vec::new(),
+            None,
+            cfgd_core::reconciler::ActualPackages::default(),
+        )
     } else {
         let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
             .package_managers
@@ -218,11 +271,8 @@ pub fn run_apply(
         // Profile-scoped: module packages are added separately by
         // `reconciler.plan` as `Action::Module`, so this planner must stay
         // profile-only to avoid double-handling them.
-        let pkg_cx = cfgd_core::providers::PackageContext {
-            printer,
-            state: &state,
-        };
-        let pkg = packages::plan_packages(
+        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
+        let (pkg, actual) = packages::plan_packages_observed(
             &effective_resolved.merged,
             &[],
             &all_managers,
@@ -252,15 +302,66 @@ pub fn run_apply(
 
         if dry_run {
             // Keep fm around for diff display but don't register it
-            (pkg, fa, Some(fm))
+            (pkg, fa, Some(fm), actual)
         } else {
             // Register the file manager so the reconciler delegates through the trait
             registry.file_manager = Some(Box::new(fm));
-            (pkg, fa, None)
+            (pkg, fa, None, actual)
         }
     };
 
-    let reconciler = Reconciler::new(&registry, &state);
+    let module_names: Vec<String> = resolved_modules.iter().map(|m| m.name.clone()).collect();
+
+    // A resource awaiting (or declined by) a source decision is not this run's
+    // to touch, in any mode: the confirm prompt, `--yes` and `--dry-run` all
+    // act on the plan below. The env arm withholds its surface as a unit and
+    // apply rebuilds that surface from the DECLARED set after the phases run,
+    // so the reconciler carries the flag as well — pruning alone would leave
+    // an undecided variable reaching the machine through the regeneration.
+    // Source gone, items gone: a decision the operator can no longer answer is
+    // dropped rather than left to sit in `cfgd status` forever. Only a real
+    // apply whose config actually parsed sweeps — a dry run reports and writes
+    // nothing, and a module-only fallback knows no subscription list to judge
+    // the rows against. The rows are inert either way (the gate below admits
+    // only subscribed sources), so this is cleanup, not enforcement.
+    // A FOREIGN config while the state dir stays the default is not
+    // authoritative over that store either: its subscription list belongs to a
+    // different machine picture, and the rows it would delete are another
+    // config's, unrecoverably. Ownership follows the resolved path, not the
+    // spelling — `--config` naming the default config file is still the
+    // machine's own config. Withholding is unaffected — the gate below still
+    // refuses rows this run has no source for.
+    let owns_the_store =
+        reconciler::owns_decision_store(&cli.config, cli.state_dir.is_some(), cli.scope());
+    let store_writes = !dry_run && config_parsed && owns_the_store;
+    if store_writes {
+        let subscribed: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
+        if let Err(e) = state.discard_decisions_not_in(&subscribed) {
+            tracing::warn!(error = %e, "failed to discard decisions of removed sources");
+        }
+    }
+
+    // A run that owns the store also RECORDS what the policy classified, so an
+    // item this apply refuses to install is one `cfgd decide` can answer now
+    // rather than after the daemon's next tick — but only AFTER the operator
+    // lets the run proceed: the mint is a store write like the others, so it
+    // waits behind the confirm gate below (the preview withholds and names the
+    // item either way, through `with_unrecorded`). The same three conditions
+    // gate it as gate the sweep: a dry run changes nothing, a module-only
+    // fallback knows no subscription list, and a foreign config naming someone
+    // else's store does not write rows into it.
+    let (withheld, review) = plan_ops::withheld_for_run(
+        &state,
+        &cfg,
+        &effective_resolved,
+        &config_dir,
+        config_parsed,
+        plan_ops::DecisionWrites::ReadOnly,
+        &actual_packages,
+    )?;
+    let exclusions = reconciler::DecisionExclusions::from_withheld(&withheld);
+    let reconciler = Reconciler::new(&registry, &state)
+        .withholding_env_surface(exclusions.withholds_env_surface());
     let mut plan = reconciler.plan(
         &effective_resolved,
         file_actions,
@@ -268,6 +369,7 @@ pub fn run_apply(
         resolved_modules.clone(),
         reconcile_context,
     )?;
+    reconciler::withhold_from_plan(&mut plan, &exclusions);
 
     // Snapshot scope before --skip/--only prune the plan, so a zero-action
     // outcome distinguishes "in sync" from "a filter excluded pending work".
@@ -279,7 +381,14 @@ pub fn run_apply(
     let scope = ScopeReport::capture(&plan, filter_active, module_miss);
 
     // Apply --skip / --only filters
-    filter_plan(&mut plan, skip, only);
+    filter_plan(
+        &mut plan,
+        skip,
+        only,
+        phase_filter.as_ref(),
+        printer,
+        &registry,
+    );
 
     // Strip script phases when --skip-scripts is set
     if args.skip_scripts {
@@ -294,17 +403,34 @@ pub fn run_apply(
         .map(|b| b.name.clone())
         .collect();
 
+    // The rows every path below prints above its own body. Built once so a dry
+    // run, an executing run and a no-work run cannot describe the same
+    // invocation differently.
+    let run_ctx = |title| reconciler::RunContext {
+        title,
+        config_path: Some(cli.config.as_path()),
+        profile: profile_label.as_deref(),
+        modules: &module_names,
+        trigger: None,
+    };
+
     if dry_run {
+        let run = reconciler::ApplyRun::new(run_ctx(reconciler::RunTitle::Plan), &plan)
+            .with_filter(phase_filter.as_ref())
+            .with_withheld(&withheld)
+            .decisions_answerable(owns_the_store)
+            .preview_only();
         display_plan_preview(
+            &run,
             &plan,
             printer,
-            &state,
             &PlanPreviewArgs {
                 context: &args.context,
                 phase_filter: phase_filter.as_ref(),
                 dry_run_fm: dry_run_fm.as_ref(),
                 scope: &scope,
                 pending_backups: &pending_backups,
+                withheld: &withheld,
             },
         );
         // Preview orphaned custom-manager packages a real apply would prune
@@ -318,9 +444,17 @@ pub fn run_apply(
 
     // --- Apply mode ---
 
-    // Handle unmanaged file targets: if a target exists as a non-cfgd file, prompt to
-    // adopt (proceed), backup (rename to .cfgd-backup), or skip.
-    handle_unmanaged_file_targets(&mut plan, &config_dir, &state, printer, yes)?;
+    // Handle unmanaged file targets: a target that already holds a file cfgd
+    // never wrote is settled by `--on-conflict` before anything is applied.
+    handle_unmanaged_file_targets(
+        &mut plan,
+        &config_dir,
+        &state,
+        printer,
+        yes,
+        args.on_conflict,
+        registry.default_file_strategy,
+    )?;
 
     // Self-heal the package-tracking table on a full unscoped apply, BEFORE the
     // no-op early-return: a row whose package vanished (partial-uninstall
@@ -339,9 +473,8 @@ pub fn run_apply(
     // Check if filtered plan has actions
     let has_actions = if let Some(ref pf) = phase_filter {
         plan.phases.iter().any(|p| {
-            p.actions
-                .iter()
-                .any(|a| reconciler::action_matches_phase_filter(&p.name, a, pf))
+            p.owned_actions()
+                .any(|(owner, a)| reconciler::action_matches_phase_filter(&p.name, owner, a, pf))
         })
     } else {
         !plan.is_empty()
@@ -351,121 +484,114 @@ pub fn run_apply(
     // diff, so a converged machine (the common case once a fleet is settled)
     // must not short-circuit here — that would silently starve backups of
     // the cadence "every apply" promises.
+    // Register cooperative-cancellation handlers for the duration of the apply.
+    // SIGINT/SIGTERM flip the shared flag (the reconciler checks it between
+    // atomic actions); the in-flight action still finishes, so no file is torn.
+    // The flag itself is built here rather than after the no-work gate because
+    // the backup units below borrow it, and they are part of the run this
+    // gate decides about.
+    let abort = cfgd_core::AbortFlag::new();
+    let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())?;
+    let backup_profile = active_profile_name(cli, Some(&cfg));
+    // The units the run's `Backups` pseudo-phase will render. Built before the
+    // run so the header's `Actions N planned` can count their hooks and
+    // snapshots, which is the same enumeration the rollup reconciles against.
+    let backup_units: Vec<cfgd_core::backup::BackupUnit<'_>> = pending_backup_specs
+        .iter()
+        .map(|spec| {
+            cfgd_core::backup::BackupUnit::new(spec, &config_dir, &backup_profile, &state_dir)
+                .with_abort(&abort)
+        })
+        .collect();
+
+    let run = reconciler::ApplyRun::new(run_ctx(reconciler::RunTitle::Apply), &plan)
+        .with_filter(phase_filter.as_ref())
+        .with_withheld(&withheld)
+        .decisions_answerable(owns_the_store)
+        .with_pending_backups(&backup_units, &state);
+
     if !has_actions && pending_backups.is_empty() {
-        report_no_in_scope_actions(printer, &scope, phase_filter.as_ref());
+        run.header(printer);
+        // The header above NAMED any withheld items, and this run proceeded —
+        // there was just nothing else for it to do. It still records what the
+        // policy classified, or a converged machine (the common case once a
+        // fleet settles) could never mint the rows its own plan keeps naming.
+        // No confirm gate exists on this path: nothing destructive follows.
+        if store_writes {
+            reconciler::mint_decisions(&state, &review);
+        }
+        report_plan_verdict(printer, 0, Some(&scope));
         printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
         return Ok(ApplyOutcome::success());
     }
 
-    let start = std::time::Instant::now();
-
-    // Both the preview and the confirmation gate are about the reconciler's
-    // file/package/module diff. A backup-only apply (has_actions == false,
-    // pending_backups non-empty) has no diff to preview or confirm — showing
-    // an empty "Plan preview" section and prompting "Apply these changes?"
-    // over nothing would confuse the one case this exists to serve.
-    if has_actions {
-        // Show what will change, nested under a section so each phase's items
-        // render at the section's indent. The preview honours the same
-        // action-level filter as the executor so users see exactly what's about
-        // to run.
-        {
-            let preview = printer.section("Plan preview");
-            for phase_item in &plan.phases {
-                let items = reconciler::format_plan_items(phase_item);
-                let displayed: Vec<(&reconciler::Action, &String)> =
-                    if let Some(ref pf) = phase_filter {
-                        phase_item
-                            .actions
-                            .iter()
-                            .zip(items.iter())
-                            .filter(|(a, _)| {
-                                reconciler::action_matches_phase_filter(&phase_item.name, a, pf)
-                            })
-                            .collect()
-                    } else {
-                        phase_item.actions.iter().zip(items.iter()).collect()
-                    };
-                if displayed.is_empty() {
-                    continue;
-                }
-                let phase_sec = preview.section(phase_item.display_label());
-                for (action, item) in displayed {
-                    phase_sec.bullet(reconciler::display_action_desc_in_phase(
-                        action,
-                        item,
-                        phase_item.scope.as_ref(),
-                    ));
-                }
-            }
-            for w in &plan.warnings {
-                preview.status_simple(Role::Warn, w);
-            }
-        }
-
-        // Confirm
-        if !yes {
-            // Closed-TTY / non-interactive defaults to "no" — apply is destructive
-            // and silence is treated as decline, not as approval.
-            let confirmed = printer
-                .prompt_confirm("Apply these changes?")
-                .unwrap_or(false);
-            if !confirmed {
-                printer.status_simple(Role::Info, "Aborted");
-                printer.emit(Doc::new().with_data(ApplyOutput::aborted()));
-                return Ok(ApplyOutcome::success());
-            }
-        }
-    }
-
-    // Acquire apply lock to prevent concurrent applies (see helpers::apply_lock_dir).
-    let _apply_lock =
-        cfgd_core::acquire_apply_lock(&apply_lock_dir(cli.state_dir.as_deref(), cli.scope())?)?;
-
-    // Register cooperative-cancellation handlers for the duration of the apply.
-    // SIGINT/SIGTERM flip the shared flag (the reconciler checks it between
-    // atomic actions); the in-flight action still finishes, so no file is torn.
-    let abort = cfgd_core::AbortFlag::new();
     register_abort_handlers(&abort);
 
-    // Apply
-    let shell_override = args.shell.map(super::apply_shell_to_script_shell);
-    let result = reconciler.apply(
-        &plan,
-        &effective_resolved,
-        &config_dir,
-        printer,
-        phase_filter.as_ref(),
-        &resolved_modules,
-        reconcile_context,
-        args.skip_scripts,
-        shell_override,
-        &abort,
-    )?;
+    // The confirmation gate is about the reconciler's file/package/module diff.
+    // A backup-only apply (has_actions == false, pending_backups non-empty) has
+    // no diff to confirm, and `ApplyRun::execute` skips the prompt for exactly
+    // that case — prompting "Apply these changes?" over nothing would confuse
+    // the one case this exists to serve.
+    let confirm = if yes {
+        reconciler::Confirm::Skip
+    } else {
+        // Closed-TTY / non-interactive defaults to "no" — apply is destructive
+        // and silence is treated as decline, not as approval.
+        reconciler::Confirm::Ask("Apply these changes?")
+    };
+    let mut exec = ReconcilerExecutor {
+        reconciler: &reconciler,
+        resolved: &effective_resolved,
+        config_dir: &config_dir,
+        phase_filter: phase_filter.as_ref(),
+        modules: &resolved_modules,
+        context: reconcile_context,
+        skip_scripts: args.skip_scripts,
+        shell_override: args.shell.map(super::apply_shell_to_script_shell),
+        abort: &abort,
+        lock_dir: run_state_dir(cli.state_dir.as_deref(), cli.scope())?,
+        lock: None,
+    };
+    let disposition = run.execute(printer, confirm, &mut exec)?;
+    // The operator let the run proceed (or `--yes` did), so apply's deferred
+    // store write lands now: the rows the policy classified are recorded and
+    // `cfgd decide` can answer them without waiting for a daemon tick. A
+    // declined run skips this — refusing the apply refuses its writes.
+    if store_writes && !matches!(disposition, reconciler::RunDisposition::Declined) {
+        reconciler::mint_decisions(&state, &review);
+    }
+    let (result, backup_reports) = match disposition {
+        reconciler::RunDisposition::Applied { result, backups } => (result, backups),
+        reconciler::RunDisposition::Declined => {
+            printer.status_simple(Role::Info, "Aborted");
+            printer.emit(Doc::new().with_data(ApplyOutput::aborted()));
+            return Ok(ApplyOutcome::success());
+        }
+        // None of these are reachable for a run carrying a plan and no
+        // `preview_only`, and none of them ran a plan action, which is what
+        // the nothing-to-do exit already reports.
+        reconciler::RunDisposition::NothingToDo
+        | reconciler::RunDisposition::Previewed
+        | reconciler::RunDisposition::BackupsApplied { .. } => {
+            return Ok(ApplyOutcome::success());
+        }
+    };
 
     if let Some(code) = result.aborted {
         let signal = if code == 143 { "SIGTERM" } else { "SIGINT" };
-        let applied = result.succeeded();
         // Filter-aware planned count (computed by the reconciler with the same
         // predicate the apply loop uses), so "{applied} of {total}" reflects
         // only the in-scope actions under --phase/--skip/--only, not the whole
-        // plan.
-        let total = result.planned_total;
-        printer.emit(
-            Doc::new()
-                .status(
-                    Role::Warn,
-                    format!(
-                        "apply aborted by signal — {applied} of {total} action(s) applied; no partial writes, rerun to converge"
-                    ),
-                )
-                .with_data(AbortOutput {
-                    aborted: true,
-                    signal: signal.to_string(),
-                    applied,
-                    total,
-                }),
-        );
+        // plan. The sentence itself is the rollup's `Aborted` arm; this `Doc`
+        // carries data only, so structured consumers see the payload and the
+        // human surface sees exactly one abort line.
+        printer.emit(Doc::new().with_data(AbortOutput {
+            aborted: true,
+            signal: signal.to_string(),
+            applied: result.succeeded(),
+            failed: result.failed(),
+            total: result.planned_total,
+        }));
         // An aborted run can still have completed the Env phase, so the user's
         // shell is just as stale as after a full apply.
         print_shell_env_reminder(&result, printer);
@@ -475,7 +601,7 @@ pub fn run_apply(
         });
     }
 
-    let mut status = print_apply_result(&result, printer, Some(start.elapsed()));
+    let mut status = result.status.clone();
     print_shell_env_reminder(&result, printer);
 
     // Link source commits to this apply for provenance tracking
@@ -501,32 +627,42 @@ pub fn run_apply(
         tracing::warn!(error = %e, "failed to prune old backups");
     }
 
-    // Run every schedule-less `spec.backups[]` entry. Not a reconciler action
-    // (no diff against desired state — they always run), and independent of
-    // the reconcile outcome above, so they run here unconditionally rather
-    // than being folded into `plan`/`result`. A dirty run (good snapshot, but
-    // a failed post-hook) is user-declared work, so — unlike the best-effort
-    // pruning above — it downgrades a `Success` apply to `Partial` and drives
-    // the process exit code the same way a failed reconciler action would.
-    let backup_outputs = run_pending_backups(
-        &pending_backup_specs,
-        &PendingBackupCtx {
-            cli,
-            cfg: &cfg,
-            config_dir: &config_dir,
-            state: &state,
-            printer,
-            abort: &abort,
-        },
-        &mut status,
-    )?;
+    // Every schedule-less `spec.backups[]` entry ran inside the run above, as
+    // the `Backups` pseudo-phase before the rollup. What is left here is the
+    // half the run cannot decide: user-declared work that did not complete
+    // cleanly downgrades a `Success` apply to `Partial` and drives the process
+    // exit code the same way a failed reconciler action would. A unit another
+    // writer held is NOT that — it is the engine's one-writer rule working, so
+    // it leaves the exit code alone.
+    // One report per pending unit, in unit order — `render_backups` pushes them
+    // as it walks the same slice. A silent `zip` truncation here would drop
+    // both the payload entry AND the status downgrade for units that did run.
+    debug_assert_eq!(
+        pending_backup_specs.len(),
+        backup_reports.len(),
+        "one report per pending backup unit"
+    );
+    let backup_outputs: Vec<BackupRunOutput> = pending_backup_specs
+        .iter()
+        .zip(&backup_reports)
+        .map(|(spec, report)| {
+            if report.skipped.is_none() && !report.is_clean() {
+                downgrade_to_partial(&mut status);
+            }
+            BackupRunOutput::from_report(&spec.name, report)
+        })
+        .collect();
 
     let output = ApplyOutput {
         status: status.display_str().to_string(),
         apply_id: Some(result.apply_id),
         succeeded: result.succeeded(),
         failed: result.failed(),
-        source_commits,
+        // `ApplyOutput.source_commits` is a `BTreeMap` so `-o json`/`-o yaml`
+        // serialize its keys in a fixed order; `DesiredState.source_commits`
+        // stays a `HashMap` internally since nothing else reads its
+        // iteration order.
+        source_commits: source_commits.into_iter().collect(),
         backups: backup_outputs,
     };
     printer.emit(Doc::new().with_data(&output));
@@ -537,102 +673,6 @@ pub fn run_apply(
     })
 }
 
-/// What [`run_pending_backups`] needs from the apply it runs inside.
-struct PendingBackupCtx<'a> {
-    cli: &'a Cli,
-    cfg: &'a CfgdConfig,
-    config_dir: &'a std::path::Path,
-    state: &'a cfgd_core::state::StateStore,
-    printer: &'a cfgd_core::output::Printer,
-    abort: &'a cfgd_core::AbortFlag,
-}
-
-/// Run the apply's schedule-less `spec.backups[]` units, downgrading `status`
-/// for any unit whose work did not complete cleanly.
-fn run_pending_backups(
-    specs: &[&cfgd_core::config::BackupSpec],
-    ctx: &PendingBackupCtx<'_>,
-    status: &mut cfgd_core::state::ApplyStatus,
-) -> anyhow::Result<Vec<BackupRunOutput>> {
-    let mut outputs = Vec::with_capacity(specs.len());
-    if specs.is_empty() {
-        return Ok(outputs);
-    }
-    let printer = ctx.printer;
-    let profile_name = active_profile_name(ctx.cli, Some(ctx.cfg));
-    let state_dir = cfgd_core::resolve_state_dir(ctx.cli.state_dir.as_deref(), ctx.cli.scope())?;
-    for spec in specs {
-        let backup_name = &spec.name;
-        let unit =
-            cfgd_core::backup::BackupUnit::new(spec, ctx.config_dir, &profile_name, &state_dir)
-                .with_abort(ctx.abort);
-        // Best-effort, matching the neighboring `record_source_apply` call in
-        // the caller: `run_backup` only returns `Err` on a state-store write
-        // failure (ordinary snapshot/hook failures are captured into the
-        // returned record, not propagated), so a `?` here would abort every
-        // remaining backup AND the rest of apply over what's really a single
-        // unit's storage problem. Warn, count the unit as failed for
-        // exit-code purposes, and keep going.
-        let record = match cfgd_core::backup::run_backup(&unit, ctx.state, printer) {
-            Ok(record) => record,
-            // Another surface (a daemon timer fire, a hand-run) holds this
-            // unit's lock, so the unit IS being backed up right now — just
-            // not by us. Skipping is the correct outcome of the engine's
-            // one-writer-per-unit rule, not an apply failure, so it does
-            // not move the exit code; the structured payload still carries
-            // the skip so a script can see the run did not come from here.
-            Err(cfgd_core::errors::CfgdError::Backup(cfgd_core::errors::BackupError::Busy {
-                holder,
-                ..
-            })) => {
-                printer
-                    .status(Role::Skipped, format!("backup '{backup_name}'"))
-                    .detail(format!("already running ({holder})"));
-                tracing::info!(
-                    backup = %backup_name,
-                    holder = %holder,
-                    "backup already running elsewhere; skipped"
-                );
-                outputs.push(BackupRunOutput {
-                    name: backup_name.clone(),
-                    status: "skipped".to_string(),
-                    destination_path: None,
-                    clean: false,
-                    error: Some(format!("already running ({holder})")),
-                });
-                continue;
-            }
-            Err(e) => {
-                printer
-                    .status(Role::Fail, format!("backup '{backup_name}'"))
-                    .detail(cfgd_core::output::collapse_to_subject_line(&e));
-                tracing::warn!(
-                    backup = %backup_name,
-                    error = %e,
-                    "backup run failed; continuing with remaining backups"
-                );
-                downgrade_to_partial(status);
-                outputs.push(BackupRunOutput {
-                    name: backup_name.clone(),
-                    status: cfgd_core::state::BackupRunStatus::Failed
-                        .as_str()
-                        .to_string(),
-                    destination_path: None,
-                    clean: false,
-                    error: Some(e.to_string()),
-                });
-                continue;
-            }
-        };
-        cfgd_core::backup::report_backup_record(printer, &record);
-        if !record.is_clean() {
-            downgrade_to_partial(status);
-        }
-        outputs.push(BackupRunOutput::from(&record));
-    }
-    Ok(outputs)
-}
-
 /// Structured `-o json` payload emitted when an apply is cooperatively aborted
 /// by a signal.
 #[derive(serde::Serialize)]
@@ -641,6 +681,11 @@ struct AbortOutput {
     aborted: bool,
     signal: String,
     applied: usize,
+    /// Actions the abort caught mid-flight: the signal reaches the child
+    /// process too, so an interrupted install dies with the run. Without it a
+    /// consumer differencing `total - applied` reads a killed action as one
+    /// that never started.
+    failed: usize,
     total: usize,
 }
 
@@ -708,7 +753,7 @@ fn gc_stale_package_tracking(
             return;
         }
     };
-    let cx = cfgd_core::providers::PackageContext { printer, state };
+    let cx = cfgd_core::providers::PackageContext::new(printer, state);
     match cfgd_core::reconciler::stale_tracked_packages(managers, &tracked, &cx) {
         Ok(stale) => {
             for (mgr, id) in stale {
@@ -742,7 +787,7 @@ fn gc_orphaned_custom_packages(
     if orphans.is_empty() {
         return;
     }
-    let cx = cfgd_core::providers::PackageContext { printer, state };
+    let cx = cfgd_core::providers::PackageContext::new(printer, state);
     for (mgr, pkg) in packages::prune_orphaned_packages(&orphans, &cx) {
         let rid = format!("{mgr}/{pkg}");
         if let Err(e) = state.remove_managed_resource("package", &rid) {

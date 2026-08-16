@@ -1,0 +1,45 @@
+{
+  "context": "apply",
+  "phases": [
+    {
+      "groups": [
+        {
+          "actions": [
+            {
+              "description": "apt install sl, cowsay",
+              "targets": [
+                "sl",
+                "cowsay"
+              ],
+              "type": "install"
+            }
+          ],
+          "owner": {
+            "kind": "profile",
+            "name": "work"
+          },
+          "token": "profile:work"
+        },
+        {
+          "actions": [
+            {
+              "description": "brew install neovim",
+              "origin": "team",
+              "targets": [
+                "neovim"
+              ],
+              "type": "install"
+            }
+          ],
+          "owner": {
+            "kind": "module",
+            "name": "nvim"
+          },
+          "token": "module:nvim"
+        }
+      ],
+      "phase": "Packages"
+    }
+  ],
+  "totalActions": 2
+}

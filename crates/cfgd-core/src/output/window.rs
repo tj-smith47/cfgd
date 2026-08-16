@@ -70,9 +70,23 @@ pub struct OutputWindow<'p> {
 
 impl<'p> OutputWindow<'p> {
     pub(crate) fn new(spinner: Spinner<'p>, label: String) -> Self {
+        Self::opened(spinner, label, /*announce=*/ true)
+    }
+
+    /// A window over a line its CALLER owns and will settle — a
+    /// [`super::live_row::LiveRow`]'s.
+    ///
+    /// It never announces the step. The row above it already names the action
+    /// and will carry its outcome, so a `Status(Running)` here would be that
+    /// action's second line, and the one the row settles would be its third.
+    pub(crate) fn borrowed(spinner: Spinner<'p>, label: String) -> Self {
+        Self::opened(spinner, label, /*announce=*/ false)
+    }
+
+    fn opened(spinner: Spinner<'p>, label: String, announce: bool) -> Self {
         let windowed = !spinner.bar.is_hidden();
         let body_depth = spinner.depth + 1;
-        if !windowed && spinner.renderer.verbosity != Verbosity::Quiet {
+        if announce && !windowed && spinner.renderer.verbosity != Verbosity::Quiet {
             // No window to hold the label, so the step announces itself the way
             // `run_streaming` does: a Running status, then its lines.
             spinner.renderer.render_status(
@@ -84,6 +98,8 @@ impl<'p> OutputWindow<'p> {
                     detail: None,
                     duration: None,
                     target: None,
+                    subject_style: None,
+                    detail_style: None,
                 },
             );
         }
@@ -140,14 +156,23 @@ impl<'p> OutputWindow<'p> {
         self.spinner.set_message(msg);
     }
 
+    /// Collapse the window and replace it with a single Status in `role`.
+    ///
+    /// The general form: `finish_ok` / `finish_warn` / `finish_fail` are the
+    /// three roles with names, and a caller whose role is computed needs the
+    /// parameter rather than a fourth name.
+    pub fn finish_with(self, role: Role, subject: impl Into<String>) -> StatusBuilder<'p> {
+        self.spinner.finish_with(role, subject)
+    }
+
     /// Collapse the window and replace it with a single success Status.
     pub fn finish_ok(self, subject: impl Into<String>) -> StatusBuilder<'p> {
-        self.spinner.finish_ok(subject)
+        self.finish_with(Role::Ok, subject)
     }
 
     /// Collapse the window and replace it with a single warning Status.
     pub fn finish_warn(self, subject: impl Into<String>) -> StatusBuilder<'p> {
-        self.spinner.finish_warn(subject)
+        self.finish_with(Role::Warn, subject)
     }
 
     /// Collapse the window and replace it with a single failure Status.
@@ -156,7 +181,35 @@ impl<'p> OutputWindow<'p> {
     /// child's output visible after a failure holds the full capture and
     /// renders it itself, below the Status.
     pub fn finish_fail(self, subject: impl Into<String>) -> StatusBuilder<'p> {
-        self.spinner.finish_fail(subject)
+        self.finish_with(Role::Fail, subject)
+    }
+
+    /// Collapse the window leaving NO status line behind.
+    ///
+    /// For the one case the window is not the action: when a caller further up
+    /// emits the action's own status line (the reconciler's tree), a settled
+    /// window line would be a second line for one action. The live tail still
+    /// renders while the command runs; only the collapse is silent.
+    pub fn finish_silent(self) {
+        self.spinner.finish_silent();
+    }
+
+    /// Give the line back to whoever owns it, printing nothing and leaving it
+    /// on screen exactly as the last repaint left it.
+    ///
+    /// For a window drawn on a [`super::live_row::LiveRow`]: the row settles
+    /// its own line, and [`Self::finish_silent`] would retire the row's bar
+    /// along with the window, so the settle would paint a line nothing draws.
+    pub(crate) fn release(self) {
+        self.spinner.release();
+    }
+
+    /// Collapse the window into the deepest level of the phase → owner →
+    /// action tree: [`Self::finish_with`] with the subject painted
+    /// `theme.primary`, so a script's line matches every other action line.
+    pub fn finish_action(self, role: Role, subject: impl Into<String>) -> StatusBuilder<'p> {
+        let style = self.spinner.renderer.theme.primary.clone();
+        self.finish_with(role, subject).with_subject_style(style)
     }
 
     /// True when the tail lived in the repainting window and is therefore gone
@@ -172,6 +225,11 @@ impl<'p> OutputWindow<'p> {
     /// the post-failure dump. Call only when the closed window's
     /// [`Self::tail_needs_replay`] was `true`; in the streaming degradation the
     /// lines this would render are already in the scrollback.
+    ///
+    /// And only from a window that settled a status of its own: the body is
+    /// positioned relative to a line already written, so a window closed with
+    /// [`Self::finish_silent`] has nothing for it to land under and the dump
+    /// would print above the caller's line instead of below it.
     pub fn dump_below(
         printer: &super::Printer,
         depth: usize,
@@ -196,13 +254,23 @@ impl super::Printer {
     ///
     /// Every surface that displays a child process's muted output goes through
     /// this — there is no second tail implementation to drift from it.
+    /// Open a bounded output window at the ambient depth — the innermost open
+    /// section while a `DepthInheritGuard` is held, column 0 otherwise. The
+    /// same relationship [`Printer::run`] has to `run_command`: a caller
+    /// inside a section gets its window indented under the line it belongs to
+    /// without naming a depth it would have to keep in sync.
+    #[must_use]
+    pub fn output_window(&self, label: impl Into<String>) -> OutputWindow<'_> {
+        self.output_window_at(self.renderer.inherit_depth(), label)
+    }
+
     #[must_use]
     pub fn output_window_at(&self, depth: usize, label: impl Into<String>) -> OutputWindow<'_> {
         let label = label.into();
-        let bar = super::spinner::make_spinner_bar(
+        let (bar, live) = super::spinner::make_spinner_bar(
             &self.multi_progress,
             &self.renderer,
-            self.verbosity(),
+            self.live_bars(),
             depth,
             &label,
         );
@@ -213,15 +281,11 @@ impl super::Printer {
             bar,
             message: label.clone(),
             finished: false,
+            _live: live,
+            borrowed: false,
             _phantom: PhantomData,
         };
         OutputWindow::new(spinner, label)
-    }
-
-    /// Top-level [`Printer::output_window_at`].
-    #[must_use]
-    pub fn output_window(&self, label: impl Into<String>) -> OutputWindow<'_> {
-        self.output_window_at(0, label)
     }
 }
 
@@ -244,6 +308,8 @@ mod tests {
             bar: indicatif::ProgressBar::hidden(),
             message: "step".into(),
             finished: false,
+            _live: None,
+            borrowed: false,
             _phantom: PhantomData,
         };
         (OutputWindow::new(spinner, "step".into()), buf)
@@ -353,6 +419,8 @@ mod tests {
             bar: indicatif::ProgressBar::hidden(),
             message: "step".into(),
             finished: false,
+            _live: None,
+            borrowed: false,
             _phantom: PhantomData,
         };
         let mut w = OutputWindow::new(spinner, "step".into());
@@ -413,5 +481,21 @@ mod tests {
             available_width(&sink, 40) >= 24,
             "clamped below a usable floor"
         );
+    }
+
+    #[test]
+    fn window_finish_with_emits_the_given_role() {
+        // The Windowed script arm picks its role from `non_fatal` at the call
+        // site, so the primitive has to carry an arbitrary role through rather
+        // than offering three fixed collapses.
+        for (role, glyph) in [(Role::Warn, "⚠"), (Role::Fail, "✗"), (Role::Skipped, "—")] {
+            let (w, buf) = window(0, Verbosity::Normal);
+            let _ = w.finish_with(role, "script finished");
+            let out = strip_ansi(&buf.lock().unwrap());
+            assert!(
+                out.contains(&format!("{glyph} script finished")),
+                "role {role:?} did not reach the status line: {out:?}"
+            );
+        }
     }
 }

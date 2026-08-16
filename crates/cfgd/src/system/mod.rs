@@ -58,7 +58,10 @@ pub(super) fn read_command_output(cmd: &mut Command) -> String {
 /// value to its string representation via `value_to_string_fn`, looks up
 /// the actual value via `get_actual(key_str)`, and pushes a `SystemDrift` when
 /// they differ.  The `key_prefix` is prepended (with a dot separator) to each
-/// drift key when non-empty.
+/// drift key when non-empty — it names an INNER grouping the desired mapping is
+/// nested under (a defaults domain, a registry key path, a kde file+group), and
+/// must never be the configurator's own name: the reconciler already composes
+/// `system:<configurator>.<key>` around whatever comes back.
 ///
 /// Returns an empty vec if `desired` is not a mapping.
 pub(crate) fn diff_yaml_mapping(
@@ -179,6 +182,53 @@ pub(crate) fn yaml_value_with_numeric_bools(value: &serde_yaml::Value) -> String
         _ => format!("{:?}", value),
     }
 }
+
+/// Assert that no drift key repeats its own configurator's name.
+///
+/// The reconciler composes `system:<configurator>.<key>` for the plan line, the
+/// `managed_resources` id and the journal `resource_id`, so a key that opens
+/// with the configurator's name doubles it into all three — and because two of
+/// those are persisted, undoubling one later costs a state migration. Every
+/// configurator's diff test calls this against its own fixture, so the shape is
+/// pinned per configurator rather than only where an exact key is asserted.
+//
+// Plain `test` rather than `test-and-unix`: `windowsRegistry` and
+// `windowsServices` mint the same persisted key shape as every unix
+// configurator and their `diff()` tests are cross-platform already (neither
+// shells out to read state), so they call this from every OS including
+// Windows. gpg's shim tests, `ssh_keys` and `node` stay `#[cfg(unix)]` at
+// their own call sites — they diff real filesystem/service state that only
+// exists on unix — so this function needs no narrower gate of its own; it
+// would be dead only if every caller vanished at once.
+#[cfg(test)]
+pub(crate) fn assert_keys_undoubled(
+    configurator: &dyn cfgd_core::providers::SystemConfigurator,
+    drifts: &[SystemDrift],
+) {
+    let name = configurator.name();
+    for drift in drifts {
+        // The rule and its wording come from the reconciler, which is what
+        // composes the id — a second spelling here could pass a key the
+        // planner's own debug assertion rejects. Unconditional rather than
+        // debug-only so `cargo test --release` still enforces it.
+        if let Some(message) = cfgd_core::reconciler::system_key_doubling_error(name, &drift.key) {
+            panic!("{message}");
+        }
+    }
+}
+
+// `windows_registry`'s bridge test is the cross-platform caller: its
+// `apply()` always emits the narration this capture pins, on every OS,
+// because the actual `reg add` shell-out is itself `cfg!(windows)`-guarded
+// inside `write_reg_value` rather than the narration around it — so driving
+// it needs no platform gate here and this module compiles (and its Windows
+// caller runs) on Windows too. `ssh_keys`'s and `node`'s consumers stay
+// `#[cfg(unix)]`, and `systemd_unit`'s stays `target_os = "linux"`, at THEIR
+// own call sites: their `apply()` genuinely shells out to a command that
+// does not exist off that platform, so a bridge fixture driving them there
+// would error rather than produce a golden.
+#[cfg(test)]
+mod tests_snapshot_bridge;
 
 #[cfg(test)]
 mod tests;

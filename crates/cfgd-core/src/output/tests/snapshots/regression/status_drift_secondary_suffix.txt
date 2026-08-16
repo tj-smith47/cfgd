@@ -1,2 +1,2 @@
 Drift
-  ⚠ file /etc/hosts — want: managed, have: external [team-config]
+  ⚠ file /etc/hosts — want: managed, have: external source:team-config

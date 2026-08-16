@@ -4,10 +4,8 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 
-use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
-use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
     bootstrap_via_shell_script, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
@@ -40,6 +38,11 @@ pub(super) fn nix_env_cmd() -> Command {
     tool_cmd_with_resolver("nix-env", find_nix_env)
 }
 
+// Single source for the multi-user installer's profile bin dir, so
+// `bootstrap_plan`'s declaration and `path_dirs`'s recording can never
+// drift apart.
+const NIX_PROFILE_BIN_DIR: &str = "/nix/var/nix/profiles/default/bin";
+
 impl PackageManager for NixManager {
     fn name(&self) -> &str {
         "nix"
@@ -49,13 +52,24 @@ impl PackageManager for NixManager {
         nix_env_available() || nix_available()
     }
 
-    fn can_bootstrap(&self) -> bool {
-        command_available("curl")
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        // The multi-user (`--daemon`) install puts the nix binaries in the
+        // default profile; a per-user profile only appears once something is
+        // installed into it.
+        Some(
+            BootstrapPlan::new("nix installer")
+                .requiring(["curl"])
+                .creating([NIX_PROFILE_BIN_DIR]),
+        )
     }
 
-    fn bootstrap(&self, printer: &Printer) -> Result<()> {
+    fn path_dirs(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
+        vec![cfgd_core::to_posix_string(NIX_PROFILE_BIN_DIR)]
+    }
+
+    fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         bootstrap_via_shell_script(
-            printer,
+            cx,
             "nix",
             "Installing Nix",
             "curl -L https://nixos.org/nix/install | sh -s -- --daemon",
@@ -105,7 +119,7 @@ impl PackageManager for NixManager {
             if nix_available() {
                 let label = format!("nix profile install nixpkgs#{}", pkg);
                 run_pkg_cmd_live(
-                    cx.printer,
+                    cx,
                     "nix",
                     nix_cmd().args(["profile", "install", &format!("nixpkgs#{}", pkg)]),
                     &label,
@@ -114,7 +128,7 @@ impl PackageManager for NixManager {
             } else {
                 let label = format!("nix-env -iA nixpkgs.{}", pkg);
                 run_pkg_cmd_live(
-                    cx.printer,
+                    cx,
                     "nix",
                     nix_env_cmd().args(["-iA", &format!("nixpkgs.{}", pkg)]),
                     &label,
@@ -140,7 +154,7 @@ impl PackageManager for NixManager {
                 // the element name.
                 let label = format!("nix profile remove {}", pkg);
                 run_pkg_cmd_live(
-                    cx.printer,
+                    cx,
                     "nix",
                     nix_cmd().args(["profile", "remove", pkg]),
                     &label,
@@ -149,7 +163,7 @@ impl PackageManager for NixManager {
             } else {
                 let label = format!("nix-env -e {}", pkg);
                 run_pkg_cmd_live(
-                    cx.printer,
+                    cx,
                     "nix",
                     nix_env_cmd().args(["-e", pkg]),
                     &label,
@@ -157,11 +171,6 @@ impl PackageManager for NixManager {
                 )?;
             }
         }
-        Ok(())
-    }
-
-    fn update(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        // Nix packages are pinned; update is a no-op (channels are managed separately)
         Ok(())
     }
 
@@ -264,8 +273,7 @@ pub(super) fn parse_nix_search_version(output: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use cfgd_core::command_available;
-    use cfgd_core::providers::PackageManager;
+    use cfgd_core::providers::{PackageManager, PackageManagerExt};
 
     use super::*;
 
@@ -276,12 +284,16 @@ mod tests {
     }
 
     #[test]
-    fn nix_manager_update_is_noop() {
+    fn nix_declares_no_index_to_refresh() {
         let mgr = NixManager;
         let printer = cfgd_core::test_helpers::test_printer();
         let state = cfgd_core::test_helpers::test_state();
         let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-        mgr.update(&cx).unwrap();
+        assert!(
+            !mgr.has_index(),
+            "nix packages are pinned; channels are managed separately"
+        );
+        mgr.refresh_index(&cx).unwrap();
     }
 
     #[test]
@@ -356,52 +368,71 @@ mod tests {
     }
 
     #[test]
-    fn nix_manager_can_bootstrap_checks_curl() {
+    fn nix_bootstrap_plan_names_curl_and_the_default_profile_bin() {
         // Both sides read `PATH`; without the guard a concurrent test's
         // `PATH` mutation can land between them and they disagree.
         let _path = cfgd_core::test_helpers::path_env_read_guard();
-        let mgr = NixManager;
-        let can = mgr.can_bootstrap();
-        assert_eq!(can, command_available("curl"));
+        let plan = NixManager
+            .bootstrap_plan()
+            .expect("the cascade is unconditional");
+        // Feasibility is a separate question, asked of the same plan.
+        assert_eq!(
+            NixManager.feasible_bootstrap_plan().is_some(),
+            cfgd_core::providers::prerequisite_obtainable("curl")
+        );
+        // What `bootstrap` runs: the nixos.org installer in --daemon mode,
+        // fetched with curl, whose binaries land in the default profile.
+        assert_eq!(plan.method, "nix installer");
+        assert_eq!(plan.requires, ["curl"]);
+        assert_eq!(
+            plan.creates_path_dirs,
+            ["/nix/var/nix/profiles/default/bin"]
+        );
+    }
+
+    #[test]
+    fn nix_path_dirs_matches_the_bootstrap_plans_declaration() {
+        let plan = NixManager
+            .bootstrap_plan()
+            .expect("the cascade is unconditional");
+        let printer = cfgd_core::test_helpers::test_printer();
+        let state = cfgd_core::test_helpers::test_state();
+        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+        let mgr: Box<dyn PackageManager> = Box::new(NixManager);
+        assert_eq!(mgr.path_dirs(&cx), plan.creates_path_dirs);
     }
 
     #[test]
     #[serial_test::serial]
-    fn nix_manager_is_available_checks_nix_env_or_nix() {
-        // Snapshot + clear the seam env vars so this assertion mirrors the
-        // PATH-only contract (mgr.is_available() == command_available union).
-        // Without this, parallel ToolShim tests setting CFGD_NIX_BIN /
-        // CFGD_NIX_ENV_BIN would race with this assertion.
-        let prev_nix = std::env::var_os("CFGD_NIX_BIN");
-        let prev_nix_env = std::env::var_os("CFGD_NIX_ENV_BIN");
-        // SAFETY: serial.
-        unsafe {
-            std::env::remove_var("CFGD_NIX_BIN");
-            std::env::remove_var("CFGD_NIX_ENV_BIN");
-        }
+    fn nix_manager_is_available_for_either_nix_binary() {
+        // The seam env vars are cleared for the whole test: with either set,
+        // this asserts about whichever ToolShim ran last rather than about the
+        // PATH probe.
+        let _seam_nix = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_NIX_BIN");
+        let _seam_nix_env = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_NIX_ENV_BIN");
+        let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
         let mgr = NixManager;
-        let available = mgr.is_available();
-        let expected = command_available("nix-env") || command_available("nix");
-        // Restore before any panic so other tests aren't poisoned.
-        // SAFETY: serial.
-        unsafe {
-            if let Some(v) = prev_nix {
-                std::env::set_var("CFGD_NIX_BIN", v);
-            }
-            if let Some(v) = prev_nix_env {
-                std::env::set_var("CFGD_NIX_ENV_BIN", v);
-            }
-        }
-        assert_eq!(available, expected);
-    }
 
-    #[test]
-    fn nix_update_returns_ok() {
-        let mgr = NixManager;
-        let printer = cfgd_core::test_helpers::test_printer();
-        let state = cfgd_core::test_helpers::test_state();
-        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-        mgr.update(&cx).unwrap();
+        {
+            let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+            assert!(
+                !mgr.is_available(),
+                "a host resolving no binaries has no nix"
+            );
+        }
+
+        // A classic install ships `nix-env`, a flakes-era one may ship only
+        // `nix`; each is asserted alone, so dropping either arm is caught on a
+        // host that happens to carry both.
+        #[cfg(unix)]
+        for binary in ["nix-env", "nix"] {
+            let _probe = cfgd_core::test_helpers::ProbePath::containing(&[binary]);
+            assert!(
+                mgr.is_available(),
+                "{binary} alone must make this manager available"
+            );
+        }
     }
 
     // --- parse_nix_profile_list_json ---
@@ -668,7 +699,9 @@ mod tests {
         fn nix_bootstrap_runs_sh_install_pipeline_ok() {
             let (_bin, _path) = install_named_path_shim("sh", 0, "", "");
             let p = test_printer();
-            NixManager.bootstrap(&p).expect("bootstrap Ok via shim");
+            NixManager
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
+                .expect("bootstrap Ok via shim");
         }
 
         #[test]
@@ -677,7 +710,7 @@ mod tests {
             let (_bin, _path) = install_named_path_shim("sh", 1, "", "nix install failed");
             let p = test_printer();
             let err = NixManager
-                .bootstrap(&p)
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
                 .expect_err("non-zero sh must error");
             let msg = err.to_string();
             assert!(

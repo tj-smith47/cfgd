@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use cfgd_core::config::FileStrategy;
+use cfgd_core::config::{FileStrategy, LOCAL_LAYER};
 use cfgd_core::errors::{FileError, Result};
 use cfgd_core::output::Printer;
 use cfgd_core::providers::{
@@ -58,7 +58,7 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                     permissions: cfgd_core::file_permissions_mode(&metadata),
                     is_template: false,
                     source_path: path.clone(),
-                    origin_source: "local".to_string(),
+                    origin_source: LOCAL_LAYER.to_string(),
                 },
             );
         }
@@ -138,7 +138,7 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                 } => {
                     let file_origin = match action {
                         FileAction::Create { origin, .. } | FileAction::Update { origin, .. } => {
-                            if origin == "local" {
+                            if origin == LOCAL_LAYER {
                                 None
                             } else {
                                 Some(origin.as_str())

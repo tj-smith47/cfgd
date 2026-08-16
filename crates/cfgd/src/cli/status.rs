@@ -1,6 +1,8 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
+use cfgd_core::config::LOCAL_LAYER;
 use cfgd_core::output::{Doc, Printer, Role, condense_script_label, renderer::Table};
+use cfgd_core::reconciler::Owner;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -11,6 +13,31 @@ pub struct StatusOutput {
     pub pending_decisions: Vec<cfgd_core::state::PendingDecision>,
     pub modules: Vec<ModuleStatusEntry>,
     pub managed_resources: Vec<cfgd_core::state::ManagedResource>,
+    /// Source batches no decision row can name (a dotted custom manager) —
+    /// withheld from every plan fail-closed, so the dashboard names them here
+    /// instead of showing clean-empty. Same lines the `plan` payload's
+    /// `warnings` carries; absent when there are none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    /// True when the source-decision classification failed and
+    /// `pendingDecisions` is missing the classified-but-unrecorded items — a
+    /// degraded listing is otherwise indistinguishable from a clean empty one
+    /// to a `-o json` consumer.
+    pub classification_degraded: bool,
+    /// The machine-stable cause class, present only when degraded — the
+    /// reason string beside it is the human detail and carries no stability
+    /// promise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classification_degraded_code: Option<super::output_types::ClassificationDegradedCode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classification_degraded_reason: Option<String>,
+    /// Whether `drift` is the verdict of a LIVE scan of this machine or the
+    /// events something previously recorded. Plain `status` is the fast
+    /// recorded-drift dashboard, so on a host with no daemon its `drift` is
+    /// empty however far the machine has drifted; only `--exit-code` scans.
+    /// A consumer differencing an empty list needs to know which of those two
+    /// it is holding, and the human line says the same thing in words.
+    pub drift_checked_live: bool,
 }
 
 #[derive(Serialize)]
@@ -66,7 +93,16 @@ pub fn build_fleet_status_doc(
     }
 
     doc = if output.drift.is_empty() {
-        doc.section("Drift", |s| s.status(Role::Ok, "No drift detected"))
+        // Only the live scan may claim a detection. The recorded dashboard has
+        // asked nothing of the machine, and "No drift detected" over a host
+        // whose last apply left a declared package uninstalled is an assurance
+        // no query backs.
+        let subject = if output.drift_checked_live {
+            "No drift detected"
+        } else {
+            "No drift recorded — `cfgd diff` checks the live machine"
+        };
+        doc.section("Drift", |s| s.status(Role::Ok, subject))
     } else {
         doc.section("Drift", |s| {
             output.drift.iter().fold(s, |s, event| {
@@ -93,12 +129,15 @@ pub fn build_fleet_status_doc(
                     event.expected.as_deref().unwrap_or("?"),
                     event.actual.as_deref().unwrap_or("?"),
                 );
-                if event.source != "local" {
+                if event.source != LOCAL_LAYER {
                     // Source attribution renders in `secondary` (pink/magenta)
                     // at end-of-subject; the StatusBuilder API guarantees the
                     // label lands last so the inner SGR reset is never
-                    // followed by outer-role-styled text.
-                    let label_text = format!("[{}]", event.source);
+                    // followed by outer-role-styled text. The token is the
+                    // vocabulary `cfgd sync` and `cfgd source *` head their
+                    // groups with, so a reader carries one spelling across the
+                    // three surfaces that name a source.
+                    let label_text = Owner::source(&event.source).token();
                     s.status_with(Role::Warn, subject, |f| {
                         f.label(Role::Secondary, label_text)
                     })
@@ -133,36 +172,28 @@ pub fn build_fleet_status_doc(
     doc = doc.section_if_nonempty(
         "Pending Decisions",
         &output.pending_decisions,
-        |s, decisions| {
-            let mut by_source: std::collections::BTreeMap<
-                &str,
-                Vec<&cfgd_core::state::PendingDecision>,
-            > = std::collections::BTreeMap::new();
-            for d in decisions {
-                by_source.entry(&d.source).or_default().push(d);
-            }
-            by_source.into_iter().fold(s, |s, (source_name, items)| {
-                let count = items.len();
-                let plural = if count == 1 { "" } else { "s" };
-                s.subsection(source_name.to_string(), |sub| {
-                    let sub = sub.status(Role::Info, format!("{count} pending item{plural}"));
-                    items.iter().fold(sub, |sub, item| {
-                        sub.status(
-                            Role::Info,
-                            format!(
-                                "{} {} — {} ({})",
-                                item.tier, item.resource, item.summary, item.action
-                            ),
-                        )
-                    })
-                })
-            })
-        },
+        super::build_pending_decisions_table_section,
     );
+
+    // Rendered beside the pending rows those batches would otherwise be:
+    // "why isn't requests installed?" must be answerable from the dashboard,
+    // not only from a plan/apply run header.
+    doc = output
+        .warnings
+        .iter()
+        .fold(doc, |d, w| d.status(Role::Warn, w));
 
     doc = doc.section_if_nonempty("Modules", &output.modules, |s, mods| {
         mods.iter().fold(s, |s, m| {
-            let summary = format!("{} pkgs, {} files", m.packages, m.files);
+            // Fixed units, so they agree with their own count: one package is
+            // `1 pkg`, not `1 pkgs`.
+            let summary = format!(
+                "{} pkg{}, {} file{}",
+                m.packages,
+                if m.packages == 1 { "" } else { "s" },
+                m.files,
+                if m.files == 1 { "" } else { "s" }
+            );
             let role = match m.status.as_str() {
                 "installed" => Role::Ok,
                 "not applied" | "not yet applied" => Role::Info,
@@ -173,7 +204,12 @@ pub fn build_fleet_status_doc(
             } else {
                 m.status.clone()
             };
-            s.status(role, format!("{}: {}, {}", m.name, summary, suffix))
+            // Subject is the owner token, exactly as the tree that applied the
+            // module heads its group; the counts and the state are what the
+            // line reports about it.
+            s.status_with(role, Owner::module(&m.name).token(), |f| {
+                f.detail(format!("{summary}, {suffix}"))
+            })
         })
     });
 
@@ -259,8 +295,8 @@ pub(super) fn cmd_status(
         return cmd_status_module(cli, printer, mod_name);
     }
 
-    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli)?;
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
 
     let last_apply = state.last_apply()?;
     let drift_events = state.unresolved_drift()?;
@@ -269,7 +305,11 @@ pub(super) fn cmd_status(
     } else {
         vec![]
     };
-    let pending = state.pending_decisions()?;
+    // Only rows `cfgd decide` can still act on: a decision outliving the source
+    // that raised it withholds nothing from a plan, so listing it here would
+    // report work awaiting an answer that no answer can release.
+    let mut pending = reconciler::Subscriptions::known(cfg.spec.sources.iter().map(|s| &s.name))
+        .answerable(state.pending_decisions()?);
     let resources = state.managed_resources()?;
 
     let config_dir = config_dir(cli);
@@ -288,6 +328,50 @@ pub(super) fn cmd_status(
     )?;
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
+
+    // The plan withholds items no run has recorded a row for yet; a dashboard
+    // that hides them contradicts the plan it summarizes. Same classification
+    // source `plan` reads, still read-only — the `id` 0 rows mark items whose
+    // row `cfgd decide` (or the next apply/tick) will mint. Unlike the gate in
+    // plan/apply, a dashboard DEGRADES rather than dying: a classification
+    // failure (a malformed package manifest, say) costs the unrecorded rows
+    // and says so, never the whole status surface. And with no sources there
+    // is nothing to classify, so none of the classification's work runs.
+    let mut classification_degraded: Option<(
+        super::output_types::ClassificationDegradedCode,
+        String,
+    )> = None;
+    let mut warnings: Vec<String> = Vec::new();
+    if !cfg.spec.sources.is_empty() {
+        // The dashboard enumerates no package state (it is offline by design),
+        // so the classification sees an empty observation and auto-accepts
+        // nothing — installed-but-undecided items keep their pending rows
+        // here and are released by the next plan/apply/tick, which does
+        // enumerate.
+        match plan_ops::withheld_for_run(
+            &state,
+            &cfg,
+            &resolved,
+            &config_dir,
+            true,
+            plan_ops::DecisionWrites::ReadOnly,
+            &reconciler::ActualPackages::default(),
+        ) {
+            Ok((withheld, _review)) => {
+                warnings = withheld.undecidable.iter().map(|b| b.warning()).collect();
+                pending.extend(withheld.pending.into_iter().filter(|d| d.id == 0));
+            }
+            Err(e) => {
+                let code = super::output_types::ClassificationDegradedCode::from_error(&e);
+                let reason = cfgd_core::output::collapse_to_subject_line(format!("{e:#}"));
+                printer.status_simple(
+                    Role::Warn,
+                    format!("Source decisions not classified: {reason}"),
+                );
+                classification_degraded = Some((code, reason));
+            }
+        }
+    }
 
     let state_map = module_state_map(&state);
     let module_entries: Vec<ModuleStatusEntry> = resolved_modules
@@ -316,6 +400,11 @@ pub(super) fn cmd_status(
         pending_decisions: pending,
         modules: module_entries,
         managed_resources: resources,
+        warnings,
+        classification_degraded: classification_degraded.is_some(),
+        classification_degraded_code: classification_degraded.as_ref().map(|(c, _)| *c),
+        classification_degraded_reason: classification_degraded.map(|(_, r)| r),
+        drift_checked_live: exit_code,
     };
 
     // Plain `status` (no --exit-code) keeps the fast RECORDED-drift dashboard by
@@ -331,10 +420,7 @@ pub(super) fn cmd_status(
         let mut registry = build_registry_with_profile(&resolved.merged.packages);
         registry.set_system_config_dir(&config_dir);
         let cfgd_installed = cfgd_installed_packages(&state)?;
-        let pkg_cx = cfgd_core::providers::PackageContext {
-            printer,
-            state: &state,
-        };
+        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
         let drift = super::live_drift::live_drift_results(
             &config_dir,
             &resolved,
@@ -352,7 +438,7 @@ pub(super) fn cmd_status(
                 expected: Some(r.expected.clone()),
                 actual: Some(r.actual.clone()),
                 resolved_by: None,
-                source: "local".to_string(),
+                source: LOCAL_LAYER.to_string(),
             });
         }
         drift
@@ -395,7 +481,7 @@ pub(super) fn cmd_status_module(
         }
     };
 
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let state_rec = state.module_state_by_name(mod_name)?;
 
     let status = state_rec
@@ -453,12 +539,121 @@ mod tests {
             pending_decisions: Vec::new(),
             modules: Vec::new(),
             managed_resources: Vec::new(),
+            warnings: Vec::new(),
+            classification_degraded: false,
+            classification_degraded_code: None,
+            classification_degraded_reason: None,
+            drift_checked_live: false,
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["lastApply"]["status"], serde_json::json!("inProgress"));
         assert_eq!(
             json["lastApply"]["status"],
             serde_json::json!(ApplyStatus::InProgress.display_str())
+        );
+        assert_eq!(json["classificationDegraded"], serde_json::json!(false));
+        assert!(
+            json.get("classificationDegradedCode").is_none()
+                && json.get("classificationDegradedReason").is_none(),
+            "a clean payload carries no code or reason field"
+        );
+    }
+
+    /// The module health line's units agree with their own counts: a module
+    /// with one of each reads `1 pkg, 1 file`, and anything else — including
+    /// zero — keeps the plural.
+    #[test]
+    fn module_status_line_units_agree_with_their_counts() {
+        let output = StatusOutput {
+            last_apply: None,
+            drift: Vec::new(),
+            sources: Vec::new(),
+            pending_decisions: Vec::new(),
+            modules: vec![
+                ModuleStatusEntry {
+                    name: "tmux".to_string(),
+                    packages: 1,
+                    files: 1,
+                    status: "installed".to_string(),
+                },
+                ModuleStatusEntry {
+                    name: "nvim".to_string(),
+                    packages: 3,
+                    files: 12,
+                    status: "installed".to_string(),
+                },
+                ModuleStatusEntry {
+                    name: "git".to_string(),
+                    packages: 0,
+                    files: 0,
+                    status: "installed".to_string(),
+                },
+            ],
+            managed_resources: Vec::new(),
+            warnings: Vec::new(),
+            classification_degraded: false,
+            classification_degraded_code: None,
+            classification_degraded_reason: None,
+            drift_checked_live: false,
+        };
+
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(build_fleet_status_doc(
+            &output,
+            &[],
+            std::path::Path::new("/etc/cfgd/cfgd.yaml"),
+            "default",
+        ));
+        drop(printer);
+        let out = buf.lock().unwrap().clone();
+
+        assert!(
+            out.contains("1 pkg, 1 file,"),
+            "a single package and file must read singular: {out}"
+        );
+        assert!(
+            out.contains("3 pkgs, 12 files,"),
+            "many must stay plural: {out}"
+        );
+        assert!(
+            out.contains("0 pkgs, 0 files,"),
+            "zero keeps the plural: {out}"
+        );
+    }
+
+    /// A degraded classification must be visible IN the `-o json` payload:
+    /// the human warning is suppressed under structured output, so without
+    /// these fields a broken classification is indistinguishable from a clean
+    /// machine with nothing pending.
+    #[test]
+    fn status_json_degraded_classification_is_structural() {
+        let output = StatusOutput {
+            last_apply: None,
+            drift: Vec::new(),
+            sources: Vec::new(),
+            pending_decisions: Vec::new(),
+            modules: Vec::new(),
+            managed_resources: Vec::new(),
+            warnings: Vec::new(),
+            classification_degraded: true,
+            classification_degraded_code: Some(
+                crate::cli::output_types::ClassificationDegradedCode::SourceUnreadable,
+            ),
+            classification_degraded_reason: Some(
+                "source 'acme': cached config is unreadable".to_string(),
+            ),
+            drift_checked_live: false,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["classificationDegraded"], serde_json::json!(true));
+        assert_eq!(
+            json["classificationDegradedCode"],
+            serde_json::json!("sourceUnreadable"),
+            "the code is the closed, camelCase machine token"
+        );
+        assert_eq!(
+            json["classificationDegradedReason"],
+            serde_json::json!("source 'acme': cached config is unreadable")
         );
     }
 
@@ -495,6 +690,7 @@ mod tests {
             verbose: 0,
             quiet: true,
             no_color: true,
+            color: crate::cli::ColorWhen::Auto,
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
             jsonpath: None,
@@ -581,15 +777,15 @@ mod tests {
             "empty applies state should render info line, got: {output}"
         );
         assert!(
-            output.contains("No drift detected"),
-            "empty drift should print success line, got: {output}"
+            output.contains("No drift recorded"),
+            "an empty recorded dashboard says what it read, got: {output}"
         );
     }
 
     #[test]
     fn cmd_status_with_apply_record_prints_last_apply_block() {
         let (_cfg_dir, state_dir, config_path) = setup_env();
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
             .record_apply(
                 "default",
@@ -627,7 +823,7 @@ mod tests {
     #[test]
     fn cmd_status_drift_present_renders_warning_line() {
         let (_cfg_dir, state_dir, config_path) = setup_env();
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
             .record_drift(
                 "file",
@@ -662,7 +858,7 @@ mod tests {
     #[test]
     fn cmd_status_drift_non_local_source_includes_source_tag() {
         let (_cfg_dir, state_dir, config_path) = setup_env();
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
             .record_drift(
                 "package",
@@ -680,17 +876,19 @@ mod tests {
         drop(printer);
 
         let output = buf.lock().unwrap();
-        // The format string adds " [<source>]" only when source != "local".
+        // The label is appended only when source != "local", and it carries the
+        // owner token so the attribution reads the same here as it does over a
+        // `cfgd sync` group.
         assert!(
-            output.contains("[team-config]"),
-            "non-local drift should include bracketed source, got: {output}"
+            output.contains("source:team-config"),
+            "non-local drift should carry the source owner token, got: {output}"
         );
     }
 
     #[test]
     fn cmd_status_managed_resources_renders_table() {
         let (_cfg_dir, state_dir, config_path) = setup_env();
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
             .upsert_managed_resource("file", "/etc/managed.conf", "local", Some("hashval"), None)
             .unwrap();
@@ -720,7 +918,7 @@ mod tests {
     #[test]
     fn cmd_status_running_script_managed_resource_condenses_for_human_display() {
         let (_cfg_dir, state_dir, config_path) = setup_env();
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         let raw_body = " echo one\necho two\necho three";
         store
             .upsert_managed_resource("Running script", raw_body, "local", None, None)
@@ -746,7 +944,7 @@ mod tests {
     #[test]
     fn cmd_status_running_script_json_preserves_raw_resource_id() {
         let (_cfg_dir, state_dir, config_path) = setup_env();
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         let raw_body = " echo one\necho two\necho three";
         store
             .upsert_managed_resource("Running script", raw_body, "local", None, None)
@@ -773,7 +971,7 @@ mod tests {
         // process::exit. Only the non-exiting half is testable in-process; the
         // drift-present branch would terminate the test runner via process::exit.
         let (_cfg_dir, state_dir, config_path) = setup_env();
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
             .record_drift("file", "/etc/x", Some("a"), Some("b"), "local")
             .unwrap();
@@ -804,7 +1002,7 @@ mod tests {
     #[test]
     fn cmd_status_json_output_emits_expected_shape() {
         let (_cfg_dir, state_dir, config_path) = setup_env();
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
             .record_apply("default", "abc123", ApplyStatus::Success, Some("ok"))
             .unwrap();
@@ -921,7 +1119,7 @@ mod tests {
         let (_cfg_dir, state_dir, config_path) = setup_env_with_module();
 
         // Pre-populate module state.
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
             .upsert_module_state(
                 "test-mod",
@@ -984,7 +1182,7 @@ mod tests {
         let real_file = tmp_home.path().join("real.conf");
         std::fs::write(&real_file, b"x").unwrap();
 
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         let apply_id = store
             .record_apply("default", "h", ApplyStatus::Success, None)
             .unwrap();
@@ -1034,7 +1232,7 @@ mod tests {
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let (_cfg_dir, state_dir, config_path) = setup_env_with_module();
 
-        let store = open_state_store(Some(state_dir.path())).unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
             .upsert_module_state("test-mod", None, "pkgh", "fileh", None, "installed")
             .unwrap();

@@ -1,53 +1,344 @@
 use crate::AbortFlag;
 use crate::PathDisplayExt;
-use crate::config::{ResolvedProfile, ScriptShell};
+use crate::config::{LOCAL_LAYER, ResolvedProfile, ScriptShell};
 use crate::errors::{ConfigError, Result};
 use crate::modules::ResolvedModule;
-use crate::output::{Printer, Role, collapse_to_subject_line};
+use crate::output::{OwnerLabel, Printer, Role, SectionGuard, collapse_to_subject_line};
 use crate::state::ApplyStatus;
 
 use super::format::{
-    condense_action_desc_for_display, format_action_description, parse_package_description,
-    parse_resource_from_description,
+    action_display_subject, condense_action_desc_for_display, format_action_description,
+    parse_package_description, parse_resource_from_description,
 };
 use super::restore::action_target_path;
+use super::run::align_width;
 use super::scripts::{
-    MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, build_module_script_env, build_script_env,
-    effective_continue_on_error, execute_script, script_default_workdir,
+    MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, ScriptSubject, build_module_script_env,
+    build_script_env, effective_continue_on_error, execute_script, script_default_workdir,
 };
 use super::types::{
-    Action, ActionResult, ApplyResult, ModuleAction, ModuleActionKind, PhaseName, Plan,
-    ReconcileContext, ScriptAction, ScriptPhase,
+    Action, ActionResult, ApplyResult, MANAGER_RESOURCE_TYPE, ManagerAction, ModuleAction,
+    ModuleActionKind, Owner, OwnerKind, PhaseFilter, PhaseName, Plan, ReconcileContext,
+    ScriptAction, ScriptPhase, SystemAction,
 };
+use crate::providers::{ActionNote, FileAction, NoteSink, PackageAction, SecretAction};
+
+/// One action's line in the execution tree, resolved where the outcome is known
+/// and written either immediately (a streaming phase) or at phase close
+/// (`Packages`, whose dispatch order is not its reading order).
+pub(super) struct ActionOutcome {
+    /// The action's display subject, resolved once at record time so the
+    /// streaming writer and the deferred one cannot disagree about it.
+    pub(super) subject: String,
+    pub(super) role: Role,
+    pub(super) detail: Option<String>,
+    /// The detail was derived from the plan or from the action's own no-op
+    /// status rather than from what happened, so it renders muted. A collapsed
+    /// error never does — it is the thing the reader has to act on.
+    pub(super) detail_muted: bool,
+    pub(super) duration: Option<std::time::Duration>,
+    notes: Vec<ActionNote>,
+    /// The child output a concurrent lane captured instead of streaming, laid
+    /// out beneath this line when the phase's tree is written. Always empty in
+    /// a sequential phase, where the output window already showed it live.
+    body: Vec<String>,
+}
+
+#[cfg(test)]
+impl ActionOutcome {
+    /// The outcome of an action that succeeded, for a test driving the display
+    /// path rather than an apply.
+    pub(super) fn for_test(subject: &str, duration: std::time::Duration) -> Self {
+        Self {
+            subject: subject.to_string(),
+            role: Role::Ok,
+            detail: None,
+            detail_muted: false,
+            duration: Some(duration),
+            notes: Vec::new(),
+            body: Vec::new(),
+        }
+    }
+}
+
+/// A planned action that is a no-op by construction. Its subject already states
+/// why nothing happened, so the tree renders it at the role that text implies
+/// and attaches no `unchanged` detail.
+///
+/// An unknown system key keeps `Role::Warn` — it is almost always a typo, and
+/// `format_plan_items` branches on the same flag, so the warning-versus-neutral
+/// distinction the deleted bespoke lines carried survives as the action's role.
+fn declared_noop_role(action: &Action) -> Option<Role> {
+    match action {
+        Action::System(SystemAction::Skip { unknown: true, .. }) => Some(Role::Warn),
+        Action::System(SystemAction::Skip { .. })
+        | Action::File(FileAction::Skip { .. })
+        | Action::Package(PackageAction::Skip { .. })
+        | Action::Secret(SecretAction::Skip { .. })
+        | Action::Module(ModuleAction {
+            kind: ModuleActionKind::Skip { .. },
+            ..
+        }) => Some(Role::Skipped),
+        _ => None,
+    }
+}
+
+/// `execute_script` emits a script action's one status line itself, so the tree
+/// must not add a second for the two action shapes that reach it.
+fn action_reports_its_own_status(action: &Action) -> bool {
+    matches!(action, Action::Script(_))
+        || matches!(
+            action,
+            Action::Module(ModuleAction {
+                kind: ModuleActionKind::RunScript { .. },
+                ..
+            })
+        )
+}
+
+/// Elapsed times below this read as noise on a line whose subject is the point.
+const MIN_REPORTED_DURATION: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The per-phase display inputs every settled action line is built from.
+struct PhaseLedger<'p> {
+    phase_name: PhaseName,
+    /// The subject every action renders under, in both trees: the same string
+    /// the preview bullet printed and `align_width` measured.
+    subjects: &'p std::collections::HashMap<usize, String>,
+}
+
+/// One finished action, as its collection point hands it over.
+struct SettleInput<'p, 'r> {
+    action: &'p Action,
+    journal_id: Option<i64>,
+    result: Result<(String, bool, Option<String>)>,
+    elapsed: std::time::Duration,
+    notes: Vec<ActionNote>,
+    body: Vec<String>,
+    finished: usize,
+    ledger: &'p PhaseLedger<'p>,
+    results: &'r mut Vec<ActionResult>,
+}
+
+/// What settling produced: the description the journal and the result row
+/// carry, whether the run must stop here, and the line the tree will render.
+struct Settled {
+    desc: String,
+    should_abort: bool,
+    /// `None` for the two script shapes, whose one line `execute_script`
+    /// already emitted; their notes are in `notes` instead.
+    outcome: Option<ActionOutcome>,
+    notes: Vec<ActionNote>,
+}
+
+/// The run's monotonic count of finishes, ticked wherever an action is
+/// collected — which is always the coordinator thread, sequential phase and
+/// concurrent one alike.
+///
+/// Separate from the plan-position counter because lanes make the two orders
+/// differ, and the wall clock cannot substitute: `utc_now_iso8601` truncates to
+/// whole seconds, so two lanes finishing inside one second are unordered by
+/// `completed_at`.
+#[derive(Default)]
+struct Completions(usize);
+
+impl Completions {
+    fn next(&mut self) -> usize {
+        let index = self.0;
+        self.0 += 1;
+        index
+    }
+}
+
+/// The notes a provider produced during one action, under the status that
+/// action just emitted — whoever emitted it. The ONE render path for a note,
+/// package-manager caveat and system-configurator narration alike.
+///
+/// Public so a per-configurator snapshot bridge renders its capture through the
+/// same call the reconciler makes: a golden assembled from a test's own
+/// `attached_status` loop would keep passing after this derivation moved, and
+/// would then be pinning a shape cfgd no longer emits.
+pub fn emit_action_notes(section: &SectionGuard<'_>, notes: &[ActionNote]) {
+    for note in notes {
+        section.attached_status(note.role, note.body());
+    }
+}
+
+pub(super) fn emit_action_line(
+    printer: &Printer,
+    section: &SectionGuard<'_>,
+    outcome: &ActionOutcome,
+) {
+    {
+        let mut builder = section.action_status(outcome.role, &outcome.subject);
+        if outcome.detail_muted {
+            builder = builder.detail_muted_opt(outcome.detail.as_deref());
+        } else {
+            builder = builder.detail_opt(outcome.detail.as_deref());
+        }
+        if let Some(d) = outcome.duration {
+            builder = builder.duration(d);
+        }
+        drop(builder);
+    }
+    emit_action_notes(section, &outcome.notes);
+    // Held back rather than streamed: two lanes streaming into one log
+    // interleave line by line, so a concurrent phase captures its children's
+    // output and lays each action's out under the line it belongs to. Empty
+    // whenever a live window already showed it, and under `Verbosity::Quiet`.
+    if !outcome.body.is_empty() {
+        crate::output::OutputWindow::dump_below(printer, section.depth, &outcome.body);
+    }
+}
+
+/// Write the outcomes a concurrent dispatch held back as the phase's tree: the
+/// same group / `live_column` / status walk a streaming phase runs live, with
+/// the groups in `Owner::sort_key` order and each group's actions in plan
+/// order. Every outcome it renders is taken out of `recorded`, so what remains
+/// is exactly what nothing rendered.
+///
+/// A group whose actions an abort reached before any of them were considered
+/// for dispatch produces nothing — the shortfall is the rollup's to name, not
+/// an empty heading's, and that holds for every action an abort stopped
+/// whether or not it was downstream of one that failed. An action left
+/// outstanding for a reason that is NOT an abort is different: `dispatch_lanes`
+/// hands every one of them to `collect` as a synthetic failure (stalled, or a
+/// lane that ended without reporting) before it returns, so they ARE in
+/// `recorded` and render here like any other failed action — never dispatching
+/// is itself the failure being reported, not a reason to say nothing.
+///
+/// `preopened` is the group whose label the caller already committed — the
+/// single-owner case, where the label belongs above the live region rather
+/// than above the tree written after it. Its outcomes render into that guard
+/// instead of opening a second one under the same name.
+fn emit_phase_tree(
+    printer: &Printer,
+    section: &SectionGuard<'_>,
+    phase: &super::types::Phase,
+    width: usize,
+    recorded: &mut std::collections::HashMap<usize, ActionOutcome>,
+    preopened: Option<(&Owner, &SectionGuard<'_>)>,
+) {
+    for group in phase.groups() {
+        let already_open =
+            preopened.and_then(|(owner, guard)| (owner == &group.owner).then_some(guard));
+        let mut group_section: Option<SectionGuard<'_>> = None;
+        for action in &group.actions {
+            let Some(outcome) = recorded.remove(&action_key(action)) else {
+                continue;
+            };
+            // Opened HERE, beneath the content it introduces, and that is the
+            // right place for it whenever the phase runs several groups at
+            // once: scrollback is append-only, so a label committed before the
+            // dispatch would be separated from its own tree by every other
+            // group's, and each live window is headed by its owner's name
+            // already — nothing paints unlabelled while the lanes run.
+            let target = match already_open {
+                Some(guard) => guard,
+                None => group_section.get_or_insert_with(|| {
+                    let opened = section.section_owner(&OwnerLabel::new(
+                        group.owner.kind.as_str(),
+                        group.owner.name.as_str(),
+                    ));
+                    opened.live_column(width);
+                    opened
+                }),
+            };
+            emit_action_line(printer, target, &outcome);
+        }
+    }
+}
+
+/// Identity of one planned action, for correlating the plan-order walk with the
+/// dispatch-order walk over the same `OwnerGroup::actions` storage.
+///
+/// Value equality is wrong here: two groups can plan byte-identical actions
+/// (the same package declared by two modules), and those are distinct rows in
+/// the journal.
+fn action_key(action: &Action) -> usize {
+    action as *const Action as usize
+}
+
+/// Whether an owner's actions in `phase` run through the concurrent dispatcher
+/// rather than sequentially.
+///
+/// The ONE partition, so the phase's two halves cannot both claim an action or
+/// both disown it: all of `Packages`, and only the `cfgd:managers` group of
+/// `Prerequisites` — its other two groups write the env file and refresh the
+/// live session, which are one file and one session and contend with each
+/// other rather than with a manager's binary.
+fn dispatched_in_lanes(phase: &PhaseName, owner: &Owner) -> bool {
+    match phase {
+        PhaseName::Packages => true,
+        PhaseName::Prerequisites => owner.is_managers(),
+        _ => false,
+    }
+}
 
 fn hash_sorted_parts(mut parts: Vec<String>) -> String {
     parts.sort();
     crate::sha256_hex(parts.join("|").as_bytes())
 }
 
-/// Whether `action` (residing in `phase_name`) should execute under `filter`.
+/// Whether `action` (owned by `owner`, residing in `phase_name`) should execute
+/// under `filter`.
+///
+/// `--phase modules` is an OWNER filter: module work applies in the phase whose
+/// kind it is, so every module-owned action matches it wherever it landed.
 ///
 /// `--phase post-scripts` / `--phase pre-scripts` are intentionally inclusive
-/// across plan phases: module-level lifecycle scripts are emitted into
-/// `PhaseName::Modules` as `Action::Module(RunScript { phase: PostApply | ... })`,
-/// not into `PhaseName::PostScripts`. A naive `phase.name == filter` test
-/// therefore drops every per-module post/pre script and makes
+/// across plan phases: a module lifecycle script is
+/// `Action::Module(RunScript { phase: PostApply | ... })`, which a naive
+/// `phase.name == filter` test would drop, making
 /// `cfgd apply --module nvim --phase post-scripts` a no-op even when failed
 /// module scripts need re-attempting. Other filters keep strict
 /// phase-equality semantics.
+///
+/// `PhaseFilter::Selector(name, selector)` (the `<phase>.<selector>` grammar,
+/// e.g. `prerequisites.managers`) is stricter still: it never inherits the
+/// post/pre-scripts cross-phase leak above, because a selector already names
+/// something narrower than a whole phase.
 pub fn action_matches_phase_filter(
     phase_name: &PhaseName,
+    owner: &Owner,
     action: &Action,
-    filter: &PhaseName,
+    filter: &PhaseFilter,
 ) -> bool {
-    if phase_name == filter {
+    let filter_phase = match filter {
+        PhaseFilter::ModuleOwners => return owner.kind == OwnerKind::Module,
+        PhaseFilter::Phase(name) => name,
+        PhaseFilter::Selector(name, selector) => {
+            return phase_name == name && selector_matches(owner, action, selector);
+        }
+    };
+    if phase_name == filter_phase {
         return true;
     }
-    match filter {
+    match filter_phase {
         PhaseName::PostScripts => is_post_apply_script(action),
         PhaseName::PreScripts => is_pre_apply_script(action),
         _ => false,
     }
+}
+
+/// The `<selector>` half of a dotted phase filter: either one of the closed
+/// cfgd owner-group names (`managers`/`env`/`session`) or a manager name.
+///
+/// A manager selector matches on [`ManagerAction::filter_subject`] directly
+/// rather than through `Owner`, because every [`ManagerAction`] shares the
+/// single `cfgd:managers` owner — the manager identity lives on the action,
+/// not the owner. Sub-managers are already collapsed onto their family at
+/// plan time (`managers.rs`), so `prerequisites.brew` matching `brew-cask`'s
+/// plan node costs nothing extra here. `filter_subject` (not
+/// [`ManagerAction::manager`]) keys a prerequisite node on its TOOL rather
+/// than its installer, so this matcher agrees with `cfgd`'s own
+/// `action_path`/`pattern_matches_action` on which node
+/// `prerequisites.curl` reaches.
+fn selector_matches(owner: &Owner, action: &Action, selector: &str) -> bool {
+    if super::types::CFGD_GROUP_ORDER.contains(&selector) {
+        return owner.kind == OwnerKind::Cfgd && owner.name == selector;
+    }
+    matches!(action, Action::Manager(node) if node.selector_names(selector))
 }
 
 /// Suffix `apply_env_action` appends to a description when the surface was
@@ -65,6 +356,25 @@ fn env_result_key(description: &str) -> &str {
     description
         .strip_suffix(ENV_SKIPPED_SUFFIX)
         .unwrap_or(description)
+}
+
+/// Whether the post-phase env regeneration must re-run over `path_dirs_now`,
+/// the recorded PATH directories as they stand once every phase has run.
+///
+/// Order-insensitive on purpose: `path_dirs_now` reads back
+/// `ORDER BY manager` (alphabetical, `state::bootstrapped_managers`) while
+/// `path_dirs_at_plan` appends a newly-provisioned manager's declared dirs in
+/// plan declaration order, so the same SET of directories can legally list in
+/// a different order on each side without either side being wrong — a run
+/// that provisions a manager alphabetically ahead of one already recorded
+/// must not be told PATH "changed" just because grouping by manager name
+/// reordered it.
+pub(super) fn path_dirs_changed(path_dirs_now: &[String], path_dirs_at_plan: &[String]) -> bool {
+    let mut now_sorted = path_dirs_now.to_vec();
+    now_sorted.sort();
+    let mut at_plan_sorted = path_dirs_at_plan.to_vec();
+    at_plan_sorted.sort();
+    now_sorted != at_plan_sorted
 }
 
 /// Fold a late env regeneration into the result the Env phase already recorded
@@ -94,7 +404,7 @@ fn merge_env_result(results: &mut Vec<ActionResult>, description: String, change
         // These are env actions no matter which late input triggered them, and a
         // caller filtering results by phase must find them where every other
         // `env:write:`/`env:inject:` result sits.
-        phase: PhaseName::Env.as_str().to_string(),
+        phase: PhaseName::Prerequisites.as_str().to_string(),
         description,
         success: true,
         error: None,
@@ -217,7 +527,7 @@ impl<'a> super::Reconciler<'a> {
         resolved: &ResolvedProfile,
         config_dir: &std::path::Path,
         printer: &Printer,
-        phase_filter: Option<&PhaseName>,
+        phase_filter: Option<&PhaseFilter>,
         module_actions: &[ResolvedModule],
         context: ReconcileContext,
         skip_scripts: bool,
@@ -244,229 +554,476 @@ impl<'a> super::Reconciler<'a> {
             .iter()
             .map(|phase| match phase_filter {
                 Some(filter) => phase
-                    .actions
-                    .iter()
-                    .filter(|a| action_matches_phase_filter(&phase.name, a, filter))
+                    .owned_actions()
+                    .filter(|(owner, a)| action_matches_phase_filter(&phase.name, owner, a, filter))
                     .count(),
-                None => phase.actions.len(),
+                None => phase.action_count(),
             })
             .sum();
 
         let mut results = Vec::new();
-        let mut action_index: usize = 0;
+        // Running base of the plan-position counter: `action_index` is dense
+        // from 0 across the whole run, over the actions that survive
+        // `phase_filter`.
+        let mut plan_index_base: usize = 0;
+        let mut completions = Completions::default();
         let mut secret_env_collector: Vec<(String, String)> = Vec::new();
         // The PATH directories the Env phase's planned content was built from.
-        // Compared against the post-run set below to detect a manager this run
-        // bootstrapped, whose directories could not have been known that early.
-        let path_dirs_at_plan =
-            super::env::recorded_manager_path_dirs(self.state, &resolved.merged, module_actions);
+        // `plan()` folds a to-be-provisioned manager's OWN declared dirs into
+        // the Env phase's write (`managers::fold_provision_path_dirs`), so
+        // this baseline must fold the SAME way against the SAME
+        // Prerequisites-phase Provision actions — otherwise it is a pre-run
+        // snapshot missing every manager this run is about to bootstrap, and
+        // the comparison below flags ordinary, successful provisioning as
+        // drift.
+        let path_dirs_at_plan = super::managers::fold_provision_path_dirs(
+            self.registry,
+            plan.phases
+                .iter()
+                .find(|phase| phase.name == PhaseName::Prerequisites)
+                .into_iter()
+                .flat_map(|phase| phase.actions()),
+            super::env::recorded_manager_path_dirs(self.state, &resolved.merged, module_actions),
+        );
         // Set when a signal requested cooperative cancellation. Stopping happens BEFORE
         // the next action — the previous one already completed atomically, so no
         // file is left torn.
         let mut aborted_code: Option<u8> = None;
+        // Post-install notes a manager produced during ONE action, drained
+        // after that action's status line so they render attached to it.
+        let notes = NoteSink::default();
+        // Library code reached from inside a phase or owner section renders at
+        // that section's depth for the whole run: package-manager output
+        // windows, script windows and every status they collapse into.
+        let _inherit = printer.depth_inheritance();
 
         'phases: for phase in &plan.phases {
-            // Pre-filter to the actions in this phase that survive `phase_filter`.
-            // Restricting the indexed loop below to the surviving subset keeps
-            // the `[i/total]` status headers honest about what actually runs.
-            let filtered: Vec<&Action> = if let Some(filter) = phase_filter {
-                phase
-                    .actions
-                    .iter()
-                    .filter(|a| action_matches_phase_filter(&phase.name, a, filter))
-                    .collect()
-            } else {
-                phase.actions.iter().collect()
-            };
+            // Plan positions of the actions in this phase that survive
+            // `phase_filter`, in `Phase::actions()` order. `action_index` is
+            // documented as "where this action sits in the plan", and Rule P
+            // dispatches `Packages` out of plan order, so the value is read from
+            // this map rather than counted at dispatch. Address identity is the
+            // key because both walks borrow the same `OwnerGroup::actions`
+            // storage, so a reference from either one names the same slot.
+            let mut plan_positions: std::collections::HashMap<usize, usize> =
+                std::collections::HashMap::new();
+            for (owner, action) in phase.owned_actions() {
+                if let Some(filter) = phase_filter
+                    && !action_matches_phase_filter(&phase.name, owner, action, filter)
+                {
+                    continue;
+                }
+                let next = plan_positions.len();
+                plan_positions.insert(action_key(action), next);
+            }
 
-            if filtered.is_empty() {
+            if plan_positions.is_empty() {
                 continue;
             }
 
-            let total = filtered.len();
-            for (action_idx, action) in filtered.iter().copied().enumerate() {
-                // Cooperative cancellation: a signal flips the abort flag, and
-                // the loop stops before beginning the next atomic action.
-                if let Some(code) = abort.aborted() {
-                    aborted_code = Some(code);
-                    break 'phases;
-                }
+            let total = plan_positions.len();
+            // Rule P's three-tier partition (`0 → B → 1`), which is plain plan
+            // order outside `Packages`. Membership in `plan_positions` is the
+            // `phase_filter` test: the map was built from the same predicate
+            // over the same actions, so an item missing from it is exactly one
+            // the filter excluded.
+            let dispatch: Vec<(&Owner, &Action, usize)> = phase
+                .dispatch_order()
+                .filter_map(|(owner, action)| {
+                    plan_positions
+                        .get(&action_key(action))
+                        .map(|pos| (owner, action, *pos))
+                })
+                .collect();
 
-                let desc_for_journal = format_action_description(action);
-                let (action_type, resource_id) = parse_resource_from_description(&desc_for_journal);
-
-                // Capture file state before overwrite (for backup). A target
-                // that does not yet exist (a CREATE) gets an absent marker so
-                // rollback removes it rather than restoring a later apply's
-                // post-apply snapshot.
-                if let Some(backup) = action_target_path(action) {
-                    let path = &backup.path;
-                    // Backup key, not display: every writer of
-                    // `file_backups.file_path` folds with `to_posix_fs_key` so a
-                    // rollback lookup finds the row a Windows apply wrote — and
-                    // so the row a rollback reopens still names the file that
-                    // was backed up.
-                    let path_str = crate::to_posix_fs_key(path);
-                    let captured = if backup.follow_symlink {
-                        crate::capture_file_resolved_state(path)
-                    } else {
-                        crate::capture_file_state(path)
-                    };
-                    match captured {
-                        Ok(Some(file_state)) => {
-                            if let Err(e) =
-                                self.state
-                                    .store_file_backup(apply_id, &path_str, &file_state)
-                            {
-                                tracing::warn!(
-                                    "failed to store file backup for {}: {}",
-                                    path.posix(),
-                                    e
-                                );
-                            }
-                        }
-                        Ok(None) => {
-                            if let Err(e) = self.state.store_absent_backup(apply_id, &path_str) {
-                                tracing::warn!(
-                                    "failed to store absent marker for {}: {}",
-                                    path.posix(),
-                                    e
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "failed to capture file state for backup of {}: {}",
-                                path.posix(),
-                                e
-                            );
-                        }
-                    }
-                }
-
-                // Journal: record action start
-                let journal_id = self
-                    .state
-                    .journal_begin(
-                        apply_id,
-                        action_index,
-                        phase.name.as_str(),
-                        &action_type,
-                        &resource_id,
-                        None,
+            // The subject every action renders under, in both trees: the same
+            // string the preview bullet printed and `align_width` measured.
+            let subjects: std::collections::HashMap<usize, String> = phase
+                .groups()
+                .iter()
+                .flat_map(|group| group.actions.iter())
+                .map(|action| {
+                    (
+                        action_key(action),
+                        action_display_subject(action).to_string(),
                     )
-                    .ok();
+                })
+                .collect();
+            let width = align_width(phase);
+            let ledger = PhaseLedger {
+                phase_name: phase.name.clone(),
+                subjects: &subjects,
+            };
+            // The concurrent actions of this phase — all of `Packages`, and the
+            // `cfgd:managers` group of `Prerequisites`, whose nodes are a DAG
+            // over the same family lanes. The rest of the phase runs
+            // sequentially AFTER them: `cfgd:env` publishes where the binaries
+            // the managers group just created live, so producer precedes
+            // consumer inside the phase as well as across it.
+            let (lane_dispatch, serial_dispatch): (Vec<_>, Vec<_>) = dispatch
+                .into_iter()
+                .partition(|(owner, _, _)| dispatched_in_lanes(&phase.name, owner));
+            // The lane half's tree is written the moment the lanes drain, and
+            // the serial half streams after it, so the phase reads in
+            // `Owner::sort_key` order only while every lane group sorts above
+            // every serial one. `Packages` hands everything to a lane and
+            // `Prerequisites` leads with `cfgd:managers`; a third partition
+            // that did not would print its groups out of order.
+            debug_assert!(
+                lane_dispatch.iter().all(|(lane_owner, _, _)| {
+                    serial_dispatch
+                        .iter()
+                        .all(|(serial_owner, _, _)| lane_owner.renders_above(serial_owner))
+                }),
+                "a serially dispatched group sorts above a lane group in {}",
+                phase.name.as_str()
+            );
 
-                let result = self.apply_action(
-                    action,
-                    resolved,
-                    config_dir,
+            // The lane half's dispatch order is not its reading order — Rule P
+            // dispatches `Packages` `0 -> B -> 1` while its groups read in
+            // `Owner::sort_key` order, and the `cfgd:managers` nodes finish in
+            // whatever order their lanes do — so it holds its outcomes and
+            // writes them as a tree the moment the lanes drain. The serial
+            // half streams, because there the two walks are the same one.
+            let mut recorded: std::collections::HashMap<usize, ActionOutcome> =
+                std::collections::HashMap::new();
+            // Platform-gated skips are the header's `Modules`-row annotation,
+            // so the phase holding them opens no block at all.
+            let phase_section = (phase.name != PhaseName::Modules)
+                .then(|| printer.section_phase(&phase.name.section_label()));
+            // The flat dispatch stream converted back to the nested render
+            // shape: a new group guard opens whenever the owner changes, and
+            // the previous one closes first. Outside `Packages` an owner's
+            // actions are contiguous in the stream by construction, so this is
+            // one guard per group, in group order.
+            let mut owner_section: Option<SectionGuard<'_>> = None;
+            let mut owner_open: Option<&Owner> = None;
+            // Why the action loop stopped, resolved after the phase's tree is
+            // written — a deferred phase must still render what it completed.
+            let mut abort_stop: Option<u8> = None;
+            let mut pre_script_stop: Option<String> = None;
+
+            // The one owner every lane action of this phase belongs to, when
+            // there is one. `Prerequisites` always has one (`cfgd:managers`);
+            // `Packages` has one per module plus the profile's.
+            let mut lane_owners = lane_dispatch.iter().map(|(owner, _, _)| *owner);
+            let sole_lane_owner = lane_owners
+                .next()
+                .filter(|first| lane_owners.all(|owner| owner == *first));
+            // A single-owner lane phase commits that label BEFORE its lanes
+            // paint anything. The live region draws below the last committed
+            // line, so a label held back until the tree is written lands under
+            // the very windows and wait bars it introduces.
+            let lane_group = phase_section
+                .as_ref()
+                .zip(sole_lane_owner)
+                .map(|(section, owner)| {
+                    let group = section
+                        .section_owner(&OwnerLabel::new(owner.kind.as_str(), owner.name.as_str()));
+                    group.live_column(width);
+                    group.commit_header();
+                    group
+                });
+
+            if !lane_dispatch.is_empty() {
+                // The concurrent dispatcher owns these actions: it opens each
+                // action's journal row at its dispatch point, runs the work in
+                // a per-manager lane, and hands every finish back HERE, on this
+                // thread, in completion order. Where each finish LANDS is the
+                // tree's: on a terminal every action has a row from the moment
+                // the dispatcher first has something to say about it, and the
+                // finish settles that row in place. Off one there are no rows,
+                // and the outcomes are held for `emit_phase_tree` below.
+                let run = super::lanes::LaneRun {
                     printer,
                     apply_id,
-                    context,
+                    phase: &phase.name,
+                    config_dir,
+                    resolved,
                     module_actions,
-                    &mut secret_env_collector,
+                    context,
                     shell_override,
                     abort,
+                    plan_index_base,
+                    action_depth: phase_section.as_ref().map_or(0, |s| s.depth + 1),
+                };
+                let mut tree = super::live_tree::PhaseTree::new(
+                    printer,
+                    phase_section.as_ref(),
+                    sole_lane_owner.zip(lane_group.as_ref()),
+                    run.action_depth,
+                    width,
                 );
-
-                let (desc, success, action_changed, error, should_abort) = match result {
-                    Ok((desc, action_changed, script_output)) => {
-                        if let Some(jid) = journal_id
-                            && let Err(e) =
-                                self.state
-                                    .journal_complete(jid, None, script_output.as_deref())
-                        {
-                            tracing::warn!("failed to record journal completion: {e}");
+                // Asked once, of the tree that will answer for it: the two
+                // halves of this decision must never disagree, or an outcome
+                // is rendered twice or not at all.
+                let settles_in_place = tree.is_live();
+                let mut settle = |action: &Action, collected: super::lanes::LaneCollected| {
+                    let finished = completions.next();
+                    let settled = self.settle_action(SettleInput {
+                        action,
+                        journal_id: collected.journal_id,
+                        result: collected
+                            .result
+                            .map(|(desc, changed)| (desc, changed, None)),
+                        elapsed: collected.elapsed,
+                        notes: collected.notes,
+                        body: collected.body,
+                        finished,
+                        ledger: &ledger,
+                        results: &mut results,
+                    });
+                    match settled.outcome {
+                        Some(outcome) if settles_in_place => Some(outcome),
+                        Some(outcome) => {
+                            recorded.insert(action_key(action), outcome);
+                            None
                         }
-                        (desc, true, action_changed, None, false)
-                    }
-                    Err(e) => {
-                        let desc = format_action_description(action);
-
-                        // Check if this is a script action with continueOnError
-                        let continue_on_err = if let Action::Script(ScriptAction::Run {
-                            entry,
-                            phase: script_phase,
-                            ..
-                        }) = action
-                        {
-                            effective_continue_on_error(entry, script_phase)
-                        } else {
-                            false
-                        };
-
-                        let display_desc = condense_action_desc_for_display(action, &desc);
-                        let display_err = collapse_to_subject_line(&e);
-                        if continue_on_err {
-                            printer.status_simple(
-                                Role::Warn,
-                                format!(
-                                    "[{}/{}] Script failed (continueOnError): {} — {}",
-                                    action_idx + 1,
-                                    total,
-                                    display_desc,
-                                    display_err
-                                ),
+                        // An action that reported its own status carries its
+                        // notes beside the outcome rather than inside it, and a
+                        // held-back tree has no line open to attach them under.
+                        // Unreachable: only the two script shapes self-report,
+                        // and neither is ever dispatched into a lane.
+                        None => {
+                            debug_assert!(
+                                settled.notes.is_empty(),
+                                "a self-reporting action reached a lane carrying notes"
                             );
-                        } else {
-                            printer.status_simple(
-                                Role::Fail,
-                                format!(
-                                    "[{}/{}] Failed: {} — {}",
-                                    action_idx + 1,
-                                    total,
-                                    display_desc,
-                                    display_err
-                                ),
-                            );
+                            None
                         }
-                        if let Some(jid) = journal_id
-                            && let Err(je) = self.state.journal_fail(jid, &e.to_string())
-                        {
-                            tracing::warn!("failed to record journal failure: {je}");
-                        }
-                        (desc, false, false, Some(e.to_string()), !continue_on_err)
                     }
                 };
-
-                let changed = success && action_changed;
-                results.push(ActionResult {
-                    phase: phase.name.as_str().to_string(),
-                    description: desc.clone(),
-                    success,
-                    error: error.clone(),
-                    changed,
-                });
-                action_index += 1;
-
-                // If a signal arrived while the action was running, the execute_script
-                // poll loop already killed the child and returned an error. Treat this
-                // as a cooperative abort (not a script failure) so the correct exit
-                // code (130 for SIGINT) and "aborted" DB row are recorded.
-                if let Some(code) = abort.aborted() {
-                    aborted_code = Some(code);
-                    break 'phases;
-                }
-
-                // If a pre-script failed without continueOnError, abort
-                let is_pre_script = matches!(
-                    action,
-                    Action::Script(ScriptAction::Run { phase: sp, .. })
-                        if matches!(sp, ScriptPhase::PreApply | ScriptPhase::PreReconcile)
-                ) || matches!(
-                    action,
-                    Action::Module(ModuleAction {
-                        kind: ModuleActionKind::RunScript { phase: sp, .. },
-                        ..
-                    }) if matches!(sp, ScriptPhase::PreApply | ScriptPhase::PreReconcile)
+                abort_stop = self.dispatch_lanes(
+                    &lane_dispatch,
+                    &run,
+                    &mut super::lanes::LaneCollector::new(&mut settle, &mut tree),
                 );
-                if should_abort && is_pre_script {
-                    let display_desc = condense_action_desc_for_display(action, &desc);
-                    return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
-                        message: format!("pre-script failed, aborting apply: {}", display_desc),
-                    }));
+                // Committed HERE, not at phase close: whatever the phase does
+                // next renders below the live region, so the region has to be
+                // down first. `Prerequisites` is the phase that needs it — its
+                // `cfgd:env` and `cfgd:session` groups run in the serial half
+                // below and stream their own lines, which would land ABOVE the
+                // managers group they follow if this waited.
+                tree.finish();
+                // Empty on a terminal — the tree settled every line as it
+                // happened — and the whole phase off one.
+                if let Some(section) = phase_section.as_ref() {
+                    emit_phase_tree(
+                        printer,
+                        section,
+                        phase,
+                        width,
+                        &mut recorded,
+                        sole_lane_owner.zip(lane_group.as_ref()),
+                    );
                 }
+            }
+            // Closed before the serial half opens a group of its own: the
+            // renderer's section stack unwinds in order, and a lane group left
+            // open would nest the phase's remaining groups inside it.
+            drop(lane_group);
+
+            // Whatever the phase did not hand to a lane, in plan order. An
+            // abort during the lane half stops here: the phase's remaining work
+            // is exactly the work a cancelled run must not begin.
+            if abort_stop.is_none() {
+                for (owner, action, plan_index) in serial_dispatch.into_iter() {
+                    let action_index = plan_index_base + plan_index;
+                    // Cooperative cancellation: a signal flips the abort flag, and
+                    // the loop stops before beginning the next atomic action.
+                    if let Some(code) = abort.aborted() {
+                        abort_stop = Some(code);
+                        break;
+                    }
+                    if let Some(section) = phase_section.as_ref()
+                        && owner_open != Some(owner)
+                    {
+                        // Explicit close before the next open: assigning over the
+                        // binding would build the new guard first and unwind the
+                        // renderer's section stack out of order.
+                        drop(owner_section.take());
+                        let group = section.section_owner(&OwnerLabel::new(
+                            owner.kind.as_str(),
+                            owner.name.as_str(),
+                        ));
+                        group.live_column(width);
+                        // The label lands before the action does: an action
+                        // that opens an output window or a spinner paints it
+                        // into the live region, which draws below whatever has
+                        // been committed — so a label still deferred to this
+                        // action's status line would be written after the
+                        // output of the action it introduces.
+                        group.commit_header();
+                        owner_section = Some(group);
+                        owner_open = Some(owner);
+                    }
+
+                    let desc_for_journal = format_action_description(action);
+                    let (action_type, resource_id) =
+                        parse_resource_from_description(&desc_for_journal);
+
+                    // Capture file state before overwrite (for backup). A target
+                    // that does not yet exist (a CREATE) gets an absent marker so
+                    // rollback removes it rather than restoring a later apply's
+                    // post-apply snapshot.
+                    if let Some(backup) = action_target_path(action) {
+                        let path = &backup.path;
+                        // Backup key, not display: every writer of
+                        // `file_backups.file_path` folds with `to_posix_fs_key` so a
+                        // rollback lookup finds the row a Windows apply wrote — and
+                        // so the row a rollback reopens still names the file that
+                        // was backed up.
+                        let path_str = crate::to_posix_fs_key(path);
+                        let captured = if backup.follow_symlink {
+                            crate::capture_file_resolved_state(path)
+                        } else {
+                            crate::capture_file_state(path)
+                        };
+                        match captured {
+                            Ok(Some(file_state)) => {
+                                if let Err(e) =
+                                    self.state
+                                        .store_file_backup(apply_id, &path_str, &file_state)
+                                {
+                                    tracing::warn!(
+                                        "failed to store file backup for {}: {}",
+                                        path.posix(),
+                                        e
+                                    );
+                                }
+                            }
+                            Ok(None) => {
+                                if let Err(e) = self.state.store_absent_backup(apply_id, &path_str)
+                                {
+                                    tracing::warn!(
+                                        "failed to store absent marker for {}: {}",
+                                        path.posix(),
+                                        e
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "failed to capture file state for backup of {}: {}",
+                                    path.posix(),
+                                    e
+                                );
+                            }
+                        }
+                    }
+
+                    // Journal: record action start
+                    let journal_id = self
+                        .state
+                        .journal_begin(
+                            apply_id,
+                            action_index,
+                            phase.name.as_str(),
+                            &action_type,
+                            &resource_id,
+                            None,
+                        )
+                        .ok();
+
+                    let started = std::time::Instant::now();
+                    let result = self.apply_action(
+                        action,
+                        resolved,
+                        config_dir,
+                        printer,
+                        apply_id,
+                        context,
+                        module_actions,
+                        &mut secret_env_collector,
+                        shell_override,
+                        abort,
+                        &notes,
+                    );
+                    let elapsed = started.elapsed();
+                    let finished = completions.next();
+                    // Drained unconditionally: a note left in the sink would
+                    // attach to whichever action drains next, which is not the one
+                    // that produced it.
+                    let drained = notes.take();
+                    let settled = self.settle_action(SettleInput {
+                        action,
+                        journal_id,
+                        result,
+                        elapsed,
+                        notes: drained,
+                        body: Vec::new(),
+                        finished,
+                        ledger: &ledger,
+                        results: &mut results,
+                    });
+                    let should_abort = settled.should_abort;
+                    let desc = settled.desc;
+                    match settled.outcome {
+                        // One status line per plan action, always — except the two
+                        // script shapes, whose line `execute_script` already
+                        // emitted. Their notes still belong under it.
+                        None => {
+                            if let Some(section) = owner_section.as_ref() {
+                                emit_action_notes(section, &settled.notes);
+                            }
+                        }
+                        // `PhaseName::Modules` opens no block: its only actions
+                        // are platform-gated skips, which the header's
+                        // `Modules` row already annotates.
+                        Some(outcome) => {
+                            if let Some(section) = owner_section.as_ref() {
+                                emit_action_line(printer, section, &outcome);
+                            }
+                        }
+                    }
+
+                    // If a signal arrived while the action was running, the execute_script
+                    // poll loop already killed the child and returned an error. Treat this
+                    // as a cooperative abort (not a script failure) so the correct exit
+                    // code (130 for SIGINT) and "aborted" DB row are recorded.
+                    if let Some(code) = abort.aborted() {
+                        abort_stop = Some(code);
+                        break;
+                    }
+
+                    // If a pre-script failed without continueOnError, abort
+                    let is_pre_script = matches!(
+                        action,
+                        Action::Script(ScriptAction::Run { phase: sp, .. })
+                            if matches!(sp, ScriptPhase::PreApply | ScriptPhase::PreReconcile)
+                    ) || matches!(
+                        action,
+                        Action::Module(ModuleAction {
+                            kind: ModuleActionKind::RunScript { phase: sp, .. },
+                            ..
+                        }) if matches!(sp, ScriptPhase::PreApply | ScriptPhase::PreReconcile)
+                    );
+                    if should_abort && is_pre_script {
+                        pre_script_stop = Some(condense_action_desc_for_display(action, &desc));
+                        break;
+                    }
+                }
+            }
+
+            debug_assert!(
+                recorded.is_empty(),
+                "a lane outcome outlived the tree that was to render it"
+            );
+
+            // Guards close in declaration order's reverse, so the phase's tree
+            // is complete before the run unwinds past it.
+            drop(owner_section);
+            drop(phase_section);
+
+            plan_index_base += total;
+            if let Some(display_desc) = pre_script_stop {
+                return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
+                    message: format!("pre-script failed, aborting apply: {}", display_desc),
+                }));
+            }
+            if let Some(code) = abort_stop {
+                aborted_code = Some(code);
+                break 'phases;
             }
         }
 
@@ -479,10 +1036,19 @@ impl<'a> super::Reconciler<'a> {
             self.record_managed_resources(apply_id, &results)?;
             self.update_module_state(module_actions, apply_id, &results)?;
             let succeeded = results.iter().filter(|r| r.success).count();
+            // `total` is what the run PLANNED, not what it reached: an aborted
+            // run's whole point is that those two numbers differ, and a stored
+            // record whose total is the reached count reads as a clean sweep
+            // of a smaller plan. `notRun` is the difference stated outright,
+            // and it is the only place the actions the abort stopped are
+            // accounted for — the dispatcher deliberately reports none of them
+            // action by action.
+            let not_run = planned_total.saturating_sub(results.len());
             let summary = serde_json::json!({
-                "total": results.len(),
+                "total": planned_total,
                 "succeeded": succeeded,
                 "failed": results.len() - succeeded,
+                "notRun": not_run,
                 "aborted": true,
             })
             .to_string();
@@ -498,11 +1064,21 @@ impl<'a> super::Reconciler<'a> {
         }
 
         // --- Env regeneration: fold in inputs that only exist once the phases ran ---
-        // Two inputs land too late for the Env phase, which by `PhaseName` order
-        // runs before both Modules and Packages: a secret's resolved value, and
-        // the PATH directories of a manager bootstrapped during this very run.
-        // Regenerating once here, with both present, converges the file inside
-        // the same apply instead of leaving it right only from the next one on.
+        // One input lands too late for the Env phase, which by `PhaseName` order
+        // runs before both Modules and Packages: a secret's resolved value.
+        // Regenerating here converges the file inside the same apply instead of
+        // leaving it right only from the next one on.
+        //
+        // A manager's PATH directories are not a late-arriving input anymore —
+        // `plan()` already folds a Provision node's declared `creates_path_dirs`
+        // into the planned content, so the Env phase's own write already
+        // carries them for every manager whose `path_dirs()` mirrors its
+        // `bootstrap_plan()` declaration, and `path_dirs_at_plan` above folds
+        // the identical set. Comparing `path_dirs_now` against
+        // `path_dirs_at_plan` stays as the convergence net for the one case
+        // the planner cannot declare up front — npm, whose resolved global
+        // prefix is only knowable once its install finishes — and for any run
+        // where what actually got recorded diverges from what was declared.
         let path_dirs_now =
             super::env::recorded_manager_path_dirs(self.state, &resolved.merged, module_actions);
         // A phase-scoped run must stay inside the phase the caller asked for.
@@ -510,8 +1086,17 @@ impl<'a> super::Reconciler<'a> {
         // and rewrite `~/.cfgd.env` plus the source lines in `~/.bashrc` —
         // surfaces the Env phase owns. The bootstrap record is durable either
         // way, so the next unfiltered apply still converges the file.
-        let path_dirs_changed = phase_filter.is_none() && path_dirs_now != path_dirs_at_plan;
-        if !secret_env_collector.is_empty() || path_dirs_changed {
+        let path_dirs_changed =
+            phase_filter.is_none() && path_dirs_changed(&path_dirs_now, &path_dirs_at_plan);
+        // The regeneration reads the DECLARED env, not the plan, so a caller
+        // that pruned the env actions out of its plan would still see the
+        // surface written here. `withhold_env_surface` is that caller saying
+        // the surface is not this run's to touch; the inputs that would have
+        // triggered the regeneration are durable, so the run that stops
+        // withholding still converges it.
+        if self.withhold_env_surface {
+            tracing::info!("env surface withheld: skipping post-phase regeneration");
+        } else if !secret_env_collector.is_empty() || path_dirs_changed {
             let (env_actions, _) = self.plan_env(
                 &resolved.merged.env,
                 &resolved.merged.aliases,
@@ -523,7 +1108,10 @@ impl<'a> super::Reconciler<'a> {
             );
             for env_action in &env_actions {
                 if let Action::Env(ea) = env_action {
-                    match Self::apply_env_action(ea, printer) {
+                    // No phase section is open here and nothing will drain a
+                    // sink, so a session-refresh warning settles on its own line
+                    // — beside the failure line below it, which does the same.
+                    match Self::apply_env_action(ea, printer, NoteSink::discarded()) {
                         Ok(desc) => {
                             let changed = !desc.contains(ENV_SKIPPED_SUFFIX);
                             merge_env_result(&mut results, desc, changed);
@@ -534,7 +1122,7 @@ impl<'a> super::Reconciler<'a> {
                                 format!("Failed to regenerate shell env files: {}", e),
                             );
                             results.push(ActionResult {
-                                phase: PhaseName::Env.as_str().to_string(),
+                                phase: PhaseName::Prerequisites.as_str().to_string(),
                                 description: "env:write:regenerate".to_string(),
                                 success: false,
                                 error: Some(e.to_string()),
@@ -574,6 +1162,11 @@ impl<'a> super::Reconciler<'a> {
                     printer,
                     shell_override,
                     Some(abort),
+                    ScriptReport {
+                        subject: ScriptSubject::Hook(ScriptPhase::OnChange.display_name()),
+                        non_fatal: effective_continue_on_error(entry, &ScriptPhase::OnChange),
+                        ..ScriptReport::default()
+                    },
                 ) {
                     Ok((desc, changed, _)) => {
                         results.push(ActionResult {
@@ -644,6 +1237,11 @@ impl<'a> super::Reconciler<'a> {
                         printer,
                         shell_override,
                         Some(abort),
+                        ScriptReport {
+                            subject: ScriptSubject::Hook(ScriptPhase::OnChange.display_name()),
+                            non_fatal: effective_continue_on_error(entry, &ScriptPhase::OnChange),
+                            ..ScriptReport::default()
+                        },
                     ) {
                         Ok((desc, changed, _)) => {
                             results.push(ActionResult {
@@ -776,7 +1374,7 @@ impl<'a> super::Reconciler<'a> {
                                 .and_then(|m| m.persisted_uninstall());
                             self.state.upsert_package_resource(
                                 &rid,
-                                "local",
+                                LOCAL_LAYER,
                                 Some(apply_id),
                                 uninstall_cmd.as_deref(),
                             )?;
@@ -797,11 +1395,148 @@ impl<'a> super::Reconciler<'a> {
                 .strip_suffix(ENV_SKIPPED_SUFFIX)
                 .unwrap_or(&result.description);
             let (rtype, rid) = parse_resource_from_description(description);
+            // A manager node is cfgd's own scaffolding, never a resource the
+            // user declared: a refreshed index, a provisioned manager and a
+            // tool a cascade shelled out to are none of them things cfgd
+            // prunes, restores or reports under `cfgd status`. The journal
+            // still records the work; `managed_resources` does not.
+            if rtype == MANAGER_RESOURCE_TYPE {
+                continue;
+            }
             self.state
-                .upsert_managed_resource(&rtype, &rid, "local", None, Some(apply_id))?;
+                .upsert_managed_resource(&rtype, &rid, LOCAL_LAYER, None, Some(apply_id))?;
             self.state.resolve_drift(apply_id, &rtype, &rid)?;
         }
         Ok(())
+    }
+
+    /// Turn one finished action into its journal completion, its result row and
+    /// the line the phase's tree will render.
+    ///
+    /// The ONE settle, shared by the sequential walk and the concurrent
+    /// dispatcher, because the two orders differ and the LINE must not: a
+    /// deferred tree written from a second derivation would disagree with a
+    /// streaming one about role, detail or duration on the same action.
+    fn settle_action(&self, input: SettleInput<'_, '_>) -> Settled {
+        let SettleInput {
+            action,
+            journal_id,
+            result,
+            elapsed,
+            notes,
+            body,
+            finished,
+            ledger,
+            results,
+        } = input;
+        // Set by the `Err` arm below so the tree renders the failure on
+        // the action's own line instead of a bespoke one above it.
+        let mut failure_detail: Option<(String, bool)> = None;
+
+        let (desc, success, action_changed, error, should_abort) = match result {
+            Ok((desc, action_changed, script_output)) => {
+                if let Some(jid) = journal_id
+                    && let Err(e) =
+                        self.state
+                            .journal_complete(jid, finished, None, script_output.as_deref())
+                {
+                    tracing::warn!("failed to record journal completion: {e}");
+                }
+                (desc, true, action_changed, None, false)
+            }
+            Err(e) => {
+                let desc = format_action_description(action);
+
+                // Check if this is a script action with continueOnError
+                let continue_on_err = if let Action::Script(ScriptAction::Run {
+                    entry,
+                    phase: script_phase,
+                    ..
+                }) = action
+                {
+                    effective_continue_on_error(entry, script_phase)
+                } else {
+                    false
+                };
+
+                failure_detail = Some((collapse_to_subject_line(&e), continue_on_err));
+                if let Some(jid) = journal_id
+                    && let Err(je) = self.state.journal_fail(jid, finished, &e.to_string())
+                {
+                    tracing::warn!("failed to record journal failure: {je}");
+                }
+                (desc, false, false, Some(e.to_string()), !continue_on_err)
+            }
+        };
+
+        let changed = success && action_changed;
+        results.push(ActionResult {
+            phase: ledger.phase_name.as_str().to_string(),
+            description: desc.clone(),
+            success,
+            error,
+            changed,
+        });
+
+        if action_reports_its_own_status(action) {
+            return Settled {
+                desc,
+                should_abort,
+                outcome: None,
+                notes,
+            };
+        }
+
+        let subject = ledger
+            .subjects
+            .get(&action_key(action))
+            .cloned()
+            .unwrap_or_else(|| condense_action_desc_for_display(action, &desc));
+        let outcome = match &failure_detail {
+            Some((message, continue_on_err)) => ActionOutcome {
+                subject,
+                role: if *continue_on_err {
+                    Role::Warn
+                } else {
+                    Role::Fail
+                },
+                // A refusal's subject IS its reason by construction
+                // (`cannot provision <m> — <reason>`), and the error it
+                // settles through restates that reason for the journal. On
+                // the line the two are one sentence printed twice.
+                detail: (!matches!(action, Action::Manager(ManagerAction::Refuse { .. })))
+                    .then(|| message.clone()),
+                detail_muted: false,
+                duration: None,
+                notes,
+                body,
+            },
+            None => {
+                let noop = declared_noop_role(action);
+                let role = match (noop, action_changed) {
+                    (Some(role), _) => role,
+                    (None, true) => Role::Ok,
+                    (None, false) => Role::Skipped,
+                };
+                let detail = (noop.is_none() && !action_changed).then(|| "unchanged".to_string());
+                let duration = (elapsed >= MIN_REPORTED_DURATION).then_some(elapsed);
+                ActionOutcome {
+                    subject,
+                    role,
+                    detail,
+                    detail_muted: true,
+                    duration,
+                    notes,
+                    body,
+                }
+            }
+        };
+        Settled {
+            desc,
+            should_abort,
+            outcome: Some(outcome),
+            notes: Vec::new(),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -817,19 +1552,20 @@ impl<'a> super::Reconciler<'a> {
         secret_env_collector: &mut Vec<(String, String)>,
         shell_override: Option<ScriptShell>,
         abort: &AbortFlag,
+        notes: &NoteSink,
     ) -> Result<(String, bool, Option<String>)> {
         match action {
             Action::System(sys) => self
-                .apply_system_action(sys, &resolved.merged, module_actions, printer)
+                .apply_system_action(sys, &resolved.merged, module_actions, printer, notes)
                 .map(|d| (d, true, None)),
             Action::Package(pkg) => self
-                .apply_package_action(pkg, printer)
+                .apply_package_action(pkg, printer, notes)
                 .map(|d| (d, true, None)),
             Action::File(file) => self
                 .apply_file_action(file, resolved.profile_name(), config_dir, printer)
                 .map(|d| (d, true, None)),
             Action::Secret(secret) => self
-                .apply_secret_action(secret, config_dir, printer, secret_env_collector)
+                .apply_secret_action(secret, config_dir, secret_env_collector)
                 .map(|d| (d, true, None)),
             Action::Script(script) => self.apply_script_action(
                 script,
@@ -851,9 +1587,13 @@ impl<'a> super::Reconciler<'a> {
                     module_actions,
                     shell_override,
                     abort,
+                    notes,
                 )
                 .map(|(d, c)| (d, c, None)),
-            Action::Env(env) => Self::apply_env_action(env, printer).map(|d| {
+            Action::Manager(manager) => self
+                .apply_manager_action(manager, printer, notes)
+                .map(|(desc, changed)| (desc, changed, None)),
+            Action::Env(env) => Self::apply_env_action(env, printer, notes).map(|d| {
                 let changed = !d.contains(ENV_SKIPPED_SUFFIX);
                 (d, changed, None)
             }),

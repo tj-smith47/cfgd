@@ -42,6 +42,7 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::R
     // Read current config, update profile field, write back
     let contents = std::fs::read_to_string(&config_path)?;
     let mut cfg: config::CfgdConfig = config::parse_config(&contents, &config_path)?;
+    drain_config_deprecations(printer, &mut cfg);
     let old_profile = cfg.spec.profile.clone().unwrap_or_default();
     cfg.spec.profile = Some(name.to_string());
 

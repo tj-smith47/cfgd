@@ -16,7 +16,7 @@ fn scripted_manager_from_spec() {
     };
     let mgr = ScriptedManager::from_spec(&spec);
     assert_eq!(mgr.name(), "mypm");
-    assert!(!mgr.can_bootstrap());
+    assert!(mgr.bootstrap_plan().is_none());
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn scripted_manager_update_noop_when_no_cmd() {
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    mgr.update(&cx).unwrap();
+    mgr.refresh_index(&cx).unwrap();
 }
 
 #[test]
@@ -286,7 +286,7 @@ fn scripted_manager_update_runs_command() {
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    mgr.update(&cx).unwrap();
+    mgr.refresh_index(&cx).unwrap();
 }
 
 #[test]
@@ -304,7 +304,7 @@ fn scripted_manager_update_failure() {
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    let result = mgr.update(&cx);
+    let result = mgr.refresh_index(&cx);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -357,7 +357,7 @@ fn custom_managers_preserves_names() {
     assert_eq!(managers[2].name(), "gamma");
     // All should not be bootstrappable
     for m in &managers {
-        assert!(!m.can_bootstrap());
+        assert!(m.bootstrap_plan().is_none());
     }
 }
 
@@ -590,7 +590,7 @@ fn scripted_manager_update_failure_includes_stderr() {
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    let result = mgr.update(&cx);
+    let result = mgr.refresh_index(&cx);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -725,7 +725,7 @@ fn custom_managers_all_return_none_for_version() {
     let managers = custom_managers(&specs);
     for m in &managers {
         assert!(m.available_version("any").unwrap().is_none());
-        assert!(!m.can_bootstrap());
+        assert!(m.bootstrap_plan().is_none());
     }
 }
 
@@ -743,7 +743,7 @@ fn scripted_manager_is_available_through_trait() {
     let mgr: Box<dyn PackageManager> = Box::new(ScriptedManager::from_spec(&spec));
     // Exercise is_available through the trait object
     assert!(mgr.is_available());
-    assert!(!mgr.can_bootstrap());
+    assert!(mgr.bootstrap_plan().is_none());
     assert!(mgr.available_version("anything").unwrap().is_none());
 }
 
@@ -765,7 +765,8 @@ fn scripted_manager_bootstrap_through_trait() {
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    mgr.bootstrap(&printer).unwrap();
+    mgr.bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&printer))
+        .unwrap();
     // Exercise installed_packages through the same trait object post-bootstrap.
     assert!(mgr.installed_packages(&cx).unwrap().is_empty());
 }

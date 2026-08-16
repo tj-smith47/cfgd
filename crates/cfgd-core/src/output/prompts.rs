@@ -32,7 +32,12 @@ fn non_interactive_err(structured: bool, prompt: &str) -> inquire::InquireError 
 /// True when the current process can interact with a human — stdin is a TTY.
 /// Windows' `inquire` doesn't self-reject the non-TTY case, so the explicit
 /// gate goes here.
-fn stdin_is_tty() -> bool {
+///
+/// Read exactly once per `Printer`, at construction, and stored as
+/// `interactive_stdin`; every prompt below asks the printer rather than the
+/// process, so a capture printer answers "no human" whatever terminal the
+/// suite was invoked from.
+pub(super) fn stdin_is_terminal() -> bool {
     std::io::stdin().is_terminal()
 }
 
@@ -44,7 +49,7 @@ impl Printer {
     /// from a prompt that was reached and then failed — and word the two
     /// differently instead of quoting the prompt's message back inside its own.
     pub fn can_prompt(&self) -> bool {
-        !self.is_structured() && stdin_is_tty()
+        !self.is_structured() && self.interactive_stdin
     }
 
     pub fn prompt_confirm(&self, message: &str) -> Result<bool, inquire::InquireError> {
@@ -53,7 +58,7 @@ impl Printer {
         {
             return Ok(b);
         }
-        if self.is_structured() || !stdin_is_tty() {
+        if !self.can_prompt() {
             return Err(non_interactive_err(self.is_structured(), message));
         }
         inquire::Confirm::new(message).with_default(false).prompt()
@@ -73,7 +78,7 @@ impl Printer {
                 )
             });
         }
-        if self.is_structured() || !stdin_is_tty() {
+        if !self.can_prompt() {
             return Err(non_interactive_err(self.is_structured(), message));
         }
         if options.is_empty() {
@@ -96,7 +101,7 @@ impl Printer {
         {
             return Ok(s);
         }
-        if self.is_structured() || !stdin_is_tty() {
+        if !self.can_prompt() {
             return Err(non_interactive_err(self.is_structured(), message));
         }
         inquire::Text::new(message).with_default(default).prompt()
@@ -118,7 +123,12 @@ mod tests {
 
     #[test]
     fn structured_mode_refuses_prompt() {
-        let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json);
+        let p = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Json,
+            crate::output::ColorChoice::Auto,
+        );
         let r = p.prompt_confirm("really?");
         assert!(r.is_err());
     }
@@ -148,7 +158,12 @@ mod tests {
 
     #[test]
     fn structured_select_refuses_when_no_seeded_answer() {
-        let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json);
+        let p = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Json,
+            crate::output::ColorChoice::Auto,
+        );
         let options = vec!["a".to_string(), "b".to_string()];
         let err = p
             .prompt_select("pick", &options)
@@ -170,7 +185,12 @@ mod tests {
 
     #[test]
     fn structured_text_refuses_when_no_seeded_answer() {
-        let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json);
+        let p = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Json,
+            crate::output::ColorChoice::Auto,
+        );
         let err = p.prompt_text("name", "").expect_err("structured refuse");
         let msg = format!("{err}");
         assert!(
@@ -207,6 +227,27 @@ mod tests {
             !msg.contains("-o text"),
             "non-TTY cause must not suggest -o text: {msg}"
         );
+    }
+
+    /// A capture printer whose seeded queue is empty (or absent) must refuse.
+    /// The alternative is `inquire` reading the suite's own terminal, which
+    /// blocks until someone types — a hang no test harness reports as a
+    /// failure, and one that only appears when the suite is run under a pty.
+    #[test]
+    fn capture_printer_refuses_an_unqueued_prompt() {
+        let (p, _buf) = Printer::for_test_at(Verbosity::Normal);
+        assert!(!p.can_prompt());
+        let err = p
+            .prompt_confirm("really?")
+            .expect_err("an unqueued confirm must refuse, never block");
+        assert!(format!("{err}").contains("not a TTY"), "msg: {err}");
+
+        // Draining the seeded answer leaves the same printer in the same state:
+        // the second ask has nothing to pop and must refuse too.
+        let (seeded, _b) =
+            Printer::for_test_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
+        assert!(seeded.prompt_confirm("first?").expect("seeded answer"));
+        assert!(seeded.prompt_confirm("second?").is_err());
     }
 
     #[test]

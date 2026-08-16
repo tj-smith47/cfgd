@@ -1,4 +1,4 @@
-Source: pinned-source
+source:pinned-source
   URL                 https://github.com/team/pinned
   Branch              main
   Priority            200

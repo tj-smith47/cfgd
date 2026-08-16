@@ -1,2 +1,2 @@
-Update Module: noop-mod
+Update module:noop-mod
 ⊙ No changes specified

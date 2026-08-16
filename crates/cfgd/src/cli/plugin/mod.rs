@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 
 use cfgd_core::output::{Doc, Printer, Role, Verbosity};
 
-use crate::cli::OutputFormatArg;
+use crate::cli::{ColorWhen, OutputFormatArg};
 
 #[derive(Parser)]
 #[command(
@@ -23,6 +23,20 @@ struct PluginCli {
     /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL, template-file=PATH
     #[arg(long, short = 'o', global = true, default_value = "table")]
     output: OutputFormatArg,
+
+    /// Disable colored output (alias for --color never)
+    #[arg(long, global = true)]
+    no_color: bool,
+
+    /// When to colorize output: auto (follow the terminal), always, never
+    #[arg(
+        long,
+        global = true,
+        value_name = "WHEN",
+        env = "CFGD_COLOR",
+        default_value = "auto"
+    )]
+    color: ColorWhen,
 
     #[command(subcommand)]
     command: PluginCommand,
@@ -191,11 +205,10 @@ pub fn plugin_main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    if std::env::var_os("NO_COLOR").is_some() {
-        Printer::disable_colors();
-    }
-
-    let printer = Printer::with_format(Verbosity::Normal, None, cli.output.0);
+    // Same precedence as the primary CLI (main.rs), via the one shared
+    // resolution both entry points call.
+    let color_choice = crate::cli::resolve_color_choice(cli.no_color, cli.color);
+    let printer = Printer::with_format(Verbosity::Normal, None, cli.output.0, color_choice);
 
     let result = match cli.command {
         PluginCommand::Debug {
@@ -664,9 +677,9 @@ pub fn cmd_deploy(
                 .status(
                     Role::Ok,
                     format!(
-                        "Applied {} document(s), {} reference(s) pinned",
-                        out_docs.len(),
-                        rewrites.len()
+                        "Applied {}, {} pinned",
+                        cfgd_core::pluralize(out_docs.len(), "document"),
+                        cfgd_core::pluralize(rewrites.len(), "reference")
                     ),
                 )
                 .with_data(payload),

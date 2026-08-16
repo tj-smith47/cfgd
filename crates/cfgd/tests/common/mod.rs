@@ -47,6 +47,39 @@ pub fn tiny_profile_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     (config_dir, state_dir, target)
 }
 
+/// Build a tempdir-backed profile whose plan carries every shape the phase
+/// tree renders: a `Prerequisites` manager node, a `Packages` install, and a
+/// serially-applied file write.
+///
+/// The caller must have a `CFGD_BREW_BIN` shim installed, which is what makes
+/// the plan the same on every host — brew answers "present" through the seam,
+/// so the graph plans an index refresh rather than a bootstrap, and no real
+/// package manager is reached.
+///
+/// Returns `(config_dir, state_dir, target)`.
+pub fn profile_with_packages_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let files_dir = config_dir.path().join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join("hello.txt"), "hello world").unwrap();
+
+    let target = config_dir.path().join("out").join("hello.txt");
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  packages:\n    brew:\n      formulae:\n        - ripgrep\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
+        target.display()
+    );
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("tiny.yaml"), &profile).unwrap();
+
+    let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: tiny\n";
+    std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
+
+    (config_dir, state_dir, target)
+}
+
 /// Build a tempdir-backed profile with two file actions: one whose target
 /// directory exists and is writable (succeeds), and one whose target's
 /// parent is a regular file (so `create_dir_all` errors at apply time —
@@ -97,6 +130,7 @@ pub fn cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli
         config_explicit: false,
         profile: None,
         no_color: true,
+        color: cfgd::cli::ColorWhen::Auto,
         verbose: 0,
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
@@ -119,6 +153,7 @@ pub fn cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli
 /// Default `ApplyArgs` for a non-dry-run `--yes` apply.
 pub fn apply_args() -> ApplyArgs {
     ApplyArgs {
+        on_conflict: cfgd::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -135,6 +170,7 @@ pub fn apply_args() -> ApplyArgs {
 /// Default `ApplyArgs` for a `--dry-run --yes` apply.
 pub fn apply_args_dry_run() -> ApplyArgs {
     ApplyArgs {
+        on_conflict: cfgd::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -168,8 +204,8 @@ pub fn empty_profile_setup() -> (tempfile::TempDir, tempfile::TempDir) {
 }
 
 /// Like `tiny_profile_setup` but pre-records an unresolved pending decision in
-/// the state DB so `display_plan_preview` renders the pending-decisions
-/// section.
+/// the state DB. The config subscribes to no source, so the row is inert —
+/// only a source still listed in `spec.sources` can withhold anything.
 ///
 /// Returns `(config_dir, state_dir, target)`.
 pub fn state_with_pending_decision_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
@@ -551,6 +587,52 @@ pub fn permission_change_source_setup() -> (
 // state shape.
 // ---------------------------------------------------------------------------
 
+/// Seed a state DB whose rollback REMOVES files rather than restoring content:
+/// apply 1 settles with the workspace empty, apply 2 creates two files (each
+/// recorded as an absent backup, the marker that says the path did not exist
+/// when apply 1 finished). Rolling back to apply 1 therefore undoes both
+/// creates — the `N newly created files removed` line, in the plural.
+///
+/// Returns `(workspace, state_dir, created_paths, apply_id_1)`.
+pub fn rollback_state_with_created_files_setup()
+-> (tempfile::TempDir, tempfile::TempDir, Vec<PathBuf>, i64) {
+    let workspace = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(state_dir.path()).unwrap();
+    let state = StateStore::open(&state_dir.path().join("state.db")).unwrap();
+
+    let apply_id_1 = state
+        .record_apply("test", "hash1", ApplyStatus::Success, None)
+        .unwrap();
+    let apply_id_2 = state
+        .record_apply("test", "hash2", ApplyStatus::Success, None)
+        .unwrap();
+
+    let created: Vec<PathBuf> = ["new-config.txt", "new-aliases.sh"]
+        .iter()
+        .map(|name| workspace.path().join(name))
+        .collect();
+    for (index, path) in created.iter().enumerate() {
+        state
+            .store_absent_backup(apply_id_2, &path.display().to_string())
+            .unwrap();
+        let jid = state
+            .journal_begin(
+                apply_id_2,
+                index,
+                "files",
+                "file",
+                &format!("file:create:{}", path.display()),
+                None,
+            )
+            .unwrap();
+        state.journal_complete(jid, index, None, None).unwrap();
+        std::fs::write(path, "created by apply 2").unwrap();
+    }
+
+    (workspace, state_dir, created, apply_id_1)
+}
+
 /// Seed a state DB with a target apply that has subsequent file changes to
 /// roll back: apply 1 creates a file, apply 2 modifies it (capturing a
 /// backup of apply 1's content). `cmd_rollback(apply_id_1)` rolls back to
@@ -576,7 +658,7 @@ pub fn rollback_state_with_backups_setup() -> (tempfile::TempDir, tempfile::Temp
     let jid1 = state
         .journal_begin(apply_id_1, 0, "files", "file", &resource_id_1, None)
         .unwrap();
-    state.journal_complete(jid1, None, None).unwrap();
+    state.journal_complete(jid1, 0, None, None).unwrap();
     std::fs::write(&target, "v1 content").unwrap();
 
     // Apply 2: backup of v1, then modify to v2.
@@ -591,7 +673,7 @@ pub fn rollback_state_with_backups_setup() -> (tempfile::TempDir, tempfile::Temp
     let jid2 = state
         .journal_begin(apply_id_2, 0, "files", "file", &resource_id_2, None)
         .unwrap();
-    state.journal_complete(jid2, None, None).unwrap();
+    state.journal_complete(jid2, 0, None, None).unwrap();
     std::fs::write(&target, "v2 content").unwrap();
 
     (workspace, state_dir, target, apply_id_1)
@@ -635,7 +717,7 @@ pub fn log_history_setup(
 
 /// Seed a state DB with one apply and a set of journal entries. Each
 /// entry's optional `script_output` is recorded via
-/// `journal_complete(jid, None, script_output)`.
+/// `journal_complete(jid, idx, None, script_output)`.
 ///
 /// Returns `(state_dir, apply_id)`.
 pub fn log_show_output_setup(
@@ -652,7 +734,9 @@ pub fn log_show_output_setup(
         let jid = state
             .journal_begin(apply_id, idx, phase, action_type, resource_id, None)
             .unwrap();
-        state.journal_complete(jid, None, *script_output).unwrap();
+        state
+            .journal_complete(jid, idx, None, *script_output)
+            .unwrap();
     }
     (state_dir, apply_id)
 }
@@ -1257,7 +1341,7 @@ pub fn rollback_state_with_non_file_actions_setup() -> (tempfile::TempDir, i64) 
             None,
         )
         .unwrap();
-    state.journal_complete(jid, None, None).unwrap();
+    state.journal_complete(jid, 0, None, None).unwrap();
 
     (state_dir, apply_id_1)
 }
@@ -1290,7 +1374,7 @@ pub fn rollback_state_with_multiline_script_action_setup() -> (tempfile::TempDir
             None,
         )
         .unwrap();
-    state.journal_complete(jid, None, None).unwrap();
+    state.journal_complete(jid, 0, None, None).unwrap();
 
     (state_dir, apply_id_1)
 }

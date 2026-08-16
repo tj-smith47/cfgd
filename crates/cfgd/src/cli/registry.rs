@@ -1,6 +1,7 @@
 use super::*;
 
 use cfgd_core::PathDisplayExt;
+use cfgd_core::output::Printer;
 
 // --- Provider registry, daemon hooks, state store ---
 
@@ -38,7 +39,7 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
         config_dir: &std::path::Path,
         resolved: &ResolvedProfile,
     ) -> cfgd_core::errors::Result<Vec<FileAction>> {
-        let fm = build_compliance_file_manager(config_dir, resolved)?;
+        let fm = build_compliance_file_manager(config_dir, resolved, None)?;
         fm.plan(&resolved.merged)
     }
 
@@ -57,6 +58,21 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
         packages::plan_packages(profile, &[], managers, cfgd_installed, cx)
     }
 
+    fn plan_packages_observed(
+        &self,
+        profile: &cfgd_core::config::MergedProfile,
+        managers: &[&dyn cfgd_core::providers::PackageManager],
+        cfgd_installed: &std::collections::HashSet<String>,
+        cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<(
+        Vec<cfgd_core::providers::PackageAction>,
+        cfgd_core::reconciler::ActualPackages,
+    )> {
+        // Same planner as `plan_packages` above, capturing its own
+        // installed-state enumeration for the source-decision classification.
+        packages::plan_packages_observed(profile, &[], managers, cfgd_installed, cx)
+    }
+
     fn extend_registry_custom_managers(
         &self,
         registry: &mut ProviderRegistry,
@@ -73,7 +89,7 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
         resolved: &ResolvedProfile,
     ) -> cfgd_core::errors::Result<Option<Box<dyn cfgd_core::providers::FileManager>>> {
         Ok(Some(Box::new(build_compliance_file_manager(
-            config_dir, resolved,
+            config_dir, resolved, None,
         )?)))
     }
 
@@ -103,12 +119,33 @@ pub(in crate::cli) fn build_registry_with_profile(
 /// making compliance content checks compare against the true desired content.
 /// Shared by the compliance/checkin CLI callers and the daemon's compliance hook
 /// so every surface content-checks identically.
+///
+/// Loads `config_dir.join("cfgd.yaml")` — the literal default filename, NOT
+/// whatever `--config` named. `already_drained` is `Some((printer, cli.config))`
+/// from a CLI caller that already ran `load_config_and_profile(cli, printer)` on
+/// `cli.config` earlier in the same invocation: when the two paths coincide (the
+/// common case — `--config` unset or pointed at the default `cfgd.yaml`), this
+/// load is a re-parse of an already-drained file and draining it again would
+/// double-print. When they differ (a `--config` naming a non-default filename),
+/// this load reads a genuinely different file whose deprecations nothing else in
+/// the invocation would ever surface, so it drains here instead. The daemon's
+/// `WorkstationDaemonHooks::plan_files`/`build_file_manager` call sites pass
+/// `None` — they run on every reconcile tick, and draining there would repeat
+/// the same notice every interval for the life of the daemon process (the same
+/// reasoning documented for the daemon's other per-tick reloads).
 pub(in crate::cli) fn build_compliance_file_manager(
     config_dir: &std::path::Path,
     resolved: &ResolvedProfile,
+    already_drained: Option<(&Printer, &std::path::Path)>,
 ) -> cfgd_core::errors::Result<CfgdFileManager> {
     let mut fm = CfgdFileManager::new(config_dir, resolved)?;
-    let cfg = config::load_config(&config_dir.join("cfgd.yaml"))?;
+    let compliance_config_path = config_dir.join("cfgd.yaml");
+    let mut cfg = config::load_config(&compliance_config_path)?;
+    if let Some((printer, cli_config_path)) = already_drained
+        && compliance_config_path != cli_config_path
+    {
+        cfg.drain_deprecations(printer);
+    }
     fm.set_global_strategy(cfg.spec.file_strategy);
     let (backend_name, age_key_path) = secret_backend_from_config(Some(&cfg));
     let backend = secrets::build_secret_backend(&backend_name, age_key_path, Some(config_dir));
@@ -346,10 +383,13 @@ impl cfgd_core::providers::PackageManager for FakeNativeManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+        None
     }
-    fn bootstrap(&self, _printer: &cfgd_core::output::Printer) -> cfgd_core::errors::Result<()> {
+    fn bootstrap(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<()> {
         Ok(())
     }
     fn installed_packages(
@@ -372,7 +412,11 @@ impl cfgd_core::providers::PackageManager for FakeNativeManager {
     ) -> cfgd_core::errors::Result<()> {
         Ok(())
     }
-    fn update(
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(
         &self,
         _cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> cfgd_core::errors::Result<()> {
@@ -395,12 +439,19 @@ pub(in crate::cli) fn cfgd_installed_packages(
         .collect())
 }
 
-pub(in crate::cli) fn open_state_store(state_dir: Option<&Path>) -> anyhow::Result<StateStore> {
-    if let Some(dir) = state_dir {
-        Ok(StateStore::open_in_dir(dir)?)
-    } else {
-        Ok(StateStore::open_default()?)
-    }
+/// Open the run's state store: `--state-dir` verbatim, else the default for
+/// the run's `--scope`, through the same [`super::helpers::run_state_dir`]
+/// resolution the apply lock takes — so the store a command judges ownership
+/// against, the lock that serializes it, and the scope the command claims are
+/// always one picture. Opening the USER store from a `--scope system` run was
+/// exactly how a system-picture sweep landed in the per-user rows.
+pub(in crate::cli) fn open_state_store(
+    state_dir: Option<&Path>,
+    scope: cfgd_core::Scope,
+) -> anyhow::Result<StateStore> {
+    Ok(StateStore::open_in_dir(&super::helpers::run_state_dir(
+        state_dir, scope,
+    )?)?)
 }
 
 // --- Secret backend resolution ---
@@ -409,10 +460,13 @@ pub(in crate::cli) fn open_state_store(state_dir: Option<&Path>) -> anyhow::Resu
 /// Returns a registry whose `secret_backend` is guaranteed `Some`.
 pub(in crate::cli) fn resolve_secret_backend(
     cli: &Cli,
+    printer: &Printer,
     file: &Path,
 ) -> anyhow::Result<ProviderRegistry> {
     let cfg = if cli.config.exists() {
-        Some(config::load_config(&cli.config)?)
+        let mut cfg = config::load_config(&cli.config)?;
+        drain_config_deprecations(printer, &mut cfg);
+        Some(cfg)
     } else {
         None
     };
@@ -446,9 +500,10 @@ pub(in crate::cli) fn resolve_secret_backend(
 /// Shorthand: resolve secret backend and extract it in one call.
 pub(in crate::cli) fn get_secret_backend(
     cli: &Cli,
+    printer: &Printer,
     file: &Path,
 ) -> anyhow::Result<Box<dyn SecretBackend>> {
-    let registry = resolve_secret_backend(cli, file)?;
+    let registry = resolve_secret_backend(cli, printer, file)?;
     registry
         .secret_backend
         .ok_or_else(|| anyhow::anyhow!("No secret backend configured"))
@@ -471,6 +526,7 @@ mod tests {
             verbose: 0,
             quiet: true,
             no_color: true,
+            color: crate::cli::ColorWhen::Auto,
             output: crate::cli::OutputFormatArg(OutputFormat::Table),
             list_envelope: false,
             jsonpath: None,
@@ -661,7 +717,11 @@ mod tests {
         let missing = dir.path().join("absent.enc");
 
         // ProviderRegistry is not Debug, so match rather than expect_err.
-        let err = match resolve_secret_backend(&cli, &missing) {
+        let err = match resolve_secret_backend(
+            &cli,
+            &cfgd_core::test_helpers::test_printer(),
+            &missing,
+        ) {
             Ok(_) => panic!("missing target file must error"),
             Err(e) => e,
         };
@@ -678,7 +738,8 @@ mod tests {
         let missing = dir.path().join("absent.enc");
 
         // Box<dyn SecretBackend> is not Debug, so match rather than expect_err.
-        let err = match get_secret_backend(&cli, &missing) {
+        let err = match get_secret_backend(&cli, &cfgd_core::test_helpers::test_printer(), &missing)
+        {
             Ok(_) => panic!("missing target file must error"),
             Err(e) => e,
         };
@@ -691,12 +752,45 @@ mod tests {
     #[test]
     fn open_state_store_honors_explicit_dir() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let state = open_state_store(Some(dir.path())).expect("open in explicit dir");
+        let state = open_state_store(Some(dir.path()), cfgd_core::Scope::User)
+            .expect("open in explicit dir");
         // Round-trip a write to prove the store at this dir is live and usable.
         state
             .upsert_package_resource("apt/curl", "local", None, None)
             .expect("write to explicit-dir store");
         let set = cfgd_installed_packages(&state).expect("read back");
         assert!(set.contains("apt/curl"));
+    }
+
+    /// The system-scope cell: a `--scope system` run with no `--state-dir`
+    /// resolves the MACHINE-wide state root, not the per-user default —
+    /// pinned at the resolution seam `open_state_store` opens verbatim
+    /// (`open_state_store_honors_explicit_dir` above proves the open half),
+    /// because opening the real machine root from a test would write into
+    /// `/var/lib`.
+    #[test]
+    #[serial_test::serial]
+    fn a_scope_system_run_resolves_the_machine_state_root_not_the_user_one() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = cfgd_core::with_test_home_guard(home.path());
+        let _cfgd = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _sd = cfgd_core::test_helpers::EnvVarGuard::unset("STATE_DIRECTORY");
+
+        let user = super::helpers::run_state_dir(None, cfgd_core::Scope::User)
+            .expect("user-scope state dir resolves");
+        assert_eq!(
+            user,
+            home.path().join(".local").join("state").join("cfgd"),
+            "the user cell stays per-user"
+        );
+
+        let system = super::helpers::run_state_dir(None, cfgd_core::Scope::System)
+            .expect("system-scope state dir resolves");
+        assert_ne!(
+            system, user,
+            "a system-scope run must not open the per-user store"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(system, std::path::PathBuf::from("/var/lib/cfgd"));
     }
 }

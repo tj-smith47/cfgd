@@ -1,12 +1,12 @@
 use super::*;
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Role};
+use cfgd_core::output::{Doc, OwnerLabel, Role};
 
 pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Result<()> {
     printer.heading("Sync");
 
-    let (cfg, profile_name, _resolved) = load_config_and_profile(cli)?;
+    let (cfg, profile_name, _resolved) = load_config_and_profile(cli, printer)?;
     printer.kv_block([
         ("Config".to_string(), cli.config.display_posix()),
         ("Profile".to_string(), profile_name),
@@ -44,12 +44,12 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         let cache_dir = source_cache_dir(cli)?;
         let mut mgr = SourceManager::new(&cache_dir);
         mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
-        let silent_printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let silent_printer = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
         // Opened once: every open runs the full migration chain, and the loop
         // below records a fetch per source. Best-effort — the cache refreshes
         // either way, so a read-only state dir must not turn a successful sync
         // into a failure; it costs the freshness ledger, not the sync.
-        let state = match open_state_store(cli.state_dir.as_deref()) {
+        let state = match open_state_store(cli.state_dir.as_deref(), cli.scope()) {
             Ok(state) => Some(state),
             Err(e) => {
                 sources_sec
@@ -59,12 +59,6 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
             }
         };
 
-        // Multi-source sync emits N undifferentiated status streams. The
-        // per-source `secondary` line acts as a structural pivot — color
-        // groups each block visually so the eye can jump source-to-source
-        // without re-reading the spinner labels. Single-source runs still
-        // emit the header (consistent shape > one-off branches).
-        let multi_source = cfg.spec.sources.len() > 1;
         for source_spec in &cfg.spec.sources {
             let source_dir = cache_dir.join(&source_spec.name);
             let old_manifest = if source_dir.exists() {
@@ -83,10 +77,14 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                 None
             };
 
-            if multi_source {
-                sources_sec.status_simple(Role::Secondary, format!("Source: {}", source_spec.name));
-            }
-            let sp = sources_sec.spinner(format!("Syncing source '{}'", source_spec.name));
+            // One `source:<name>` group per source, opened whether or not
+            // there is a second source: a stream of undifferentiated status
+            // lines is what the owner grammar exists to remove, and a
+            // one-source run reading differently from a two-source run is a
+            // shape the reader has to learn twice. Every line below names its
+            // outcome only — the group heading already says whose it is.
+            let owner = sources_sec.section_owner(&OwnerLabel::new("source", &source_spec.name));
+            let sp = owner.spinner("Syncing");
             let load_result = mgr.load_source(source_spec, &silent_printer);
             match load_result {
                 Ok(()) => {
@@ -116,13 +114,9 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
 
                         let had_perm_changes = perm_changes.is_some();
                         let proceed = if let Some(perm_changes) = perm_changes {
-                            sp.finish_warn(format!(
-                                "'{}' has permission changes",
-                                source_spec.name
-                            ));
+                            sp.finish_warn("permission changes need approval");
                             {
-                                let perm_sec = sources_sec
-                                    .section(format!("'{}' permission changes", source_spec.name));
+                                let perm_sec = owner.section("permission changes");
                                 for change in &perm_changes {
                                     perm_sec.bullet(change.description.clone());
                                 }
@@ -130,28 +124,19 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                             match printer.prompt_confirm("Accept permission changes?") {
                                 Ok(true) => true,
                                 Ok(false) => {
-                                    sources_sec.status_simple(
+                                    owner.status_simple(
                                         Role::Info,
-                                        format!(
-                                            "Skipped source '{}' (permission changes rejected)",
-                                            source_spec.name
-                                        ),
+                                        "skipped (permission changes rejected)",
                                     );
                                     false
                                 }
                                 Err(_) => {
-                                    sources_sec.status_simple(
-                                        Role::Info,
-                                        format!(
-                                            "Skipped source '{}' (prompt cancelled)",
-                                            source_spec.name
-                                        ),
-                                    );
+                                    owner.status_simple(Role::Info, "skipped (prompt cancelled)");
                                     false
                                 }
                             }
                         } else {
-                            sp.finish_ok(format!("'{}' synced", source_spec.name))
+                            sp.finish_ok("synced")
                                 .detail(format!("commit: {}", commit_short));
                             true
                         };
@@ -162,8 +147,8 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                             // line so human consumers see "'X' synced —
                             // commit: <hash>".
                             if had_perm_changes {
-                                sources_sec
-                                    .status(Role::Ok, format!("'{}' synced", source_spec.name))
+                                owner
+                                    .status(Role::Ok, "synced")
                                     .detail(format!("commit: {}", commit_short));
                             }
 
@@ -184,14 +169,8 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                                     source_spec.sync.pin_version.as_deref(),
                                 )
                             {
-                                sources_sec
-                                    .status(
-                                        Role::Warn,
-                                        format!(
-                                            "could not record the fetch for '{}'",
-                                            source_spec.name
-                                        ),
-                                    )
+                                owner
+                                    .status(Role::Warn, "could not record the fetch")
                                     .detail(cfgd_core::output::collapse_to_subject_line(&e));
                             }
 
@@ -208,7 +187,7 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                                 if let Err(e) =
                                     cfgd_core::update_source_lock_entry(&config_dir, lock_entry)
                                 {
-                                    sources_sec.status_simple(
+                                    owner.status_simple(
                                         cfgd_core::output::Role::Warn,
                                         crate::cli::source::sources_lock_update_warning(&e),
                                     );
@@ -231,7 +210,7 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                     }
                 }
                 Err(e) => {
-                    sp.finish_fail(format!("Failed to sync '{}'", source_spec.name))
+                    sp.finish_fail("sync failed")
                         .detail(cfgd_core::output::collapse_to_subject_line(e));
                     sync_payload.sources.push(SourceSyncOutput {
                         name: source_spec.name.clone(),

@@ -28,7 +28,8 @@ pub fn cmd_module_add_from_registry(
     if !cli.config.exists() {
         return Err(no_config_error(printer, &cli.config));
     }
-    let cfg = config::load_config(&cli.config)?;
+    let mut cfg = config::load_config(&cli.config)?;
+    drain_config_deprecations(printer, &mut cfg);
 
     let registries = cfg
         .spec
@@ -67,7 +68,7 @@ pub fn cmd_module_add_from_registry(
             // takes a Printer; the Quiet sink suppresses the lib's
             // progress emissions so this command's status surface above
             // owns the user-facing line (inversion of control).
-            let lib_printer = null_lib_printer();
+            let lib_printer = null_lib_printer(printer);
             modules::fetch_registry_modules(registry_entry, &cache_base, &lib_printer)?;
             match modules::latest_module_version(registry_entry, &reg_ref.module, &cache_base)? {
                 Some(t) => t,
@@ -123,7 +124,7 @@ pub fn cmd_module_add_remote(
     // Quiet sink suppresses the lib's progress emissions so the spinner
     // owns the user-facing surface (inversion of control).
     let sp = printer.spinner(format!("Fetching {}", url));
-    let lib_printer = null_lib_printer();
+    let lib_printer = null_lib_printer(printer);
     let fetched = match modules::fetch_remote_module(url, &cache_base, &lib_printer) {
         Ok(f) => {
             sp.finish_ok(format!("Fetched {}", url));
@@ -231,7 +232,8 @@ pub fn cmd_module_add_remote(
     };
     let mut added_to_profile: Option<String> = None;
     if cli.config.exists() {
-        let cfg = config::load_config(&cli.config)?;
+        let mut cfg = config::load_config(&cli.config)?;
+        drain_config_deprecations(printer, &mut cfg);
         let profile_name = match cli.profile.as_deref() {
             Some(p) => p,
             None => cfg.active_profile()?,
@@ -274,11 +276,14 @@ pub fn cmd_module_upgrade(
     yes: bool,
     allow_unsigned: bool,
 ) -> anyhow::Result<()> {
-    printer.heading(format!("Update Module: {}", name));
+    printer.heading(format!(
+        "Update {}",
+        cfgd_core::reconciler::Owner::module(name).token()
+    ));
 
     let config_dir = config_dir(cli);
     let cache_base = module_cache_dir(cli)?;
-    let lib_printer = null_lib_printer();
+    let lib_printer = null_lib_printer(printer);
 
     // Find the lockfile entry
     let mut lockfile = modules::load_lockfile(&config_dir)?;
@@ -522,7 +527,9 @@ pub(super) fn print_module_review_summary(
     commit: &str,
     integrity: &str,
 ) {
-    let mod_sec = printer.section(format!("Module: {}", module_name));
+    // The review heads the module with the same token its actions carry in an
+    // apply tree, so the thing being approved is named once, one way.
+    let mod_sec = printer.section_owner(&cfgd_core::output::OwnerLabel::new("module", module_name));
 
     if !module.spec.depends.is_empty() {
         mod_sec.kv("Dependencies", module.spec.depends.join(", "));
@@ -623,13 +630,14 @@ pub(super) fn filter_and_build_search_results(
 
 pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::Result<()> {
     let cache_base = module_cache_dir(cli)?;
-    let lib_printer = null_lib_printer();
+    let lib_printer = null_lib_printer(printer);
 
     if !cli.config.exists() {
         return Err(no_config_error(printer, &cli.config));
     }
 
-    let cfg = config::load_config(&cli.config)?;
+    let mut cfg = config::load_config(&cli.config)?;
+    drain_config_deprecations(printer, &mut cfg);
     let registries = cfg
         .spec
         .modules
@@ -717,6 +725,13 @@ pub fn cmd_module_registry_add(
     name: Option<&str>,
 ) -> anyhow::Result<()> {
     printer.heading("Add Module Registry");
+
+    // Resolve the reference before the name is derived and before the URL is
+    // persisted, so `extract_registry_name` sees the same string a later fetch
+    // will clone. An existing local path stays itself rather than becoming a
+    // same-named GitHub repository; a GitHub `owner/repo` shorthand expands;
+    // any other shape passes through.
+    let url = &*cfgd_core::resolve_repo_reference(url);
 
     let registry_name = match name {
         Some(n) => n.to_string(),
@@ -936,7 +951,8 @@ pub fn cmd_module_registry_rename(
         return Err(no_config_error(printer, &cli.config));
     }
 
-    let cfg = config::load_config(&cli.config)?;
+    let mut cfg = config::load_config(&cli.config)?;
+    drain_config_deprecations(printer, &mut cfg);
     let registries = cfg
         .spec
         .modules
@@ -1060,7 +1076,8 @@ pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<
         return Ok(());
     }
 
-    let cfg = config::load_config(&cli.config)?;
+    let mut cfg = config::load_config(&cli.config)?;
+    drain_config_deprecations(printer, &mut cfg);
     let registries = cfg
         .spec
         .modules
@@ -1205,6 +1222,11 @@ pub(super) fn ensure_module_in_profile_doc(
 /// drives the user-facing spinner / status above the call, so the lib's
 /// emissions are suppressed (inversion of control — the CLI owns the
 /// user-facing surface, the lib gets a non-emitting sink).
-fn null_lib_printer() -> cfgd_core::output::Printer {
-    cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet)
+///
+/// Derived from the command's own printer rather than built fresh: a sink
+/// built from nothing re-resolves colour and theme, and a lib call that does
+/// emit — a warning survives Quiet — would answer to the terminal instead of
+/// to `--no-color` and `spec.theme`.
+fn null_lib_printer(printer: &Printer) -> cfgd_core::output::Printer {
+    printer.at_verbosity(cfgd_core::output::Verbosity::Quiet)
 }

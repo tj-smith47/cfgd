@@ -133,19 +133,28 @@ pub(crate) fn display_source_manifest(
             if locked_count > 0 {
                 s = s.status(
                     Role::Warn,
-                    format!("{} locked item(s) (cannot override)", locked_count),
+                    format!(
+                        "{} locked (cannot override)",
+                        cfgd_core::pluralize(locked_count, "item")
+                    ),
                 );
             }
             if required_count > 0 {
                 s = s.status(
                     Role::Info,
-                    format!("{} required item(s) (team requirement)", required_count),
+                    format!(
+                        "{} required (team requirement)",
+                        cfgd_core::pluralize(required_count, "item")
+                    ),
                 );
             }
             if recommended_count > 0 {
                 s = s.status(
                     Role::Info,
-                    format!("{} recommended item(s)", recommended_count),
+                    format!(
+                        "{} recommended",
+                        cfgd_core::pluralize(recommended_count, "item")
+                    ),
                 );
             }
             if constraints.no_scripts {
@@ -197,8 +206,14 @@ pub(crate) fn count_policy_items(items: &config::PolicyItems) -> usize {
 /// Append a per-source breakdown of pending decisions to a [`SectionBuilder`].
 ///
 /// Grouped by source name (BTreeMap → alphabetical order). Each source becomes
-/// a nested subsection whose status lines list the per-item tier/resource/summary
-/// triplet. Returns the augmented builder so callers can chain further composition.
+/// a nested subsection headed by its `source:<name>` owner token, whose first
+/// status line carries the count and whose remaining lines list the per-item
+/// tier/resource/summary triplet. Returns the augmented builder so callers can
+/// chain further composition.
+///
+/// The single renderer behind both `cfgd decide`'s listing and `cfgd status`'s
+/// Pending Decisions section: the same rows under two headings would let one
+/// screen's grammar drift from the other's.
 pub(crate) fn build_pending_decisions_table_section(
     s: SectionBuilder,
     decisions: &[cfgd_core::state::PendingDecision],
@@ -211,9 +226,12 @@ pub(crate) fn build_pending_decisions_table_section(
     by_source.into_iter().fold(s, |s, (source_name, items)| {
         let count = items.len();
         let plural = if count == 1 { "" } else { "s" };
+        // The same `source:<name>` token every other source-owned line carries —
+        // one screen must not name one source two ways.
         s.subsection(
-            format!("{source_name}: {count} pending item{plural}"),
+            cfgd_core::reconciler::Owner::source(source_name).token(),
             |sub| {
+                let sub = sub.status(Role::Info, format!("{count} pending item{plural}"));
                 items.iter().fold(sub, |sub, item| {
                     sub.status(
                         Role::Info,
@@ -423,6 +441,7 @@ mod tests {
             verbose: 0,
             quiet: true,
             no_color: true,
+            color: crate::cli::ColorWhen::Auto,
             output: OutputFormatArg(OutputFormat::Table),
             list_envelope: false,
             jsonpath: None,

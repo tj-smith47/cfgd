@@ -39,14 +39,24 @@ pub(crate) fn enforce_signature_policy(
     cache_base: &Path,
     repo_url: &str,
 ) -> anyhow::Result<()> {
-    let require_signatures = cli
-        .config
-        .exists()
-        .then(|| config::load_config(&cli.config).ok())
-        .flatten()
-        .and_then(|c| c.spec.modules)
-        .and_then(|m| m.security)
-        .is_some_and(|s| s.require_signatures);
+    // Bounded duplicate: `cmd_module_add_from_registry` already drains its own
+    // earlier load of this file, so this call re-shows the same notice there;
+    // `cmd_module_upgrade` has no other config parse in its path, so this is
+    // its sole opportunity to surface a deprecation on the user's real config.
+    let require_signatures = if cli.config.exists() {
+        match config::load_config(&cli.config) {
+            Ok(mut c) => {
+                drain_config_deprecations(printer, &mut c);
+                c.spec
+                    .modules
+                    .and_then(|m| m.security)
+                    .is_some_and(|s| s.require_signatures)
+            }
+            Err(_) => false,
+        }
+    } else {
+        false
+    };
 
     let Some(tag) = tag else {
         if require_signatures && !allow_unsigned {
@@ -141,6 +151,7 @@ mod tests {
             config_explicit: false,
             profile: None,
             no_color: true,
+            color: crate::cli::ColorWhen::Auto,
             verbose: 0,
             quiet: true,
             output: crate::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),

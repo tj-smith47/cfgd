@@ -39,7 +39,12 @@ pub(super) fn cmd_daemon(
 
     let config_path = std::fs::canonicalize(&cli.config).unwrap_or_else(|_| cli.config.clone());
     let profile_override = cli.profile.clone();
-    let daemon_printer = std::sync::Arc::new(cfgd_core::output::Printer::new(if cli.quiet {
+    // Derived from the process printer, never rebuilt: a fresh `Printer::new`
+    // re-resolves colour from the terminal, so `--no-color` reached the process
+    // printer and nothing else and the daemon drew a fully coloured reconcile
+    // tree into journald. It also re-resolves the theme from nothing, dropping
+    // the configured `spec.theme` on the way.
+    let daemon_printer = std::sync::Arc::new(printer.at_verbosity(if cli.quiet {
         cfgd_core::output::Verbosity::Quiet
     } else if cli.verbose > 0 {
         cfgd_core::output::Verbosity::Verbose
@@ -221,11 +226,16 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
 
     #[cfg(windows)]
     let payload = {
-        let event_log_on = cfgd_core::config::load_config(&cli.config)
-            .ok()
-            .and_then(|cfg| cfg.spec.daemon)
-            .map(|d| d.windows_event_log)
-            .unwrap_or(false);
+        let event_log_on = match cfgd_core::config::load_config(&cli.config) {
+            Ok(mut cfg) => {
+                drain_config_deprecations(printer, &mut cfg);
+                cfg.spec
+                    .daemon
+                    .map(|d| d.windows_event_log)
+                    .unwrap_or(false)
+            }
+            Err(_) => false,
+        };
         DaemonInstallOutput {
             platform: "windows".to_string(),
             service: "cfgd".to_string(),
@@ -451,6 +461,7 @@ mod tests {
             config_explicit: false,
             profile: None,
             no_color: true,
+            color: crate::cli::ColorWhen::Auto,
             verbose: 0,
             quiet: true,
             output: crate::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),

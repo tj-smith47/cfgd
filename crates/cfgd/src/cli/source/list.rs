@@ -67,7 +67,8 @@ pub fn cmd_source_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let cfg = config::load_config(&config_path)?;
+    let mut cfg = config::load_config(&config_path)?;
+    drain_config_deprecations(printer, &mut cfg);
 
     if cfg.spec.sources.is_empty() {
         let entries: Vec<SourceListEntry> = Vec::new();
@@ -75,7 +76,7 @@ pub fn cmd_source_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
 
     let entries: Vec<SourceListEntry> = cfg
         .spec

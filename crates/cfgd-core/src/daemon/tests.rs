@@ -2,6 +2,88 @@ use super::*;
 // Drift helpers are reached via fully-qualified `super::drift::` paths in
 // production; tests use the bare names (e.g. `record_file_drift_to`).
 use super::drift::*;
+use crate::config::{AutoApplyPolicyConfig, PolicyAction};
+use crate::reconciler::{
+    DecisionExclusions, DecisionScope, DeliveredItems, WithheldDecisions, action_resource_info,
+    declared_decision_paths, hash_resources, local_profile, review_source_policy,
+    source_delivered_profile,
+};
+
+/// A merged profile as ONE layer at `policy`'s tier.
+///
+/// The fixtures below describe what a source offers as a `MergedProfile`,
+/// while the policy classifier reads layers — because only a layer carries the
+/// tier. This is the bridge, and the `policy` argument is what lets a test say
+/// "the source offered this in its optional profile" rather than assume.
+fn tiered_items(merged: &MergedProfile, policy: crate::config::LayerPolicy) -> DeliveredItems {
+    DeliveredItems::from_layers(&[tiered_layer(merged, policy)])
+}
+
+/// One layer of `merged` at `policy`'s tier, for a caller composing more than
+/// one tier into a single source's offer.
+fn tiered_layer(
+    merged: &MergedProfile,
+    policy: crate::config::LayerPolicy,
+) -> crate::config::ProfileLayer {
+    crate::config::ProfileLayer {
+        source: "acme".to_string(),
+        profile_name: format!("offered-{policy:?}"),
+        priority: 500,
+        policy,
+        spec: crate::config::ProfileSpec {
+            modules: merged.modules.clone(),
+            env: merged.env.clone(),
+            env_scope: Some(merged.env_scope),
+            aliases: merged.aliases.clone(),
+            packages: Some(merged.packages.clone()),
+            files: Some(merged.files.clone()),
+            system: merged.system.clone(),
+            secrets: merged.secrets.clone(),
+            scripts: Some(merged.scripts.clone()),
+            backups: merged.backups.clone(),
+            ..Default::default()
+        },
+    }
+}
+
+/// The daemon's two halves of one source's auto-apply policy — classify, then
+/// record what the classification asked for — as the single call a tick makes.
+fn process_source_decisions(
+    store: &StateStore,
+    source_name: &str,
+    merged: &MergedProfile,
+    policy: &AutoApplyPolicyConfig,
+    notifier: &Notifier,
+) -> HashSet<String> {
+    process_tiered_decisions(
+        store,
+        source_name,
+        &tiered_items(merged, crate::config::LayerPolicy::Recommended),
+        policy,
+        notifier,
+    )
+}
+
+/// [`process_source_decisions`] for a caller that has already chosen the tier
+/// its items arrive at.
+fn process_tiered_decisions(
+    store: &StateStore,
+    source_name: &str,
+    delivered: &DeliveredItems,
+    policy: &AutoApplyPolicyConfig,
+    notifier: &Notifier,
+) -> HashSet<String> {
+    let review = review_source_policy(
+        store,
+        source_name,
+        delivered,
+        policy,
+        &crate::reconciler::ActualPackages::default(),
+    )
+    .expect("policy review reads the test store");
+    super::reconcile::mint_reviewed_decisions(store, &review, notifier);
+    review.declined
+}
 use crate::test_helpers::{test_printer, test_state};
 
 /// A never-raised abort flag with a `'static` lifetime, so a `ReconcileCtx`
@@ -25,6 +107,7 @@ fn quiet_reconcile_ctx<'a>(
         notify_on_drift,
         hooks,
         state_dir_override: Some(state_dir),
+        explicit_state_dir: true,
         printer,
         module_filter: None,
         auto_apply_override: None,
@@ -69,11 +152,11 @@ fn parse_duration_with_whitespace() {
 
 fn module_drift_plan(action: crate::reconciler::Action) -> crate::reconciler::Plan {
     crate::reconciler::Plan {
-        phases: vec![crate::reconciler::Phase {
-            name: crate::reconciler::PhaseName::Modules,
-            scope: None,
-            actions: vec![action],
-        }],
+        phases: vec![crate::reconciler::Phase::from_actions(
+            crate::reconciler::PhaseName::Modules,
+            &crate::reconciler::Owner::profile("test"),
+            vec![action],
+        )],
         warnings: Vec::new(),
     }
 }
@@ -276,6 +359,7 @@ fn find_server_url_returns_none_for_git_origin() {
             compliance: None,
             update: None,
         },
+        deprecations: Vec::new(),
     };
     assert!(find_server_url(&config).is_none());
 }
@@ -310,6 +394,7 @@ fn find_server_url_returns_url_for_server_origin() {
             compliance: None,
             update: None,
         },
+        deprecations: Vec::new(),
     };
     assert_eq!(
         find_server_url(&config),
@@ -396,7 +481,7 @@ fn extract_source_resources_from_merged_profile() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(resources.contains("packages.brew.ripgrep"));
     assert!(resources.contains("packages.brew.fd"));
     assert!(resources.contains("packages.brew.firefox"));
@@ -425,21 +510,6 @@ fn hash_resources_differs_for_different_sets() {
 }
 
 #[test]
-fn infer_item_tier_defaults_to_recommended() {
-    assert_eq!(infer_item_tier("packages.brew.ripgrep"), "recommended");
-    assert_eq!(infer_item_tier("env.EDITOR"), "recommended");
-}
-
-#[test]
-fn infer_item_tier_detects_locked() {
-    assert_eq!(infer_item_tier("files.security-policy.yaml"), "locked");
-    assert_eq!(
-        infer_item_tier("files./home/user/.config/company/security.yaml"),
-        "locked"
-    );
-}
-
-#[test]
 fn process_source_decisions_first_run_records_decisions() {
     use crate::config::PackagesSpec;
     let store = test_state();
@@ -457,13 +527,1776 @@ fn process_source_decisions_first_run_records_decisions() {
         ..Default::default()
     };
 
-    let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    let declined = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    assert!(
+        declined.is_empty(),
+        "Notify records the item for review rather than declining it outright"
+    );
 
     // First run: all items are new, policy is Notify → pending decisions created
     let pending = store.pending_decisions().unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].resource, "packages.cargo.bat");
-    assert!(excluded.contains("packages.cargo.bat"));
+
+    // The decision path is not the plan's vocabulary: translated, it withholds
+    // `bat` from a cargo batch and leaves every unrelated package alone.
+    let exclusions =
+        DecisionExclusions::from_decision_paths(withheld_paths(&store), crate::expand_tilde);
+    assert!(exclusions.withholds_package("cargo", "bat"));
+    assert!(!exclusions.withholds_package("cargo", "ripgrep"));
+    assert!(!exclusions.withholds_package("npm", "bat"));
+
+    let mut phase = packages_phase_of(vec![install_of("cargo", &["bat", "ripgrep"])]);
+    prune_with(&mut phase, &exclusions);
+    assert_eq!(
+        installed_batches(&phase),
+        vec![("cargo".to_string(), vec!["ripgrep".to_string()])],
+        "the undecided package leaves the batch; its siblings still apply"
+    );
+}
+
+#[test]
+fn first_observation_of_a_source_reasks_nothing_already_answered() {
+    use crate::config::PackagesSpec;
+    // Rows can exist before any hash does: `cfgd decide` records the one item
+    // it answers and stamps nothing, so the daemon's first stamped observation
+    // arrives with an answered row already present. "No previous hash" must
+    // not read as "the source changed" for that item — re-minting it would
+    // supersede the answer the operator just gave — while the sibling, never
+    // asked about, is still minted: the notification decide left unconsumed.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default(); // new_recommended: Notify
+
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "recommended packages.cargo.bat (from acme)",
+        )
+        .unwrap();
+    store
+        .resolve_decision("packages.cargo.bat", "rejected")
+        .unwrap();
+
+    let merged = MergedProfile {
+        packages: PackagesSpec {
+            cargo: Some(crate::config::CargoSpec {
+                file: None,
+                packages: vec!["bat".into(), "eza".into()],
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+        &crate::reconciler::ActualPackages::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        review
+            .to_mint
+            .iter()
+            .map(|m| m.resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.eza"],
+        "only the never-asked item is minted; the answered one stands"
+    );
+    assert!(
+        !review.changed_hashes.is_empty(),
+        "the observation itself is still recorded once a run may write it"
+    );
+}
+
+#[test]
+fn a_changed_source_reasks_an_item_already_answered() {
+    use crate::config::{CargoSpec, PackagesSpec};
+    // The other half of the first-observation split: once a PREVIOUS
+    // observation disagrees with the delivered set, every answered item is
+    // asked again — `docs/sources.md`: a rejection does not persist across
+    // source versions, so an update mints a fresh decision beside the
+    // resolved one and the fresh answer is the operator's current intent.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default(); // new_recommended: Notify
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "recommended packages.cargo.bat (from acme)",
+        )
+        .unwrap();
+    store
+        .resolve_decision("packages.cargo.bat", "rejected")
+        .unwrap();
+    store
+        .set_source_config_hash("acme", "hash-of-an-older-delivered-set")
+        .unwrap();
+
+    let merged = MergedProfile {
+        packages: PackagesSpec {
+            cargo: Some(CargoSpec {
+                file: None,
+                packages: vec!["bat".into()],
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+        &crate::reconciler::ActualPackages::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        review
+            .to_mint
+            .iter()
+            .map(|m| m.resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.bat"],
+        "a source that moved re-asks the item its operator already answered"
+    );
+}
+
+#[test]
+fn an_installed_item_with_no_decision_row_is_still_asked_about() {
+    use crate::config::{CargoSpec, PackagesSpec};
+    // The classifier's "known" proxy reads decision rows ONLY. A
+    // managed-resource row — even one attributed to the source, in the state
+    // vocabulary its table speaks (`package` + `cargo/bat`) — must not stand
+    // in for a decision: an installed item nobody was asked about is exactly
+    // the item Notify still owes a question, and letting the state table
+    // suppress it would revive the vocabulary mismatch this pin retires.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default(); // new_recommended: Notify
+    store
+        .upsert_managed_resource("package", "cargo/bat", "acme", None, None)
+        .unwrap();
+    store
+        .set_source_config_hash("acme", "hash-of-an-older-delivered-set")
+        .unwrap();
+
+    let merged = MergedProfile {
+        packages: PackagesSpec {
+            cargo: Some(CargoSpec {
+                file: None,
+                packages: vec!["bat".into()],
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+        &crate::reconciler::ActualPackages::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        review
+            .to_mint
+            .iter()
+            .map(|m| m.resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.bat"],
+        "a managed-resource row is not a decision; the item is still asked about"
+    );
+}
+
+/// A cargo profile delivering the named packages, for the auto-accept pins.
+fn cargo_profile(packages: &[&str]) -> MergedProfile {
+    use crate::config::PackagesSpec;
+    MergedProfile {
+        packages: PackagesSpec {
+            cargo: Some(crate::config::CargoSpec {
+                file: None,
+                packages: packages.iter().map(|p| p.to_string()).collect(),
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// The planner's observation of one cargo enumeration: installed
+/// `(identity, version)` pairs plus the identity every desired entry mapped to.
+fn cargo_observation(
+    installed: &[(&str, Option<&str>)],
+    identities: &[(&str, &str)],
+) -> crate::reconciler::ActualPackages {
+    let mut actual = crate::reconciler::ActualPackages::default();
+    actual.record_enumeration(
+        "cargo",
+        installed
+            .iter()
+            .map(|(name, v)| (name.to_string(), v.map(str::to_string))),
+    );
+    for (entry, identity) in identities {
+        actual.record_identity("cargo", entry, identity);
+    }
+    actual
+}
+
+#[test]
+fn an_installed_source_package_auto_accepts_instead_of_minting() {
+    // The satisfies-gate's trivial case (`docs/sources.md`): an item with no
+    // version spec is satisfied by any installed version, so the machine
+    // already running it answers the question nobody was asked yet. The
+    // never-installed sibling is still minted.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default(); // new_recommended: Notify
+    let merged = cargo_profile(&["bat", "eza"]);
+    let actual = cargo_observation(&[("bat", None)], &[("bat", "bat"), ("eza", "eza")]);
+
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+        &actual,
+    )
+    .unwrap();
+
+    assert_eq!(
+        review
+            .auto_accepted
+            .iter()
+            .map(|a| a.resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.bat"],
+        "the installed item is accepted without asking"
+    );
+    assert_eq!(
+        review
+            .to_mint
+            .iter()
+            .map(|m| m.resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.eza"],
+        "the absent item still owes its question"
+    );
+
+    // The writing path records the acceptance as an already-resolved row with
+    // auto provenance, and the resource is released from withholding.
+    crate::reconciler::mint_decisions(&store, &review);
+    let rows: Vec<_> = store
+        .withheld_decisions()
+        .unwrap()
+        .into_iter()
+        .map(|d| d.resource)
+        .collect();
+    assert_eq!(
+        rows,
+        vec!["packages.cargo.eza"],
+        "only the still-pending item withholds"
+    );
+    let recorded = store
+        .pending_decisions_for_source("acme")
+        .unwrap()
+        .into_iter()
+        .find(|d| d.resource == "packages.cargo.bat");
+    assert!(
+        recorded.is_none(),
+        "the auto-accepted row is resolved, not pending"
+    );
+    assert!(
+        store.has_decision("acme", "packages.cargo.bat").unwrap(),
+        "resolved with provenance, not merely skipped — the row exists \
+         (its resolution/summary shape is pinned at the store level)"
+    );
+}
+
+#[test]
+fn a_mismatched_version_pin_stays_pending_with_the_conflict_annotated() {
+    // `docs/sources.md`: a version mismatch never auto-accepts — the row
+    // stays pending and carries the conflict as data, so `status` / `decide`
+    // can say WHY the installed copy did not answer the question.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default();
+    let merged = cargo_profile(&["tool@^14"]);
+    let actual = cargo_observation(&[("tool", Some("13.0"))], &[("tool@^14", "tool")]);
+
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+        &actual,
+    )
+    .unwrap();
+
+    assert!(
+        review.auto_accepted.is_empty(),
+        "a mismatch is never consent"
+    );
+    assert_eq!(review.to_mint.len(), 1);
+    let mint = &review.to_mint[0];
+    assert_eq!(
+        mint.annotation.as_deref(),
+        Some("installed 13.0, source wants ^14")
+    );
+    assert!(
+        mint.as_row()
+            .summary
+            .contains("installed 13.0, source wants ^14"),
+        "the annotation rides the row summary every listing renders"
+    );
+}
+
+#[test]
+fn a_satisfied_version_pin_auto_accepts() {
+    // The satisfies-gate proper: installed state satisfies the source's spec,
+    // judged by the shared `version_satisfies` helper.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default();
+    let merged = cargo_profile(&["tool@^14"]);
+    let actual = cargo_observation(&[("tool", Some("14.2"))], &[("tool@^14", "tool")]);
+
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+        &actual,
+    )
+    .unwrap();
+
+    assert!(
+        review.to_mint.is_empty(),
+        "a satisfied pin owes no question"
+    );
+    assert_eq!(review.auto_accepted.len(), 1);
+    assert_eq!(
+        review.auto_accepted[0].reason, "installed 14.2 satisfies ^14",
+        "the provenance names the satisfying version and the spec"
+    );
+}
+
+#[test]
+fn an_unobserved_manager_fails_closed_to_pending() {
+    // Fail-closed on unknown state: the run never enumerated this manager
+    // (unavailable, or its probe errored), so nothing auto-accepts on a guess
+    // — the item is minted plain, exactly as before.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default();
+    let merged = cargo_profile(&["bat"]);
+    // An observation exists, but for a DIFFERENT manager entirely.
+    let mut actual = crate::reconciler::ActualPackages::default();
+    actual.record_enumeration("brew", [("bat".to_string(), None)]);
+
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+        &actual,
+    )
+    .unwrap();
+
+    assert!(review.auto_accepted.is_empty());
+    assert_eq!(
+        review
+            .to_mint
+            .iter()
+            .map(|m| (m.resource.as_str(), m.annotation.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![("packages.cargo.bat", None)],
+        "unknown installed state keeps the plain question"
+    );
+}
+
+#[test]
+fn a_files_item_already_on_disk_never_auto_accepts() {
+    // Packages only: an existing file matching source content is NOT consent.
+    // The file genuinely exists on disk; the classification must not care.
+    use crate::config::{FilesSpec, ManagedFileSpec};
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default();
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("delivered.conf");
+    std::fs::write(&target, "already here\n").unwrap();
+
+    let merged = MergedProfile {
+        files: FilesSpec {
+            managed: vec![ManagedFileSpec {
+                patch: None,
+                source: "files/delivered.conf".into(),
+                target: target.clone(),
+                strategy: None,
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            }],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+        &crate::reconciler::ActualPackages::default(),
+    )
+    .unwrap();
+
+    assert!(
+        review.auto_accepted.is_empty(),
+        "a file on disk is not consent"
+    );
+    assert_eq!(
+        review.to_mint.len(),
+        1,
+        "the files item is still asked about"
+    );
+    assert!(review.to_mint[0].resource.starts_with("files."));
+}
+
+#[test]
+fn a_pending_row_auto_accepts_once_its_package_is_installed() {
+    // The manual-install path `docs/sources.md` promises: the operator
+    // installs the pending package by hand, and the next classification finds
+    // it present, resolves the row with auto provenance, and releases the
+    // resource — no `cfgd decide` required.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default();
+    let merged = cargo_profile(&["bat"]);
+    let delivered = tiered_items(&merged, crate::config::LayerPolicy::Recommended);
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "recommended packages.cargo.bat (from acme)",
+        )
+        .unwrap();
+    store
+        .set_source_config_hash("acme", &delivered.resource_hash())
+        .unwrap();
+
+    let actual = cargo_observation(&[("bat", None)], &[("bat", "bat")]);
+    let review = review_source_policy(&store, "acme", &delivered, &policy, &actual).unwrap();
+
+    assert_eq!(
+        review
+            .auto_accepted
+            .iter()
+            .map(|a| a.resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.bat"]
+    );
+    assert!(review.to_mint.is_empty());
+
+    // Read-only paths release the row without writing anything…
+    let scope = DecisionScope::new(["acme".to_string()], &MergedProfile::default());
+    let withheld = WithheldDecisions::read(&store, &scope)
+        .unwrap()
+        .with_auto_accepted(&review.auto_accepted);
+    assert!(
+        withheld.pending.is_empty(),
+        "the released item no longer withholds the preview"
+    );
+
+    // …and the writing path resolves the SAME row in place.
+    crate::reconciler::mint_decisions(&store, &review);
+    assert!(withheld_paths(&store).is_empty());
+    assert!(
+        store
+            .pending_decisions_for_source("acme")
+            .unwrap()
+            .is_empty(),
+        "the row is resolved, not duplicated"
+    );
+}
+
+#[test]
+fn an_explicit_rejection_is_never_auto_accepted() {
+    // The operator's standing answer outranks installed state: a rejected row
+    // keeps withholding even when the package is on the machine.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default();
+    let merged = cargo_profile(&["bat"]);
+    let delivered = tiered_items(&merged, crate::config::LayerPolicy::Recommended);
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "recommended packages.cargo.bat (from acme)",
+        )
+        .unwrap();
+    store
+        .resolve_decision("packages.cargo.bat", "rejected")
+        .unwrap();
+    store
+        .set_source_config_hash("acme", &delivered.resource_hash())
+        .unwrap();
+
+    let actual = cargo_observation(&[("bat", None)], &[("bat", "bat")]);
+    let review = review_source_policy(&store, "acme", &delivered, &policy, &actual).unwrap();
+
+    assert!(review.auto_accepted.is_empty(), "rejected means rejected");
+    assert!(review.to_mint.is_empty(), "and the answer is not re-asked");
+    crate::reconciler::mint_decisions(&store, &review);
+    assert_eq!(
+        withheld_paths(&store),
+        HashSet::from(["packages.cargo.bat".to_string()]),
+        "the rejection still withholds"
+    );
+}
+
+#[test]
+fn a_voided_rejection_with_the_package_installed_auto_accepts_the_fresh_question() {
+    // `docs/sources.md`: a rejection answers ONE delivered set — when the
+    // source's set changes, the item is a fresh question. Installed state
+    // answers that fresh question exactly as it answers a first-time one (an
+    // installed-despite-rejection package is one the operator put there), so
+    // the composed path is a decision, not an accident: no re-ask, one
+    // auto-accepted resolution.
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default();
+    let old_delivered = tiered_items(
+        &cargo_profile(&["bat"]),
+        crate::config::LayerPolicy::Recommended,
+    );
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "recommended packages.cargo.bat (from acme)",
+        )
+        .unwrap();
+    store
+        .resolve_decision("packages.cargo.bat", "rejected")
+        .unwrap();
+    store
+        .set_source_config_hash("acme", &old_delivered.resource_hash())
+        .unwrap();
+
+    // The source moves: its delivered set gains an item, voiding the standing
+    // answer for everything it delivers.
+    let new_delivered = tiered_items(
+        &cargo_profile(&["bat", "eza"]),
+        crate::config::LayerPolicy::Recommended,
+    );
+    let actual = cargo_observation(&[("bat", None)], &[("bat", "bat"), ("eza", "eza")]);
+    let review = review_source_policy(&store, "acme", &new_delivered, &policy, &actual).unwrap();
+
+    assert_eq!(
+        review
+            .auto_accepted
+            .iter()
+            .map(|a| a.resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.bat"],
+        "the fresh question is answered by installed state, not re-asked"
+    );
+    assert_eq!(
+        review
+            .to_mint
+            .iter()
+            .map(|m| m.resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.eza"],
+        "the not-installed newcomer still owes its question"
+    );
+
+    crate::reconciler::mint_decisions(&store, &review);
+    assert_eq!(
+        withheld_paths(&store),
+        HashSet::from(["packages.cargo.eza".to_string()]),
+        "the auto-accepted item is released; only the fresh ask withholds"
+    );
+}
+
+#[test]
+fn a_pending_rows_conflict_annotation_is_refreshed_in_place() {
+    // A row minted before the operator installed a WRONG version must not
+    // keep its stale summary: the conflict lands on the row (and only
+    // re-writes when it actually moves, so a steady conflict is not a
+    // fresh notification every tick).
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default();
+    let merged = cargo_profile(&["tool@^14"]);
+    let delivered = tiered_items(&merged, crate::config::LayerPolicy::Recommended);
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.tool@^14",
+            "recommended",
+            "install",
+            "recommended packages.cargo.tool@^14 (from acme)",
+        )
+        .unwrap();
+    store
+        .set_source_config_hash("acme", &delivered.resource_hash())
+        .unwrap();
+
+    let actual = cargo_observation(&[("tool", Some("13.0"))], &[("tool@^14", "tool")]);
+    let review = review_source_policy(&store, "acme", &delivered, &policy, &actual).unwrap();
+    assert!(review.auto_accepted.is_empty() && review.to_mint.is_empty());
+    assert_eq!(review.annotation_refresh.len(), 1);
+
+    crate::reconciler::mint_decisions(&store, &review);
+    let rows = store.pending_decisions_for_source("acme").unwrap();
+    assert_eq!(rows.len(), 1, "refreshed in place, never duplicated");
+    assert!(
+        rows[0].summary.contains("installed 13.0, source wants ^14"),
+        "the row the operator reads carries the current conflict, got {:?}",
+        rows[0].summary
+    );
+
+    // A second identical observation is a no-op.
+    let again = review_source_policy(&store, "acme", &delivered, &policy, &actual).unwrap();
+    assert!(
+        again.annotation_refresh.is_empty(),
+        "an unchanged conflict does not rewrite the row every tick"
+    );
+}
+
+/// Every withholding decision's resource path, straight from the store — the
+/// read [`DecisionScope`] then filters down to what a run may still withhold.
+fn withheld_paths(store: &StateStore) -> HashSet<String> {
+    store
+        .withheld_decisions()
+        .expect("read withholding decisions")
+        .into_iter()
+        .map(|d| d.resource)
+        .collect()
+}
+
+/// A local profile declaring one cargo package of the subscriber's own.
+fn local_profile_declaring_bat() -> crate::config::ResolvedProfile {
+    use crate::config::*;
+    let packages = PackagesSpec {
+        cargo: Some(CargoSpec {
+            file: None,
+            packages: vec!["bat".into()],
+        }),
+        ..Default::default()
+    };
+    ResolvedProfile {
+        layers: vec![ProfileLayer {
+            source: "local".into(),
+            profile_name: "default".into(),
+            priority: 1000,
+            policy: LayerPolicy::Local,
+            spec: ProfileSpec {
+                packages: Some(packages.clone()),
+                ..Default::default()
+            },
+        }],
+        merged: MergedProfile {
+            packages,
+            ..Default::default()
+        },
+    }
+}
+
+/// A source recommending one brew formula, subscribed with `accept_recommended`.
+fn source_recommending_k9s(accept_recommended: bool) -> crate::composition::CompositionInput {
+    use crate::config::*;
+    crate::composition::CompositionInput {
+        source_name: "acme".into(),
+        priority: 500,
+        policy: ConfigSourcePolicy {
+            recommended: PolicyItems {
+                packages: Some(PackagesSpec {
+                    brew: Some(BrewSpec {
+                        formulae: vec!["k9s".into()],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        constraints: SourceConstraints::default(),
+        layers: vec![],
+        subscription: crate::composition::SubscriptionConfig {
+            accept_recommended,
+            ..Default::default()
+        },
+        allow_scripts: false,
+    }
+}
+
+#[test]
+fn a_recommended_item_the_subscriber_declined_to_accept_is_never_asked_about() {
+    let local = local_profile_declaring_bat();
+    let composed = crate::composition::compose(
+        &local,
+        &[source_recommending_k9s(false)],
+        crate::composition::ConstraintMode::Enforce,
+    )
+    .unwrap();
+
+    let delivered = source_delivered_profile(&composed.resolved, "acme");
+    assert!(
+        declared_decision_paths(&delivered).is_empty(),
+        "an unaccepted recommended tier never becomes a layer, so the source \
+         delivered nothing to decide about"
+    );
+
+    let store = test_state();
+    let notifier = Notifier::new(NotifyMethod::Stdout, None);
+    let declined = process_source_decisions(
+        &store,
+        "acme",
+        &delivered,
+        &AutoApplyPolicyConfig::default(),
+        &notifier,
+    );
+
+    assert!(
+        declined.is_empty(),
+        "nothing was delivered, so there is nothing to decline"
+    );
+    assert!(
+        store.pending_decisions().unwrap().is_empty(),
+        "an item cfgd will not apply must mint no pending row and add no noise \
+         to a plan"
+    );
+}
+
+#[test]
+fn only_what_the_source_delivered_is_minted_as_a_decision() {
+    let local = local_profile_declaring_bat();
+    let composed = crate::composition::compose(
+        &local,
+        &[source_recommending_k9s(true)],
+        crate::composition::ConstraintMode::Enforce,
+    )
+    .unwrap();
+
+    let delivered = source_delivered_profile(&composed.resolved, "acme");
+    let store = test_state();
+    let notifier = Notifier::new(NotifyMethod::Stdout, None);
+    process_source_decisions(
+        &store,
+        "acme",
+        &delivered,
+        &AutoApplyPolicyConfig::default(),
+        &notifier,
+    );
+
+    let pending: Vec<String> = store
+        .pending_decisions()
+        .unwrap()
+        .into_iter()
+        .map(|d| d.resource)
+        .collect();
+    assert_eq!(
+        pending,
+        vec!["packages.brew.k9s".to_string()],
+        "the accepted recommended item is the one thing the source put in front \
+         of the operator"
+    );
+
+    // Feeding the whole composed profile instead would mint the subscriber's own
+    // declaration as if a source had sent it — and now that a pending row
+    // withholds its resource, that row would block the operator's own package.
+    let scope = DecisionScope::new(["acme"], &local_profile(&composed.resolved));
+    let withheld = WithheldDecisions::read(&store, &scope).expect("read withheld decisions");
+    let exclusions = DecisionExclusions::from_withheld(&withheld);
+    assert!(exclusions.withholds_package("brew", "k9s"));
+    assert!(
+        !exclusions.withholds_package("cargo", "bat"),
+        "a local declaration is not a source decision"
+    );
+}
+
+#[test]
+fn a_decision_never_withholds_a_resource_the_operator_declares_themselves() {
+    // The decision names a path, and a path is not an owner: the subscriber
+    // declares `bat` in their own profile while the source offers it too, so a
+    // row about the source's copy must not be what removes the operator's.
+    let local = local_profile_declaring_bat();
+    let mut source = source_recommending_k9s(true);
+    source.policy.recommended.packages = Some(crate::config::PackagesSpec {
+        cargo: Some(crate::config::CargoSpec {
+            file: None,
+            packages: vec!["bat".into()],
+        }),
+        ..Default::default()
+    });
+    let composed = crate::composition::compose(
+        &local,
+        &[source],
+        crate::composition::ConstraintMode::Enforce,
+    )
+    .unwrap();
+
+    let store = test_state();
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "bat",
+        )
+        .unwrap();
+    store
+        .resolve_decision("packages.cargo.bat", "rejected")
+        .unwrap();
+
+    let scope = DecisionScope::new(["acme"], &local_profile(&composed.resolved));
+    let withheld = WithheldDecisions::read(&store, &scope).expect("read withheld decisions");
+    assert!(
+        withheld.is_empty(),
+        "the operator's own declaration outranks a source's decision over the \
+         same path"
+    );
+    assert!(
+        !DecisionExclusions::from_withheld(&withheld).withholds_package("cargo", "bat"),
+        "declining a source's offer must not uninstall what the operator asked for"
+    );
+}
+
+/// A resolved profile whose only local layer declares one managed file.
+fn local_profile_declaring_file(target: &str) -> crate::config::ResolvedProfile {
+    use crate::config::*;
+    let files = FilesSpec {
+        managed: vec![ManagedFileSpec {
+            source: "files/zshrc".into(),
+            target: std::path::PathBuf::from(target),
+            strategy: None,
+            private: false,
+            origin: None,
+            encryption: None,
+            permissions: None,
+            patch: None,
+        }],
+        ..Default::default()
+    };
+    ResolvedProfile {
+        layers: vec![ProfileLayer {
+            source: LOCAL_LAYER.into(),
+            profile_name: "default".into(),
+            priority: 1000,
+            policy: LayerPolicy::Local,
+            spec: ProfileSpec {
+                files: Some(files.clone()),
+                ..Default::default()
+            },
+        }],
+        merged: MergedProfile {
+            files,
+            ..Default::default()
+        },
+    }
+}
+
+/// The two spellings of one home-relative path, in both orders. A source and a
+/// subscriber write their own manifests, so the guard cannot assume they agree
+/// on `~` — and the prune expands, so a raw string comparison would admit the
+/// row and then delete the operator's own action with it.
+#[test]
+#[serial_test::serial]
+fn a_decision_never_withholds_a_local_declaration_spelled_differently() {
+    let _home = crate::with_test_home_guard(std::path::Path::new("/home/decision-guard"));
+    let expanded = crate::to_posix_string(crate::expand_tilde(std::path::Path::new("~/.zshrc")));
+
+    for (declared, decided) in [
+        ("~/.zshrc", format!("files.{expanded}")),
+        (expanded.as_str(), "files.~/.zshrc".to_string()),
+    ] {
+        let local = local_profile_declaring_file(declared);
+        let store = test_state();
+        store
+            .upsert_pending_decision("acme", &decided, "recommended", "install", "zshrc")
+            .unwrap();
+
+        let scope = DecisionScope::new(["acme"], &local_profile(&local));
+        let withheld = WithheldDecisions::read(&store, &scope).expect("read withheld decisions");
+        assert!(
+            withheld.is_empty(),
+            "a decision spelled `{decided}` must not withhold the operator's own \
+             `{declared}` declaration"
+        );
+        assert!(
+            !DecisionExclusions::from_withheld(&withheld)
+                .withholds_file(&crate::expand_tilde(std::path::Path::new(declared))),
+            "and the prune must leave the operator's file action in the plan"
+        );
+    }
+}
+
+#[test]
+fn a_decision_stops_withholding_once_its_source_is_gone() {
+    // The rows a dropped source leaves are the rows nobody can answer, so they
+    // must go inert the moment it stops delivering — including a rejection,
+    // which would otherwise be a permanent block on a path with no source left
+    // to `cfgd decide` against.
+    let local = local_profile_declaring_bat();
+    let composed = crate::composition::compose(
+        &local,
+        &[source_recommending_k9s(true)],
+        crate::composition::ConstraintMode::Enforce,
+    )
+    .unwrap();
+
+    let store = test_state();
+    store
+        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "k9s")
+        .unwrap();
+    store
+        .upsert_pending_decision(
+            "gone",
+            "packages.brew.stern",
+            "recommended",
+            "install",
+            "stern",
+        )
+        .unwrap();
+    store
+        .resolve_decision("packages.brew.stern", "rejected")
+        .unwrap();
+
+    let scope = DecisionScope::new(["acme"], &local_profile(&composed.resolved));
+    let withheld = WithheldDecisions::read(&store, &scope).expect("read withheld decisions");
+    assert_eq!(
+        withheld
+            .resource_paths()
+            .collect::<Vec<_>>()
+            .as_slice()
+            .to_vec(),
+        vec!["packages.brew.k9s".to_string()],
+        "only the subscribed source's decision still withholds"
+    );
+
+    // The rows themselves are cleaned up by the reconcile sweep, which is what
+    // stops `cfgd status` offering a decision the operator cannot act on.
+    assert_eq!(
+        store
+            .discard_decisions_not_in(&["acme".to_string()])
+            .unwrap(),
+        1
+    );
+    assert_eq!(store.withheld_decisions().unwrap().len(), 1);
+}
+
+/// A config naming a profile that declares nothing, plus its profiles dir, so
+/// a reconcile tick runs end-to-end without planning any work.
+fn inert_config_under(root: &std::path::Path) -> PathBuf {
+    inert_config_named(root, "other.yaml")
+}
+
+/// [`inert_config_under`] with a caller-chosen filename, for staging the same
+/// inert config AT the default config location (`cfgd.yaml`).
+fn inert_config_named(root: &std::path::Path, filename: &str) -> PathBuf {
+    std::fs::create_dir_all(root).unwrap();
+    let config_path = root.join(filename);
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  profile: solo\n",
+    )
+    .unwrap();
+    let profiles = root.join("profiles");
+    std::fs::create_dir_all(&profiles).unwrap();
+    std::fs::write(
+        profiles.join("solo.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: solo\nspec: {}\n",
+    )
+    .unwrap();
+    config_path
+}
+
+/// Run one tick against the DEFAULT state store, from whatever config path the
+/// daemon was pointed at — ownership of the store's decision rows is judged on
+/// that path alone. The ctx carries the EXACT shape the production loop
+/// produces: `run_daemon_with` materializes the scope default into
+/// `state_dir_override` on every real tick, and the operator-explicit
+/// `--state-dir` fact rides its own bit, `false` here because no operator
+/// passed one. A `None` override is a shape the deployed loop never sends,
+/// and driving it here once hid a vacuous ownership gate.
+async fn tick_against_default_store(config_path: PathBuf) {
+    crate::spawn_blocking_with_test_home(move || {
+        let materialized =
+            crate::state::default_state_dir().expect("the test home resolves a default state dir");
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+        let printer = test_printer();
+        handle_reconcile(
+            &config_path,
+            None,
+            ReconcileCtx {
+                state: &state,
+                notifier: &notifier,
+                notify_on_drift: false,
+                hooks: &crate::test_helpers::NoopDaemonHooks,
+                state_dir_override: Some(&materialized),
+                explicit_state_dir: false,
+                printer: &printer,
+                module_filter: None,
+                auto_apply_override: None,
+                drift_policy_override: None,
+                scope: crate::Scope::User,
+                abort: never_abort(),
+            },
+        );
+    })
+    .await
+    .expect("the tick runs to completion");
+}
+
+/// The daemon takes the same store-ownership gate `cfgd apply` does: a daemon
+/// started with `--config other.yaml` against the DEFAULT store would
+/// otherwise delete another config's decision rows, unrecoverably, on its very
+/// first tick.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_daemon_on_a_foreign_config_leaves_the_default_stores_rows_alone() {
+    let staging = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(staging.path());
+    let store = StateStore::open_default().expect("the default store lands under the test home");
+    store
+        .upsert_pending_decision("gone", "packages.brew.stern", "recommended", "install", "s")
+        .unwrap();
+
+    tick_against_default_store(inert_config_under(staging.path())).await;
+
+    assert_eq!(
+        store.pending_decisions().unwrap().len(),
+        1,
+        "a config this daemon was pointed at is not authoritative over another config's rows"
+    );
+}
+
+/// The mint half of the same gate: a daemon on a foreign config whose sources
+/// deliver new items must not write those questions into the DEFAULT store —
+/// the answers would bind a config the operator never subscribed the machine
+/// to, and the recorded source hash would silence the real config's own first
+/// ask.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_daemon_on_a_foreign_config_mints_no_decisions_into_the_default_store() {
+    let staging = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(staging.path());
+    let cache_root = staging.path().join("cache-root").join("cfgd");
+    let _cache =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    stage_cached_source(
+        &cache_root,
+        "acme",
+        "  packages:\n    cargo:\n      - bat\n",
+    );
+
+    let config_path = staging.path().join("other.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  profile: solo\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: NotifyOnly\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.test/team.git\n      subscription:\n        profile: team\n",
+    )
+    .unwrap();
+    let profiles = staging.path().join("profiles");
+    std::fs::create_dir_all(&profiles).unwrap();
+    std::fs::write(
+        profiles.join("solo.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: solo\nspec: {}\n",
+    )
+    .unwrap();
+
+    tick_against_default_store(config_path).await;
+
+    let store = StateStore::open_default().expect("the default store lands under the test home");
+    assert!(
+        store.pending_decisions().unwrap().is_empty(),
+        "a foreign config's delivered items must not become the default store's questions"
+    );
+    assert!(
+        store.source_config_hash("acme").unwrap().is_none(),
+        "no source hash may be recorded either, or the real config's first ask is silenced"
+    );
+}
+
+/// The other arm, in the exact shape every installed service unit runs:
+/// systemd/launchd/the SCM binPath all bake `--config <default path>` into the
+/// invocation, and a daemon on the machine's own config must sweep no matter
+/// how that config was named. Ownership is the PATH, not the spelling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_service_daemon_naming_the_default_config_still_sweeps_dead_decision_rows() {
+    let staging = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(staging.path());
+    let store = StateStore::open_default().expect("the default store lands under the test home");
+    store
+        .upsert_pending_decision("gone", "packages.brew.stern", "recommended", "install", "s")
+        .unwrap();
+
+    // The same file the bare default would resolve, passed the way a generated
+    // service unit passes it: as an explicit path.
+    let config_path =
+        inert_config_named(&crate::default_config_dir(), crate::config::CONFIG_FILENAME);
+    tick_against_default_store(config_path).await;
+
+    assert!(
+        store.pending_decisions().unwrap().is_empty(),
+        "a row whose source is not in spec.sources is one nobody can answer"
+    );
+}
+
+/// A `Packages` phase owned by one profile, for the pending-decision prune.
+fn packages_phase_of(actions: Vec<crate::reconciler::Action>) -> crate::reconciler::Phase {
+    crate::reconciler::Phase::from_actions(
+        crate::reconciler::PhaseName::Packages,
+        &crate::reconciler::Owner::profile("default"),
+        actions,
+    )
+}
+
+fn install_of(manager: &str, packages: &[&str]) -> crate::reconciler::Action {
+    crate::reconciler::Action::Package(crate::providers::PackageAction::Install {
+        manager: manager.to_string(),
+        packages: packages.iter().map(|p| (*p).to_string()).collect(),
+        origin: "acme".to_string(),
+    })
+}
+
+/// The exact prune `handle_reconcile` runs, so a unit test and the daemon
+/// cannot drift apart on how the exclusions are applied.
+fn prune_with(phase: &mut crate::reconciler::Phase, exclusions: &DecisionExclusions) {
+    phase.retain_actions_and_batches(
+        |action| !exclusions.withholds_action(action),
+        |manager, package| !exclusions.withholds_package(manager, package),
+        |target| !exclusions.withholds_file(target),
+    );
+}
+
+/// Every surviving install batch as `(manager, packages)`.
+fn installed_batches(phase: &crate::reconciler::Phase) -> Vec<(String, Vec<String>)> {
+    phase
+        .actions()
+        .filter_map(|action| match action {
+            crate::reconciler::Action::Package(crate::providers::PackageAction::Install {
+                manager,
+                packages,
+                ..
+            }) => Some((manager.clone(), packages.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn pending_package_decision_drops_the_action_only_when_its_batch_empties() {
+    let exclusions = DecisionExclusions::from_decision_paths(
+        ["packages.cargo.bat".to_string()],
+        crate::expand_tilde,
+    );
+
+    let mut shrunk = packages_phase_of(vec![install_of("cargo", &["bat", "ripgrep"])]);
+    prune_with(&mut shrunk, &exclusions);
+    assert_eq!(shrunk.action_count(), 1, "a batch with survivors is kept");
+    assert_eq!(
+        installed_batches(&shrunk),
+        vec![("cargo".to_string(), vec!["ripgrep".to_string()])]
+    );
+
+    let mut emptied = packages_phase_of(vec![install_of("cargo", &["bat"])]);
+    prune_with(&mut emptied, &exclusions);
+    assert!(
+        emptied.is_empty() && emptied.groups().is_empty(),
+        "an emptied batch drops its action, and the emptied group with it"
+    );
+}
+
+#[test]
+fn pending_package_decision_leaves_a_skip_alone() {
+    // A `Skip` names no package — nothing on it could ever match a decision
+    // path — so pruning never withholds it, unlike an Install action, whose
+    // per-package matches can shrink it down to nothing.
+    let exclusions = DecisionExclusions::from_decision_paths(
+        ["packages.cargo.bat".to_string()],
+        crate::expand_tilde,
+    );
+    let mut phase = packages_phase_of(vec![
+        crate::reconciler::Action::Package(crate::providers::PackageAction::Skip {
+            manager: "cargo".into(),
+            reason: "not available".into(),
+            origin: "acme".into(),
+        }),
+        install_of("cargo", &["bat", "ripgrep"]),
+    ]);
+    prune_with(&mut phase, &exclusions);
+    assert_eq!(phase.action_count(), 2, "the skip survives");
+    assert_eq!(
+        installed_batches(&phase),
+        vec![("cargo".to_string(), vec!["ripgrep".to_string()])]
+    );
+}
+
+#[test]
+fn pending_package_decision_withholds_from_a_module_batch_too() {
+    // A package a module claims is planned as the module's own
+    // `InstallPackages` batch, while the decision path was minted from the
+    // profile's declaration of the same package.
+    use crate::reconciler::{Action, ModuleAction, ModuleActionKind};
+
+    let resolved = |name: &str| crate::modules::ResolvedPackage {
+        canonical_name: name.to_string(),
+        resolved_name: name.to_string(),
+        manager: "cargo".to_string(),
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+    };
+    let exclusions = DecisionExclusions::from_decision_paths(
+        ["packages.cargo.bat".to_string()],
+        crate::expand_tilde,
+    );
+    let mut phase = packages_phase_of(vec![Action::Module(ModuleAction {
+        module_name: "cli-tools".into(),
+        kind: ModuleActionKind::InstallPackages {
+            resolved: vec![resolved("bat"), resolved("ripgrep")],
+        },
+        origin: Some("acme".into()),
+    })]);
+    prune_with(&mut phase, &exclusions);
+
+    let names: Vec<String> = phase
+        .actions()
+        .flat_map(|action| match action {
+            Action::Module(ModuleAction {
+                kind: ModuleActionKind::InstallPackages { resolved },
+                ..
+            }) => resolved.iter().map(|p| p.resolved_name.clone()).collect(),
+            _ => Vec::new(),
+        })
+        .collect();
+    assert_eq!(names, vec!["ripgrep".to_string()]);
+}
+
+#[test]
+fn a_per_module_tick_keeps_the_refresh_its_own_packages_read() {
+    // The per-module narrow drops every group but the module's own. Dropping
+    // `cfgd:managers` with them installs that module's packages against an
+    // index the tick never refreshed — the inline post-bootstrap refresh only
+    // covers a manager cfgd installs mid-run, and a manager already present
+    // never reaches it.
+    use crate::reconciler::{
+        Action, ManagerAction, ModuleAction, ModuleActionKind, Owner, Phase, PhaseName, Plan,
+    };
+
+    let package = |name: &str, manager: &str| crate::modules::ResolvedPackage {
+        canonical_name: name.to_string(),
+        resolved_name: name.to_string(),
+        manager: manager.to_string(),
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+    };
+    let module = |name: &str, resolved: Vec<crate::modules::ResolvedPackage>| {
+        Action::Module(ModuleAction {
+            module_name: name.to_string(),
+            kind: ModuleActionKind::InstallPackages { resolved },
+            origin: None,
+        })
+    };
+    let mut plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::profile("default"),
+                vec![
+                    Action::Manager(ManagerAction::RefreshIndex {
+                        manager: "cargo".to_string(),
+                    }),
+                    Action::Manager(ManagerAction::RefreshIndex {
+                        manager: "npm".to_string(),
+                    }),
+                ],
+            ),
+            packages_phase_of(vec![
+                module("cli-tools", vec![package("bat", "cargo")]),
+                module("web", vec![package("tldr", "npm")]),
+            ]),
+        ],
+        warnings: Vec::new(),
+    };
+
+    super::reconcile::narrow_to_module(&mut plan, "cli-tools");
+
+    let nodes: Vec<String> = plan
+        .phases
+        .iter()
+        .flat_map(|p| p.actions())
+        .filter_map(|action| match action {
+            Action::Manager(node) => Some(node.node_id()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        nodes,
+        vec!["manager:refresh:cargo".to_string()],
+        "cargo installs this module's package, so its refresh stays; npm's \
+         consumer left with the other module's group"
+    );
+    assert_eq!(
+        installed_batches(&plan.phases[1]),
+        Vec::<(String, Vec<String>)>::new(),
+        "the module batch is a module action, not a bare install"
+    );
+    assert!(
+        module_has_drift(&plan, "cli-tools"),
+        "the module's own work survives the narrow"
+    );
+    assert!(
+        !module_has_drift(&plan, "web"),
+        "the other module's work does not"
+    );
+}
+
+#[test]
+fn a_per_module_tick_for_a_module_with_no_packages_plans_no_refresh() {
+    // The same rule from the other side: keeping the managers group through
+    // the narrow must not resurrect work for a tick that consumes nothing, or
+    // every module's interval runs `apt update`.
+    use crate::reconciler::{
+        Action, ManagerAction, ModuleAction, ModuleActionKind, Owner, Phase, PhaseName, Plan,
+    };
+
+    let mut plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::profile("default"),
+                vec![Action::Manager(ManagerAction::RefreshIndex {
+                    manager: "cargo".to_string(),
+                })],
+            ),
+            packages_phase_of(vec![
+                Action::Module(ModuleAction {
+                    module_name: "docs".to_string(),
+                    kind: ModuleActionKind::DeployFiles { files: Vec::new() },
+                    origin: None,
+                }),
+                install_of("cargo", &["ripgrep"]),
+            ]),
+        ],
+        warnings: Vec::new(),
+    };
+
+    super::reconcile::narrow_to_module(&mut plan, "docs");
+
+    assert!(
+        plan.phases
+            .iter()
+            .flat_map(|p| p.actions())
+            .all(|action| !matches!(action, Action::Manager(_))),
+        "the profile install that wanted the cargo index left with the profile group"
+    );
+}
+
+#[test]
+fn an_all_withheld_manager_is_withheld_with_its_packages() {
+    // `withhold_from_plan` prunes the installs; the node that exists to serve
+    // them has to go with them, or a run whose every package awaits a decision
+    // still refreshes an index nothing left will read.
+    use crate::reconciler::{Action, ManagerAction, Owner, Phase, PhaseName, Plan};
+
+    let exclusions = DecisionExclusions::from_decision_paths(
+        ["packages.cargo.bat".to_string()],
+        crate::expand_tilde,
+    );
+    let mut plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::profile("default"),
+                vec![
+                    Action::Manager(ManagerAction::RefreshIndex {
+                        manager: "cargo".to_string(),
+                    }),
+                    Action::Manager(ManagerAction::RefreshIndex {
+                        manager: "npm".to_string(),
+                    }),
+                ],
+            ),
+            packages_phase_of(vec![
+                install_of("cargo", &["bat"]),
+                install_of("npm", &["tldr"]),
+            ]),
+        ],
+        warnings: Vec::new(),
+    };
+
+    let withheld = crate::reconciler::withhold_from_plan(&mut plan, &exclusions);
+
+    let nodes: Vec<String> = plan
+        .phases
+        .iter()
+        .flat_map(|p| p.actions())
+        .filter_map(|action| match action {
+            Action::Manager(node) => Some(node.node_id()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        nodes,
+        vec!["manager:refresh:npm".to_string()],
+        "cargo lost its only consumer to the decision; npm keeps its own"
+    );
+    assert_eq!(
+        withheld, 2,
+        "the count the header renders covers the refresh that left with the install"
+    );
+}
+
+#[test]
+fn a_module_whose_only_package_awaits_a_decision_reports_no_drift() {
+    // The documented consequence of the prune, now that it actually matches:
+    // `module_has_drift` reads the pruned plan, so a module left with nothing
+    // to do fires no `onDrift` hook — the hook reacts to work the tick will do,
+    // and an undecided resource is work it will not do.
+    use crate::reconciler::{Action, ModuleAction, ModuleActionKind};
+
+    let exclusions = DecisionExclusions::from_decision_paths(
+        ["packages.cargo.bat".to_string()],
+        crate::expand_tilde,
+    );
+    let mut phase = packages_phase_of(vec![Action::Module(ModuleAction {
+        module_name: "cli-tools".into(),
+        kind: ModuleActionKind::InstallPackages {
+            resolved: vec![crate::modules::ResolvedPackage {
+                canonical_name: "bat".into(),
+                resolved_name: "bat".into(),
+                manager: "cargo".into(),
+                version: None,
+                script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
+            }],
+        },
+        origin: Some("acme".into()),
+    })]);
+    let plan_before = crate::reconciler::Plan {
+        phases: vec![packages_phase_of(vec![Action::Module(ModuleAction {
+            module_name: "cli-tools".into(),
+            kind: ModuleActionKind::Skip {
+                reason: "placeholder".into(),
+            },
+            origin: None,
+        })])],
+        warnings: Vec::new(),
+    };
+    assert!(
+        !module_has_drift(&plan_before, "cli-tools"),
+        "a Skip action was never drift to begin with"
+    );
+
+    prune_with(&mut phase, &exclusions);
+    let plan = crate::reconciler::Plan {
+        phases: vec![phase],
+        warnings: Vec::new(),
+    };
+    assert!(plan.is_empty());
+    assert!(!module_has_drift(&plan, "cli-tools"));
+}
+
+#[test]
+fn pending_brew_decision_reaches_a_cask_installed_by_brew_cask() {
+    // `declared_decision_paths` mints a cask as `packages.brew.<name>`, but the
+    // planner installs it through the `brew-cask` manager.
+    let exclusions = DecisionExclusions::from_decision_paths(
+        ["packages.brew.firefox".to_string()],
+        crate::expand_tilde,
+    );
+    assert!(exclusions.withholds_package("brew-cask", "firefox"));
+    assert!(exclusions.withholds_package("brew", "firefox"));
+    assert!(!exclusions.withholds_package("brew-cask", "ripgrep"));
+    // The fold is one-directional: a decision naming the cask manager outright
+    // must not reach a formula of the same name.
+    let cask_only = DecisionExclusions::from_decision_paths(
+        ["packages.brew-cask.slack".to_string()],
+        crate::expand_tilde,
+    );
+    assert!(cask_only.withholds_package("brew-cask", "slack"));
+    assert!(!cask_only.withholds_package("brew", "slack"));
+}
+
+#[test]
+fn pending_file_decision_matches_the_expanded_action_target() {
+    // The decision keeps the declared `~` spelling; the planner expands it.
+    let home = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(home.path());
+
+    let exclusions = DecisionExclusions::from_decision_paths(
+        ["files.~/.zshrc".to_string(), "files./etc/hosts".to_string()],
+        crate::expand_tilde,
+    );
+
+    let file_action = |target: PathBuf| {
+        crate::reconciler::Action::File(crate::providers::FileAction::Create {
+            source: PathBuf::from("/src/file"),
+            target,
+            origin: "acme".into(),
+            strategy: crate::config::FileStrategy::default(),
+            source_hash: None,
+            patch: None,
+        })
+    };
+    assert!(exclusions.withholds_action(&file_action(home.path().join(".zshrc"))));
+    assert!(exclusions.withholds_action(&file_action(PathBuf::from("/etc/hosts"))));
+    assert!(!exclusions.withholds_action(&file_action(home.path().join(".bashrc"))));
+}
+
+#[test]
+fn pending_file_decision_reaches_a_module_deployed_target_too() {
+    // Profile files and module files are separate surfaces that can name one
+    // path, so withholding only the profile action still writes the file.
+    let home = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(home.path());
+
+    let exclusions = DecisionExclusions::from_decision_paths(
+        ["files.~/.zshrc".to_string()],
+        crate::expand_tilde,
+    );
+
+    let resolved_file = |target: PathBuf| crate::modules::ResolvedFile {
+        source: PathBuf::from("/src/file"),
+        target,
+        is_git_source: false,
+        strategy: None,
+        encryption: None,
+        permissions: None,
+        patch: None,
+    };
+    let deploy = crate::reconciler::Action::Module(crate::reconciler::ModuleAction {
+        module_name: "shell".to_string(),
+        kind: crate::reconciler::ModuleActionKind::DeployFiles {
+            files: vec![
+                resolved_file(home.path().join(".zshrc")),
+                resolved_file(home.path().join(".bashrc")),
+            ],
+        },
+        origin: Some("acme".to_string()),
+    });
+
+    let mut phase = crate::reconciler::Phase::from_actions(
+        crate::reconciler::PhaseName::Modules,
+        &crate::reconciler::Owner::profile("default"),
+        vec![deploy],
+    );
+    prune_with(&mut phase, &exclusions);
+
+    let targets: Vec<PathBuf> = phase
+        .actions()
+        .filter_map(|action| match action {
+            crate::reconciler::Action::Module(crate::reconciler::ModuleAction {
+                kind: crate::reconciler::ModuleActionKind::DeployFiles { files },
+                ..
+            }) => Some(files.iter().map(|f| f.target.clone()).collect::<Vec<_>>()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(
+        targets,
+        vec![home.path().join(".bashrc")],
+        "the undecided target leaves the module's deploy batch; its siblings still deploy"
+    );
+}
+
+#[test]
+fn pending_file_decision_drops_a_module_deploy_action_it_empties() {
+    let home = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(home.path());
+
+    let exclusions = DecisionExclusions::from_decision_paths(
+        ["files.~/.zshrc".to_string()],
+        crate::expand_tilde,
+    );
+    let deploy = crate::reconciler::Action::Module(crate::reconciler::ModuleAction {
+        module_name: "shell".to_string(),
+        kind: crate::reconciler::ModuleActionKind::DeployFiles {
+            files: vec![crate::modules::ResolvedFile {
+                source: PathBuf::from("/src/file"),
+                target: home.path().join(".zshrc"),
+                is_git_source: false,
+                strategy: None,
+                encryption: None,
+                permissions: None,
+                patch: None,
+            }],
+        },
+        origin: Some("acme".to_string()),
+    });
+
+    let mut phase = crate::reconciler::Phase::from_actions(
+        crate::reconciler::PhaseName::Modules,
+        &crate::reconciler::Owner::profile("default"),
+        vec![deploy],
+    );
+    prune_with(&mut phase, &exclusions);
+
+    assert_eq!(
+        phase.action_count(),
+        0,
+        "a deploy batch the decision emptied takes its action with it"
+    );
+}
+
+#[test]
+fn pending_env_decision_withholds_the_whole_env_surface() {
+    // One `WriteEnvFile` renders every declared variable into one file, so
+    // there is no per-variable action to withhold — the surface is withheld as
+    // the unit it is generated as.
+    use crate::reconciler::{Action, EnvAction};
+
+    let exclusions =
+        DecisionExclusions::from_decision_paths(["env.EDITOR".to_string()], crate::expand_tilde);
+    assert!(
+        exclusions.withholds_action(&Action::Env(EnvAction::WriteEnvFile {
+            path: PathBuf::from("/home/user/.cfgd.env"),
+            content: "export EDITOR=vim".into(),
+        }))
+    );
+    assert!(
+        exclusions.withholds_action(&Action::Env(EnvAction::InjectSourceLine {
+            rc_path: PathBuf::from("/home/user/.bashrc"),
+            line: ". ~/.cfgd.env".into(),
+        }))
+    );
+    assert!(
+        exclusions.withholds_action(&Action::Env(EnvAction::RefreshLiveSession {
+            vars: vec![("EDITOR".into(), "vim".into())],
+        }))
+    );
+    // No env decision, no env withholding.
+    let unrelated = DecisionExclusions::from_decision_paths(
+        ["packages.cargo.bat".to_string()],
+        crate::expand_tilde,
+    );
+    assert!(
+        !unrelated.withholds_action(&Action::Env(EnvAction::WriteEnvFile {
+            path: PathBuf::from("/home/user/.cfgd.env"),
+            content: String::new(),
+        }))
+    );
+}
+
+#[test]
+fn pending_system_decision_withholds_every_action_for_its_configurator() {
+    // The decision names the whole `spec.system.<configurator>` block, one
+    // level above the `<configurator>:<key>` id a drift carries.
+    use crate::reconciler::{Action, SystemAction};
+
+    let exclusions =
+        DecisionExclusions::from_decision_paths(["system.sysctl".to_string()], crate::expand_tilde);
+    assert!(
+        exclusions.withholds_action(&Action::System(SystemAction::SetValue {
+            configurator: "sysctl".into(),
+            key: "vm.swappiness".into(),
+            desired: "10".into(),
+            current: "60".into(),
+            origin: "acme".into(),
+        }))
+    );
+    assert!(
+        exclusions.withholds_action(&Action::System(SystemAction::Skip {
+            configurator: "sysctl".into(),
+            reason: "not available".into(),
+            origin: "acme".into(),
+            unknown: false,
+        }))
+    );
+    assert!(
+        !exclusions.withholds_action(&Action::System(SystemAction::SetValue {
+            configurator: "shell".into(),
+            key: "defaultShell".into(),
+            desired: "zsh".into(),
+            current: "bash".into(),
+            origin: "acme".into(),
+        }))
+    );
+}
+
+#[test]
+fn pending_decision_in_no_known_vocabulary_withholds_nothing() {
+    // A malformed or unknown decision path cannot be translated, so it must
+    // withhold nothing rather than withhold everything (or panic).
+    let exclusions = DecisionExclusions::from_decision_paths(
+        [
+            "packages.cargo".to_string(),
+            "packages..bat".to_string(),
+            "files.".to_string(),
+            "env.".to_string(),
+            "system.".to_string(),
+            "secrets.op://vault/item".to_string(),
+            String::new(),
+        ],
+        crate::expand_tilde,
+    );
+    assert!(exclusions.is_empty());
+    assert!(!exclusions.withholds_package("cargo", "bat"));
+
+    let mut phase = packages_phase_of(vec![install_of("cargo", &["bat"])]);
+    prune_with(&mut phase, &exclusions);
+    assert_eq!(phase.action_count(), 1);
+}
+
+#[test]
+fn pending_decisions_never_withhold_a_secret_script_or_module_action() {
+    // `declared_decision_paths` mints four prefixes and no others, so no
+    // pending row can name one of these.
+    use crate::reconciler::{Action, ModuleAction, ModuleActionKind, ScriptAction, ScriptPhase};
+
+    let exclusions = DecisionExclusions::from_decision_paths(
+        [
+            "packages.cargo.bat".to_string(),
+            "files./etc/hosts".to_string(),
+            "env.EDITOR".to_string(),
+            "system.sysctl".to_string(),
+        ],
+        crate::expand_tilde,
+    );
+    assert!(!exclusions.withholds_action(&Action::Secret(
+        crate::providers::SecretAction::Decrypt {
+            source: PathBuf::from("/etc/secret.enc.yaml"),
+            target: PathBuf::from("/etc/secret.yaml"),
+            backend: "sops".into(),
+            origin: "acme".into(),
+        }
+    )));
+    assert!(
+        !exclusions.withholds_action(&Action::Script(ScriptAction::Run {
+            entry: crate::config::ScriptEntry::Simple("echo hi".into()),
+            phase: ScriptPhase::PreApply,
+            origin: "acme".into(),
+        }))
+    );
+    assert!(!exclusions.withholds_action(&Action::Module(ModuleAction {
+        module_name: "cli-tools".into(),
+        kind: ModuleActionKind::Skip {
+            reason: "unmet dependency".into()
+        },
+        origin: None,
+    })));
 }
 
 #[test]
@@ -487,12 +2320,12 @@ fn process_source_decisions_accept_policy_no_pending() {
         ..Default::default()
     };
 
-    let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    let declined = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
 
-    // Accept policy: no pending decisions, not excluded from plan
+    // Accept policy: no pending decisions, nothing declined — the item applies
     let pending = store.pending_decisions().unwrap();
     assert!(pending.is_empty());
-    assert!(!excluded.contains("packages.cargo.bat"));
+    assert!(!declined.contains("packages.cargo.bat"));
 }
 
 // --- Compliance snapshot-on-change logic ---
@@ -522,11 +2355,12 @@ fn compliance_snapshot_skips_when_hash_unchanged() {
         },
     };
 
-    let json = serde_json::to_string_pretty(&snapshot).unwrap();
-    let hash = crate::sha256_hex(json.as_bytes());
+    // Derived through the store's own derivation: a hand-rolled serialization
+    // here would assert the writer against a hash nothing else produces.
+    let (_, hash) = crate::compliance::snapshot_content_hash(&snapshot).unwrap();
 
     // Store first snapshot
-    store.store_compliance_snapshot(&snapshot, &hash).unwrap();
+    store.store_compliance_snapshot(&snapshot).unwrap();
 
     // Latest hash should match — a second store would be skipped
     let latest = store.latest_compliance_hash().unwrap();
@@ -558,9 +2392,8 @@ fn compliance_snapshot_stores_when_hash_changes() {
         },
     };
 
-    let json1 = serde_json::to_string_pretty(&snapshot1).unwrap();
-    let hash1 = crate::sha256_hex(json1.as_bytes());
-    store.store_compliance_snapshot(&snapshot1, &hash1).unwrap();
+    let (_, hash1) = crate::compliance::snapshot_content_hash(&snapshot1).unwrap();
+    store.store_compliance_snapshot(&snapshot1).unwrap();
 
     // Different snapshot with a violation
     let snapshot2 = crate::compliance::ComplianceSnapshot {
@@ -584,21 +2417,153 @@ fn compliance_snapshot_stores_when_hash_changes() {
         },
     };
 
-    let json2 = serde_json::to_string_pretty(&snapshot2).unwrap();
-    let hash2 = crate::sha256_hex(json2.as_bytes());
+    let (_, hash2) = crate::compliance::snapshot_content_hash(&snapshot2).unwrap();
 
     // Hashes differ — new snapshot should be stored
     assert_ne!(hash1, hash2);
     let latest = store.latest_compliance_hash().unwrap();
     assert_ne!(latest.as_deref(), Some(hash2.as_str()));
 
-    store.store_compliance_snapshot(&snapshot2, &hash2).unwrap();
+    store.store_compliance_snapshot(&snapshot2).unwrap();
     let latest = store.latest_compliance_hash().unwrap();
     assert_eq!(latest.as_deref(), Some(hash2.as_str()));
 
     // Both snapshots stored
     let history = store.compliance_history(None, 10).unwrap();
     assert_eq!(history.len(), 2);
+}
+
+#[test]
+fn unchanged_machine_collected_twice_hashes_equal_and_the_daemon_skips_the_second() {
+    // Ground truth for the change detector: two real collections of one
+    // unchanged machine, taken at different wall-clock times, must hash equal
+    // so `compliance history` records changes rather than ticks. The hash
+    // covered the collection timestamp until it was excluded, which made the
+    // skip branch unreachable and appended a row on every tick.
+    use crate::compliance::collect_snapshot;
+    use crate::config::{ComplianceScope, FilesSpec, ManagedFileSpec};
+    use crate::providers::SystemDrift;
+    use crate::test_helpers::{MockFileManager, MockSystemConfigurator};
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("gitconfig");
+    let target = dir.path().join("deployed-gitconfig");
+    std::fs::write(&source, "same").unwrap();
+    std::fs::write(&target, "same").unwrap();
+
+    let mut profile = MergedProfile {
+        files: FilesSpec {
+            managed: vec![ManagedFileSpec {
+                source: source.to_string_lossy().into_owned(),
+                target: target.clone(),
+                strategy: None,
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+                patch: None,
+            }],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    // Four declared configurators, not one: the system checks are the only half
+    // of the array whose order came from map iteration, and a 1-element
+    // permutation is the identity — a single-entry fixture passes this test
+    // whether or not the order is deterministic.
+    let mut registry = ProviderRegistry::new();
+    registry.file_manager = Some(Box::new(MockFileManager::new()));
+    for name in ["sysctl", "shell", "kernelModules", "kubelet"] {
+        profile.system.insert(
+            name.to_string(),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+        registry
+            .system_configurators
+            .push(Box::new(MockSystemConfigurator::new(name).with_drift(
+                vec![SystemDrift {
+                    key: format!("{name}-setting"),
+                    expected: "10".into(),
+                    actual: "60".into(),
+                }],
+            )));
+    }
+
+    let printer = crate::test_helpers::test_printer();
+    let store = test_state();
+    let collect = |registry: &ProviderRegistry| {
+        collect_snapshot(
+            "default",
+            &profile,
+            &[],
+            dir.path(),
+            registry,
+            &ComplianceScope::default(),
+            &["local".to_string()],
+            &printer,
+            &store,
+        )
+        .unwrap()
+    };
+
+    let first = collect(&registry);
+    let mut second = collect(&registry);
+    // The stamp is second-granularity, so two back-to-back collections can
+    // share one; pin a distinct later value rather than let the case that
+    // matters depend on how long the collector took.
+    second.timestamp = "2099-01-01T00:00:00Z".to_string();
+    assert_ne!(first.timestamp, second.timestamp);
+
+    // Pinned directly, not only through the digest: with four configurators a
+    // shuffled order coincides with the sorted one about once in 24 runs, so a
+    // hash compare alone would be a flaky guard rather than a guard.
+    let system_keys = |snapshot: &crate::compliance::ComplianceSnapshot| -> Vec<String> {
+        snapshot
+            .checks
+            .iter()
+            .filter(|c| c.category == "system")
+            .filter_map(|c| c.key.clone())
+            .collect()
+    };
+    assert_eq!(
+        system_keys(&first),
+        vec![
+            "kernelModules.kernelModules-setting".to_string(),
+            "kubelet.kubelet-setting".to_string(),
+            "shell.shell-setting".to_string(),
+            "sysctl.sysctl-setting".to_string(),
+        ],
+        "system checks must be collected in a deterministic (sorted) order"
+    );
+    assert_eq!(system_keys(&first), system_keys(&second));
+
+    let (_, first_hash) = crate::compliance::snapshot_content_hash(&first).unwrap();
+    let (_, second_hash) = crate::compliance::snapshot_content_hash(&second).unwrap();
+    assert_eq!(
+        first_hash, second_hash,
+        "an unchanged machine must hash equal across collections"
+    );
+
+    store.store_compliance_snapshot(&first).unwrap();
+    let latest = store.latest_compliance_hash().unwrap();
+    assert!(
+        super::sync::compliance_snapshot_unchanged(latest.as_deref(), &second_hash),
+        "the daemon must skip the second collection of an unchanged machine"
+    );
+
+    // A real state change still moves the digest: the deployed file stops
+    // matching its source, so the file-content check flips.
+    std::fs::write(&target, "drifted").unwrap();
+    let third = collect(&registry);
+    let (_, third_hash) = crate::compliance::snapshot_content_hash(&third).unwrap();
+    assert_ne!(
+        first_hash, third_hash,
+        "a changed machine must not hash equal to the stored snapshot"
+    );
+    assert!(
+        !super::sync::compliance_snapshot_unchanged(latest.as_deref(), &third_hash),
+        "the daemon must store the collection that observed the change"
+    );
 }
 
 #[test]
@@ -898,17 +2863,18 @@ fn action_resource_info_file_skip() {
 }
 
 #[test]
-fn action_resource_info_package_bootstrap() {
-    use crate::reconciler::Action;
+fn action_resource_info_manager_provision() {
+    use crate::reconciler::{Action, ManagerAction};
 
-    let action = Action::Package(crate::providers::PackageAction::Bootstrap {
+    let action = Action::Manager(ManagerAction::Provision {
         manager: "brew".into(),
-        method: "curl".into(),
-        origin: "local".into(),
+        via: "homebrew installer".into(),
+        batched: vec![],
+        depends_on: vec![],
     });
     let (rtype, rid) = action_resource_info(&action);
-    assert_eq!(rtype, "package");
-    assert_eq!(rid, "brew:bootstrap");
+    assert_eq!(rtype, "manager");
+    assert_eq!(rid, "provision:brew");
 }
 
 #[test]
@@ -1097,7 +3063,7 @@ fn action_resource_info_env_inject() {
     assert_eq!(rid, "/home/user/.bashrc");
 }
 
-// --- extract_source_resources with more package managers ---
+// --- declared_decision_paths with more package managers ---
 
 #[test]
 fn extract_source_resources_apt_dnf_pipx_npm() {
@@ -1120,7 +3086,7 @@ fn extract_source_resources_apt_dnf_pipx_npm() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(resources.contains("packages.apt.git"));
     assert!(resources.contains("packages.apt.tmux"));
     assert!(resources.contains("packages.dnf.vim"));
@@ -1141,7 +3107,7 @@ fn extract_source_resources_system_keys() {
         .system
         .insert("kernelModules".into(), serde_yaml::Value::Null);
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(resources.contains("system.sysctl"));
     assert!(resources.contains("system.kernelModules"));
     assert_eq!(resources.len(), 2);
@@ -1150,7 +3116,7 @@ fn extract_source_resources_system_keys() {
 #[test]
 fn extract_source_resources_empty_profile() {
     let merged = crate::config::MergedProfile::default();
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(resources.is_empty());
 }
 
@@ -1181,12 +3147,12 @@ fn process_source_decisions_no_change_on_second_call() {
     let _ = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
 
     // Second call with same profile: hash matches, no new decisions
-    let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    let declined = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
 
     // No pending decisions since policy is Accept
     let pending = store.pending_decisions().unwrap();
     assert!(pending.is_empty());
-    assert!(excluded.is_empty());
+    assert!(declined.is_empty());
 }
 
 #[test]
@@ -1225,22 +3191,14 @@ fn process_source_decisions_detects_new_items_on_change() {
         },
         ..Default::default()
     };
-    let excluded = process_source_decisions(&store, "acme", &merged2, &policy, &notifier);
+    process_source_decisions(&store, "acme", &merged2, &policy, &notifier);
 
     // Should have a pending decision for ripgrep (new item)
     let pending = store.pending_decisions().unwrap();
     assert!(!pending.is_empty());
     let resource_names: Vec<&str> = pending.iter().map(|d| d.resource.as_str()).collect();
     assert!(resource_names.contains(&"packages.cargo.ripgrep"));
-    assert!(excluded.contains("packages.cargo.ripgrep"));
-}
-
-// --- infer_item_tier: "policy" keyword ---
-
-#[test]
-fn infer_item_tier_detects_policy_keyword() {
-    assert_eq!(infer_item_tier("files.policy-definitions.yaml"), "locked");
-    assert_eq!(infer_item_tier("system.security-policy"), "locked");
+    assert!(withheld_paths(&store).contains("packages.cargo.ripgrep"));
 }
 
 // --- ModuleReconcileStatus serialization ---
@@ -1323,6 +3281,7 @@ fn find_server_url_picks_server_among_multiple_origins() {
             compliance: None,
             update: None,
         },
+        deprecations: Vec::new(),
     };
     assert_eq!(
         find_server_url(&config),
@@ -1354,6 +3313,7 @@ fn find_server_url_returns_none_for_empty_origins() {
             compliance: None,
             update: None,
         },
+        deprecations: Vec::new(),
     };
     assert!(find_server_url(&config).is_none());
 }
@@ -1415,7 +3375,7 @@ fn compute_config_hash_with_empty_packages() {
     assert_eq!(hash1.len(), 64, "hash should be a valid SHA256 hex string");
 }
 
-// --- extract_source_resources: brew taps are not included, casks are ---
+// --- declared_decision_paths: casks fold into brew, taps keep their own manager ---
 
 #[test]
 fn extract_source_resources_brew_casks_only() {
@@ -1434,7 +3394,7 @@ fn extract_source_resources_brew_casks_only() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(
         resources.contains("packages.brew.iterm2"),
         "casks should appear as brew resources"
@@ -1443,12 +3403,14 @@ fn extract_source_resources_brew_casks_only() {
         resources.contains("packages.brew.visual-studio-code"),
         "casks should appear as brew resources"
     );
-    // Taps are not tracked as individual resources
+    // A tap adds a third-party repository to the machine — ask-before-install
+    // covers it like any other source-delivered item, under its own planner
+    // manager name so the exclusion meets the `brew-tap` batch directly.
     assert!(
-        !resources.contains("packages.brew.homebrew/cask"),
-        "taps should not appear as resources"
+        resources.contains("packages.brew-tap.homebrew/cask"),
+        "taps are source-delivered items and mint decisions under brew-tap"
     );
-    assert_eq!(resources.len(), 2);
+    assert_eq!(resources.len(), 3);
 }
 
 #[test]
@@ -1466,7 +3428,7 @@ fn extract_source_resources_cargo_packages_only() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(resources.contains("packages.cargo.cargo-watch"));
     assert!(resources.contains("packages.cargo.cargo-expand"));
     assert_eq!(resources.len(), 2);
@@ -1487,10 +3449,300 @@ fn extract_source_resources_npm_globals() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(resources.contains("packages.npm.typescript"));
     assert!(resources.contains("packages.npm.eslint"));
     assert_eq!(resources.len(), 2);
+}
+
+// --- declared_decision_paths: coverage derives from the planner's own manager enumeration ---
+
+#[test]
+fn declared_decision_paths_cover_every_manager_the_reconciler_plans_from() {
+    use crate::config::{
+        AptSpec, BrewSpec, CargoSpec, CustomManagerSpec, FlatpakSpec, MergedProfile, NpmSpec,
+        PackagesSpec, SnapSpec,
+    };
+
+    let mut packages = PackagesSpec {
+        brew: Some(BrewSpec {
+            file: None,
+            taps: vec!["acme/tools".into()],
+            formulae: vec!["jq".into()],
+            casks: vec!["iterm2".into()],
+        }),
+        apt: Some(AptSpec {
+            file: None,
+            packages: vec!["git".into()],
+        }),
+        cargo: Some(CargoSpec {
+            file: None,
+            packages: vec!["bat".into()],
+        }),
+        npm: Some(NpmSpec {
+            file: None,
+            global: vec!["prettier".into()],
+        }),
+        snap: Some(SnapSpec {
+            packages: vec!["hello".into()],
+            classic: vec!["code".into()],
+        }),
+        flatpak: Some(FlatpakSpec {
+            packages: vec!["org.gnome.Maps".into()],
+            remote: None,
+        }),
+        custom: vec![CustomManagerSpec {
+            name: "mymgr".into(),
+            check: "true".into(),
+            list_installed: "true".into(),
+            install: "true".into(),
+            uninstall: "true".into(),
+            update: None,
+            packages: vec!["mypkg".into()],
+        }],
+        ..Default::default()
+    };
+    for manager in [
+        "pipx",
+        "dnf",
+        "apk",
+        "pacman",
+        "zypper",
+        "yum",
+        "pkg",
+        "nix",
+        "go",
+        "winget",
+        "chocolatey",
+        "scoop",
+    ] {
+        packages
+            .simple_list_mut(manager)
+            .expect("simple-list manager")
+            .push(format!("{manager}-pkg"));
+    }
+    // A manager the fixture missed is a manager this test cannot vouch for, so
+    // a manager added to the planner's enumeration fails HERE first and gets a
+    // fixture entry — which the loop below then holds to coverage.
+    for manager in crate::config::ALL_MANAGER_NAMES {
+        assert!(
+            !crate::config::desired_packages_for_spec(manager, &packages).is_empty(),
+            "fixture declares no package for built-in manager {manager}"
+        );
+    }
+
+    let merged = MergedProfile {
+        packages,
+        ..Default::default()
+    };
+    let paths = declared_decision_paths(&merged);
+    for manager in crate::config::ALL_MANAGER_NAMES {
+        // Casks fold into `brew`: the decision vocabulary cannot tell a cask
+        // from a formula, and the exclusion side already meets the
+        // `brew-cask` batch through that fold.
+        let decision_manager = if *manager == "brew-cask" {
+            "brew"
+        } else {
+            manager
+        };
+        for pkg in crate::config::desired_packages_for_spec(manager, &merged.packages) {
+            assert!(
+                paths.contains(&format!("packages.{decision_manager}.{pkg}")),
+                "manager {manager} delivers {pkg} but mints no decision path — it would install without a decision"
+            );
+        }
+    }
+    assert!(
+        paths.contains("packages.mymgr.mypkg"),
+        "a custom manager's packages are source-deliverable too"
+    );
+}
+
+#[test]
+fn a_scoop_item_mints_and_withholds_under_notify_exactly_like_a_brew_item() {
+    use crate::config::{BrewSpec, MergedProfile, PackagesSpec};
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default(); // new_recommended: Notify
+
+    let merged = MergedProfile {
+        packages: PackagesSpec {
+            brew: Some(BrewSpec {
+                file: None,
+                taps: vec![],
+                formulae: vec!["jq".into()],
+                casks: vec![],
+            }),
+            scoop: vec!["wget".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+        &crate::reconciler::ActualPackages::default(),
+    )
+    .unwrap();
+    let mut minted: Vec<&str> = review.to_mint.iter().map(|m| m.resource.as_str()).collect();
+    minted.sort_unstable();
+    assert_eq!(
+        minted,
+        vec!["packages.brew.jq", "packages.scoop.wget"],
+        "a scoop item is asked about exactly like a brew item"
+    );
+
+    // The minted paths translate into the plan vocabulary and prune a scoop
+    // batch the same way a brew batch is pruned.
+    let exclusions = DecisionExclusions::from_decision_paths(
+        review.to_mint.iter().map(|m| m.resource.clone()),
+        crate::expand_tilde,
+    );
+    assert!(exclusions.withholds_package("scoop", "wget"));
+    let mut phase = packages_phase_of(vec![install_of("scoop", &["wget", "curl"])]);
+    prune_with(&mut phase, &exclusions);
+    assert_eq!(
+        installed_batches(&phase),
+        vec![("scoop".to_string(), vec!["curl".to_string()])],
+        "the undecided scoop package leaves the batch; its siblings still apply"
+    );
+}
+
+#[test]
+fn a_locked_tier_scoop_item_still_applies_when_the_policy_accepts_locked() {
+    use crate::config::{MergedProfile, PackagesSpec};
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig {
+        locked_conflict: PolicyAction::Accept,
+        ..Default::default()
+    };
+
+    let merged = MergedProfile {
+        packages: PackagesSpec {
+            scoop: vec!["wget".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Required),
+        &policy,
+        &crate::reconciler::ActualPackages::default(),
+    )
+    .unwrap();
+    assert!(
+        review.to_mint.is_empty() && review.declined.is_empty(),
+        "an accepted locked-tier item is neither asked about nor declined — it applies"
+    );
+}
+
+/// A tap decision round-trips like the scoop one above: `brew-tap` mints under
+/// its own name — tap names carry a `/`, which the path grammar tolerates
+/// after the manager segment — and the minted path meets the planner's
+/// `brew-tap` batch verbatim.
+#[test]
+fn a_brew_tap_decision_prunes_the_tap_batch_it_names() {
+    let exclusions = DecisionExclusions::from_decision_paths(
+        ["packages.brew-tap.homebrew/cask-fonts".to_string()],
+        crate::expand_tilde,
+    );
+    assert!(exclusions.withholds_package("brew-tap", "homebrew/cask-fonts"));
+    let mut phase = packages_phase_of(vec![install_of(
+        "brew-tap",
+        &["homebrew/cask-fonts", "acme/tools"],
+    )]);
+    prune_with(&mut phase, &exclusions);
+    assert_eq!(
+        installed_batches(&phase),
+        vec![("brew-tap".to_string(), vec!["acme/tools".to_string()])],
+        "the undecided tap leaves the batch; its sibling still applies"
+    );
+}
+
+/// The manager the grammar cannot carry: a `.` in a custom manager's own name
+/// splits the decision path, so no row can name its packages. The batch is
+/// withheld fail-closed — through the review, like every other withhold — and
+/// the run's warnings say why, while the operator's own declaration under the
+/// same manager stays in the plan.
+#[test]
+fn a_dotted_custom_manager_source_batch_is_withheld_fail_closed_with_a_warning() {
+    use crate::config::{
+        CustomManagerSpec, LayerPolicy, MergedProfile, PackagesSpec, ResolvedProfile,
+    };
+
+    let custom = |packages: Vec<String>| PackagesSpec {
+        custom: vec![CustomManagerSpec {
+            name: "pip3.11".into(),
+            check: "pip3.11 --version".into(),
+            list_installed: "pip3.11 list".into(),
+            install: "pip3.11 install".into(),
+            uninstall: "pip3.11 uninstall".into(),
+            update: None,
+            packages,
+        }],
+        ..Default::default()
+    };
+
+    let mut local_layer = tiered_layer(
+        &MergedProfile {
+            packages: custom(vec!["shared".into()]),
+            ..Default::default()
+        },
+        LayerPolicy::Local,
+    );
+    local_layer.source = crate::config::LOCAL_LAYER.to_string();
+    let source_layer = tiered_layer(
+        &MergedProfile {
+            packages: custom(vec!["requests".into(), "shared".into()]),
+            ..Default::default()
+        },
+        LayerPolicy::Recommended,
+    );
+    let resolved = ResolvedProfile {
+        layers: vec![local_layer, source_layer],
+        merged: MergedProfile {
+            packages: custom(vec!["requests".into(), "shared".into()]),
+            ..Default::default()
+        },
+    };
+
+    let batches = crate::reconciler::undecidable_source_batches(&resolved, ["acme"]);
+    assert_eq!(
+        batches,
+        vec![crate::reconciler::UndecidableBatch {
+            source: "acme".to_string(),
+            manager: "pip3.11".to_string(),
+            packages: vec!["requests".to_string()],
+        }],
+        "the source's package is undecidable; the locally declared one is the operator's"
+    );
+
+    let withheld = WithheldDecisions::default().with_undecidable(batches);
+    let exclusions = DecisionExclusions::from_withheld(&withheld);
+    let mut plan = crate::reconciler::Plan {
+        phases: vec![packages_phase_of(vec![install_of(
+            "pip3.11",
+            &["requests", "shared"],
+        )])],
+        warnings: Vec::new(),
+    };
+    let pruned = crate::reconciler::withhold_from_plan(&mut plan, &exclusions);
+    assert_eq!(pruned, 0, "the batch survives with one fewer entry");
+    assert_eq!(
+        installed_batches(&plan.phases[0]),
+        vec![("pip3.11".to_string(), vec!["shared".to_string()])],
+        "the source's undecidable package leaves the batch; the local one applies"
+    );
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.contains("pip3.11") && w.contains("'.'") && w.contains("requests")),
+        "the plan's warnings name the manager, the grammar limitation and the packages: {:?}",
+        plan.warnings
+    );
 }
 
 // --- process_source_decisions with Reject policy ---
@@ -1516,17 +3768,111 @@ fn process_source_decisions_reject_policy_silently_skips() {
         ..Default::default()
     };
 
-    let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    let declined = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
 
-    // Reject policy: no pending decisions, items pass through silently
+    // "Skip silently" is a disposition of the ITEM, in one series with
+    // "don't apply" (Notify) and "automatically apply" (Accept): the package
+    // does not reach the machine, and nothing is recorded to say so — a
+    // rejecting policy is a standing answer, not a question for the operator.
     let pending = store.pending_decisions().unwrap();
     assert!(
         pending.is_empty(),
         "reject policy should not create pending decisions"
     );
+    assert_eq!(
+        declined.iter().collect::<Vec<_>>(),
+        vec!["packages.cargo.bat"],
+        "a rejected item is withheld from the plan, not installed silently"
+    );
+}
+
+/// One merged profile declaring a single cargo package.
+fn merged_declaring_cargo(package: &str) -> MergedProfile {
+    use crate::config::{CargoSpec, PackagesSpec};
+    MergedProfile {
+        packages: PackagesSpec {
+            cargo: Some(CargoSpec {
+                file: None,
+                packages: vec![package.into()],
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+#[test]
+fn flipping_a_rejecting_policy_to_notify_asks_about_the_item() {
+    // A `Reject` policy records nothing, so nothing carries the disposition
+    // forward — and the source has not changed, so a mint gated on the source's
+    // hash would mint nothing and the item would install unattended. The
+    // documented promise ("re-run with Notify if you want to be asked") is only
+    // true if the absence of a row is itself enough to ask.
+    let store = test_state();
+    let notifier = Notifier::new(NotifyMethod::Stdout, None);
+    let merged = merged_declaring_cargo("bat");
+
+    let declined = process_source_decisions(
+        &store,
+        "acme",
+        &merged,
+        &AutoApplyPolicyConfig {
+            new_recommended: PolicyAction::Reject,
+            ..Default::default()
+        },
+        &notifier,
+    );
+    assert!(declined.contains("packages.cargo.bat"));
+    assert!(store.pending_decisions().unwrap().is_empty());
+
+    let declined = process_source_decisions(
+        &store,
+        "acme",
+        &merged,
+        &AutoApplyPolicyConfig {
+            new_recommended: PolicyAction::Notify,
+            ..Default::default()
+        },
+        &notifier,
+    );
     assert!(
-        excluded.is_empty(),
-        "reject policy does not create pending records so nothing is excluded"
+        declined.is_empty(),
+        "the flipped policy no longer declines the item"
+    );
+    assert_eq!(
+        store
+            .pending_decisions()
+            .unwrap()
+            .into_iter()
+            .map(|d| d.resource)
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.bat".to_string()],
+        "so it must be asked about rather than applied unattended"
+    );
+}
+
+#[test]
+fn an_answered_decision_is_not_re_minted_while_its_source_stands_still() {
+    // The other half of minting on an absent row: a row that EXISTS is an
+    // answer, and re-minting over it every tick would re-ask a question the
+    // operator already closed.
+    let store = test_state();
+    let notifier = Notifier::new(NotifyMethod::Stdout, None);
+    let merged = merged_declaring_cargo("bat");
+    let policy = AutoApplyPolicyConfig {
+        new_recommended: PolicyAction::Notify,
+        ..Default::default()
+    };
+
+    process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    store
+        .resolve_decision("packages.cargo.bat", "rejected")
+        .unwrap();
+
+    process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    assert!(
+        store.pending_decisions().unwrap().is_empty(),
+        "a rejection stands until the source itself changes"
     );
 }
 
@@ -1571,6 +3917,7 @@ fn find_server_url_picks_first_server_among_duplicates() {
             compliance: None,
             update: None,
         },
+        deprecations: Vec::new(),
     };
     assert_eq!(
         find_server_url(&config),
@@ -1633,7 +3980,7 @@ fn compute_config_hash_empty_vs_nonempty_differ() {
 // --- process_source_decisions with Ignore policy ---
 
 #[test]
-fn process_source_decisions_ignore_policy_no_pending_no_excluded() {
+fn process_source_decisions_ignore_policy_declines_the_item_without_a_row() {
     use crate::config::{CargoSpec, PackagesSpec};
     let store = test_state();
     let notifier = Notifier::new(NotifyMethod::Stdout, None);
@@ -1653,17 +4000,19 @@ fn process_source_decisions_ignore_policy_no_pending_no_excluded() {
         ..Default::default()
     };
 
-    let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    let declined = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
 
-    // Ignore policy: silently skipped, no pending decisions, nothing excluded
+    // `Ignore` sits beside `Reject` in the same "skip silently" row of the
+    // policy table, so it declines the item on the same terms.
     let pending = store.pending_decisions().unwrap();
     assert!(
         pending.is_empty(),
         "ignore policy should not create pending decisions"
     );
-    assert!(
-        excluded.is_empty(),
-        "ignore policy does not create pending records so nothing is excluded"
+    assert_eq!(
+        declined.iter().collect::<Vec<_>>(),
+        vec!["packages.cargo.bat"],
+        "an ignored item is withheld from the plan, not installed silently"
     );
 }
 
@@ -1901,17 +4250,17 @@ fn reconcile_task_per_module() {
     assert!(task.last_reconciled.is_some());
 }
 
-// --- pending_resource_paths ---
+// --- withheld_decisions ---
 
 #[test]
-fn pending_resource_paths_empty_store() {
+fn withheld_decisions_empty_store() {
     let store = test_state();
-    let paths = pending_resource_paths(&store);
+    let paths = withheld_paths(&store);
     assert!(paths.is_empty());
 }
 
 #[test]
-fn pending_resource_paths_with_decisions() {
+fn withheld_decisions_with_decisions() {
     let store = test_state();
     store
         .upsert_pending_decision(
@@ -1932,40 +4281,13 @@ fn pending_resource_paths_with_decisions() {
         )
         .unwrap();
 
-    let paths = pending_resource_paths(&store);
+    let paths = withheld_paths(&store);
     assert_eq!(paths.len(), 2);
     assert!(paths.contains("packages.cargo.bat"));
     assert!(paths.contains("env.EDITOR"));
 }
 
-// --- infer_item_tier: more coverage ---
-
-#[test]
-fn infer_item_tier_locked_keyword() {
-    assert_eq!(infer_item_tier("files.locked-module-config.yaml"), "locked");
-}
-
-#[test]
-fn infer_item_tier_security_in_system() {
-    assert_eq!(infer_item_tier("system.security-baseline"), "locked");
-}
-
-#[test]
-fn infer_item_tier_normal_package() {
-    assert_eq!(infer_item_tier("packages.brew.curl"), "recommended");
-}
-
-#[test]
-fn infer_item_tier_normal_env_var() {
-    assert_eq!(infer_item_tier("env.GOPATH"), "recommended");
-}
-
-#[test]
-fn infer_item_tier_normal_file() {
-    assert_eq!(infer_item_tier("files./home/user/.zshrc"), "recommended");
-}
-
-// --- extract_source_resources: aliases not included (not tracked) ---
+// --- declared_decision_paths: aliases not included (not tracked) ---
 
 #[test]
 fn extract_source_resources_aliases_not_tracked() {
@@ -1985,7 +4307,7 @@ fn extract_source_resources_aliases_not_tracked() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     // Aliases are not tracked as individual resources
     assert!(
         resources.is_empty(),
@@ -1993,7 +4315,7 @@ fn extract_source_resources_aliases_not_tracked() {
     );
 }
 
-// --- extract_source_resources: mixed profile with everything ---
+// --- declared_decision_paths: mixed profile with everything ---
 
 #[test]
 fn extract_source_resources_full_profile() {
@@ -2002,7 +4324,7 @@ fn extract_source_resources_full_profile() {
         PackagesSpec,
     };
 
-    let mut system = std::collections::HashMap::new();
+    let mut system = std::collections::BTreeMap::new();
     system.insert("sysctl".into(), serde_yaml::Value::Null);
 
     let merged = MergedProfile {
@@ -2055,7 +4377,7 @@ fn extract_source_resources_full_profile() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     // Verify all expected resources are present
     assert!(resources.contains("packages.brew.ripgrep"));
     assert!(resources.contains("packages.brew.firefox"));
@@ -2084,8 +4406,9 @@ fn process_source_decisions_locked_item_notify_policy() {
         ..Default::default()
     };
 
-    // Use a file with "security" in the name to trigger the locked tier
-    let mut system = std::collections::HashMap::new();
+    // The source offers this on a locked/required layer, so `lockedConflict`
+    // governs it — not `newRecommended`.
+    let mut system = std::collections::BTreeMap::new();
     system.insert("security-baseline".into(), serde_yaml::Value::Null);
 
     let merged = MergedProfile {
@@ -2093,14 +4416,19 @@ fn process_source_decisions_locked_item_notify_policy() {
         ..Default::default()
     };
 
-    let excluded = process_source_decisions(&store, "corp", &merged, &policy, &notifier);
+    let declined = process_tiered_decisions(
+        &store,
+        "corp",
+        &tiered_items(&merged, crate::config::LayerPolicy::Required),
+        &policy,
+        &notifier,
+    );
+    assert!(declined.is_empty(), "Notify records rather than declines");
 
-    // The "system.security-baseline" item should be inferred as "locked" tier
-    // and with locked_conflict = Notify, it should create a pending decision
     let pending = store.pending_decisions().unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].resource, "system.security-baseline");
-    assert!(excluded.contains("system.security-baseline"));
+    assert!(withheld_paths(&store).contains("system.security-baseline"));
 }
 
 // --- process_source_decisions: multiple sources ---
@@ -2137,12 +4465,12 @@ fn process_source_decisions_different_sources_independent() {
         ..Default::default()
     };
 
-    let excluded_a = process_source_decisions(&store, "source-a", &merged_a, &policy, &notifier);
-    let excluded_b = process_source_decisions(&store, "source-b", &merged_b, &policy, &notifier);
+    let declined_a = process_source_decisions(&store, "source-a", &merged_a, &policy, &notifier);
+    let declined_b = process_source_decisions(&store, "source-b", &merged_b, &policy, &notifier);
 
-    // Accept policy: both sources processed, nothing excluded
-    assert!(excluded_a.is_empty());
-    assert!(excluded_b.is_empty());
+    // Accept policy: both sources processed, nothing declined
+    assert!(declined_a.is_empty());
+    assert!(declined_b.is_empty());
 }
 
 // --- process_source_decisions: items removed from source ---
@@ -2181,12 +4509,12 @@ fn process_source_decisions_removed_items_update_hash() {
         },
         ..Default::default()
     };
-    let excluded = process_source_decisions(&store, "acme", &merged2, &policy, &notifier);
+    let declined = process_source_decisions(&store, "acme", &merged2, &policy, &notifier);
 
     // Hash changed, but Accept policy means no pending decisions
     let pending = store.pending_decisions().unwrap();
     assert!(pending.is_empty());
-    assert!(excluded.is_empty());
+    assert!(declined.is_empty());
 }
 
 // --- SourceStatus: field defaults ---
@@ -2369,11 +4697,9 @@ fn process_source_decisions_mixed_tiers_accept_recommended_notify_locked() {
         locked_conflict: PolicyAction::Notify,
     };
 
-    // Mix of recommended (cargo packages) and locked (security system setting)
-    let mut system = std::collections::HashMap::new();
-    system.insert("security-policy".into(), serde_yaml::Value::Null);
-
-    let merged = MergedProfile {
+    // One source, two tiers: a recommended layer carrying a package and a
+    // locked layer carrying a system setting.
+    let recommended = MergedProfile {
         packages: PackagesSpec {
             cargo: Some(CargoSpec {
                 file: None,
@@ -2381,20 +4707,34 @@ fn process_source_decisions_mixed_tiers_accept_recommended_notify_locked() {
             }),
             ..Default::default()
         },
+        ..Default::default()
+    };
+    let mut system = std::collections::BTreeMap::new();
+    system.insert("security-policy".into(), serde_yaml::Value::Null);
+    let locked = MergedProfile {
         system,
         ..Default::default()
     };
 
-    let excluded = process_source_decisions(&store, "corp", &merged, &policy, &notifier);
+    let delivered = DeliveredItems::from_layers(&[
+        tiered_layer(&recommended, crate::config::LayerPolicy::Recommended),
+        tiered_layer(&locked, crate::config::LayerPolicy::Required),
+    ]);
+    let declined = process_tiered_decisions(&store, "corp", &delivered, &policy, &notifier);
+    assert!(
+        declined.is_empty(),
+        "neither Accept nor Notify declines an item outright"
+    );
 
     let pending = store.pending_decisions().unwrap();
     // Only the locked item should be pending (security-policy)
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].resource, "system.security-policy");
-    // bat should not be excluded (Accept policy for recommended)
-    assert!(!excluded.contains("packages.cargo.bat"));
-    // security-policy should be excluded (pending)
-    assert!(excluded.contains("system.security-policy"));
+    let withheld = withheld_paths(&store);
+    // bat is accepted by policy, so it stays in the plan
+    assert!(!withheld.contains("packages.cargo.bat"));
+    // security-policy awaits the operator, so it is withheld
+    assert!(withheld.contains("system.security-policy"));
 }
 
 // --- generate_device_id: always hex ---
@@ -2410,7 +4750,7 @@ fn generate_device_id_hex_format() {
     );
 }
 
-// --- extract_source_resources: multiple files ---
+// --- declared_decision_paths: multiple files ---
 
 #[test]
 fn extract_source_resources_multiple_files() {
@@ -2455,14 +4795,14 @@ fn extract_source_resources_multiple_files() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert_eq!(resources.len(), 3);
     assert!(resources.contains("files./home/user/.zshrc"));
     assert!(resources.contains("files./home/user/.vimrc"));
     assert!(resources.contains("files./home/user/.gitconfig"));
 }
 
-// --- extract_source_resources: multiple env vars ---
+// --- declared_decision_paths: multiple env vars ---
 
 #[test]
 fn extract_source_resources_multiple_env_vars() {
@@ -2486,20 +4826,20 @@ fn extract_source_resources_multiple_env_vars() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert_eq!(resources.len(), 3);
     assert!(resources.contains("env.PATH"));
     assert!(resources.contains("env.EDITOR"));
     assert!(resources.contains("env.GOPATH"));
 }
 
-// --- extract_source_resources: multiple system keys ---
+// --- declared_decision_paths: multiple system keys ---
 
 #[test]
 fn extract_source_resources_multiple_system_keys() {
     use crate::config::MergedProfile;
 
-    let mut system = std::collections::HashMap::new();
+    let mut system = std::collections::BTreeMap::new();
     system.insert("sysctl".into(), serde_yaml::Value::Null);
     system.insert("kernelModules".into(), serde_yaml::Value::Null);
     system.insert("apparmor".into(), serde_yaml::Value::Null);
@@ -2509,7 +4849,7 @@ fn extract_source_resources_multiple_system_keys() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert_eq!(resources.len(), 3);
     assert!(resources.contains("system.sysctl"));
     assert!(resources.contains("system.kernelModules"));
@@ -3665,6 +6005,7 @@ fn try_server_checkin_no_server_origin_returns_false() {
             compliance: None,
             update: None,
         },
+        deprecations: Vec::new(),
     };
     let resolved = ResolvedProfile {
         layers: vec![ProfileLayer {
@@ -3722,6 +6063,7 @@ fn try_server_checkin_with_server_origin_calls_checkin() {
             compliance: None,
             update: None,
         },
+        deprecations: Vec::new(),
     };
     let resolved = ResolvedProfile {
         layers: vec![ProfileLayer {
@@ -4006,9 +6348,8 @@ fn process_source_decisions_optional_tier_accept() {
         locked_conflict: PolicyAction::Notify,
     };
 
-    // Regular packages trigger "recommended" tier, not "optional".
-    // The current infer_item_tier only returns "recommended" or "locked".
-    // Verify that recommended items still get the Notify treatment.
+    // An item a source offers on a recommended-tier layer is governed by
+    // `newRecommended`, whatever `newOptional` says.
     let merged = MergedProfile {
         packages: crate::config::PackagesSpec {
             cargo: Some(crate::config::CargoSpec {
@@ -4020,12 +6361,147 @@ fn process_source_decisions_optional_tier_accept() {
         ..Default::default()
     };
 
-    let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    process_source_decisions(&store, "acme", &merged, &policy, &notifier);
     let pending = store.pending_decisions().unwrap();
     // "bat" is recommended tier -> Notify policy -> creates pending decision
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].resource, "packages.cargo.bat");
-    assert!(excluded.contains("packages.cargo.bat"));
+    assert!(withheld_paths(&store).contains("packages.cargo.bat"));
+}
+
+/// `newOptional` governs an item a source offered in an opt-in profile, and
+/// nothing else. The tier comes from the LAYER composition built for that
+/// profile — the only place the fact lives — so the policy key
+/// `docs/sources.md` documents is reachable rather than decorative.
+#[test]
+fn an_optional_tier_item_is_governed_by_the_optional_policy() {
+    let store = test_state();
+    let notifier = Notifier::new(NotifyMethod::Stdout, None);
+    let policy = AutoApplyPolicyConfig {
+        new_recommended: PolicyAction::Notify,
+        new_optional: PolicyAction::Ignore,
+        locked_conflict: PolicyAction::Notify,
+    };
+
+    let merged = MergedProfile {
+        packages: crate::config::PackagesSpec {
+            cargo: Some(crate::config::CargoSpec {
+                file: None,
+                packages: vec!["bat".into()],
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let declined = process_tiered_decisions(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Optional),
+        &policy,
+        &notifier,
+    );
+    assert!(
+        declined.contains("packages.cargo.bat"),
+        "an opt-in profile's item takes newOptional (Ignore), not newRecommended (Notify): {declined:?}"
+    );
+    assert!(
+        store
+            .pending_decisions()
+            .expect("read decisions")
+            .is_empty(),
+        "an Ignored item records no row"
+    );
+}
+
+/// The `locked`/`required` tiers share one `LayerPolicy`, and `lockedConflict`
+/// is the key that governs both — a source's locked item must not be judged by
+/// `newRecommended` merely because its path reads like an ordinary package.
+#[test]
+fn a_required_tier_item_is_governed_by_the_locked_policy() {
+    let store = test_state();
+    let notifier = Notifier::new(NotifyMethod::Stdout, None);
+    let policy = AutoApplyPolicyConfig {
+        new_recommended: PolicyAction::Reject,
+        new_optional: PolicyAction::Ignore,
+        locked_conflict: PolicyAction::Notify,
+    };
+
+    let merged = MergedProfile {
+        packages: crate::config::PackagesSpec {
+            cargo: Some(crate::config::CargoSpec {
+                file: None,
+                packages: vec!["bat".into()],
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let declined = process_tiered_decisions(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Required),
+        &policy,
+        &notifier,
+    );
+    assert!(
+        declined.is_empty(),
+        "lockedConflict: Notify asks about the item rather than declining it: {declined:?}"
+    );
+    let pending = store.pending_decisions().expect("read decisions");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].tier, "locked");
+}
+
+/// A path that merely READS as policy-bearing is not a locked item. The tier
+/// is what the source's layer says it is; guessing from the path once sent a
+/// recommended `~/.config/company/security.yaml` to `lockedConflict`.
+#[test]
+fn a_recommended_item_whose_path_reads_like_policy_is_still_recommended() {
+    let store = test_state();
+    let notifier = Notifier::new(NotifyMethod::Stdout, None);
+    let policy = AutoApplyPolicyConfig {
+        new_recommended: PolicyAction::Notify,
+        new_optional: PolicyAction::Ignore,
+        locked_conflict: PolicyAction::Accept,
+    };
+
+    let merged = MergedProfile {
+        files: crate::config::FilesSpec {
+            managed: vec![managed_file_spec("files/security-policy.yaml")],
+            permissions: Default::default(),
+        },
+        ..Default::default()
+    };
+
+    process_tiered_decisions(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+        &notifier,
+    );
+    let pending = store.pending_decisions().expect("read decisions");
+    assert_eq!(
+        pending.len(),
+        1,
+        "lockedConflict: Accept must not swallow a recommended item"
+    );
+    assert_eq!(pending[0].tier, "recommended");
+}
+
+fn managed_file_spec(target: &str) -> crate::config::ManagedFileSpec {
+    crate::config::ManagedFileSpec {
+        source: "files/x".into(),
+        target: std::path::PathBuf::from(target),
+        strategy: Some(crate::config::FileStrategy::Copy),
+        private: false,
+        origin: None,
+        encryption: None,
+        permissions: None,
+        patch: None,
+    }
 }
 
 // --- process_source_decisions: empty merged profile no decisions ---
@@ -4038,10 +6514,10 @@ fn process_source_decisions_empty_profile_no_decisions() {
 
     let merged = MergedProfile::default();
 
-    let excluded = process_source_decisions(&store, "empty", &merged, &policy, &notifier);
+    let declined = process_source_decisions(&store, "empty", &merged, &policy, &notifier);
     let pending = store.pending_decisions().unwrap();
     assert!(pending.is_empty());
-    assert!(excluded.is_empty());
+    assert!(declined.is_empty());
 }
 
 // --- DaemonStatusResponse: deserialization with all optional fields ---
@@ -4405,30 +6881,6 @@ fn source_status_camel_case_serialization() {
     assert!(!json.contains("\"last_sync\""));
     assert!(!json.contains("\"last_reconcile\""));
     assert!(!json.contains("\"drift_count\""));
-}
-
-// --- infer_item_tier: boundary cases ---
-
-#[test]
-fn infer_item_tier_empty_string() {
-    assert_eq!(infer_item_tier(""), "recommended");
-}
-
-#[test]
-fn infer_item_tier_case_sensitivity() {
-    // "Security" (uppercase S) does NOT match since contains() is case-sensitive
-    assert_eq!(infer_item_tier("files.Security-settings"), "recommended");
-    // "POLICY" (all caps) does NOT match since contains() is case-sensitive
-    assert_eq!(infer_item_tier("files.POLICY-doc"), "recommended");
-    // Only lowercase matches trigger the "locked" tier
-    assert_eq!(infer_item_tier("files.security-settings"), "locked");
-    assert_eq!(infer_item_tier("files.policy-doc"), "locked");
-}
-
-#[test]
-fn infer_item_tier_partial_keyword_match() {
-    // "insecurity" contains "security"
-    assert_eq!(infer_item_tier("files.insecurity-note"), "locked");
 }
 
 // --- compute_config_hash: uses only packages for hash ---
@@ -6249,6 +8701,7 @@ async fn handle_reconcile_auto_apply_honors_a_raised_abort_flag() {
                 notify_on_drift: false,
                 hooks: &hooks,
                 state_dir_override: Some(&sd),
+                explicit_state_dir: true,
                 printer: &printer,
                 module_filter: None,
                 auto_apply_override: None,
@@ -6434,6 +8887,785 @@ async fn handle_reconcile_runs_on_drift_scripts() {
     );
 }
 
+// Every hook body here is a no-op valid in BOTH shells `ScriptShell::Auto`
+// dispatches to — `sh -c` on Unix and `cmd.exe /C` on Windows — so the test
+// runs everywhere the daemon does. What it asserts (heading order, owner
+// depth, the derived alignment column) is produced by `pseudo_phase` /
+// `align_width_of` / `Printer::section`, none of which has an OS-conditional
+// arm; the shell was the only host-bound part of the fixture.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn notify_only_tick_renders_both_on_drift_owners_above_the_reconcile_header() {
+    // A tick that detected drift and chose not to act still reports what
+    // drifted and who ran hooks over it: one `Drift Hooks` heading holding
+    // both owners, ABOVE the `Reconcile` header, then the preview tree, then a
+    // verdict — never a rollup, because nothing was applied.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    // Two bodies of different length, so the shared alignment column below is
+    // a real assertion rather than a tautology.
+    let profile_hook = "cd .";
+    let module_hook = "exit 0";
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: NotifyOnly\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - nvim\n  scripts:\n    onDrift:\n      - \"{profile_hook}\"\n"
+        ),
+    )
+    .unwrap();
+    // The module's `postReconcile` script is what drifts — it is a planned
+    // module action, so `module_has_drift` fires the module's own hook.
+    let mod_dir = tmp.path().join("modules").join("nvim");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  scripts:\n    postReconcile:\n      - \"exit 0\"\n    onDrift:\n      - \"{module_hook}\"\n"
+        ),
+    )
+    .unwrap();
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    crate::spawn_blocking_with_test_home(move || {
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &EmptyPlanHooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    let out = harness::captured_text(&buf);
+    let hooks_at = out
+        .find(crate::reconciler::HOOKS_PHASE_LABEL)
+        .unwrap_or_else(|| panic!("no Drift Hooks heading in:\n{out}"));
+    let header_at = out
+        .find("\nReconcile\n")
+        .unwrap_or_else(|| panic!("no Reconcile header in:\n{out}"));
+    assert!(
+        hooks_at < header_at,
+        "the hooks ran before the reconcile, so their tree renders above its header:\n{out}"
+    );
+    assert!(
+        out.contains("\n  profile:default\n") && out.contains("\n  module:nvim\n"),
+        "both onDrift owners must open a group inside the pseudo-phase:\n{out}"
+    );
+
+    // One SETTLED status per script, at owner depth, carrying the `onDrift`
+    // marker. A `Role::Ok` glyph is the evidence the script ran and exited
+    // zero. The running line above each one names the same subject — a capture
+    // has no live region to repaint that announcement away — so only settled
+    // lines are counted.
+    let hook_lines: Vec<&str> = out
+        .lines()
+        .filter(|l| l.contains("onDrift:") && !l.trim_start().starts_with('\u{25d0}'))
+        .collect();
+    assert_eq!(hook_lines.len(), 2, "one status per hook, got:\n{out}");
+    for (line, body) in hook_lines.iter().zip([profile_hook, module_hook]) {
+        assert!(
+            line.starts_with(&format!("    \u{2713} onDrift: {body}")),
+            "hook status must render Ok at owner depth under its group: {line:?}"
+        );
+    }
+    // Both groups share the pseudo-phase's derived column, so the trailing
+    // duration of the shorter subject lands where the longer one's does.
+    let columns: Vec<Option<usize>> = hook_lines.iter().map(|l| l.find('(')).collect();
+    assert!(
+        columns[0].is_some() && columns[0] == columns[1],
+        "the derived alignment column must be shared by every group in the pseudo-phase: {hook_lines:?}"
+    );
+
+    assert!(
+        out.contains("Trigger  drift (1 resources)"),
+        "the header names what woke the tick:\n{out}"
+    );
+    assert!(
+        out.contains("Phase: "),
+        "a notify-only tick still shows WHAT drifted:\n{out}"
+    );
+    assert!(
+        out.contains("Drift detected — 1 action; policy is notify-only, nothing applied"),
+        "a non-applying tick closes on a verdict:\n{out}"
+    );
+    assert!(
+        !out.contains("Reconcile complete"),
+        "nothing was applied, so no rollup may claim otherwise:\n{out}"
+    );
+    assert!(
+        !out.contains("Actions  "),
+        "a preview-only run's count belongs to its verdict, not to an Actions row:\n{out}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_apply_tick_renders_header_tree_and_rollup() {
+    // The CLI/daemon asymmetry closed: an auto-applying tick renders the same
+    // run skeleton `cfgd apply` does — header rows, the execution tree, and one
+    // rollup — under `RunTitle::Reconcile`.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let source = tmp.path().join("src.txt");
+    std::fs::write(&source, "hello").unwrap();
+    let target = tmp.path().join("dst.txt");
+    let hooks = DriftingFileHooks {
+        source,
+        target: target.clone(),
+    };
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    crate::spawn_blocking_with_test_home(move || {
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &hooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    let out = harness::captured_text(&buf);
+    assert!(
+        out.contains("\nReconcile\n") || out.starts_with("Reconcile\n"),
+        "the tick opens with its own run header:\n{out}"
+    );
+    assert!(
+        out.contains("Profile  default")
+            && out.contains("Trigger  drift (1 resources)")
+            && out.contains("Actions  1 planned"),
+        "header rows name the profile, the trigger and the planned count:\n{out}"
+    );
+    assert!(
+        out.contains("Phase: Files") && out.contains("\n  profile:default\n"),
+        "the executed work renders as a phase/owner tree:\n{out}"
+    );
+    assert!(
+        out.contains("Reconcile complete — 1 action succeeded"),
+        "the run closes on one rollup naming the title:\n{out}"
+    );
+    assert!(target.exists(), "the tick actually applied the action");
+}
+
+/// Records every package name passed to `install`, so a withholding test can
+/// assert what a tick EXECUTED rather than only what it planned.
+struct RecordingInstallManager {
+    installed: Arc<Mutex<Vec<String>>>,
+}
+
+impl PackageManager for RecordingInstallManager {
+    fn name(&self) -> &str {
+        "cargo"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
+    }
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> crate::errors::Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self, _: &PackageContext<'_>) -> crate::errors::Result<HashSet<String>> {
+        Ok(HashSet::new())
+    }
+    fn install(&self, packages: &[String], _: &PackageContext<'_>) -> crate::errors::Result<()> {
+        // blocking_lock is safe: reconcile apply runs on spawn_blocking, off the
+        // async runtime worker.
+        self.installed
+            .blocking_lock()
+            .extend(packages.iter().cloned());
+        Ok(())
+    }
+    fn uninstall(&self, _: &[String], _: &PackageContext<'_>) -> crate::errors::Result<()> {
+        Ok(())
+    }
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> crate::errors::Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _: &str) -> crate::errors::Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
+    // An auto-applying tick must not touch a resource whose source change is
+    // still awaiting the operator's decision. Two pending rows are seeded —
+    // one package inside a batch, one file — and the tick has to withhold
+    // exactly those: `ripgrep` still installs alongside the withheld `bat`, the
+    // undecided file is never written, and the counts the run reports (header,
+    // trigger, rollup, drift rows, journal positions) all describe the pruned
+    // plan rather than the planned-but-withheld one.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    // A configured source with an empty cache is a benign cache-miss: the tick
+    // reconciles local-only and still runs the source-decision workflow. It is
+    // also the reason the withhold is scoped to the SUBSCRIPTION rather than to
+    // what composition merged — a source that delivered nothing this run must
+    // not be a source whose undecided items suddenly apply.
+    let cache_root = tmp.path().join("cache-root-empty").join("cfgd");
+    std::fs::create_dir_all(&cache_root).unwrap();
+    let _cache =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    {
+        let seed = StateStore::open_in_dir(&state_dir).unwrap();
+        seed.upsert_pending_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "recommended packages.cargo.bat (from acme)",
+        )
+        .unwrap();
+        // The decision keeps the DECLARED spelling of the target; the planner
+        // expands it. Both halves of that mapping are exercised here.
+        seed.upsert_pending_decision(
+            "acme",
+            "files.~/withheld.txt",
+            "recommended",
+            "install",
+            "recommended files.~/withheld.txt (from acme)",
+        )
+        .unwrap();
+    }
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n      policy:\n        newRecommended: Accept\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.test/acme.git\n      subscription:\n        profile: team\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        // Only `ripgrep` is the operator's own; `bat` is the source's offer, so
+        // the seeded decision is about a resource the local profile does not
+        // declare.
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  packages:\n    cargo:\n      packages:\n        - ripgrep\n",
+    )
+    .unwrap();
+
+    let source_file = tmp.path().join("src.txt");
+    std::fs::write(&source_file, "hello").unwrap();
+    let kept_target = tmp.path().join("kept.txt");
+    let withheld_target = crate::expand_tilde(Path::new("~/withheld.txt"));
+
+    struct DecisionHooks {
+        installed: Arc<Mutex<Vec<String>>>,
+        source: PathBuf,
+        kept: PathBuf,
+        withheld: PathBuf,
+    }
+    impl DaemonHooks for DecisionHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            let mut reg = ProviderRegistry::new();
+            reg.package_managers.push(Box::new(RecordingInstallManager {
+                installed: Arc::clone(&self.installed),
+            }));
+            reg
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![
+                FileAction::Create {
+                    source: self.source.clone(),
+                    target: self.kept.clone(),
+                    origin: "acme".into(),
+                    strategy: crate::config::FileStrategy::Copy,
+                    source_hash: None,
+                    patch: None,
+                },
+                FileAction::Create {
+                    source: self.source.clone(),
+                    target: self.withheld.clone(),
+                    origin: "acme".into(),
+                    strategy: crate::config::FileStrategy::Copy,
+                    source_hash: None,
+                    patch: None,
+                },
+            ])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![PackageAction::Install {
+                manager: "cargo".into(),
+                packages: vec!["bat".into(), "ripgrep".into()],
+                origin: "acme".into(),
+            }])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    let installed = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = DecisionHooks {
+        installed: Arc::clone(&installed),
+        source: source_file,
+        kept: kept_target.clone(),
+        withheld: withheld_target.clone(),
+    };
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    crate::spawn_blocking_with_test_home(move || {
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &hooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    // What the tick EXECUTED: the decided package only, the decided file only.
+    let installed = installed.lock().await;
+    assert_eq!(
+        *installed,
+        vec!["ripgrep".to_string()],
+        "the undecided package must leave the batch while its siblings still install"
+    );
+    assert!(
+        kept_target.exists(),
+        "a resource with no pending decision still applies"
+    );
+    assert!(
+        !withheld_target.exists(),
+        "a file awaiting a decision must not be written by an auto-applying tick"
+    );
+
+    // What the tick REPORTED: one set — header, trigger and rollup all count
+    // the pruned plan. Three, not two: the decided package and file, plus the
+    // `cfgd:managers` index refresh the Prerequisites phase plans for cargo.
+    let out = harness::captured_text(&buf);
+    assert!(
+        out.contains("Trigger  drift (3 resources)") && out.contains("Actions  3 planned"),
+        "the header must count the pruned plan, not the withheld resources:\n{out}"
+    );
+    assert!(
+        out.contains("Reconcile complete — 3 actions succeeded"),
+        "the rollup must agree with the header:\n{out}"
+    );
+    // The tmp root is substituted first: a random temp-dir name could otherwise
+    // carry the package name as a substring and fail this on luck alone.
+    let named = crate::normalize_for_snapshot(&out, &[(tmp.path(), "TMP")]);
+    assert!(
+        !named.contains("bat") && !named.contains("withheld.txt"),
+        "a withheld resource must not be named anywhere in the run:\n{out}"
+    );
+
+    // What the tick RECORDED: drift rows and journal positions over the same
+    // pruned set, with `action_index` dense from 0.
+    let after = StateStore::open_in_dir(&state_dir).unwrap();
+    let drift_ids: Vec<String> = after
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|d| d.resource_id)
+        .collect();
+    assert!(
+        !drift_ids.iter().any(|id| id.contains("bat")),
+        "a withheld resource is not drift the tick recorded: {drift_ids:?}"
+    );
+    let journal = after.journal_entries_after_apply(0).unwrap();
+    let mut indexes: Vec<i64> = journal.iter().map(|e| e.action_index).collect();
+    indexes.sort_unstable();
+    assert_eq!(
+        indexes,
+        vec![0, 1, 2],
+        "`action_index` stays dense from 0 over the pruned plan"
+    );
+    assert!(
+        !journal
+            .iter()
+            .any(|e| e.resource_id.contains("bat") || e.resource_id.contains("withheld.txt")),
+        "no withheld resource may reach the journal: {:?}",
+        journal.iter().map(|e| &e.resource_id).collect::<Vec<_>>()
+    );
+}
+
+/// Every file under `root`, with its content, for a leak assertion that no
+/// single known surface path can miss.
+fn files_under(root: &Path) -> Vec<(PathBuf, String)> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(ft) if ft.is_dir() => stack.push(path),
+                Ok(ft) if ft.is_file() => {
+                    if let Ok(body) = std::fs::read_to_string(&path) {
+                        out.push((path, body));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_tick_that_cannot_record_a_decision_still_withholds_the_item() {
+    // Fail-closed on the WRITE half too: `mint_decisions` logs and skips a row
+    // the store rejects, so the classified item exists nowhere in the store —
+    // and the unattended tick is the one path with nobody at the screen to
+    // catch it. The item must ride `WithheldDecisions::with_unrecorded` exactly
+    // as it does on `cfgd plan`/`cfgd apply`, or a locked table quietly
+    // installs what nobody was asked about.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let cache_root = tmp.path().join("cache-root").join("cfgd");
+    std::fs::create_dir_all(&cache_root).unwrap();
+    let _cache =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    // `acme` delivers `bat` on a recommended layer; the config sets no policy,
+    // so the item falls to `newRecommended`'s `Notify` default and must be
+    // asked about before it installs.
+    stage_cached_source(
+        &cache_root,
+        "acme",
+        "  packages:\n    cargo:\n      packages:\n        - bat\n",
+    );
+
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    {
+        // Create the schema first, then deny every INSERT into
+        // `pending_decisions` via a trigger: `upsert_pending_decision` fails
+        // while every read (and every other table) keeps working — the exact
+        // shape of a store that rejects the one write minting needs.
+        let seed = StateStore::open_in_dir(&state_dir).unwrap();
+        drop(seed);
+        let conn = rusqlite::Connection::open(state_dir.join(crate::state::STATE_DB_FILENAME))
+            .expect("open the state db directly");
+        conn.execute_batch(
+            "CREATE TRIGGER deny_pending_decision_writes\n             BEFORE INSERT ON pending_decisions\n             BEGIN SELECT RAISE(ABORT, 'pending_decisions rejects writes in this test'); END;",
+        )
+        .expect("install the write-denying trigger");
+    }
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.test/acme.git\n      subscription:\n        profile: team\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        // `ripgrep` is the operator's own and must still install: withholding
+        // the unrecorded item may not turn into skipping the whole tick.
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  packages:\n    cargo:\n      packages:\n        - ripgrep\n",
+    )
+    .unwrap();
+
+    struct MintDeniedHooks {
+        installed: Arc<Mutex<Vec<String>>>,
+    }
+    impl DaemonHooks for MintDeniedHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            let mut reg = ProviderRegistry::new();
+            reg.package_managers.push(Box::new(RecordingInstallManager {
+                installed: Arc::clone(&self.installed),
+            }));
+            reg
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            merged: &MergedProfile,
+            _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            // Plan from the composed profile the tick resolved, so the source's
+            // `bat` is genuinely in the plan the withholding must prune.
+            let packages = merged
+                .packages
+                .cargo
+                .as_ref()
+                .map(|c| c.packages.clone())
+                .unwrap_or_default();
+            Ok(vec![PackageAction::Install {
+                manager: "cargo".into(),
+                packages,
+                origin: "acme".into(),
+            }])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    let installed = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = MintDeniedHooks {
+        installed: Arc::clone(&installed),
+    };
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    crate::spawn_blocking_with_test_home(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &hooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    let after = StateStore::open_in_dir(&state_dir).unwrap();
+    assert!(
+        after.pending_decisions().unwrap().is_empty(),
+        "the fixture's premise: the mint write really failed, so no row exists"
+    );
+    let installed = installed.lock().await;
+    assert!(
+        !installed.contains(&"bat".to_string()),
+        "an item whose decision could not be recorded is still awaiting one — \
+         a failed write must cost the operator the ability to answer, never the \
+         protection; installed: {installed:?}"
+    );
+    assert!(
+        installed.contains(&"ripgrep".to_string()),
+        "the operator's own declaration still installs alongside the withheld \
+         item; installed: {installed:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn auto_apply_tick_does_not_regenerate_a_withheld_env_surface() {
+    // The env arm withholds the whole surface — but apply REGENERATES that
+    // surface after the phases run, from the full declared set rather than from
+    // the pruned plan, whenever a secret resolved env vars (or a manager was
+    // bootstrapped this tick). The undecided variable must not reach the machine
+    // through that back door.
+    //
+    // The control run (no pending decision) proves the fixture genuinely drives
+    // the regeneration: TEAM_TOKEN lands. Without it, an early bail anywhere in
+    // the tick would leave the withheld run vacuously green.
+    let landed = secret_env_tick_leaks(false).await;
+    assert!(
+        !landed.is_empty(),
+        "control: with no pending decision the regeneration must write TEAM_TOKEN — \
+         an empty result means the tick never reached the env surface at all"
+    );
+
+    let leaked = secret_env_tick_leaks(true).await;
+    assert!(
+        leaked.is_empty(),
+        "a variable awaiting a source decision must not reach the machine through the \
+         post-phase env regeneration; it landed in: {leaked:?}"
+    );
+}
+
+/// One auto-apply tick over a secret-envs profile; returns every file under the
+/// test home whose body names TEAM_TOKEN.
+async fn secret_env_tick_leaks(seed_pending_decision: bool) -> Vec<PathBuf> {
+    let tmp = tempfile::tempdir().unwrap();
+    // The home is a SEPARATE root from the config, so "nothing under the home
+    // names the variable" cannot be satisfied by the declaring profile itself.
+    let home = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(home.path());
+    // `acme` really delivers TEAM_TOKEN: the decision is about a source's
+    // variable, not about one the operator declared for themselves.
+    let cache_root = tmp.path().join("cache-root").join("cfgd");
+    std::fs::create_dir_all(&cache_root).unwrap();
+    let _cache =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    stage_cached_source(
+        &cache_root,
+        "acme",
+        "  env:\n    - name: TEAM_TOKEN\n      value: from-acme\n",
+    );
+
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    if seed_pending_decision {
+        let seed = StateStore::open_in_dir(&state_dir).unwrap();
+        seed.upsert_pending_decision(
+            "acme",
+            "env.TEAM_TOKEN",
+            "recommended",
+            "install",
+            "recommended env.TEAM_TOKEN (from acme)",
+        )
+        .unwrap();
+    }
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n      policy:\n        newRecommended: Accept\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.test/acme.git\n      subscription:\n        profile: team\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    // `secrets[].envs` with an available provider fills `secret_env_collector`,
+    // which is what triggers the regeneration on EVERY apply.
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        // `envScope: Login` keeps the surface to files: the live-session arm is
+        // not redirectable by a test home, so a test that does not mean to reach
+        // the operator's session pins the scope instead.
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Login\n  secrets:\n    - source: \"vault://kv/token\"\n      envs:\n        - SECRET_TOKEN\n",
+    )
+    .unwrap();
+
+    struct SecretEnvHooks;
+    impl DaemonHooks for SecretEnvHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            let mut reg = ProviderRegistry::new();
+            reg.secret_providers
+                .push(Box::new(crate::test_helpers::MockSecretProvider::new(
+                    "vault",
+                )));
+            reg
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    crate::spawn_blocking_with_test_home(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &SecretEnvHooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    files_under(home.path())
+        .into_iter()
+        .filter(|(_, body)| body.contains("TEAM_TOKEN"))
+        .map(|(path, _)| path)
+        .collect()
+}
+
 /// Records every package name passed to `uninstall`, so a daemon prune test can
 /// assert the reconcile actually executed the removal (not just planned it).
 struct RecordingUninstallManager {
@@ -6448,10 +9680,10 @@ impl PackageManager for RecordingUninstallManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
     }
-    fn bootstrap(&self, _: &crate::output::Printer) -> crate::errors::Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> crate::errors::Result<()> {
         Ok(())
     }
     fn installed_packages(&self, _: &PackageContext<'_>) -> crate::errors::Result<HashSet<String>> {
@@ -6468,7 +9700,11 @@ impl PackageManager for RecordingUninstallManager {
             .extend(packages.iter().cloned());
         Ok(())
     }
-    fn update(&self, _: &PackageContext<'_>) -> crate::errors::Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> crate::errors::Result<()> {
         Ok(())
     }
     fn available_version(&self, _: &str) -> crate::errors::Result<Option<String>> {
@@ -6894,12 +10130,12 @@ fn discover_managed_paths_with_profile_override() {
     assert_eq!(paths[0], PathBuf::from("/home/user/.bashrc"));
 }
 
-// --- pending_resource_paths ---
+// --- withheld_decisions ---
 
 #[test]
-fn pending_resource_paths_returns_empty_for_no_decisions() {
+fn withheld_decisions_returns_empty_for_no_decisions() {
     let store = test_state();
-    let paths = pending_resource_paths(&store);
+    let paths = withheld_paths(&store);
     assert!(paths.is_empty());
 }
 
@@ -7443,7 +10679,7 @@ fn module_reconcile_status_round_trips_extended() {
     assert_eq!(parsed.drift_policy, "Auto");
 }
 
-// --- extract_source_resources edge cases ---
+// --- declared_decision_paths edge cases ---
 
 #[test]
 fn extract_source_resources_includes_npm_and_pipx_and_dnf() {
@@ -7462,7 +10698,7 @@ fn extract_source_resources_includes_npm_and_pipx_and_dnf() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(resources.contains("packages.npm.typescript"));
     assert!(resources.contains("packages.npm.eslint"));
     assert!(resources.contains("packages.pipx.black"));
@@ -7486,7 +10722,7 @@ fn extract_source_resources_includes_apt() {
         ..Default::default()
     };
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(resources.contains("packages.apt.vim"));
     assert!(resources.contains("packages.apt.git"));
     assert_eq!(resources.len(), 2);
@@ -7506,7 +10742,7 @@ fn extract_source_resources_includes_system_keys() {
         serde_yaml::Value::Mapping(Default::default()),
     );
 
-    let resources = extract_source_resources(&merged);
+    let resources = declared_decision_paths(&merged);
     assert!(resources.contains("system.shell"));
     assert!(resources.contains("system.macos_defaults"));
     assert_eq!(resources.len(), 2);
@@ -7534,37 +10770,19 @@ fn notifier_desktop_does_not_panic() {
     notifier.notify("test title", "test body");
 }
 
-// --- infer_item_tier edge cases ---
-
-#[test]
-fn infer_item_tier_detects_policy_keyword_extended() {
-    assert_eq!(infer_item_tier("files./etc/security-policy.conf"), "locked");
-    assert_eq!(infer_item_tier("system.policy_engine"), "locked");
-}
-
-#[test]
-fn infer_item_tier_normal_resources_are_recommended() {
-    assert_eq!(infer_item_tier("packages.npm.typescript"), "recommended");
-    assert_eq!(
-        infer_item_tier("files./home/user/.gitconfig"),
-        "recommended"
-    );
-    assert_eq!(infer_item_tier("env.PATH"), "recommended");
-}
-
 // --- build_webhook_payload ---
 
 #[test]
 fn build_webhook_payload_emits_expected_schema() {
     let body = super::build_webhook_payload(
         "cfgd: drift detected",
-        "5 file(s) changed",
+        "5 files changed",
         "2026-05-07T05:30:00Z",
     );
     let parsed: serde_json::Value =
         serde_json::from_str(&body).expect("payload must be valid JSON");
     assert_eq!(parsed["event"], "cfgd: drift detected");
-    assert_eq!(parsed["message"], "5 file(s) changed");
+    assert_eq!(parsed["message"], "5 files changed");
     assert_eq!(parsed["timestamp"], "2026-05-07T05:30:00Z");
     assert_eq!(
         parsed["source"], "cfgd",
@@ -7628,6 +10846,11 @@ mod harness {
     /// for any test that doesn't need package or file planning to do real work.
     pub(super) use crate::test_helpers::NoopDaemonHooks as NoopHooks;
 
+    /// The captured render with ANSI escapes removed. Re-exported rather than
+    /// re-derived so the daemon tests and every other capture consumer read
+    /// their buffer through one function.
+    pub(super) use crate::test_helpers::captured_text;
+
     /// Build a `DaemonLoopContext` wired for tests. `config_path` is set to a
     /// nonexistent file under `tmp` so any handler that tries to load config
     /// returns early before touching real system state. `state_dir_override`
@@ -7659,6 +10882,7 @@ mod harness {
             compliance_config: compliance,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            explicit_state_dir: true,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -7790,7 +11014,7 @@ mod harness {
         let (ctx, buf) = sighup_ctx(tmp, config_path);
         let mut backup_timers = crate::daemon::BackupTimers::empty();
         runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_timers);
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         (
             captured,
             reconcile_secs.load(Ordering::Relaxed),
@@ -7872,6 +11096,35 @@ mod harness {
         );
         assert_eq!(reconcile_secs, 300);
         assert_eq!(sync_secs, 300);
+    }
+
+    #[test]
+    fn apply_sighup_reload_drains_theme_deprecations() {
+        // An operator-triggered SIGHUP is a discrete reload, not a periodic
+        // tick, so re-showing the notice here is a fresh-invocation echo, not
+        // a repeat spam of the same message every reconcile interval.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1
+kind: Cfgd
+metadata:
+  name: t
+spec:
+  daemon:
+    enabled: true
+  theme:
+    overrides:
+      iconSuccess: green
+",
+        )
+        .unwrap();
+        let (captured, _reconcile_secs, _sync_secs) = run_sighup(&tmp, &config_path);
+        assert!(
+            captured.contains("theme.overrides.iconSuccess is renamed to iconOk"),
+            "expected SIGHUP reload to drain the theme deprecation notice; got: {captured:?}"
+        );
     }
 
     // ----- build_initial_source_status tests -----
@@ -8204,7 +11457,7 @@ mod harness {
             .expect("join error")
             .expect("loop returned Err");
         assert_eq!(reconcile_secs_observe.load(Ordering::Relaxed), 77);
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         assert!(
             captured.contains("Timer intervals reloaded"),
             "expected reload message in: {}",
@@ -8436,6 +11689,7 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            explicit_state_dir: true,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -8521,6 +11775,7 @@ mod harness {
             compliance_config: Some(compliance_cfg),
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            explicit_state_dir: true,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -8772,6 +12027,7 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            explicit_state_dir: true,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -8847,6 +12103,7 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            explicit_state_dir: true,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -8907,6 +12164,7 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            explicit_state_dir: true,
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
@@ -9337,6 +12595,59 @@ mod harness {
     }
 
     #[test]
+    fn build_pre_loop_setup_drains_theme_deprecations_once_at_startup() {
+        // Startup runs build_pre_loop_setup exactly once per daemon process, so
+        // this is the one place a periodic reconcile tick's own config reload
+        // (which stays silent — see reconcile.rs) would otherwise never surface
+        // the notice at all.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1
+kind: Cfgd
+metadata:
+  name: t
+spec:
+  profile: default
+  theme:
+    overrides:
+      iconSuccess: green
+",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec: {}
+",
+        )
+        .unwrap();
+
+        let (printer, buf) = Printer::for_test();
+        build_pre_loop_setup(
+            &config_path,
+            None,
+            &NoopHooks,
+            crate::Scope::User,
+            &printer,
+            None,
+        )
+        .expect("setup with a deprecated theme key still succeeds");
+
+        let captured = captured_text(&buf);
+        assert!(
+            captured.contains("theme.overrides.iconSuccess is renamed to iconOk"),
+            "expected startup to drain the theme deprecation notice; got: {captured:?}"
+        );
+    }
+
+    #[test]
     fn build_pre_loop_setup_loads_compliance_interval_when_enabled() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -9547,6 +12858,7 @@ mod harness {
             &compliance_cfg,
             Some(&state_dir),
             crate::Scope::User,
+            &crate::test_helpers::test_printer(),
         );
 
         // Snapshot row was written to the override DB.
@@ -9584,6 +12896,7 @@ mod harness {
             &compliance_cfg,
             Some(&state_dir),
             crate::Scope::User,
+            &crate::test_helpers::test_printer(),
         );
 
         // No snapshot stored because config load failed.
@@ -9627,6 +12940,7 @@ mod harness {
             &compliance_cfg,
             Some(&state_dir),
             crate::Scope::User,
+            &crate::test_helpers::test_printer(),
         );
 
         // No snapshot stored because resolve_profile failed.
@@ -9670,6 +12984,7 @@ mod harness {
             &compliance_cfg,
             Some(&state_dir),
             crate::Scope::User,
+            &crate::test_helpers::test_printer(),
         );
 
         let store =
@@ -10202,7 +13517,7 @@ mod harness {
             &["reconcile=30s".to_string(), "compliance=900s".to_string()],
             "/tmp/cfgd-banner-test.sock",
         );
-        let out = buf.lock().unwrap().clone();
+        let out = captured_text(&buf);
         assert!(out.contains("Health: /tmp/cfgd-banner-test.sock"));
         assert!(out.contains("Intervals: reconcile=30s, compliance=900s"));
         assert!(out.contains("Daemon running"));
@@ -10482,7 +13797,7 @@ mod harness {
         assert!(result.is_ok(), "daemon should exit Ok, got {:?}", result);
 
         // Banner emitted by print_startup_banner
-        let out = buf.lock().unwrap().clone();
+        let out = captured_text(&buf);
         assert!(
             out.contains("Daemon running"),
             "banner should announce running state, got: {}",
@@ -10628,7 +13943,7 @@ mod harness {
             .expect("daemon should shut down in time")
             .expect("daemon join");
         assert!(result.is_ok(), "daemon Ok, got {:?}", result);
-        let out = buf.lock().unwrap().clone();
+        let out = captured_text(&buf);
         assert!(
             out.contains("Reloading configuration") || out.contains("Timer intervals reloaded"),
             "expected sighup reload chatter, got: {}",
@@ -10951,7 +14266,7 @@ mod harness {
             "wait_for_shutdown must return after SIGTERM"
         );
         joined.unwrap().expect("task join");
-        let out = buf.lock().unwrap().clone();
+        let out = captured_text(&buf);
         assert!(
             out.contains("Received SIGTERM"),
             "shutdown printer should announce SIGTERM, got: {}",
@@ -11120,7 +14435,7 @@ mod harness {
             .expect("daemon join");
         assert!(result.is_ok(), "daemon should exit Ok, got {:?}", result);
 
-        let out = buf.lock().unwrap().clone();
+        let out = captured_text(&buf);
         assert!(
             out.contains("Daemon stopped"),
             "cleanup path must run, got: {}",
@@ -11297,7 +14612,7 @@ mod harness {
     // reconcile output is emitted by `daemon::reconcile` through separate
     // short-lived printers and is invisible to the buffer below.
 
-    use crate::output::test_capture::{assert_snapshot_at, strip_ansi};
+    use crate::output::test_capture::assert_snapshot_at;
 
     fn snapshot_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/snapshots")
@@ -11355,8 +14670,7 @@ mod harness {
         assert!(result.is_ok(), "daemon should exit Ok, got {:?}", result);
 
         drop(printer);
-        let raw = buf.lock().unwrap().clone();
-        let actual = normalize_ipc(&strip_ansi(&raw), &ipc_path);
+        let actual = normalize_ipc(&captured_text(&buf), &ipc_path);
         assert_snapshot("clean_reconcile_cycle.txt", &actual);
     }
 
@@ -11407,8 +14721,7 @@ mod harness {
         assert!(result.is_ok(), "daemon Ok, got {:?}", result);
 
         drop(printer);
-        let raw = buf.lock().unwrap().clone();
-        let actual = normalize_ipc(&strip_ansi(&raw), &ipc_path);
+        let actual = normalize_ipc(&captured_text(&buf), &ipc_path);
         assert_snapshot("drift_event.txt", &actual);
     }
 }
@@ -11417,7 +14730,7 @@ mod harness {
 // daemon/reconcile.rs — extra branch coverage:
 //   * Plural-message branch fires when count > 1 new pending decisions in
 //     one call (singular path is already covered by *_detects_new_items_on_change)
-//   * pending_resource_paths direct read-back contract — empty / multi-decision
+//   * withheld_decisions direct read-back contract — empty / multi-decision
 //     / post-resolution-empty
 // ---------------------------------------------------------------------------
 
@@ -11429,7 +14742,7 @@ fn process_source_decisions_three_new_items_all_become_pending_in_one_call() {
     // inside `notifier.notify(...)` rendering when new_pending_count > 1.
     // We can't inspect the formatted body directly via Stdout notifier, but
     // we CAN pin the precondition: a single call must register all three
-    // items as pending in the store + the excluded set. That's exactly the
+    // items as pending in the store, all of which then withhold. That's the
     // shape that would trigger the plural message in the notifier body.
     let notifier = Notifier::new(NotifyMethod::Stdout, None);
     let policy = AutoApplyPolicyConfig::default(); // Notify
@@ -11445,7 +14758,7 @@ fn process_source_decisions_three_new_items_all_become_pending_in_one_call() {
         ..Default::default()
     };
 
-    let excluded = process_source_decisions(&store, "acme", &merged, &policy, &notifier);
+    process_source_decisions(&store, "acme", &merged, &policy, &notifier);
 
     let pending = store.pending_decisions().unwrap();
     assert_eq!(
@@ -11454,9 +14767,9 @@ fn process_source_decisions_three_new_items_all_become_pending_in_one_call() {
         "all three new cargo items must produce pending decisions on the first call"
     );
     assert_eq!(
-        excluded.len(),
+        withheld_paths(&store).len(),
         3,
-        "all three pending items must appear in the excluded set"
+        "all three pending items must withhold their resource"
     );
     let names: std::collections::HashSet<&str> =
         pending.iter().map(|d| d.resource.as_str()).collect();
@@ -11466,12 +14779,10 @@ fn process_source_decisions_three_new_items_all_become_pending_in_one_call() {
 }
 
 #[test]
-fn pending_resource_paths_returns_decision_resources_as_set() {
-    use crate::daemon::reconcile::pending_resource_paths;
-
+fn withheld_decisions_returns_decision_resources_as_set() {
     let store = test_state();
     // Empty store → empty set
-    let empty = pending_resource_paths(&store);
+    let empty = withheld_paths(&store);
     assert!(empty.is_empty(), "no decisions → empty set");
 
     // Two distinct decisions
@@ -11494,7 +14805,7 @@ fn pending_resource_paths_returns_decision_resources_as_set() {
         )
         .unwrap();
 
-    let paths = pending_resource_paths(&store);
+    let paths = withheld_paths(&store);
     assert_eq!(paths.len(), 2);
     assert!(paths.contains("packages.cargo.bat"));
     assert!(paths.contains("files.security/rules.yaml"));
@@ -11503,7 +14814,7 @@ fn pending_resource_paths_returns_decision_resources_as_set() {
     store
         .resolve_decisions_for_source("acme", "accepted")
         .unwrap();
-    let after = pending_resource_paths(&store);
+    let after = withheld_paths(&store);
     assert!(
         after.is_empty(),
         "resolving all decisions empties the pending-resource set"
@@ -11819,29 +15130,42 @@ async fn handle_reconcile_auto_apply_with_sources_processes_decisions_and_resolv
 // SKIPS the tick (no prune, no uninstall, last_reconcile untouched, alert
 // raised), while a benign never-synced cache-miss still reconciles local-only.
 
-/// Stage a cached source under `<xdg_data>/cfgd/sources/<name>` whose `team`
-/// profile carries a `preApply` script. The source's policy keeps the default
-/// `noScripts: true` constraint, so composition of the subscribed `team` profile
-/// fails with `ScriptsNotAllowed` — a realistic "cached manifest went bad"
-/// error. Returns nothing; `cache_root` is the unified cfgd cache root
-/// (`<home>/.cache/cfgd`) under which the source cache lives.
-fn stage_constraint_violating_cached_source(cache_root: &Path, name: &str) {
+/// Stage a cached source under `<cache_root>/sources/<name>` providing a single
+/// `team` profile whose `spec:` body is `team_spec` (already indented two
+/// spaces). `cache_root` is the unified cfgd cache root (`<home>/.cache/cfgd`)
+/// the daemon resolves its sources under. The source keeps the default policy,
+/// so `constraints.noScripts` is on.
+fn stage_cached_source(cache_root: &Path, name: &str, team_spec: &str) {
     let src_dir = cache_root.join("sources").join(name);
     std::fs::create_dir_all(src_dir.join("profiles")).unwrap();
-    // Default policy → constraints.noScripts = true.
     std::fs::write(
         src_dir.join("cfgd-source.yaml"),
-        "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: test-src\nspec:\n  provides:\n    profiles:\n      - team\n",
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: {name}\nspec:\n  provides:\n    profiles:\n      - team\n"
+        ),
     )
     .unwrap();
-    // The subscribed profile ships a script → violates noScripts → compose Err.
     std::fs::write(
         src_dir.join("profiles").join("team.yaml"),
-        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n  scripts:\n    preApply:\n      - run: echo hi\n",
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n{team_spec}"
+        ),
     )
     .unwrap();
     // Make it a git repo with a commit so head_commit resolves like a real cache.
     crate::test_helpers::init_test_git_repo(&src_dir);
+}
+
+/// Stage a cached source whose `team` profile carries a `preApply` script.
+/// The source's policy keeps the default `noScripts: true` constraint, so
+/// composition of the subscribed `team` profile fails with `ScriptsNotAllowed`
+/// — a realistic "cached manifest went bad" error.
+fn stage_constraint_violating_cached_source(cache_root: &Path, name: &str) {
+    stage_cached_source(
+        cache_root,
+        name,
+        "  scripts:\n    preApply:\n      - run: echo hi\n",
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -12207,6 +15531,139 @@ async fn handle_reconcile_required_uncached_source_skips_tick_and_preserves_pack
             .any(|(title, body)| title.contains("reconcile skipped")
                 && body.contains("source's cached config is broken")),
         "a required-uncached source must raise the fail-closed skip alert; got: {alerts:?}"
+    );
+}
+
+/// One real reconcile tick against `config_path`, with the daemon's own
+/// collaborator shape (`quiet_reconcile_ctx`), returning how many
+/// "pending decisions" notifications it dispatched.
+async fn tick_pending_decision_notifications(
+    config_path: &Path,
+    state_dir: &Path,
+) -> Vec<(String, String)> {
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let not = Arc::clone(&notifier);
+    let cp = config_path.to_path_buf();
+    let sd = state_dir.to_path_buf();
+    crate::spawn_blocking_with_test_home(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(
+                &state,
+                &not,
+                false,
+                &crate::test_helpers::NoopDaemonHooks,
+                &sd,
+                &printer,
+            ),
+        );
+    })
+    .await
+    .expect("the tick runs to completion");
+    notifier
+        .captured()
+        .into_iter()
+        .filter(|(title, _)| title.contains("pending decisions"))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_tick_renotifies_a_changed_source_and_stays_silent_on_an_unchanged_one() {
+    // The re-notify comparison, through the daemon's real tick shape: the
+    // delivered set is hashed in the decision vocabulary and rows are compared
+    // in the same vocabulary, so an unchanged source raises no second
+    // notification for the item it already asked about, and a changed one
+    // notifies for exactly what it newly delivers.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    // reconcile runs on a `spawn_blocking` worker thread where the
+    // thread-local home override re-installs but `XDG_CACHE_HOME` is honored
+    // only by the Linux `directories` backend, so pin the cache root with the
+    // process-global, every-platform `CFGD_CACHE_DIR` short-circuit.
+    let cache_root = tmp.path().join("cache-root").join("cfgd");
+    let _cache =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    stage_cached_source(
+        &cache_root,
+        "acme",
+        "  packages:\n    cargo:\n      - bat\n",
+    );
+
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: NotifyOnly\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.test/team.git\n      subscription:\n        profile: team\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    // First observation: the item is new, Notify mints and notifies.
+    let first = tick_pending_decision_notifications(&config_path, &state_dir).await;
+    assert_eq!(
+        first.len(),
+        1,
+        "the first tick asks about the newly delivered item; got: {first:?}"
+    );
+    let store = StateStore::open_in_dir(&state_dir).unwrap();
+    assert_eq!(
+        store
+            .pending_decisions()
+            .unwrap()
+            .iter()
+            .map(|d| d.resource.clone())
+            .collect::<Vec<_>>(),
+        vec!["packages.cargo.bat".to_string()]
+    );
+
+    // Unchanged source: same delivered set, same hash — no re-notification.
+    let second = tick_pending_decision_notifications(&config_path, &state_dir).await;
+    assert!(
+        second.is_empty(),
+        "an unchanged source does not re-notify the item it already asked about; got: {second:?}"
+    );
+
+    // The source changes what it delivers: the new item notifies again.
+    std::fs::write(
+        cache_root
+            .join("sources")
+            .join("acme")
+            .join("profiles")
+            .join("team.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n  packages:\n    cargo:\n      - bat\n      - eza\n",
+    )
+    .unwrap();
+    let third = tick_pending_decision_notifications(&config_path, &state_dir).await;
+    assert_eq!(
+        third.len(),
+        1,
+        "a changed source notifies for what it newly delivers; got: {third:?}"
+    );
+    let mut resources: Vec<String> = store
+        .pending_decisions()
+        .unwrap()
+        .iter()
+        .map(|d| d.resource.clone())
+        .collect();
+    resources.sort_unstable();
+    assert_eq!(
+        resources,
+        vec![
+            "packages.cargo.bat".to_string(),
+            "packages.cargo.eza".to_string()
+        ]
     );
 }
 
@@ -12857,6 +16314,7 @@ mod handle_reconcile_extra_branches {
                     notify_on_drift: false,
                     hooks: &NoopHooks,
                     state_dir_override: Some(&sd),
+                    explicit_state_dir: true,
                     printer: &printer,
                     module_filter: Some("dev-tools"),
                     auto_apply_override: Some(false),
@@ -13102,9 +16560,14 @@ mod tests_run_daemon_wrapper {
         }
     }
 
+    // Serial + explicitly unset: `resolve_default_ipc_path` consults
+    // `CFGD_DAEMON_IPC_PATH` before it ever looks at --runtime-dir, and the
+    // socket-server tests set that variable process-wide while they run.
     #[test]
+    #[serial_test::serial]
     fn cli_run_overrides_carry_the_state_dir_and_runtime_dir_flags() {
         use crate::daemon::cli_run_overrides;
+        let _unset_override = crate::test_helpers::EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
         let state = PathBuf::from("/srv/cfgd-state");
         let runtime = PathBuf::from("/srv/cfgd-run");
         let over = cli_run_overrides(
@@ -13183,7 +16646,7 @@ mod tests_run_daemon_wrapper {
 // ===========================================================================
 
 mod backup_timers {
-    use super::harness::{make_test_ctx, make_triggers, pre_loop, sighup_ctx};
+    use super::harness::{captured_text, make_test_ctx, make_triggers, pre_loop, sighup_ctx};
     use super::*;
     use crate::daemon::backup::{
         BackupTask, BackupTimers, DegradedReason, ResolvedBackupTasks, build_backup_tasks,
@@ -13472,7 +16935,7 @@ mod backup_timers {
             "a changed schedule re-arms the timer"
         );
 
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         assert!(
             captured.contains("Backup schedules reloaded: 1 added, 1 removed, 1 rescheduled"),
             "reload must report the timer-set delta: {captured}"
@@ -13976,7 +17439,7 @@ mod backup_timers {
             kept, armed,
             "the pending deadlines must survive the failure"
         );
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         assert!(
             captured.contains("Backup schedules NOT reloaded"),
             "the operator must be told the reload was refused: {captured}"
@@ -14021,7 +17484,7 @@ mod backup_timers {
             "a healed config must restore the timers without a restart or a SIGHUP"
         );
         assert!(!set.is_degraded());
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         assert!(
             captured.contains("Backup schedules restored: 1 scheduled"),
             "the recovery must be visible: {captured}"
@@ -14051,7 +17514,7 @@ mod backup_timers {
 
         assert_eq!(set.len(), 0);
         assert!(!set.is_degraded());
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         assert!(
             captured.contains("Backup schedule resolved: no units configured"),
             "the zero case must not say 'restored': {captured}"
@@ -14094,16 +17557,23 @@ mod backup_timers {
     /// degraded: the exact state the adopt branch runs in. (A source that was
     /// never fetched is only WARNED about, not an error, so it cannot produce
     /// this state.)
+    ///
+    /// Returns the guard pinning `CFGD_CACHE_DIR` at the staged root alongside
+    /// the config path: the cache root is otherwise derived from the home, and
+    /// a concurrent test setting that variable would move it out from under
+    /// this one — the cache would then look absent, composition would succeed,
+    /// and the degraded state under test would never be reached. Every caller
+    /// is `serial` for the same reason.
     fn write_config_with_broken_source_cache(
         tmp: &tempfile::TempDir,
         backups_yaml: &str,
-    ) -> PathBuf {
-        let cache = tmp
-            .path()
-            .join(".cache")
-            .join("cfgd")
-            .join("sources")
-            .join("team");
+    ) -> (PathBuf, crate::test_helpers::EnvVarGuard) {
+        let cache_root = tmp.path().join(".cache").join("cfgd");
+        let guard = crate::test_helpers::EnvVarGuard::set(
+            "CFGD_CACHE_DIR",
+            cache_root.to_str().expect("utf-8 cache root"),
+        );
+        let cache = cache_root.join("sources").join("team");
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::write(
             cache.join(crate::sources::SOURCE_MANIFEST_FILE),
@@ -14124,10 +17594,11 @@ mod backup_timers {
             ),
         )
         .unwrap();
-        config_path
+        (config_path, guard)
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
     async fn a_retry_that_adopts_a_partial_set_says_so_instead_of_reporting_an_all_clear() {
         // The recovery path the startup retry opens: booted on a broken
         // profile (0 timers), profile since fixed, sources still unavailable.
@@ -14140,13 +17611,14 @@ mod backup_timers {
         let source = tmp.path().join("data.db");
         std::fs::write(&source, b"x").unwrap();
         let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
-        ctx.config_path = write_config_with_broken_source_cache(
+        let (broken_config, _cache) = write_config_with_broken_source_cache(
             &tmp,
             &format!(
                 "    - name: db\n      source: {}\n      schedule: 1h\n",
                 crate::to_posix_string(&source)
             ),
         );
+        ctx.config_path = broken_config;
 
         let mut set = BackupTimers::empty_with_retry(Instant::now() - StdDuration::from_secs(3600));
         assert!(set.retry_due(Instant::now()));
@@ -14160,7 +17632,7 @@ mod backup_timers {
             "adopting a partial set must not clear the degraded state"
         );
 
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         assert!(
             captured.contains(
                 "Backup schedules restored: 1 scheduled (source composition unavailable)"
@@ -14178,6 +17650,7 @@ mod backup_timers {
     }
 
     #[test]
+    #[serial_test::serial]
     fn a_sighup_that_adopts_a_partial_set_says_so_instead_of_reporting_an_all_clear() {
         // Same state, reached the other way: a SIGHUP arriving while nothing is
         // running adopts rather than refusing (there is nothing to protect), so
@@ -14186,7 +17659,7 @@ mod backup_timers {
         let _g = crate::with_test_home_guard(tmp.path());
         let source = tmp.path().join("data.db");
         std::fs::write(&source, b"x").unwrap();
-        let config_path = write_config_with_broken_source_cache(
+        let (config_path, _cache) = write_config_with_broken_source_cache(
             &tmp,
             &format!(
                 "    - name: db\n      source: {}\n      schedule: 1h\n",
@@ -14205,7 +17678,7 @@ mod backup_timers {
             set.degraded_reason(),
             Some(crate::daemon::backup::DegradedReason::SourcesUnavailable)
         );
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         assert!(
             captured.contains(
                 "Backup schedules reloaded: 1 added, 0 removed, 0 rescheduled (source composition unavailable)"
@@ -14245,7 +17718,7 @@ mod backup_timers {
         runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
 
         assert!(!set.is_degraded());
-        let captured = buf.lock().unwrap().clone();
+        let captured = captured_text(&buf);
         assert!(
             captured.contains("✓ Backup schedules reloaded: 1 added, 0 removed, 0 rescheduled"),
             "got: {captured}"
@@ -14416,5 +17889,302 @@ mod backup_timers {
              not borrow the profile-unresolved or source-composition wording, \
              got: {unreadable_config:?}"
         );
+    }
+    // ----- one group, whichever surface dispatched it -----
+
+    /// The `Backups` block of a captured run, with the wall-clock parts of it
+    /// neutralised: the snapshot stamp (and the `-N` suffix the engine appends
+    /// when two runs land in one second) and every duration. What is left is
+    /// exactly the grammar — icons, subjects, alignment, group headings.
+    fn backups_block(human: &str) -> String {
+        let plain = crate::output::strip_ansi(human);
+        let block: Vec<&str> = plain
+            .lines()
+            .skip_while(|line| line.trim() != "Backups")
+            // The rollup opens the run's closing block and names the surface
+            // that dispatched it (`Apply complete` / `Backup complete`), which
+            // is the one line the group's grammar is deliberately not compared
+            // on. Every line of the group itself is an icon + subject; only a
+            // rollup counts actions.
+            .take_while(|line| !line.contains("action"))
+            .map(str::trim_end)
+            .collect();
+        let mut out = block.join("\n");
+        while let Some(start) = find_stamp(&out) {
+            let mut end = start + 16;
+            let bytes = out.as_bytes().to_vec();
+            if bytes.get(end) == Some(&b'-') {
+                end += 1;
+                while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+                    end += 1;
+                }
+            }
+            out.replace_range(start..end, "<STAMP>");
+        }
+        strip_durations(&out)
+    }
+
+    /// Byte offset of the first `YYYYmmddTHHMMSSZ` stamp in `s`, if any. Byte
+    /// offsets rather than char offsets because the captured lines carry
+    /// multibyte status icons, and `replace_range` indexes bytes.
+    fn find_stamp(s: &str) -> Option<usize> {
+        let b = s.as_bytes();
+        (0..b.len().saturating_sub(15)).find(|&i| {
+            b[i..i + 8].iter().all(u8::is_ascii_digit)
+                && b[i + 8] == b'T'
+                && b[i + 9..i + 15].iter().all(u8::is_ascii_digit)
+                && b[i + 15] == b'Z'
+        })
+    }
+
+    /// Replace every `(1.2s)` with `(<DUR>)`.
+    fn strip_durations(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s;
+        while let Some(open) = rest.find('(') {
+            let Some(close) = rest[open..].find(')') else {
+                break;
+            };
+            let inner = &rest[open + 1..open + close];
+            out.push_str(&rest[..open]);
+            if inner.ends_with('s')
+                && inner[..inner.len() - 1]
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c == '.')
+            {
+                out.push_str("(<DUR>)");
+            } else {
+                out.push('(');
+                out.push_str(inner);
+                out.push(')');
+            }
+            rest = &rest[open + close + 1..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// A backup spec's whole rendered group must not depend on which surface
+    /// dispatched it: `cfgd backup run`, `cfgd apply`'s pending backups and the
+    /// daemon's scheduled fire all render through `backup::run_backup_group`,
+    /// so a user reading a scheduled fire in the journal sees exactly what they
+    /// saw when they ran it by hand.
+    #[test]
+    fn backup_group_is_identical_across_surfaces() {
+        /// One surface's render of the same unit, against its own state dir so
+        /// each run is that unit's first.
+        fn render(
+            tmp: &Path,
+            label: &str,
+            run: impl FnOnce(&Path, &StateStore, &Printer),
+        ) -> String {
+            let home = tmp.join(label);
+            let state_dir = home.join("state");
+            std::fs::create_dir_all(&state_dir).unwrap();
+            let store = StateStore::open_in_dir(&state_dir).unwrap();
+            let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+            crate::with_test_home(&home, || run(&state_dir, &store, &printer));
+            drop(printer);
+            let human = captured_text(&buf);
+            backups_block(&human)
+        }
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"payload").unwrap();
+        let config_dir = tmp.path().to_path_buf();
+        let config_path = tmp.path().join("cfgd.yaml");
+        let mut s = spec("db", &source, Some("1h"));
+        s.pre_backup = vec![config::ScriptEntry::Simple("exit 0".to_string())];
+
+        let ctx_for = |title| crate::reconciler::RunContext {
+            title,
+            config_path: None,
+            profile: Some("workstation"),
+            modules: &[],
+            trigger: None,
+        };
+
+        // `cfgd backup run`
+        let by_hand = render(tmp.path(), "cli", |state_dir, store, printer| {
+            let units = vec![crate::backup::BackupUnit::new(
+                &s,
+                &config_dir,
+                "workstation",
+                state_dir,
+            )];
+            crate::reconciler::ApplyRun::backups(
+                ctx_for(crate::reconciler::RunTitle::Backup),
+                &units,
+                store,
+            )
+            .execute_backups(printer)
+            .expect("a backup run renders");
+        });
+
+        // `cfgd apply`'s pending backups: the same units carried by a plan run.
+        let during_apply = render(tmp.path(), "apply", |state_dir, store, printer| {
+            let units = vec![crate::backup::BackupUnit::new(
+                &s,
+                &config_dir,
+                "workstation",
+                state_dir,
+            )];
+            let plan = crate::reconciler::Plan {
+                phases: Vec::new(),
+                warnings: Vec::new(),
+            };
+            let mut exec = NoopExecutor;
+            crate::reconciler::ApplyRun::new(ctx_for(crate::reconciler::RunTitle::Apply), &plan)
+                .with_pending_backups(&units, store)
+                .execute(printer, crate::reconciler::Confirm::Skip, &mut exec)
+                .expect("an apply with pending backups renders");
+        });
+
+        // The daemon's scheduled fire.
+        let scheduled = render(tmp.path(), "schedule", |state_dir, _store, printer| {
+            let due = vec![("workstation".to_string(), s.clone())];
+            let abort = crate::AbortFlag::default();
+            crate::daemon::backup::run_scheduled_backups(
+                &due,
+                &config_path,
+                &config_dir,
+                state_dir,
+                printer,
+                &abort,
+            );
+        });
+
+        assert!(
+            by_hand.contains("backup:db") && by_hand.contains("snapshot data.db.<STAMP>"),
+            "the group must render at all before it can be compared: {by_hand:?}"
+        );
+        assert_eq!(
+            by_hand, during_apply,
+            "`cfgd apply`'s pending backups render a different group than `cfgd backup run`"
+        );
+        assert_eq!(
+            by_hand, scheduled,
+            "a scheduled fire renders a different group than `cfgd backup run`"
+        );
+    }
+
+    /// Thread-local log capture: only events emitted on THIS thread inside `f`
+    /// are seen. Sound because `run_scheduled_backups` is blocking and logs on
+    /// the calling thread.
+    fn capture_run_logs<F: FnOnce()>(f: F) -> String {
+        #[derive(Clone)]
+        struct LogCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for LogCapture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("lock").extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+            type Writer = LogCapture;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(LogCapture(buf.clone()))
+            .with_max_level(tracing::Level::INFO)
+            // Styled field names would put escape sequences between `holder`
+            // and its value, so an assertion on the pair could not match.
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = buf.lock().expect("lock").clone();
+        String::from_utf8(bytes).expect("utf8 logs")
+    }
+
+    /// A unit skipped for a held lock must say so in the journal — the only
+    /// view an operator has of a background fire. The reports the run returns
+    /// carry the holder per unit; a `latest_backup_run` re-read cannot, because
+    /// the row it finds is whatever ran BEFORE, so a unit with any history at
+    /// all would be logged as a run that completed and did not happen.
+    #[test]
+    fn a_busy_scheduled_unit_logs_its_holder_over_its_own_history() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"payload").unwrap();
+        let config_dir = tmp.path().to_path_buf();
+        let config_path = tmp.path().join("cfgd.yaml");
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let s = spec("db", &source, Some("1h"));
+        let due = vec![("workstation".to_string(), s)];
+        let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+        let abort = crate::AbortFlag::default();
+
+        // A first fire, so the unit has the history a re-read would find.
+        crate::daemon::backup::run_scheduled_backups(
+            &due,
+            &config_path,
+            &config_dir,
+            &state_dir,
+            &printer,
+            &abort,
+        );
+        let store = StateStore::open_in_dir(&state_dir).unwrap();
+        assert!(
+            store
+                .latest_backup_run("db")
+                .unwrap()
+                .is_some_and(|r| r.error.is_none()),
+            "the first fire must leave a clean row for the second to be confused by"
+        );
+
+        let _held = crate::acquire_backup_lock(&state_dir, "db").expect("hold the unit lock");
+        let logs = capture_run_logs(|| {
+            crate::daemon::backup::run_scheduled_backups(
+                &due,
+                &config_path,
+                &config_dir,
+                &state_dir,
+                &printer,
+                &abort,
+            );
+        });
+
+        assert!(
+            logs.contains("already running"),
+            "a refused unit must be logged as refused: {logs}"
+        );
+        assert!(
+            logs.contains("holder="),
+            "the refusal must name who holds the lock: {logs}"
+        );
+        assert!(
+            !logs.contains("scheduled backup completed"),
+            "the previous fire's row must not be reported as this fire's outcome: {logs}"
+        );
+    }
+
+    /// A `RunExecutor` for the apply surface's empty plan — the backups are the
+    /// only work in that run.
+    struct NoopExecutor;
+
+    impl crate::reconciler::RunExecutor for NoopExecutor {
+        fn apply(
+            &mut self,
+            _plan: &crate::reconciler::Plan,
+            _printer: &Printer,
+        ) -> crate::errors::Result<crate::reconciler::ApplyResult> {
+            Ok(crate::reconciler::ApplyResult {
+                action_results: Vec::new(),
+                status: crate::state::ApplyStatus::Success,
+                apply_id: 1,
+                aborted: None,
+                planned_total: 0,
+            })
+        }
     }
 }

@@ -1,2 +1,2 @@
-Added (1 check(s))
+Added (1 check)
   - hardening.firewall.enabled

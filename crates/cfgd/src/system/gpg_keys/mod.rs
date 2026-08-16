@@ -1,8 +1,8 @@
 use std::process::Command;
 
 use cfgd_core::errors::{CfgdError, Result};
-use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::output::Role;
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 /// Test seam env var for redirecting `gpg` invocations to a shim binary.
 /// Production code never sets this; tests point it at a `/bin/sh` shim
@@ -373,7 +373,7 @@ impl SystemConfigurator for GpgKeysConfigurator {
 
             if matching.is_empty() {
                 drifts.push(SystemDrift {
-                    key: format!("gpgKeys.{}.presence", spec.name),
+                    key: format!("{}.presence", spec.name),
                     expected: format!(
                         "key for {} <{}> with usage={} present",
                         spec.real_name, spec.email, spec.usage
@@ -389,9 +389,13 @@ impl SystemConfigurator for GpgKeysConfigurator {
                 let fingerprints: Vec<&str> =
                     matching.iter().map(|k| k.fingerprint.as_str()).collect();
                 drifts.push(SystemDrift {
-                    key: format!("gpgKeys.{}.expiry", spec.name),
+                    key: format!("{}.expiry", spec.name),
                     expected: "key not expired".to_string(),
-                    actual: format!("key(s) expired: {}", fingerprints.join(", ")),
+                    actual: format!(
+                        "{} expired: {}",
+                        cfgd_core::plural_noun(fingerprints.len(), "key"),
+                        fingerprints.join(", ")
+                    ),
                 });
             }
             // If at least one valid key exists, no drift for this entry.
@@ -400,7 +404,7 @@ impl SystemConfigurator for GpgKeysConfigurator {
         Ok(drifts)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let entries = match desired.as_sequence() {
             Some(s) => s,
             None => return Ok(()),
@@ -421,7 +425,7 @@ impl SystemConfigurator for GpgKeysConfigurator {
                     .find(|k| !k.is_expired())
                     .map(|k| k.fingerprint.as_str())
                     .unwrap_or("unknown");
-                printer.status_simple(
+                cx.report(
                     Role::Info,
                     format!(
                         "gpgKeys: {} <{}> already present ({}), skipping",
@@ -433,17 +437,19 @@ impl SystemConfigurator for GpgKeysConfigurator {
 
             if !matching.is_empty() {
                 // All matching keys are expired — warn but still generate
-                printer.status_simple(
+                cx.report(
                     Role::Warn,
                     format!(
-                        "gpgKeys: existing key(s) for {} <{}> are expired; generating new key",
-                        spec.real_name, spec.email
+                        "gpgKeys: existing {} for {} <{}> expired; generating new key",
+                        cfgd_core::plural_noun(matching.len(), "key"),
+                        spec.real_name,
+                        spec.email
                     ),
                 );
             }
 
             // Generate key via gpg --batch --gen-key with a parameter file written to a temp file
-            printer.status_simple(
+            cx.report(
                 Role::Info,
                 format!(
                     "gpgKeys: generating {:?} key for {} <{}>",
@@ -464,8 +470,11 @@ impl SystemConfigurator for GpgKeysConfigurator {
             let mut cmd = gpg_cmd();
             cmd.args(["--batch", "--gen-key", param_path.to_str().unwrap_or("")]);
 
-            let output = printer
-                .run(
+            // `run_silent`, not `run`: the reconciler already settles this
+            // action's one line, so a window that settled its own would render
+            // the same key generation twice.
+            let output = cx
+                .run_silent(
                     &mut cmd,
                     format!("Generating GPG key for {} <{}>", spec.real_name, spec.email),
                 )
@@ -490,7 +499,7 @@ impl SystemConfigurator for GpgKeysConfigurator {
                 .find(|k| !k.is_expired());
 
             if let Some(k) = new_key {
-                printer.status_simple(
+                cx.report(
                     Role::Ok,
                     format!(
                         "gpgKeys: generated key for {} <{}> — fingerprint {}",
@@ -498,7 +507,7 @@ impl SystemConfigurator for GpgKeysConfigurator {
                     ),
                 );
             } else {
-                printer.status_simple(
+                cx.report(
                     Role::Warn,
                     format!(
                         "gpgKeys: key generated for {} <{}> but failed to confirm fingerprint",

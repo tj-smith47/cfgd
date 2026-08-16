@@ -45,6 +45,7 @@ pub use error::{
     exit_code_for_anyhow,
 };
 pub use helpers::effective_config_file;
+pub(crate) use helpers::run_state_dir;
 pub(in crate::cli) use helpers::*;
 pub(in crate::cli) use output_types::*;
 pub(in crate::cli) use plan_ops::*;
@@ -77,12 +78,15 @@ use cfgd_core::platform::Platform;
 use cfgd_core::providers::{
     FileAction, PackageAction, ProviderRegistry, SecretAction, SecretBackend,
 };
-use cfgd_core::reconciler::{self, PhaseName, ReconcileContext, Reconciler};
+// `MSG_NOTHING_TO_DO` is imported rather than restated: the run skeleton owns
+// the wording, so the CLI's verdict and the daemon's cannot drift apart.
+use cfgd_core::reconciler::{
+    self, MSG_NOTHING_TO_DO, PhaseFilter, PhaseName, ReconcileContext, Reconciler,
+};
 use cfgd_core::sources::SourceManager;
 use cfgd_core::state::StateStore;
 
 const MSG_RUN_APPLY: &str = "Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'";
-const MSG_NOTHING_TO_DO: &str = "Nothing to do — everything is up to date";
 
 fn default_config_file() -> PathBuf {
     cfgd_core::default_config_dir().join(cfgd_core::config::CONFIG_FILENAME)
@@ -231,6 +235,45 @@ fn extract_config_path(args: &[String]) -> Option<PathBuf> {
     Some(default_config_file())
 }
 
+/// When to colorize output, in the `auto`/`always`/`never` spelling every
+/// other CLI uses. The tri-state lives here rather than reusing
+/// [`cfgd_core::output::ColorChoice`] directly so clap owns the parsing and the
+/// core type stays free of a clap dependency.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+#[value(rename_all = "lower")]
+pub enum ColorWhen {
+    /// Follow the terminal, `NO_COLOR` and `TERM=dumb`.
+    #[default]
+    Auto,
+    /// Colorize even when stderr is not a terminal — for a pager that renders
+    /// escapes (`less -R`) or a captured transcript.
+    Always,
+    /// Never colorize.
+    Never,
+}
+
+impl From<ColorWhen> for cfgd_core::output::ColorChoice {
+    fn from(value: ColorWhen) -> Self {
+        match value {
+            ColorWhen::Auto => Self::Auto,
+            ColorWhen::Always => Self::Always,
+            ColorWhen::Never => Self::Never,
+        }
+    }
+}
+
+/// Resolve the two colour flags every entry point (the primary CLI, the
+/// kubectl plugin) exposes into the one choice the printer is built from.
+/// `--no-color` is the older spelling of `--color never` and wins when both
+/// appear, because it can only ever have been typed to turn colour off.
+pub fn resolve_color_choice(no_color: bool, color: ColorWhen) -> cfgd_core::output::ColorChoice {
+    if no_color {
+        cfgd_core::output::ColorChoice::Never
+    } else {
+        color.into()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OutputFormatArg(pub cfgd_core::output::OutputFormat);
 
@@ -332,9 +375,19 @@ pub struct Cli {
     )]
     pub quiet: bool,
 
-    /// Disable colored output
+    /// Disable colored output (alias for --color never)
     #[arg(long, global = true)]
     pub no_color: bool,
+
+    /// When to colorize output: auto (follow the terminal), always, never
+    #[arg(
+        long,
+        global = true,
+        value_name = "WHEN",
+        env = "CFGD_COLOR",
+        default_value = "auto"
+    )]
+    pub color: ColorWhen,
 
     /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL, template-file=PATH
     #[arg(long, short = 'o', global = true, default_value = "table")]
@@ -408,15 +461,19 @@ impl Cli {
 
 #[derive(Parser)]
 pub struct ApplyArgs {
-    /// Config source: git URL to clone, or local path to an existing config directory
+    /// Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path
+    /// to an existing config directory (an existing path wins over the shorthand)
     #[arg(long)]
     pub from: Option<String>,
     /// Preview changes without applying
     #[arg(long)]
     pub dry_run: bool,
-    /// Apply only a specific phase
-    #[arg(long, value_enum)]
-    pub phase: Option<ApplyPhase>,
+    /// Apply only a specific phase, optionally scoped to `<phase>.<selector>`
+    /// (an owner group — `prerequisites.managers` — or a manager name —
+    /// `prerequisites.brew`). Phases: pre-scripts, prerequisites, modules,
+    /// packages, system, files, secrets, post-scripts
+    #[arg(long, value_parser = PhaseArgValueParser)]
+    pub phase: Option<PhaseArg>,
     /// Skip confirmation prompt
     #[arg(long, short, env = "CFGD_YES")]
     pub yes: bool,
@@ -440,16 +497,44 @@ pub struct ApplyArgs {
     /// scripts are unaffected. Intended for debugging.
     #[arg(long, value_enum)]
     pub shell: Option<ApplyShell>,
+    /// How to handle a managed target that already exists as an unmanaged file
+    #[arg(long, value_enum, default_value_t = OnConflict::Ask)]
+    pub on_conflict: OnConflict,
+}
+
+/// What `apply` does with a managed target that already holds an unmanaged
+/// file — one the user (or another tool) put there and cfgd has never written.
+///
+/// The default is [`OnConflict::Ask`], which resolves to a prompt when there is
+/// a human at stdin and to [`OnConflict::Backup`] when there is not, so
+/// `--yes` keeps meaning "do not stop to ask" rather than "discard my file".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum OnConflict {
+    /// Ask per file; falls back to `backup` when nothing can be asked (default)
+    #[default]
+    Ask,
+    /// Copy the existing file to `<target>.cfgd-backup`, then write
+    Backup,
+    /// Replace the existing file, keeping no copy of it
+    Overwrite,
+    /// Leave the existing file alone and skip cfgd's write
+    Skip,
+    /// Abort the apply without touching the file
+    Fail,
 }
 
 #[derive(Parser)]
 pub struct PlanArgs {
-    /// Config source: git URL to clone, or local path to an existing config directory
+    /// Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path
+    /// to an existing config directory (an existing path wins over the shorthand)
     #[arg(long)]
     pub from: Option<String>,
-    /// Plan only a specific phase
-    #[arg(long, value_enum)]
-    pub phase: Option<ApplyPhase>,
+    /// Plan only a specific phase, optionally scoped to `<phase>.<selector>`
+    /// (an owner group — `prerequisites.managers` — or a manager name —
+    /// `prerequisites.brew`). Phases: pre-scripts, prerequisites, modules,
+    /// packages, system, files, secrets, post-scripts
+    #[arg(long, value_parser = PhaseArgValueParser)]
+    pub phase: Option<PhaseArg>,
     /// Skip specific items by dot-notation path (e.g., packages.brew.ripgrep, system.sysctl)
     #[arg(long)]
     pub skip: Vec<String>,
@@ -471,14 +556,15 @@ pub struct PlanArgs {
 pub enum Command {
     /// Initialize a new cfgd configuration repository
     #[command(
-        long_about = "Scaffold or clone a cfgd configuration repository.\n\nExamples:\n  cfgd init\n  cfgd init --from https://github.com/acme/cfgd-config\n  cfgd init ~/cfgd --theme solarized-dark --apply"
+        long_about = "Scaffold or clone a cfgd configuration repository.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\nAn existing path always wins over the shorthand.\n\nExamples:\n  cfgd init\n  cfgd init --from acme/cfgd-config                         # GitHub shorthand\n  cfgd init --from https://github.com/acme/cfgd-config\n  cfgd init --from https://gitlab.example.com/acme/cfgd-config.git\n  cfgd init --from git@git.example.com:acme/cfgd-config.git\n  cfgd init --from ~/existing/config\n  cfgd init ~/cfgd --theme solarized-dark --apply\n  cfgd init --from acme/cfgd-config --apply --yes --on-conflict backup"
     )]
     Init {
         /// Directory to initialize (default: current directory)
         #[arg(value_hint = clap::ValueHint::DirPath)]
         path: Option<String>,
 
-        /// Config source: git URL to clone, or local path to an existing config directory
+        /// Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path
+        /// to an existing config directory (an existing path wins over the shorthand)
         #[arg(long)]
         from: Option<String>,
 
@@ -523,17 +609,21 @@ pub enum Command {
         /// Apply specific modules (repeatable, errors if not found)
         #[arg(long = "apply-module")]
         apply_modules: Vec<String>,
+
+        /// How to handle a managed target that already exists as an unmanaged file
+        #[arg(long, value_enum, default_value_t = OnConflict::Ask)]
+        on_conflict: OnConflict,
     },
 
     /// Apply the configuration (use --dry-run to preview without applying)
     #[command(
-        long_about = "Apply the active profile to this machine.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --module nettools\n  cfgd apply --context reconcile"
+        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--on-conflict decides what happens when a managed target already holds a file\ncfgd has never written: ask (default — prompts, or backs up when nothing can be\nasked), backup, overwrite, skip, fail. A target that already holds exactly the\ndesired bytes is left alone under every policy.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --phase prerequisites.managers --yes                # one owner group\n  cfgd apply --skip prerequisites.session                        # skip the broadcast half\n  cfgd apply --skip prerequisites.brew                            # skip one manager\n  cfgd apply --module nettools\n  cfgd apply --yes --on-conflict backup                          # copy each conflict aside\n  cfgd apply --yes --on-conflict fail                            # refuse to touch strangers\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
     )]
     Apply(ApplyArgs),
 
     /// Preview the reconciliation plan without applying
     #[command(
-        long_about = "Render the reconciliation plan without applying it.\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --skip packages.brew --only files"
+        long_about = "Render the reconciliation plan without applying it.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --phase prerequisites.managers                       # one owner group\n  cfgd plan --skip prerequisites.session                         # skip the broadcast half\n  cfgd plan --from acme/cfgd-config                              # GitHub shorthand\n  cfgd plan --from https://gitlab.example.com/acme/config.git\n  cfgd plan --skip packages.brew --only files"
     )]
     Plan(PlanArgs),
 
@@ -640,7 +730,7 @@ pub enum Command {
 
     /// Manage modules
     #[command(
-        long_about = "Create, inspect, push, and manage modules.\n\nExamples:\n  cfgd module list\n  cfgd module push ./my-module --artifact ghcr.io/me/my-module:1.0.0\n  cfgd module registry add https://github.com/my-org/cfgd-modules --name my-org\n  cfgd module delete old --ignore-not-found"
+        long_about = "Create, inspect, push, and manage modules.\n\nA registry URL may be any git URL, or the GitHub shorthand `owner/repo`.\n\nExamples:\n  cfgd module list\n  cfgd module push ./my-module --artifact ghcr.io/me/my-module:1.0.0\n  cfgd module registry add my-org/cfgd-modules                                    # GitHub shorthand\n  cfgd module registry add https://github.com/my-org/cfgd-modules --name my-org\n  cfgd module registry add https://gitlab.example.com/my-org/cfgd-modules.git --name my-org\n  cfgd module delete old --ignore-not-found"
     )]
     Module {
         #[command(subcommand)]
@@ -649,7 +739,7 @@ pub enum Command {
 
     /// Manage config sources
     #[command(
-        long_about = "Subscribe to, override, or remove upstream config sources.\n\nExamples:\n  cfgd source add https://github.com/team/config --priority 700\n  cfgd source list\n  cfgd source override team set env.EDITOR vim\n  cfgd source remove team --keep-all\n  cfgd source remove team --ignore-not-found"
+        long_about = "Subscribe to, override, or remove upstream config sources.\n\nA source URL may be any git URL, or the GitHub shorthand `owner/repo`.\n\nExamples:\n  cfgd source add team/config --priority 700                       # GitHub shorthand\n  cfgd source add https://github.com/team/config --priority 700\n  cfgd source add https://gitlab.example.com/team/config.git\n  cfgd source add git@git.example.com:team/config.git\n  cfgd source list\n  cfgd source replace team team/config-v2\n  cfgd source override team set env.EDITOR vim\n  cfgd source remove team --keep-all\n  cfgd source remove team --ignore-not-found"
     )]
     Source {
         #[command(subcommand)]
@@ -658,7 +748,7 @@ pub enum Command {
 
     /// Run declarative backups (`spec.backups[]`)
     #[command(
-        long_about = "Run, inspect, or restore declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs on the daemon's timer, and on demand via this command.\n\n`backup restore` overlays a snapshot back onto the backup's source, taking a safety snapshot of the current contents first (skipped when --to points outside the source).\n\nExamples:\n  cfgd backup run\n  cfgd backup run openlist-db\n  cfgd backup list\n  cfgd backup list openlist-db --snapshots\n  cfgd backup restore openlist-db\n  cfgd backup restore openlist-db --at 20260730T120000Z\n  cfgd backup restore openlist-db --to /tmp/inspect --yes\n  cfgd --output json backup list"
+        long_about = "Run, inspect, or restore declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs on the daemon's timer, and on demand via this command.\n\n`backup restore` overlays a snapshot back onto the backup's source, taking a safety snapshot of the current contents first (skipped when --to points outside the source).\n\nExamples:\n  cfgd backup run\n  cfgd backup run notes-db\n  cfgd backup list\n  cfgd backup list notes-db --snapshots\n  cfgd backup restore notes-db\n  cfgd backup restore notes-db --at 20260730T120000Z\n  cfgd backup restore notes-db --to /tmp/inspect --yes\n  cfgd --output json backup list"
     )]
     Backup {
         #[command(subcommand)]
@@ -996,7 +1086,7 @@ pub enum StateCommand {
 
 #[derive(Parser)]
 pub struct SourceAddArgs {
-    /// Git URL of the source
+    /// Git URL of the source, on any host — or the GitHub shorthand `owner/repo`
     pub url: String,
     /// Name for this source (default: inferred from URL)
     #[arg(long)]
@@ -1109,7 +1199,7 @@ pub enum SourceCommand {
         /// Source to replace
         old_name: String,
 
-        /// Git URL of the new source
+        /// Git URL of the new source, on any host — or the GitHub shorthand `owner/repo`
         new_url: String,
     },
 
@@ -1159,7 +1249,7 @@ pub enum BackupCommand {
 
     /// Restore a snapshot back over the backup's source
     #[command(
-        long_about = "Restore a snapshot back over the backup's source.\n\nThe newest snapshot is restored unless --at names another one; --at matches a\nfull snapshot name or just the timestamp portion of one. A directory snapshot\nis overlaid, so files present only in the target survive; a target entry whose\nkind differs from the snapshot's is replaced.\n\nA safety snapshot of the current contents is taken first and recorded as an\nordinary run, unless --to points outside the source (nothing of the backup's is\nbeing overwritten) or the source does not exist yet. The unit's preBackup /\npostBackup hooks wrap the whole restore once, with CFGD_OPERATION=restore.\n\ncfgd asks before overwriting live data; --yes (or CFGD_YES=1) skips the prompt,\nand is required when stdin is not a terminal.\n\nExamples:\n  cfgd backup restore openlist-db\n  cfgd backup restore openlist-db --at 20260730T120000Z\n  cfgd backup restore openlist-db --at openlist-db-20260730T120000Z\n  cfgd backup restore openlist-db --to /tmp/inspect --yes\n  cfgd --output json backup restore openlist-db --yes"
+        long_about = "Restore a snapshot back over the backup's source.\n\nThe newest snapshot is restored unless --at names another one; --at matches a\nfull snapshot name or just the timestamp portion of one. A directory snapshot\nis overlaid, so files present only in the target survive; a target entry whose\nkind differs from the snapshot's is replaced.\n\nA safety snapshot of the current contents is taken first and recorded as an\nordinary run, unless --to points outside the source (nothing of the backup's is\nbeing overwritten) or the source does not exist yet. The unit's preBackup /\npostBackup hooks wrap the whole restore once, with CFGD_OPERATION=restore.\n\ncfgd asks before overwriting live data; --yes (or CFGD_YES=1) skips the prompt,\nand is required when stdin is not a terminal.\n\nExamples:\n  cfgd backup restore notes-db\n  cfgd backup restore notes-db --at 20260730T120000Z\n  cfgd backup restore notes-db --at notes.db.20260730T120000Z\n  cfgd backup restore notes-db --to /tmp/inspect --yes\n  cfgd --output json backup restore notes-db --yes"
     )]
     Restore {
         /// Backup name
@@ -1869,9 +1959,14 @@ pub enum SourceOverrideAction {
 /// Clap-facing phase selector for `apply --phase` / `plan --phase`.
 /// Mirrors `cfgd_core::reconciler::PhaseName`; lives in the CLI layer so
 /// the help text can use kebab-case consistently with the rest of cfgd.
-#[derive(Clone, Copy, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum ApplyPhase {
     PreScripts,
+    Prerequisites,
+    /// The pre-merge spelling of `prerequisites`, from before the phase also
+    /// provisioned package managers. Still selects that phase, and says once
+    /// per run that it is on the way out.
+    #[value(name = "env", hide = true)]
     Env,
     Modules,
     Packages,
@@ -1886,6 +1981,7 @@ impl ApplyPhase {
     pub fn as_str(self) -> &'static str {
         match self {
             ApplyPhase::PreScripts => "pre-scripts",
+            ApplyPhase::Prerequisites => "prerequisites",
             ApplyPhase::Env => "env",
             ApplyPhase::Modules => "modules",
             ApplyPhase::Packages => "packages",
@@ -1897,18 +1993,197 @@ impl ApplyPhase {
     }
 }
 
-/// Map a clap-validated ApplyPhase to the reconciler's PhaseName.
-fn apply_phase_to_phase_name(p: ApplyPhase) -> PhaseName {
-    match p {
-        ApplyPhase::PreScripts => PhaseName::PreScripts,
-        ApplyPhase::Env => PhaseName::Env,
-        ApplyPhase::Modules => PhaseName::Modules,
-        ApplyPhase::Packages => PhaseName::Packages,
-        ApplyPhase::System => PhaseName::System,
-        ApplyPhase::Files => PhaseName::Files,
-        ApplyPhase::Secrets => PhaseName::Secrets,
-        ApplyPhase::PostScripts => PhaseName::PostScripts,
+/// Clap value type for `--phase`'s dotted grammar:
+/// `<phase>[.<selector>]`, e.g. `prerequisites`, `prerequisites.managers`,
+/// `prerequisites.brew`. Not a `ValueEnum` because the selector half is open
+/// (any owner-group name or any registered manager name); [`ApplyPhase`]
+/// still gates the phase half to the closed, typo-checked vocabulary.
+#[derive(Clone, Debug)]
+pub struct PhaseArg {
+    pub phase: ApplyPhase,
+    pub selector: Option<String>,
+}
+
+impl PhaseArg {
+    /// A selector-less `PhaseArg`, for call sites (mostly tests) that only
+    /// ever named a bare phase before this grammar existed.
+    #[cfg(test)]
+    pub fn bare(phase: ApplyPhase) -> Self {
+        PhaseArg {
+            phase,
+            selector: None,
+        }
     }
+}
+
+impl std::str::FromStr for PhaseArg {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (phase_str, selector) = match s.split_once('.') {
+            Some((p, "")) => {
+                return Err(format!(
+                    "invalid phase '{s}': a trailing '.' has no selector after it — \
+                     write '{p}' alone, or name one (e.g. '{p}.managers')"
+                ));
+            }
+            Some((p, sel)) => (p, Some(sel.to_string())),
+            None => (s, None),
+        };
+        let phase = <ApplyPhase as clap::ValueEnum>::from_str(phase_str, true).map_err(|_| {
+            let variants: Vec<String> = <ApplyPhase as clap::ValueEnum>::value_variants()
+                .iter()
+                .filter_map(clap::ValueEnum::to_possible_value)
+                .filter(|pv| !pv.is_hide_set())
+                .map(|pv| pv.get_name().to_string())
+                .collect();
+            format!(
+                "invalid phase '{phase_str}' [possible values: {}]",
+                variants.join(", ")
+            )
+        })?;
+        Ok(PhaseArg { phase, selector })
+    }
+}
+
+/// The `value_parser` for `--phase`, standing in for a derive-generated one.
+///
+/// `PhaseArg` cannot derive `clap::ValueEnum` — the selector half of its
+/// grammar is open — but a bare `#[arg(long)]` relying on `FromStr` alone
+/// drops the possible-values list `--help` and `cfgd completions <shell>`
+/// read from. Implementing `TypedValueParser` restores it: `parse_ref`
+/// delegates to `FromStr`, and `possible_values` republishes `ApplyPhase`'s
+/// own vocabulary so the bare-phase half stays visible even though the
+/// selector half cannot be enumerated ahead of a loaded `ProviderRegistry`.
+#[derive(Clone)]
+struct PhaseArgValueParser;
+
+impl clap::builder::TypedValueParser for PhaseArgValueParser {
+    type Value = PhaseArg;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        let inner = clap::builder::StringValueParser::new();
+        let s = inner.parse_ref(cmd, arg, value)?;
+        s.parse::<PhaseArg>().map_err(|e| {
+            let mut err = clap::Error::new(clap::error::ErrorKind::ValueValidation).with_cmd(cmd);
+            if let Some(arg) = arg {
+                err.insert(
+                    clap::error::ContextKind::InvalidArg,
+                    clap::error::ContextValue::String(arg.to_string()),
+                );
+            }
+            err.insert(
+                clap::error::ContextKind::InvalidValue,
+                clap::error::ContextValue::String(e),
+            );
+            err
+        })
+    }
+
+    fn possible_values(
+        &self,
+    ) -> Option<Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_>> {
+        Some(Box::new(
+            <ApplyPhase as clap::ValueEnum>::value_variants()
+                .iter()
+                .filter_map(clap::ValueEnum::to_possible_value),
+        ))
+    }
+}
+
+/// Map a clap-validated ApplyPhase to the reconciler's plan filter.
+///
+/// `--phase modules` is an owner filter rather than a phase name: module work
+/// applies in the phase whose kind it is, so selecting a plan phase called
+/// `modules` would reach only the platform-gated skips.
+fn apply_phase_to_filter(p: ApplyPhase) -> PhaseFilter {
+    match p {
+        ApplyPhase::Modules => PhaseFilter::ModuleOwners,
+        ApplyPhase::PreScripts => PhaseFilter::Phase(PhaseName::PreScripts),
+        ApplyPhase::Prerequisites | ApplyPhase::Env => PhaseFilter::Phase(PhaseName::Prerequisites),
+        ApplyPhase::Packages => PhaseFilter::Phase(PhaseName::Packages),
+        ApplyPhase::System => PhaseFilter::Phase(PhaseName::System),
+        ApplyPhase::Files => PhaseFilter::Phase(PhaseName::Files),
+        ApplyPhase::Secrets => PhaseFilter::Phase(PhaseName::Secrets),
+        ApplyPhase::PostScripts => PhaseFilter::Phase(PhaseName::PostScripts),
+    }
+}
+
+/// The phase filter a run was given, plus the notice a legacy spelling earns.
+///
+/// The ONE resolution of `--phase` for both `apply` and `plan`: a spelling
+/// deprecated in one of them and silently accepted in the other would teach the
+/// user the old name is fine wherever they happened not to read it.
+///
+/// Fallible because a selector combined with `--phase modules` has nothing to
+/// scope to: `ApplyPhase::Modules` maps to `PhaseFilter::ModuleOwners`, which
+/// already spans every phase module work can land in, not a single phase a
+/// selector could narrow. Also fallible on a selector that names neither a
+/// cfgd owner group nor a registered package manager: validated here against
+/// `registry`, which the caller must have already extended with any
+/// config-declared custom managers, so the vocabulary this checks against is
+/// the same one the plan itself will match selectors against.
+fn resolve_phase_filter(
+    phase: Option<PhaseArg>,
+    registry: &ProviderRegistry,
+    printer: &cfgd_core::output::Printer,
+) -> anyhow::Result<Option<PhaseFilter>> {
+    let Some(PhaseArg { phase, selector }) = phase else {
+        return Ok(None);
+    };
+    if matches!(phase, ApplyPhase::Env) {
+        printer.deprecation(
+            "`--phase env` is deprecated: that phase now provisions package managers as well \
+             as writing the env file. Use `--phase prerequisites`.",
+        );
+    }
+    let base = apply_phase_to_filter(phase);
+    let Some(selector) = selector else {
+        return Ok(Some(base));
+    };
+    let PhaseFilter::Phase(name) = base else {
+        anyhow::bail!(
+            "`--phase modules.{selector}` is not valid: `modules` has no single phase to scope \
+             a selector to — module work applies in whichever phase it landed in. Use \
+             `--module {selector}` instead."
+        );
+    };
+    if name != PhaseName::Prerequisites {
+        let phase_label = <ApplyPhase as clap::ValueEnum>::to_possible_value(&phase)
+            .map(|pv| pv.get_name().to_string())
+            .unwrap_or_default();
+        if name == PhaseName::Packages {
+            anyhow::bail!(
+                "`--phase packages.{selector}` is not valid: package manager work lives in \
+                 `prerequisites`, not `packages`. Use `--phase prerequisites.{selector}` instead."
+            );
+        }
+        anyhow::bail!(
+            "`--phase {phase_label}.{selector}` is not valid: `{phase_label}` has no dotted \
+             selector grammar. Selectors are only valid on `--phase prerequisites`."
+        );
+    }
+    let mut legal: Vec<String> = reconciler::CFGD_GROUP_ORDER
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    // The planner's own vocabulary, not a second one derived here: a
+    // prerequisite node is keyed on its TOOL, so a list of manager names alone
+    // refused `--phase prerequisites.curl` while `--skip prerequisites.curl`
+    // accepted it and the matcher was written to serve both.
+    legal.extend(reconciler::prerequisite_selectors(registry));
+    if !legal.contains(&selector) {
+        anyhow::bail!(
+            "unknown selector '{selector}' for `--phase prerequisites`: legal values are {}",
+            legal.join(", ")
+        );
+    }
+    Ok(Some(PhaseFilter::Selector(name, selector)))
 }
 
 /// Clap-facing interpreter selector for `apply --shell`. Mirrors
@@ -1941,9 +2216,9 @@ pub(crate) fn apply_shell_to_script_shell(s: ApplyShell) -> cfgd_core::config::S
 pub enum ModuleRegistryCommand {
     /// Add a module registry
     Add {
-        /// Git URL of the registry repo (GitHub only)
+        /// Git URL of the registry repo, on any host — or the GitHub shorthand `owner/repo`
         url: String,
-        /// Custom name/alias (defaults to GitHub org name)
+        /// Custom name/alias (defaults to the GitHub org name; required for any other host)
         #[arg(long)]
         name: Option<String>,
     },
@@ -1996,9 +2271,13 @@ pub fn execute(
         Command::Diff { module, exit_code } => {
             diff::cmd_diff(cli, printer, module.as_deref(), *exit_code)
         }
-        Command::Log { limit, show_output } => {
-            log::cmd_log(printer, *limit, *show_output, cli.state_dir.as_deref())
-        }
+        Command::Log { limit, show_output } => log::cmd_log(
+            printer,
+            *limit,
+            *show_output,
+            cli.state_dir.as_deref(),
+            cli.scope(),
+        ),
         Command::Verify { module, exit_code } => {
             verify::cmd_verify(cli, printer, module.as_deref(), *exit_code)
         }
@@ -2041,6 +2320,7 @@ pub fn execute(
             theme,
             apply_profile,
             apply_modules,
+            on_conflict,
         } => init::cmd_init(
             printer,
             &init::InitArgs {
@@ -2059,6 +2339,7 @@ pub fn execute(
                 state_dir: cli.state_dir.as_deref(),
                 runtime_dir: cli.runtime_dir.as_deref(),
                 scope: cli.scope(),
+                on_conflict: *on_conflict,
             },
         ),
         Command::Module { command } => match command {
@@ -2216,14 +2497,14 @@ pub fn execute(
             SourceCommand::Replace { old_name, new_url } => {
                 source::cmd_source_replace(cli, printer, old_name, new_url)
             }
-            SourceCommand::Edit => source::cmd_source_edit(cli, printer),
+            SourceCommand::Edit => source::cmd_source_edit(printer, &std::env::current_dir()?),
             SourceCommand::Create {
                 name,
                 description,
                 version,
             } => source::cmd_source_create(
-                cli,
                 printer,
+                &std::env::current_dir()?,
                 name.as_deref(),
                 description.as_deref(),
                 version.as_deref(),
@@ -2297,12 +2578,12 @@ pub fn execute(
             source,
             all,
         } => decide::cmd_decide(
+            cli,
             printer,
             *action,
             resource.as_deref(),
             source.as_deref(),
             *all,
-            cli.state_dir.as_deref(),
         ),
         Command::Config { command } => match command {
             ConfigCommand::Show => config_cmd::cmd_config_show(cli, printer),
@@ -2368,16 +2649,23 @@ pub fn execute(
             Ok(())
         }
         Command::Generate(args) => generate::cmd_generate(cli, printer, args),
-        Command::Rollback { apply_id, yes } => {
-            rollback::cmd_rollback(printer, *apply_id, *yes, cli.state_dir.as_deref())
-        }
+        Command::Rollback { apply_id, yes } => rollback::cmd_rollback(
+            printer,
+            *apply_id,
+            *yes,
+            cli.state_dir.as_deref(),
+            cli.scope(),
+        ),
         Command::State { command } => match command {
-            StateCommand::ForgetPrefix { manager } => {
-                state_cmd::cmd_state_forget_prefix(printer, manager, cli.state_dir.as_deref())
-            }
+            StateCommand::ForgetPrefix { manager } => state_cmd::cmd_state_forget_prefix(
+                printer,
+                manager,
+                cli.state_dir.as_deref(),
+                cli.scope(),
+            ),
         },
         Command::McpServer => {
-            crate::mcp::server::run_mcp_server(&cli.config, cli.state_dir.as_deref())
+            crate::mcp::server::run_mcp_server(&cli.config, cli.state_dir.as_deref(), cli.scope())
         }
         Command::Compliance { command } => match command {
             None => compliance::cmd_compliance_snapshot(cli, printer),

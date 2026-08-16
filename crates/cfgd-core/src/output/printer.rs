@@ -26,6 +26,7 @@ pub enum PromptAnswer {
 
 /// Captured-output handle returned by `Printer::for_test_doc`. Available with
 /// the `test-helpers` feature.
+#[derive(Clone)]
 pub struct DocCapture {
     pub(crate) human: Arc<Mutex<String>>,
     pub(crate) doc_json: Arc<Mutex<Option<serde_json::Value>>>,
@@ -60,6 +61,31 @@ pub struct Printer {
     /// stderr. The CLI entrypoint reads it via `had_output_error` after dispatch
     /// to exit non-zero — the failure has already been reported on stderr.
     pub(crate) output_error: AtomicBool,
+    /// Whether this printer has a live region — a terminal it can repaint in
+    /// place. Decided ONCE, at construction, from the stderr it will actually
+    /// write to, rather than re-read from the process at each bar: a printer
+    /// whose sink is a capture buffer has no live region no matter what the
+    /// process's own stderr is, and the test that must exercise the repainting
+    /// path needs one no matter what the suite was invoked from.
+    pub(crate) live_region: bool,
+    /// Whether a `prompt_*` on this printer can reach a human. Decided ONCE, at
+    /// construction, from the process stdin the prompt would actually read —
+    /// the same shape as `live_region`, and for the same reason: a printer
+    /// whose sink is a capture buffer is driving no one's keyboard, no matter
+    /// what the process's own stdin is. Read at prompt time instead, a test
+    /// with no seeded answer BLOCKS on a real `inquire` prompt the moment the
+    /// suite is started under a pty, and a hang is a worse failure than a
+    /// mismatch because nothing ever reports it.
+    pub(crate) interactive_stdin: bool,
+    /// Whether this printer's output may carry colour. Decided ONCE, at
+    /// construction, and folded into the renderer's theme — the third ambient
+    /// terminal input, and the one that used to be re-read from
+    /// `console::colors_enabled()` inside every styled render. That global is
+    /// mutable by any thread, so a capture buffer could come back styled
+    /// because an unrelated test flipped it, which turns a negative assertion
+    /// (`!contains("✓ Foo")`) into one that passes vacuously. Held here as well
+    /// as in the theme so a re-themed copy keeps the decision this printer made.
+    pub(crate) colors: bool,
     /// When set (via `--list-envelope` / `CFGD_LIST_ENVELOPE`), a top-level JSON
     /// array emitted under `-o json`/`-o yaml` is wrapped in a KRM List envelope
     /// (`{apiVersion, kind: List, items}`). Off by default — bare arrays stay
@@ -67,8 +93,49 @@ pub struct Printer {
     pub(crate) list_envelope: bool,
 }
 
-/// Whether constructing a `Printer` for `output_format` must turn the terminal's
-/// colour flags off.
+/// How a `Printer` under construction decides whether it may emit colour.
+///
+/// The decision is an input rather than a global the caller mutates beforehand:
+/// a printer's colour is settled once, at construction, and folded into its
+/// theme, so nothing a later thread does can change what this printer renders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorChoice {
+    /// Colour when the terminal and the output format both allow it —
+    /// `console`'s own tty/`CLICOLOR` detection, read once, minus the cases
+    /// [`colors_must_be_disabled`] rules out.
+    Auto,
+    /// Colour whatever the terminal says, short of the one case that would
+    /// corrupt data. What `--color always` selects, for a run piped into a
+    /// pager that renders escapes (`less -R`) or into a docs capture.
+    Always,
+    /// Never colour. What `--color never` / `--no-color` selects.
+    Never,
+}
+
+impl ColorChoice {
+    /// Resolve to the concrete decision this printer will hold for its lifetime.
+    fn resolve(self, output_format: &OutputFormat) -> bool {
+        match self {
+            // The colour question is asked of STDERR, because stderr is where
+            // every human emission goes: stdout carries structured data only,
+            // and colour is already forced off there. Asking `colors_enabled()`
+            // (the stdout answer) styles `cfgd apply 2> log` into the log file
+            // and strips `cfgd apply | tee log` on a live terminal — both
+            // backwards.
+            Self::Auto => {
+                console::colors_enabled_stderr() && !colors_must_be_disabled(output_format)
+            }
+            // An explicit request outranks `NO_COLOR` / `TERM=dumb` (the
+            // convention is a default, not a veto) but never outranks the
+            // structured-output gate: an escape inside a JSON string field is
+            // corrupt data, not a styling preference.
+            Self::Always => !output_format.is_structured(),
+            Self::Never => false,
+        }
+    }
+}
+
+/// Whether a `Printer` for `output_format` must refuse colour outright.
 ///
 /// Honors `NO_COLOR` / `TERM=dumb`, and additionally disables colour under
 /// structured output (Json / Yaml / Template / Jsonpath / Name) so a role-styled
@@ -76,13 +143,9 @@ pub struct Printer {
 /// enforced at construction, not by every caller remembering to wrap with
 /// `with_data`.
 ///
-/// Split out of [`Printer::with_format`] so the decision is testable without
-/// reading `console`'s colour flags. Those flags are process-global and every
-/// structured-output `Printer` construction in the test binary writes them, so an
-/// assertion made against them races the whole non-serial majority of the suite —
-/// a race `#[serial]` cannot fence, because the mutators are ordinary production
-/// constructions rather than serial tests.
-fn colors_must_be_disabled(output_format: &OutputFormat) -> bool {
+/// Split out of [`ColorChoice::resolve`] so the decision is testable without
+/// reading `console`'s colour flags at all.
+pub(crate) fn colors_must_be_disabled(output_format: &OutputFormat) -> bool {
     std::env::var_os("NO_COLOR").is_some()
         || std::env::var_os("TERM").is_some_and(|t| t == "dumb")
         || output_format.is_structured()
@@ -91,48 +154,92 @@ fn colors_must_be_disabled(output_format: &OutputFormat) -> bool {
 impl Printer {
     /// Production constructor: stderr/stdout via `console::Term`.
     pub fn new(verbosity: Verbosity) -> Self {
-        Self::with_format(verbosity, None, OutputFormat::Table)
+        Self::with_format(verbosity, None, OutputFormat::Table, ColorChoice::Auto)
     }
 
-    pub fn with_theme_name(verbosity: Verbosity, theme_name: Option<&str>) -> Self {
-        Self::with_format(verbosity, theme_name, OutputFormat::Table)
+    /// A non-emitting sink for a process that owns no terminal at all — the
+    /// Windows service entry point and the MCP server's JSON-RPC dispatch.
+    ///
+    /// Quiet AND [`ColorChoice::Never`], because there is no parent printer to
+    /// inherit a decision from and `Auto` would answer to whatever the service
+    /// host or the MCP client left on stderr. Every other quiet sink in the
+    /// workspace derives from a real printer via [`Printer::at_verbosity`];
+    /// reach for this one only where no such printer exists.
+    pub fn silent() -> Self {
+        Self::with_format(
+            Verbosity::Quiet,
+            None,
+            OutputFormat::Table,
+            ColorChoice::Never,
+        )
     }
 
     pub fn with_format(
         verbosity: Verbosity,
         theme_name: Option<&str>,
         output_format: OutputFormat,
+        colors: ColorChoice,
     ) -> Self {
-        // A test holding a `ColorsEnabledGuard` owns both flags for its
-        // duration; clobbering them here would race it from any concurrently
-        // constructing test. Compiled out of release builds.
-        #[cfg(test)]
-        let pinned = crate::output::test_support::colors_are_pinned();
-        #[cfg(not(test))]
-        let pinned = false;
+        let theme = theme_name.map(Theme::from_preset).unwrap_or_default();
+        let colors = colors.resolve(&output_format);
+        Self::build(verbosity, theme, output_format, colors)
+    }
 
-        if !pinned && colors_must_be_disabled(&output_format) {
-            console::set_colors_enabled(false);
-            console::set_colors_enabled_stderr(false);
-        }
+    /// Production constructor for a printer built from the user's `spec.theme`
+    /// block: the preset it names AND the per-slot `overrides` it declares.
+    ///
+    /// Separate from [`Printer::with_format`] because the override pass has to
+    /// run before the colour stamp — `Theme::from_config` fills the optional
+    /// `primary` slot with a fresh style when a preset leaves it empty, and a
+    /// slot minted after the stamp would carry the default (colour-off)
+    /// decision instead of this printer's.
+    pub fn with_theme_config(
+        verbosity: Verbosity,
+        theme: Option<&crate::config::ThemeConfig>,
+        output_format: OutputFormat,
+        colors: ColorChoice,
+    ) -> Self {
+        let theme = Theme::from_config(theme);
+        let colors = colors.resolve(&output_format);
+        Self::build(verbosity, theme, output_format, colors)
+    }
+
+    fn build(
+        verbosity: Verbosity,
+        theme: Theme,
+        output_format: OutputFormat,
+        colors: bool,
+    ) -> Self {
         // Auto-quiet under structured output.
         let verbosity = if output_format.is_structured() {
             Verbosity::Quiet
         } else {
             verbosity
         };
-        let theme = theme_name.map(Theme::from_preset).unwrap_or_default();
+        let theme = theme.with_colors(colors);
+        // The MultiProgress is built first and a clone handed to the renderer,
+        // so the two are wired at construction. This is the ONE constructor
+        // whose stderr sink is that MultiProgress's own draw target, which is
+        // what makes routing lines through it correct.
+        let multi_progress = indicatif::MultiProgress::new();
         Self {
-            renderer: Arc::new(Renderer::new(theme, verbosity)),
+            renderer: Arc::new(Renderer::with_bars(
+                theme,
+                verbosity,
+                multi_progress.clone(),
+            )),
             output_format,
             sink_stderr: Arc::new(Term::stderr()),
             sink_stdout: Arc::new(Term::stdout()),
-            multi_progress: indicatif::MultiProgress::new(),
+            multi_progress,
             syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
             theme_set: syntect::highlighting::ThemeSet::load_defaults(),
             test_doc_capture: None,
             prompt_queue: None,
             output_error: AtomicBool::new(false),
+            live_region: super::spinner::stderr_is_terminal(),
+            interactive_stdin: super::prompts::stdin_is_terminal(),
+            colors,
             list_envelope: false,
         }
     }
@@ -146,15 +253,89 @@ impl Printer {
     /// output cannot show the theme it just chose. Re-theming after the config
     /// is written closes that gap.
     ///
-    /// Carries no test capture or queued prompts: those belong to the printer a
-    /// test constructed, and a re-themed copy is only taken on a real run.
+    /// Inherits every ambient terminal decision and test channel from `self` —
+    /// see [`Printer::build_derived`]. `cmd_init` re-themes mid-run and keeps
+    /// using the derived printer for the apply that follows; a re-probed
+    /// `interactive_stdin`/`live_region` there is the pty-hang shape this
+    /// closes (a `prompt_queue` reset to `None` would also silently drop a
+    /// test's seeded answer).
     pub fn rethemed(&self, theme_name: &str) -> Self {
-        Self::with_format(
+        self.build_derived(
             self.verbosity(),
-            Some(theme_name),
+            Theme::from_preset(theme_name),
             self.output_format.clone(),
         )
-        .with_list_envelope(self.list_envelope)
+    }
+
+    /// A copy of this printer at `verbosity`, inheriting the theme (preset plus
+    /// `spec.theme.overrides`) and every ambient terminal decision and test
+    /// channel from `self` — see [`Printer::build_derived`].
+    ///
+    /// The one way to mint the quiet sink a command hands to a library call, and
+    /// the daemon's own printer. Deriving `live_region`/`multi_progress` from
+    /// `self` rather than re-probing is what keeps the daemon's printer from
+    /// standing up a second `MultiProgress` against the same stderr as the
+    /// process printer's.
+    pub fn at_verbosity(&self, verbosity: Verbosity) -> Self {
+        self.build_derived(
+            verbosity,
+            self.renderer.theme.clone(),
+            self.output_format.clone(),
+        )
+    }
+
+    /// The one way to derive a copy of `self`: only `verbosity`, `theme`, and
+    /// `output_format` are recomputed. Every ambient terminal decision this
+    /// printer already settled — its stdout/stderr sinks, its `MultiProgress`,
+    /// whether it has a live region, whether its stdin is interactive — and
+    /// every test-only channel (`test_doc_capture`, `prompt_queue`) carry over
+    /// unchanged rather than being re-probed from the real process.
+    ///
+    /// Re-probing any of those here is the leak F9 closes: a derived quiet
+    /// sink (`cli/compliance.rs`, `daemon/sync.rs`, …) would answer
+    /// `render_status`'s `Role::Fail` line to the REAL stderr instead of a
+    /// test's capture buffer even at `Verbosity::Quiet`, a re-themed printer
+    /// would regain a live region and a real stdin-tty mid-run and block on an
+    /// unanswered confirmation prompt under a pty, and a second `at_verbosity`
+    /// call (the daemon's own printer) would stand up a second
+    /// `MultiProgress` doing independent cursor arithmetic on the one real
+    /// stderr the process printer already owns.
+    fn build_derived(
+        &self,
+        verbosity: Verbosity,
+        theme: Theme,
+        output_format: OutputFormat,
+    ) -> Self {
+        // Auto-quiet under structured output, same as `build`.
+        let verbosity = if output_format.is_structured() {
+            Verbosity::Quiet
+        } else {
+            verbosity
+        };
+        // The copy inherits the colour this printer resolved rather than
+        // re-resolving: re-reading the terminal would let the two disagree
+        // mid-run, which is the whole class of bug the field exists to close.
+        let theme = theme.with_colors(self.colors);
+        Self {
+            renderer: Arc::new(Renderer::with_bars(
+                theme,
+                verbosity,
+                self.multi_progress.clone(),
+            )),
+            output_format,
+            sink_stderr: self.sink_stderr.clone(),
+            sink_stdout: self.sink_stdout.clone(),
+            multi_progress: self.multi_progress.clone(),
+            syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
+            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
+            test_doc_capture: self.test_doc_capture.clone(),
+            prompt_queue: self.prompt_queue.clone(),
+            output_error: AtomicBool::new(false),
+            live_region: self.live_region,
+            interactive_stdin: self.interactive_stdin,
+            colors: self.colors,
+            list_envelope: self.list_envelope,
+        }
     }
 
     /// Enable or disable the KRM List envelope for top-level JSON arrays under
@@ -178,26 +359,15 @@ impl Printer {
         matches!(self.output_format, OutputFormat::Wide)
     }
 
-    /// Disable color globally (today's `disable_colors`).
-    pub fn disable_colors() {
-        console::set_colors_enabled(false);
-        console::set_colors_enabled_stderr(false);
-    }
-
-    /// Force color globally regardless of TTY detection. Symmetric to
-    /// `disable_colors` so demo / example binaries that pipe their output for
-    /// capture can still emit real ANSI escapes. Production CLI dispatch goes
-    /// through `with_format`, which honors `NO_COLOR` and structured-output
-    /// gating — call this only from non-production entry points.
-    pub fn enable_colors() {
-        console::set_colors_enabled(true);
-        console::set_colors_enabled_stderr(true);
+    /// Whether this printer's output may carry colour.
+    pub fn colors(&self) -> bool {
+        self.colors
     }
 
     // ----- Top-level emit methods (depth 0) -----
 
     pub fn heading(&self, text: impl Into<String>) {
-        let depth = self.renderer.enforce_top_level_emit(0);
+        let depth = self.renderer.enforce_structural_top_level(0);
         // render_heading is hardcoded to depth 0 today; for the runtime-check
         // re-route path we emit a styled bold line at the section's depth so
         // the output stays readable despite the shape being wrong.
@@ -216,7 +386,7 @@ impl Printer {
         // kv buffers; flush will use the renderer's current depth, so the
         // runtime check is informational here — no depth value to thread
         // through, but we still want the warn/assert at the call site.
-        let _depth = self.renderer.enforce_top_level_emit(0);
+        let _depth = self.renderer.enforce_structural_top_level(0);
         self.renderer.render_kv(&key.into(), &value.into());
     }
 
@@ -226,7 +396,7 @@ impl Printer {
         K: Into<String>,
         V: Into<String>,
     {
-        let depth = self.renderer.enforce_top_level_emit(0);
+        let depth = self.renderer.enforce_structural_top_level(0);
         let pairs: Vec<(String, String)> = pairs
             .into_iter()
             .map(|(k, v)| (k.into(), v.into()))
@@ -236,13 +406,13 @@ impl Printer {
     }
 
     pub fn hint(&self, text: impl Into<String>) {
-        let depth = self.renderer.enforce_top_level_emit(0);
+        let depth = self.renderer.inherit_depth();
         self.renderer
             .render_hint(self.sink_stderr.as_ref(), depth, &text.into());
     }
 
     pub fn note(&self, text: impl Into<String>) {
-        let depth = self.renderer.enforce_top_level_emit(0);
+        let depth = self.renderer.inherit_depth();
         self.renderer
             .render_note(self.sink_stderr.as_ref(), depth, &text.into());
     }
@@ -254,21 +424,57 @@ impl Printer {
     /// It writes only to `sink_stderr`, never to `sink_stdout`, keeping the
     /// `-o` data channel pure.
     pub fn deprecation(&self, msg: impl Into<String>) {
-        let depth = self.renderer.enforce_top_level_emit(0);
+        let depth = self.renderer.enforce_structural_top_level(0);
         self.renderer
-            .render_deprecation(self.sink_stderr.as_ref(), depth, &msg.into());
+            .render_advisory(self.sink_stderr.as_ref(), depth, &msg.into());
+    }
+
+    /// Emit a persistent advisory on stderr: a diagnostic about *this* run that
+    /// the user must see even when they asked for data only, because acting on
+    /// the output without it would be acting on a wrong picture (a `--skip` that
+    /// silently stranded package installs). Same routing as [`Printer::deprecation`]
+    /// — always visible, stderr only, so the `-o` data channel stays pure — and
+    /// deliberately a separate method: a deprecation is about the command's
+    /// SPELLING and stays true until the surface is removed, while an alert is
+    /// about the command's EFFECT this time. Routing both through one name makes
+    /// them indistinguishable to a reader and to a grep.
+    pub fn alert(&self, msg: impl Into<String>) {
+        let depth = self.renderer.enforce_structural_top_level(0);
+        self.renderer
+            .render_advisory(self.sink_stderr.as_ref(), depth, &msg.into());
     }
 
     pub fn table(&self, table: Table) {
-        let depth = self.renderer.enforce_top_level_emit(0);
+        let depth = self.renderer.enforce_structural_top_level(0);
         self.renderer
             .render_table(self.sink_stderr.as_ref(), depth, &table);
+    }
+
+    /// Enable depth inheritance for status / hint / note / spinner / run for
+    /// as long as the guard lives, so library code reached from inside an open
+    /// section renders at that section's depth instead of tripping the
+    /// top-level structural assert. Structural emits (`heading`, `kv_block`,
+    /// `table`, `emit`) keep the assert in every mode — a heading inside a
+    /// group is a bug whatever the caller is doing.
+    #[must_use = "inheritance ends when the guard drops; bind it"]
+    pub fn depth_inheritance(&self) -> super::renderer::DepthInheritGuard<'_> {
+        super::renderer::DepthInheritGuard::acquire(&self.renderer)
+    }
+
+    /// `theme.muted` applied to `text` — the one way a caller composes a
+    /// subordinate fragment into a value the renderer receives as a single
+    /// string (a kv row whose tail qualifies its head, and which therefore has
+    /// no field of its own to carry a style). A colour-disabled stream answers
+    /// the text unchanged, because `ThemedStyle` decides that and not the
+    /// caller. Never reach for `console` to do this at a call site.
+    pub fn muted(&self, text: &str) -> String {
+        self.renderer.theme.muted.apply_to(text).to_string()
     }
 
     /// Status with no extra fields. For detail/duration/target, use the builder
     /// returned by the binding helper `status` (see status_builder.rs).
     pub fn status_simple(&self, role: Role, subject: impl Into<String>) {
-        let depth = self.renderer.enforce_top_level_emit(0);
+        let depth = self.renderer.inherit_depth();
         let subject = subject.into();
         self.renderer.render_status(
             self.sink_stderr.as_ref(),
@@ -279,17 +485,32 @@ impl Printer {
                 detail: None,
                 duration: None,
                 target: None,
+                subject_style: None,
+                detail_style: None,
             },
         );
     }
 
-    /// Status builder at depth 0. Commits on Drop.
+    /// [`Self::status`] with the subject painted `theme.primary` — the same
+    /// seam `SectionGuard::action_status` applies, for an action line emitted
+    /// without a section guard in hand (a script settling its own status).
+    pub fn action_status(
+        &self,
+        role: Role,
+        subject: impl Into<String>,
+    ) -> super::status_builder::StatusBuilder<'_> {
+        let style = self.renderer.theme.primary.clone();
+        self.status(role, subject).with_subject_style(style)
+    }
+
+    /// Status builder at the ambient depth (0 unless a `DepthInheritGuard`
+    /// is open). Commits on Drop.
     pub fn status(
         &self,
         role: Role,
         subject: impl Into<String>,
     ) -> super::status_builder::StatusBuilder<'_> {
-        let depth = self.renderer.enforce_top_level_emit(0);
+        let depth = self.renderer.inherit_depth();
         super::status_builder::StatusBuilder::new(
             self.renderer.clone(),
             self.sink_stderr.clone(),
@@ -299,28 +520,33 @@ impl Printer {
         )
     }
 
-    // ----- Spinners / progress (depth 0) -----
+    // ----- Spinners / progress -----
 
-    /// Top-level spinner (depth 0). Required for ~14 lib-side call sites
-    /// in cfgd-core that today take `&Printer` and have no section context
-    /// (oci/, upgrade/, sources/, modules/git.rs, reconciler/scripts.rs).
+    /// Spinner at the ambient depth — 0 unless a `DepthInheritGuard` is open,
+    /// in which case it renders inside the innermost section. Required for the
+    /// lib-side call sites in cfgd-core that take `&Printer` and have no
+    /// section context of their own (oci/, upgrade/, sources/, modules/git.rs,
+    /// reconciler/scripts.rs).
     #[must_use]
     pub fn spinner(&self, message: impl Into<String>) -> super::spinner::Spinner<'_> {
         let message = message.into();
-        let bar = super::spinner::make_spinner_bar(
+        let depth = self.renderer.inherit_depth();
+        let (bar, live) = super::spinner::make_spinner_bar(
             &self.multi_progress,
             &self.renderer,
-            self.verbosity(),
-            0,
+            self.live_bars(),
+            depth,
             &message,
         );
         super::spinner::Spinner {
             renderer: self.renderer.clone(),
             sink: self.sink_stderr.clone(),
-            depth: 0,
+            depth,
             bar,
             message,
             finished: false,
+            _live: live,
+            borrowed: false,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -331,35 +557,62 @@ impl Printer {
         total: u64,
         message: impl Into<String>,
     ) -> super::spinner::ProgressBar<'_> {
-        let bar = super::spinner::make_progress_bar(
+        let (bar, live) = super::spinner::make_progress_bar(
             &self.multi_progress,
+            &self.renderer,
             total,
-            self.verbosity(),
+            self.live_bars(),
+            self.renderer.inherit_depth(),
             &message.into(),
         );
         super::spinner::ProgressBar {
             bar,
+            _live: live,
             _phantom: std::marker::PhantomData,
         }
     }
 
-    /// Expose the underlying MultiProgress for callers that need fine-grained
-    /// control (kept for API parity with the old Printer).
-    pub fn multi_progress(&self) -> &indicatif::MultiProgress {
-        &self.multi_progress
-    }
-
-    /// Run an external command at top-level (depth 0), displaying its output
+    /// Run an external command at the ambient depth, displaying its output
     /// through an `OutputWindow` and capturing the full stdout/stderr in the
-    /// returned `CommandOutput`.
+    /// returned `CommandOutput`. The window indents under the innermost open
+    /// section while a `DepthInheritGuard` is held, and sits at column 0
+    /// otherwise.
     pub fn run(
         &self,
         cmd: &mut std::process::Command,
         label: impl Into<String>,
     ) -> std::io::Result<super::process::CommandOutput> {
-        // run is depth-0 only; the clamp would still return 0, so the value is discarded.
-        let _ = self.renderer.enforce_top_level_emit(0);
-        super::process::run_command(self, 0, cmd, &label.into())
+        let depth = self.renderer.inherit_depth();
+        super::process::run_command(
+            self,
+            depth,
+            cmd,
+            &label.into(),
+            super::process::StatusOwner::Window,
+        )
+    }
+
+    /// [`Self::run`] for a command that is part of a larger action whose status
+    /// line the CALLER emits: the live window renders exactly as it does for
+    /// `run`, but collapses without a line of its own.
+    ///
+    /// Use it wherever a status line already names the work — a package
+    /// install inside the reconciler's action tree. Reaching for `run` there
+    /// renders the action twice, once with the command's label and once with
+    /// the plan's.
+    pub fn run_silent(
+        &self,
+        cmd: &mut std::process::Command,
+        label: impl Into<String>,
+    ) -> std::io::Result<super::process::CommandOutput> {
+        let depth = self.renderer.inherit_depth();
+        super::process::run_command(
+            self,
+            depth,
+            cmd,
+            &label.into(),
+            super::process::StatusOwner::Caller,
+        )
     }
 
     /// Final flush — call at the end of a streaming command to ensure any
@@ -420,6 +673,53 @@ impl Printer {
         }
     }
 
+    /// Open a run phase's section (`Phase: Packages`).
+    ///
+    /// The ONE way to open one, so every phase heading in the workspace takes
+    /// the same two theme slots — and commits to scrollback before anything
+    /// the phase does. A phase's work can open a live region (a lane's output
+    /// window, a wait line), and the live region paints below the last
+    /// committed line: a heading still deferred to its first status would be
+    /// written *after* the output it introduces.
+    #[must_use = "section closes when SectionGuard is dropped; bind it"]
+    pub fn section_phase(
+        &self,
+        label: &super::PhaseLabel,
+    ) -> super::section_guard::SectionGuard<'_> {
+        self.renderer.render_section_open_styled(
+            &label.plain(),
+            Some(label.styled(&self.renderer.theme)),
+            /*keep_when_empty=*/ true,
+        );
+        self.renderer
+            .render_section_commit_header(&*self.sink_stderr);
+        super::section_guard::SectionGuard {
+            printer: self,
+            renderer: self.renderer.clone(),
+            sink: self.sink_stderr.clone(),
+            depth: 1,
+        }
+    }
+
+    /// Open a section headed by a styled owner token (`module:nvim`).
+    #[must_use = "section closes when SectionGuard is dropped; bind it"]
+    pub fn section_owner(
+        &self,
+        label: &super::OwnerLabel,
+    ) -> super::section_guard::SectionGuard<'_> {
+        self.renderer.render_section_open_styled(
+            &label.plain(),
+            Some(label.styled(&self.renderer.theme)),
+            /*keep_when_empty=*/ true,
+        );
+        super::section_guard::SectionGuard {
+            printer: self,
+            renderer: self.renderer.clone(),
+            sink: self.sink_stderr.clone(),
+            depth: 1,
+        }
+    }
+
     #[must_use = "section closes when SectionGuard is dropped; bind it"]
     pub fn section_or_collapse(
         &self,
@@ -441,6 +741,43 @@ impl Drop for Printer {
     }
 }
 
+/// Turns `console`'s process-global colour flags ON and restores them on drop,
+/// including on unwind, so a failed assertion cannot leave the suite's terminal
+/// decision flipped under every test that runs after it.
+///
+/// The ONE writer of those flags in the workspace, and test-only: production
+/// never touches them, because a printer's colour is decided at construction
+/// (see [`ColorChoice`]). A test reaches for this when the flags being ON is
+/// the reported condition it must reproduce — `--no-color` on a colour
+/// terminal, or a capture taken while an unrelated thread flipped them. Pair it
+/// with `serial_test::serial`; the flags are process-global.
+#[cfg(test)]
+pub(crate) struct ColorGlobalOn {
+    stdout: bool,
+    stderr: bool,
+}
+
+#[cfg(test)]
+impl ColorGlobalOn {
+    pub(crate) fn set() -> Self {
+        let prior = Self {
+            stdout: console::colors_enabled(),
+            stderr: console::colors_enabled_stderr(),
+        };
+        console::set_colors_enabled(true);
+        console::set_colors_enabled_stderr(true);
+        prior
+    }
+}
+
+#[cfg(test)]
+impl Drop for ColorGlobalOn {
+    fn drop(&mut self) {
+        console::set_colors_enabled(self.stdout);
+        console::set_colors_enabled_stderr(self.stderr);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,25 +787,226 @@ mod tests {
     use serial_test::serial;
 
     #[test]
-    #[serial]
     fn structured_format_auto_quiets() {
-        let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json);
+        let p = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Json,
+            ColorChoice::Auto,
+        );
         assert_eq!(p.verbosity(), Verbosity::Quiet);
     }
 
     #[test]
-    #[serial]
     fn table_format_keeps_verbosity() {
-        let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Table);
+        let p = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Table,
+            ColorChoice::Auto,
+        );
         assert_eq!(p.verbosity(), Verbosity::Normal);
     }
 
     #[test]
     #[serial]
+    fn derived_printers_inherit_the_colour_decision() {
+        // The terminal is asked to say YES, so a derived printer that re-reads
+        // it would come back coloured and the assertion below would fail. That
+        // is the regression: `cfgd daemon --no-color` built its own printer
+        // with `Printer::new`, which resolves `Auto`, and drew a fully coloured
+        // reconcile tree into journald.
+        let _no_color = EnvVarGuard::unset("NO_COLOR");
+        let _term = EnvVarGuard::set("TERM", "xterm-256color");
+        let _globals = ColorGlobalOn::set();
+
+        let never = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Table,
+            ColorChoice::Never,
+        );
+        assert!(!never.colors());
+        assert!(!never.at_verbosity(Verbosity::Quiet).colors());
+        assert!(!never.at_verbosity(Verbosity::Verbose).colors());
+        assert!(!never.rethemed("dracula").colors());
+
+        // `silent()` answers the same way with no parent to inherit from.
+        assert!(!Printer::silent().colors());
+
+        // And the inheritance is faithful in the other direction: an ON
+        // decision survives the derivation too, so this is not a test that
+        // would pass with the field hardcoded to false.
+        let always = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Table,
+            ColorChoice::Always,
+        );
+        assert!(always.colors());
+        assert!(always.at_verbosity(Verbosity::Quiet).colors());
+    }
+
+    /// F9: `rethemed`/`at_verbosity` used to rebuild every ambient terminal
+    /// decision via `build`, re-probing the REAL stderr/stdin/`MultiProgress`
+    /// and dropping the parent's test channels — colour was already proven
+    /// above; this extends the same shape to the five ambient inputs that
+    /// were not: the sinks, `live_region`, `interactive_stdin`,
+    /// `test_doc_capture`, and `prompt_queue`. A re-probe there is the
+    /// pty-hang shape (`cmd_init`'s re-theme regaining a live region + a real
+    /// stdin-tty mid-run and blocking on an unanswered confirmation prompt),
+    /// the vacuous-test-pass shape (a derived quiet sink's `Role::Fail` line
+    /// landing on the real terminal instead of the parent test's capture
+    /// buffer, at `Verbosity::Quiet`), and the double-`MultiProgress` shape
+    /// (the daemon's own `at_verbosity` call painting a second live region
+    /// over the process printer's).
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn derived_printers_inherit_ambient_terminal_and_test_channels() {
+        // Sinks, live_region, interactive_stdin, and the seeded prompt queue.
+        let (parent, _buf) =
+            Printer::for_test_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
+        for derived in [
+            parent.at_verbosity(Verbosity::Normal),
+            parent.rethemed("dracula"),
+        ] {
+            assert_eq!(
+                derived.live_region, parent.live_region,
+                "live_region must be inherited, not re-probed from the real stderr"
+            );
+            assert_eq!(
+                derived.interactive_stdin, parent.interactive_stdin,
+                "interactive_stdin must be inherited, not re-probed from the real stdin"
+            );
+            assert!(
+                Arc::ptr_eq(&derived.sink_stderr, &parent.sink_stderr),
+                "a derived printer must write into the SAME sink as its parent, not a fresh Term"
+            );
+            assert!(
+                Arc::ptr_eq(&derived.sink_stdout, &parent.sink_stdout),
+                "a derived printer must write into the SAME sink as its parent, not a fresh Term"
+            );
+            let queue = derived
+                .prompt_queue
+                .as_ref()
+                .expect("a derived printer must inherit the parent's seeded prompt answers");
+            assert!(
+                Arc::ptr_eq(queue, parent.prompt_queue.as_ref().unwrap()),
+                "the derived queue must be the SAME queue the parent was seeded with, not None"
+            );
+        }
+
+        // test_doc_capture: an emit on the DERIVED printer must land in the
+        // capture the PARENT test is holding, not on the real stdout.
+        let (doc_parent, cap) = Printer::for_test_doc();
+        let derived_doc = doc_parent.at_verbosity(Verbosity::Quiet);
+        derived_doc.emit(super::super::doc::Doc::new().with_data(serde_json::json!({"ok": true})));
+        assert_eq!(
+            cap.json(),
+            Some(serde_json::json!({"ok": true})),
+            "a derived printer must keep writing into the parent's test_doc_capture"
+        );
+
+        // multi_progress: a derived printer must draw into the SAME
+        // MultiProgress as its parent, not stand up a second one against a
+        // fresh (real) draw target.
+        let (live_parent, drawn) = Printer::for_test_with_live_bars();
+        let derived_live = live_parent.at_verbosity(Verbosity::Normal);
+        assert!(derived_live.live_bars());
+        let bar = derived_live.progress_bar(1, "deriving");
+        bar.inc(1);
+        bar.finish();
+        let out = drawn.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            !out.is_empty(),
+            "a derived printer's progress bar never reached the parent's recording draw \
+             target — it stood up a fresh MultiProgress instead of inheriting one"
+        );
+    }
+
+    /// `spec.theme.overrides` is a documented field, and until the process
+    /// printer was built from the whole block it was inert: `main` passed only
+    /// `theme.name`, so `Theme::from_config` was reachable from nothing but its
+    /// own tests and every declared override was silently dropped.
+    #[test]
+    #[serial]
+    fn theme_overrides_reach_the_rendered_style() {
+        use crate::config::{ThemeConfig, ThemeOverrides};
+
+        let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
+        let _no_color = EnvVarGuard::unset("NO_COLOR");
+        let _term = EnvVarGuard::set("TERM", "xterm-256color");
+
+        let config = ThemeConfig {
+            name: "dracula".to_string(),
+            overrides: ThemeOverrides {
+                success: Some("#010203".to_string()),
+                // The optional slot: a preset answering `None` must be FILLED
+                // by an override, and filled before the colour stamp — a slot
+                // minted afterwards would carry the default colour-off answer
+                // instead of this printer's.
+                primary: Some("#040506".to_string()),
+                ..Default::default()
+            },
+        };
+
+        let p = Printer::with_theme_config(
+            Verbosity::Normal,
+            Some(&config),
+            OutputFormat::Table,
+            ColorChoice::Always,
+        );
+        // Asserted on the RENDER rather than on the stored triple: reaching the
+        // theme struct is not the claim, reaching the escape a user sees is.
+        let theme = &p.renderer.theme;
+        assert!(theme.colors(), "the stamp must reach the overridden slots");
+        assert_eq!(
+            theme.success.apply_to("x").to_string(),
+            "\u{1b}[38;2;1;2;3mx\u{1b}[0m"
+        );
+        let primary = theme
+            .primary
+            .as_ref()
+            .expect("an override must fill an optional slot the preset leaves empty");
+        assert_eq!(
+            primary.apply_to("x").to_string(),
+            "\u{1b}[38;2;4;5;6mx\u{1b}[0m",
+            "a slot minted during the override pass must still carry this \
+             printer's colour decision, not the default colour-off one"
+        );
+
+        // No config at all is the default theme, not a panic or an empty one.
+        let bare = Printer::with_theme_config(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Table,
+            ColorChoice::Always,
+        );
+        assert_eq!(
+            bare.renderer.theme.success.apply_to("x").to_string(),
+            Theme::default()
+                .with_colors(true)
+                .success
+                .apply_to("x")
+                .to_string()
+        );
+    }
+
+    #[test]
     fn is_structured_classifies() {
-        let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json);
+        let p = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Json,
+            ColorChoice::Auto,
+        );
         assert!(p.is_structured());
-        let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Table);
+        let p = Printer::with_format(
+            Verbosity::Normal,
+            None,
+            OutputFormat::Table,
+            ColorChoice::Auto,
+        );
         assert!(!p.is_structured());
     }
 
@@ -539,6 +1077,50 @@ mod tests {
         assert!(
             out.contains("--jsonpath is deprecated"),
             "deprecation must be force-shown under structured/Quiet; got: {out:?}"
+        );
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn alert_shows_under_structured_quiet() {
+        // An alert carries the reason the payload below it is incomplete, so
+        // it has to survive exactly what a deprecation survives — otherwise a
+        // `-o json` consumer acts on a plan whose caveat was dropped.
+        let (p, buf) = Printer::for_test_with_format(OutputFormat::Json);
+        assert_eq!(p.verbosity(), Verbosity::Quiet);
+
+        p.status_simple(Role::Warn, "ordinary warning");
+        p.alert("2 package actions will not apply");
+        p.flush();
+
+        let out = strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        assert!(
+            !out.contains("ordinary warning"),
+            "Role::Warn must stay suppressed under structured/Quiet; got: {out:?}"
+        );
+        assert!(
+            out.contains("2 package actions will not apply"),
+            "alert must be force-shown under structured/Quiet; got: {out:?}"
+        );
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn alert_never_reaches_the_data_channel() {
+        let (p, cap) = Printer::for_test_doc();
+        p.alert("stranded installs");
+        p.emit(super::super::doc::Doc::new().with_data(serde_json::json!({"ok": true})));
+        p.flush();
+
+        assert!(
+            cap.human().contains("stranded installs"),
+            "the alert belongs on the human/stderr channel: {}",
+            cap.human()
+        );
+        let payload = cap.json().expect("emit must produce a doc payload");
+        assert!(
+            !payload.to_string().contains("stranded installs"),
+            "the alert must not contaminate the -o data channel: {payload}"
         );
     }
 
@@ -982,7 +1564,7 @@ mod tests {
     }
 
     /// In debug builds, a top-level emit reached while a section is open
-    /// trips `debug_assert!` in `Renderer::enforce_top_level_emit`. We catch
+    /// trips `debug_assert!` in `Renderer::enforce_structural_top_level`. We catch
     /// the panic to verify the assert fires.
     #[cfg(feature = "test-helpers")]
     #[test]
@@ -1018,5 +1600,103 @@ mod tests {
             !out.contains("\nMidSection\n"),
             "unindented form leaked through: {out:?}"
         );
+    }
+
+    /// With a `DepthInheritGuard` open, a library emit that has no section
+    /// context of its own renders inside the section its caller opened,
+    /// keeping the `&Printer` signature the provider traits already pass.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn status_inherits_section_depth_under_the_guard() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let _phase = p.section("Phase: Files");
+            let _owner = _phase.section("module:nvim");
+            let _inherit = p.depth_inheritance();
+            p.status_simple(Role::Ok, "wrote init.lua");
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(
+            out.contains("\n    ✓ wrote init.lua\n"),
+            "expected depth 2; got: {out:?}"
+        );
+    }
+
+    /// The guard is scoped: once it drops, the codebase-wide structural guard
+    /// is armed again for the hundreds of call sites that never wanted
+    /// inheritance.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    #[cfg(debug_assertions)]
+    fn inheritance_ends_with_the_guard() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (p, _buf) = Printer::for_test_at(Verbosity::Normal);
+            let _s = p.section("Outer");
+            {
+                let _inherit = p.depth_inheritance();
+                p.status_simple(Role::Ok, "inside");
+            }
+            p.status_simple(Role::Ok, "after"); // debug_assert! fires
+        }));
+        assert!(result.is_err(), "expected debug_assert! panic");
+    }
+
+    /// Inheritance covers NON-structural emits only. A heading inside a group
+    /// is a bug in every mode, so the structural assert stays armed even with
+    /// the guard open.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    #[cfg(debug_assertions)]
+    fn structural_emits_still_assert_under_the_guard() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (p, _buf) = Printer::for_test_at(Verbosity::Normal);
+            let _s = p.section("Outer");
+            let _inherit = p.depth_inheritance();
+            p.heading("MidSection"); // debug_assert! fires
+        }));
+        assert!(result.is_err(), "expected debug_assert! panic");
+    }
+
+    /// A run at ambient depth 0 — every caller before the run tree existed —
+    /// renders at column 0 exactly as it did before the split.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn top_level_run_stays_at_column_zero() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        let out = p
+            .run(
+                std::process::Command::new("echo").arg("hello-from-run"),
+                "echo step",
+            )
+            .expect("echo must succeed");
+        assert!(out.status.success());
+        p.flush();
+        let rendered = strip_ansi(&buf.lock().unwrap());
+        let line = rendered
+            .lines()
+            .find(|l| l.contains("echo step"))
+            .expect("label missing");
+        assert!(
+            !line.starts_with(' '),
+            "top-level run gained an indent: {line:?}"
+        );
+    }
+
+    /// A top-level owner group: the token heads the section at column 0 and
+    /// its children indent under it.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn printer_section_owner_heads_a_top_level_group() {
+        use crate::output::OwnerLabel;
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let owner = p.section_owner(&OwnerLabel::new("profile", "work"));
+            owner.bullet("installed ripgrep");
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.starts_with("profile:work\n"), "got: {out:?}");
+        assert!(out.contains("\n  - installed ripgrep\n"), "got: {out:?}");
     }
 }

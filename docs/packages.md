@@ -47,9 +47,10 @@ as installed:
    absent, and passes `--prefix $HOME/.npm-global` on the npm command line.
 
 The first time the fallback is used, `cfgd apply` prints a one-time notice
-naming the fallback prefix and that its `bin` directory needs to be added to
-`PATH` — cfgd bootstraps installs into `$HOME/.npm-global` but does not
-silently rewrite your shell's `PATH` for you.
+naming the fallback prefix. Nothing is asked of you: `$HOME/.npm-global` is a
+directory cfgd created, so its `bin` directory is written into the generated
+env file (`~/.cfgd.env`) like every other `PATH` entry cfgd owns, whether cfgd
+installed npm itself or you did.
 
 Once resolved, the decision (prefix + whether it was the fallback) is
 persisted in cfgd's state store and reused by every later `install` /
@@ -87,12 +88,126 @@ packages:
       - pynvim      # resolves through brew's prefix, same apply
 ```
 
+A manager that is not on the machine yet is provisioned in the `Prerequisites`
+phase, which runs before any package work:
+
+```
+Phase: Prerequisites
+  cfgd:managers
+    - refresh apt index
+    - provision nix via nix installer
+```
+
+so every prefix an install needs exists before the `Packages` phase starts.
+Those manager nodes are a graph — a provision waits for the tool it shells out
+to, and for the manager it installs through — and everything whose edges are
+satisfied provisions at the same time. A node whose dependency failed does not
+run at all; its line names the failure that stopped it.
+
+Managers one mediator delivers by an ordinary package install collapse onto a
+single node, and a single command:
+
+```
+Phase: Prerequisites
+  cfgd:managers
+    ✓ provision npm, pipx via apt (12.4s)
+```
+
+is one `apt-get install nodejs npm pipx`, not two `apt-get` runs queued behind
+each other for the dpkg lock. The line names every manager the command
+delivers, and `--skip` / `--only` / `--phase` still address them one at a time
+(`--skip prerequisites.npm` leaves `provision pipx via apt` behind). Only a
+plain install collapses: a manager that bootstraps through a vendor script
+(`brew` via the Homebrew installer, `npm` via `nvm`, `cargo` via `rustup`)
+keeps its own node and its own command. Provisions that stay separate but share
+a mediator still take that mediator's lane and run one at a time.
+Inside `Packages`, work runs one lane per manager family concurrently. The lane
+is per *family* rather than per name because `brew`, `brew-tap` and `brew-cask`
+drive one binary — formulae, taps and casks queue behind each other so only one
+`brew` process ever runs.
+
+**The `via` on a provision line is binding, not a preview.** cfgd resolves the
+mediator while planning — that is the manager named on the line you read, and
+the lane the node is serialized on — and execution runs exactly that one:
+
+```
+Phase: Prerequisites
+  cfgd:managers
+    ✗ provision npm via apt — apt could not install npm: exit code 100: E: Unable to locate package nodejs
+```
+
+If the named mediator has gone away or its install fails, the provision fails
+naming it. cfgd does not fall through to whatever else happens to be installed:
+a substitute would run outside the lane the node holds (two dpkg-class installs
+at once is exactly what the lane prevents) and would install through a manager
+the line never mentioned. Re-run to re-plan against the host as it is now.
+
+For the same reason a manager is only planned through a mediator this host can
+actually run: on a machine with none of them, cfgd says the manager cannot be
+provisioned and why, instead of naming one and failing on it.
+
 The same directories reach lifecycle scripts (see
-[lifecycle-scripts.md](lifecycle-scripts.md)) and the generated env file, so a
-`postApply` step and your next login shell resolve the binary identically.
+[lifecycle-scripts.md](lifecycle-scripts.md)), the generated env file, and the
+environment of every package-manager command cfgd runs afterwards — so a
+`postApply` step, an `npm install` that shells out to `node`, and your next
+login shell all resolve the binary identically.
 Your *current* shell is the one exception — it predates the env file, which is
 why `cfgd apply`, `cfgd init --apply*`, and `cfgd module add --apply` all end
 by naming the file to source.
+
+## Index refresh
+
+cfgd refreshes the package index of every manager that is already on the machine,
+has work in this run, and keeps a local index at all. The refresh is an action of
+its own in the `Prerequisites` phase, so it is named in the plan before it happens
+and reported where it ran:
+
+```
+Phase: Prerequisites
+  cfgd:managers
+    ✓ refresh apt index (1.0s)
+      Hit:1 http://deb.debian.org/debian stable InRelease
+      Reading package lists... Done
+```
+
+A refresh touches METADATA ONLY. cfgd never upgrades a package you did not
+declare on its way to installing one you did, so a manager whose only "update"
+command is a machine-wide upgrade — `npm update -g`, `pipx upgrade-all`,
+`choco upgrade all -y`, `winget upgrade --all`, a bare `snap refresh` — gets no
+refresh action at all. Neither does a manager that resolves its remote on every
+install and so has no index to go stale: `cargo`, `go`, `nix`. Where a manager
+has both forms, cfgd runs the metadata half: `scoop update` (bucket manifests,
+not `scoop update *`) and `flatpak update --appstream -y` (remote metadata, not
+a bare `flatpak update -y`). Nothing in the plan or the tree claims a refresh
+that never ran.
+
+| Refreshed | Not refreshed (no local index) |
+|---|---|
+| `apt`, `dnf`, `yum`, `zypper`, `pacman`, `apk`, `pkg`, `brew`, `scoop`, `flatpak`, a custom manager declaring `update:` | `cargo`, `go`, `nix`, `npm`, `pipx`, `snap`, `chocolatey`, `winget`, `brew-cask`, `brew-tap` |
+
+`brew-cask` and `brew-tap` are the same binary and the same index as `brew`, so
+the family is refreshed once by `brew` rather than three times.
+
+Filters filter: a run that leaves the phase out (`--phase packages`) or drops one
+node from it (`--skip prerequisites.apt`) does not refresh that index behind your
+back. The refresh is the phase's, so excluding the phase excludes the refresh.
+
+The rule holds for anything else that narrows a run: a per-module daemon tick
+(`reconcile.modules`) and a package withheld awaiting a source decision both take
+the refresh with them once nothing left in the run reads that index.
+
+A refresh that fails is reported as a warning naming the manager that failed and
+leaves its line `unchanged`; it never fails the run, because a stale index is a
+reason for an install to be out of date, not a reason to stop.
+
+A manager cfgd cannot provision on this host says so in the same phase, naming
+the cause rather than disappearing from the run:
+
+```
+Phase: Prerequisites
+  cfgd:managers
+    ✗ cannot provision pipx — pip3 is missing and apt does not install it under that name
+```
 
 ## Profile Usage
 
@@ -283,14 +398,37 @@ Each manager supports querying available package versions without installing:
 
 ## Dry Run
 
-`cfgd apply --dry-run` shows the full package plan without making changes:
+`cfgd apply --dry-run` shows the full package plan without making changes. `toolbox`
+below is a custom manager declaring an `update:` command, which is why it takes a
+refresh node of its own:
 
 ```
-Packages:
-  + brew install ripgrep fd bat
-  - brew uninstall unused-tool
-  = apt: 5 packages up to date
-  ⊘ snap: not installed (skipping)
+Plan
+  Config   /home/you/.config/cfgd/cfgd.yaml
+  Profile  pkgdemo
+  Phases   Prerequisites, Packages
+
+Phase: Prerequisites
+  cfgd:managers
+    - refresh brew index
+    - refresh toolbox index
+
+Phase: Packages
+  profile:pkgdemo
+    - brew install ripgrep
+    - toolbox install delta
+    - toolbox uninstall beta
+    - skip absent: 'absent' not available — cannot auto-install on this platform
+
+⊙ 6 actions planned
 ```
+
+Every manager's work is one line per operation: an install names the manager and the
+packages it takes in one call, an uninstall names what leaves the desired set, and a
+manager that is neither present nor installable is a `skip` line carrying the reason
+rather than a silent omission.
+
+A package already at its desired version produces no action, so it gets no line:
+the plan lists what would change, not the full inventory.
 
 See the [CLI reference](cli-reference.md) for `cfgd profile update --package` and `cfgd module update --package` commands.

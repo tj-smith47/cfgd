@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use cfgd::cli::diff::{build_diff_doc, cmd_diff};
 use cfgd::cli::output_types::{DiffOutput, DiffSummary, PackageDrift, SystemDriftOutput};
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
 use pretty_assertions::assert_eq;
 
 use common::cli_for;
@@ -166,10 +166,12 @@ fn diff_no_drift_json() {
         files: Vec::new(),
         packages: Vec::new(),
         system: Vec::new(),
+        system_errors: Vec::new(),
         summary: DiffSummary {
             has_file_drift: false,
             has_pkg_drift: false,
             has_system_drift: false,
+            system_check_failed: false,
         },
     };
     let (printer, cap) = Printer::for_test_doc();
@@ -242,10 +244,12 @@ fn diff_system_drift_human() {
             expected: "4096".to_string(),
             actual: "128".to_string(),
         }],
+        system_errors: Vec::new(),
         summary: DiffSummary {
             has_file_drift: false,
             has_pkg_drift: false,
             has_system_drift: true,
+            system_check_failed: false,
         },
     };
     let (printer, cap) = Printer::for_test_doc();
@@ -285,20 +289,24 @@ fn diff_bridge_one_blank_line() {
             shape: "missing".to_string(),
             packages: vec!["pkg-a".to_string()],
             bootstrap_method: None,
+            reason: None,
         }],
         system: Vec::new(),
+        system_errors: Vec::new(),
         summary: DiffSummary {
             has_file_drift: false,
             has_pkg_drift: true,
             has_system_drift: false,
+            system_check_failed: false,
         },
     };
     let (printer, cap) = Printer::for_test_doc();
 
     printer.heading("Diff");
     {
-        let pkg_sec = printer.section("Packages");
-        pkg_sec
+        let pkg_sec = printer.section("Phase: Packages");
+        let group = pkg_sec.section_owner(&OwnerLabel::new("profile", "tiny"));
+        group
             .status(Role::Warn, "drift-mgr: missing")
             .detail("pkg-a");
     }

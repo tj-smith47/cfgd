@@ -92,6 +92,17 @@ pub(super) struct EnvHostProbe {
 
 impl EnvHostProbe {
     pub(super) fn detect(home: &Path) -> Self {
+        #[cfg(any(test, feature = "test-helpers"))]
+        if let Some(o) = TEST_HOST_PROBE_OVERRIDE.with(|cell| cell.borrow().clone()) {
+            return Self {
+                shell: o.shell,
+                fish_present: o.fish_present,
+                bash_profile_exists: o.bash_profile_exists,
+                bash_login_exists: o.bash_login_exists,
+                git_bash_present: o.git_bash_present,
+                zsh_present: o.zsh_present,
+            };
+        }
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         let fish_conf_d = home.join(".config/fish/conf.d");
         let zsh_present = shell.contains("zsh")
@@ -106,6 +117,61 @@ impl EnvHostProbe {
             zsh_present,
         }
     }
+}
+
+// `EnvHostProbe::detect` reads `$SHELL`, `command_available("zsh"/"fish")`,
+// and PATH — none of which `with_test_home_guard` isolates, so an
+// integration-style test driving a real `cmd_apply`/`cmd_verify` gets
+// whatever shell shape the CI runner happens to have. This is the same
+// thread-local override idiom as `with_test_home`
+// (`cfgd-core/src/util/paths.rs`): a test pins a declared host shape for the
+// duration of a guard instead of asserting against ambient reality.
+#[cfg(any(test, feature = "test-helpers"))]
+thread_local! {
+    static TEST_HOST_PROBE_OVERRIDE: std::cell::RefCell<Option<EnvHostProbeOverride>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A declared host shape for [`EnvHostProbe::detect`] to return verbatim
+/// instead of reading `$SHELL`/PATH/`~`. Field-for-field mirror of
+/// [`EnvHostProbe`] rather than a re-export of it: `EnvHostProbe` stays
+/// `pub(super)` (internal to the reconciler), while this override is the
+/// crate's public test seam.
+#[cfg(any(test, feature = "test-helpers"))]
+#[derive(Debug, Clone)]
+pub struct EnvHostProbeOverride {
+    pub shell: String,
+    pub fish_present: bool,
+    pub bash_profile_exists: bool,
+    pub bash_login_exists: bool,
+    pub git_bash_present: bool,
+    pub zsh_present: bool,
+}
+
+/// RAII guard restoring the prior override on drop, mirroring
+/// [`crate::TestHomeGuard`].
+#[cfg(any(test, feature = "test-helpers"))]
+#[must_use = "dropping the guard immediately restores the previous override"]
+pub struct EnvHostProbeOverrideGuard {
+    prev: Option<EnvHostProbeOverride>,
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+impl Drop for EnvHostProbeOverrideGuard {
+    fn drop(&mut self) {
+        let prev = self.prev.take();
+        TEST_HOST_PROBE_OVERRIDE.with(|cell| *cell.borrow_mut() = prev);
+    }
+}
+
+/// Install an `EnvHostProbe::detect` override for the current thread and
+/// return a guard that restores the prior value (including `None`) on drop.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn with_env_host_probe_override_guard(
+    probe: EnvHostProbeOverride,
+) -> EnvHostProbeOverrideGuard {
+    let prev = TEST_HOST_PROBE_OVERRIDE.with(|cell| cell.replace(Some(probe)));
+    EnvHostProbeOverrideGuard { prev }
 }
 
 fn reaches_login(scope: EnvScope) -> bool {

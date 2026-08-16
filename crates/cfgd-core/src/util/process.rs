@@ -239,6 +239,47 @@ pub fn hostname_string() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
+/// How a finished child process ended, as one clause a message can embed.
+///
+/// The ONE rendering of an `ExitStatus` for a human, and the reason no caller
+/// writes `status.code().unwrap_or(-1)`: a process killed by a signal has no
+/// exit code at all, so that idiom prints `exit code -1` — a number no process
+/// ever returned — for the most common failure an interrupted run produces. A
+/// `cfgd apply` stopped with Ctrl-C reported exactly that for the install it
+/// killed.
+pub fn exit_status_reason(status: &std::process::ExitStatus) -> String {
+    if let Some(code) = status.code() {
+        return format!("exit code {code}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return match signal_name(signal) {
+                Some(name) => format!("killed by signal {signal} ({name})"),
+                None => format!("killed by signal {signal}"),
+            };
+        }
+    }
+    "terminated without an exit code".to_string()
+}
+
+/// The name for the signals a user is likely to have sent or to recognise;
+/// `None` for the rest, which the number alone describes well enough.
+#[cfg(unix)]
+fn signal_name(signal: i32) -> Option<&'static str> {
+    match signal {
+        1 => Some("SIGHUP"),
+        2 => Some("SIGINT"),
+        6 => Some("SIGABRT"),
+        9 => Some("SIGKILL"),
+        11 => Some("SIGSEGV"),
+        13 => Some("SIGPIPE"),
+        15 => Some("SIGTERM"),
+        _ => None,
+    }
+}
+
 /// Extract stdout from a `Command` output as a trimmed, lossy UTF-8 string.
 pub fn stdout_lossy_trimmed(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
@@ -331,6 +372,71 @@ pub fn register_bootstrapped_path_dirs(dirs: &[String]) {
             guard.push(path);
         }
     }
+}
+
+/// Compose a `PATH` value whose leading entries are `dirs`, followed by
+/// everything already in `current`.
+///
+/// `None` when the value would not change — `dirs` is empty, or every one of
+/// them is already on `current` — so a caller can leave the environment alone
+/// rather than re-setting a variable to itself. `None` also when the join
+/// fails, which happens when a directory contains the platform separator and
+/// would silently split into two bogus entries; keeping the original `PATH` is
+/// the safe answer.
+///
+/// The ONE composition of that string. Two callers need it and they must agree,
+/// because they hand the same directories to two halves of the same run: a
+/// lifecycle script's environment (`reconciler::scripts`) and a package
+/// manager's child process (`packages::shared::pkg_run`). Prepending rather
+/// than appending matches `generate_env_file_content` — a script, a package
+/// manager and the login shell that follows them must resolve a command the
+/// same way, and cfgd installed the manager's copy on purpose.
+pub fn path_with_dirs_prepended(current: &str, dirs: &[std::path::PathBuf]) -> Option<String> {
+    if dirs.is_empty() {
+        return None;
+    }
+    // An empty `PATH` has no entries at all. `split_paths("")` yields one EMPTY
+    // entry, which POSIX reads as the current directory — composing that back
+    // would put `.` on the PATH of every child, which is not what an unset PATH
+    // asked for.
+    let existing: Vec<std::path::PathBuf> = if current.is_empty() {
+        Vec::new()
+    } else {
+        std::env::split_paths(current).collect()
+    };
+    let mut merged: Vec<std::path::PathBuf> = Vec::new();
+    for dir in dirs {
+        if !existing.contains(dir) && !merged.contains(dir) {
+            merged.push(dir.clone());
+        }
+    }
+    if merged.is_empty() {
+        return None;
+    }
+    merged.extend(existing);
+    match std::env::join_paths(&merged) {
+        Ok(joined) => Some(joined.to_string_lossy().into_owned()),
+        Err(e) => {
+            tracing::warn!("cannot add bootstrapped PATH directories: {e}");
+            None
+        }
+    }
+}
+
+/// [`path_with_dirs_prepended`] over THIS PROCESS's `PATH`.
+///
+/// The read is bracketed by the same re-entrant read guard every other
+/// production `PATH` reader in the workspace takes, which is why it lives here
+/// rather than at the call site: a consumer outside cfgd-core cannot name the
+/// `test-helpers` feature the guard is gated on, and an unsynchronized read
+/// ahead of a guarded spawn re-opens the window the lock exists to close.
+pub fn process_path_with_dirs_prepended(dirs: &[std::path::PathBuf]) -> Option<String> {
+    if dirs.is_empty() {
+        return None;
+    }
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _path_guard = crate::test_helpers::path_env_read_guard();
+    path_with_dirs_prepended(&std::env::var("PATH").unwrap_or_default(), dirs)
 }
 
 /// Snapshot of the directories registered by [`register_bootstrapped_path_dirs`].
@@ -444,6 +550,30 @@ pub fn require_tool_with_seam(
     require_tool(default, install_hint)
 }
 
+/// Test-seam env var for every `systemctl` invocation in the workspace.
+///
+/// Named once here because five call sites across three crates spawn
+/// `systemctl` and a test can only redirect them all when they agree on the
+/// spelling. See [`systemctl_cmd`].
+pub const SYSTEMCTL_BIN_ENV: &str = "CFGD_SYSTEMCTL_BIN";
+
+/// Build a `Command` for `systemctl`, honoring [`SYSTEMCTL_BIN_ENV`].
+///
+/// Every `systemctl` shell-out goes through here, and every one of them is
+/// bounded by [`command_output_with_timeout`]: on a host where systemd is
+/// installed but not running (a container, WSL, a chroot), a bare
+/// `systemctl` call blocks for the D-Bus connect timeout — around 90
+/// seconds — per unit, which a `cfgd diff` over several units turns into
+/// minutes of silence.
+pub fn systemctl_cmd() -> std::process::Command {
+    tool_cmd(SYSTEMCTL_BIN_ENV, "systemctl")
+}
+
+/// Whether `systemctl` resolves, honoring [`SYSTEMCTL_BIN_ENV`].
+pub fn systemctl_available() -> bool {
+    command_available_with_seam(SYSTEMCTL_BIN_ENV, "systemctl")
+}
+
 /// Like [`command_available`] but also returns true when the env-var seam
 /// points at an existing file. Use in `is_available()` checks where the
 /// caller wants a bool, not a `Result`.
@@ -458,6 +588,28 @@ pub fn command_available_with_seam(env_var: &str, default: &str) -> bool {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn a_signal_killed_child_is_named_by_its_signal_not_by_a_code_it_never_returned() {
+        let ok = std::process::Command::new("sh")
+            .args(["-c", "exit 7"])
+            .status()
+            .expect("spawn");
+        assert_eq!(exit_status_reason(&ok), "exit code 7");
+
+        #[cfg(unix)]
+        {
+            let killed = std::process::Command::new("sh")
+                .args(["-c", "kill -INT $$"])
+                .status()
+                .expect("spawn");
+            assert_eq!(
+                exit_status_reason(&killed),
+                "killed by signal 2 (SIGINT)",
+                "`status.code().unwrap_or(-1)` renders this as `exit code -1`"
+            );
+        }
+    }
 
     #[test]
     fn hostname_string_returns_non_empty() {
@@ -907,6 +1059,70 @@ mod tests {
         assert!(
             !orphan.is_empty(),
             "output written before the kill must still be captured"
+        );
+    }
+
+    /// The separator is the platform's, so the assertions build their
+    /// expectation with `join_paths` rather than hardcoding `:`.
+    fn joined(parts: &[&str]) -> String {
+        std::env::join_paths(parts.iter().map(std::path::Path::new))
+            .expect("no separator inside a fixture path")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn a_bootstrapped_dir_lands_in_front_of_the_path_it_is_added_to() {
+        let composed = path_with_dirs_prepended(
+            &joined(&["/usr/bin", "/bin"]),
+            &[std::path::PathBuf::from("/home/linuxbrew/.linuxbrew/bin")],
+        )
+        .expect("a new directory changes the value");
+        assert_eq!(
+            composed,
+            joined(&["/home/linuxbrew/.linuxbrew/bin", "/usr/bin", "/bin"])
+        );
+    }
+
+    #[test]
+    fn a_dir_already_on_the_path_composes_nothing_rather_than_duplicating_itself() {
+        assert_eq!(
+            path_with_dirs_prepended(
+                &joined(&["/usr/bin", "/opt/bin"]),
+                &[std::path::PathBuf::from("/opt/bin")],
+            ),
+            None,
+            "an unchanged PATH must not be re-set"
+        );
+        assert_eq!(
+            path_with_dirs_prepended("/usr/bin", &[]),
+            None,
+            "nothing to add is nothing to change"
+        );
+    }
+
+    #[test]
+    fn repeated_dirs_are_added_once_and_keep_the_order_they_were_given() {
+        let composed = path_with_dirs_prepended(
+            "/usr/bin",
+            &[
+                std::path::PathBuf::from("/opt/a"),
+                std::path::PathBuf::from("/opt/b"),
+                std::path::PathBuf::from("/opt/a"),
+            ],
+        )
+        .expect("two new directories change the value");
+        assert_eq!(composed, joined(&["/opt/a", "/opt/b", "/usr/bin"]));
+    }
+
+    #[test]
+    fn an_empty_current_path_yields_the_dirs_alone() {
+        let composed = path_with_dirs_prepended("", &[std::path::PathBuf::from("/opt/a")])
+            .expect("a directory is added to nothing");
+        assert_eq!(
+            composed, "/opt/a",
+            "an unset PATH contributes no entries — least of all the empty one \
+             `split_paths` invents, which POSIX reads as the current directory"
         );
     }
 }

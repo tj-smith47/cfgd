@@ -1,6 +1,6 @@
-Remove Source: team-config
+Remove source:team-config
 
-This source manages 1 resource(s)
+This source manages 1 resource
   Type     Resource 
   ──────────────────
   package  brew/curl

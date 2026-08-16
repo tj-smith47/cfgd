@@ -272,6 +272,11 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
         pending_decisions: Vec::new(),
         modules: Vec::new(),
         managed_resources: Vec::new(),
+        warnings: Vec::new(),
+        classification_degraded: false,
+        classification_degraded_code: None,
+        classification_degraded_reason: None,
+        drift_checked_live: false,
     };
     let (status_printer, status_cap) = Printer::for_test_doc();
     status_printer.emit(cfgd::cli::status::build_fleet_status_doc(

@@ -159,6 +159,16 @@ fn main() -> anyhow::Result<()> {
     // derives `profiles/` from the wrong parent.
     cli.config = cfgd_core::config::resolve_config_path(&cli.config);
 
+    // A relative `--config`/`CFGD_CONFIG`/`--config-dir` value stays relative
+    // past this point otherwise: every downstream derivation of the config
+    // directory (`config_dir(cli)`, in turn a script hook's resolution base)
+    // inherits it verbatim, and a script's process `cwd` is the home
+    // directory rather than the config dir — a relative `run:` script then
+    // resolves against the wrong location whenever cfgd itself isn't invoked
+    // from that same directory. Absolutizing once, here, makes every later
+    // reader agree regardless of how `--config` was spelled.
+    cli.config = cfgd_core::absolutize_path(&cli.config);
+
     // A `--config-dir` override also makes the resolved config path
     // user-directed: a missing config there is the user's typo, not a fresh
     // machine. `--scope system` alone does NOT — that repointing is still a
@@ -227,23 +237,30 @@ fn main() -> anyhow::Result<()> {
             .init();
     }
 
-    // Handle --no-color flag. NO_COLOR / TERM=dumb are handled inside
-    // Printer::with_format so every Printer (including daemon-owned
-    // ones) honors the convention.
-    if cli.no_color {
-        cfgd_core::output::Printer::disable_colors();
-    }
+    // The colour choice is an input to the printer's own decision, not a global
+    // flipped beforehand: the printer settles colour once, at construction, so
+    // nothing later in the run can disagree with it, and every derived printer
+    // (the daemon's, every quiet library sink) inherits that one answer rather
+    // than re-reading the terminal. NO_COLOR and TERM=dumb are read inside the
+    // `Auto` arm, so the convention needs no second spelling here — and
+    // `--color always` deliberately outranks them.
+    let color_choice = cli::resolve_color_choice(cli.no_color, cli.color);
 
-    // Try loading config for theme settings; fall back to default theme if unavailable
+    // Try loading config for theme settings; fall back to default theme if
+    // unavailable. The whole block travels, not just its name: `overrides`
+    // is a documented field, and a printer built from the name alone drops it.
     let theme_config = std::path::Path::new(&cli.config)
         .exists()
         .then(|| cfgd_core::config::load_config(std::path::Path::new(&cli.config)).ok())
         .flatten()
         .and_then(|c| c.spec.theme);
-    let theme_name = theme_config.as_ref().map(|t| t.name.clone());
-    let printer =
-        cfgd_core::output::Printer::with_format(verbosity, theme_name.as_deref(), output_format)
-            .with_list_envelope(cli.list_envelope);
+    let printer = cfgd_core::output::Printer::with_theme_config(
+        verbosity,
+        theme_config.as_ref(),
+        output_format,
+        color_choice,
+    )
+    .with_list_envelope(cli.list_envelope);
 
     if jsonpath_deprecated {
         // A deprecation notice is a stderr diagnostic, not `-o` data — and

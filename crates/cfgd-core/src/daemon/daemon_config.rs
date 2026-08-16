@@ -169,7 +169,7 @@ pub(crate) fn build_sync_tasks(
     manifest_detector: impl Fn(&Path) -> Option<bool>,
 ) -> Vec<SyncTask> {
     let mut tasks: Vec<SyncTask> = vec![SyncTask {
-        source_name: "local".to_string(),
+        source_name: config::LOCAL_LAYER.to_string(),
         repo_path: config_dir.to_path_buf(),
         auto_pull: parsed.auto_pull,
         auto_push: parsed.auto_push,

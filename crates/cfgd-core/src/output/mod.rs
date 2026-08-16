@@ -17,7 +17,13 @@ pub use component::{Component, KvPair};
 pub mod renderer;
 
 pub mod printer;
-pub use printer::{DocCapture, Printer, PromptAnswer};
+pub use printer::{ColorChoice, DocCapture, Printer, PromptAnswer};
+
+pub mod owner_label;
+pub use owner_label::OwnerLabel;
+
+pub mod phase_label;
+pub use phase_label::PhaseLabel;
 
 pub mod section_guard;
 pub use section_guard::SectionGuard;
@@ -30,6 +36,13 @@ pub use spinner::{ProgressBar, Spinner};
 
 pub mod window;
 pub use window::OutputWindow;
+
+// Every item is `pub(crate)`: a row is a live-region primitive the reconciler
+// draws its phase tree with, never a published surface.
+pub(crate) mod live_row;
+
+pub mod lane;
+pub use lane::LaneOutput;
 
 pub mod process;
 pub use process::CommandOutput;
@@ -100,6 +113,17 @@ pub fn strip_ansi(s: &str) -> String {
         }
     }
     out
+}
+
+/// The rendered column width of `text`, in terminal columns.
+///
+/// The ONE width measurement available outside the renderer, so a caller that
+/// pre-computes an alignment column measures exactly what the renderer pads
+/// against: ANSI escapes count as zero columns and a multi-byte glyph (`✓`,
+/// `—`) counts as the columns a terminal gives it, neither of which
+/// `str::len()` answers.
+pub fn measure_width(text: &str) -> usize {
+    console::measure_text_width(text)
 }
 
 /// Collapse a multi-line error message into a single subject-safe line.
@@ -202,9 +226,6 @@ pub use structured::validate_jsonpath_expr;
 
 #[cfg(feature = "test-helpers")]
 pub mod test_capture;
-
-#[cfg(test)]
-pub(crate) mod test_support;
 
 #[cfg(test)]
 mod tests;

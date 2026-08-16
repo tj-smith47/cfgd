@@ -2,6 +2,19 @@ use super::*;
 use cfgd_core::output::{Printer, Verbosity};
 use cfgd_core::test_helpers::test_printer as quiet_printer;
 
+/// Drive `cmd_init` while holding the `PATH` read guard.
+///
+/// `cmd_init` resolves `git` from the process `PATH` and calls `exit(1)` when
+/// it cannot find it — which, inside a test binary, kills every unrelated test
+/// running beside it instead of failing one. One test in this file empties
+/// `PATH` under the write guard, so a reader that skips the read half sees that
+/// window and takes the exit. Every `cmd_init` call in this file goes through
+/// here for that reason.
+fn cmd_init_guarded(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
+    cmd_init(printer, args)
+}
+
 // `cmd_init` gates on `command_available("git")` and calls `ExitCode::Error.exit()`
 // when it misses, so losing the race against a concurrent test's empty-`PATH`
 // window does not fail one test — it terminates the whole test binary. Only for a
@@ -468,11 +481,7 @@ fn pick_profile_multi_lists_options_and_propagates_prompt_error() {
         "each profile must be enumerated 1-based on its own bullet: {captured}"
     );
 
-    let json_printer = Printer::with_format(
-        Verbosity::Normal,
-        None,
-        cfgd_core::output::OutputFormat::Json,
-    );
+    let json_printer = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json).0;
     let err = pick_profile(&profiles_dir, &json_printer)
         .expect_err("non-interactive prompt_text Errs in structured-format printer");
     let msg = err.to_string();
@@ -497,28 +506,81 @@ fn pick_profile_no_dir_errors() {
 }
 
 #[test]
-fn is_git_source_detects_urls() {
-    assert!(is_git_source("https://github.com/user/repo"));
-    assert!(is_git_source("http://github.com/user/repo"));
-    assert!(is_git_source("git@github.com:user/repo.git"));
-    assert!(is_git_source("ssh://git@github.com/user/repo"));
-    assert!(is_git_source("git://github.com/user/repo"));
-    assert!(is_git_source("/some/local/path.git"));
+fn is_clonable_source_detects_urls() {
+    assert!(is_clonable_source("https://github.com/user/repo"));
+    assert!(is_clonable_source("http://github.com/user/repo"));
+    assert!(is_clonable_source("git@github.com:user/repo.git"));
+    assert!(is_clonable_source("ssh://git@github.com/user/repo"));
+    assert!(is_clonable_source("git://github.com/user/repo"));
+    assert!(is_clonable_source("/some/local/path.git"));
 }
 
 #[test]
-fn is_git_source_detects_local_git_repo() {
+fn is_clonable_source_detects_local_git_repo() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join(".git")).unwrap();
-    assert!(is_git_source(&dir.path().display().to_string()));
+    assert!(is_clonable_source(&dir.path().display().to_string()));
 }
 
 #[test]
-fn is_git_source_rejects_plain_paths() {
-    assert!(!is_git_source("/home/user/config"));
-    assert!(!is_git_source("~/my-config"));
-    assert!(!is_git_source("./relative/path"));
-    assert!(!is_git_source("config"));
+fn is_clonable_source_rejects_plain_paths() {
+    assert!(!is_clonable_source("/home/user/config"));
+    assert!(!is_clonable_source("~/my-config"));
+    assert!(!is_clonable_source("./relative/path"));
+    assert!(!is_clonable_source("config"));
+}
+
+// ─── --from resolution — GitHub shorthand vs existing path ─────────────────
+
+#[test]
+#[serial_test::serial]
+fn is_clonable_source_classifies_file_urls_without_reading_the_env_gate() {
+    // `is_git_source` gates `file://` behind CFGD_ALLOW_LOCAL_SOURCES, which any
+    // other test in this binary may have set. `--from` must classify the same way
+    // either way, or the answer depends on unrelated tests.
+    for allow in [Some("1"), None] {
+        let _guard = match allow {
+            Some(v) => cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", v),
+            None => cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES"),
+        };
+        assert!(
+            is_clonable_source("file:///srv/git/config"),
+            "file:// must be clonable with CFGD_ALLOW_LOCAL_SOURCES={allow:?}"
+        );
+    }
+}
+
+#[test]
+fn expanded_shorthand_is_a_clonable_source() {
+    // The two halves have to agree: a resolved shorthand is what `resolve_from`
+    // then hands to `is_clonable_source`, and a URL it refused would be treated
+    // as a local path that does not exist.
+    assert!(is_clonable_source(&cfgd_core::resolve_repo_reference(
+        "acme/config"
+    )));
+}
+
+#[test]
+#[serial_test::serial]
+fn resolve_from_keeps_an_existing_relative_config_dir_as_a_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let _cwd = cfgd_core::test_helpers::CwdGuard::set(dir.path()).expect("cwd guard");
+    let nested = dir.path().join("acme").join("config");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(
+        nested.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec: {}\n",
+    )
+    .unwrap();
+
+    let printer = quiet_printer();
+    let resolved = resolve_from("acme/config", None, "master", &printer)
+        .expect("an existing relative config dir resolves to itself");
+    assert_eq!(
+        resolved,
+        Path::new("acme/config"),
+        "a relative path that exists must be used as-is, never cloned from GitHub"
+    );
 }
 
 #[test]
@@ -557,22 +619,26 @@ fn resolve_from_nonexistent_path_errors() {
     assert!(result.unwrap_err().to_string().contains("does not exist"));
 }
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn check_prerequisites_returns_true_when_git_available() {
-    // git should be available in CI and dev environments
-    let printer = quiet_printer();
-    let result = check_prerequisites(&printer);
-    if cfgd_core::command_available("git") {
-        assert!(
-            result,
-            "check_prerequisites should return true when git is available"
-        );
-    } else {
-        assert!(
-            !result,
-            "check_prerequisites should return false when git is missing"
-        );
+    // Both arms are driven from a probe PATH. Read off the host, the
+    // git-is-missing arm — the one that prints the install hint a first-run
+    // user actually needs — never executes anywhere cfgd is developed or
+    // tested, so nothing would notice it breaking.
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+
+    {
+        let _probe = cfgd_core::test_helpers::ProbePath::containing(&["git"]);
+        let printer = quiet_printer();
+        assert!(check_prerequisites(&printer), "git resolves");
     }
+
+    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+    let printer = quiet_printer();
+    assert!(!check_prerequisites(&printer), "no git, no prerequisites");
 }
 
 #[test]
@@ -583,6 +649,7 @@ fn cmd_init_scaffolds_local_directory() {
 
     let printer = quiet_printer();
     let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         path: Some(target.to_str().unwrap()),
         from: None,
         branch: "master",
@@ -600,7 +667,7 @@ fn cmd_init_scaffolds_local_directory() {
         scope: cfgd_core::Scope::User,
     };
 
-    let result = cmd_init(&printer, &args);
+    let result = cmd_init_guarded(&printer, &args);
     assert!(result.is_ok(), "cmd_init failed: {:?}", result.err());
 
     // Verify scaffolded files exist and have expected content
@@ -639,6 +706,7 @@ fn cmd_init_skips_if_already_initialized() {
 
     let printer = quiet_printer();
     let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         path: Some(target.to_str().unwrap()),
         from: None,
         branch: "master",
@@ -656,7 +724,7 @@ fn cmd_init_skips_if_already_initialized() {
         scope: cfgd_core::Scope::User,
     };
 
-    let result = cmd_init(&printer, &args);
+    let result = cmd_init_guarded(&printer, &args);
     assert!(result.is_ok());
     // cfgd.yaml should be unchanged (not overwritten)
     let contents = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
@@ -671,6 +739,7 @@ fn cmd_init_creates_directory_if_missing() {
 
     let printer = quiet_printer();
     let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         path: Some(target.to_str().unwrap()),
         from: None,
         branch: "master",
@@ -688,7 +757,7 @@ fn cmd_init_creates_directory_if_missing() {
         scope: cfgd_core::Scope::User,
     };
 
-    let result = cmd_init(&printer, &args);
+    let result = cmd_init_guarded(&printer, &args);
     assert!(result.is_ok(), "cmd_init failed: {:?}", result.err());
     assert!(target.exists());
     assert!(target.join("cfgd.yaml").exists());
@@ -878,6 +947,7 @@ fn cmd_init_with_from_local_path() {
     let (printer, cap) = Printer::for_test_doc();
     let source_str = source.display().to_string();
     let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         path: None,
         from: Some(&source_str),
         branch: "master",
@@ -895,7 +965,7 @@ fn cmd_init_with_from_local_path() {
         scope: cfgd_core::Scope::User,
     };
 
-    cmd_init(&printer, &args).unwrap();
+    cmd_init_guarded(&printer, &args).unwrap();
 
     drop(printer);
     let output = cap.human();
@@ -956,6 +1026,7 @@ fn cmd_init_scaffold_to_new_dir() {
     let (printer, cap) = Printer::for_test_doc();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
         branch: "master",
@@ -973,7 +1044,7 @@ fn cmd_init_scaffold_to_new_dir() {
         scope: cfgd_core::Scope::User,
     };
 
-    cmd_init(&printer, &args).unwrap();
+    cmd_init_guarded(&printer, &args).unwrap();
 
     // Verify scaffolded structure
     assert!(target.join("cfgd.yaml").exists(), "should create cfgd.yaml");
@@ -1012,6 +1083,7 @@ fn cmd_init_already_initialized() {
     let (printer, cap) = Printer::for_test_doc();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
         branch: "master",
@@ -1029,7 +1101,7 @@ fn cmd_init_already_initialized() {
         scope: cfgd_core::Scope::User,
     };
 
-    cmd_init(&printer, &args).unwrap();
+    cmd_init_guarded(&printer, &args).unwrap();
 
     drop(printer);
     let output = cap.human();
@@ -1047,6 +1119,7 @@ fn cmd_init_with_theme() {
     let printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
         branch: "master",
@@ -1064,7 +1137,7 @@ fn cmd_init_with_theme() {
         scope: cfgd_core::Scope::User,
     };
 
-    cmd_init(&printer, &args).unwrap();
+    cmd_init_guarded(&printer, &args).unwrap();
 
     let config = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
     assert!(
@@ -1112,45 +1185,45 @@ fn resolve_from_nonexistent_path_fails() {
     );
 }
 
-// ─── is_git_source — comprehensive coverage ────────────────
+// ─── is_clonable_source — comprehensive coverage ────────────────
 
 #[test]
-fn is_git_source_https() {
-    assert!(is_git_source("https://github.com/user/repo"));
-    assert!(is_git_source("https://github.com/user/repo.git"));
+fn is_clonable_source_https() {
+    assert!(is_clonable_source("https://github.com/user/repo"));
+    assert!(is_clonable_source("https://github.com/user/repo.git"));
 }
 
 #[test]
-fn is_git_source_ssh() {
-    assert!(is_git_source("ssh://git@github.com/user/repo"));
-    assert!(is_git_source("git@github.com:user/repo.git"));
+fn is_clonable_source_ssh() {
+    assert!(is_clonable_source("ssh://git@github.com/user/repo"));
+    assert!(is_clonable_source("git@github.com:user/repo.git"));
 }
 
 #[test]
-fn is_git_source_git_protocol() {
-    assert!(is_git_source("git://github.com/user/repo"));
+fn is_clonable_source_git_protocol() {
+    assert!(is_clonable_source("git://github.com/user/repo"));
 }
 
 #[test]
-fn is_git_source_dot_git_suffix() {
-    assert!(is_git_source("anything.git"));
+fn is_clonable_source_dot_git_suffix() {
+    assert!(is_clonable_source("anything.git"));
 }
 
 #[test]
-fn is_git_source_local_plain_dir_not_git() {
+fn is_clonable_source_local_plain_dir_not_git() {
     let dir = tempfile::tempdir().unwrap();
     assert!(
-        !is_git_source(&dir.path().display().to_string()),
+        !is_clonable_source(&dir.path().display().to_string()),
         "plain directory without .git should not be a git source"
     );
 }
 
 #[test]
-fn is_git_source_local_git_repo() {
+fn is_clonable_source_local_git_repo() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join(".git")).unwrap();
     assert!(
-        is_git_source(&dir.path().display().to_string()),
+        is_clonable_source(&dir.path().display().to_string()),
         "directory with .git should be a git source"
     );
 }
@@ -1397,37 +1470,37 @@ fn count_packages_apt_and_cargo() {
     assert_eq!(count_packages(&spec), 3);
 }
 
-// ─── is_git_source — additional edge cases ────────────────────
+// ─── is_clonable_source — additional edge cases ────────────────────
 
 #[test]
-fn is_git_source_http_url() {
-    assert!(is_git_source("http://internal.host/repo"));
+fn is_clonable_source_http_url() {
+    assert!(is_clonable_source("http://internal.host/repo"));
 }
 
 #[test]
-fn is_git_source_empty_string() {
-    assert!(!is_git_source(""));
+fn is_clonable_source_empty_string() {
+    assert!(!is_clonable_source(""));
 }
 
 #[test]
-fn is_git_source_relative_path_not_git() {
-    assert!(!is_git_source("relative/path"));
+fn is_clonable_source_relative_path_not_git() {
+    assert!(!is_clonable_source("relative/path"));
 }
 
 #[test]
-fn is_git_source_dot_git_middle_not_matched_as_suffix() {
+fn is_clonable_source_dot_git_middle_not_matched_as_suffix() {
     // Only .git at the END matters
-    assert!(!is_git_source("something.github"));
+    assert!(!is_clonable_source("something.github"));
 }
 
 #[test]
-fn is_git_source_bare_name_not_git() {
-    assert!(!is_git_source("myconfig"));
+fn is_clonable_source_bare_name_not_git() {
+    assert!(!is_clonable_source("myconfig"));
 }
 
 #[test]
-fn is_git_source_file_ending_in_dot_git() {
-    assert!(is_git_source("file:///path/to/repo.git"));
+fn is_clonable_source_file_ending_in_dot_git() {
+    assert!(is_clonable_source("file:///path/to/repo.git"));
 }
 
 // ─── resolve_from — additional cases ──────────────────────────
@@ -1539,6 +1612,7 @@ fn cmd_init_with_name_overrides_dir_name() {
     let printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
         branch: "master",
@@ -1556,7 +1630,7 @@ fn cmd_init_with_name_overrides_dir_name() {
         scope: cfgd_core::Scope::User,
     };
 
-    cmd_init(&printer, &args).unwrap();
+    cmd_init_guarded(&printer, &args).unwrap();
 
     let config = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
     assert!(
@@ -1573,6 +1647,7 @@ fn cmd_init_creates_git_repo() {
     let printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
         branch: "master",
@@ -1590,7 +1665,7 @@ fn cmd_init_creates_git_repo() {
         scope: cfgd_core::Scope::User,
     };
 
-    cmd_init(&printer, &args).unwrap();
+    cmd_init_guarded(&printer, &args).unwrap();
 
     assert!(
         target.join(".git").exists(),
@@ -1609,6 +1684,7 @@ fn cmd_init_with_theme_and_name_together() {
     let printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
         branch: "master",
@@ -1626,7 +1702,7 @@ fn cmd_init_with_theme_and_name_together() {
         scope: cfgd_core::Scope::User,
     };
 
-    cmd_init(&printer, &args).unwrap();
+    cmd_init_guarded(&printer, &args).unwrap();
 
     let config = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
     assert!(
@@ -1650,19 +1726,19 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
     // Isolate the state store under the tempdir so parallel tests don't
     // contend on the shared default state database (SQLite lock contention
     // manifests as 'database is locked' on slower filesystems, e.g. macOS).
-    let store = super::open_state_store(Some(dir.path())).unwrap();
+    let store = super::open_state_store(Some(dir.path()), cfgd_core::Scope::User).unwrap();
     let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
     let resolved = config::ResolvedProfile {
         layers: Vec::new(),
         merged: config::MergedProfile::default(),
     };
 
-    let plan = cfgd_core::reconciler::Plan {
+    let mut plan = cfgd_core::reconciler::Plan {
         phases: Vec::new(),
         warnings: Vec::new(),
     };
     let result = apply_plan(
-        &plan,
+        &mut plan,
         &reconciler,
         &resolved,
         &[],
@@ -1672,6 +1748,10 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
             yes: false,
             state_dir: None,
             scope: cfgd_core::Scope::User,
+            profile: None,
+            state: &store,
+            on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
         },
         &printer,
     );
@@ -1679,9 +1759,11 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
 
     drop(printer);
     let output = cap.human();
+    // The exact shared string, not a substring of one spelling: `init --apply`
+    // and `apply` must render one verdict, so a reworded copy here is a bug.
     assert!(
-        output.contains("Nothing to do"),
-        "should report nothing to do for empty plan, got: {output}"
+        output.contains(cfgd_core::reconciler::MSG_NOTHING_TO_DO),
+        "should report the shared nothing-to-do verdict for an empty plan, got: {output}"
     );
 }
 
@@ -1712,27 +1794,39 @@ fn ensure_dir_writable_nonexistent_path_returns_ok() {
 
 // ─── check_prerequisites — git availability ──────────────────
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn check_prerequisites_with_test_printer() {
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+
+    {
+        let _probe = cfgd_core::test_helpers::ProbePath::containing(&["git"]);
+        let (printer, cap) = Printer::for_test_doc();
+        let result = check_prerequisites(&printer);
+        drop(printer);
+        assert!(result, "should return true when git available");
+        assert!(
+            !cap.human().contains("not installed"),
+            "should not show error when git is available"
+        );
+    }
+
+    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let (printer, cap) = Printer::for_test_doc();
     let result = check_prerequisites(&printer);
     drop(printer);
     let output = cap.human();
-
-    if cfgd_core::command_available("git") {
-        assert!(result, "should return true when git available");
-        // No error output when git is available
-        assert!(
-            !output.contains("not installed"),
-            "should not show error when git is available"
-        );
-    } else {
-        assert!(!result, "should return false when git unavailable");
-        assert!(
-            output.contains("not installed"),
-            "should show error when git is missing, got: {output}"
-        );
-    }
+    assert!(!result, "should return false when git unavailable");
+    assert!(
+        output.contains("git is not installed"),
+        "should show error when git is missing, got: {output}"
+    );
+    assert!(
+        output.contains("Install with:"),
+        "the install hint is the actionable half of the message: {output}"
+    );
 }
 
 // ─── ensure_config_file — edge cases ─────────────────────────
@@ -1862,6 +1956,7 @@ fn cmd_init_from_local_path_uses_source_dir() {
     let (printer, cap) = Printer::for_test_doc();
     let source_str = source.display().to_string();
     let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         path: None,
         from: Some(&source_str),
         branch: "master",
@@ -1879,7 +1974,7 @@ fn cmd_init_from_local_path_uses_source_dir() {
         scope: cfgd_core::Scope::User,
     };
 
-    cmd_init(&printer, &args).unwrap();
+    cmd_init_guarded(&printer, &args).unwrap();
 
     drop(printer);
     let output = cap.human();
@@ -2156,6 +2251,136 @@ fn default_device_id_is_deterministic() {
     assert_eq!(id1, id2, "device ID should be deterministic");
 }
 
+// --- apply_plan unmanaged-file conflicts ---
+
+#[test]
+fn init_apply_copies_an_unmanaged_target_aside_before_writing_it() {
+    // The first apply on a machine is where the user's own files are: `init`
+    // reaches the same conflict pass `cfgd apply` does, rather than writing
+    // over a stranger with no copy kept.
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.conf");
+    let target = dir.path().join("app.conf");
+    std::fs::write(&source, "from the config repo\n").unwrap();
+    std::fs::write(&target, "years of hand edits\n").unwrap();
+
+    let (printer, _cap) = Printer::for_test_doc();
+    let registry = super::build_registry_with_config(None);
+    let store = super::open_state_store(Some(dir.path()), cfgd_core::Scope::User).unwrap();
+    let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
+    let resolved = config::ResolvedProfile {
+        layers: Vec::new(),
+        merged: config::MergedProfile::default(),
+    };
+
+    let mut plan = cfgd_core::reconciler::Plan {
+        phases: vec![cfgd_core::reconciler::Phase::from_actions(
+            cfgd_core::reconciler::PhaseName::Files,
+            &cfgd_core::reconciler::Owner::profile("test"),
+            vec![cfgd_core::reconciler::Action::File(
+                cfgd_core::providers::FileAction::Update {
+                    source,
+                    target: target.clone(),
+                    diff: "--- old\n+++ new\n".to_string(),
+                    origin: "test".to_string(),
+                    strategy: cfgd_core::config::FileStrategy::Copy,
+                    source_hash: None,
+                    patch: None,
+                },
+            )],
+        )],
+        warnings: Vec::new(),
+    };
+
+    apply_plan(
+        &mut plan,
+        &reconciler,
+        &resolved,
+        &[],
+        dir.path(),
+        ApplyPlanOpts {
+            dry_run: false,
+            yes: true,
+            state_dir: Some(dir.path()),
+            scope: cfgd_core::Scope::User,
+            profile: None,
+            state: &store,
+            on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
+        },
+        &printer,
+    )
+    .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("app.conf.cfgd-backup")).unwrap(),
+        "years of hand edits\n",
+        "`init --apply --yes` must preserve a file it did not write"
+    );
+}
+
+#[test]
+fn init_dry_run_never_copies_anything_aside() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.conf");
+    let target = dir.path().join("app.conf");
+    std::fs::write(&source, "from the config repo\n").unwrap();
+    std::fs::write(&target, "years of hand edits\n").unwrap();
+
+    let (printer, _cap) = Printer::for_test_doc();
+    let registry = super::build_registry_with_config(None);
+    let store = super::open_state_store(Some(dir.path()), cfgd_core::Scope::User).unwrap();
+    let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
+    let resolved = config::ResolvedProfile {
+        layers: Vec::new(),
+        merged: config::MergedProfile::default(),
+    };
+
+    let mut plan = cfgd_core::reconciler::Plan {
+        phases: vec![cfgd_core::reconciler::Phase::from_actions(
+            cfgd_core::reconciler::PhaseName::Files,
+            &cfgd_core::reconciler::Owner::profile("test"),
+            vec![cfgd_core::reconciler::Action::File(
+                cfgd_core::providers::FileAction::Update {
+                    source,
+                    target,
+                    diff: "--- old\n+++ new\n".to_string(),
+                    origin: "test".to_string(),
+                    strategy: cfgd_core::config::FileStrategy::Copy,
+                    source_hash: None,
+                    patch: None,
+                },
+            )],
+        )],
+        warnings: Vec::new(),
+    };
+
+    apply_plan(
+        &mut plan,
+        &reconciler,
+        &resolved,
+        &[],
+        dir.path(),
+        ApplyPlanOpts {
+            dry_run: true,
+            yes: true,
+            state_dir: Some(dir.path()),
+            scope: cfgd_core::Scope::User,
+            profile: None,
+            state: &store,
+            on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
+        },
+        &printer,
+    )
+    .unwrap();
+
+    assert!(
+        !dir.path().join("app.conf.cfgd-backup").exists(),
+        "a preview writes nothing, so it has nothing to preserve"
+    );
+}
+
 // --- apply_plan prompt-declined branch (yes=false, prompt fails or returns false) ---
 
 #[test]
@@ -2169,30 +2394,30 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
     let (printer, cap) = Printer::for_test_doc();
 
     let registry = super::build_registry_with_config(None);
-    let store = super::open_state_store(Some(dir.path())).unwrap();
+    let store = super::open_state_store(Some(dir.path()), cfgd_core::Scope::User).unwrap();
     let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
     let resolved = config::ResolvedProfile {
         layers: Vec::new(),
         merged: config::MergedProfile::default(),
     };
 
-    let plan = cfgd_core::reconciler::Plan {
-        phases: vec![cfgd_core::reconciler::Phase {
-            name: cfgd_core::reconciler::PhaseName::Packages,
-            scope: None,
-            actions: vec![cfgd_core::reconciler::Action::Package(
+    let mut plan = cfgd_core::reconciler::Plan {
+        phases: vec![cfgd_core::reconciler::Phase::from_actions(
+            cfgd_core::reconciler::PhaseName::Packages,
+            &cfgd_core::reconciler::Owner::profile("test"),
+            vec![cfgd_core::reconciler::Action::Package(
                 cfgd_core::providers::PackageAction::Install {
                     manager: "brew".to_string(),
                     packages: vec!["test-pkg".to_string()],
                     origin: "test".to_string(),
                 },
             )],
-        }],
+        )],
         warnings: Vec::new(),
     };
 
     let result = apply_plan(
-        &plan,
+        &mut plan,
         &reconciler,
         &resolved,
         &[],
@@ -2202,6 +2427,10 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
             yes: false,
             state_dir: None,
             scope: cfgd_core::Scope::User,
+            profile: None,
+            state: &store,
+            on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
         },
         &printer,
     );
@@ -2229,7 +2458,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
     // path. With an empty registry the apply runs a no-op flow (no package
     // managers registered → no manager spawn), but the code path that's
     // covered is the post-prompt sequence: default_state_dir, acquire_apply_lock,
-    // reconciler.apply, print_apply_result. We assert the apply lock was
+    // reconciler.apply, render_apply_result. We assert the apply lock was
     // observed (no "Skipped" output) and that apply completed without panic.
     let dir = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(dir.path());
@@ -2241,7 +2470,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
     let registry = super::build_registry_with_config(None);
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
-    let store = super::open_state_store(Some(&state_dir)).unwrap();
+    let store = super::open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
     let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
     let resolved = config::ResolvedProfile {
         layers: Vec::new(),
@@ -2252,17 +2481,17 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
     // in the registry. The reconciler will surface a planning issue but apply
     // will short-circuit gracefully — we care about the post-prompt branches
     // executing, not the final outcome.
-    let plan = cfgd_core::reconciler::Plan {
-        phases: vec![cfgd_core::reconciler::Phase {
-            name: cfgd_core::reconciler::PhaseName::PreScripts,
-            scope: None,
-            actions: vec![],
-        }],
+    let mut plan = cfgd_core::reconciler::Plan {
+        phases: vec![cfgd_core::reconciler::Phase::from_actions(
+            cfgd_core::reconciler::PhaseName::PreScripts,
+            &cfgd_core::reconciler::Owner::profile("test"),
+            vec![],
+        )],
         warnings: Vec::new(),
     };
 
     let result = apply_plan(
-        &plan,
+        &mut plan,
         &reconciler,
         &resolved,
         &[],
@@ -2272,6 +2501,10 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
             yes: false,
             state_dir: None,
             scope: cfgd_core::Scope::User,
+            profile: None,
+            state: &store,
+            on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
         },
         &printer,
     );
@@ -2306,7 +2539,7 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
     let registry = super::build_registry_with_config(None);
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
-    let store = super::open_state_store(Some(&state_dir)).unwrap();
+    let store = super::open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
     let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
     let resolved = config::ResolvedProfile {
         layers: Vec::new(),
@@ -2319,7 +2552,7 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
         files: Vec::new(),
         env: Vec::new(),
         aliases: Vec::new(),
-        system: std::collections::HashMap::new(),
+        system: std::collections::BTreeMap::new(),
         pre_apply_scripts: Vec::new(),
         post_apply_scripts: Vec::new(),
         pre_reconcile_scripts: Vec::new(),
@@ -2334,23 +2567,23 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
 
     // A manager no registry can supply: the action is recorded as failed and
     // skipped, so the apply is a real run that touches nothing on this host.
-    let plan = cfgd_core::reconciler::Plan {
-        phases: vec![cfgd_core::reconciler::Phase {
-            name: cfgd_core::reconciler::PhaseName::Packages,
-            scope: None,
-            actions: vec![cfgd_core::reconciler::Action::Package(
+    let mut plan = cfgd_core::reconciler::Plan {
+        phases: vec![cfgd_core::reconciler::Phase::from_actions(
+            cfgd_core::reconciler::PhaseName::Packages,
+            &cfgd_core::reconciler::Owner::profile("test"),
+            vec![cfgd_core::reconciler::Action::Package(
                 cfgd_core::providers::PackageAction::Install {
                     manager: "no-such-package-manager".to_string(),
                     packages: vec!["test-pkg".to_string()],
                     origin: "test".to_string(),
                 },
             )],
-        }],
+        )],
         warnings: Vec::new(),
     };
 
     let result = apply_plan(
-        &plan,
+        &mut plan,
         &reconciler,
         &resolved,
         std::slice::from_ref(&module),
@@ -2360,6 +2593,10 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
             yes: true,
             state_dir: Some(&state_dir),
             scope: cfgd_core::Scope::User,
+            profile: None,
+            state: &store,
+            on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
         },
         &printer,
     );
@@ -2392,7 +2629,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
     let registry = super::build_registry_with_config(None);
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
-    let store = super::open_state_store(Some(&state_dir)).unwrap();
+    let store = super::open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
     let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
     let resolved = config::ResolvedProfile {
         layers: Vec::new(),
@@ -2402,23 +2639,23 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
     // Plan must have at least one action so total > 0 and the prompt fires.
     // A FileAction::Skip is enough — the prompt-declined arm short-circuits
     // before apply runs so the action's body is never executed.
-    let plan = cfgd_core::reconciler::Plan {
-        phases: vec![cfgd_core::reconciler::Phase {
-            name: cfgd_core::reconciler::PhaseName::Files,
-            scope: None,
-            actions: vec![cfgd_core::reconciler::Action::File(
+    let mut plan = cfgd_core::reconciler::Plan {
+        phases: vec![cfgd_core::reconciler::Phase::from_actions(
+            cfgd_core::reconciler::PhaseName::Files,
+            &cfgd_core::reconciler::Owner::profile("test"),
+            vec![cfgd_core::reconciler::Action::File(
                 cfgd_core::providers::FileAction::Skip {
                     target: dir.path().join("noop"),
                     reason: "synthetic prompt-declined coverage".to_string(),
                     origin: "test".to_string(),
                 },
             )],
-        }],
+        )],
         warnings: Vec::new(),
     };
 
     let result = apply_plan(
-        &plan,
+        &mut plan,
         &reconciler,
         &resolved,
         &[],
@@ -2428,6 +2665,10 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
             yes: false,
             state_dir: None,
             scope: cfgd_core::Scope::User,
+            profile: None,
+            state: &store,
+            on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
         },
         &printer,
     );
@@ -2454,7 +2695,7 @@ fn apply_plan_dry_run_skips_apply() {
     let registry = super::build_registry_with_config(None);
     // Isolate the state store under the tempdir so parallel tests don't
     // contend on the shared default state database.
-    let store = super::open_state_store(Some(dir.path())).unwrap();
+    let store = super::open_state_store(Some(dir.path()), cfgd_core::Scope::User).unwrap();
     let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
     let resolved = config::ResolvedProfile {
         layers: Vec::new(),
@@ -2462,23 +2703,23 @@ fn apply_plan_dry_run_skips_apply() {
     };
 
     // Create a plan with at least one action so dry_run actually has something to skip
-    let plan = cfgd_core::reconciler::Plan {
-        phases: vec![cfgd_core::reconciler::Phase {
-            name: cfgd_core::reconciler::PhaseName::Packages,
-            scope: None,
-            actions: vec![cfgd_core::reconciler::Action::Package(
+    let mut plan = cfgd_core::reconciler::Plan {
+        phases: vec![cfgd_core::reconciler::Phase::from_actions(
+            cfgd_core::reconciler::PhaseName::Packages,
+            &cfgd_core::reconciler::Owner::profile("test"),
+            vec![cfgd_core::reconciler::Action::Package(
                 cfgd_core::providers::PackageAction::Install {
                     manager: "brew".to_string(),
                     packages: vec!["test-pkg".to_string()],
                     origin: "test".to_string(),
                 },
             )],
-        }],
+        )],
         warnings: Vec::new(),
     };
 
     let result = apply_plan(
-        &plan,
+        &mut plan,
         &reconciler,
         &resolved,
         &[],
@@ -2488,6 +2729,10 @@ fn apply_plan_dry_run_skips_apply() {
             yes: false,
             state_dir: None,
             scope: cfgd_core::Scope::User,
+            profile: None,
+            state: &store,
+            on_conflict: crate::cli::OnConflict::Ask,
+            default_strategy: cfgd_core::config::FileStrategy::Symlink,
         },
         &printer,
     );
@@ -2532,6 +2777,7 @@ fn cmd_init_from_git_source_with_explicit_target() {
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: Some(&origin_str),
         branch: "master",
@@ -2549,7 +2795,7 @@ fn cmd_init_from_git_source_with_explicit_target() {
         scope: cfgd_core::Scope::User,
     };
 
-    let result = cmd_init(&printer, &args);
+    let result = cmd_init_guarded(&printer, &args);
     assert!(
         result.is_ok(),
         "cmd_init with --from git should succeed: {:?}",
@@ -2601,6 +2847,7 @@ fn cmd_init_from_git_leaves_an_already_initialized_target_intact() {
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: Some(&origin_str),
         branch: "master",
@@ -2618,7 +2865,7 @@ fn cmd_init_from_git_leaves_an_already_initialized_target_intact() {
         scope: cfgd_core::Scope::User,
     };
 
-    let result = cmd_init(&printer, &args);
+    let result = cmd_init_guarded(&printer, &args);
     assert!(
         result.is_ok(),
         "init against an already-initialized target must succeed as a no-op: {:?}",
@@ -2655,6 +2902,7 @@ fn cmd_init_from_plain_path_does_not_rescaffold_over_the_config_it_points_at() {
     let printer = quiet_printer();
     let source_str = source.display().to_string();
     let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         path: None,
         from: Some(&source_str),
         branch: "master",
@@ -2672,7 +2920,7 @@ fn cmd_init_from_plain_path_does_not_rescaffold_over_the_config_it_points_at() {
         scope: cfgd_core::Scope::User,
     };
 
-    let result = cmd_init(&printer, &args);
+    let result = cmd_init_guarded(&printer, &args);
     assert!(
         result.is_ok(),
         "init --from <plain path> must succeed: {:?}",
@@ -2713,6 +2961,7 @@ fn cmd_init_from_git_with_theme_override() {
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: Some(&origin_str),
         branch: "master",
@@ -2730,7 +2979,7 @@ fn cmd_init_from_git_with_theme_override() {
         scope: cfgd_core::Scope::User,
     };
 
-    let result = cmd_init(&printer, &args);
+    let result = cmd_init_guarded(&printer, &args);
     assert!(
         result.is_ok(),
         "cmd_init with theme override should succeed: {:?}",
@@ -2773,6 +3022,7 @@ fn cmd_init_from_git_applies_name_and_theme_overrides_together() {
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: Some(&origin_str),
         branch: "master",
@@ -2790,7 +3040,7 @@ fn cmd_init_from_git_applies_name_and_theme_overrides_together() {
         scope: cfgd_core::Scope::User,
     };
 
-    let result = cmd_init(&printer, &args);
+    let result = cmd_init_guarded(&printer, &args);
     assert!(
         result.is_ok(),
         "cmd_init with name + theme overrides should succeed: {:?}",
@@ -4058,7 +4308,7 @@ mod enroll_mockito {
 //
 // These tests drive `cmd_init` with `args.from = Some(<file:// URL>)` to
 // exercise the clone-from-URL orchestration path. The `cli/init/source.rs`
-// `is_git_source` predicate matches any value ending in `.git`, so a bare
+// `is_clonable_source` predicate matches any value ending in `.git`, so a bare
 // repo at `<tmp>/upstream.git` works without an env var gate.
 
 #[cfg(unix)]
@@ -4069,7 +4319,7 @@ mod cmd_init_from_local_bare {
     /// Initialise a bare upstream + a working source repo, commit a populated
     /// cfgd config tree (cfgd.yaml + profiles/default.yaml), and push the
     /// branch to the bare. Returns the bare path that ends in `.git` — so
-    /// `is_git_source` treats `file://<bare>` as a clonable git source.
+    /// `is_clonable_source` treats `file://<bare>` as a clonable git source.
     fn make_bare_config_repo(tmp_root: &Path) -> PathBuf {
         let bare = tmp_root.join("upstream.git");
         let _bare_repo = git2::Repository::init_bare(&bare).unwrap();
@@ -4154,6 +4404,7 @@ mod cmd_init_from_local_bare {
 
         let printer = quiet_printer();
         let args = InitArgs {
+            on_conflict: crate::cli::OnConflict::Ask,
             path: Some(target.to_str().unwrap()),
             from: Some(&url),
             branch: "master",
@@ -4170,7 +4421,7 @@ mod cmd_init_from_local_bare {
             runtime_dir: None,
             scope: cfgd_core::Scope::User,
         };
-        cmd_init(&printer, &args).expect("cmd_init --from should succeed");
+        cmd_init_guarded(&printer, &args).expect("cmd_init --from should succeed");
 
         // The cloned cfgd.yaml lands at the target.
         let cfg_yaml = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
@@ -4200,6 +4451,7 @@ mod cmd_init_from_local_bare {
 
         let printer = quiet_printer();
         let args = InitArgs {
+            on_conflict: crate::cli::OnConflict::Ask,
             path: Some(target.to_str().unwrap()),
             from: Some(&url),
             branch: "master",
@@ -4216,7 +4468,7 @@ mod cmd_init_from_local_bare {
             runtime_dir: None,
             scope: cfgd_core::Scope::User,
         };
-        cmd_init(&printer, &args).expect("cmd_init --from --theme should succeed");
+        cmd_init_guarded(&printer, &args).expect("cmd_init --from --theme should succeed");
 
         let cfg_yaml = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
         assert!(
@@ -4237,6 +4489,7 @@ mod cmd_init_from_local_bare {
 
         let printer = quiet_printer();
         let args = InitArgs {
+            on_conflict: crate::cli::OnConflict::Ask,
             path: Some(target.to_str().unwrap()),
             from: Some(&url),
             branch: "master",
@@ -4253,7 +4506,7 @@ mod cmd_init_from_local_bare {
             runtime_dir: None,
             scope: cfgd_core::Scope::User,
         };
-        cmd_init(&printer, &args).expect("clone of empty repo should still return Ok");
+        cmd_init_guarded(&printer, &args).expect("clone of empty repo should still return Ok");
 
         // README.md from the source is present.
         assert!(target.join("README.md").is_file());
@@ -4304,6 +4557,7 @@ mod cmd_init_apply_orchestration {
         let printer = quiet_printer();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: None,
                 branch: "master",
@@ -4320,7 +4574,7 @@ mod cmd_init_apply_orchestration {
                 runtime_dir: None,
                 scope: cfgd_core::Scope::User,
             };
-            let err = cmd_init(&printer, &args)
+            let err = cmd_init_guarded(&printer, &args)
                 .expect_err("scaffold+apply without profile should surface pick_profile bail");
             let msg = err.to_string();
             assert!(
@@ -4349,6 +4603,7 @@ mod cmd_init_apply_orchestration {
         with_state_dir(&state_dir, || {
             let modules = vec!["ghost-module".to_string()];
             let args = InitArgs {
+                on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: None,
                 branch: "master",
@@ -4365,7 +4620,7 @@ mod cmd_init_apply_orchestration {
                 runtime_dir: None,
                 scope: cfgd_core::Scope::User,
             };
-            let err = cmd_init(&printer, &args)
+            let err = cmd_init_guarded(&printer, &args)
                 .expect_err("--apply-module on unknown module should bail");
             let msg = err.to_string();
             assert!(
@@ -4389,6 +4644,7 @@ mod cmd_init_apply_orchestration {
         let printer = quiet_printer();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: None,
                 branch: "master",
@@ -4405,7 +4661,7 @@ mod cmd_init_apply_orchestration {
                 runtime_dir: None,
                 scope: cfgd_core::Scope::User,
             };
-            let err = cmd_init(&printer, &args)
+            let err = cmd_init_guarded(&printer, &args)
                 .expect_err("--apply-profile on missing profile should bail");
             let msg = err.to_string();
             assert!(
@@ -4490,6 +4746,7 @@ mod cmd_init_apply_orchestration {
         let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
                 branch: "master",
@@ -4506,13 +4763,16 @@ mod cmd_init_apply_orchestration {
                 runtime_dir: None,
                 scope: cfgd_core::Scope::User,
             };
-            cmd_init(&printer, &args).expect("--from + --apply --dry-run should succeed");
+            cmd_init_guarded(&printer, &args).expect("--from + --apply --dry-run should succeed");
         });
 
         drop(printer);
-        let out = cap.human();
+        let out = cfgd_core::output::strip_ansi(&cap.human());
+        // The run header's `Profile` row is what names the branch now that
+        // both arms render the one skeleton: the module-only arm resolves no
+        // profile and omits the row entirely.
         assert!(
-            out.contains("Applying Configuration"),
+            out.contains("Profile  default"),
             "should enter the profile-based apply branch: {out}"
         );
         // Empty profile -> 0 planned actions -> the apply_plan no-op success.
@@ -4540,6 +4800,7 @@ mod cmd_init_apply_orchestration {
         let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
                 branch: "master",
@@ -4556,7 +4817,8 @@ mod cmd_init_apply_orchestration {
                 runtime_dir: None,
                 scope: cfgd_core::Scope::User,
             };
-            cmd_init(&printer, &args).expect("--apply-profile default should drive apply branch");
+            cmd_init_guarded(&printer, &args)
+                .expect("--apply-profile default should drive apply branch");
         });
 
         drop(printer);
@@ -4633,6 +4895,7 @@ mod cmd_init_apply_orchestration {
         let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
                 branch: "master",
@@ -4649,14 +4912,20 @@ mod cmd_init_apply_orchestration {
                 runtime_dir: None,
                 scope: cfgd_core::Scope::User,
             };
-            cmd_init(&printer, &args).expect("--apply-module drives module-only branch");
+            cmd_init_guarded(&printer, &args).expect("--apply-module drives module-only branch");
         });
 
         drop(printer);
-        let out = cap.human();
+        let out = cfgd_core::output::strip_ansi(&cap.human());
+        // Module-only: the header names the module and carries no `Profile`
+        // row, because this arm resolves no profile at all.
         assert!(
-            out.contains("Applying Modules"),
-            "should hit the Applying Modules header in the module-only arm: {out}"
+            out.contains("Modules  sample"),
+            "module-only arm should name the module in the run header: {out}"
+        );
+        assert!(
+            !out.contains("Profile  "),
+            "module-only arm must render no Profile row: {out}"
         );
         // Sample module declares no packages/files → 0 actions → "Nothing to do".
         assert!(
@@ -4721,6 +4990,7 @@ mod cmd_init_apply_orchestration {
         let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
                 branch: "master",
@@ -4737,7 +5007,7 @@ mod cmd_init_apply_orchestration {
                 runtime_dir: None,
                 scope: cfgd_core::Scope::User,
             };
-            cmd_init(&printer, &args).expect("pick_profile should select the sole profile");
+            cmd_init_guarded(&printer, &args).expect("pick_profile should select the sole profile");
         });
 
         drop(printer);
@@ -4827,6 +5097,7 @@ mod cmd_init_apply_orchestration {
         let modules = vec!["extra".to_string()];
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
                 branch: "master",
@@ -4843,20 +5114,21 @@ mod cmd_init_apply_orchestration {
                 runtime_dir: None,
                 scope: cfgd_core::Scope::User,
             };
-            cmd_init(&printer, &args)
+            cmd_init_guarded(&printer, &args)
                 .expect("--apply-profile + --apply-module should walk the combined arm");
         });
 
         drop(printer);
-        let out = cap.human();
+        let out = cfgd_core::output::strip_ansi(&cap.human());
         // Profile-validation arm fires.
         assert!(
             out.contains("Set active profile: default"),
             "combined arm should still announce profile selection: {out}"
         );
-        // Profile-based apply header (not the module-only one).
+        // The run header carries both: the profile arm's `Profile` row and the
+        // module the flag merged into it.
         assert!(
-            out.contains("Applying Configuration"),
+            out.contains("Profile  default") && out.contains("Modules  extra"),
             "combined arm should drive the profile-based apply branch, not module-only: {out}"
         );
         // Profile + module both reach the reconciler — empty module + empty
@@ -4888,6 +5160,7 @@ mod cmd_init_apply_orchestration {
         let modules = vec!["ghost-extra".to_string()];
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
                 branch: "master",
@@ -4904,7 +5177,7 @@ mod cmd_init_apply_orchestration {
                 runtime_dir: None,
                 scope: cfgd_core::Scope::User,
             };
-            let err = cmd_init(&printer, &args).expect_err(
+            let err = cmd_init_guarded(&printer, &args).expect_err(
                 "profile-based apply with unknown --apply-module should bail before plan",
             );
             let msg = err.to_string();
@@ -4931,6 +5204,7 @@ mod cmd_init_apply_orchestration {
 
         let (printer, cap) = Printer::for_test_doc();
         let args = InitArgs {
+            on_conflict: crate::cli::OnConflict::Ask,
             path: Some(target.to_str().unwrap()),
             from: None,
             branch: "master",
@@ -4947,7 +5221,7 @@ mod cmd_init_apply_orchestration {
             runtime_dir: None,
             scope: cfgd_core::Scope::User,
         };
-        cmd_init(&printer, &args).expect("cmd_init with install_daemon must succeed");
+        cmd_init_guarded(&printer, &args).expect("cmd_init with install_daemon must succeed");
 
         drop(printer);
         let captured = cap.human();
@@ -4987,6 +5261,7 @@ mod cmd_init_apply_orchestration {
 
         let (printer, cap) = Printer::for_test_doc();
         let args = InitArgs {
+            on_conflict: crate::cli::OnConflict::Ask,
             path: Some(target.to_str().unwrap()),
             from: None,
             branch: "master",
@@ -5003,7 +5278,7 @@ mod cmd_init_apply_orchestration {
             runtime_dir: None,
             scope: cfgd_core::Scope::User,
         };
-        cmd_init(&printer, &args).expect("cmd_init with install_daemon must succeed");
+        cmd_init_guarded(&printer, &args).expect("cmd_init with install_daemon must succeed");
 
         drop(printer);
         let captured = cap.human();

@@ -2,9 +2,9 @@ use std::process::Command;
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::Result;
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::Role;
 
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 use std::path::Path;
 
@@ -71,7 +71,7 @@ impl SystemConfigurator for LaunchAgentConfigurator {
         Ok(drifts)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let agents = match desired.as_sequence() {
             Some(s) => s,
             None => return Ok(()),
@@ -97,7 +97,7 @@ impl SystemConfigurator for LaunchAgentConfigurator {
             let plist_content = generate_launch_agent_plist(name, program, &args, run_at_load);
             let plist_path = launch_agent_plist_path(name);
 
-            printer.status_simple(
+            cx.report(
                 Role::Info,
                 format!("Writing launch agent: {}", plist_path.posix()),
             );
@@ -118,7 +118,7 @@ impl SystemConfigurator for LaunchAgentConfigurator {
                 .map_err(cfgd_core::errors::CfgdError::Io)?;
 
             if !output.status.success() {
-                printer.status_simple(
+                cx.report(
                     Role::Warn,
                     format!(
                         "launchctl load failed for {}: {}",
@@ -423,7 +423,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let la = LaunchAgentConfigurator;
         let yaml = serde_yaml::Value::Sequence(Vec::new());
-        la.apply(&yaml, &printer).unwrap();
+        la.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -431,7 +432,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let la = LaunchAgentConfigurator;
         let yaml = serde_yaml::Value::String("not a sequence".into());
-        la.apply(&yaml, &printer).unwrap();
+        la.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -444,7 +446,8 @@ mod tests {
             serde_yaml::Value::String("/usr/bin/true".into()),
         );
         let yaml = serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(agent)]);
-        la.apply(&yaml, &printer).unwrap();
+        la.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -670,7 +673,8 @@ mod tests {
             make_agent_yaml("com.cfgd.apply.one", "/bin/sh", &["-c", "echo"], true),
             make_agent_yaml("com.cfgd.apply.two", "/bin/sh", &[], false),
         ]);
-        la.apply(&yaml, &printer).unwrap();
+        la.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
 
         let plist_dir = home.path().join("Library/LaunchAgents");
         let one = plist_dir.join("com.cfgd.apply.one.plist");
@@ -705,7 +709,8 @@ mod tests {
             serde_yaml::Value::Mapping(nameless),
             make_agent_yaml("com.cfgd.named", "/bin/sh", &[], true),
         ]);
-        la.apply(&yaml, &printer).unwrap();
+        la.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
 
         let plist_dir = home.path().join("Library/LaunchAgents");
         assert!(plist_dir.join("com.cfgd.named.plist").exists());
@@ -739,7 +744,8 @@ mod tests {
             &[],
             true,
         )]);
-        la.apply(&yaml, &printer).unwrap();
+        la.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
         let captured = buf.lock().unwrap().clone();
         assert!(
             captured.contains("Writing launch agent"),
@@ -769,7 +775,8 @@ mod tests {
             true,
         )]);
         // apply should still return Ok — load failure is a printed warning.
-        la.apply(&yaml, &printer).unwrap();
+        la.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
         // Plist still gets written.
         assert!(
             home.path()

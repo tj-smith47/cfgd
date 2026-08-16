@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Condvar, Mutex};
 
 use secrecy::SecretString;
 
@@ -375,7 +375,11 @@ impl SystemConfigurator for MockSystemConfigurator {
             .collect())
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, _printer: &Printer) -> crate::errors::Result<()> {
+    fn apply(
+        &self,
+        desired: &serde_yaml::Value,
+        _cx: &crate::providers::SystemContext<'_>,
+    ) -> crate::errors::Result<()> {
         self.apply_calls.lock().unwrap().push(desired.clone());
         if *self.fail_apply.lock().unwrap() {
             return Err(CfgdError::Io(std::io::Error::other(
@@ -994,6 +998,49 @@ impl BareGitRepo {
 // Printer helper
 // ---------------------------------------------------------------------------
 
+/// The glyphs a SETTLED status line can start with. A running window's `◐` is
+/// not one: it is repainted in place and is never the action's own line.
+///
+/// ONE definition on purpose. Two of them is how a side-channel `⊙` came to
+/// sit beside a tree line for the same action while the fence guarding that
+/// action still read as passing.
+pub const SETTLED_GLYPHS: [char; 5] = ['\u{2713}', '\u{2717}', '\u{26A0}', '\u{2014}', '\u{2299}'];
+
+/// The settled status lines of a captured transcript, trimmed and in order.
+/// Strip ANSI before calling: a styled glyph is preceded by its escape.
+pub fn settled_status_lines(transcript: &str) -> Vec<String> {
+    transcript
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with(SETTLED_GLYPHS))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Read a `Printer::for_test*` capture buffer with ANSI escapes removed — the
+/// ONE way a test should reach the string it asserts against.
+///
+/// Colour is no longer ambient: every capture constructor pins `colors: false`
+/// at construction, so a buffer is unstyled BY CONSTRUCTION rather than because
+/// this function strips it. Keep using it anyway for any assertion about TEXT —
+/// `Printer::for_test_with_theme_colored` really does emit escapes, an
+/// attribute-carrying slot emits SGR even with colour off (`NO_COLOR` governs
+/// colour only), and a subject may carry foreign escapes of its own.
+///
+/// Three failure shapes, all observed on the raw buffer while colour was still
+/// ambient: `contains("module:vim-config")` breaks on the escape between the
+/// owner token's two styled halves, `ends_with(path)` breaks on the trailing
+/// reset, and every negative `!contains(…)` passes vacuously once styling is
+/// on — it stops guarding anything without ever going red.
+///
+/// A test that asserts ON the escapes wants the raw buffer and
+/// `Printer::for_test_with_theme_colored`. To assert the colour DECISION rather
+/// than a rendered escape, call `output::printer::colors_must_be_disabled` and
+/// render nothing.
+pub fn captured_text(buf: &std::sync::Arc<std::sync::Mutex<String>>) -> String {
+    crate::output::strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 /// Create a quiet `Printer` for tests that exercise the reconciler entry
 /// surface (`Reconciler::apply`, `Reconciler::apply_action`, and per-action
 /// helpers in `apply.rs` / `modules.rs` / `packages.rs` / `secrets.rs` /
@@ -1003,8 +1050,37 @@ impl BareGitRepo {
 /// Returns a bare `Printer` (not the `(Printer, Buffer)` tuple from
 /// `Printer::for_test()`) so it drops in as a direct replacement in fixtures
 /// that don't assert on captured output.
+///
+/// Built from the capture constructor and not from `Printer::new`, because
+/// `new` inherits the terminal the suite was invoked from: under a pty that
+/// printer reports a live region AND a human at stdin, so a command reaching
+/// an unanswered confirmation prompt BLOCKS for the rest of the run instead of
+/// refusing. Discarding the buffer keeps the surface identical (Quiet, Table).
 pub fn test_printer() -> crate::output::Printer {
-    crate::output::Printer::new(crate::output::Verbosity::Quiet)
+    crate::output::Printer::for_test().0
+}
+
+/// A `PackageStateStore` that remembers nothing — for a fixture whose subject
+/// (`bootstrap`) reaches no state. A test-fixture stub only; re-exported under
+/// this name so existing fixtures keep reading as "the state a bootstrap-only
+/// test doesn't need."
+pub use crate::providers::NoOpPackageState as NullPackageState;
+
+/// A `PackageContext` for a fixture that drives `bootstrap`, which touches no
+/// state — so the fixture needs no `StateStore` of its own.
+pub fn test_bootstrap_context(
+    printer: &crate::output::Printer,
+) -> crate::providers::PackageContext<'_> {
+    crate::providers::PackageContext::new(printer, &NullPackageState)
+}
+
+/// [`test_bootstrap_context`] over a caller-owned sink, for a fixture asserting
+/// that a bootstrap's post-install caveats travel back to the reconciler.
+pub fn test_bootstrap_context_with_notes<'a>(
+    printer: &'a crate::output::Printer,
+    notes: &'a crate::providers::NoteSink,
+) -> crate::providers::PackageContext<'a> {
+    crate::providers::PackageContext::with_notes(printer, &NullPackageState, notes)
 }
 
 /// Build a `PackageContext` from a borrowed `Printer` and `StateStore` — the
@@ -1015,7 +1091,7 @@ pub fn test_package_context<'a>(
     printer: &'a crate::output::Printer,
     state: &'a crate::state::StateStore,
 ) -> crate::providers::PackageContext<'a> {
-    crate::providers::PackageContext { printer, state }
+    crate::providers::PackageContext::new(printer, state)
 }
 
 // ---------------------------------------------------------------------------
@@ -1160,7 +1236,7 @@ pub fn make_resolved_module(name: &str) -> crate::modules::ResolvedModule {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: std::collections::HashMap::new(),
+        system: std::collections::BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         platform_skip_reason: None,
@@ -1276,6 +1352,50 @@ spec:
 // installed on the runner. Pair with `serial_test::serial` because env-var
 // mutation is process-global.
 // ---------------------------------------------------------------------------
+
+/// A `PATH` holding exactly the named executables and nothing else, for a test
+/// asserting what a `command_available` probe resolves.
+///
+/// It exists because an `is_available()` test that compares the provider's
+/// answer to `command_available("<tool>")` restates the implementation: both
+/// sides move together, so the test passes on every host and would keep passing
+/// if the probed name were misspelled. Naming the executables makes the probe's
+/// NAME the subject — install `gsettings` and the configurator must say yes;
+/// install nothing and it must say no.
+///
+/// Take `path_env_mutation_guard()` first (declared before this, so it drops
+/// last) and pair the test with `serial_test::serial`: `PATH` is process-global.
+/// `BootstrappedPathDirsGuard::capture_and_clear()` is required too for the
+/// negative direction — the bootstrapped registry is searched after `PATH`.
+///
+/// Unix-only: the probe files are `/bin/sh` no-ops, and Windows resolves an
+/// executable by `PATHEXT` rather than by the exec bit.
+#[cfg(unix)]
+pub struct ProbePath {
+    _tmp: tempfile::TempDir,
+    _path: EnvVarGuard,
+}
+
+#[cfg(unix)]
+impl ProbePath {
+    /// A `PATH` of one directory containing an executable per name.
+    pub fn containing(names: &[&str]) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        for name in names {
+            let bin = tmp.path().join(name);
+            std::fs::write(&bin, "#!/bin/sh\nexit 0\n").expect("write probe tool");
+            let mut perms = std::fs::metadata(&bin).expect("stat").permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin, perms).expect("chmod");
+        }
+        let path = EnvVarGuard::set("PATH", tmp.path().to_str().expect("utf-8 tempdir"));
+        Self {
+            _tmp: tmp,
+            _path: path,
+        }
+    }
+}
 
 /// Owns a tempdir holding a `/bin/sh` shim binary plus the env-vars that
 /// route a single `tool_cmd(env_var, default)` factory at it. The shim
@@ -1460,6 +1580,66 @@ pub fn install_named_path_shim(
     (bin_dir, guard)
 }
 
+/// The argv record of a [`install_named_path_shim_logged`] shim. Same two
+/// readers as [`ToolShim`], because a PATH-resolved manager has exactly the
+/// same question asked of it — "what did it actually run, and how often" — and
+/// a test that can only see the shim's exit code cannot tell a refresh that
+/// updated an index from one that upgraded every installed package.
+#[cfg(unix)]
+pub struct PathShimLog {
+    log_path: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl PathShimLog {
+    /// Read the captured argv. Each line is the space-joined argv of one
+    /// invocation, in order.
+    pub fn argv_log(&self) -> String {
+        std::fs::read_to_string(&self.log_path).unwrap_or_default()
+    }
+
+    /// Number of times the shim was invoked.
+    pub fn invocation_count(&self) -> usize {
+        self.argv_log().lines().filter(|l| !l.is_empty()).count()
+    }
+}
+
+/// [`install_named_path_shim`] that also records every invocation's argv.
+///
+/// Reach for it over the plain variant whenever the assertion is about WHICH
+/// subcommand ran rather than about what the manager did with its output — the
+/// difference between `scoop update` and `scoop update *`, or between a
+/// no-index manager refreshing nothing and one silently running
+/// `winget upgrade --all`, is invisible in an exit code.
+#[cfg(unix)]
+pub fn install_named_path_shim_logged(
+    binary: &str,
+    exit_code: u8,
+    stdout: &str,
+    stderr: &str,
+) -> (tempfile::TempDir, PathShimGuard, PathShimLog) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin_dir = tempfile::tempdir().expect("tempdir");
+    let log_path = bin_dir.path().join("argv.log");
+    // The log path is baked into the script rather than read from the
+    // environment, so no OTHER shim can write to it. Invocations of THIS name
+    // by a concurrently-running test still can — the shim is on the
+    // process-global PATH — so a test asserting on the log must be `serial`
+    // along with every other test that spawns the same binary.
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf '%s' \"{}\"\nprintf '%s' \"{}\" >&2\nexit {}\n",
+        log_path.display().to_string().replace('\'', "'\\''"),
+        stdout.replace('"', "\\\""),
+        stderr.replace('"', "\\\""),
+        exit_code
+    );
+    let path = bin_dir.path().join(binary);
+    std::fs::write(&path, script).expect("write shim");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let guard = PathShimGuard::prepend(bin_dir.path());
+    (bin_dir, guard, PathShimLog { log_path })
+}
+
 /// Install several `#!/bin/sh` shims into a single tempdir prepended to PATH.
 /// Each `(name, exit_code)` becomes a 0o755 script that exits with the given
 /// code (no stdout/stderr). Returns `(TempDir, PathShimGuard)` whose drops
@@ -1514,7 +1694,129 @@ pub fn install_named_path_shims(shims: &[(&str, i32)]) -> (tempfile::TempDir, Pa
 /// on one thread. And shared-then-exclusive on one thread: a read guard cannot
 /// upgrade to a write guard, so [`path_env_mutation_guard`] `debug_assert!`s
 /// that no shared guard is held rather than silently allowing the mutation.
-static PATH_ENV_LOCK: RwLock<()> = RwLock::new(());
+///
+/// ## Why this is not a `std::sync::RwLock`
+///
+/// `RwLock` is write-preferring: once a writer is queued, a reader arriving
+/// after it waits even though the lock is ALREADY held for reading. That
+/// starves the one pattern concurrent dispatch is made of — a reader that
+/// cannot leave its critical section until a SECOND reader enters it. A lane
+/// worker blocked in a fixture rendezvous holds the read side; the thread
+/// waiting on it cannot proceed until the sibling worker starts; the sibling is
+/// a fresh thread, so it takes a real read and parks behind whatever writer
+/// happened to queue in between. Nothing in that cycle can move, and the only
+/// thing that ends it is a test-side timeout expiring minutes later — after
+/// stalling every other reader in the binary behind the same writer.
+///
+/// So admission is: a reader waits while a writer HOLDS the gate, and while a
+/// writer is waiting for a gate no reader holds. A writer that is waiting on
+/// readers already inside does not block another reader from joining them — it
+/// has to wait for those readers regardless, and refusing the newcomer buys it
+/// nothing while making the deadlock above representable. Writers still make
+/// progress: readers stop being admitted the moment the reader count reaches
+/// zero with a writer waiting.
+static PATH_ENV_LOCK: PathEnvGate = PathEnvGate {
+    state: Mutex::new(PathEnvGateState {
+        readers: 0,
+        writer: false,
+        writers_waiting: 0,
+    }),
+    signal: Condvar::new(),
+};
+
+/// The `PATH` gate's admission state and the condvar every waiter parks on.
+struct PathEnvGate {
+    state: Mutex<PathEnvGateState>,
+    signal: Condvar,
+}
+
+struct PathEnvGateState {
+    readers: usize,
+    writer: bool,
+    writers_waiting: usize,
+}
+
+impl PathEnvGate {
+    fn locked(&self) -> std::sync::MutexGuard<'_, PathEnvGateState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn acquire_read(&self) {
+        let mut state = self.locked();
+        while state.writer || (state.writers_waiting > 0 && state.readers == 0) {
+            state = self
+                .signal
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        state.readers += 1;
+    }
+
+    fn release_read(&self) {
+        let mut state = self.locked();
+        // An underflow here means a release without a matching acquire — a bug
+        // in the gate itself, not a count to saturate through.
+        debug_assert!(
+            state.readers > 0,
+            "PATH gate: release_read with readers == 0"
+        );
+        state.readers -= 1;
+        if state.readers == 0 {
+            self.signal.notify_all();
+        }
+    }
+
+    fn acquire_write(&self) {
+        let mut state = self.locked();
+        state.writers_waiting += 1;
+        // Announced before parking, so a test can observe the queued writer
+        // rather than sleep a guess at when it arrives.
+        self.signal.notify_all();
+        // A generous bound no legitimate suite run can approach: a silent
+        // hang points at nothing, so a writer that waits this long panics
+        // with a diagnostic naming the gate instead of leaving the suite to
+        // time out with no pointer to why.
+        const WRITER_STARVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+        let (next, result) = self
+            .signal
+            .wait_timeout_while(state, WRITER_STARVATION_TIMEOUT, |gate| {
+                gate.writer || gate.readers > 0
+            })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state = next;
+        if result.timed_out() {
+            panic!(
+                "PATH_ENV_LOCK: writer starved for over {:?} with {} reader(s) still \
+                 holding the gate — this is writer starvation, not a legitimate wait",
+                WRITER_STARVATION_TIMEOUT, state.readers
+            );
+        }
+        state.writers_waiting -= 1;
+        state.writer = true;
+    }
+
+    fn release_write(&self) {
+        let mut state = self.locked();
+        state.writer = false;
+        self.signal.notify_all();
+    }
+}
+
+/// Block until a thread is waiting to take [`path_env_mutation_guard`]'s
+/// exclusive side, answering `false` if none arrives within `timeout`.
+///
+/// The observable a concurrency test needs to reach "a writer is queued"
+/// without a clock standing in for it: a test that slept instead would pass
+/// vacuously whenever the sleep were short, and prove nothing about the
+/// admission rule it is there to pin.
+pub fn await_queued_path_writer(timeout: std::time::Duration) -> bool {
+    let state = PATH_ENV_LOCK.locked();
+    let (state, _) = PATH_ENV_LOCK
+        .signal
+        .wait_timeout_while(state, timeout, |gate| gate.writers_waiting == 0)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    state.writers_waiting > 0
+}
 
 thread_local! {
     /// Depth of nested [`path_env_read_guard`] acquisitions on this thread.
@@ -1531,29 +1833,43 @@ thread_local! {
 /// *fails* does not need it — an empty `PATH` cannot turn a miss into a hit.
 ///
 /// Re-entrant by design: a `CwdGuard`/`PathShimGuard` window (which hold the
-/// exclusive guard) composing with a spawn inside it is normal, and `RwLock`
-/// is write-preferring, so a second *real* read acquisition on a thread would
-/// deadlock behind a waiting writer. A nested acquisition, and any acquisition
-/// on a thread already holding the exclusive guard, is therefore a no-op. See
-/// [`PATH_ENV_LOCK`].
+/// exclusive guard) composing with a spawn inside it is normal, and a thread
+/// that already holds the exclusive side must not queue behind itself. A nested
+/// acquisition, and any acquisition on a thread already holding the exclusive
+/// guard, is therefore a no-op. See [`PATH_ENV_LOCK`].
 pub fn path_env_read_guard() -> SpawnEnvGuard {
     if SPAWN_GUARD_EXCLUSIVE.with(std::cell::Cell::get)
         || SPAWN_GUARD_DEPTH.with(std::cell::Cell::get) > 0
     {
         return SpawnEnvGuard(None);
     }
-    let guard = PATH_ENV_LOCK.read().unwrap_or_else(|e| e.into_inner());
+    PATH_ENV_LOCK.acquire_read();
     SPAWN_GUARD_DEPTH.with(|d| d.set(1));
-    SpawnEnvGuard(Some(guard))
+    SpawnEnvGuard(Some(()))
 }
 
-/// Shared read guard returned by [`path_env_read_guard`].
-pub struct SpawnEnvGuard(Option<RwLockReadGuard<'static, ()>>);
+/// Whether THIS thread currently holds [`path_env_mutation_guard`]'s exclusive
+/// guard. For a coordinator (`reconciler::lanes::dispatch_package_lanes`, say)
+/// about to spawn helper threads: a helper carries neither of this lock's
+/// thread-locals — they are per-thread, and a freshly spawned thread starts
+/// with both at their default — so a helper's own [`path_env_read_guard`]
+/// genuinely blocks on [`PATH_ENV_LOCK`] rather than short-circuiting as a
+/// re-entrant no-op, and never unblocks if the exclusive holder is the same
+/// thread that is now waiting on the helper. Check this BEFORE spawning, so
+/// that precondition fails fast instead of hanging.
+pub fn path_env_exclusive_guard_held() -> bool {
+    SPAWN_GUARD_EXCLUSIVE.with(std::cell::Cell::get)
+}
+
+/// Shared read guard returned by [`path_env_read_guard`]. `None` for a
+/// re-entrant acquisition, which took nothing and must release nothing.
+pub struct SpawnEnvGuard(Option<()>);
 
 impl Drop for SpawnEnvGuard {
     fn drop(&mut self) {
         if self.0.is_some() {
             SPAWN_GUARD_DEPTH.with(|d| d.set(0));
+            PATH_ENV_LOCK.release_read();
         }
     }
 }
@@ -1569,8 +1885,8 @@ impl Drop for SpawnEnvGuard {
 ///
 /// Re-entrant per thread, exactly like [`path_env_read_guard`]: combining a
 /// [`CwdGuard`] with a [`PathShimGuard`], or nesting either, is a natural
-/// thing for a test to do and must not deadlock a write-preferring `RwLock`
-/// against itself. The inner acquisitions are no-ops and the lock is released
+/// thing for a test to do and must not queue the gate against itself. The
+/// inner acquisitions are no-ops and the gate is released
 /// when the outermost guard drops. See [`PATH_ENV_LOCK`] for the cross-thread
 /// limit.
 ///
@@ -1588,22 +1904,24 @@ pub fn path_env_mutation_guard() -> ExclusiveEnvGuard {
          Take the exclusive guard before the spawn, not during it."
     );
     if SPAWN_GUARD_EXCLUSIVE.with(std::cell::Cell::get) {
-        return ExclusiveEnvGuard { guard: None };
+        return ExclusiveEnvGuard { held: false };
     }
-    let guard = PATH_ENV_LOCK.write().unwrap_or_else(|e| e.into_inner());
+    PATH_ENV_LOCK.acquire_write();
     SPAWN_GUARD_EXCLUSIVE.with(|f| f.set(true));
-    ExclusiveEnvGuard { guard: Some(guard) }
+    ExclusiveEnvGuard { held: true }
 }
 
 /// Exclusive spawn-environment guard returned by [`path_env_mutation_guard`].
 pub struct ExclusiveEnvGuard {
-    guard: Option<RwLockWriteGuard<'static, ()>>,
+    /// `false` for a re-entrant acquisition, which took nothing.
+    held: bool,
 }
 
 impl Drop for ExclusiveEnvGuard {
     fn drop(&mut self) {
-        if self.guard.is_some() {
+        if self.held {
             SPAWN_GUARD_EXCLUSIVE.with(|f| f.set(false));
+            PATH_ENV_LOCK.release_write();
         }
     }
 }
@@ -2039,9 +2357,49 @@ pub struct MockPackageManager {
     pub mgr_name: String,
     pub available: bool,
     pub bootstrap_capable: bool,
+    pub bootstrap_method: String,
+    pub bootstrap_requires: Vec<String>,
+    pub bootstrap_creates: Vec<String>,
     pub installed: std::collections::HashSet<String>,
     pub install_calls: Mutex<Vec<Vec<String>>>,
     pub uninstall_calls: Mutex<Vec<Vec<String>>>,
+    /// Whether `bootstrap()` leaves this manager available, for a test that
+    /// must drive a `Provision` node through to a real success rather than
+    /// the default `BootstrapFailed` a fixed `available` flag always yields.
+    pub bootstrap_succeeds: bool,
+    /// Interior mutability because `PackageManager::bootstrap` takes `&self` —
+    /// `is_available()` is read again immediately after, and `available`
+    /// itself is a plain `bool` a `&self` call cannot flip.
+    became_available: std::sync::atomic::AtomicBool,
+    /// Sleep this long inside `install()` before returning — holds a lane open
+    /// long enough for the others to be seen in it.
+    install_delay: Option<std::time::Duration>,
+    /// Shared counter of installs in flight, for a test proving lanes overlap.
+    witness: Option<std::sync::Arc<ConcurrencyWitness>>,
+    /// Whether this manager keeps a local index. `true` by default because
+    /// most fixtures want the refresh node in the tree; `without_index()` is
+    /// the `cargo`/`npm` shape, which must plan none.
+    keeps_index: bool,
+    /// What a mediator installs to deliver this manager, keyed by mediator
+    /// name — the answer `PackageManager::mediated_packages` gives, and so
+    /// what decides whether the planner may batch this manager's provision
+    /// onto a sibling's. Empty by default: a mock is unbatchable until a
+    /// fixture says otherwise.
+    mediated: std::collections::BTreeMap<String, Vec<String>>,
+    /// When set, `is_available()` reads this flag instead of `available`.
+    /// That is the shape a provisioned manager really has: npm appears on the
+    /// host when APT's install lands, not when npm's own bootstrap is called —
+    /// and under a batched provision no member's `bootstrap` runs at all, so a
+    /// mock that can only flip itself can never reach the post-install
+    /// availability check.
+    availability: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Raised by this manager's `install()`. The mediator half of the pair
+    /// above.
+    raises: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Every `install()` this manager was asked to run, shared with the test
+    /// that owns the registry — a `Box<dyn PackageManager>` cannot be read
+    /// back for its own `install_calls`.
+    install_log: Option<std::sync::Arc<Mutex<Vec<Vec<String>>>>>,
 }
 
 impl MockPackageManager {
@@ -2050,10 +2408,28 @@ impl MockPackageManager {
             mgr_name: name.to_string(),
             available: true,
             bootstrap_capable: false,
+            bootstrap_method: "mock".to_string(),
+            bootstrap_requires: Vec::new(),
+            bootstrap_creates: Vec::new(),
             installed: std::collections::HashSet::new(),
             install_calls: Mutex::new(Vec::new()),
             uninstall_calls: Mutex::new(Vec::new()),
+            bootstrap_succeeds: false,
+            became_available: std::sync::atomic::AtomicBool::new(false),
+            install_delay: None,
+            witness: None,
+            keeps_index: true,
+            mediated: std::collections::BTreeMap::new(),
+            availability: None,
+            raises: None,
+            install_log: None,
         }
+    }
+
+    /// The `cargo`/`npm`/`pipx` shape: no local index, so no refresh node.
+    pub fn without_index(mut self) -> Self {
+        self.keeps_index = false;
+        self
     }
 
     pub fn with_installed(mut self, pkgs: &[&str]) -> Self {
@@ -2072,6 +2448,125 @@ impl MockPackageManager {
         self.bootstrap_capable = true;
         self
     }
+
+    /// Bootstrappable, with the method its plan names.
+    pub fn bootstrappable_via(mut self, method: &str) -> Self {
+        self.bootstrap_capable = true;
+        self.bootstrap_method = method.to_string();
+        self
+    }
+
+    /// Name the tools this manager's bootstrap plan shells out to — the
+    /// population the `Prerequisites` phase draws a prerequisite node from.
+    pub fn requiring(mut self, tools: &[&str]) -> Self {
+        self.bootstrap_requires = tools.iter().map(|t| (*t).to_string()).collect();
+        self
+    }
+
+    /// Name the PATH directories this manager's bootstrap plan declares —
+    /// the population `fold_provision_path_dirs` folds into the planned Env
+    /// content for a manager this run will provision.
+    pub fn creating_dirs(mut self, dirs: &[&str]) -> Self {
+        self.bootstrap_creates = dirs.iter().map(|d| (*d).to_string()).collect();
+        self
+    }
+
+    /// Make `bootstrap()` leave this manager available, so a `Provision` node
+    /// driven through a real `apply()` settles as a success instead of the
+    /// `BootstrapFailed` a manager stuck `unavailable()` always yields.
+    pub fn bootstrap_succeeds(mut self) -> Self {
+        self.bootstrap_succeeds = true;
+        self
+    }
+
+    /// Make `install()` sleep for `delay` before returning — for a test that
+    /// proves the lane dispatcher runs independent managers concurrently
+    /// rather than one after another.
+    pub fn with_install_delay(mut self, delay: std::time::Duration) -> Self {
+        self.install_delay = Some(delay);
+        self
+    }
+
+    /// Declare that `via` delivers this manager by installing `packages` —
+    /// the `npm`-from-`apt` shape, and the only thing that makes a provision
+    /// batchable.
+    pub fn mediated_by(mut self, via: &str, packages: &[&str]) -> Self {
+        self.mediated.insert(
+            via.to_string(),
+            packages.iter().map(|p| (*p).to_string()).collect(),
+        );
+        self
+    }
+
+    /// Read availability from `flag` rather than from a fixed bool.
+    pub fn available_when(mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.availability = Some(flag);
+        self
+    }
+
+    /// Raise `flag` from this manager's `install()` — the mediator that
+    /// delivers whatever reads the same flag through `available_when`.
+    pub fn raising(mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.raises = Some(flag);
+        self
+    }
+
+    /// Record every `install()` into a log the test keeps a handle on.
+    pub fn recording_installs(mut self, log: std::sync::Arc<Mutex<Vec<Vec<String>>>>) -> Self {
+        self.install_log = Some(log);
+        self
+    }
+
+    /// Report this manager's installs to a witness shared with its peers.
+    pub fn with_concurrency_witness(mut self, witness: std::sync::Arc<ConcurrencyWitness>) -> Self {
+        self.witness = Some(witness);
+        self
+    }
+}
+
+/// How many mock installs were ever in flight at the same moment.
+///
+/// The direct observation of the thing a concurrency test is about. A wall
+/// clock cannot make that claim: "faster than a serial walk would be" is a
+/// margin, and a loaded test binary spends it on scheduling rather than on
+/// work — the same run reads 200ms alone and 400ms beside 800 other tests, so
+/// the bound is either too tight to be reliable or too loose to falsify
+/// anything. A peak of one IS a serial walk, whatever the clock said.
+#[derive(Default)]
+pub struct ConcurrencyWitness {
+    live: std::sync::atomic::AtomicUsize,
+    peak: std::sync::atomic::AtomicUsize,
+}
+
+impl ConcurrencyWitness {
+    pub fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self::default())
+    }
+
+    /// The most installs seen running at once.
+    pub fn peak(&self) -> usize {
+        self.peak.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn enter(&self) -> WitnessGuard<'_> {
+        let live = self.live.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        self.peak
+            .fetch_max(live, std::sync::atomic::Ordering::SeqCst);
+        WitnessGuard { witness: self }
+    }
+}
+
+/// Leaves the count where it found it, including on a panicking install.
+struct WitnessGuard<'a> {
+    witness: &'a ConcurrencyWitness,
+}
+
+impl Drop for WitnessGuard<'_> {
+    fn drop(&mut self) {
+        self.witness
+            .live
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl crate::providers::PackageManager for MockPackageManager {
@@ -2080,15 +2575,37 @@ impl crate::providers::PackageManager for MockPackageManager {
     }
 
     fn is_available(&self) -> bool {
+        if let Some(flag) = &self.availability {
+            return flag.load(std::sync::atomic::Ordering::SeqCst);
+        }
         self.available
+            || self
+                .became_available
+                .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn can_bootstrap(&self) -> bool {
-        self.bootstrap_capable
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        self.bootstrap_capable.then(|| {
+            crate::providers::BootstrapPlan::new(self.bootstrap_method.clone())
+                .requiring(self.bootstrap_requires.clone())
+                .creating(self.bootstrap_creates.clone())
+        })
     }
 
-    fn bootstrap(&self, _printer: &Printer) -> crate::errors::Result<()> {
+    fn bootstrap(&self, _cx: &crate::providers::PackageContext<'_>) -> crate::errors::Result<()> {
+        if self.bootstrap_succeeds {
+            self.became_available
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         Ok(())
+    }
+
+    fn mediated_packages(&self, via: &str) -> Option<Vec<String>> {
+        self.mediated.get(via).cloned()
+    }
+
+    fn path_dirs(&self, _cx: &crate::providers::PackageContext<'_>) -> Vec<String> {
+        self.bootstrap_creates.clone()
     }
 
     fn installed_packages(
@@ -2103,7 +2620,17 @@ impl crate::providers::PackageManager for MockPackageManager {
         packages: &[String],
         _cx: &crate::providers::PackageContext<'_>,
     ) -> crate::errors::Result<()> {
+        let _in_flight = self.witness.as_ref().map(|w| w.enter());
+        if let Some(delay) = self.install_delay {
+            std::thread::sleep(delay);
+        }
         self.install_calls.lock().unwrap().push(packages.to_vec());
+        if let Some(log) = &self.install_log {
+            log.lock().unwrap().push(packages.to_vec());
+        }
+        if let Some(flag) = &self.raises {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         Ok(())
     }
 
@@ -2116,7 +2643,14 @@ impl crate::providers::PackageManager for MockPackageManager {
         Ok(())
     }
 
-    fn update(&self, _cx: &crate::providers::PackageContext<'_>) -> crate::errors::Result<()> {
+    fn has_index(&self) -> bool {
+        self.keeps_index
+    }
+
+    fn refresh_index(
+        &self,
+        _cx: &crate::providers::PackageContext<'_>,
+    ) -> crate::errors::Result<()> {
         Ok(())
     }
 
@@ -2151,6 +2685,14 @@ impl ReconcilerTestHarnessBuilder {
     pub fn package_manager(mut self, name: &str, installed: &[&str]) -> Self {
         self.package_managers
             .push(MockPackageManager::new(name).with_installed(installed));
+        self
+    }
+
+    /// Add an already-built mock package manager, for a test that configures
+    /// availability or a bootstrap plan the `(name, installed)` shorthand
+    /// cannot express.
+    pub fn with_package_manager(mut self, pm: MockPackageManager) -> Self {
+        self.package_managers.push(pm);
         self
     }
 
@@ -2270,13 +2812,25 @@ impl ReconcilerTestHarness {
         plan: &crate::reconciler::Plan,
         printer: &Printer,
     ) -> crate::errors::Result<crate::reconciler::ApplyResult> {
+        self.apply_with_filter(plan, printer, None)
+    }
+
+    /// Apply a plan under an active `--phase`/`--skip` filter — the shape a
+    /// test needs to reproduce "this run never reached the `Prerequisites`
+    /// phase", since [`Self::apply`] always applies unfiltered.
+    pub fn apply_with_filter(
+        &self,
+        plan: &crate::reconciler::Plan,
+        printer: &Printer,
+        phase_filter: Option<&crate::reconciler::PhaseFilter>,
+    ) -> crate::errors::Result<crate::reconciler::ApplyResult> {
         let reconciler = crate::reconciler::Reconciler::new(&self.registry, &self.state);
         reconciler.apply(
             plan,
             &self.resolved,
             std::path::Path::new("."),
             printer,
-            None,
+            phase_filter,
             &[],
             crate::reconciler::ReconcileContext::Apply,
             false,
@@ -2370,10 +2924,56 @@ mod tests {
     use crate::providers::FileManager;
     use secrecy::ExposeSecret;
 
+    /// Concurrent dispatch is made of a reader that cannot leave its critical
+    /// section until a SECOND reader enters it: a lane worker blocked in a
+    /// fixture rendezvous holds the read side, and the thread waiting on it
+    /// cannot proceed until the sibling worker — a fresh thread, so a real
+    /// acquisition — starts. Queue a writer between the two and a
+    /// write-preferring lock deadlocks all four parties until a test-side
+    /// timeout expires minutes later, having stalled every other reader in the
+    /// binary behind the same writer. The gate admits the sibling instead: the
+    /// writer is already waiting on the reader inside, and refusing the
+    /// newcomer buys it nothing.
+    #[test]
+    fn a_queued_writer_does_not_shut_out_a_reader_joining_one_already_inside() {
+        let (holder_in, holder_ready) = std::sync::mpsc::channel();
+        let (release_holder, holder_waits) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _inside = path_env_read_guard();
+            holder_in.send(()).expect("report the read side taken");
+            holder_waits.recv().expect("wait for the release");
+        });
+        holder_ready.recv().expect("the read side is held");
+
+        let writer = std::thread::spawn(|| {
+            let _exclusive = path_env_mutation_guard();
+        });
+        // The writer is QUEUED, not merely spawned — the state a clock would
+        // otherwise be guessing at.
+        assert!(
+            await_queued_path_writer(std::time::Duration::from_secs(10)),
+            "the writer never reached the gate"
+        );
+
+        let (joined_in, joined) = std::sync::mpsc::channel();
+        let joiner = std::thread::spawn(move || {
+            let _inside = path_env_read_guard();
+            joined_in.send(()).expect("report the second read taken");
+        });
+        joined
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("a reader joining one already inside was shut out by a queued writer");
+
+        release_holder.send(()).expect("release the first reader");
+        for thread in [holder, writer, joiner] {
+            thread.join().expect("thread");
+        }
+    }
+
     /// The spawn-environment guards must compose: a test that pins the working
     /// directory *and* puts a shim on `PATH` is natural, and both halves take
-    /// the exclusive guard. Without per-thread re-entrancy this deadlocks a
-    /// write-preferring `RwLock` against itself and hangs the suite with no
+    /// the exclusive guard. Without per-thread re-entrancy the second
+    /// acquisition queues behind the first and hangs the suite with no
     /// timeout, so this test only ever passes or never returns.
     #[cfg(unix)]
     #[test]
@@ -2596,7 +3196,7 @@ mod tests {
 
     #[test]
     fn mock_package_manager_helpers_and_trait_methods() {
-        use crate::providers::PackageManager;
+        use crate::providers::{PackageManager, PackageManagerExt};
 
         let mgr = MockPackageManager::new("pacman")
             .with_installed(&["git"])
@@ -2615,7 +3215,7 @@ mod tests {
             mgr.can_bootstrap(),
             "`bootstrappable()` must enable bootstrap"
         );
-        mgr.bootstrap(&printer).unwrap();
+        mgr.bootstrap(&cx).unwrap();
 
         assert_eq!(
             mgr.installed_packages(&cx).unwrap(),
@@ -2624,7 +3224,7 @@ mod tests {
 
         mgr.install(&["vim".to_string()], &cx).unwrap();
         mgr.uninstall(&["nano".to_string()], &cx).unwrap();
-        mgr.update(&cx).unwrap();
+        mgr.refresh_index(&cx).unwrap();
         assert_eq!(
             mgr.install_calls.lock().unwrap().as_slice(),
             &[vec!["vim".to_string()]]
@@ -2736,7 +3336,8 @@ mod tests {
         let sc = MockSystemConfigurator::new("sysctl");
         let printer = test_printer();
         let desired = serde_yaml::Value::String("test".into());
-        sc.apply(&desired, &printer).unwrap();
+        sc.apply(&desired, &crate::providers::SystemContext::new(&printer))
+            .unwrap();
         assert_eq!(sc.apply_calls.lock().unwrap().len(), 1);
     }
 
@@ -2745,7 +3346,10 @@ mod tests {
         let sc = MockSystemConfigurator::new("sysctl");
         let printer = test_printer();
         sc.set_fail_apply(true);
-        let result = sc.apply(&serde_yaml::Value::Null, &printer);
+        let result = sc.apply(
+            &serde_yaml::Value::Null,
+            &crate::providers::SystemContext::new(&printer),
+        );
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
             err_msg.contains("mock system apply failure"),
@@ -3300,7 +3904,11 @@ mod tests {
                 .unwrap();
 
             assert!(!plan.is_empty());
-            assert_eq!(plan.total_actions(), 1);
+            assert_eq!(
+                plan.total_actions(),
+                2,
+                "the install, plus the `Prerequisites` node refreshing the index it reads"
+            );
         }
 
         #[test]

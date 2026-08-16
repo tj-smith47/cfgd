@@ -9,7 +9,8 @@ use std::process::{Command, Output};
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::{CommandOutput, Printer, Role};
+use cfgd_core::output::{CommandOutput, Role, collapse_to_subject_line};
+use cfgd_core::providers::{ActionNote, PackageContext};
 
 /// Compute the canonical env-var seam name for a package-manager binary.
 /// Pattern: `CFGD_<NAME>_BIN`, with hyphens turned into underscores so
@@ -127,14 +128,8 @@ where
     build_pkg_command(name, resolver())
 }
 
-/// Important post-install messages extracted from package manager output.
-pub(super) struct PostInstallNote {
-    pub(super) manager: String,
-    pub(super) message: String,
-}
-
 /// Extract caveats/warnings from package manager output.
-pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<PostInstallNote> {
+pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<ActionNote> {
     let combined = format!("{}\n{}", output.stdout, output.stderr);
     let mut notes = Vec::new();
 
@@ -152,10 +147,7 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Post
                 if in_caveats {
                     if line.starts_with("==> ") {
                         if !caveat_lines.is_empty() {
-                            notes.push(PostInstallNote {
-                                manager: manager.to_string(),
-                                message: caveat_lines.join("\n").trim().to_string(),
-                            });
+                            notes.push(ActionNote::warn(manager, caveat_lines.join("\n").trim()));
                         }
                         in_caveats = false;
                     } else {
@@ -164,20 +156,14 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Post
                 }
             }
             if in_caveats && !caveat_lines.is_empty() {
-                notes.push(PostInstallNote {
-                    manager: manager.to_string(),
-                    message: caveat_lines.join("\n").trim().to_string(),
-                });
+                notes.push(ActionNote::warn(manager, caveat_lines.join("\n").trim()));
             }
         }
         "npm" | "pnpm" => {
             for line in combined.lines() {
                 let trimmed = line.trim();
                 if trimmed.starts_with("npm warn") || trimmed.starts_with("npm WARN") {
-                    notes.push(PostInstallNote {
-                        manager: manager.to_string(),
-                        message: trimmed.to_string(),
-                    });
+                    notes.push(ActionNote::warn(manager, trimmed));
                 }
             }
         }
@@ -185,10 +171,7 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Post
             for line in combined.lines() {
                 let trimmed = line.trim();
                 if trimmed.starts_with("WARNING:") {
-                    notes.push(PostInstallNote {
-                        manager: manager.to_string(),
-                        message: trimmed.to_string(),
-                    });
+                    notes.push(ActionNote::warn(manager, trimmed));
                 }
             }
         }
@@ -199,26 +182,12 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Post
                 let lower = trimmed.to_lowercase();
                 if lower.contains("warning:") || lower.contains("caveat") || lower.contains("note:")
                 {
-                    notes.push(PostInstallNote {
-                        manager: manager.to_string(),
-                        message: trimmed.to_string(),
-                    });
+                    notes.push(ActionNote::warn(manager, trimmed));
                 }
             }
         }
     }
     notes
-}
-
-/// Print collected post-install notes to the user.
-pub(super) fn print_caveats(printer: &Printer, notes: &[PostInstallNote]) {
-    if notes.is_empty() {
-        return;
-    }
-    printer.status_simple(Role::Info, "Post-install notes");
-    for note in notes {
-        printer.status_simple(Role::Warn, format!("[{}] {}", note.manager, note.message));
-    }
 }
 
 /// Run a command, mapping IO errors to PackageError::CommandFailed and non-zero
@@ -253,6 +222,7 @@ fn run_pkg_cmd_prefixed(
     error_kind: &str,
     msg_prefix: Option<&str>,
 ) -> std::result::Result<Output, PackageError> {
+    hand_child_bootstrapped_path(cmd);
     // Ensure stdout/stderr are captured for timeout-based execution
     let output = cfgd_core::command_output_with_timeout(cmd, PKG_CMD_TIMEOUT).map_err(|e| {
         PackageError::CommandFailed {
@@ -300,6 +270,7 @@ pub(super) fn run_pkg_query(
     manager: &str,
     cmd: &mut Command,
 ) -> std::result::Result<Output, PackageError> {
+    hand_child_bootstrapped_path(cmd);
     cfgd_core::command_output_with_timeout(cmd, PKG_CMD_TIMEOUT).map_err(|e| {
         PackageError::CommandFailed {
             manager: manager.into(),
@@ -308,38 +279,134 @@ pub(super) fn run_pkg_query(
     })
 }
 
+/// Report the failure of a bootstrap step the chain is about to abandon.
+///
+/// A fallback chain tries methods until one works, so every step but the last
+/// has its exit status inspected and discarded — and the error the chain
+/// finally returns names only the method it stopped on. With the window
+/// collapsing silently under a caller-owned status, this is the one place the
+/// abandoned step's diagnostic survives.
+pub(super) fn report_abandoned_step(
+    cx: &PackageContext<'_>,
+    manager: &str,
+    method: &str,
+    output: &CommandOutput,
+) {
+    cx.report(
+        Role::Warn,
+        manager,
+        format!(
+            "{method} could not install {manager} ({}); trying the next method",
+            command_failure_reason(output)
+        ),
+    );
+}
+
+/// One line naming why a package command failed: its exit code, plus the stderr
+/// it produced when there is any.
+///
+/// The `CommandOutput` counterpart of `collapse_to_subject_line`, and the only
+/// place that shape is built. Two callers need it and neither may print a raw
+/// tail of its own: `run_pkg_cmd_live`, whose error IS the caller's status
+/// detail (a downstream branch also matches on its substring — snap's
+/// classic-confinement retry), and a fallback chain that inspects the exit
+/// status itself and reports the step it is about to abandon. Collapsed,
+/// because both destinations are a single status subject/detail and
+/// `Renderer::write_line` debug-asserts on an embedded newline. The exit code
+/// stays in the message so an operator can still tell "unknown failure" from a
+/// tool that exited non-zero saying nothing.
+pub(super) fn command_failure_reason(output: &CommandOutput) -> String {
+    let reason = cfgd_core::exit_status_reason(&output.status);
+    let stderr = collapse_to_subject_line(output.stderr.trim());
+    if stderr.is_empty() {
+        reason
+    } else {
+        format!("{reason}: {stderr}")
+    }
+}
+
+/// Run `cmd` through a live output window, letting the CONTEXT decide whether
+/// that window settles a status line of its own.
+///
+/// The one entry point for a package manager's shell-outs. Under the
+/// reconciler the action already has exactly one status line, built from the
+/// plan and carrying the phase's alignment column, so a window that settled its
+/// own would render the same install twice; standalone (`cfgd doctor`, a manual
+/// bootstrap) the window IS the only line and must settle.
+///
+/// A concurrent install lane is checked first: its window already exists,
+/// created by the coordinator at the action's depth, and `Printer::run` would
+/// open a second one at the ambient depth — which in a concurrent phase is
+/// whatever the last renderer state happened to be, shared by every lane.
+pub(super) fn pkg_run(
+    cx: &PackageContext<'_>,
+    cmd: &mut Command,
+    label: impl Into<String>,
+) -> std::io::Result<CommandOutput> {
+    hand_child_bootstrapped_path(cmd);
+    if let Some(lane) = cx.lane() {
+        lane.run(cmd)
+    } else if cx.caller_owns_status {
+        cx.printer.run_silent(cmd, label)
+    } else {
+        cx.printer.run(cmd, label)
+    }
+}
+
+/// Give a package-manager child the PATH directories cfgd bootstrapped during
+/// this run.
+///
+/// Resolving the manager's own binary through the registry
+/// (`cfgd_core::command_path`) is not enough: npm shells out to `node` and
+/// `git`, pipx to a Python, and those grandchildren resolve through the PATH
+/// they inherit — which is the one cfgd started with, and which cannot name a
+/// prefix that did not exist then. Lifecycle scripts already get this treatment
+/// (`reconciler::scripts`), and both compose the string the same way.
+///
+/// A PATH the command builder set deliberately is left alone: `brew_cmd`'s
+/// augmented PATH is how brew finds its own tools, and overwriting it would
+/// undo a decision made with more context than this has.
+///
+/// Every spawn wrapper in this module calls it — `pkg_run`, `run_pkg_cmd*` and
+/// `run_pkg_query` alike. A manager's install path reaches all three (npm's
+/// `install` asks `npm config get prefix` through `run_pkg_query` before it
+/// builds the install command), so augmenting one of them leaves the same
+/// availability/spawn disagreement live one call earlier.
+fn hand_child_bootstrapped_path(cmd: &mut Command) {
+    let dirs = cfgd_core::bootstrapped_path_dirs();
+    if dirs.is_empty()
+        || cmd
+            .get_envs()
+            .any(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+    {
+        return;
+    }
+    // Through the core reader, which brackets the process `PATH` read with the
+    // same guard every other production reader takes: the read happens BEFORE
+    // the guarded spawn, so an unsynchronized one re-opens the window the lock
+    // exists to close.
+    if let Some(joined) = cfgd_core::process_path_with_dirs_prepended(&dirs) {
+        cmd.env("PATH", joined);
+    }
+}
+
 /// Run a package manager command with live progress display via Printer.
 /// Use for long-running operations (install, uninstall, update, bootstrap).
-/// Maps spawn errors to PackageError::CommandFailed and non-zero exit to
+/// Maps spawn errors to `PackageError::CommandFailed` and non-zero exit to
 /// the appropriate variant based on `error_kind`.
 pub(super) fn run_pkg_cmd_live(
-    printer: &Printer,
+    cx: &PackageContext<'_>,
     manager: &str,
     cmd: &mut Command,
     label: &str,
     error_kind: &str,
 ) -> std::result::Result<CommandOutput, PackageError> {
-    let output = printer
-        .run(cmd, label)
-        .map_err(|e| PackageError::CommandFailed {
-            manager: manager.into(),
-            source: e,
-        })?;
+    let output = pkg_run(cx, cmd, label).map_err(|e| PackageError::CommandFailed {
+        manager: manager.into(),
+        source: e,
+    })?;
     if !output.status.success() {
-        let code = output.status.code().unwrap_or(-1);
-        // Surface stderr in the error message for parity with `run_pkg_cmd`
-        // (which already does this via `stderr_lossy_trimmed`). Without this,
-        // downstream branches that inspect `e.to_string()` for a substring
-        // (e.g., snap's classic-confinement retry) cannot read the upstream
-        // tool's actual diagnostic. The exit code stays in the message so
-        // operators can still distinguish "unknown failure" from a tool
-        // that exited cleanly without stderr output.
-        let stderr = output.stderr.trim();
-        let message = if stderr.is_empty() {
-            format!("exit code {}", code)
-        } else {
-            format!("exit code {}: {}", code, stderr)
-        };
+        let message = command_failure_reason(&output);
         return Err(match error_kind {
             "install" => PackageError::InstallFailed {
                 manager: manager.into(),
@@ -355,10 +422,14 @@ pub(super) fn run_pkg_cmd_live(
             },
         });
     }
-    // Extract and print any post-install caveats
+    // Post-install caveats travel back to the reconciler instead of printing
+    // here: `run_pkg_cmd_live` returns before the action's own status line is
+    // emitted, so anything printed from inside it lands above the line it
+    // belongs to.
     if error_kind == "install" {
-        let notes = extract_caveats(manager, &output);
-        print_caveats(printer, &notes);
+        for note in extract_caveats(manager, &output) {
+            cx.notes.push(note);
+        }
     }
     Ok(output)
 }
@@ -375,7 +446,7 @@ pub(super) fn run_pkg_cmd_live(
 /// retried — there is nothing to isolate, so its original error is surfaced
 /// verbatim.
 pub(super) fn install_batch_then_per_package<F>(
-    printer: &Printer,
+    cx: &PackageContext<'_>,
     manager: &str,
     packages: &[String],
     build_cmd: F,
@@ -389,25 +460,36 @@ where
 
     let batch_label = format!("{} install {}", manager, packages.join(" "));
     let mut batch = build_cmd(packages);
-    match run_pkg_cmd_live(printer, manager, &mut batch, &batch_label, "install") {
+    match run_pkg_cmd_live(cx, manager, &mut batch, &batch_label, "install") {
         Ok(_) => return Ok(()),
         Err(e) => {
             if packages.len() == 1 {
                 return Err(e);
             }
-            printer.status_simple(
+            // The batch failure is the reason the retry is happening AND the
+            // only place its diagnostic survives: a caller-owned window
+            // collapses without printing, and the error below names the
+            // packages that failed on their own, not why the batch did.
+            cx.report(
                 Role::Warn,
-                format!("{manager}: batch install failed; retrying each package individually"),
+                manager,
+                format!(
+                    "batch install failed; retrying each package individually: {}",
+                    collapse_to_subject_line(&e)
+                ),
             );
         }
     }
 
+    // Each retry's cause travels into the returned error. Dropping it left the
+    // caller's one status line reading `failed to install: a, b` with nothing
+    // to act on, because the window that saw the stderr settled silently.
     let mut failed: Vec<String> = Vec::new();
     for pkg in packages {
         let label = format!("{} install {}", manager, pkg);
         let mut cmd = build_cmd(std::slice::from_ref(pkg));
-        if run_pkg_cmd_live(printer, manager, &mut cmd, &label, "install").is_err() {
-            failed.push(pkg.clone());
+        if let Err(e) = run_pkg_cmd_live(cx, manager, &mut cmd, &label, "install") {
+            failed.push(format!("{} ({})", pkg, collapse_to_subject_line(&e)));
         }
     }
 
@@ -416,7 +498,7 @@ where
     } else {
         Err(PackageError::InstallFailed {
             manager: manager.into(),
-            message: format!("failed to install: {}", failed.join(", ")),
+            message: format!("failed to install: {}", failed.join("; ")),
         })
     }
 }
@@ -441,22 +523,252 @@ pub(super) fn brew_available() -> bool {
     cfg!(target_os = "linux") && std::path::Path::new(LINUXBREW_PATH).exists()
 }
 
-/// True when a Linux system package manager (apt, dnf, or zypper) is on PATH.
-/// Used by Linux-only managers (snap, flatpak) to decide bootstrappability.
-#[cfg(target_os = "linux")]
-pub(super) fn linux_system_manager_available() -> bool {
-    command_available("apt") || command_available("dnf") || command_available("zypper")
+/// A system manager a bootstrap cascade can mediate through, as
+/// `(plan method, command)`.
+///
+/// The plan names the MANAGER — `apt` is what the user reads on the line and
+/// what the concurrency lane is keyed on — while the binary a bootstrap spawns
+/// is `apt-get`. Both halves live in one table so a method and the arm it
+/// authorizes cannot drift apart, and so the detector that PICKS a method
+/// probes exactly the command that will run it. That pairing is what makes a
+/// planned method safe to treat as binding: a plan can only name a mediator
+/// execution can spawn.
+type SystemArm = (&'static str, &'static str);
+
+/// The system arms of [`bootstrap_via_brew_then_system`].
+const BREW_SYSTEM_ARMS: &[SystemArm] = &[("apt", "apt-get"), ("dnf", "dnf")];
+
+/// The arms of [`bootstrap_via_system_manager`], which reaches one manager more
+/// than the brew cascade does.
+const SYSTEM_MANAGER_ARMS: &[SystemArm] =
+    &[("apt", "apt-get"), ("dnf", "dnf"), ("zypper", "zypper")];
+
+/// One manager's mediated bootstrap: the packages a mediating manager installs
+/// to deliver it, per mediator family.
+///
+/// Declared once per manager and read twice — by its `bootstrap`, which hands
+/// these lists to the cascade helpers below, and by its
+/// [`cfgd_core::providers::PackageManager::mediated_packages`], which answers
+/// what a BATCHED provision asks the same mediator to install. Two hand-written
+/// copies of the names is how a batch would come to install something the solo
+/// bootstrap never does.
+pub(super) struct MediatedArms {
+    /// The brew formula, or `None` for a manager with no brew arm.
+    pub(super) brew: Option<&'static str>,
+    /// The package names the system arms install.
+    pub(super) system: &'static [&'static str],
+    /// Which system arms deliver it — the same table the manager's own
+    /// bootstrap cascade walks.
+    pub(super) system_arms: &'static [SystemArm],
 }
 
-/// True when any cross-platform system package manager is available.
-/// Covers brew (macOS/Linux), apt/dnf (Linux), and winget/choco/scoop (Windows).
-pub(super) fn any_system_manager_available() -> bool {
-    brew_available()
-        || command_available("apt")
-        || command_available("dnf")
-        || command_available("winget")
-        || command_available("choco")
-        || command_available("scoop")
+impl MediatedArms {
+    /// The packages `via` installs for this manager, or `None` when `via` is
+    /// not a mediator these arms describe. Answered on `via`'s FAMILY, so
+    /// `brew-cask` reads as brew — the same collapse the provision lane makes.
+    pub(super) fn packages_for(&self, via: &str) -> Option<Vec<String>> {
+        let family = cfgd_core::manager_family(via);
+        if family == "brew" {
+            return self.brew.map(|pkg| vec![pkg.to_string()]);
+        }
+        self.system_arms
+            .iter()
+            .any(|(arm, _)| *arm == family)
+            .then(|| self.system.iter().map(|p| (*p).to_string()).collect())
+    }
+}
+
+/// The arms of a manager whose bootstrap runs [`bootstrap_via_brew_then_system`].
+pub(super) const fn brew_then_system_arms(
+    brew: &'static str,
+    system: &'static [&'static str],
+) -> MediatedArms {
+    MediatedArms {
+        brew: Some(brew),
+        system,
+        system_arms: BREW_SYSTEM_ARMS,
+    }
+}
+
+/// The arms of a manager whose bootstrap runs [`bootstrap_via_system_manager`],
+/// optionally after a brew arm of its own.
+pub(super) const fn system_manager_arms(
+    brew: Option<&'static str>,
+    system: &'static [&'static str],
+) -> MediatedArms {
+    MediatedArms {
+        brew,
+        system,
+        system_arms: SYSTEM_MANAGER_ARMS,
+    }
+}
+
+/// The first arm of `arms` this host can actually run, or `None`.
+fn detect_system_arm(arms: &[SystemArm]) -> Option<&'static str> {
+    arms.iter()
+        .find(|(_, tool)| system_tool_available(tool))
+        .map(|(method, _)| *method)
+}
+
+/// Which manager a brew→apt→dnf cascade would pick, or `fallback` when none of
+/// them is available. The name a `BootstrapPlan` carries as its method.
+///
+/// The answer is BINDING on execution, not a preview of it: the plan line the
+/// user reads names this mediator and the action is serialized on this
+/// mediator's concurrency lane, so `bootstrap` runs this arm alone (see
+/// [`PackageContext::planned_method`] and [`bootstrap_via_brew_then_system`])
+/// and fails rather than substituting a manager that became available after
+/// planning.
+///
+/// `fallback` must be the caller's OWN bootstrap arm (npm's `nvm`, pipx's
+/// `pip`) — the same string it hands the cascade — because a method naming
+/// neither this cascade nor that arm is a provision nothing can run.
+pub(super) fn detect_brew_system_method(fallback: &'static str) -> &'static str {
+    detect_brew_or_system_method(BREW_SYSTEM_ARMS).unwrap_or(fallback)
+}
+
+/// The mediator a brew-then-system bootstrap can actually run on this host, or
+/// `None` when none is present.
+///
+/// The strict counterpart of [`detect_brew_system_method`], for a manager with
+/// no bootstrap arm of its own: naming a mediator the host cannot run used to
+/// degrade into a cascade that tried something else, and under a binding plan
+/// it would be a guaranteed failure instead.
+pub(super) fn detect_brew_or_system_method(arms: &[SystemArm]) -> Option<&'static str> {
+    if brew_available() {
+        return Some("brew");
+    }
+    detect_system_arm(arms)
+}
+
+/// Which manager an apt→dnf→zypper cascade can run here, or `None` when none of
+/// them is present. Linux-only, like the two managers whose plans resolve their
+/// method through it. Binding on execution for the same reason
+/// [`detect_brew_system_method`] is.
+#[cfg(target_os = "linux")]
+pub(super) fn detect_system_method() -> Option<&'static str> {
+    detect_system_arm(SYSTEM_MANAGER_ARMS)
+}
+
+/// Every mediator a `go` bootstrap can run: brew, then the full system cascade
+/// (`bootstrap_via_system_manager`, which reaches zypper as well).
+pub(super) fn detect_go_bootstrap_method() -> Option<&'static str> {
+    detect_brew_or_system_method(SYSTEM_MANAGER_ARMS)
+}
+
+/// The plan named a mediator that cannot deliver on this host any more.
+///
+/// Never a fall-through: substituting whatever else is available would run the
+/// install outside the lane the action was serialized on, and would contradict
+/// the line the user approved.
+pub(super) fn planned_method_unavailable(manager: &str, method: &str) -> PackageError {
+    PackageError::BootstrapFailed {
+        manager: manager.into(),
+        message: format!(
+            "the plan installs {manager} via {method}, which is not available on this host; re-run to re-plan"
+        ),
+    }
+}
+
+/// The mediator the plan named ran and failed. Its diagnostic travels in the
+/// error rather than in a note, because there is no next method to narrate
+/// toward and a caller-owned window settles no line of its own.
+pub(super) fn planned_method_failed(
+    manager: &str,
+    method: &str,
+    output: &CommandOutput,
+) -> PackageError {
+    PackageError::BootstrapFailed {
+        manager: manager.into(),
+        message: format!(
+            "{method} could not install {manager}: {}",
+            command_failure_reason(output)
+        ),
+    }
+}
+
+/// A `~`-relative directory an installer creates, or `None` when no home
+/// resolves — a literal `~` handed to a PATH entry names nothing, so a
+/// bootstrap plan declares no directory rather than an unusable one.
+pub(super) fn home_relative_dir(rel: &str) -> Option<std::path::PathBuf> {
+    let rel = std::path::Path::new(rel);
+    let expanded = cfgd_core::expand_tilde(rel);
+    (expanded != rel).then_some(expanded)
+}
+
+/// The directory `pip install --user <tool>` writes console scripts into, or
+/// `None` when it cannot be named.
+///
+/// Unix hands every interpreter the same `~/.local/bin`. Windows does not: the
+/// scripts land under roaming AppData in a directory carrying the interpreter's
+/// OWN version (`%APPDATA%\Python\Python314\Scripts`, CPython's `nt_user`
+/// install scheme), so the answer has to come from the pip that will run the
+/// install. When the version cannot be read, the plan declares nothing rather
+/// than a guess — a declared directory reaches the generated env file, where a
+/// wrong one is worse than a missing one.
+pub(super) fn pip_user_scripts_dir(pip_tool: &str) -> Option<PathBuf> {
+    if cfg!(windows) {
+        windows_pip_user_scripts_dir(pip_tool)
+    } else {
+        home_relative_dir("~/.local/bin")
+    }
+}
+
+/// The Windows arm of [`pip_user_scripts_dir`], split out so the composition it
+/// performs is reachable from a test on any host.
+fn windows_pip_user_scripts_dir(pip_tool: &str) -> Option<PathBuf> {
+    let appdata = std::env::var("APPDATA").ok()?;
+    compose_pip_user_scripts_dir(&appdata, &pip_python_version(pip_tool)?)
+}
+
+/// Join the roaming AppData root and a dotted `X.Y` interpreter version into the
+/// `nt_user` scripts directory. The version loses its dots there, so `3.14`
+/// names `Python314`.
+pub(super) fn compose_pip_user_scripts_dir(appdata: &str, python_version: &str) -> Option<PathBuf> {
+    let mut parts = python_version.split('.');
+    let major = parts.next()?;
+    let minor = parts.next()?;
+    let numeric = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if appdata.is_empty() || !numeric(major) || !numeric(minor) {
+        return None;
+    }
+    Some(
+        PathBuf::from(appdata)
+            .join("Python")
+            .join(format!("Python{major}{minor}"))
+            .join("Scripts"),
+    )
+}
+
+/// The interpreter version a given pip belongs to, read from its `--version`
+/// banner.
+///
+/// Only a SUCCESSFUL answer is cached, for the process: a plan is derived once
+/// per manager on every planning run and again on every doctor pass, and the
+/// interpreter behind a resolved pip cannot change while cfgd runs, so the probe
+/// is worth exactly one spawn. A failure is deliberately not remembered — a test
+/// that empties `PATH` for its own assertion would otherwise pin every later
+/// plan in the binary to a dir-less answer it never asked for.
+fn pip_python_version(pip_tool: &str) -> Option<String> {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(cached) = VERSION.get() {
+        return Some(cached.clone());
+    }
+    let mut cmd = tool_cmd_with_resolver(pip_tool, || resolve_tool_with_fallbacks(pip_tool, &[]));
+    cmd.arg("--version");
+    let out = cfgd_core::command_output_with_timeout(&mut cmd, cfgd_core::COMMAND_TIMEOUT).ok()?;
+    let probed = parse_pip_python_version(&cfgd_core::stdout_lossy_trimmed(&out))?;
+    Some(VERSION.get_or_init(|| probed).clone())
+}
+
+/// The `X.Y` inside the `(python X.Y)` tail of a `pip --version` banner
+/// (`pip 25.2 from C:\Python314\Lib\site-packages\pip (python 3.14)`).
+pub(super) fn parse_pip_python_version(banner: &str) -> Option<String> {
+    const MARKER: &str = "(python ";
+    let rest = &banner[banner.rfind(MARKER)? + MARKER.len()..];
+    let end = rest.find(')')?;
+    let version = rest[..end].trim();
+    (!version.is_empty()).then(|| version.to_string())
 }
 
 /// Return the brew bin/sbin directories for the current platform.
@@ -469,17 +781,62 @@ pub(super) fn brew_path_dirs() -> Vec<String> {
             "/home/linuxbrew/.linuxbrew/sbin".to_string(),
         ]
     } else if cfg!(target_os = "macos") {
-        // Apple Silicon vs Intel
-        if std::path::Path::new("/opt/homebrew/bin").exists() {
-            vec![
-                "/opt/homebrew/bin".to_string(),
-                "/opt/homebrew/sbin".to_string(),
-            ]
-        } else {
-            vec!["/usr/local/bin".to_string(), "/usr/local/sbin".to_string()]
-        }
+        let prefix = macos_brew_prefix();
+        vec![format!("{prefix}/bin"), format!("{prefix}/sbin")]
     } else {
         Vec::new()
+    }
+}
+
+/// The macOS Homebrew prefixes, in the order an installed one is looked for.
+const MACOS_BREW_PREFIXES: [&str; 2] = ["/opt/homebrew", "/usr/local"];
+
+/// Which macOS prefix brew lives under — the same answer before and after a
+/// bootstrap.
+///
+/// This value is read twice per run, once while the plan is built and once
+/// right after brew is installed, and the two reads have to agree or the plan
+/// promises one directory while the apply records another. So an installed brew
+/// answers for itself (including an Intel-prefix brew running under Rosetta on
+/// Apple Silicon), and a machine with no brew answers from the architecture the
+/// installer will target rather than from anything the install would change.
+fn macos_brew_prefix() -> &'static str {
+    macos_brew_prefix_from(&MACOS_BREW_PREFIXES, std::env::consts::ARCH)
+}
+
+/// The derivation itself, over the candidates and architecture it is given: the
+/// first candidate holding a real brew wins, and a machine holding none answers
+/// from `arch`.
+///
+/// Parameterized so the wiring is drivable on any host. Reading the real
+/// absolutes would make the search untestable everywhere except a Mac with the
+/// right brew already installed, and the order candidates are tried in is the
+/// half of this that decides what an Intel-prefix brew on Apple Silicon
+/// answers.
+fn macos_brew_prefix_from<'p>(candidates: &[&'p str], arch: &str) -> &'p str {
+    candidates
+        .iter()
+        .copied()
+        .find(|prefix| brew_prefix_holds_brew(std::path::Path::new(prefix)))
+        .unwrap_or_else(|| macos_brew_prefix_for_arch(arch))
+}
+
+/// Whether `prefix` holds a real brew. The probe is the `bin/brew` binary and
+/// never the bin directory: stock macOS ships a `/usr/local/bin` with no brew
+/// in it, so a directory probe would answer `/usr/local` on a bare Apple
+/// Silicon machine and `/opt/homebrew` once the installer had run — the moving
+/// answer this derivation exists to rule out.
+fn brew_prefix_holds_brew(prefix: &std::path::Path) -> bool {
+    prefix.join("bin/brew").is_file()
+}
+
+/// Where the Homebrew installer puts a prefix on an `arch` machine that has
+/// none yet: Apple Silicon gets `/opt/homebrew`, Intel keeps `/usr/local`.
+fn macos_brew_prefix_for_arch(arch: &str) -> &'static str {
+    if arch == "aarch64" {
+        MACOS_BREW_PREFIXES[0]
+    } else {
+        MACOS_BREW_PREFIXES[1]
     }
 }
 
@@ -562,31 +919,149 @@ fn brew_owner() -> Option<String> {
     }
 }
 
+/// Run the brew arm of a bootstrap cascade, honoring the method the plan chose.
+///
+/// `Ok(true)` — brew installed `brew_pkg`. `Ok(false)` — the caller continues
+/// to its next arm, because brew is absent or the plan named a different
+/// mediator. `Err` — the plan named brew and brew could not deliver, which is
+/// the end of the attempt rather than the start of a fallback.
+pub(super) fn bootstrap_brew_arm(
+    cx: &PackageContext<'_>,
+    manager_name: &str,
+    brew_pkg: &str,
+) -> Result<bool> {
+    let planned = cx.planned_method();
+    if planned.is_some_and(|method| method != "brew") {
+        return Ok(false);
+    }
+    if !brew_available() {
+        return match planned {
+            Some(method) => Err(planned_method_unavailable(manager_name, method).into()),
+            None => Ok(false),
+        };
+    }
+    let result = pkg_run(
+        cx,
+        brew_cmd().args(["install", brew_pkg]),
+        format!("Installing {} via brew", brew_pkg),
+    )
+    .map_err(|e| PackageError::BootstrapFailed {
+        manager: manager_name.into(),
+        message: format!("brew install {} failed: {}", brew_pkg, e),
+    })?;
+    if result.status.success() {
+        return Ok(true);
+    }
+    match planned {
+        Some(method) => Err(planned_method_failed(manager_name, method, &result).into()),
+        None => {
+            report_abandoned_step(cx, manager_name, "brew", &result);
+            Ok(false)
+        }
+    }
+}
+
+/// Install `pkgs` from the first of `arms` this host can run — or, when the
+/// plan chose one of them, from that one alone.
+///
+/// `subject` is what the live window says is being installed. `fallback_method`
+/// is the caller's OWN bootstrap arm, the one thing this cascade may decline
+/// toward: `Ok(false)` under a planned method means the plan named exactly that
+/// string, never merely "a method this cascade does not recognize". A method
+/// that is neither an arm here nor the caller's own arm is a provision nothing
+/// can run, and fails naming itself rather than being answered by whatever the
+/// caller happens to try next.
+fn bootstrap_system_arms(
+    cx: &PackageContext<'_>,
+    manager_name: &str,
+    subject: &str,
+    pkgs: &[&str],
+    arms: &[SystemArm],
+    fallback_method: Option<&str>,
+) -> Result<bool> {
+    if let Some(method) = cx.planned_method() {
+        if fallback_method == Some(method) {
+            return Ok(false);
+        }
+        let Some((_, tool)) = arms.iter().find(|(arm, _)| *arm == method) else {
+            return Err(planned_method_unavailable(manager_name, method).into());
+        };
+        if !system_tool_available(tool) {
+            return Err(planned_method_unavailable(manager_name, method).into());
+        }
+        let result = run_system_install(cx, manager_name, subject, pkgs, method, tool)?;
+        return if result.status.success() {
+            Ok(true)
+        } else {
+            Err(planned_method_failed(manager_name, method, &result).into())
+        };
+    }
+
+    for (method, tool) in arms {
+        if system_tool_available(tool) {
+            let result = run_system_install(cx, manager_name, subject, pkgs, method, tool)?;
+            if result.status.success() {
+                return Ok(true);
+            }
+            report_abandoned_step(cx, manager_name, tool, &result);
+        }
+    }
+    Ok(false)
+}
+
+/// Probe a system manager through the same `CFGD_<NAME>_BIN` seam
+/// [`sudo_cmd_with_seam`] honors — a seam-shimmed tool must look available on
+/// hosts that lack the real binary (see `require_tool_with_seam`'s pairing
+/// note), or the probe answers from `$PATH` while the spawn answers from the
+/// seam.
+fn system_tool_available(tool: &str) -> bool {
+    cfgd_core::command_available_with_seam(&tool_seam_var(tool), tool)
+}
+
+/// Run one system arm's install. The window's label names the COMMAND that is
+/// running (`apt-get`), while a failure names the METHOD (`apt`) — the manager
+/// the plan line, the concurrency lane and every other binding failure use.
+fn run_system_install(
+    cx: &PackageContext<'_>,
+    manager_name: &str,
+    subject: &str,
+    pkgs: &[&str],
+    method: &str,
+    tool: &str,
+) -> Result<CommandOutput> {
+    pkg_run(
+        cx,
+        sudo_cmd_with_seam(tool).args(["install", "-y"]).args(pkgs),
+        format!("Installing {} via {}", subject, tool),
+    )
+    .map_err(|e| {
+        PackageError::BootstrapFailed {
+            manager: manager_name.into(),
+            message: format!("{} install failed: {}", method, e),
+        }
+        .into()
+    })
+}
+
 /// Try to install a package via common system package managers (apt, then dnf, then zypper).
 /// Returns `Ok(())` on first success, or a `BootstrapFailed` error if all attempts fail.
+///
+/// There is no fallback arm past this one: a caller reaching here has nothing
+/// else to try, so a planned method these arms cannot run fails naming itself.
 pub(super) fn bootstrap_via_system_manager(
-    printer: &Printer,
+    cx: &PackageContext<'_>,
     target_pkg: &str,
     manager_name: &str,
 ) -> Result<()> {
-    for cmd_name in ["apt-get", "dnf", "zypper"] {
-        // Probe through the same CFGD_<NAME>_BIN seam the construction below
-        // honors — a seam-shimmed tool must look available on hosts that lack
-        // the real binary (see require_tool_with_seam's pairing note).
-        if cfgd_core::command_available_with_seam(&tool_seam_var(cmd_name), cmd_name) {
-            let result = printer
-                .run(
-                    sudo_cmd_with_seam(cmd_name).args(["install", "-y", target_pkg]),
-                    format!("Installing {} via {}", target_pkg, cmd_name),
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: manager_name.into(),
-                    message: format!("{} install failed: {}", cmd_name, e),
-                })?;
-            if result.status.success() {
-                return Ok(());
-            }
-        }
+    if bootstrap_system_arms(
+        cx,
+        manager_name,
+        target_pkg,
+        &[target_pkg],
+        SYSTEM_MANAGER_ARMS,
+        None,
+    )? {
+        return Ok(());
     }
     Err(PackageError::BootstrapFailed {
         manager: manager_name.into(),
@@ -596,50 +1071,33 @@ pub(super) fn bootstrap_via_system_manager(
 }
 
 /// Try to install packages via brew first, then fall back to system package managers.
-/// `brew_pkg` is the brew formula name, `apt_pkgs`/`dnf_pkgs` are the system package names.
+/// `brew_pkg` is the brew formula name, `system_pkgs` are the system package names.
 /// Returns `Ok(true)` if installed, `Ok(false)` if no method succeeded (caller should
 /// try alternative), or `Err` on command execution failure.
+///
+/// When the context carries a planned method ([`PackageContext::planned_method`])
+/// exactly one arm runs: the one the plan named. `Ok(false)` then means the plan
+/// named `fallback_method` — the caller's own arm, which it runs next — never
+/// that this cascade tried and gave up. `fallback_method` must be the same
+/// string the caller passed `detect_brew_system_method`.
 pub(super) fn bootstrap_via_brew_then_system(
-    printer: &Printer,
+    cx: &PackageContext<'_>,
     manager_name: &str,
     brew_pkg: &str,
     system_pkgs: &[&str],
+    fallback_method: &str,
 ) -> Result<bool> {
-    if brew_available() {
-        let result = printer
-            .run(
-                brew_cmd().args(["install", brew_pkg]),
-                format!("Installing {} via brew", brew_pkg),
-            )
-            .map_err(|e| PackageError::BootstrapFailed {
-                manager: manager_name.into(),
-                message: format!("brew install {} failed: {}", brew_pkg, e),
-            })?;
-        if result.status.success() {
-            return Ok(true);
-        }
+    if bootstrap_brew_arm(cx, manager_name, brew_pkg)? {
+        return Ok(true);
     }
-
-    for cmd_name in ["apt-get", "dnf"] {
-        if command_available(cmd_name) {
-            let result = printer
-                .run(
-                    sudo_cmd_with_seam(cmd_name)
-                        .args(["install", "-y"])
-                        .args(system_pkgs),
-                    format!("Installing {} via {}", manager_name, cmd_name),
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: manager_name.into(),
-                    message: format!("{} install failed: {}", cmd_name, e),
-                })?;
-            if result.status.success() {
-                return Ok(true);
-            }
-        }
-    }
-
-    Ok(false)
+    bootstrap_system_arms(
+        cx,
+        manager_name,
+        manager_name,
+        system_pkgs,
+        BREW_SYSTEM_ARMS,
+        Some(fallback_method),
+    )
 }
 
 /// Run a `sh -c <script>` install pipeline and surface non-zero exits as
@@ -652,21 +1110,24 @@ pub(super) fn bootstrap_via_brew_then_system(
 /// (npm's nvm path) invokes `bash` inside its own script string rather than
 /// relying on this helper's outer interpreter.
 pub(super) fn bootstrap_via_shell_script(
-    printer: &Printer,
+    cx: &PackageContext<'_>,
     manager_name: &str,
     label: impl Into<String>,
     script: &str,
 ) -> Result<()> {
-    let result = printer
-        .run(Command::new("sh").arg("-c").arg(script), label)
-        .map_err(|e| PackageError::BootstrapFailed {
+    let result = pkg_run(cx, Command::new("sh").arg("-c").arg(script), label).map_err(|e| {
+        PackageError::BootstrapFailed {
             manager: manager_name.into(),
             message: format!("{manager_name} install failed: {e}"),
-        })?;
+        }
+    })?;
     if !result.status.success() {
         return Err(PackageError::BootstrapFailed {
             manager: manager_name.into(),
-            message: format!("{manager_name} install script failed"),
+            message: format!(
+                "{manager_name} install script failed: {}",
+                command_failure_reason(&result)
+            ),
         }
         .into());
     }

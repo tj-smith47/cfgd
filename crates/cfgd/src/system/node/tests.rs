@@ -338,41 +338,97 @@ fn sysctl_validate_key_special_chars_rejected() {
 
 // --- sysctl diff with populated mapping ---
 
+/// A desired sysctl mapping of one key.
+fn sysctl_desire(key: &str, value: serde_yaml::Value) -> serde_yaml::Value {
+    let mut mapping = serde_yaml::Mapping::new();
+    mapping.insert(serde_yaml::Value::String(key.to_string()), value);
+    serde_yaml::Value::Mapping(mapping)
+}
+
 #[test]
 fn sysctl_diff_detects_drift_for_unreadable_keys() {
-    // On a test machine without /proc/sys, read_sysctl returns "<unreadable>"
-    // so any desired value will drift
-    let sc = SysctlConfigurator;
-    let mut mapping = serde_yaml::Mapping::new();
-    mapping.insert(
-        serde_yaml::Value::String("net.ipv4.ip_forward".into()),
-        serde_yaml::Value::String("1".into()),
+    // No kernel exposes this knob, so the read fails on every host and the
+    // drift is the same everywhere. Anchoring on a REAL knob instead reports
+    // drift only on hosts whose value happens to differ from the desired one,
+    // which is the assertion silently skipping itself.
+    let drifts = SysctlConfigurator
+        .diff(&sysctl_desire(
+            "net.ipv4.cfgd_no_such_knob",
+            serde_yaml::Value::String("1".into()),
+        ))
+        .unwrap();
+    assert_eq!(drifts.len(), 1, "unexpected drifts: {drifts:?}");
+    assert_eq!(drifts[0].key, "net.ipv4.cfgd_no_such_knob");
+    assert_eq!(drifts[0].expected, "1");
+    assert_eq!(
+        drifts[0].actual, "<unreadable>",
+        "a knob that cannot be read is reported as unreadable, not as absent"
     );
-    let desired = serde_yaml::Value::Mapping(mapping);
-    let drifts = sc.diff(&desired).unwrap();
-    // The key may or may not be readable depending on the test environment,
-    // but the diff should return without error
-    assert!(drifts.len() <= 1);
-    if !drifts.is_empty() {
-        assert_eq!(drifts[0].key, "net.ipv4.ip_forward");
-        assert_eq!(drifts[0].expected, "1");
-    }
 }
 
 #[test]
 fn sysctl_diff_bool_true_converts_to_1() {
-    let sc = SysctlConfigurator;
-    let mut mapping = serde_yaml::Mapping::new();
-    mapping.insert(
-        serde_yaml::Value::String("net.ipv4.ip_forward".into()),
-        serde_yaml::Value::Bool(true),
+    // `true` and `"1"` are the same desire, so they must produce the same
+    // drift — compared against each other rather than against the host, which
+    // has no opinion about a knob that does not exist.
+    let key = "net.ipv4.cfgd_no_such_knob";
+    let from_bool = SysctlConfigurator
+        .diff(&sysctl_desire(key, serde_yaml::Value::Bool(true)))
+        .unwrap();
+    let from_string = SysctlConfigurator
+        .diff(&sysctl_desire(key, serde_yaml::Value::String("1".into())))
+        .unwrap();
+    assert_eq!(from_bool.len(), 1, "unexpected drifts: {from_bool:?}");
+    assert_eq!(
+        from_bool[0].expected, "1",
+        "`true` renders as the kernel's 1"
     );
-    let desired = serde_yaml::Value::Mapping(mapping);
-    let drifts = sc.diff(&desired).unwrap();
-    // yaml_value_with_numeric_bools converts true to "1"
-    if !drifts.is_empty() {
-        assert_eq!(drifts[0].expected, "1");
-    }
+    assert_eq!(from_bool, from_string);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sysctl_diff_reports_nothing_for_a_knob_already_at_its_desired_value() {
+    // The readable half of the same question: read a real knob, desire what it
+    // already holds, and desire something it does not. The host supplies the
+    // input here rather than the verdict, so the assertion holds on any kernel.
+    let key = "kernel.pid_max";
+    let current = match std::fs::read_to_string("/proc/sys/kernel/pid_max") {
+        Ok(v) => v.trim().to_string(),
+        // No procfs (a container without /proc mounted). Assert the arm that
+        // IS reachable there rather than returning: with nothing to read, the
+        // configurator has nothing to configure and must say so.
+        Err(_) => {
+            assert!(
+                !SysctlConfigurator.is_available(),
+                "no /proc/sys means no sysctl to apply"
+            );
+            return;
+        }
+    };
+
+    let matched = SysctlConfigurator
+        .diff(&sysctl_desire(
+            key,
+            serde_yaml::Value::String(current.clone()),
+        ))
+        .unwrap();
+    assert!(
+        matched.is_empty(),
+        "a knob already at its desired value has not drifted: {matched:?}"
+    );
+
+    let differing = SysctlConfigurator
+        .diff(&sysctl_desire(
+            key,
+            serde_yaml::Value::String(format!("{current}0")),
+        ))
+        .unwrap();
+    assert_eq!(differing.len(), 1, "unexpected drifts: {differing:?}");
+    assert_eq!(
+        differing[0].actual, current,
+        "drift must report the kernel's own value, not a placeholder"
+    );
 }
 
 #[test]
@@ -493,8 +549,9 @@ fn containerd_diff_detects_changed_setting() {
     let cc = ContainerdConfigurator;
     let desired = serde_yaml::Value::Mapping(desired_map);
     let drifts = cc.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&cc, &drifts);
     assert_eq!(drifts.len(), 1);
-    assert_eq!(drifts[0].key, "containerd.sandbox_image");
+    assert_eq!(drifts[0].key, "sandbox_image");
     assert_eq!(drifts[0].expected, "pause:3.9");
     assert_eq!(drifts[0].actual, "pause:3.8");
 }
@@ -598,8 +655,9 @@ fn containerd_diff_with_nested_toml_settings() {
     let cc = ContainerdConfigurator;
     let desired = serde_yaml::Value::Mapping(desired_map);
     let drifts = cc.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&cc, &drifts);
     assert_eq!(drifts.len(), 1);
-    assert_eq!(drifts[0].key, "containerd.plugins.cri.sandbox_image");
+    assert_eq!(drifts[0].key, "plugins.cri.sandbox_image");
     assert_eq!(drifts[0].expected, "pause:3.9");
     assert_eq!(drifts[0].actual, "pause:3.8");
 }
@@ -678,16 +736,14 @@ fn kubelet_diff_detects_changed_value() {
     let kc = KubeletConfigurator;
     let desired = serde_yaml::Value::Mapping(desired_map);
     let drifts = kc.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&kc, &drifts);
     assert_eq!(drifts.len(), 2);
 
-    let max_pods_drift = drifts.iter().find(|d| d.key == "kubelet.maxPods").unwrap();
+    let max_pods_drift = drifts.iter().find(|d| d.key == "maxPods").unwrap();
     assert_eq!(max_pods_drift.expected, "110");
     assert_eq!(max_pods_drift.actual, "100");
 
-    let cgroup_drift = drifts
-        .iter()
-        .find(|d| d.key == "kubelet.cgroupDriver")
-        .unwrap();
+    let cgroup_drift = drifts.iter().find(|d| d.key == "cgroupDriver").unwrap();
     assert_eq!(cgroup_drift.expected, "systemd");
     assert_eq!(cgroup_drift.actual, "cgroupfs");
 }
@@ -745,8 +801,9 @@ fn kubelet_diff_missing_key_shows_not_set() {
     let kc = KubeletConfigurator;
     let desired = serde_yaml::Value::Mapping(desired_map);
     let drifts = kc.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&kc, &drifts);
     assert_eq!(drifts.len(), 1);
-    assert_eq!(drifts[0].key, "kubelet.maxPods");
+    assert_eq!(drifts[0].key, "maxPods");
     assert_eq!(drifts[0].actual, "<not set>");
 }
 
@@ -815,11 +872,12 @@ fn apparmor_diff_missing_profile_file() {
     );
     let desired = serde_yaml::Value::Mapping(m);
     let drifts = ac.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&ac, &drifts);
 
     // Should report file missing
     let file_drift = drifts
         .iter()
-        .find(|d| d.key == "apparmor.test-profile.file")
+        .find(|d| d.key == "test-profile.file")
         .unwrap();
     assert_eq!(file_drift.expected, "present");
     assert_eq!(file_drift.actual, "missing");
@@ -854,10 +912,11 @@ fn apparmor_diff_content_mismatch() {
     );
     let desired = serde_yaml::Value::Mapping(m);
     let drifts = ac.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&ac, &drifts);
 
     let content_drift = drifts
         .iter()
-        .find(|d| d.key == "apparmor.test-profile.content")
+        .find(|d| d.key == "test-profile.content")
         .unwrap();
     assert_eq!(content_drift.expected, "updated");
     assert_eq!(content_drift.actual, "outdated");
@@ -1009,8 +1068,9 @@ fn seccomp_diff_missing_profile_file() {
 
     let desired = serde_yaml::Value::Mapping(m);
     let drifts = sc.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&sc, &drifts);
     assert_eq!(drifts.len(), 1);
-    assert_eq!(drifts[0].key, "seccomp.default-audit");
+    assert_eq!(drifts[0].key, "default-audit");
     assert_eq!(drifts[0].expected, "present");
     assert_eq!(drifts[0].actual, "missing");
 }
@@ -1049,8 +1109,9 @@ fn seccomp_diff_content_mismatch() {
 
     let desired = serde_yaml::Value::Mapping(m);
     let drifts = sc.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&sc, &drifts);
     assert_eq!(drifts.len(), 1);
-    assert_eq!(drifts[0].key, "seccomp.default-audit.content");
+    assert_eq!(drifts[0].key, "default-audit.content");
     assert_eq!(drifts[0].expected, "updated");
     assert_eq!(drifts[0].actual, "outdated");
 }
@@ -1214,9 +1275,10 @@ fn seccomp_diff_uses_default_profiles_dir() {
 
     let desired = serde_yaml::Value::Mapping(m);
     let drifts = sc.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&sc, &drifts);
     // File won't exist at default path, so should report missing
     assert_eq!(drifts.len(), 1);
-    assert_eq!(drifts[0].key, "seccomp.test");
+    assert_eq!(drifts[0].key, "test");
     assert_eq!(drifts[0].actual, "missing");
 }
 
@@ -1566,8 +1628,9 @@ fn containerd_diff_boolean_setting() {
     let cc = ContainerdConfigurator;
     let desired = serde_yaml::Value::Mapping(desired_map);
     let drifts = cc.diff(&desired).unwrap();
+    crate::system::assert_keys_undoubled(&cc, &drifts);
     assert_eq!(drifts.len(), 1);
-    assert_eq!(drifts[0].key, "containerd.SystemdCgroup");
+    assert_eq!(drifts[0].key, "SystemdCgroup");
     assert_eq!(drifts[0].expected, "true");
     assert_eq!(drifts[0].actual, "false");
 }
@@ -1874,19 +1937,56 @@ fn certificate_diff_non_sequence_desired() {
 
 // --- CertificateConfigurator is_available ---
 
+// Asserted per target rather than against `cfg!(target_os = "linux")`: compared
+// to the same expression the implementation uses, the two move together and the
+// test passes on every host whatever the configurator claims.
 #[test]
+#[cfg(target_os = "linux")]
 fn certificate_is_available_on_linux() {
-    let cc = CertificateConfigurator;
-    assert_eq!(cc.is_available(), cfg!(target_os = "linux"));
+    assert!(CertificateConfigurator.is_available());
+}
+
+#[test]
+#[cfg(not(target_os = "linux"))]
+fn certificate_is_unavailable_off_linux() {
+    assert!(
+        !CertificateConfigurator.is_available(),
+        "the CA-trust layout this writes is Linux's"
+    );
 }
 
 // --- SeccompConfigurator is_available ---
 
+// Availability follows the kernel's own seccomp knob, not the OS: a Linux build
+// without CONFIG_SECCOMP has no such file and must report unavailable. The two
+// directions are asserted separately because comparing against the same
+// `exists()` call the implementation makes restates it and can never fail.
+// Both kernel states assert. An early `return` when the knob is absent leaves
+// a whole arm that passes without checking anything, and nothing distinguishes
+// that from the configurator having been broken.
 #[test]
-fn seccomp_is_available_depends_on_proc() {
-    let sc = SeccompConfigurator;
-    let expected = std::path::Path::new("/proc/sys/kernel/seccomp").exists();
-    assert_eq!(sc.is_available(), expected);
+#[cfg(target_os = "linux")]
+fn seccomp_availability_follows_the_kernels_own_knob() {
+    if std::path::Path::new("/proc/sys/kernel/seccomp").exists() {
+        assert!(
+            SeccompConfigurator.is_available(),
+            "a kernel exposing the seccomp knob can be configured"
+        );
+    } else {
+        assert!(
+            !SeccompConfigurator.is_available(),
+            "a Linux build without CONFIG_SECCOMP exposes no knob to write"
+        );
+    }
+}
+
+#[test]
+#[cfg(not(target_os = "linux"))]
+fn seccomp_is_unavailable_where_there_is_no_proc() {
+    assert!(
+        !SeccompConfigurator.is_available(),
+        "seccomp is a Linux kernel facility"
+    );
 }
 
 // --- find_toml_value dot-path with missing intermediate ---
@@ -2188,7 +2288,11 @@ fn seccomp_apply_writes_profiles() {
     );
 
     let desired = serde_yaml::Value::Mapping(m);
-    sc.apply(&desired, &printer).unwrap();
+    sc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 
     let written = fs::read_to_string(profiles_dir.join("test-audit.json")).unwrap();
     assert_eq!(written, r#"{"defaultAction":"SCMP_ACT_LOG"}"#);
@@ -2200,7 +2304,11 @@ fn seccomp_apply_no_profiles_key_is_noop() {
     let sc = SeccompConfigurator;
     let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
     // Should not error even with no profiles key
-    sc.apply(&desired, &printer).unwrap();
+    sc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -2258,7 +2366,11 @@ fn seccomp_apply_skips_missing_fields() {
     );
 
     let desired = serde_yaml::Value::Mapping(m);
-    sc.apply(&desired, &printer).unwrap();
+    sc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 
     // profiles_dir should be created but no profiles written (all incomplete)
     assert!(profiles_dir.exists());
@@ -2302,7 +2414,11 @@ fn seccomp_apply_path_traversal_skipped() {
     );
 
     let desired = serde_yaml::Value::Mapping(m);
-    sc.apply(&desired, &printer).unwrap();
+    sc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 
     // The traversal path file should NOT have been written
     let etc_passwd = dir.path().join("etc/passwd");
@@ -2358,7 +2474,11 @@ fn seccomp_apply_multiple_profiles() {
     );
 
     let desired = serde_yaml::Value::Mapping(m);
-    sc.apply(&desired, &printer).unwrap();
+    sc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 
     assert_eq!(
         fs::read_to_string(profiles_dir.join("audit.json")).unwrap(),
@@ -2386,7 +2506,11 @@ fn certificate_apply_creates_ca_cert_dir() {
     );
     // No certificates key — should only create the dir
     let desired = serde_yaml::Value::Mapping(m);
-    cc.apply(&desired, &printer).unwrap();
+    cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
     assert!(ca_dir.exists());
 }
 
@@ -2396,7 +2520,11 @@ fn certificate_apply_no_certificates_is_noop() {
     let cc = CertificateConfigurator;
     let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
     // Should not error with no caCertDir or certificates
-    cc.apply(&desired, &printer).unwrap();
+    cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -2447,7 +2575,11 @@ fn certificate_apply_sets_permissions_on_existing_files() {
     );
 
     let desired = serde_yaml::Value::Mapping(m);
-    cc.apply(&desired, &printer).unwrap();
+    cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 
     #[cfg(unix)]
     {
@@ -2491,7 +2623,11 @@ fn certificate_apply_warns_for_missing_files() {
 
     let desired = serde_yaml::Value::Mapping(m);
     // Should not error — just warns about missing files
-    cc.apply(&desired, &printer).unwrap();
+    cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -2518,7 +2654,11 @@ fn certificate_apply_skips_cert_without_name() {
     );
 
     let desired = serde_yaml::Value::Mapping(m);
-    cc.apply(&desired, &printer).unwrap();
+    cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -2562,7 +2702,11 @@ fn certificate_apply_correct_permissions_no_change() {
 
     let desired = serde_yaml::Value::Mapping(m);
     // Should not error and should detect permissions are already correct
-    cc.apply(&desired, &printer).unwrap();
+    cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .unwrap();
 
     #[cfg(unix)]
     {
@@ -2590,7 +2734,10 @@ fn seccomp_apply_uses_default_profiles_dir_when_unset() {
     // Empty profiles list - should still try to create dir but won't error
     // because we catch the permission error at fs::create_dir_all
     // Actually, let's verify this specific case doesn't panic
-    let result = sc.apply(&desired, &printer);
+    let result = sc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    );
     // On CI/test machines this may fail due to permissions, which is expected
     // The important thing is it doesn't panic
     let _ = result;
@@ -2609,7 +2756,7 @@ fn kernel_modules_apply_with_non_sequence_value_emits_no_output_and_does_not_cal
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     km.apply(
         &serde_yaml::Value::String("not-a-sequence".into()),
-        &printer,
+        &cfgd_core::providers::SystemContext::new(&printer),
     )
     .expect("non-sequence value is a no-op");
     let captured = buf.lock().unwrap().clone();
@@ -2629,8 +2776,11 @@ fn kernel_modules_apply_with_empty_sequence_emits_no_modprobe_line() {
     let km = KernelModuleConfigurator;
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    km.apply(&serde_yaml::Value::Sequence(Vec::new()), &printer)
-        .expect("empty sequence must Ok");
+    km.apply(
+        &serde_yaml::Value::Sequence(Vec::new()),
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("empty sequence must Ok");
     let captured = buf.lock().unwrap().clone();
     assert!(
         !captured.contains("modprobe"),
@@ -2650,7 +2800,7 @@ fn apparmor_apply_with_no_profiles_field_emits_no_output_and_loads_nothing() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     ac.apply(
         &serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
-        &printer,
+        &cfgd_core::providers::SystemContext::new(&printer),
     )
     .expect("missing profiles key is a no-op");
     let captured = buf.lock().unwrap().clone();
@@ -2682,8 +2832,11 @@ fn apparmor_apply_skips_profile_entries_with_path_traversal() {
         serde_yaml::Value::String("profiles".into()),
         serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
     );
-    ac.apply(&serde_yaml::Value::Mapping(desired), &printer)
-        .expect("traversal-skip path must Ok");
+    ac.apply(
+        &serde_yaml::Value::Mapping(desired),
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("traversal-skip path must Ok");
     let output = buf.lock().unwrap();
     assert!(
         output.contains("path traversal"),
@@ -2718,8 +2871,11 @@ fn apparmor_apply_skips_a_profile_path_that_names_no_file() {
         serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
     );
 
-    ac.apply(&serde_yaml::Value::Mapping(desired), &printer)
-        .expect("a skipped entry must not fail apply");
+    ac.apply(
+        &serde_yaml::Value::Mapping(desired),
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("a skipped entry must not fail apply");
 
     let output = buf.lock().unwrap();
     assert!(
@@ -2757,8 +2913,11 @@ fn seccomp_apply_skips_a_file_name_that_resolves_to_the_profiles_dir() {
         serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
     );
 
-    sc.apply(&serde_yaml::Value::Mapping(desired), &printer)
-        .expect("a skipped entry must not fail apply");
+    sc.apply(
+        &serde_yaml::Value::Mapping(desired),
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("a skipped entry must not fail apply");
 
     let output = buf.lock().unwrap();
     assert!(
@@ -2785,8 +2944,11 @@ fn containerd_apply_with_no_settings_field_is_a_noop() {
     let desired = serde_yaml::Value::Mapping(m);
     let cc = ContainerdConfigurator;
     let (printer, _buf) = cfgd_core::output::Printer::for_test();
-    cc.apply(&desired, &printer)
-        .expect("missing settings is no-op");
+    cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("missing settings is no-op");
     assert!(!config.exists());
 }
 
@@ -2806,15 +2968,31 @@ fn containerd_apply_with_empty_settings_is_a_noop() {
     let desired = serde_yaml::Value::Mapping(m);
     let cc = ContainerdConfigurator;
     let (printer, _buf) = cfgd_core::output::Printer::for_test();
-    cc.apply(&desired, &printer)
-        .expect("empty settings is no-op");
+    cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("empty settings is no-op");
     assert!(!config.exists());
 }
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn containerd_apply_writes_toml_then_returns_err_when_systemctl_fails() {
     // Drives lines 105-169: settings non-empty → merge into current →
     // serialize TOML → atomic_write → restart fails → rollback arm.
+    //
+    // The failing systemctl is a shim, not the host's. Reading the host's
+    // answer means that on a real k8s node this test runs
+    // `systemctl restart containerd` against a live runtime — and then goes
+    // red there because the restart SUCCEEDS.
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        cfgd_core::SYSTEMCTL_BIN_ENV,
+        1,
+        "",
+        "Failed to restart containerd.service: Unit not found.\n",
+    );
     let dir = tempdir().unwrap();
     let config = dir.path().join("nested/config.toml");
     let mut settings = serde_yaml::Mapping::new();
@@ -2839,7 +3017,11 @@ fn containerd_apply_writes_toml_then_returns_err_when_systemctl_fails() {
     // return Ok; on CI/dev boxes without containerd it returns Err. Either
     // way, the merge + serialize + atomic_write path on lines 105-152 must
     // have executed — verifiable via the config file contents on disk.
-    let _ = cc.apply(&desired, &printer);
+    cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect_err("a failing restart must surface as an error");
     assert!(
         config.exists(),
         "atomic_write must have run before restart fires"
@@ -2851,17 +3033,26 @@ fn containerd_apply_writes_toml_then_returns_err_when_systemctl_fails() {
     );
 }
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn containerd_apply_with_existing_config_triggers_rollback_attempt_after_systemctl_fails() {
     // Drives the backup-restore branch at containerd.rs:155-167. Pre-stages
     // a valid TOML config so capture_file_state returns Some(state); apply
-    // writes the merged config; restart fails on hosts without containerd;
-    // the rollback arm fires. Asserts the rollback warning is emitted and
-    // the final on-disk config contains the original bytes.
+    // writes the merged config; the shimmed restart fails; the rollback arm
+    // fires. Asserts the rollback warning is emitted and the final on-disk
+    // config contains the original bytes.
     //
-    // On hosts where containerd is actually running, restart_containerd may
-    // succeed and the rollback warning won't fire. Skip the assertion in
-    // that case — the goal is to pin the rollback arm where it's reachable.
+    // The shim is what makes the rollback arm reachable EVERYWHERE. Reading
+    // the host's own systemctl left the whole assertion behind an `if
+    // result.is_err()`, so on a node with containerd running it asserted
+    // nothing — after restarting the node's container runtime.
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        cfgd_core::SYSTEMCTL_BIN_ENV,
+        1,
+        "",
+        "Failed to restart containerd.service: Unit not found.\n",
+    );
     let dir = tempdir().unwrap();
     let config = dir.path().join("config.toml");
     let original = "[plugins.\"io.containerd.grpc.v1.cri\"]\nsandbox_image = \"old:1.0\"\n";
@@ -2885,25 +3076,22 @@ fn containerd_apply_with_existing_config_triggers_rollback_attempt_after_systemc
     let cc = ContainerdConfigurator;
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let result = cc.apply(&desired, &printer);
+    let result = cc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    );
 
     let captured = buf.lock().unwrap().clone();
-    if result.is_err() {
-        // Rollback path: warning must fire and original content must be back.
-        assert!(
-            captured.contains("restoring previous config"),
-            "rollback warning expected on restart-failed path: {captured}"
-        );
-        let after = std::fs::read_to_string(&config).unwrap();
-        assert!(
-            after.contains("old:1.0"),
-            "rollback must restore prior containerd config: {after}"
-        );
-    }
-    // If Ok: the host actually has containerd; nothing to assert about
-    // rollback (it didn't run). The merged-write was already asserted by
-    // the sibling `containerd_apply_writes_toml_then_returns_err_when_systemctl_fails`
-    // test, so this test contributes only when the rollback arm is taken.
+    result.expect_err("a failing restart must surface as an error");
+    assert!(
+        captured.contains("restoring previous config"),
+        "rollback warning expected on restart-failed path: {captured}"
+    );
+    let after = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        after.contains("old:1.0"),
+        "rollback must restore prior containerd config: {after}"
+    );
 }
 
 // --- KubeletConfigurator::apply paths ---
@@ -2926,8 +3114,11 @@ fn kubelet_apply_with_no_settings_field_is_a_noop() {
     let desired = serde_yaml::Value::Mapping(m);
     let kc = KubeletConfigurator;
     let (printer, _buf) = cfgd_core::output::Printer::for_test();
-    kc.apply(&desired, &printer)
-        .expect("missing settings must be Ok(no-op)");
+    kc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("missing settings must be Ok(no-op)");
     assert!(!config.exists(), "no-op must not create the config file");
 }
 
@@ -2948,23 +3139,35 @@ fn kubelet_apply_with_empty_settings_is_a_noop() {
     let desired = serde_yaml::Value::Mapping(m);
     let kc = KubeletConfigurator;
     let (printer, _buf) = cfgd_core::output::Printer::for_test();
-    kc.apply(&desired, &printer)
-        .expect("empty settings must be Ok(no-op)");
+    kc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("empty settings must be Ok(no-op)");
     assert!(
         !config.exists(),
         "empty-settings no-op must not write the config"
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn kubelet_apply_writes_config_then_returns_err_when_systemctl_fails() {
     // Settings present → apply writes the merged config via atomic_write,
-    // then shells out to `systemctl restart kubelet`. In CI/tests
-    // systemctl is either absent or the kubelet unit doesn't exist, so
-    // restart fails → apply returns Err. We assert:
+    // then shells out to `systemctl restart kubelet`. The restart is shimmed
+    // to fail, so the failure arm runs on every host — including a real k8s
+    // node, where "in CI/tests systemctl is either absent or the kubelet unit
+    // doesn't exist" is false and this test would otherwise restart the
+    // node's kubelet and then fail on the Ok it got back. We assert:
     //   (a) the merged config IS written to disk (atomic_write fired)
     //   (b) the returned Err carries a systemctl-related message
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        cfgd_core::SYSTEMCTL_BIN_ENV,
+        1,
+        "",
+        "Failed to restart kubelet.service: Unit kubelet.service not found.\n",
+    );
     let dir = tempdir().unwrap();
     let config = dir.path().join("nested/sub/config.yaml");
     let mut settings = serde_yaml::Mapping::new();
@@ -2985,8 +3188,11 @@ fn kubelet_apply_writes_config_then_returns_err_when_systemctl_fails() {
     let kc = KubeletConfigurator;
     let (printer, _buf) = cfgd_core::output::Printer::for_test();
     let err = kc
-        .apply(&desired, &printer)
-        .expect_err("systemctl restart should fail in CI/tests");
+        .apply(
+            &desired,
+            &cfgd_core::providers::SystemContext::new(&printer),
+        )
+        .expect_err("the shimmed systemctl restart fails, so apply must too");
     assert!(
         config.exists(),
         "atomic_write must have written the merged config before restart"
@@ -3003,18 +3209,28 @@ fn kubelet_apply_writes_config_then_returns_err_when_systemctl_fails() {
     );
 }
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn kubelet_apply_with_existing_config_triggers_rollback_attempt_after_systemctl_fails() {
     // Drives the backup-restore branch at kubelet.rs:166-180. Pre-stage a
     // valid kubelet config so `capture_file_state` returns Some(state) with
-    // !is_symlink && !oversized. apply writes the new merged config; restart
-    // fails (systemctl unavailable / no kubelet unit); the rollback arm fires,
+    // !is_symlink && !oversized. apply writes the new merged config; the
+    // shimmed restart fails — never the host's, which on a real node means
+    // restarting the kubelet out from under running workloads — the rollback
+    // arm fires,
     // attempts to atomic_write the original bytes back, then re-tries the
     // restart (which fails again). Asserts:
     //   - the printer warning "kubelet restart failed — restoring previous
     //     config" was emitted (proves the if-let-Some(backup) branch ran)
     //   - the final config on disk matches the prior contents (rollback's
     //     atomic_write succeeded)
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        cfgd_core::SYSTEMCTL_BIN_ENV,
+        1,
+        "",
+        "Failed to restart kubelet.service: Unit kubelet.service not found.\n",
+    );
     let dir = tempdir().unwrap();
     let config = dir.path().join("config.yaml");
     let original = "clusterDomain: cluster.local\nmaxPods: 50\n";
@@ -3038,7 +3254,11 @@ fn kubelet_apply_with_existing_config_triggers_rollback_attempt_after_systemctl_
     let kc = KubeletConfigurator;
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let _ = kc.apply(&desired, &printer);
+    kc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect_err("a failing restart must surface as an error");
 
     let captured = buf.lock().unwrap().clone();
     assert!(
@@ -3070,7 +3290,11 @@ fn kubelet_error_subject_handles_multiline_systemctl_output() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     // Must not panic on the debug-assert in `Renderer::write_line`.
-    super::kubelet::emit_warn_with_error(&printer, "rollback: kubelet restart also failed", &err);
+    super::kubelet::emit_warn_with_error(
+        &cfgd_core::providers::SystemContext::new(&printer),
+        "rollback: kubelet restart also failed",
+        &err,
+    );
 
     let captured = buf.lock().unwrap().clone();
     // First line embedded as the head of the subject.
@@ -3110,8 +3334,10 @@ fn containerd_rollback_subject_handles_multiline_systemctl_output() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    // Must not panic on the debug-assert in `Renderer::write_line`.
-    printer.status_simple(
+    // Must not panic on the debug-assert in `Renderer::write_line`. Reported
+    // through the same channel the arm uses, so a standalone context still
+    // settles the line the assertions below read.
+    cfgd_core::providers::SystemContext::new(&printer).report(
         cfgd_core::output::Role::Warn,
         format!(
             "rollback: containerd restart also failed: {}",
@@ -3146,8 +3372,11 @@ fn sysctl_apply_with_non_mapping_desired_is_a_noop() {
     let sc = SysctlConfigurator;
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    sc.apply(&serde_yaml::Value::String("not a mapping".into()), &printer)
-        .expect("non-mapping must be Ok no-op");
+    sc.apply(
+        &serde_yaml::Value::String("not a mapping".into()),
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("non-mapping must be Ok no-op");
     let captured = buf.lock().unwrap().clone();
     assert!(
         !captured.contains("sysctl"),
@@ -3170,7 +3399,10 @@ fn sysctl_apply_with_invalid_key_returns_validation_err() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let err = sc
-        .apply(&desired, &printer)
+        .apply(
+            &desired,
+            &cfgd_core::providers::SystemContext::new(&printer),
+        )
         .expect_err("invalid key must error before shellout");
     let msg = err.to_string();
     assert!(
@@ -3196,8 +3428,11 @@ fn sysctl_apply_skips_non_string_keys_without_panicking() {
     let sc = SysctlConfigurator;
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    sc.apply(&desired, &printer)
-        .expect("non-string keys must be skipped, not error");
+    sc.apply(
+        &desired,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    )
+    .expect("non-string keys must be skipped, not error");
     let captured = buf.lock().unwrap().clone();
     assert!(
         !captured.contains("sysctl -w"),
@@ -3215,8 +3450,11 @@ fn sysctl_apply_skips_non_string_keys_without_panicking() {
 //   - no unitFile → straight to enable; systemctl enable on phantom unit fails
 //     → "systemctl enable ... failed" warning (or Err if systemctl absent)
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn systemd_apply_unit_with_missing_unit_file_emits_read_failed_warning() {
+    let _shim = cfgd_core::test_helpers::ToolShim::install(cfgd_core::SYSTEMCTL_BIN_ENV, 0, "", "");
     let yaml: serde_yaml::Value = serde_yaml::from_str(
         r#"
 - name: cfgd-test-phantom-read.service
@@ -3228,10 +3466,8 @@ fn systemd_apply_unit_with_missing_unit_file_emits_read_failed_warning() {
     let su = crate::system::SystemdUnitConfigurator::default();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    // Apply may return Ok or Err depending on whether systemctl is present
-    // (the enable shellout uses `?`); both are acceptable — what we pin is
-    // that the "Failed to read unit file" warning is emitted.
-    let _ = su.apply(&yaml, &printer);
+    su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+        .expect("a shimmed systemctl succeeds, so only the unreadable source warns");
     let captured = buf.lock().unwrap().clone();
     assert!(
         captured.contains("Failed to read unit file"),
@@ -3239,11 +3475,14 @@ fn systemd_apply_unit_with_missing_unit_file_emits_read_failed_warning() {
     );
 }
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn systemd_apply_unit_with_readable_source_emits_install_or_enable_line() {
     // Source unit file exists in tempdir; atomic_write to /etc/systemd/system
     // will fail for non-root → "Failed to install unit file" warning fires.
     // The "Installing unit file:" info line is emitted before the failure.
+    let _shim = cfgd_core::test_helpers::ToolShim::install(cfgd_core::SYSTEMCTL_BIN_ENV, 0, "", "");
     let dir = tempdir().unwrap();
     let source = dir.path().join("cfgd-source.service");
     fs::write(&source, "[Unit]\nDescription=Test\n").unwrap();
@@ -3255,7 +3494,7 @@ fn systemd_apply_unit_with_readable_source_emits_install_or_enable_line() {
     let su = crate::system::SystemdUnitConfigurator::default();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let _ = su.apply(&yaml, &printer);
+    let _ = su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
     let captured = buf.lock().unwrap().clone();
     assert!(
         captured.contains("Installing unit file:"),
@@ -3263,11 +3502,13 @@ fn systemd_apply_unit_with_readable_source_emits_install_or_enable_line() {
     );
 }
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn systemd_apply_unit_without_unit_file_proceeds_to_enable() {
     // No unitFile → skips the install block entirely and goes straight to
-    // the enable shellout. systemctl enable on a phantom unit either fails
-    // with a warning, or apply returns Err if systemctl itself is missing.
+    // the enable shellout, which is what the argv log has to show.
+    let shim = cfgd_core::test_helpers::ToolShim::install(cfgd_core::SYSTEMCTL_BIN_ENV, 0, "", "");
     let yaml: serde_yaml::Value = serde_yaml::from_str(
         r#"
 - name: cfgd-test-phantom-enable.service
@@ -3278,17 +3519,26 @@ fn systemd_apply_unit_without_unit_file_proceeds_to_enable() {
     let su = crate::system::SystemdUnitConfigurator::default();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let _ = su.apply(&yaml, &printer);
+    su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+        .expect("Ok");
     let captured = buf.lock().unwrap().clone();
     assert!(
         captured.contains("systemctl enable cfgd-test-phantom-enable.service"),
         "info line for enable shellout should fire: {captured}"
     );
+    assert_eq!(
+        shim.argv_log().trim(),
+        "enable cfgd-test-phantom-enable.service",
+        "no unitFile means no daemon-reload — only the enable call is made"
+    );
 }
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn systemd_apply_unit_with_disabled_field_emits_disable_line() {
     // `enabled: false` → action is "disable" instead of "enable".
+    let shim = cfgd_core::test_helpers::ToolShim::install(cfgd_core::SYSTEMCTL_BIN_ENV, 0, "", "");
     let yaml: serde_yaml::Value = serde_yaml::from_str(
         r#"
 - name: cfgd-test-phantom-disable.service
@@ -3299,19 +3549,61 @@ fn systemd_apply_unit_with_disabled_field_emits_disable_line() {
     let su = crate::system::SystemdUnitConfigurator::default();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let _ = su.apply(&yaml, &printer);
+    su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+        .expect("Ok");
     let captured = buf.lock().unwrap().clone();
     assert!(
         captured.contains("systemctl disable cfgd-test-phantom-disable.service"),
         "disable info line should fire when enabled=false: {captured}"
+    );
+    assert_eq!(
+        shim.argv_log().trim(),
+        "disable cfgd-test-phantom-disable.service",
+        "`enabled: false` must reach systemctl as `disable`, not `enable`"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn systemd_apply_unit_reloads_the_manager_before_enabling_an_installed_unit() {
+    // A unit file that lands changes what systemd knows, so the reload has to
+    // precede the enable — enabling first resolves against the stale view.
+    let shim = cfgd_core::test_helpers::ToolShim::install(cfgd_core::SYSTEMCTL_BIN_ENV, 0, "", "");
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("cfgd-order.service");
+    fs::write(&source, "[Unit]\nDescription=Test\n").unwrap();
+    let yaml_str = format!(
+        "- name: cfgd-test-phantom-order.service\n  enabled: true\n  unitFile: {}\n",
+        source.display()
+    );
+    let yaml: serde_yaml::Value = serde_yaml::from_str(&yaml_str).unwrap();
+    let su = crate::system::SystemdUnitConfigurator::default();
+    let printer = test_printer();
+    let _ = su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
+    let argv: Vec<String> = shim
+        .argv_log()
+        .lines()
+        .map(|l| l.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        argv,
+        vec![
+            "daemon-reload".to_string(),
+            "enable cfgd-test-phantom-order.service".to_string(),
+        ],
+        "reload must run before enable"
     );
 }
 
 #[cfg(target_os = "linux")]
 mod bridge {
     use super::*;
-    use cfgd_core::output::test_capture::{assert_snapshot_at, strip_ansi};
-    use cfgd_core::output::{Doc, Printer, Role};
+    use crate::system::tests_snapshot_bridge::{
+        BridgeApply, assert_single_seam, capture_attached_apply,
+    };
+    use cfgd_core::output::Role;
+    use cfgd_core::output::test_capture::assert_snapshot_at;
 
     fn snapshot_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system/node/snapshots")
@@ -3355,32 +3647,26 @@ profiles:
         ))
         .unwrap();
 
-        let (printer, cap) = Printer::for_test_doc();
         let sc = SeccompConfigurator;
-        sc.apply(&desired, &printer).unwrap();
-
         let summary = NodeApplySummary {
             configurator: "seccomp".to_string(),
             applied: true,
         };
-        let doc = Doc::new()
-            .status(Role::Ok, "seccomp profiles applied")
-            .with_data(&summary);
-        printer.emit(doc);
-        drop(printer);
-
-        let raw = strip_ansi(&cap.human());
+        let raw = capture_attached_apply(
+            &BridgeApply {
+                configurator: &sc,
+                desired: &desired,
+                key: "default-audit",
+                current: "missing",
+                target: "present",
+                summary_role: Role::Ok,
+                summary: "seccomp profiles applied",
+            },
+            &summary,
+        );
         let captured = normalize_paths(&raw, tmp.path());
 
-        assert!(
-            captured.contains("\n\n"),
-            "seccomp_clean missing blank line at seam:\n{captured}"
-        );
-        assert!(
-            !captured.contains("\n\n\n"),
-            "seccomp_clean has duplicate blank line:\n{captured}"
-        );
-
+        assert_single_seam("seccomp_clean", &captured);
         assert_snapshot("seccomp_clean.txt", &captured);
     }
 
@@ -3410,32 +3696,26 @@ profiles:
         ))
         .unwrap();
 
-        let (printer, cap) = Printer::for_test_doc();
         let sc = SeccompConfigurator;
-        sc.apply(&desired, &printer).unwrap();
-
         let summary = NodeApplySummary {
             configurator: "seccomp".to_string(),
             applied: true,
         };
-        let doc = Doc::new()
-            .status(Role::Warn, "seccomp apply completed with warnings")
-            .with_data(&summary);
-        printer.emit(doc);
-        drop(printer);
-
-        let raw = strip_ansi(&cap.human());
+        let raw = capture_attached_apply(
+            &BridgeApply {
+                configurator: &sc,
+                desired: &desired,
+                key: "allow-audit",
+                current: "missing",
+                target: "present",
+                summary_role: Role::Warn,
+                summary: "seccomp apply completed with warnings",
+            },
+            &summary,
+        );
         let captured = normalize_paths(&raw, tmp.path());
 
-        assert!(
-            captured.contains("\n\n"),
-            "seccomp_with_warnings missing blank line at seam:\n{captured}"
-        );
-        assert!(
-            !captured.contains("\n\n\n"),
-            "seccomp_with_warnings has duplicate blank line:\n{captured}"
-        );
-
+        assert_single_seam("seccomp_with_warnings", &captured);
         assert_snapshot("seccomp_with_warnings.txt", &captured);
     }
 
@@ -3474,32 +3754,26 @@ certificates:
         ))
         .unwrap();
 
-        let (printer, cap) = Printer::for_test_doc();
         let cc = CertificateConfigurator;
-        cc.apply(&desired, &printer).unwrap();
-
         let summary = NodeApplySummary {
             configurator: "certificates".to_string(),
             applied: true,
         };
-        let doc = Doc::new()
-            .status(Role::Ok, "certificates applied")
-            .with_data(&summary);
-        printer.emit(doc);
-        drop(printer);
-
-        let raw = strip_ansi(&cap.human());
+        let raw = capture_attached_apply(
+            &BridgeApply {
+                configurator: &cc,
+                desired: &desired,
+                key: "cert.kubelet-client.cert.mode",
+                current: "0644",
+                target: "0600",
+                summary_role: Role::Ok,
+                summary: "certificates applied",
+            },
+            &summary,
+        );
         let captured = normalize_paths(&raw, tmp.path());
 
-        assert!(
-            captured.contains("\n\n"),
-            "certificates_clean missing blank line at seam:\n{captured}"
-        );
-        assert!(
-            !captured.contains("\n\n\n"),
-            "certificates_clean has duplicate blank line:\n{captured}"
-        );
-
+        assert_single_seam("certificates_clean", &captured);
         assert_snapshot("certificates_clean.txt", &captured);
     }
 
@@ -3534,32 +3808,26 @@ certificates:
         ))
         .unwrap();
 
-        let (printer, cap) = Printer::for_test_doc();
         let cc = CertificateConfigurator;
-        cc.apply(&desired, &printer).unwrap();
-
         let summary = NodeApplySummary {
             configurator: "certificates".to_string(),
             applied: true,
         };
-        let doc = Doc::new()
-            .status(Role::Warn, "certificates apply completed with warnings")
-            .with_data(&summary);
-        printer.emit(doc);
-        drop(printer);
-
-        let raw = strip_ansi(&cap.human());
+        let raw = capture_attached_apply(
+            &BridgeApply {
+                configurator: &cc,
+                desired: &desired,
+                key: "cert.kubelet-client.key",
+                current: "missing",
+                target: "present",
+                summary_role: Role::Warn,
+                summary: "certificates apply completed with warnings",
+            },
+            &summary,
+        );
         let captured = normalize_paths(&raw, tmp.path());
 
-        assert!(
-            captured.contains("\n\n"),
-            "certificates_with_warnings missing blank line at seam:\n{captured}"
-        );
-        assert!(
-            !captured.contains("\n\n\n"),
-            "certificates_with_warnings has duplicate blank line:\n{captured}"
-        );
-
+        assert_single_seam("certificates_with_warnings", &captured);
         assert_snapshot("certificates_with_warnings.txt", &captured);
     }
 }

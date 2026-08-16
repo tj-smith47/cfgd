@@ -244,7 +244,7 @@ A package declared in more than one scope — the profile and a module, or two m
 
 - **Same manager + same name across scopes** → installed once; the duplicates are dropped.
 - **Different managers** → both install. `ripgrep` via `brew` in the profile and via `cargo` in a module are two distinct installs.
-- **Module installs win** over profile duplicates, and an **earlier module wins** over a later one. The Modules phase runs before the Packages phase, so a module's own `postApply` script can rely on the package already being present.
+- **Module installs win** over profile duplicates, and an **earlier module wins** over a later one. Module-owned package work is dispatched ahead of profile-owned work inside the Packages phase, so a module's own `postApply` script can rely on the package already being present.
 - **`prefer: [script]` entries are never deduped.** A custom install script is not package-manager-idempotent — two same-named scripts may differ, so both always run (subject to each entry's own `creates`/`onlyIf`/`unless` guards).
 - Dedup is **silent**: no warning is emitted for a dropped duplicate.
 
@@ -446,6 +446,28 @@ cfgd module registry list
 cfgd module registry remove community
 ```
 
+A registry URL may be any git URL, or the GitHub shorthand `owner/repo`. Both are
+equally supported — the shorthand is a convenience for GitHub, never a requirement:
+
+```sh
+# GitHub shorthand — expands to https://github.com/cfgd-community/modules.git,
+# and the registry name defaults to the org (`cfgd-community`)
+cfgd module registry add cfgd-community/modules
+
+# Any git URL, on any host. Only GitHub URLs can supply a default name, so
+# name a registry on another host with --name
+cfgd module registry add https://gitlab.example.com/myorg/modules.git --name myorg
+cfgd module registry add git@git.example.com:myorg/modules.git --name myorg
+```
+
+A value whose first segment carries a dot (`gitlab.example.com/myorg/modules`) is a URL
+for that host, not a GitHub owner, so it is passed through untouched; a dotless host
+(`gitserver/modules`) cannot be told from an owner by the value alone, so name it with a
+scheme (`http://gitserver/modules --name myorg`). An existing local path also wins over
+the shorthand: run inside a directory holding `myorg/modules` and `cfgd module registry
+add myorg/modules --name myorg` registers that local repository rather than a same-named
+GitHub one (only a GitHub URL can supply a default name, so `--name` is required).
+
 ### Registry Tag Convention
 
 Registries use per-module git tags in the format `<module>/<version>` — for example, `tmux/v1.0.0`, `nvim/v2.3.1`. This allows a single git repo to host multiple modules with independent version histories. When you install a module at a specific version, cfgd checks out the tag matching that module name.
@@ -484,11 +506,14 @@ spec:
 `cfgd status` includes a per-module health section:
 
 ```
-Modules:
-  ✓ nvim       3 packages, 12 files, healthy
-  ✓ tmux       1 package, 1 file, healthy
-  ⚠ git        1 package, outdated (git source has new commits)
+Modules
+  ✓ module:nvim — 3 pkgs, 12 files, installed
+  ✓ module:tmux — 1 pkg, 1 file, installed
+  ⚠ module:git  — 1 pkg, 0 files, outdated
 ```
+
+Each line is headed by the module's owner token — the same `module:<name>` the
+plan and apply trees head that module's group with.
 
 Each module is tracked independently. cfgd stores a hash of the resolved package list and deployed file tree. When the daemon runs its reconciliation loop, it checks:
 
@@ -502,31 +527,61 @@ Module resources are first-class in compliance reporting, not profile-only. A mo
 
 ## Plan Output Format
 
-`cfgd plan` shows module actions grouped by module, with dependencies, resolved managers, and file deployments:
+`cfgd plan` shows module actions in the phase whose kind they are, with resolved managers and file deployments:
 
 ```
-Modules:
-  nvim (depends: node, python)
-    ✓ node — resolved: apt install nodejs (18.19.0)
-    ✓ python — resolved: apt install python3 (3.10.12), pipx install pynvim
-    + neovim — snap install nvim (0.10.2, prefer: [brew, snap, apt], minVersion: 0.9)
-    + ripgrep — apt install ripgrep (14.1.0)
-    + fd — apt install fd-find (8.7.0, alias: fd→fd-find)
-    + neovim — npm install -g neovim (companion)
-    + pynvim — pipx install pynvim (companion)
-    → deploy: ~/.config/nvim/ (from module files, 12 files)
-    → postApply: nvim --headless "+Lazy! sync" +qa
-    → postApply: nvim --headless -c "MasonInstallAll" -c "qa"
+Plan
+  Config   /home/you/.config/cfgd/cfgd.yaml
+  Profile  work
+  Modules  nvim
+  Phases   Prerequisites, Packages, Files, Post-Scripts
 
-Packages: (profile-level)
-  = apt: 3 packages up to date
-  + brew install extra-tool
+Phase: Prerequisites
+  cfgd:managers
+    - refresh apt index
+    - refresh brew index
 
-Files: (profile-level)
-  = 5 files up to date
+Phase: Packages
+  profile:work
+    - brew install extra-tool
+    - apt install sl, cowsay
+  module:nvim
+    - brew install neovim (0.12.4)
+    - npm install neovim (5.4.0, alias: neovim-npm)
+    - pipx install pynvim (0.6.0)
+
+Phase: Files
+  profile:work
+    - create /home/you/.gitconfig
+  module:nvim
+    - deploy /home/you/.config/nvim/init.lua, /home/you/.config/nvim/lua/opts.lua
+
+Phase: Post-Scripts
+  module:nvim
+    - postApply: nvim --headless "+Lazy! sync" +qa
+    - postApply: nvim --headless -c "MasonInstallAll" -c "qa"
+
+⊙ 13 actions planned
 ```
 
-Module actions appear before profile-level packages and files. Dependencies are shown with `✓` (already satisfied) or `+` (will be installed). The `→` prefix marks file deployments and postApply scripts.
+A module's package line names the manager that won resolution, the manager-specific package
+name being installed, and the version that manager reports. When the module entry's own
+name differs from the manager-specific one, it follows after `alias:` —
+`npm install neovim (5.4.0, alias: neovim-npm)` installs npm's `neovim` for a module entry
+named `neovim-npm`. A profile's own package lines carry
+neither: a profile names a manager and a package directly, so there is nothing resolved to
+report. A deploy naming more than three targets lists the first two and a count
+(`deploy a, b (12 files)`).
+
+Each phase groups its actions by the owner that declared them — `profile:<name>`
+for the profile's own work, `module:<name>` for a module's — so a bullet's owner
+is visible without reading the action text.
+
+A module's work sits in the phase whose kind it is, beside the profile's, and
+each bullet reads the same whether the profile or a module planned it — a
+manager/package or file-target name, not a `[<module>]` tag. Module-owned
+package work is dispatched before profile-owned work in the Packages phase,
+whatever order the two read in.
 
 ## Lockfile
 
@@ -555,11 +610,26 @@ Resolution order when a profile references a module by name:
 1. **Local modules** (`<config-dir>/modules/`) always win over source-delivered modules.
 2. **Source priority** — when the module exists in multiple subscribed sources, the higher-priority source wins. Equal priority is tie-broken alphabetically by source name.
 
-Referencing a module that is neither local nor offered by any subscribed source is a **fatal error**. `cfgd plan` and `cfgd source show` display the originating source:
+Referencing a module that is neither local nor offered by any subscribed source is a **fatal error**. A source-delivered module's plan lines end with the delivering source, so its provenance is visible where its work is:
 
 ```
-nvim        unchanged   <- acme-corp
-corp-vpn    install     <- acme-corp
+Phase: Packages
+  module:dev-tools
+    - brew install ripgrep (15.2.0) <- team
+  module:localmod
+    - brew install jq (1.8.2)
+```
+
+`cfgd source show <name>` lists the modules a source offers, under the source's own owner token:
+
+```
+source:team-config
+  URL                 https://github.com/team/config
+  ...
+
+Modules
+  ⊙ dev-tools
+  ⊙ shell
 ```
 
 A source that delivers only modules (no profiles) is valid — see [Source-Delivered Module Bodies](sources.md#source-delivered-module-bodies) for the full contract.
@@ -654,7 +724,9 @@ cfgd apply --dry-run --module nvim  # preview module changes
 ### Bootstrap a Single Module
 
 ```sh
+cfgd init --from jane/dotfiles --module nvim                       # GitHub shorthand
 cfgd init --from git@github.com:jane/dotfiles.git --module nvim
+cfgd init --from https://gitlab.example.com/jane/dotfiles.git --module nvim
 ```
 
 Clones the repo, finds the module, resolves deps, detects platform, and applies just that module.

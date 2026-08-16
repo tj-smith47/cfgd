@@ -111,7 +111,7 @@ pub fn collect_snapshot(
         arch: platform.arch.as_str().to_owned(),
     };
 
-    let cx = PackageContext { printer, state };
+    let cx = PackageContext::new(printer, state);
 
     let mut checks = Vec::new();
 
@@ -180,6 +180,59 @@ pub fn compute_summary(checks: &[ComplianceCheck]) -> ComplianceSummary {
 // ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
+
+/// Snapshot members that describe the observation rather than the machine, and
+/// so are excluded from [`snapshot_content_hash`].
+///
+/// `timestamp` is stamped fresh by [`collect_snapshot`] on every collection, so
+/// a digest covering it changes on every tick no matter what the machine looks
+/// like — which is the one thing the digest's only consumer must be able to
+/// tell apart. It is not lost by being excluded: `compliance_snapshots` stores
+/// it in its own column and the snapshot keeps it verbatim in `snapshot_json`.
+const VOLATILE_SNAPSHOT_FIELDS: &[&str] = &["timestamp"];
+
+/// Digest an already-serialized snapshot's CONTENT, ignoring
+/// [`VOLATILE_SNAPSHOT_FIELDS`].
+///
+/// Takes the serialized form rather than the struct so the state migration that
+/// re-derives `content_hash` from a stored `snapshot_json` reaches the same
+/// normalization as the write path instead of restating it in SQL. Normalizing
+/// through `serde_json::Value` also fixes a canonical member order, so the
+/// digest cannot move if the struct's field order ever does.
+pub fn snapshot_json_content_hash(json: &str) -> Result<String> {
+    let mut value: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| std::io::Error::other(format!("JSON deserialization failed: {}", e)))?;
+    if let Some(map) = value.as_object_mut() {
+        for field in VOLATILE_SNAPSHOT_FIELDS {
+            map.remove(*field);
+        }
+    }
+    let canonical = serde_json::to_string(&value)
+        .map_err(|e| std::io::Error::other(format!("JSON serialization failed: {}", e)))?;
+    Ok(crate::sha256_hex(canonical.as_bytes()))
+}
+
+/// Serialize a snapshot for storage and digest the content of what is stored.
+///
+/// The ONE derivation behind `compliance_snapshots`: the returned JSON is what
+/// `StateStore::store_compliance_snapshot` writes to `snapshot_json`, and the
+/// returned digest is what it writes to `content_hash`. Both writers of a
+/// snapshot — the daemon's reconcile tick and `cfgd compliance` — take the hash
+/// from here for their change-detection compare, so a snapshot cannot hash
+/// differently depending on which of them observed it. They previously did: one
+/// hashed `to_string_pretty` while the other hashed the compact form the store
+/// persists, so a tick following a CLI run always read "changed".
+///
+/// The digest covers the machine's state, not the observation of it, so two
+/// collections of an unchanged machine hash equal and the daemon's skip branch
+/// can fire. A digest of the stored bytes verbatim never could: the bytes carry
+/// the collection timestamp.
+pub fn snapshot_content_hash(snapshot: &ComplianceSnapshot) -> Result<(String, String)> {
+    let json = serde_json::to_string(snapshot)
+        .map_err(|e| std::io::Error::other(format!("JSON serialization failed: {}", e)))?;
+    let hash = snapshot_json_content_hash(&json)?;
+    Ok((json, hash))
+}
 
 /// Export a compliance snapshot to a file based on the export configuration.
 ///
@@ -560,7 +613,7 @@ pub fn collect_system_checks(
                     for drift in &drifts {
                         checks.push(ComplianceCheck {
                             category: "system".into(),
-                            key: Some(format!("{}.{}", key, drift.key)),
+                            key: Some(crate::reconciler::system_resource_key(key, &drift.key)),
                             status: ComplianceStatus::Violation,
                             detail: Some(format!(
                                 "expected {}, actual {}",

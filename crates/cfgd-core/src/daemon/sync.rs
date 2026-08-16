@@ -328,6 +328,18 @@ async fn apply_daemon_update(
 
 // --- Compliance Snapshot Handler ---
 
+/// Whether a freshly collected snapshot repeats the stored one, and so must not
+/// be appended.
+///
+/// The whole reason `compliance history` is a record of changes rather than of
+/// ticks. It holds only because the digest on both sides excludes the
+/// collection timestamp (see `compliance::snapshot_content_hash`) — while it
+/// covered the stored bytes verbatim this was never true, and the daemon
+/// appended a row every tick.
+pub(super) fn compliance_snapshot_unchanged(latest_hash: Option<&str>, fresh_hash: &str) -> bool {
+    latest_hash == Some(fresh_hash)
+}
+
 pub(crate) fn handle_compliance_snapshot(
     config_path: &Path,
     profile_override: Option<&str>,
@@ -335,6 +347,7 @@ pub(crate) fn handle_compliance_snapshot(
     compliance_cfg: &config::ComplianceConfig,
     state_dir_override: Option<&Path>,
     scope: crate::Scope,
+    printer: &crate::output::Printer,
 ) {
     tracing::info!("running compliance snapshot");
 
@@ -377,7 +390,7 @@ pub(crate) fn handle_compliance_snapshot(
     // source-delivered resources as missing. Mirrors the resolve_profile arm
     // above (error + return). A benign never-synced cache-miss is warn+skip inside
     // the resolver, not an Err, so it still snapshots local-only.
-    let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+    let printer = printer.at_verbosity(crate::output::Verbosity::Quiet);
     let (resolved, source_module_roots) = match super::compose_daemon_desired_state(
         &cfg,
         &local_resolved,
@@ -420,7 +433,7 @@ pub(crate) fn handle_compliance_snapshot(
         }
     }
 
-    let source_names: Vec<String> = std::iter::once("local".to_string())
+    let source_names: Vec<String> = std::iter::once(LOCAL_LAYER.to_string())
         .chain(cfg.spec.sources.iter().map(|s| s.name.clone()))
         .collect();
 
@@ -435,7 +448,11 @@ pub(crate) fn handle_compliance_snapshot(
                 return;
             }
         },
-        None => match StateStore::open_default() {
+        // Startup materializes the scope default, so `None` means that
+        // resolution failed; re-derive for the SAME scope rather than the
+        // user default, or a system-scope daemon's compliance snapshot would
+        // read (and write) the per-user store.
+        None => match StateStore::open_default_for(scope) {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!(error = %e, "compliance: state store error");
@@ -462,16 +479,15 @@ pub(crate) fn handle_compliance_snapshot(
         }
     };
 
-    // Serialize for hashing and storage
-    let json = match serde_json::to_string_pretty(&snapshot) {
-        Ok(j) => j,
+    // Hash through the store's own derivation, so this comparison is against
+    // the value a CLI-written row holds.
+    let hash = match crate::compliance::snapshot_content_hash(&snapshot) {
+        Ok((_, h)) => h,
         Err(e) => {
             tracing::error!(error = %e, "compliance: snapshot serialization failed");
             return;
         }
     };
-
-    let hash = crate::sha256_hex(json.as_bytes());
 
     // Only store if state actually changed
     let latest_hash = match store.latest_compliance_hash() {
@@ -482,13 +498,13 @@ pub(crate) fn handle_compliance_snapshot(
         }
     };
 
-    if latest_hash.as_deref() == Some(&hash) {
+    if compliance_snapshot_unchanged(latest_hash.as_deref(), &hash) {
         tracing::debug!("compliance: no state change, skipping snapshot");
         return;
     }
 
     // Store the new snapshot
-    if let Err(e) = store.store_compliance_snapshot(&snapshot, &hash) {
+    if let Err(e) = store.store_compliance_snapshot(&snapshot) {
         tracing::error!(error = %e, "compliance: failed to store snapshot");
         return;
     }

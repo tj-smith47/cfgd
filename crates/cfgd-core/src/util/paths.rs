@@ -777,6 +777,38 @@ pub(crate) fn home_dir_var() -> Option<String> {
     }
 }
 
+/// Resolve `path` to an absolute path without requiring it to exist and
+/// without resolving symlinks.
+///
+/// A CLI entry point (`--config`) is legitimately relative *and*
+/// not-yet-created — a fresh machine before `cfgd init`, or a `--config-dir`
+/// naming a directory with no file inside it yet — so this must not require
+/// the path to exist. `Path::canonicalize` (`realpath(3)`) was tried here
+/// first, but it also resolves symlinks: a symlinked `~/.config/cfgd/cfgd.yaml`
+/// pointing into a dotfiles repo — the pattern `atomic_write_resolved` exists
+/// to support — would relocate `config_dir` to the dotfiles directory, and
+/// every derivation from it (`profiles_dir`, a script hook's `script_dir`)
+/// would relocate with it, breaking a setup that worked before the path was
+/// absolutized. `std::path::absolute` is purely lexical — CWD-join plus `.`
+/// component removal, no filesystem access. `..` is left as a literal
+/// component on non-Windows (collapsing it lexically would silently disagree
+/// with a real symlink earlier in the path — the exact ambiguity this
+/// function exists to avoid); Windows's `GetFullPathNameW` does normalize it.
+/// Either way this satisfies "absolute regardless of invocation form"
+/// without the relocation risk of following a real symlink.
+///
+/// On Windows this may still carry the `\\?\` verbatim marker; stripped here
+/// so the returned value matches the plain form every other absolute path in
+/// cfgd uses.
+pub fn absolutize_path(path: &std::path::Path) -> std::path::PathBuf {
+    match std::path::absolute(path) {
+        Ok(absolute) => {
+            std::path::PathBuf::from(strip_windows_verbatim(&absolute.to_string_lossy()))
+        }
+        Err(_) => path.to_path_buf(),
+    }
+}
+
 /// Resolve a relative path against a base directory with traversal validation.
 /// Absolute paths are returned as-is. Relative paths are validated with
 /// `validate_no_traversal` and then joined to `base`.
@@ -1128,6 +1160,52 @@ pub fn normalize_cfgd_version<'a>(s: &'a str, cfgd_version: &str) -> std::borrow
     } else {
         std::borrow::Cow::Borrowed(s)
     }
+}
+
+/// Replace every ` (N.Ns)` duration suffix with a stable ` (XXs)` placeholder,
+/// so a golden that captures a run's elapsed time is host-stable.
+///
+/// The renderer formats durations as `{:.1}s`, so the span is always digits,
+/// one dot, exactly one digit, `s`, `)`. Anything else in parentheses — a
+/// package version, an exit code, a byte size — is left alone.
+pub fn normalize_snapshot_durations(raw: &str) -> String {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0;
+    while i < chars.len() {
+        match duration_span(&chars[i..]) {
+            Some(len) => {
+                out.push_str(" (XXs)");
+                i += len;
+            }
+            None => {
+                out.push(chars[i]);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Length in chars of a ` (N.Ns)` suffix opening at `window`, if there is one.
+fn duration_span(window: &[char]) -> Option<usize> {
+    if window.len() < 7 || window[0] != ' ' || window[1] != '(' {
+        return None;
+    }
+    let mut i = 2;
+    while window.get(i).is_some_and(char::is_ascii_digit) {
+        i += 1;
+    }
+    if i == 2 {
+        return None;
+    }
+    if window.get(i) != Some(&'.') || !window.get(i + 1).is_some_and(char::is_ascii_digit) {
+        return None;
+    }
+    if window.get(i + 2) != Some(&'s') || window.get(i + 3) != Some(&')') {
+        return None;
+    }
+    Some(i + 4)
 }
 
 /// Composite normalizer for snapshot tests: CRLF→LF, fold `\`→`/`, then

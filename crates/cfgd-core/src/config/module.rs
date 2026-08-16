@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::parse::check_yaml_anchor_limit;
 use super::profile_spec::{
-    EncryptionSpec, FileStrategy, PatchSpec, ScriptSpec, validate_file_patch_shape,
+    EncryptionSpec, FileStrategy, PatchSpec, ScriptSpec, SystemSettings, validate_file_patch_shape,
 };
 use super::source::{EnvVar, ShellAlias};
 use crate::errors::{ConfigError, Result};
@@ -115,9 +115,9 @@ pub struct ModuleSpec {
 
     /// System configurator settings contributed by this module.
     /// Deep-merged into the profile system map; module values override profile values at leaf level.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    #[schemars(with = "std::collections::HashMap<String, serde_json::Value>")]
-    pub system: HashMap<String, serde_yaml::Value>,
+    #[serde(default, skip_serializing_if = "SystemSettings::is_empty")]
+    #[schemars(with = "std::collections::BTreeMap<String, serde_json::Value>")]
+    pub system: SystemSettings,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]

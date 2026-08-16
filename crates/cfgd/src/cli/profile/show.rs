@@ -39,8 +39,7 @@ pub fn build_profile_show_doc(resolved: &ResolvedProfile, name: &str, config_pat
         })
     });
 
-    let mut system_keys: Vec<&String> = resolved.merged.system.keys().collect();
-    system_keys.sort();
+    let system_keys: Vec<&String> = resolved.merged.system.keys().collect();
     doc = doc.section_if_nonempty("System", &system_keys, |s, keys| {
         keys.iter().fold(s, |s, k| s.kv(k.as_str(), "(configured)"))
     });
@@ -113,7 +112,8 @@ fn package_display_rows(pkgs: &PackagesSpec) -> Vec<(String, String)> {
 pub fn cmd_profile_show(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
     let (profile_name, resolved) = match name {
         Some(n) => {
-            config::load_config(&cli.config)?;
+            let mut cfg = config::load_config(&cli.config)?;
+            drain_config_deprecations(printer, &mut cfg);
             let dir = profiles_dir(cli);
             // resolve_profile already returns a typed ProfileNotFound (→ exit 6);
             // wrap the missing case with a `not_found` CliErrorMeta so structured
@@ -147,7 +147,7 @@ pub fn cmd_profile_show(cli: &Cli, printer: &Printer, name: Option<&str>) -> any
             (n.to_string(), resolved)
         }
         None => {
-            let (_cfg, active, resolved) = helpers::load_config_and_profile(cli)?;
+            let (_cfg, active, resolved) = helpers::load_config_and_profile(cli, printer)?;
             (active, resolved)
         }
     };

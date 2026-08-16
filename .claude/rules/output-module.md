@@ -1,5 +1,5 @@
 ---
-paths: ["**/*.rs"]
+paths: ["crates/**/*.rs"]
 ---
 # cfgd Output System — critical design constraint
 
@@ -12,10 +12,13 @@ The `output` module (`crates/cfgd-core/src/output/`) provides:
   - `printer.status_simple(role, subject)` — concise status line; `role: Role::{Ok, Info, Warn, Fail, Skipped, Pending, Running, Accent, Secondary}`. `Accent` = "attention without alarm" (orange-family); `Secondary` = "structural pivot / label / identifier" (pink/magenta-family). Both have no icon and are suppressed at `Verbosity::Quiet` like every non-`Fail` role.
   - `printer.status(role, subject)` — returns `StatusBuilder` for `.detail(...)`, `.duration(...)`, `.label(label_role, label_text)`, `.with_data(...)`. The `.label(...)` form appends a styled label at end-of-subject (enforced by API construction — see `compose_subject_with_label`).
   - `printer.hint(text)`, `printer.note(text)` — supplementary output
+  - `printer.deprecation(text)` — a notice that the SPELLING the user reached for is on the way out (a legacy flag or filter pattern). Always visible: it survives the structured-output auto-quiet, and writes to stderr only so the `-o` data channel stays pure
+  - `printer.alert(text)` — a persistent advisory about what THIS run will actually do, when acting on the output without it would mean acting on a wrong picture (a `--skip` that stranded package installs). Same always-visible stderr routing as `deprecation`; separate because a deprecation is about spelling and an alert is about effect. Not a substitute for `status_simple(Role::Warn, …)`, which is the ordinary warning and is correctly suppressed under `-o json`
   - `printer.table(table)` — tabular data
   - `printer.section(name)` — returns `SectionGuard` (drop ends the section)
   - `printer.spinner(label)` — returns `Spinner` with `.finish_ok(subject)` / `.finish_fail(subject).detail(e)`
   - `printer.progress_bar(...)` — returns `ProgressBar`
+  - `printer.live_row_at(depth)` / `printer.live_row_after(depth, &row)` / `printer.live_row_first(depth)` — return a `LiveRow`, ONE line of the live region the CALLER owns for its whole life and rewrites in place: `set_action_status(&RowStatus, column)` (a pending or settled tree line), `window(subject)` (running, with the child's output tailing below it), `set_owner_label(&label)` (a group heading), `set_note(text)` (a muted `… ` line about the region itself), and `retire()` to take the line down. `retire` ERASES the line — it does not commit it; the permanent line is written separately into a `SectionGuard` (`reconciler::apply::emit_action_line`) and the row is retired once it has been. The erase is the row's `Drop`, which `retire` is a named call to, so a row that ends any other way — an abandoned handle, an unwind — takes its line with it too. Its order is load-bearing: the bar is CLEARED while it is still in the `MultiProgress` and removed after, because removal hides the bar's draw target and a clear issued after it paints nothing, leaving the last live paint on the terminal for whatever writes next to land beneath. `live_row_after` inserts directly beneath an existing row, which is what keeps one group's rows contiguous while another group is still growing; `live_row_first` inserts at the top, the one slot an over-full region never truncates. `printer.live_row_budget()` reports how many ROWS the region can hold before the terminal's height truncates it from the FOOT — spend the budget on rows that have nothing left to say (pending work, and settled rows whose outcome is already held for commit); NEVER retire a running row's line, or the region hides exactly the work the reader is waiting on. It is a row count, not a count of the terminal lines indicatif ends up painting: a running row tails its child's output below itself, a subject may carry `\n` continuations, and either can soft-wrap. `LIVE_REGION_HEADROOM` is the slack that covers the difference, so a caller keeps its OWN rows inside the budget and does not claim the region can never overflow
   - `printer.run(cmd, fmt)` — buffered command execution with live output
   - `printer.data_line(text)` — raw structured-output line
   - `printer.emit(doc)` — `Doc` emit (for `-o json|yaml|jsonpath|template`)
@@ -42,13 +45,46 @@ Forbidden outside the `output/` module itself:
 
 See Hard Rule #1 in `hard-rules.md`.
 
+## Provider narration goes to the note sink, never to the printer
+
+A `PackageManager` or `SystemConfigurator` executes UNDER an action line the reconciler
+settles from the plan. A `status_simple` called from inside one of them therefore lands
+*above* the line describing the same work, outside the phase tree. Both traits carry a
+context whose `report` is the narration channel:
+
+```rust
+// PackageManager — the tag names the speaker, because the action line names the package
+cx.report(Role::Warn, self.name(), "brew: run `brew link --force`");
+
+// SystemConfigurator — no tag: the action line already reads system:<name>.<key>
+cx.report(Role::Info, format!("systemctl {action} {name}"));
+```
+
+```
+✓ set sysctl.net.ipv4.ip_forward: 0 → 1     ← the reconciler's line, from the plan
+  ⊙ sysctl -w net.ipv4.ip_forward=1         ← cx.report, attached one level deeper
+  ⚠ reload deferred: /proc is read-only
+```
+
+Both land in one `NoteSink` and route through one rule (`NoteSink::report_tagged`) and
+render through one path (`cfgd_core::reconciler::emit_action_notes` →
+`SectionGuard::attached_status`) — never grow a second drain. A context nobody drains
+(`SystemContext::new`, `PackageContext::new`, `NoteSink::discarded()`) settles the report
+on the printer instead, so a standalone caller loses nothing.
+
+`SystemContext`'s fields are private: `report` and `run_silent` are the whole surface, so
+`cx.printer.status_simple` is not expressible rather than merely discouraged. Never add a
+`printer()` accessor. A snapshot bridge that drives a configurator directly renders through
+`emit_action_notes` under a real `section_owner`, so its golden pins the attached shape
+production emits rather than one the test assembled.
+
 ## Source-constraint mode (every `compose_with_sources` call site)
 
 **`ConstraintMode::Report` is for read paths; every path that mutates the machine composes in `Enforce`.** Decide on what the command *does*, not on what it reads: `backup run` reads config like `status` but executes hooks and writes snapshots, so it is `Enforce`. `Report` records a source violation and continues (the read still has to render); `Enforce` aborts on the first one.
 
 | Mode | Commands |
 |---|---|
-| `Report` | `status`, `diff`, `verify`, `compliance *`, `backup list`, `checkin` — anything whose whole job is to describe state |
+| `Report` | `status`, `diff`, `verify`, `compliance *`, `backup list`, `checkin`, `decide` — anything whose whole job is to describe state (`decide`'s composition is a classification READ; its write is a decision-store row, never a change to the machine, and `Enforce` would disable answering exactly when a source violates a constraint) |
 | `Enforce` | `apply`, `plan`, `daemon`, `backup run`, `backup restore`, `source add` — anything that runs a script, writes a file, or takes a snapshot |
 
 `Report` is not "skip the check": `compose` still warns per violation, and any script surface a
@@ -62,3 +98,51 @@ a surface only `Enforce` reaches needs nothing.
 Every `cmd_*` function in `crates/cfgd/src/cli/` must have a row in
 `.claude/rules/structured-output-coverage.md`; `.claude/scripts/audit.sh`
 fails when one is missing.
+
+## No `tracing::warn!`/`tracing::error!` in the config/module/source domains
+
+Banned anywhere under `crates/cfgd-core/src/config/`,
+`crates/cfgd-core/src/modules/`, or `crates/cfgd-core/src/sources/` — the three
+domains whose whole job is turning user-authored YAML/TOML into cfgd's typed
+config. `tracing::warn!`/`tracing::error!` writes to a channel that's invisible
+without `RUST_LOG` set; a legacy-key deprecation, an ambiguous-profile notice,
+or a malformed-manifest warning routed there is an advisory the user never
+sees, the exact bug `warn_on_legacy_theme_keys` shipped with before it was
+rerouted (see `parse::REMOVED_THEME_KEYS` / `RENAMED_THEME_KEYS`).
+
+Use instead: collect the message into a `Vec<String>` the caller can drain
+through `printer.deprecation(text)` (or `printer.alert(text)` for a run-affecting
+notice) at the command boundary that actually owns a terminal — these core
+functions have many callers, none of which hold a `Printer`. `parse_config`'s
+`CfgdConfig.deprecations` field (`#[serde(skip)]`, drained once per command via
+`crates/cfgd/src/cli/helpers.rs`) is the working example to extend, not to
+reinvent per call site.
+
+`.claude/scripts/audit.sh` enforces this on the DOMAIN — every non-test `.rs`
+under those three directories — rather than on a function-name shape. An earlier
+revision anchored on a `fn parse_*` / `fn load_*` signature and walked the
+function's brace span; it selected the wrong set, because `warn_on_legacy_theme_keys`
+is named neither, and neither is any advisory helper a parse function calls
+(`check_yaml_anchor_limit`, `read_manifest`, `validate_source_name`, …). The
+domain anchor covers all of them and needs no span walk, so no string literal or
+body-less trait signature can end a scan early.
+
+Escape hatch for a genuinely internal diagnostic (one no interactive user is
+meant to read) — mirrors `native-ok:` / `spawn-blocking-ok:` — mark the call
+line or the comment line directly above it:
+
+```rust
+tracing::warn!("cache miss for {}", key); // tracing-ok: internal cache-timing diagnostic, not user-facing
+```
+
+The marker counts only inside a comment, only with a reason written after it,
+and is inherited only from a comment line — a call cannot exempt itself by
+naming the hatch in its own message string, and a marked call does not exempt
+the unmarked call beneath it.
+
+**What disqualifies a message from the hatch**, whatever the marker says: a
+message describing the user's own config, a key they wrote, a migration they
+have to perform, or anything that changes what they should do next is
+user-facing. "Internal" means a diagnostic whose entire audience is someone
+already reading `RUST_LOG` output — cache timings, retry counts, protocol
+traces.

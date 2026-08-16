@@ -1,8 +1,59 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::Serialize;
 
 // --- Command output types ---
+
+/// Machine-stable cause class for a degraded source-decision classification
+/// (`classificationDegradedCode` in the `status` / `decide` payloads). A
+/// closed set, deliberately coarse: each variant maps to a distinct operator
+/// remedy, and the human detail stays in `classificationDegradedReason`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ClassificationDegradedCode {
+    /// The decision store itself could not be read — fix the state
+    /// directory / database before trusting any decision surface.
+    DecisionStoreUnreadable,
+    /// A source's cached config failed to load or compose — re-sync or
+    /// inspect the source.
+    SourceUnreadable,
+    /// A local package-manifest reference failed to resolve (Brewfile,
+    /// `package.json`, `Cargo.toml`, apt list) — fix the referenced file.
+    ManifestUnreadable,
+    /// Anything the classes above cannot claim.
+    ClassificationFailed,
+}
+
+impl ClassificationDegradedCode {
+    /// Classify a degradation error by the FIRST typed cause in its chain —
+    /// the innermost `anyhow` contexts wrap the typed error that actually
+    /// failed, so the first hit names the failing input rather than a
+    /// wrapper.
+    pub fn from_error(e: &anyhow::Error) -> Self {
+        use cfgd_core::errors::CfgdError;
+        for cause in e.chain() {
+            if let Some(err) = cause.downcast_ref::<CfgdError>() {
+                return match err {
+                    CfgdError::State(_) => Self::DecisionStoreUnreadable,
+                    CfgdError::Source(_) | CfgdError::Composition(_) | CfgdError::Config(_) => {
+                        Self::SourceUnreadable
+                    }
+                    CfgdError::Package(_) | CfgdError::File(_) | CfgdError::Io(_) => {
+                        Self::ManifestUnreadable
+                    }
+                    _ => Self::ClassificationFailed,
+                };
+            }
+            if cause
+                .downcast_ref::<cfgd_core::errors::StateError>()
+                .is_some()
+            {
+                return Self::DecisionStoreUnreadable;
+            }
+        }
+        Self::ClassificationFailed
+    }
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,8 +89,12 @@ pub struct ApplyOutput {
     pub apply_id: Option<i64>,
     pub succeeded: usize,
     pub failed: usize,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub source_commits: HashMap<String, String>,
+    // `BTreeMap`, not `HashMap`: this field serializes into `-o json` /
+    // `-o yaml`, and with no `preserve_order` feature on `serde_json` a
+    // `HashMap` writes its keys in per-process-random order — byte-unstable
+    // for a docs capture, a golden test, or a checksum-diffing consumer.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_commits: BTreeMap<String, String>,
     /// Schedule-less `spec.backups[]` runs executed alongside this apply.
     /// Empty (and omitted from the wire) on the no-op paths and whenever the
     /// profile declares no schedule-less backups.
@@ -54,7 +109,7 @@ impl ApplyOutput {
             apply_id: None,
             succeeded: 0,
             failed: 0,
-            source_commits: HashMap::new(),
+            source_commits: BTreeMap::new(),
             backups: Vec::new(),
         }
     }
@@ -65,7 +120,7 @@ impl ApplyOutput {
             apply_id: None,
             succeeded: 0,
             failed: 0,
-            source_commits: HashMap::new(),
+            source_commits: BTreeMap::new(),
             backups: Vec::new(),
         }
     }
@@ -132,6 +187,13 @@ pub struct DiffOutput {
     pub files: Vec<cfgd_core::providers::FileDriftResult>,
     pub packages: Vec<PackageDrift>,
     pub system: Vec<SystemDriftOutput>,
+    /// One record per system configurator whose drift check could not run.
+    /// Deliberately separate from `system`: a check that errored reports
+    /// neither drift nor cleanliness, and a consumer reading only
+    /// `summary.hasSystemDrift` would otherwise read "the check failed" as
+    /// "the machine is in sync".
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub system_errors: Vec<SystemCheckError>,
     pub summary: DiffSummary,
 }
 
@@ -141,17 +203,34 @@ pub struct DiffSummary {
     pub has_file_drift: bool,
     pub has_pkg_drift: bool,
     pub has_system_drift: bool,
+    /// At least one configurator's drift check errored, so the system verdict
+    /// is unknown rather than clean. Read alongside `has_system_drift` by
+    /// every consumer that treats "no drift" as "nothing to do".
+    pub system_check_failed: bool,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageDrift {
     pub manager: String,
+    /// `missing` | `extra` | `provision` | `refused`. `provision`/`refused` are
+    /// package-less rows: the manager itself is what drifts, not a package it
+    /// would install, so `packages` stays empty for both. `provision` names the
+    /// plan-state fact (matches `ManagerAction::Provision`'s machine vocabulary
+    /// across `diff`/`verify`/`status`); the mechanism itself keeps the
+    /// "bootstrap" word in `bootstrap_method` and in the human render.
     pub shape: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub packages: Vec<String>,
+    /// The method a `shape: "provision"` row would self-install with — naming
+    /// precedent: `DoctorManagerCheck.bootstrap_method`. `Some` only when
+    /// `shape == "provision"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bootstrap_method: Option<String>,
+    /// Why a `shape: "refused"` row cannot self-install. `Some` only when
+    /// `shape == "refused"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -160,6 +239,15 @@ pub struct SystemDriftOutput {
     pub key: String,
     pub expected: String,
     pub actual: String,
+}
+
+/// A configurator whose drift check itself failed — the machine's state for
+/// that key is unknown.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemCheckError {
+    pub key: String,
+    pub error: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -187,21 +275,122 @@ pub struct PlanOutput {
     /// declared backup carries a `schedule`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pending_backups: Vec<String>,
+    /// The source decisions awaiting the operator, whose resources are
+    /// withheld from `phases[]` and from `totalActions` above.
+    ///
+    /// The structured counterpart of the human preview's "Pending Decisions"
+    /// block: under `-o json` that block is suppressed with every other human
+    /// row, so without this key a consumer would see a smaller plan with
+    /// nothing to explain it. Empty (and omitted from the wire) when no
+    /// decision is outstanding. Every entry is unresolved by construction, so
+    /// its `resolvedAt` / `resolution` are null — the answered rows are in
+    /// `rejectedDecisions` below.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pending_decisions: Vec<cfgd_core::state::PendingDecision>,
+    /// The source decisions the operator DECLINED, whose resources are
+    /// withheld from `phases[]` and from `totalActions` just as an awaiting
+    /// one's are.
+    ///
+    /// Separate from `pendingDecisions` because the two ask for different
+    /// things — one wants an answer, the other already has one and would need
+    /// reversing — but reported for the same reason: a resource absent from
+    /// `phases[]` must always be explained by a decision the consumer can see.
+    /// Every entry carries a populated `resolvedAt` / `resolution`. Empty (and
+    /// omitted from the wire) when nothing this run declares was declined.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rejected_decisions: Vec<cfgd_core::state::PendingDecision>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanPhaseOutput {
     pub phase: String,
-    /// Module name, for a phase split out of the Modules phase; omitted for
-    /// every other phase.
+    /// The phase's owner groups, in `Owner::sort_key` order — the same order
+    /// and the same grouping the human tree draws, so a consumer that renders
+    /// the payload reproduces the CLI's ordering without a comparator of its
+    /// own. Never empty: a phase whose every group was filtered away is
+    /// dropped from `phases[]`.
+    pub groups: Vec<PlanGroupOutput>,
+}
+
+/// One owner's slice of a phase: who declared the work, plus the actions.
+///
+/// `owner` is the reconciler's own [`cfgd_core::reconciler::Owner`], so the
+/// wire's `kind` vocabulary cannot drift from the one the planner assigns, and
+/// `token` is [`cfgd_core::reconciler::Owner::token`]'s rendering of it — the
+/// exact string the tree prints, carried so a consumer never re-implements the
+/// `kind:name` grammar.
+///
+/// The fields are private and [`PlanGroupOutput::new`] is the only constructor,
+/// so a `token` naming an owner other than the group's own is unrepresentable
+/// rather than merely discouraged: no caller can write a struct literal or
+/// reassign `owner` out from under a token already derived from it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanGroupOutput {
+    owner: cfgd_core::reconciler::Owner,
+    token: String,
+    actions: Vec<PlanActionOutput>,
+}
+
+impl PlanGroupOutput {
+    /// Build a group from its owner, deriving `token` rather than taking it.
+    pub fn new(owner: cfgd_core::reconciler::Owner, actions: Vec<PlanActionOutput>) -> Self {
+        Self {
+            token: owner.token(),
+            owner,
+            actions,
+        }
+    }
+
+    pub fn owner(&self) -> &cfgd_core::reconciler::Owner {
+        &self.owner
+    }
+
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    pub fn actions(&self) -> &[PlanActionOutput] {
+        &self.actions
+    }
+}
+
+/// The `cfgd:managers` group's per-action structured payload — spec §7's
+/// `{manager, state, via, requires}` shape, populated only for
+/// `Action::Manager` rows (`PlanActionOutput.manager`).
+///
+/// `manager` names the row's subject: the manager itself for
+/// `RefreshIndex`/`Provision`/`Refuse`, and the TOOL for `Prerequisite` — the
+/// installer goes in `via` instead, mirroring the human line's "{installer}
+/// install {tool}" subject/actor split. `requires` is `ManagerAction::depends_on`
+/// verbatim (full `manager:...` node ids), so a consumer resolves an entry
+/// against a sibling row's `description` with no second id scheme.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagerActionOutput {
+    pub manager: String,
+    /// `present` (refresh) | `provisioned` | `prerequisite` | `refused`.
+    /// `refused` is not in spec §7's literal enum — the spec's variant list
+    /// names `Refuse` as a node this task must give a payload, and a state
+    /// enum a refusal cannot express in is a payload that silently drops it.
+    pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub module: Option<String>,
-    /// Section within the module (`"packages"`, `"files"`, ...), for a phase
-    /// split out of the Modules phase; omitted for every other phase.
+    pub via: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
+    /// The other managers this node's ONE `via` install also provisions.
+    /// Non-empty only for `state == "provisioned"`, and omitted from the wire
+    /// otherwise, so a consumer reading only `manager` sees exactly what it
+    /// always saw. Read it to learn what a single provision row really
+    /// delivers: `manager: "npm"` with `batched: ["pipx"]` is one
+    /// `apt-get install` covering both.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub batched: Vec<String>,
+    /// Why this host cannot provision the manager. `Some` only when
+    /// `state == "refused"`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub section: Option<String>,
-    pub actions: Vec<PlanActionOutput>,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -224,6 +413,9 @@ pub struct PlanActionOutput {
     /// `description`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// The row's `cfgd:managers` detail, `Some` only for `Action::Manager`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manager: Option<ManagerActionOutput>,
 }
 
 #[derive(Serialize)]
@@ -501,6 +693,37 @@ impl From<&cfgd_core::state::BackupRunRecord> for BackupRunOutput {
     }
 }
 
+impl BackupRunOutput {
+    /// The payload entry for one unit's [`cfgd_core::backup::BackupRunReport`].
+    ///
+    /// The ONE mapping, so `cfgd backup run`, `cfgd apply` and the daemon emit
+    /// the same three shapes for the same three outcomes: a recorded run, a
+    /// unit another writer held (`"skipped"`, which is not a failure of this
+    /// run), and a state-store refusal (`"failed"`, which is). The unit's name
+    /// is the caller's because a record-less report has no name of its own.
+    pub fn from_report(name: &str, report: &cfgd_core::backup::BackupRunReport) -> Self {
+        match (&report.record, &report.skipped) {
+            (Some(record), _) => Self::from(record),
+            (None, Some(holder)) => Self {
+                name: name.to_string(),
+                status: "skipped".to_string(),
+                destination_path: None,
+                clean: false,
+                error: Some(format!("already running ({holder})")),
+            },
+            (None, None) => Self {
+                name: name.to_string(),
+                status: cfgd_core::state::BackupRunStatus::Failed
+                    .as_str()
+                    .to_string(),
+                destination_path: None,
+                clean: false,
+                error: report.error.clone(),
+            },
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceShowOutput {
@@ -614,7 +837,7 @@ pub(in crate::cli) struct ComplianceDiffOutput {
     pub changed: Vec<ComplianceCheckChange>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComplianceCheckChange {
     pub key: String,
@@ -633,6 +856,49 @@ mod tests {
     use cfgd_core::state::{ApplyRecord, ApplyStatus, ComplianceHistoryRow};
     use pretty_assertions::assert_eq;
     use serde_json::{Value, json};
+
+    /// The degradation code is a CLOSED, camelCase token set, and the
+    /// error-chain mapping lands each cause class on its own token — the
+    /// machine-stable half of the degraded payload pair.
+    #[test]
+    fn classification_degraded_code_maps_causes_to_stable_camelcase_tokens() {
+        use cfgd_core::errors::{CfgdError, StateError};
+
+        let store_err =
+            anyhow::Error::from(CfgdError::State(StateError::Database("locked".into())))
+                .context("source classification failed");
+        assert_eq!(
+            ClassificationDegradedCode::from_error(&store_err),
+            ClassificationDegradedCode::DecisionStoreUnreadable
+        );
+
+        let bare = anyhow::anyhow!("something unexpected");
+        assert_eq!(
+            ClassificationDegradedCode::from_error(&bare),
+            ClassificationDegradedCode::ClassificationFailed
+        );
+
+        for (code, token) in [
+            (
+                ClassificationDegradedCode::DecisionStoreUnreadable,
+                "decisionStoreUnreadable",
+            ),
+            (
+                ClassificationDegradedCode::SourceUnreadable,
+                "sourceUnreadable",
+            ),
+            (
+                ClassificationDegradedCode::ManifestUnreadable,
+                "manifestUnreadable",
+            ),
+            (
+                ClassificationDegradedCode::ClassificationFailed,
+                "classificationFailed",
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(code).unwrap(), json!(token));
+        }
+    }
 
     #[test]
     fn log_output_serializes_entries_array_under_camelcase_key() {
@@ -710,7 +976,7 @@ mod tests {
         );
         assert!(
             json.get("sourceCommits").is_none(),
-            "sourceCommits must be skipped when HashMap is empty"
+            "sourceCommits must be skipped when BTreeMap is empty"
         );
         assert!(
             json.get("backups").is_none(),
@@ -737,7 +1003,7 @@ mod tests {
             apply_id: Some(7),
             succeeded: 2,
             failed: 0,
-            source_commits: HashMap::new(),
+            source_commits: BTreeMap::new(),
             backups: vec![BackupRunOutput {
                 name: "photos".to_string(),
                 status: "success".to_string(),
@@ -754,7 +1020,7 @@ mod tests {
 
     #[test]
     fn apply_output_populated_includes_apply_id_and_source_commits() {
-        let mut commits = HashMap::new();
+        let mut commits = BTreeMap::new();
         commits.insert("origin".to_string(), "abc123".to_string());
         let v = ApplyOutput {
             status: "success".to_string(),
@@ -770,6 +1036,37 @@ mod tests {
         assert_eq!(json["succeeded"], json!(3));
         assert_eq!(json["failed"], json!(1));
         assert_eq!(json["sourceCommits"]["origin"], json!("abc123"));
+    }
+
+    #[test]
+    fn apply_output_source_commits_serialize_in_key_order_every_run() {
+        // A `HashMap` here would print `sourceCommits` keys in a
+        // per-process-random order, byte-unstable for a docs capture, a
+        // golden test, or a checksum-diffing `-o json` consumer.
+        // `BTreeMap` fixes the order to key-sorted regardless of insertion
+        // order or how many times this test (or the process) runs.
+        let mut commits = BTreeMap::new();
+        commits.insert("zeta".to_string(), "z-sha".to_string());
+        commits.insert("alpha".to_string(), "a-sha".to_string());
+        commits.insert("mid".to_string(), "m-sha".to_string());
+        let v = ApplyOutput {
+            status: "success".to_string(),
+            apply_id: Some(1),
+            succeeded: 1,
+            failed: 0,
+            source_commits: commits,
+            backups: Vec::new(),
+        };
+        let first = serde_json::to_string(&v).unwrap();
+        let second = serde_json::to_string(&v).unwrap();
+        assert_eq!(first, second, "identical value must serialize identically");
+        let alpha_pos = first.find("\"alpha\"").unwrap();
+        let mid_pos = first.find("\"mid\"").unwrap();
+        let zeta_pos = first.find("\"zeta\"").unwrap();
+        assert!(
+            alpha_pos < mid_pos && mid_pos < zeta_pos,
+            "sourceCommits keys must serialize in sorted order: {first}"
+        );
     }
 
     #[test]
@@ -861,17 +1158,23 @@ mod tests {
                 manager: "brew".to_string(),
                 shape: "missing".to_string(),
                 packages: vec!["ripgrep".to_string()],
-                bootstrap_method: Some("script".to_string()),
+                bootstrap_method: None,
+                reason: None,
             }],
             system: vec![SystemDriftOutput {
                 key: "sysctl.kernel.x".to_string(),
                 expected: "1".to_string(),
                 actual: "0".to_string(),
             }],
+            system_errors: vec![SystemCheckError {
+                key: "launchd".to_string(),
+                error: "permission denied".to_string(),
+            }],
             summary: DiffSummary {
                 has_file_drift: true,
                 has_pkg_drift: true,
                 has_system_drift: true,
+                system_check_failed: true,
             },
         };
         let json = serde_json::to_value(&v).unwrap();
@@ -895,6 +1198,13 @@ mod tests {
         assert_eq!(json["summary"]["hasFileDrift"], json!(true));
         assert_eq!(json["summary"]["hasPkgDrift"], json!(true));
         assert_eq!(json["summary"]["hasSystemDrift"], json!(true));
+        let errs = json["systemErrors"]
+            .as_array()
+            .expect("systemErrors is array");
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0]["key"], json!("launchd"));
+        assert_eq!(errs[0]["error"], json!("permission denied"));
+        assert_eq!(json["summary"]["systemCheckFailed"], json!(true));
     }
 
     #[test]
@@ -903,20 +1213,35 @@ mod tests {
             has_file_drift: false,
             has_pkg_drift: true,
             has_system_drift: false,
+            system_check_failed: false,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["hasFileDrift"], json!(false));
         assert_eq!(json["hasPkgDrift"], json!(true));
         assert_eq!(json["hasSystemDrift"], json!(false));
+        assert_eq!(json["systemCheckFailed"], json!(false));
     }
 
     #[test]
-    fn package_drift_skips_empty_packages_and_none_bootstrap() {
+    fn diff_output_omits_system_errors_when_every_check_ran() {
+        // The common shape: the key is absent rather than an empty array, so a
+        // consumer's `if .systemErrors` reads false on a complete run.
+        let json = serde_json::to_value(DiffOutput::default()).unwrap();
+        assert!(
+            json.get("systemErrors").is_none(),
+            "a complete run carries no error list: {json}"
+        );
+        assert_eq!(json["summary"]["systemCheckFailed"], json!(false));
+    }
+
+    #[test]
+    fn package_drift_skips_empty_packages() {
         let v = PackageDrift {
             manager: "apt".to_string(),
             shape: "extra".to_string(),
             packages: vec![],
             bootstrap_method: None,
+            reason: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["manager"], json!("apt"));
@@ -925,23 +1250,19 @@ mod tests {
             json.get("packages").is_none(),
             "packages must be skipped when Vec is empty"
         );
-        assert!(
-            json.get("bootstrapMethod").is_none(),
-            "bootstrapMethod must be skipped when None"
-        );
     }
 
     #[test]
-    fn package_drift_emits_packages_and_bootstrap_method_when_populated() {
+    fn package_drift_emits_packages_when_populated() {
         let v = PackageDrift {
             manager: "cargo".to_string(),
             shape: "missing".to_string(),
             packages: vec!["bat".to_string(), "fd-find".to_string()],
-            bootstrap_method: Some("rustup".to_string()),
+            bootstrap_method: None,
+            reason: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["packages"], json!(["bat", "fd-find"]));
-        assert_eq!(json["bootstrapMethod"], json!("rustup"));
     }
 
     #[test]
@@ -979,18 +1300,22 @@ mod tests {
             context: "default".to_string(),
             phases: vec![PlanPhaseOutput {
                 phase: "pre".to_string(),
-                module: None,
-                section: None,
-                actions: vec![PlanActionOutput {
-                    description: "install pkg".to_string(),
-                    action_type: "package".to_string(),
-                    targets: vec![],
-                    origin: None,
-                }],
+                groups: vec![PlanGroupOutput::new(
+                    cfgd_core::reconciler::Owner::profile("work"),
+                    vec![PlanActionOutput {
+                        description: "install pkg".to_string(),
+                        action_type: "package".to_string(),
+                        targets: vec![],
+                        origin: None,
+                        manager: None,
+                    }],
+                )],
             }],
             total_actions: 1,
             warnings: vec![],
             pending_backups: vec![],
+            pending_decisions: vec![],
+            rejected_decisions: vec![],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["context"], json!("default"));
@@ -1006,7 +1331,8 @@ mod tests {
         let phases = json["phases"].as_array().expect("phases is array");
         assert_eq!(phases.len(), 1);
         assert_eq!(phases[0]["phase"], json!("pre"));
-        let actions = phases[0]["actions"].as_array().expect("actions is array");
+        let groups = phases[0]["groups"].as_array().expect("groups is array");
+        let actions = groups[0]["actions"].as_array().expect("actions is array");
         assert_eq!(actions[0]["description"], json!("install pkg"));
     }
 
@@ -1018,6 +1344,8 @@ mod tests {
             total_actions: 0,
             warnings: vec!["missing tool".to_string()],
             pending_backups: vec![],
+            pending_decisions: vec![],
+            rejected_decisions: vec![],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["warnings"], json!(["missing tool"]));
@@ -1031,27 +1359,44 @@ mod tests {
             total_actions: 0,
             warnings: vec![],
             pending_backups: vec!["photos".to_string()],
+            pending_decisions: vec![],
+            rejected_decisions: vec![],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["pendingBackups"], json!(["photos"]));
     }
 
     #[test]
-    fn plan_phase_output_emits_phase_name_and_actions_array() {
+    fn plan_phase_output_emits_phase_name_and_owner_groups() {
         let v = PlanPhaseOutput {
             phase: "main".to_string(),
-            module: None,
-            section: None,
-            actions: vec![PlanActionOutput {
-                description: "render file".to_string(),
-                action_type: "file".to_string(),
-                targets: vec!["/etc/hosts".to_string()],
-                origin: None,
-            }],
+            groups: vec![PlanGroupOutput::new(
+                cfgd_core::reconciler::Owner::module("nvim"),
+                vec![PlanActionOutput {
+                    description: "render file".to_string(),
+                    action_type: "file".to_string(),
+                    targets: vec!["/etc/hosts".to_string()],
+                    origin: None,
+                    manager: None,
+                }],
+            )],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["phase"], json!("main"));
-        let actions = json["actions"].as_array().expect("actions is array");
+        let groups = json["groups"].as_array().expect("groups is array");
+        assert_eq!(groups.len(), 1);
+        // The wire vocabulary of `owner`, pinned here so a rename inside the
+        // reconciler's `Owner` cannot silently reshape the `-o json` payload.
+        assert_eq!(
+            groups[0]["owner"],
+            json!({"kind": "module", "name": "nvim"})
+        );
+        assert_eq!(
+            groups[0]["token"],
+            json!("module:nvim"),
+            "token is Owner::token()'s rendering, so a consumer never rebuilds the grammar"
+        );
+        let actions = groups[0]["actions"].as_array().expect("actions is array");
         assert_eq!(actions.len(), 1);
     }
 
@@ -1062,6 +1407,7 @@ mod tests {
             action_type: "system".to_string(),
             targets: vec![],
             origin: None,
+            manager: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["description"], json!("configure systemd"));
@@ -1087,6 +1433,7 @@ mod tests {
             action_type: "file.create".to_string(),
             targets: vec!["/etc/hosts".to_string()],
             origin: None,
+            manager: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(

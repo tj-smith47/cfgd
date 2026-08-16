@@ -6,20 +6,53 @@ use std::process::Command;
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
-use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    bootstrap_via_brew_then_system, brew_available, resolve_tool_with_fallbacks, run_pkg_cmd,
-    run_pkg_cmd_live, tool_cmd_with_resolver,
+    MediatedArms, bootstrap_via_brew_then_system, brew_then_system_arms, detect_brew_system_method,
+    pip_user_scripts_dir, pkg_run, planned_method_failed, planned_method_unavailable,
+    resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, tool_cmd_with_resolver,
 };
 
 pub struct PipxManager;
 
+/// pipx's own bootstrap arm, reached when no brew/system mediator is present.
+/// The ONE spelling, for the same reason npm has one: the planner resolves the
+/// method against it and the cascade declines toward it.
+const PIPX_FALLBACK_METHOD: &str = "pip";
+
+/// What a mediator installs to deliver pipx — same role as npm's table.
+const PIPX_MEDIATED: MediatedArms = brew_then_system_arms("pipx", &["pipx"]);
+
 fn pipx_fallbacks() -> Vec<PathBuf> {
-    std::env::var_os("HOME")
+    let mut fallbacks: Vec<PathBuf> = std::env::var_os("HOME")
         .map(|h| pipx_fallbacks_for_home(std::path::Path::new(&h)))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if cfg!(windows) {
+        fallbacks.extend(windows_user_pipx_candidates());
+    }
+    fallbacks
+}
+
+/// Every `pipx.exe` a `pip install --user pipx` could have left under roaming
+/// AppData — the same `nt_user` tree the bootstrap plan declares, so a pipx this
+/// machine installed is still found when its `Scripts` directory never reached
+/// `PATH`.
+///
+/// The version segment belongs to whichever interpreter pip ran, so the tree is
+/// READ rather than probed: this resolver answers `is_available()`, which a
+/// single run asks many times, and must not spawn a process to do it.
+pub(super) fn windows_user_pipx_candidates() -> Vec<PathBuf> {
+    let Some(root) = std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("Python")) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|e| e.path().join("Scripts").join("pipx.exe"))
+        .collect()
 }
 
 /// `pipx_fallbacks` with the `$HOME` directory injected — split out so tests
@@ -36,6 +69,23 @@ pub(super) fn pipx_available() -> bool {
     find_pipx().is_some()
 }
 
+// The tool the pip fallback would run: whichever of pip3/pip is present,
+// else the preferred name. Shared by `bootstrap_plan` and `path_dirs` so
+// both always name the same interpreter.
+fn pipx_pip_tool() -> &'static str {
+    ["pip3", "pip"]
+        .into_iter()
+        .find(|t| command_available(t))
+        .unwrap_or("pip3")
+}
+
+// Single source for the pip fallback's user-scripts dir, so
+// `bootstrap_plan`'s declaration and `path_dirs`'s recording can never
+// drift apart.
+fn pipx_pip_scripts_dir() -> Option<PathBuf> {
+    pip_user_scripts_dir(pipx_pip_tool())
+}
+
 pub(super) fn pipx_cmd() -> Command {
     tool_cmd_with_resolver("pipx", find_pipx)
 }
@@ -49,52 +99,101 @@ impl PackageManager for PipxManager {
         pipx_available()
     }
 
-    fn can_bootstrap(&self) -> bool {
-        // Can bootstrap via system package manager or pip
-        brew_available()
-            || command_available("apt")
-            || command_available("dnf")
-            || command_available("pip3")
-            || command_available("pip")
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        match detect_brew_system_method(PIPX_FALLBACK_METHOD) {
+            // Only the pip fallback installs into the user's own tree; brew and
+            // the system managers land pipx on the system PATH.
+            // The tool the pip arm would run: whichever is present, else the
+            // preferred name. Naming it even when it is absent is what lets the
+            // planner say WHY pipx cannot be provisioned instead of dropping it
+            // — `pip3` is not installable under that name from any system
+            // manager, so `feasible_bootstrap_plan` still answers `None`.
+            "pip" => Some(
+                BootstrapPlan::new("pip")
+                    .requiring([pipx_pip_tool()])
+                    .creating(pipx_pip_scripts_dir()),
+            ),
+            method => Some(BootstrapPlan::new(method)),
+        }
     }
 
-    fn bootstrap(&self, printer: &Printer) -> Result<()> {
-        if bootstrap_via_brew_then_system(printer, "pipx", "pipx", &["pipx"])? {
+    fn path_dirs(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
+        // The method this run already decided, not a fresh probe: the plan
+        // resolves the method once and binds the bootstrap to it, so re-probing
+        // here can name a directory the plan never promised — brew appearing
+        // between the two calls is enough. A context carrying no planned method
+        // belongs to a caller outside a plan (`cfgd doctor`, a direct caller),
+        // which has no decision to read and resolves the cascade as before.
+        let method = cx
+            .planned_method()
+            .unwrap_or_else(|| detect_brew_system_method(PIPX_FALLBACK_METHOD));
+        match method {
+            "pip" => pipx_pip_scripts_dir()
+                .into_iter()
+                .map(cfgd_core::to_posix_string)
+                .collect(),
+            // brew/system installs land pipx on the system PATH; nothing new
+            // to declare.
+            _ => Vec::new(),
+        }
+    }
+
+    fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
+        // Returns false without probing anything when the plan named `pip` —
+        // pipx's own fallback arm, which is the next thing below.
+        if bootstrap_via_brew_then_system(
+            cx,
+            "pipx",
+            PIPX_MEDIATED.brew.unwrap_or("pipx"),
+            PIPX_MEDIATED.system,
+            PIPX_FALLBACK_METHOD,
+        )? {
             return Ok(());
         }
 
-        // Fall back to pip
-        let pip_cmd = if command_available("pip3") {
-            "pip3"
-        } else if command_available("pip") {
-            "pip"
-        } else {
-            return Err(PackageError::BootstrapFailed {
-                manager: "pipx".into(),
-                message: "no installation method available".into(),
+        // Fall back to pip. Resolved to a full path rather than spawned by bare
+        // name: `command_path` searches the directories cfgd bootstrapped this
+        // run as well as `$PATH`, and a bare-name spawn searches only `$PATH`.
+        let Some((pip_cmd, pip_path)) = ["pip3", "pip"]
+            .into_iter()
+            .find_map(|tool| cfgd_core::command_path(tool).map(|path| (tool, path)))
+        else {
+            return Err(match cx.planned_method() {
+                Some(method) => planned_method_unavailable("pipx", method),
+                None => PackageError::BootstrapFailed {
+                    manager: "pipx".into(),
+                    message: "no installation method available".into(),
+                },
             }
             .into());
         };
 
         let label = format!("Installing pipx via {}", pip_cmd);
-        let result = printer
-            .run(
-                Command::new(pip_cmd).args(["install", "--user", "pipx"]),
-                &label,
-            )
-            .map_err(|e| PackageError::BootstrapFailed {
-                manager: "pipx".into(),
-                message: format!("{} install failed: {}", pip_cmd, e),
-            })?;
+        let result = pkg_run(
+            cx,
+            Command::new(pip_path).args(["install", "--user", "pipx"]),
+            &label,
+        )
+        .map_err(|e| PackageError::BootstrapFailed {
+            manager: "pipx".into(),
+            message: format!("{} install failed: {}", pip_cmd, e),
+        })?;
         if !result.status.success() {
-            return Err(PackageError::BootstrapFailed {
-                manager: "pipx".into(),
-                message: format!("{} install --user pipx failed", pip_cmd),
+            return Err(match cx.planned_method() {
+                Some(method) => planned_method_failed("pipx", method, &result),
+                None => PackageError::BootstrapFailed {
+                    manager: "pipx".into(),
+                    message: format!("{} install --user pipx failed", pip_cmd),
+                },
             }
             .into());
         }
 
         Ok(())
+    }
+
+    fn mediated_packages(&self, via: &str) -> Option<Vec<String>> {
+        PIPX_MEDIATED.packages_for(via)
     }
 
     fn installed_packages(
@@ -113,7 +212,7 @@ impl PackageManager for PipxManager {
         for pkg in packages {
             let label = format!("pipx install {}", pkg);
             run_pkg_cmd_live(
-                cx.printer,
+                cx,
                 "pipx",
                 pipx_cmd().args(["install", pkg]),
                 &label,
@@ -131,24 +230,13 @@ impl PackageManager for PipxManager {
         for pkg in packages {
             let label = format!("pipx uninstall {}", pkg);
             run_pkg_cmd_live(
-                cx.printer,
+                cx,
                 "pipx",
                 pipx_cmd().args(["uninstall", pkg]),
                 &label,
                 "uninstall",
             )?;
         }
-        Ok(())
-    }
-
-    fn update(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        run_pkg_cmd_live(
-            cx.printer,
-            "pipx",
-            pipx_cmd().args(["upgrade-all"]),
-            "pipx upgrade-all",
-            "update",
-        )?;
         Ok(())
     }
 
@@ -421,15 +509,90 @@ mod tests {
     }
 
     #[test]
-    fn pipx_manager_can_bootstrap_checks_cascade() {
-        let mgr = PipxManager;
-        let can = mgr.can_bootstrap();
-        let expected = brew_available()
-            || command_available("apt")
-            || command_available("dnf")
-            || command_available("pip3")
-            || command_available("pip");
-        assert_eq!(can, expected);
+    fn pipx_bootstrap_plan_follows_the_brew_system_pip_cascade() {
+        // The probes below assert what THIS host resolves, so hold the read
+        // guard — a sibling test empties PATH under the write guard.
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
+        // The plan always exists: the cascade's pip fallback names the tool it
+        // would need even when no pip is present, so the planner can say WHY
+        // pipx cannot be provisioned (`feasible_bootstrap_plan` answers the
+        // `None`).
+        let plan = PipxManager
+            .bootstrap_plan()
+            .expect("pipx plans on every host via the pip fallback");
+        // A host with no brew and no system arm (FreeBSD CI) lands on the pip
+        // fallback. The system probes are the production arms' probe binaries
+        // (`apt-get`, not `apt` — BREW_SYSTEM_ARMS).
+        if !brew_available() && !command_available("apt-get") && !command_available("dnf") {
+            assert_eq!(plan.method, "pip");
+        }
+        // Only `bootstrap`'s pip fallback installs into the user's own tree
+        // (`pip install --user`); brew and the system managers put pipx on
+        // the system PATH, so they declare no directory. The user tree is
+        // not the same directory on every platform — Windows sends console
+        // scripts to CPython's `nt_user` scheme under roaming AppData.
+        if plan.method == "pip" {
+            assert_eq!(plan.requires.len(), 1);
+            assert!(["pip3", "pip"].contains(&plan.requires[0].as_str()));
+            let is_user_scripts_dir = |d: &String| {
+                if cfg!(windows) {
+                    d.contains("/Python/Python") && d.ends_with("/Scripts")
+                } else {
+                    d.ends_with("/.local/bin")
+                }
+            };
+            assert!(
+                plan.creates_path_dirs.iter().all(is_user_scripts_dir),
+                "{:?}",
+                plan.creates_path_dirs
+            );
+        } else {
+            assert!(["brew", "apt", "dnf"].contains(&plan.method.as_str()));
+            assert!(plan.requires.is_empty());
+            assert!(plan.creates_path_dirs.is_empty());
+        }
+    }
+
+    /// One host, two planned methods, two answers: `path_dirs` reads the
+    /// decision the run already made rather than the machine as it looks right
+    /// now. Re-deriving here is what let the plan promise one directory while
+    /// the record written after the bootstrap named another — brew appearing
+    /// between the two calls is enough to move a live probe.
+    #[test]
+    fn pipx_path_dirs_answers_from_the_planned_method() {
+        let printer = cfgd_core::test_helpers::test_printer();
+        let state = cfgd_core::test_helpers::test_state();
+
+        let via_brew =
+            cfgd_core::test_helpers::test_package_context(&printer, &state).for_provision("brew");
+        assert!(
+            PipxManager.path_dirs(&via_brew).is_empty(),
+            "a brew-mediated pipx lands on the system PATH and declares nothing"
+        );
+
+        // The pip arm's directory is `~/.local/bin` on every Unix; on Windows it
+        // carries the interpreter's own version and is unnameable without a pip
+        // to ask, so only the method-dispatch half of the claim holds there.
+        #[cfg(unix)]
+        {
+            let via_pip = cfgd_core::test_helpers::test_package_context(&printer, &state)
+                .for_provision("pip");
+            let dirs = PipxManager.path_dirs(&via_pip);
+            assert_eq!(dirs.len(), 1, "{dirs:?}");
+            assert!(dirs[0].ends_with("/.local/bin"), "{dirs:?}");
+        }
+    }
+
+    #[test]
+    fn pipx_path_dirs_matches_the_bootstrap_plans_declaration() {
+        let plan = PipxManager
+            .bootstrap_plan()
+            .expect("pipx always declares a bootstrap plan");
+        let printer = cfgd_core::test_helpers::test_printer();
+        let state = cfgd_core::test_helpers::test_state();
+        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+        let mgr: Box<dyn PackageManager> = Box::new(PipxManager);
+        assert_eq!(mgr.path_dirs(&cx), plan.creates_path_dirs);
     }
 
     #[test]
@@ -520,6 +683,40 @@ mod tests {
         assert_eq!(fallbacks[0], home.join(".local/bin/pipx"));
     }
 
+    #[test]
+    #[serial_test::serial]
+    fn windows_pipx_candidates_come_from_the_roaming_python_tree() {
+        let appdata = tempfile::tempdir().unwrap();
+        let scripts = appdata
+            .path()
+            .join("Python")
+            .join("Python314")
+            .join("Scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        let _guard = cfgd_core::test_helpers::EnvVarGuard::set(
+            "APPDATA",
+            appdata.path().to_string_lossy().as_ref(),
+        );
+
+        assert_eq!(
+            windows_user_pipx_candidates(),
+            vec![scripts.join("pipx.exe")],
+            "a pipx installed by `pip install --user` must be findable off PATH"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn windows_pipx_candidates_are_empty_without_a_roaming_python_tree() {
+        let appdata = tempfile::tempdir().unwrap();
+        let _guard = cfgd_core::test_helpers::EnvVarGuard::set(
+            "APPDATA",
+            appdata.path().to_string_lossy().as_ref(),
+        );
+
+        assert!(windows_user_pipx_candidates().is_empty());
+    }
+
     // ---------------------------------------------------------------------
     // PackageManager-impl tests via CFGD_PIPX_BIN ToolShim. The seam is
     // honored automatically by `tool_cmd_with_resolver` / `find_pipx`.
@@ -565,13 +762,19 @@ mod tests {
 
         #[test]
         #[serial]
-        fn pipx_update_runs_upgrade_all_subcommand() {
+        fn pipx_declares_no_index_and_refreshing_upgrades_nothing() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
-            PipxManager.update(&cx).expect("Ok");
-            assert!(s.argv_log().contains("upgrade-all"));
+            assert!(!PipxManager.has_index(), "pipx resolves PyPI per install");
+            PipxManager.refresh_index(&cx).expect("Ok");
+            assert_eq!(
+                s.invocation_count(),
+                0,
+                "`pipx upgrade-all` upgrades every venv on the machine: {}",
+                s.argv_log()
+            );
         }
 
         #[test]
@@ -642,7 +845,9 @@ mod tests {
         fn pipx_bootstrap_via_brew_returns_ok() {
             let s = ToolShim::install("CFGD_BREW_BIN", 0, "", "");
             let p = test_printer();
-            PipxManager.bootstrap(&p).expect("bootstrap Ok via brew");
+            PipxManager
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
+                .expect("bootstrap Ok via brew");
             assert!(
                 s.argv_log().contains("install pipx"),
                 "brew argv must include `install pipx`: {}",

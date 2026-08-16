@@ -14,22 +14,41 @@ fn compose_subject_with_label(theme: &Theme, subject: &str, label: &StatusLabel)
     format!("{subject} {styled}")
 }
 
-/// Sanitize a caller-supplied status subject and optionally append a styled
-/// label. The subject may carry foreign ANSI from a captured error string
+/// Compose a `subject` behind a leading styled `marker` (`postApply:`),
+/// separated by one ASCII space.
+///
+/// A prefix rather than the trailing-label shape, because the marker names the
+/// hook the body belongs to and is read first. The inner SGR reset that closes
+/// it leaves the body in the terminal's own foreground — the marker is styled
+/// and the body is not, which is the whole of the mapping.
+fn compose_subject_with_marker(theme: &Theme, subject: &str, marker: &StatusLabel) -> String {
+    let (_, style) = role_glyph(theme, marker.role);
+    let styled = style.apply_to(&marker.text).to_string();
+    format!("{styled} {subject}")
+}
+
+/// Sanitize a caller-supplied status subject and optionally wrap it in the
+/// renderer-owned styled segments: a leading `marker` and a trailing `label`.
+/// The subject may carry foreign ANSI from a captured error string
 /// (`format!("sync failed for {url}: {e}")`); a stray `\x1b[0m` would
 /// prematurely close the role styling at the inner reset, and foreign color
 /// escapes would paint trailing characters until the next reset. Strip ANSI
-/// from the subject FIRST, then append the legitimate (renderer-controlled)
-/// label SGR so it survives sanitation.
+/// from the subject FIRST, then add the legitimate (renderer-controlled)
+/// segments so they survive sanitation.
 pub(crate) fn finalize_subject(
     theme: &Theme,
     subject: &str,
+    marker: Option<&StatusLabel>,
     label: Option<&StatusLabel>,
 ) -> String {
     let sanitized = strip_ansi(subject);
-    match label {
+    let labelled = match label {
         Some(lbl) => compose_subject_with_label(theme, &sanitized, lbl),
         None => sanitized,
+    };
+    match marker {
+        Some(mk) => compose_subject_with_marker(theme, &labelled, mk),
+        None => labelled,
     }
 }
 

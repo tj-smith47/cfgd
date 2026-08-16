@@ -429,7 +429,7 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
     // Parse config/profile from process args.
     // SCM invokes: cfgd.exe daemon service --config "C:\..." [--profile "name"]
     let args: Vec<String> = std::env::args().collect();
-    let mut config_path = crate::default_config_dir().join("config.yaml");
+    let mut config_path = crate::default_config_dir().join(crate::config::CONFIG_FILENAME);
     let mut profile_override: Option<String> = None;
     let mut scope = crate::Scope::User;
     let mut dirs = DaemonDirOverrides::default();
@@ -481,7 +481,7 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
 
     // Create the tokio runtime on the main service thread so we can shut it down gracefully
     let rt = tokio::runtime::Runtime::new()?;
-    let printer = Arc::new(crate::output::Printer::new(crate::output::Verbosity::Quiet));
+    let printer = Arc::new(crate::output::Printer::silent());
 
     // Spawn the daemon loop on the runtime
     rt.spawn(async move {

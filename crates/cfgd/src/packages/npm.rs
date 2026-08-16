@@ -6,15 +6,27 @@ use std::process::Command;
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::{PackageContext, PackageManager, PackageStateStore};
+use cfgd_core::output::Role;
+use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager, PackageStateStore};
 
 use super::shared::{
-    bootstrap_via_brew_then_system, brew_available, run_pkg_cmd_live, run_pkg_query,
-    tool_cmd_with_resolver,
+    MediatedArms, bootstrap_via_brew_then_system, brew_then_system_arms, detect_brew_system_method,
+    pkg_run, planned_method_failed, planned_method_unavailable, report_abandoned_step,
+    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
 };
 
 pub struct NpmManager;
+
+/// npm's own bootstrap arm, reached when no brew/system mediator is present.
+/// The ONE spelling: the planner resolves the method against it and the
+/// cascade declines toward it, so the two must name the same string or a
+/// planned `nvm` is a method nothing can run.
+const NPM_FALLBACK_METHOD: &str = "nvm";
+
+/// What a mediator installs to deliver npm. Read by `bootstrap` and by
+/// `mediated_packages`, so a batched provision asks apt for exactly the names
+/// the solo bootstrap does.
+const NPM_MEDIATED: MediatedArms = brew_then_system_arms("node", &["nodejs", "npm"]);
 
 /// Where a global npm operation should point, resolved once per operation so
 /// install/uninstall/update/list all agree — see [`resolve_npm_prefix`].
@@ -169,15 +181,27 @@ fn effective_elevated() -> bool {
     cfgd_core::is_root()
 }
 
+/// "No override installed", the value the elevation seam holds outside a
+/// guard's lifetime.
 #[cfg(test)]
-thread_local! {
-    static TEST_ELEVATED_OVERRIDE: std::cell::RefCell<Option<bool>> =
-        const { std::cell::RefCell::new(None) };
-}
+const TEST_ELEVATED_UNSET: i8 = -1;
+
+/// Test seam for [`effective_elevated`] — process-global rather than
+/// thread-local, because an apply dispatches its package work onto worker
+/// threads: a per-thread override is invisible exactly where the install runs,
+/// so a test driving the real reconciler could never reach the unelevated
+/// branch and would silently assert about the elevated one instead. Every
+/// consumer is `#[serial]`, which is what makes one shared cell safe.
+#[cfg(test)]
+static TEST_ELEVATED_OVERRIDE: std::sync::atomic::AtomicI8 =
+    std::sync::atomic::AtomicI8::new(TEST_ELEVATED_UNSET);
 
 #[cfg(test)]
 fn test_elevated_override() -> Option<bool> {
-    TEST_ELEVATED_OVERRIDE.with(|o| *o.borrow())
+    match TEST_ELEVATED_OVERRIDE.load(std::sync::atomic::Ordering::SeqCst) {
+        TEST_ELEVATED_UNSET => None,
+        value => Some(value != 0),
+    }
 }
 
 /// RAII guard restoring the previous elevation override on drop (including on panic).
@@ -190,20 +214,19 @@ fn test_elevated_override() -> Option<bool> {
 #[cfg(all(test, unix))]
 #[must_use = "dropping the guard immediately restores the previous override"]
 struct TestElevatedGuard {
-    prev: Option<bool>,
+    prev: i8,
 }
 
 #[cfg(all(test, unix))]
 impl Drop for TestElevatedGuard {
     fn drop(&mut self) {
-        let prev = self.prev.take();
-        TEST_ELEVATED_OVERRIDE.with(|o| *o.borrow_mut() = prev);
+        TEST_ELEVATED_OVERRIDE.store(self.prev, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
 #[cfg(all(test, unix))]
 fn with_test_elevated_guard(elevated: bool) -> TestElevatedGuard {
-    let prev = TEST_ELEVATED_OVERRIDE.with(|o| o.replace(Some(elevated)));
+    let prev = TEST_ELEVATED_OVERRIDE.swap(i8::from(elevated), std::sync::atomic::Ordering::SeqCst);
     TestElevatedGuard { prev }
 }
 
@@ -391,8 +414,12 @@ pub(super) fn find_npm() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    if command_available("npm") {
-        return Some(PathBuf::from("npm"));
+    // The FULL resolved path, never the bare name: `command_path` searches the
+    // bootstrapped-directory registry after `$PATH`, and a `Command::new("npm")`
+    // spawn searches only `$PATH` — so an npm cfgd just provisioned through brew
+    // would answer "available" and then die with ENOENT.
+    if let Some(path) = cfgd_core::command_path("npm") {
+        return Some(path);
     }
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     find_npm_in_nvm(&home)
@@ -457,6 +484,19 @@ pub(super) fn npm_path_dirs_for(elevated: bool) -> Vec<String> {
     }
 }
 
+/// The prefix decision behind both PATH-reporting methods, or `None` after
+/// warning. The ONE degrade shared by them, so a resolver failure reads the
+/// same whichever asked and neither reports a directory it could not resolve.
+fn npm_prefix_for_path(state: &dyn PackageStateStore) -> Option<NpmPrefixDecision> {
+    match resolve_npm_prefix(state) {
+        Ok(decision) => Some(decision),
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot resolve npm's global prefix for PATH");
+            None
+        }
+    }
+}
+
 impl PackageManager for NpmManager {
     fn name(&self) -> &str {
         "npm"
@@ -472,52 +512,76 @@ impl PackageManager for NpmManager {
         // reconcile tick's PATH computation agrees with whatever prefix
         // `install()`/`installed_packages()` already persisted instead of
         // re-deriving (and potentially disagreeing, if live inputs shifted).
-        match resolve_npm_prefix(cx.state) {
-            Ok(NpmPrefixDecision {
-                prefix: Some(prefix),
-                ..
-            }) => vec![cfgd_core::to_posix_string(npm_bin_dir(&prefix))],
-            Ok(NpmPrefixDecision { prefix: None, .. }) => Vec::new(),
-            Err(e) => {
-                tracing::warn!(error = %e, "cannot resolve npm's global prefix for PATH");
-                Vec::new()
+        npm_prefix_for_path(cx.state)
+            .and_then(|decision| decision.prefix)
+            .map(|prefix| vec![cfgd_core::to_posix_string(npm_bin_dir(&prefix))])
+            .unwrap_or_default()
+    }
+
+    /// The bin directory of the `$HOME/.npm-global` fallback, which
+    /// [`PackageManager::install`] creates — and only then. A writable
+    /// configured prefix is npm's own or the system's, so nothing there is
+    /// cfgd's to publish and this answers empty.
+    fn created_path_dirs(&self, cx: &PackageContext<'_>) -> Vec<String> {
+        let Some(decision) = npm_prefix_for_path(cx.state) else {
+            return Vec::new();
+        };
+        decision
+            .fallback_prefix()
+            .map(|prefix| vec![cfgd_core::to_posix_string(npm_bin_dir(prefix))])
+            .unwrap_or_default()
+    }
+
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        // No declared PATH directory: npm's global bin lives under a prefix that
+        // is only resolvable once node exists, which is what `path_dirs` reads
+        // out of state after the install.
+        match detect_brew_system_method(NPM_FALLBACK_METHOD) {
+            NPM_FALLBACK_METHOD => {
+                Some(BootstrapPlan::new(NPM_FALLBACK_METHOD).requiring(["curl"]))
             }
+            method => Some(BootstrapPlan::new(method)),
         }
     }
 
-    fn can_bootstrap(&self) -> bool {
-        // Can bootstrap via system package manager or nvm
-        brew_available()
-            || command_available("apt")
-            || command_available("dnf")
-            || command_available("curl")
-    }
-
-    fn bootstrap(&self, printer: &Printer) -> Result<()> {
-        if bootstrap_via_brew_then_system(printer, "npm", "node", &["nodejs", "npm"])? {
+    fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
+        // Returns false without probing anything when the plan named `nvm` —
+        // npm's own fallback arm, which is the next thing below.
+        if bootstrap_via_brew_then_system(
+            cx,
+            "npm",
+            NPM_MEDIATED.brew.unwrap_or("node"),
+            NPM_MEDIATED.system,
+            NPM_FALLBACK_METHOD,
+        )? {
             return Ok(());
         }
 
         // Fall back to nvm
         if command_available("curl") {
-            let result = printer
-                .run(
-                    Command::new("bash")
-                        .arg("-c")
-                        .arg(concat!(
-                            "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash && ",
-                            "export NVM_DIR=\"$HOME/.nvm\" && [ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\" && ",
-                            "nvm install --lts"
-                        )),
-                    "Installing Node.js via nvm",
-                )
-                .map_err(|e| PackageError::BootstrapFailed {
-                    manager: "npm".into(),
-                    message: format!("nvm install failed: {}", e),
-                })?;
+            let result = pkg_run(
+                cx,
+                Command::new("bash").arg("-c").arg(concat!(
+                    "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash && ",
+                    "export NVM_DIR=\"$HOME/.nvm\" && [ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\" && ",
+                    "nvm install --lts"
+                )),
+                "Installing Node.js via nvm",
+            )
+            .map_err(|e| PackageError::BootstrapFailed {
+                manager: "npm".into(),
+                message: format!("nvm install failed: {}", e),
+            })?;
             if result.status.success() {
                 return Ok(());
             }
+            if let Some(method) = cx.planned_method() {
+                return Err(planned_method_failed("npm", method, &result).into());
+            }
+            report_abandoned_step(cx, "npm", "nvm", &result);
+        } else if let Some(method) = cx.planned_method() {
+            // `curl` is nvm's declared prerequisite, so the plan promised it.
+            return Err(planned_method_unavailable("npm", method).into());
         }
 
         Err(PackageError::BootstrapFailed {
@@ -525,6 +589,10 @@ impl PackageManager for NpmManager {
             message: "no installation method available".into(),
         }
         .into())
+    }
+
+    fn mediated_packages(&self, via: &str) -> Option<Vec<String>> {
+        NPM_MEDIATED.packages_for(via)
     }
 
     fn installed_packages(&self, cx: &PackageContext<'_>) -> Result<HashSet<String>> {
@@ -544,12 +612,17 @@ impl PackageManager for NpmManager {
         let decision = resolve_npm_prefix(cx.state)?;
         if let Some(prefix) = decision.fallback_prefix() {
             ensure_npm_fallback_prefix(prefix)?;
-            cx.printer.status_simple(
+            // Where the packages went and why, and nothing about PATH: the bin
+            // directory under this prefix is reported through
+            // `created_path_dirs` and written into the generated env file, so
+            // an instruction to add it by hand would be stale the moment the
+            // env layer runs.
+            cx.report(
                 Role::Info,
+                "npm",
                 format!(
-                    "npm has no writable global prefix; installing into {} — add {} to PATH",
+                    "npm has no writable global prefix; installing into {}",
                     prefix.display(), // native-ok: human-facing terminal notice, not a persisted key
-                    npm_bin_dir(prefix).display(), // native-ok: human-facing terminal notice, not a persisted key
                 ),
             );
         }
@@ -557,7 +630,7 @@ impl PackageManager for NpmManager {
         let mut cmd = npm_cmd();
         cmd.arg("install").arg("-g").args(packages);
         apply_prefix_flag(&mut cmd, &decision);
-        run_pkg_cmd_live(cx.printer, "npm", &mut cmd, &label, "install")?;
+        run_pkg_cmd_live(cx, "npm", &mut cmd, &label, "install")?;
         Ok(())
     }
 
@@ -570,16 +643,7 @@ impl PackageManager for NpmManager {
         let mut cmd = npm_cmd();
         cmd.arg("uninstall").arg("-g").args(packages);
         apply_prefix_flag(&mut cmd, &decision);
-        run_pkg_cmd_live(cx.printer, "npm", &mut cmd, &label, "uninstall")?;
-        Ok(())
-    }
-
-    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
-        let decision = resolve_npm_prefix(cx.state)?;
-        let mut cmd = npm_cmd();
-        cmd.args(["update", "-g"]);
-        apply_prefix_flag(&mut cmd, &decision);
-        run_pkg_cmd_live(cx.printer, "npm", &mut cmd, "npm update -g", "update")?;
+        run_pkg_cmd_live(cx, "npm", &mut cmd, &label, "uninstall")?;
         Ok(())
     }
 
@@ -794,15 +858,38 @@ mod tests {
     }
 
     #[test]
-    fn npm_manager_can_bootstrap_checks_cascade() {
-        let mgr = NpmManager;
-        let can = mgr.can_bootstrap();
-        // Should be true if brew, apt, dnf, or curl is available
-        let expected = brew_available()
-            || command_available("apt")
-            || command_available("dnf")
-            || command_available("curl");
-        assert_eq!(can, expected);
+    fn npm_bootstrap_plan_follows_the_brew_system_nvm_cascade() {
+        // The cascade always has an arm — brew, a system manager, or nvm — so
+        // the plan itself is unconditional; whether the nvm arm's `curl` can be
+        // had is `feasible_bootstrap_plan`'s question.
+        let plan = NpmManager.bootstrap_plan();
+        assert!(plan.is_some());
+        if let Some(plan) = plan {
+            // The method names whichever arm of `bootstrap`'s cascade this host
+            // reaches; only the nvm fallback shells out to a tool of its own,
+            // and no arm creates a PATH dir the manager can name before node
+            // exists (`path_dirs` reads the resolved prefix out of state).
+            let can = |t: &str| command_available(t);
+            let expected_method = if brew_available() {
+                "brew"
+            } else if can("apt") {
+                "apt"
+            } else if can("dnf") {
+                "dnf"
+            } else {
+                "nvm"
+            };
+            assert_eq!(plan.method, expected_method);
+            assert_eq!(
+                plan.requires,
+                if expected_method == "nvm" {
+                    vec!["curl".to_string()]
+                } else {
+                    Vec::<String>::new()
+                }
+            );
+            assert!(plan.creates_path_dirs.is_empty());
+        }
     }
 
     #[test]
@@ -952,6 +1039,41 @@ mod tests {
             found.as_deref(),
             Some(std::path::Path::new("/nonexistent/cfgd-npm-bin-not-a-file")),
             "a non-file CFGD_NPM_BIN must be ignored, not returned verbatim"
+        );
+    }
+
+    /// The bug this pins: `command_available` searches `$PATH` AND the
+    /// bootstrapped-directory registry, while a `Command::new("npm")` spawn
+    /// searches only `$PATH` — so an npm that brew had just landed answered
+    /// "available" and then died with ENOENT. Only a full path can be spawned.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn find_npm_returns_a_full_path_for_an_npm_only_the_bootstrapped_registry_can_see() {
+        use std::os::unix::fs::PermissionsExt;
+        let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_NPM_BIN");
+        let bootstrapped = tempfile::tempdir().unwrap();
+        let npm = bootstrapped.path().join("npm");
+        std::fs::write(&npm, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // A PATH that cannot see it, so the registry is the ONLY way npm
+        // resolves — which is the state right after a brew-mediated provision.
+        let empty = tempfile::tempdir().unwrap();
+        let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _path_env = cfgd_core::test_helpers::EnvVarGuard::set(
+            "PATH",
+            empty.path().to_str().expect("utf8 tempdir path"),
+        );
+        let _registry = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        cfgd_core::register_bootstrapped_path_dirs(&[cfgd_core::to_posix_string(
+            bootstrapped.path(),
+        )]);
+
+        assert_eq!(
+            find_npm().as_deref(),
+            Some(npm.as_path()),
+            "find_npm must hand back the resolved path, never the bare name"
         );
     }
 
@@ -1144,10 +1266,7 @@ mod tests {
             // prefix and spawn npm's prefix probe — does exactly what
             // planning is asserted not to.
             let printer = test_printer();
-            let cx = PackageContext {
-                printer: &printer,
-                state: &state,
-            };
+            let cx = PackageContext::new(&printer, &state);
             NpmManager
                 .install(&["cfgd-fixture-check-pkg".to_string()], &cx)
                 .expect("install");
@@ -1162,6 +1281,80 @@ mod tests {
             );
         }
 
+        /// The apply tree renders one line per action, and a manager's own
+        /// output window must not settle a second one for the same work. Every
+        /// other test of that invariant uses a mock manager, which never opens a
+        /// window at all — this one drives a REAL manager through a REAL
+        /// shell-out, so a window that settles its own line is visible here.
+        #[test]
+        #[serial]
+        fn a_real_install_shell_out_emits_one_line_under_apply() {
+            use cfgd_core::providers::{PackageAction, ProviderRegistry};
+            use cfgd_core::reconciler::{
+                Action, Owner, Phase, PhaseName, Plan, ReconcileContext, Reconciler,
+            };
+
+            let _clear = clear_npm_env_prefix();
+            let home = tempfile::tempdir().expect("tempdir");
+            let _home_guard = cfgd_core::with_test_home_guard(home.path());
+            let (_shim, _prefix_dir) = NpmShim::with_writable_prefix(0, "added 1 package\n", "");
+
+            let state = cfgd_core::test_helpers::test_state();
+            let mut registry = ProviderRegistry::new();
+            registry.package_managers = crate::packages::all_package_managers();
+            let reconciler = Reconciler::new(&registry, &state);
+
+            let plan = Plan {
+                phases: vec![Phase::from_actions(
+                    PhaseName::Packages,
+                    &Owner::profile("work"),
+                    vec![Action::Package(PackageAction::Install {
+                        manager: "npm".to_string(),
+                        packages: vec!["typescript".to_string()],
+                        origin: "local".to_string(),
+                    })],
+                )],
+                warnings: vec![],
+            };
+
+            let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+            let result = reconciler
+                .apply(
+                    &plan,
+                    &cfgd_core::test_helpers::make_empty_resolved(),
+                    Path::new("."),
+                    &printer,
+                    None,
+                    &[],
+                    ReconcileContext::Apply,
+                    false,
+                    None,
+                    &cfgd_core::AbortFlag::new(),
+                )
+                .expect("apply");
+            assert_eq!(result.action_results.len(), 1, "one action was planned");
+
+            let out = cfgd_core::output::strip_ansi(&cap.human());
+            let settled: Vec<&str> = out
+                .lines()
+                .map(str::trim_start)
+                .filter(|l| {
+                    ['\u{2713}', '\u{2717}', '\u{26A0}', '\u{2014}', '\u{2299}']
+                        .iter()
+                        .any(|g| l.starts_with(*g))
+                })
+                .collect();
+            assert_eq!(
+                settled.len(),
+                1,
+                "the tree's line and nothing settled by the window: {out}"
+            );
+            assert!(
+                settled[0].contains("npm install typescript"),
+                "the action's line is the tree's, built from the plan: {out}"
+            );
+        }
+
         #[test]
         #[serial]
         fn npm_install_passes_install_g_with_packages() {
@@ -1171,10 +1364,7 @@ mod tests {
             let (s, _prefix_dir) = NpmShim::with_writable_prefix(0, "", "");
             let p = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &p,
-                state: &state,
-            };
+            let cx = PackageContext::new(&p, &state);
             NpmManager
                 .install(&["typescript".into(), "eslint".into()], &cx)
                 .expect("Ok");
@@ -1196,10 +1386,7 @@ mod tests {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &p,
-                state: &state,
-            };
+            let cx = PackageContext::new(&p, &state);
             NpmManager.install(&[], &cx).expect("Ok");
             assert_eq!(s.invocation_count(), 0);
         }
@@ -1213,10 +1400,7 @@ mod tests {
             let (s, _prefix_dir) = NpmShim::with_writable_prefix(0, "", "");
             let p = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &p,
-                state: &state,
-            };
+            let cx = PackageContext::new(&p, &state);
             NpmManager
                 .uninstall(&["typescript".into()], &cx)
                 .expect("Ok");
@@ -1227,21 +1411,24 @@ mod tests {
 
         #[test]
         #[serial]
-        fn npm_update_runs_update_g() {
+        fn npm_declares_no_index_and_refreshing_upgrades_nothing() {
             let _clear = clear_npm_env_prefix();
             let home = tempfile::tempdir().expect("tempdir");
             let _home_guard = cfgd_core::with_test_home_guard(home.path());
             let (s, _prefix_dir) = NpmShim::with_writable_prefix(0, "", "");
             let p = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &p,
-                state: &state,
-            };
-            NpmManager.update(&cx).expect("Ok");
+            let cx = PackageContext::new(&p, &state);
+            assert!(
+                !NpmManager.has_index(),
+                "npm resolves the registry on every install"
+            );
+            NpmManager.refresh_index(&cx).expect("Ok");
             let argv = s.argv_log();
-            assert!(argv.contains("update -g"));
-            assert!(!argv.contains("--prefix"), "got: {argv}");
+            assert!(
+                !argv.contains("update"),
+                "`npm update -g` upgrades every global package the user never declared: {argv}"
+            );
         }
 
         #[test]
@@ -1295,10 +1482,7 @@ mod tests {
             let (_s, _prefix_dir) = NpmShim::with_writable_prefix(1, json, "peer dep issues");
             let printer = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &printer,
-                state: &state,
-            };
+            let cx = PackageContext::new(&printer, &state);
             let pkgs = NpmManager.installed_packages(&cx).expect("Ok");
             assert_eq!(pkgs.len(), 2);
             assert!(pkgs.contains("typescript"));
@@ -1315,10 +1499,7 @@ mod tests {
             let (_s, _prefix_dir) = NpmShim::with_writable_prefix(0, json, "");
             let printer = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &printer,
-                state: &state,
-            };
+            let cx = PackageContext::new(&printer, &state);
             let pkgs = NpmManager
                 .installed_packages_with_versions(&cx)
                 .expect("Ok");
@@ -1341,10 +1522,7 @@ mod tests {
             let (s, _prefix_dir) = NpmShim::with_writable_prefix(0, "{}", "");
             let printer = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &printer,
-                state: &state,
-            };
+            let cx = PackageContext::new(&printer, &state);
             NpmManager.installed_packages(&cx).expect("Ok");
             let argv = s.argv_log();
             assert!(
@@ -1370,10 +1548,7 @@ mod tests {
             let global_prefix = tmp_home.path().join(".npm-global");
             let printer = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &printer,
-                state: &state,
-            };
+            let cx = PackageContext::new(&printer, &state);
             let dirs = cfgd_core::with_test_home(tmp_home.path(), || {
                 NpmManager.installed_packages(&cx).expect("Ok");
                 npm_path_dirs_for(false)
@@ -1405,7 +1580,9 @@ mod tests {
         fn npm_bootstrap_via_brew_returns_ok() {
             let s = ToolShim::install("CFGD_BREW_BIN", 0, "", "");
             let p = test_printer();
-            NpmManager.bootstrap(&p).expect("bootstrap Ok via brew");
+            NpmManager
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
+                .expect("bootstrap Ok via brew");
             assert!(
                 s.argv_log().contains("install node"),
                 "brew argv must include `install node`: {}",
@@ -1428,10 +1605,7 @@ mod tests {
             let _home_guard = cfgd_core::with_test_home_guard(home.path());
             let printer = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &printer,
-                state: &state,
-            };
+            let cx = PackageContext::new(&printer, &state);
             let err = NpmManager
                 .installed_packages(&cx)
                 .expect_err("ENOENT spawn must surface as CommandFailed, not a panic");
@@ -1464,10 +1638,7 @@ mod tests {
             let _home_guard = cfgd_core::with_test_home_guard(home.path());
             let printer = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &printer,
-                state: &state,
-            };
+            let cx = PackageContext::new(&printer, &state);
             let err = NpmManager
                 .installed_packages_with_versions(&cx)
                 .expect_err("ENOENT spawn must surface as CommandFailed");
@@ -1489,10 +1660,7 @@ mod tests {
             let (_s, _prefix_dir) = NpmShim::with_writable_prefix(0, "this is not json", "");
             let printer = test_printer();
             let state = cfgd_core::test_helpers::test_state();
-            let cx = PackageContext {
-                printer: &printer,
-                state: &state,
-            };
+            let cx = PackageContext::new(&printer, &state);
             let err = NpmManager
                 .installed_packages_with_versions(&cx)
                 .expect_err("invalid JSON must surface as ListFailed");
@@ -1622,7 +1790,8 @@ mod tests {
             let configured = Path::new("cfgd-absent-prefix-root/relative-prefix");
             let shim = NpmShim::install(configured, 0, "{}", "");
             let home = tempfile::tempdir().expect("tempdir");
-            let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+            let (printer, buf) =
+                cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
             // Two INDEPENDENT in-memory state stores, not one shared between
             // the two calls: the point of this test is proving both methods
@@ -1632,14 +1801,8 @@ mod tests {
             // hit, which proves nothing about the resolver itself.
             let install_state = cfgd_core::test_helpers::test_state();
             let installed_state = cfgd_core::test_helpers::test_state();
-            let install_cx = PackageContext {
-                printer: &printer,
-                state: &install_state,
-            };
-            let installed_cx = PackageContext {
-                printer: &printer,
-                state: &installed_state,
-            };
+            let install_cx = PackageContext::new(&printer, &install_state);
+            let installed_cx = PackageContext::new(&printer, &installed_state);
 
             let (install_result, installed_result) = cfgd_core::with_test_home(home.path(), || {
                 with_test_elevated(false, || {
@@ -1906,6 +2069,167 @@ mod tests {
                 dirs,
                 vec![cfgd_core::to_posix_string(npm_bin_dir(&fallback))],
                 "path_dirs must report the fallback prefix's bin dir when npm has no usable configured prefix"
+            );
+        }
+
+        /// `created_path_dirs` answers for the directory cfgd MADE, which is
+        /// only ever the `$HOME/.npm-global` fallback: a configured prefix
+        /// belongs to npm or to the system, so it stays out of the generated
+        /// env file even though it is exactly where npm's binaries live —
+        /// which `path_dirs` keeps saying.
+        #[test]
+        #[serial]
+        fn npm_created_path_dirs_reports_only_the_prefix_cfgd_makes_itself() {
+            let _clear = clear_npm_env_prefix();
+            let _elevated = with_test_elevated_guard(false);
+            let printer = test_printer();
+
+            let home = tempfile::tempdir().expect("tempdir");
+            // Empty stdout for `config get prefix` lands in the fallback branch
+            // without invoking the write-probe — root-independent by
+            // construction.
+            let fallback_shim = NpmShim::install(Path::new(""), 0, "", "");
+            let fallback_state = cfgd_core::test_helpers::test_state();
+            let fallback_cx = PackageContext::new(&printer, &fallback_state);
+            let (created, fallback) = cfgd_core::with_test_home(home.path(), || {
+                (
+                    NpmManager.created_path_dirs(&fallback_cx),
+                    npm_fallback_prefix(),
+                )
+            });
+            assert_eq!(
+                created,
+                vec![cfgd_core::to_posix_string(npm_bin_dir(&fallback))],
+                "the fallback prefix is cfgd's own creation and must be reported"
+            );
+            drop(fallback_shim);
+
+            let (_shim, prefix_dir) = NpmShim::with_writable_prefix(0, "", "");
+            let state = cfgd_core::test_helpers::test_state();
+            let cx = PackageContext::new(&printer, &state);
+            assert!(
+                NpmManager.created_path_dirs(&cx).is_empty(),
+                "a writable configured prefix is not cfgd's to publish"
+            );
+            assert_eq!(
+                NpmManager.path_dirs(&cx),
+                vec![cfgd_core::to_posix_string(npm_bin_dir(prefix_dir.path()))],
+                "that same prefix is still where npm's binaries live"
+            );
+        }
+
+        /// A directory cfgd created earns an env entry however the manager got
+        /// onto the machine. Nothing provisions npm here — the plan holds one
+        /// install and no `Provision` — yet the prefix `install()` created has
+        /// to reach the recorded PATH directories, which is what the generated
+        /// env file is built from. Recorded through the install path, this is
+        /// the case that used to reach the user only as an instruction to edit
+        /// their own PATH.
+        #[test]
+        #[serial]
+        fn an_install_that_creates_a_prefix_records_it_with_no_provision_in_the_run() {
+            use cfgd_core::providers::{PackageAction, ProviderRegistry};
+            use cfgd_core::reconciler::{
+                Action, Owner, Phase, PhaseName, Plan, ReconcileContext, Reconciler,
+            };
+
+            let _clear = clear_npm_env_prefix();
+            let _elevated = with_test_elevated_guard(false);
+            let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture();
+            let (_blocker_dir, unwritable) = unwritable_prefix();
+            let _shim = NpmShim::install(&unwritable, 0, "", "");
+
+            let home = tempfile::tempdir().expect("tempdir");
+            let _home_guard = cfgd_core::with_test_home_guard(home.path());
+
+            let state = cfgd_core::test_helpers::test_state();
+            let mut registry = ProviderRegistry::new();
+            registry.package_managers = crate::packages::all_package_managers();
+            let reconciler = Reconciler::new(&registry, &state);
+
+            let plan = Plan {
+                phases: vec![Phase::from_actions(
+                    PhaseName::Packages,
+                    &Owner::profile("work"),
+                    vec![Action::Package(PackageAction::Install {
+                        manager: "npm".to_string(),
+                        packages: vec!["typescript".to_string()],
+                        origin: "local".to_string(),
+                    })],
+                )],
+                warnings: vec![],
+            };
+
+            let printer = test_printer();
+            reconciler
+                .apply(
+                    &plan,
+                    &cfgd_core::test_helpers::make_empty_resolved(),
+                    Path::new("."),
+                    &printer,
+                    None,
+                    &[],
+                    ReconcileContext::Apply,
+                    false,
+                    None,
+                    &cfgd_core::AbortFlag::new(),
+                )
+                .expect("apply");
+
+            assert_eq!(
+                state
+                    .bootstrapped_managers()
+                    .expect("read path-dir records"),
+                vec![(
+                    "npm".to_string(),
+                    vec![cfgd_core::to_posix_string(
+                        home.path().join(".npm-global").join("bin")
+                    )]
+                )],
+                "the prefix install() created must be recorded for the env file"
+            );
+        }
+
+        /// cfgd owns `~/.cfgd.env`, so a directory it just created is written
+        /// there rather than handed to the user as an errand. The note keeps
+        /// only what writing a file cannot fix — where the packages went, and
+        /// why the prefix moved.
+        #[test]
+        #[serial]
+        fn the_fallback_prefix_note_tells_the_user_nothing_to_do_about_path() {
+            let _clear = clear_npm_env_prefix();
+            let _elevated = with_test_elevated_guard(false);
+            let (_blocker_dir, unwritable) = unwritable_prefix();
+            let _shim = NpmShim::install(&unwritable, 0, "", "");
+
+            let home = tempfile::tempdir().expect("tempdir");
+            let _home_guard = cfgd_core::with_test_home_guard(home.path());
+
+            let (printer, buf) =
+                cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+            let state = cfgd_core::test_helpers::test_state();
+            let cx = PackageContext::new(&printer, &state);
+            NpmManager
+                .install(&["typescript".to_string()], &cx)
+                .expect("install");
+
+            let out = cfgd_core::test_helpers::captured_text(&buf);
+            let note = out
+                .lines()
+                .find(|l| l.contains("no writable global prefix"))
+                .expect("the fallback note is reported");
+            let prefix = home.path().join(".npm-global").display().to_string();
+            assert!(
+                note.contains(&prefix),
+                "the note must still say where the packages went: {note}"
+            );
+            // The prefix is a random tempdir path, and any substring test would
+            // be answering about THAT rather than about the sentence: `add`
+            // turns up in a tempdir name roughly once in 100k runs.
+            let sentence = note.replace(&prefix, "<prefix>");
+            assert!(
+                !sentence.contains("PATH") && !sentence.contains("add"),
+                "the note must not ask the user to edit PATH: {note}"
             );
         }
 

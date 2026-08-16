@@ -1,9 +1,9 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::Role;
 
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 /// WindowsServiceConfigurator — manages Windows Services declaratively.
 ///
@@ -314,7 +314,7 @@ impl SystemConfigurator for WindowsServiceConfigurator {
         Ok(drifts)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let entries = Self::parse_services(desired);
         for entry in &entries {
             let mut exists = Self::query_service(&entry.name).is_some();
@@ -327,7 +327,7 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                     entry.start_type.as_deref(),
                 ) {
                     if let Some(raw) = unknown_start {
-                        printer.status_simple(
+                        cx.report(
                             Role::Warn,
                             format!(
                                 "Unknown start type '{}' for service {}, using 'demand'",
@@ -340,11 +340,11 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                         .output()
                         .map_err(cfgd_core::errors::CfgdError::Io)?;
                     if output.status.success() {
-                        printer.status_simple(Role::Ok, format!("Created service {}", entry.name));
+                        cx.report(Role::Ok, format!("Created service {}", entry.name));
                         exists = true;
                     } else {
                         let stdout = String::from_utf8_lossy(&output.stdout);
-                        printer.status_simple(
+                        cx.report(
                             Role::Warn,
                             format!("Failed to create service {}: {}", entry.name, stdout.trim()),
                         );
@@ -362,7 +362,7 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                     .map_err(cfgd_core::errors::CfgdError::Io)?;
                 if !output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    printer.status_simple(
+                    cx.report(
                         Role::Warn,
                         format!(
                             "Failed to configure service {}: {}",
@@ -387,11 +387,10 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                             .output()
                             .map_err(cfgd_core::errors::CfgdError::Io)?;
                         if output.status.success() {
-                            printer
-                                .status_simple(Role::Ok, format!("Started service {}", entry.name));
+                            cx.report(Role::Ok, format!("Started service {}", entry.name));
                         } else {
                             let stdout = String::from_utf8_lossy(&output.stdout);
-                            printer.status_simple(
+                            cx.report(
                                 Role::Warn,
                                 format!("Failed to start {}: {}", entry.name, stdout.trim()),
                             );
@@ -403,11 +402,10 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                             .output()
                             .map_err(cfgd_core::errors::CfgdError::Io)?;
                         if output.status.success() {
-                            printer
-                                .status_simple(Role::Ok, format!("Stopped service {}", entry.name));
+                            cx.report(Role::Ok, format!("Stopped service {}", entry.name));
                         } else {
                             let stdout = String::from_utf8_lossy(&output.stdout);
-                            printer.status_simple(
+                            cx.report(
                                 Role::Warn,
                                 format!("Failed to stop {}: {}", entry.name, stdout.trim()),
                             );

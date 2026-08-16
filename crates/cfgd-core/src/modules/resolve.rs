@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use crate::config::ModulePackageEntry;
 use crate::errors::{ModuleError, Result};
 use crate::platform::Platform;
-use crate::providers::PackageManager;
+use crate::providers::{PackageManager, PackageManagerExt};
 
 use crate::errors::CfgdError;
 

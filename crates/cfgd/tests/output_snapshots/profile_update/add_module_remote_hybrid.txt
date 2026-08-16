@@ -6,7 +6,7 @@ Add Remote Module
 Commit     <COMMIT_SHA>
 Integrity  sha256:9ddde7d140067f9a93cc4d4f012b292d023731854e4f8a957bad25e565eb579b
 
-Module: mymod
+module:mymod
   (none)
 
 ⊙ Tag 'v1.0.0' is unsigned
@@ -16,4 +16,4 @@ Module: mymod
 
 → Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'
 
-✓ Updated profile 'default' (1 change(s))
+✓ Updated profile 'default' (1 change)

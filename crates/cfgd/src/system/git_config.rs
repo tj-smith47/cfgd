@@ -1,6 +1,6 @@
 use cfgd_core::errors::{CfgdError, Result};
-use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::output::Role;
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 /// GitConfigurator — manages `git config --global` settings declaratively.
 ///
@@ -163,7 +163,7 @@ impl SystemConfigurator for GitConfigurator {
         Ok(drifts)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let mapping = match desired.as_mapping() {
             Some(m) => m,
             None => return Ok(()),
@@ -176,7 +176,7 @@ impl SystemConfigurator for GitConfigurator {
             // it with a warning naming the key rather than writing a Debug
             // string git would store verbatim.
             if !is_git_scalar(desired_val) {
-                printer.status_simple(
+                cx.report(
                     Role::Warn,
                     format!("git config {}: non-scalar value ignored", key),
                 );
@@ -185,7 +185,7 @@ impl SystemConfigurator for GitConfigurator {
 
             let desired_str = value_to_git_string(desired_val);
 
-            printer.status_simple(
+            cx.report(
                 Role::Info,
                 format!("git config --global {} {}", key, desired_str),
             );
@@ -198,7 +198,7 @@ impl SystemConfigurator for GitConfigurator {
                 .map_err(CfgdError::Io)?;
 
             if !output.status.success() {
-                printer.status_simple(
+                cx.report(
                     Role::Warn,
                     format!(
                         "git config --global {} failed: {}",
@@ -348,7 +348,12 @@ mod tests {
             let desired: serde_yaml::Value =
                 serde_yaml::from_str("user.email: jane@work.com").unwrap();
             let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
-            GitConfigurator.apply(&desired, &printer).unwrap();
+            GitConfigurator
+                .apply(
+                    &desired,
+                    &cfgd_core::providers::SystemContext::new(&printer),
+                )
+                .unwrap();
 
             let actual = git_config_get_file(config_file, "user.email");
             assert_eq!(actual.as_deref(), Some("jane@work.com"));
@@ -360,7 +365,12 @@ mod tests {
         with_temp_global_config(|config_file| {
             let desired: serde_yaml::Value = serde_yaml::from_str("commit.gpgSign: true").unwrap();
             let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
-            GitConfigurator.apply(&desired, &printer).unwrap();
+            GitConfigurator
+                .apply(
+                    &desired,
+                    &cfgd_core::providers::SystemContext::new(&printer),
+                )
+                .unwrap();
 
             let actual = git_config_get_file(config_file, "commit.gpgSign");
             assert_eq!(actual.as_deref(), Some("true"));
@@ -425,7 +435,9 @@ mod tests {
                 serde_yaml::from_str("push:\n  autoSetupRemote: true\n  default: simple\n")
                     .unwrap();
             let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
-            GitConfigurator.apply(&nested, &printer).unwrap();
+            GitConfigurator
+                .apply(&nested, &cfgd_core::providers::SystemContext::new(&printer))
+                .unwrap();
 
             assert_eq!(
                 git_config_get_file(config_file, "push.autoSetupRemote").as_deref(),
@@ -445,7 +457,12 @@ mod tests {
                 serde_yaml::from_str("user.name: Jane Doe\npush:\n  autoSetupRemote: true\n")
                     .unwrap();
             let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
-            GitConfigurator.apply(&desired, &printer).unwrap();
+            GitConfigurator
+                .apply(
+                    &desired,
+                    &cfgd_core::providers::SystemContext::new(&printer),
+                )
+                .unwrap();
 
             assert_eq!(
                 git_config_get_file(config_file, "user.name").as_deref(),
@@ -463,7 +480,12 @@ mod tests {
         with_temp_global_config(|config_file| {
             let desired: serde_yaml::Value = serde_yaml::from_str("a:\n  b:\n    c: x\n").unwrap();
             let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
-            GitConfigurator.apply(&desired, &printer).unwrap();
+            GitConfigurator
+                .apply(
+                    &desired,
+                    &cfgd_core::providers::SystemContext::new(&printer),
+                )
+                .unwrap();
 
             assert_eq!(
                 git_config_get_file(config_file, "a.b.c").as_deref(),
@@ -480,7 +502,12 @@ mod tests {
             let desired: serde_yaml::Value =
                 serde_yaml::from_str("custom:\n  list:\n    - a\n    - b\n").unwrap();
             let (printer, doc) = cfgd_core::output::Printer::for_test_doc();
-            GitConfigurator.apply(&desired, &printer).unwrap();
+            GitConfigurator
+                .apply(
+                    &desired,
+                    &cfgd_core::providers::SystemContext::new(&printer),
+                )
+                .unwrap();
 
             // Nothing was written for the non-scalar key.
             assert_eq!(git_config_get_file(config_file, "custom.list"), None);
@@ -527,7 +554,12 @@ mod tests {
             );
 
             let (printer, doc) = cfgd_core::output::Printer::for_test_doc();
-            GitConfigurator.apply(&desired, &printer).unwrap();
+            GitConfigurator
+                .apply(
+                    &desired,
+                    &cfgd_core::providers::SystemContext::new(&printer),
+                )
+                .unwrap();
 
             // Nothing written under the empty section.
             assert_eq!(git_config_get_file(config_file, "push.default"), None);

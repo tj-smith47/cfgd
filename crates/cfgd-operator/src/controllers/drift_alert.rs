@@ -169,9 +169,9 @@ pub(super) async fn reconcile_drift_alert(
                                 "status": "True",
                                 "reason": "DriftActive",
                                 "message": format!(
-                                    "Drift detected on device {} — {} detail(s)",
+                                    "Drift detected on device {} — {}",
                                     obj.spec.device_id,
-                                    obj.spec.drift_details.len()
+                                    cfgd_core::pluralize(obj.spec.drift_details.len(), "detail")
                                 ),
                                 "lastTransitionTime": now.clone(),
                                 "observedGeneration": mc_generation,

@@ -1,4 +1,4 @@
-Add Config Source
+Add source:team-config
 ◐ Cloning source 'team-config'
   Cloning into '<STATE_DIR>/sources/team-config'...
 ✓ Cloning source 'team-config'
@@ -14,7 +14,7 @@ Policy
 
 ✓ No conflicts with current config
 
-✓ Subscribed to source 'team-config'
+✓ subscribed
 
 Profile  default
 

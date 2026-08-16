@@ -13,9 +13,10 @@
 use cfgd::cli::output_types::{
     DoctorConfigCheck, DoctorConfigState, DoctorConfiguratorCheck, DoctorManagerCheck,
     DoctorModuleCheck, DoctorOutput, DoctorProviderCheck, DoctorSecretsCheck, LogOutput,
-    PlanActionOutput, PlanOutput, PlanPhaseOutput,
+    PlanActionOutput, PlanGroupOutput, PlanOutput, PlanPhaseOutput,
 };
 use cfgd_core::output::{Doc, OutputFormat, Printer};
+use cfgd_core::reconciler::Owner;
 use cfgd_core::state::{ApplyRecord, ApplyStatus};
 use pretty_assertions::assert_eq;
 
@@ -87,38 +88,45 @@ fn plan_output_roundtrips_through_emit() {
         phases: vec![
             PlanPhaseOutput {
                 phase: "packages".into(),
-                module: None,
-                section: None,
-                actions: vec![
-                    PlanActionOutput {
-                        description: "install ripgrep via brew".into(),
-                        action_type: "package_install".into(),
-                        targets: vec![],
-                        origin: None,
-                    },
-                    PlanActionOutput {
-                        description: "install fd via brew".into(),
-                        action_type: "package_install".into(),
-                        targets: vec![],
-                        origin: None,
-                    },
-                ],
+                groups: vec![PlanGroupOutput::new(
+                    Owner::profile("base"),
+                    vec![
+                        PlanActionOutput {
+                            description: "install ripgrep via brew".into(),
+                            action_type: "package_install".into(),
+                            targets: vec![],
+                            origin: None,
+                            manager: None,
+                        },
+                        PlanActionOutput {
+                            description: "install fd via brew".into(),
+                            action_type: "package_install".into(),
+                            targets: vec![],
+                            origin: None,
+                            manager: None,
+                        },
+                    ],
+                )],
             },
             PlanPhaseOutput {
                 phase: "files".into(),
-                module: None,
-                section: None,
-                actions: vec![PlanActionOutput {
-                    description: "write ~/.gitconfig".into(),
-                    action_type: "file_write".into(),
-                    targets: vec!["/home/u/.gitconfig".into()],
-                    origin: None,
-                }],
+                groups: vec![PlanGroupOutput::new(
+                    Owner::module("dotfiles"),
+                    vec![PlanActionOutput {
+                        description: "write ~/.gitconfig".into(),
+                        action_type: "file_write".into(),
+                        targets: vec!["/home/u/.gitconfig".into()],
+                        origin: None,
+                        manager: None,
+                    }],
+                )],
             },
         ],
         total_actions: 3,
         warnings: vec!["module 'foo' has no provider".into()],
         pending_backups: vec!["photos".into()],
+        pending_decisions: vec![],
+        rejected_decisions: vec![],
     };
 
     let actual = emit_and_parse(&payload);

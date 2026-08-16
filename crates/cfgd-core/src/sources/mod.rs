@@ -28,6 +28,40 @@ use crate::output::{Printer, Role};
 pub(crate) const SOURCE_MANIFEST_FILE: &str = "cfgd-source.yaml";
 const PROFILES_DIR: &str = "profiles";
 
+/// Whether git would treat this origin URL as a remote rather than a path on
+/// this machine. Applies git's own rule: a `scheme://` URL is remote, and so is
+/// the scp-style `[user@]host:path` form — recognised, as git recognises it, by
+/// a colon appearing before the first slash. Everything else (absolute,
+/// relative, UNC and drive-letter paths) is a location on this host.
+///
+/// Deliberately NOT [`crate::modules::is_git_source`], which is a strict
+/// scheme-and-`git@` allow-list: it answers "is this a git URL" for module file
+/// sources, where a bare `files/nvim` must stay a path, and rejects the legal
+/// `deploy@host:acme/config.git` remote that a source origin may name. This
+/// predicate answers the narrower question the source-origin guard asks — "does
+/// resolving this reach the network or the local filesystem" — so widening
+/// either one to serve the other would break the caller it was not written for.
+fn is_remote_origin_url(url: &str) -> bool {
+    let url = url.trim();
+    if url.to_lowercase().starts_with("file://") {
+        return false;
+    }
+    if url.contains("://") {
+        return true;
+    }
+    match url.split_once(':') {
+        Some((host, _)) => {
+            // A one-letter "host" is a Windows drive letter (`C:/repo`), which
+            // git resolves as a path on the host it runs on.
+            !host.is_empty()
+                && !host.contains('/')
+                && !host.contains('\\')
+                && !(host.len() == 1 && host.starts_with(|c: char| c.is_ascii_alphabetic()))
+        }
+        None => false,
+    }
+}
+
 /// Cached state for a single config source.
 #[derive(Debug, Clone)]
 pub struct CachedSource {
@@ -159,6 +193,26 @@ impl SourceManager {
             return Ok(());
         }
 
+        // A read path never fetches, but it must not COMPOSE a checkout that was
+        // cloned from a repository the spec no longer names — that is another
+        // source's content wearing this one's name. Degrade exactly like the
+        // cache-miss above: the sync path is what discards and re-clones. Only
+        // a RECORDED origin that disagrees takes this arm — a cache that is not
+        // a repository falls through to the parse/signature checks below, whose
+        // hard errors are the fail-closed contract for a corrupt cache.
+        if Self::cached_recorded_origin(&source_dir)
+            .is_some_and(|recorded| recorded != spec.origin.url)
+        {
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "Source '{}': cached checkout was cloned from a different origin — run 'cfgd sync' to re-fetch it; using local state only",
+                    spec.name
+                ),
+            );
+            return Ok(());
+        }
+
         let manifest = self.parse_manifest(&spec.name, &source_dir)?;
 
         // A cached source still gets its signature verified — a tampered cache
@@ -186,23 +240,13 @@ impl SourceManager {
     pub fn load_source(&mut self, spec: &SourceSpec, printer: &Printer) -> Result<()> {
         validate_source_name(&spec.name)?;
 
-        // Reject local file URLs to prevent local filesystem access from composed sources.
-        // CFGD_ALLOW_LOCAL_SOURCES bypasses this for dev/test environments only.
-        let url_lower = spec.origin.url.to_lowercase();
-        let allow_local = std::env::var("CFGD_ALLOW_LOCAL_SOURCES").is_ok();
-        if !allow_local && (url_lower.starts_with("file://") || url_lower.starts_with('/')) {
-            return Err(SourceError::GitError {
-                name: spec.name.clone(),
-                message: "local file:// URLs and absolute paths are not allowed as source origins"
-                    .to_string(),
-            }
-            .into());
-        }
-
         // A URL beginning with '-' would be parsed by git as an option rather
         // than the positional remote (clone/ls-remote take the URL positionally).
         // Reject it; the trailing positionals are additionally guarded with
-        // --end-of-options as defense in depth.
+        // --end-of-options as defense in depth. Judged BEFORE the local-origin
+        // check below and independently of CFGD_ALLOW_LOCAL_SOURCES, because an
+        // injected git option is an attack whatever the origin resolves to, and
+        // naming it a "local path" would describe the wrong defect.
         if spec.origin.url.trim_start().starts_with('-') {
             return Err(SourceError::GitError {
                 name: spec.name.clone(),
@@ -211,7 +255,60 @@ impl SourceManager {
             .into());
         }
 
+        // Reject local file URLs and filesystem paths to prevent local filesystem
+        // access from composed sources. A source delivers files, packages and
+        // scripts to the machine, so its origin has to be a remote a subscriber
+        // can verify and pin — not a directory whose contents anything on the
+        // host can rewrite. The check is on what GIT would treat as local rather
+        // than on a leading `/`: a bare `acme/config` or `../config` is a
+        // relative path git clones from the current directory just as readily as
+        // an absolute one, so accepting those left the guard naming a rule it did
+        // not enforce. CFGD_ALLOW_LOCAL_SOURCES bypasses this for dev/test
+        // environments only.
+        let allow_local = std::env::var("CFGD_ALLOW_LOCAL_SOURCES").is_ok();
+        if !allow_local && !is_remote_origin_url(&spec.origin.url) {
+            return Err(SourceError::GitError {
+                name: spec.name.clone(),
+                message: format!(
+                    "'{}' is a local path or file:// URL, which is not allowed as a source \
+                     origin — pass a git URL (e.g. https://github.com/acme/config.git)",
+                    spec.origin.url
+                ),
+            }
+            .into());
+        }
+
         let source_dir = self.cache_dir.join(&spec.name);
+
+        // The cache is keyed by the source NAME alone, so nothing else ties an
+        // existing checkout to the origin it was cloned from. Left unchecked, a
+        // subscription whose origin changed — or two configs sharing one cache
+        // under the same name — fetches whatever repository the stale clone
+        // still points at and serves content the spec never named. A clone
+        // whose recorded origin disagrees is discarded and re-cloned rather
+        // than re-pointed: unrelated histories refuse the fast-forward, which
+        // would quietly keep serving the OLD checkout after a "successful"
+        // fetch. A directory that is not a repository (or records no origin)
+        // is equally unfetchable, so it takes the same discard-and-reclone
+        // self-heal here on the sync path.
+        if source_dir.exists()
+            && Self::cached_recorded_origin(&source_dir)
+                .is_none_or(|recorded| recorded != spec.origin.url)
+        {
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "Source '{}': cached checkout was cloned from a different origin — discarding it and re-cloning from '{}'",
+                    spec.name, spec.origin.url
+                ),
+            );
+            std::fs::remove_dir_all(&source_dir).map_err(|e| SourceError::CacheError {
+                message: format!(
+                    "failed to discard stale cache for source '{}': {e}",
+                    spec.name
+                ),
+            })?;
+        }
 
         // A pin resolves to a concrete git ref (tag or commit SHA) rather than
         // tracking a branch. Resolution happens on every load so a semver-range
@@ -311,6 +408,18 @@ impl SourceManager {
 
         self.sources.insert(spec.name.clone(), cached);
         Ok(())
+    }
+
+    /// The origin URL the cached checkout at `source_dir` records, or `None`
+    /// for a directory that is not a repository or has no `origin` remote.
+    /// `None` is deliberately NOT an answer about mismatch: the sync path
+    /// discards it as unfetchable either way, while the read path falls
+    /// through so a corrupt cache keeps hitting the parse/signature hard
+    /// errors it always has instead of being quietly skipped.
+    fn cached_recorded_origin(source_dir: &Path) -> Option<String> {
+        let repo = Repository::open(source_dir).ok()?;
+        let remote = repo.find_remote("origin").ok()?;
+        remote.url().ok().map(str::to_owned)
     }
 
     /// Fetch (pull) updates for an already-cloned source.
@@ -1111,8 +1220,8 @@ pub fn verify_head_signature(name: &str, repo_dir: &Path) -> Result<()> {
         return Err(SourceError::SignatureVerificationFailed {
             name: name.to_string(),
             message: format!(
-                "git log failed (exit {}): {}",
-                output.status.code().unwrap_or(-1),
+                "git log failed ({}): {}",
+                crate::exit_status_reason(&output.status),
                 crate::stderr_lossy_trimmed(&output)
             ),
         }
@@ -1477,8 +1586,8 @@ pub fn git_clone_with_fallback(
     // reason into the final message so the actual cause is not lost.
     let cli_failure = match &cli_result {
         Ok(output) => format!(
-            "git CLI exited {}: {}",
-            output.status.code().unwrap_or(-1),
+            "git CLI {}: {}",
+            crate::exit_status_reason(&output.status),
             output.stderr.trim()
         ),
         Err(e) => format!("git CLI unavailable: {e}"),

@@ -4,8 +4,8 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::{PackageContext, PackageManager};
+use cfgd_core::output::Role;
+use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager};
 
 use super::shared::{run_pkg_cmd, run_pkg_cmd_msg};
 
@@ -80,7 +80,7 @@ impl ScriptedManager {
         &self,
         template: &str,
         packages: &[String],
-        printer: &Printer,
+        cx: &PackageContext<'_>,
         error_kind: &str,
     ) -> Result<()> {
         if packages.is_empty() {
@@ -100,12 +100,12 @@ impl ScriptedManager {
             // surfaced as a per-package error so the caller can see which
             // member of the batch failed.
             for (cmd, pkg) in invocations.iter().zip(packages) {
-                printer.status_simple(Role::Info, cmd.as_str());
+                cx.report(Role::Info, &self.mgr_name, cmd.as_str());
                 run_pkg_cmd_msg(&self.mgr_name, &mut shell_command(cmd), error_kind, pkg)?;
             }
         } else if let Some(cmd) = invocations.first() {
             // Batch mode — build_template_invocations emits a single command.
-            printer.status_simple(Role::Info, cmd.as_str());
+            cx.report(Role::Info, &self.mgr_name, cmd.as_str());
             run_pkg_cmd(&self.mgr_name, &mut shell_command(cmd), error_kind)?;
         }
         Ok(())
@@ -165,11 +165,13 @@ impl PackageManager for ScriptedManager {
             .unwrap_or(false)
     }
 
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        // A user-defined manager declares no install of its own — only how to
+        // check, list, install and remove packages with one that already exists.
+        None
     }
 
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
 
@@ -185,18 +187,22 @@ impl PackageManager for ScriptedManager {
     }
 
     fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
-        self.run_template(&self.install_cmd, packages, cx.printer, "install")
+        self.run_template(&self.install_cmd, packages, cx, "install")
     }
 
     fn uninstall(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
-        self.run_template(&self.uninstall_cmd, packages, cx.printer, "uninstall")
+        self.run_template(&self.uninstall_cmd, packages, cx, "uninstall")
     }
 
-    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        self.update_cmd.is_some()
+    }
+
+    fn refresh_index(&self, cx: &PackageContext<'_>) -> Result<()> {
         if let Some(ref cmd) = self.update_cmd {
             #[cfg(test)]
             let _path_guard = cfgd_core::test_helpers::path_env_read_guard();
-            cx.printer.status_simple(Role::Info, cmd.as_str());
+            cx.report(Role::Info, &self.mgr_name, cmd.as_str());
             run_pkg_cmd_msg(
                 &self.mgr_name,
                 &mut shell_command(cmd),

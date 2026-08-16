@@ -67,10 +67,15 @@ pub fn cmd_profile_delete(
     let is_canonical = profile_path == cfgd_core::config::canonical_profile_path(&pdir, name);
 
     // Safety: refuse if active profile
-    if cli.config.exists()
-        && let Ok(cfg) = config::load_config(&cli.config)
-        && cfg.spec.profile.as_deref() == Some(name)
-    {
+    let active_conflict = cli.config.exists()
+        && match config::load_config(&cli.config) {
+            Ok(mut cfg) => {
+                drain_config_deprecations(printer, &mut cfg);
+                cfg.spec.profile.as_deref() == Some(name)
+            }
+            Err(_) => false,
+        };
+    if active_conflict {
         return Err(crate::cli::cli_error(
             name,
             "active_profile",

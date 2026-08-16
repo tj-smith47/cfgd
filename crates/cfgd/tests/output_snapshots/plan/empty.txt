@@ -2,7 +2,4 @@ Plan
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  empty
 
-Plan
-  (nothing to do)
-
 ✓ Nothing to do — everything is up to date

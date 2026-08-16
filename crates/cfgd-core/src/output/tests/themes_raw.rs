@@ -5,13 +5,13 @@
 //! These tests inspect raw rendered bytes for the expected truecolor SGR
 //! codes per preset to lock in palette values.
 
-use crate::output::test_support::ColorsEnabledGuard;
 use crate::output::{Doc, Printer, Role, Theme, Verbosity};
 use crate::test_helpers::EnvVarGuard;
 use serial_test::serial;
 
 fn render_with_theme(name: &str, doc: Doc) -> String {
-    let (p, buf) = Printer::for_test_with_theme(Theme::from_preset(name), Verbosity::Normal);
+    let (p, buf) =
+        Printer::for_test_with_theme_colored(Theme::from_preset(name), Verbosity::Normal);
     p.emit(doc);
     p.flush();
     // Mutex is local to this test — poisoning would only occur if a prior
@@ -38,7 +38,6 @@ fn accent_emits_truecolor_sgr_per_preset() {
     ];
     let _no_color = EnvVarGuard::unset("NO_COLOR");
     let _term = EnvVarGuard::set("COLORTERM", "truecolor");
-    let _guard = ColorsEnabledGuard::set(true);
     for (preset, (r, g, b)) in cases {
         let doc = Doc::new().status(Role::Accent, "marker");
         let raw = render_with_theme(preset, doc);
@@ -65,7 +64,6 @@ fn secondary_emits_truecolor_sgr_per_preset() {
     ];
     let _no_color = EnvVarGuard::unset("NO_COLOR");
     let _term = EnvVarGuard::set("COLORTERM", "truecolor");
-    let _guard = ColorsEnabledGuard::set(true);
     for (preset, (r, g, b)) in cases {
         let doc = Doc::new().status(Role::Secondary, "marker");
         let raw = render_with_theme(preset, doc);
@@ -82,7 +80,6 @@ fn secondary_emits_truecolor_sgr_per_preset() {
 fn minimal_accent_emits_italic_attr_no_color() {
     let _no_color = EnvVarGuard::unset("NO_COLOR");
     let _term = EnvVarGuard::set("COLORTERM", "truecolor");
-    let _guard = ColorsEnabledGuard::set(true);
     let doc = Doc::new().status(Role::Accent, "marker");
     let raw = render_with_theme("minimal", doc);
     // minimal accent = plain.italic, no hex. Expect \x1b[3m (italic only).
@@ -102,7 +99,6 @@ fn minimal_accent_emits_italic_attr_no_color() {
 fn minimal_secondary_emits_underline_attr_no_color() {
     let _no_color = EnvVarGuard::unset("NO_COLOR");
     let _term = EnvVarGuard::set("COLORTERM", "truecolor");
-    let _guard = ColorsEnabledGuard::set(true);
     let doc = Doc::new().status(Role::Secondary, "marker");
     let raw = render_with_theme("minimal", doc);
     // minimal secondary = plain.underlined, no hex. Expect \x1b[4m.

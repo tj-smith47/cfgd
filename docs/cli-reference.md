@@ -2,6 +2,14 @@
 
 Complete command reference for `cfgd`. All commands respect [global flags](configuration.md#global-flags).
 
+**Every top-level command has an entry here**, and each entry is the same depth: what the command
+does in a sentence, a synopsis of its subcommands and arguments, the flags that are specific to it,
+and a link to the topic document when one exists. Global flags are listed once, in
+[Configuration](configuration.md#global-flags), and are never repeated per command. Semantics —
+what a backup run does when a hook fails, how a source's constraints are enforced — live in the
+topic document, which links back here; this file does not restate them. `cfgd help <command>` and
+`cfgd <command> --help` print the same synopsis from the binary itself.
+
 ## Core Commands
 
 ### `cfgd generate`
@@ -62,24 +70,39 @@ Initialize a new cfgd configuration repository.
 ```sh
 cfgd init                                          # interactive setup in current directory
 cfgd init ~/dotfiles                               # scaffold in specific directory
+cfgd init --from you/config                        # GitHub shorthand for owner/repo
 cfgd init --from git@github.com:you/config.git     # clone and scaffold
+cfgd init --from https://gitlab.example.com/you/config.git  # any git host
 cfgd init --from ~/existing/config                 # use local config directory
 cfgd init --from <source> --branch dev                # specify branch
 cfgd init --from <source> --apply-profile work-mac    # clone, activate profile, apply
 cfgd init --from <source> --apply-module nvim         # clone, apply just one module
 cfgd init --from <source> --apply --yes --install-daemon  # full one-liner bootstrap
+cfgd init --from <source> --apply --yes --on-conflict fail  # stop at the first stranger
 ```
+
+`--from` accepts any git URL, a local path, or the GitHub shorthand `owner/repo` —
+all equally supported. Only a bare `owner/repo` is expanded, and an existing path
+always wins over the shorthand: run inside a directory that holds `you/config`,
+`--from you/config` means that directory. A first segment carrying a dot
+(`gitlab.example.com/you/config`) is a URL for that host and is passed through
+untouched; a dotless first segment cannot be told from a GitHub owner by the
+value alone, so name a host like `gitserver` with a scheme
+(`http://gitserver/config`). The same rule applies everywhere cfgd takes a
+repository reference — `cfgd apply --from`, `cfgd plan --from`,
+`cfgd source add`, `cfgd source replace` and `cfgd module registry add`.
 
 | Flag | Description |
 |---|---|
 | `[path]` | Target directory (default: current directory) |
-| `--from <url\|path>` | Config source: git URL to clone, or local path to existing config |
+| `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory (an existing path wins over the shorthand) |
 | `--branch <name>` | Git branch (default: master) |
 | `--name <name>` | Config name in metadata (default: directory name) |
 | `--apply` | Apply configuration after scaffolding |
 | `--apply-profile <name>` | Activate and apply a specific profile (implies --apply, exits `6` if not found) |
 | `--apply-module <name>` | Apply a specific module (repeatable, implies --apply, errors if not found) |
 | `--yes`, `-y` | Skip confirmation prompts (used with --apply) |
+| `--on-conflict <ask\|backup\|overwrite\|skip\|fail>` | What the `--apply` step does with a target that already holds a file cfgd never wrote (default `ask`; see [`cfgd apply`](#unmanaged-files-at-a-managed-target)) |
 | `--install-daemon` | Install daemon service after init |
 | `--theme <name>` | Theme name (default, dracula, solarized-dark, solarized-light, minimal) |
 
@@ -99,21 +122,95 @@ cfgd apply                          # apply with confirmation
 cfgd apply --dry-run                # preview without applying
 cfgd apply --yes                    # skip confirmation
 cfgd apply --phase packages         # single phase
+cfgd apply --phase modules          # every module-owned action, in every phase
+cfgd apply --phase prerequisites.managers  # one owner group within a phase
 cfgd apply --module nvim            # single module + deps (no profile required)
-cfgd apply --only packages.brew     # dot-notation filter
+cfgd apply --only packages.brew     # dot-notation filter (the brew manager)
+cfgd apply --only packages.module:nvim  # a module's package work
+cfgd apply --skip module:nvim       # one module, every phase
+cfgd apply --skip cfgd:managers     # every package-manager bootstrap
+cfgd apply --skip prerequisites.session  # skip the live-session broadcast
+cfgd apply --skip prerequisites.brew     # skip one manager (family-collapsed)
 cfgd apply --skip system.sysctl     # skip specific items
 cfgd apply --skip-scripts           # apply without running any hooks
+cfgd apply --yes --on-conflict backup    # copy every stranger aside, then write
+cfgd apply --yes --on-conflict fail      # refuse to touch a file cfgd never wrote
 ```
 
 | Flag | Description |
 |---|---|
+| `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory (an existing path wins over the shorthand) |
 | `--dry-run` | Preview changes without applying (supports `-o json`) |
-| `--phase <name>` | Apply only a specific phase |
+| `--phase <name>` | Apply only a specific phase; takes a dotted `<phase>[.<selector>]` path (see below) |
 | `--yes`, `-y` | Skip confirmation prompt |
 | `--module <name>` | Apply only this module and its dependencies |
 | `--skip <path>` | Skip items by dot-notation path (repeatable) |
 | `--only <path>` | Apply only items matching dot-notation paths (repeatable) |
 | `--skip-scripts` | Skip all script hooks (pre/post/onChange) |
+| `--context <ctx>` | `apply` (default) or `reconcile` — selects which hooks run |
+| `--shell <auto\|sh\|bash\|zsh\|pwsh\|cmd>` | Force every *inline* lifecycle script under this interpreter, overriding each entry's own `shell:`. File and shebang scripts are unaffected. For debugging a script that behaves differently under another shell |
+| `--on-conflict <ask\|backup\|overwrite\|skip\|fail>` | What to do with a managed target that already holds a file cfgd never wrote (default `ask`) |
+
+#### Unmanaged files at a managed target
+
+A target that already exists but that cfgd has never written — your own `.zshrc`,
+a config another tool dropped — is a **conflict**. `--on-conflict` decides what
+happens to it:
+
+| Policy | What happens |
+|---|---|
+| `ask` (default) | Prompt per file. With `--yes`, under `-o json`, or with no terminal at stdin, resolves to `backup` |
+| `backup` | Copy the file to `<target>.cfgd-backup`, then write the managed version |
+| `overwrite` | Write the managed version, keeping no copy |
+| `skip` | Leave the file alone — content *and* permissions; the action is reported as skipped |
+| `fail` | Abort the apply (exit `1`) without touching anything |
+
+The prompt offers the same four outcomes, so nothing is reachable only by
+re-running with a flag:
+
+```console
+$ cfgd apply
+⚠ Target exists as unmanaged file: /home/u/.zshrc
+? How should cfgd handle this file?
+> Backup (copy to <target>.cfgd-backup, then overwrite)
+  Overwrite (replace it, keeping no copy)
+  Skip (leave the file untouched)
+  Abort (stop the apply without touching the file)
+```
+
+Interrupting that prompt (Ctrl-C, or Esc) aborts the run — it is never read as
+"nobody to ask" and resolved to `backup`.
+
+```console
+$ cfgd apply --yes
+⚠ Target exists as unmanaged file: /home/u/.config/app/app.conf
+✓ Backed up to /home/u/.config/app/app.conf.cfgd-backup
+...
+    ✓ update /home/u/.config/app/app.conf
+
+$ cfgd apply --yes --on-conflict fail
+⚠ Target exists as unmanaged file: /home/u/.config/app/app.conf
+✗ target exists as unmanaged file: /home/u/.config/app/app.conf (--on-conflict fail)
+```
+
+A target that already holds **exactly** the bytes cfgd would write is not a
+conflict under any policy: nothing is prompted, nothing is copied aside, and
+nothing is rewritten. See [File Safety](safety.md#unmanaged-file-adoption) for
+what the backup copy guarantees.
+
+`cfgd init --apply` takes the same flag and runs the same pass — the first apply
+on a machine is the one that meets the most files cfgd never wrote. The daemon's
+auto-apply does **not** run this pass; see
+[File Safety](safety.md#the-daemon-does-not-run-this-pass).
+
+`apply` reconciles exactly what `plan` previews, so a [source item awaiting a
+decision](sources.md#automatic-apply-decisions) is not installed by `apply --yes` either.
+`cfgd decide` is the only command that resolves one. The same holds for an item your
+auto-apply policy declines outright (`newRecommended: Reject`): `plan`, `apply` and the
+daemon read one policy, so a manual apply cannot install what the daemon skips. A `Notify`
+item — the default — is withheld from the first run that sees it, before any row exists;
+`apply` records the row so `cfgd decide` can answer it without waiting for a daemon tick,
+while `plan` withholds it read-only.
 
 ### `cfgd plan`
 
@@ -123,13 +220,16 @@ Preview the reconciliation plan without applying. This is the canonical preview 
 cfgd plan                               # preview with default (apply) context
 cfgd plan --context reconcile           # preview what the daemon would run
 cfgd plan --module nvim                 # plan for a single module
+cfgd plan --phase prerequisites.managers  # one owner group within a phase
+cfgd plan --skip prerequisites.session  # skip the live-session broadcast
 cfgd plan --skip-scripts                # exclude all script hooks
 cfgd plan -o json                       # structured plan output
 ```
 
 | Flag | Description |
 |---|---|
-| `--phase <name>` | Show only a specific phase |
+| `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory (an existing path wins over the shorthand) |
+| `--phase <name>` | Show only a specific phase; takes a dotted `<phase>[.<selector>]` path (see below) |
 | `--module <name>` | Plan only this module and its dependencies |
 | `--skip <path>` | Skip items by dot-notation path (repeatable) |
 | `--only <path>` | Plan only items matching dot-notation paths (repeatable) |
@@ -141,43 +241,283 @@ just like source-delivered files and packages: the human plan line ends with
 ` <- <source>`, and each action in the `-o json`/`-o yaml` payload carries an
 `origin` field (omitted for consumer-local modules).
 
-Modules get the same per-section breakdown a profile does: one heading per
-`<module> / <section>`, in the order the work runs, rather than a single
-`Modules` bucket. Sections are `Pre-Scripts`, `Packages`, `Files`,
-`Post-Scripts`, and `Skipped`.
-
-A module-scoped heading already names its module, so the bullets under it drop
-the `[<module>]` tag they carry in the payload. `dev-tools` below is delivered
-by the source `team`; `localmod` is consumer-local and carries no origin.
+A module's work is planned into the phase whose kind it is, beside the
+profile's: packages in `Packages`, files in `Files`, lifecycle scripts in
+`Pre-Scripts`/`Post-Scripts`. The `Modules` phase holds only the modules that
+were skipped. `dev-tools` below is delivered by the source `team`; `localmod`
+is consumer-local and carries no origin.
 
 ```sh
 $ cfgd plan
-Phase: dev-tools / Packages
-  - brew install ripgrep, fd <- team
-Phase: localmod / Packages
-  - brew install jq
-Phase: localmod / Post-Scripts
-  - postApply: jq --version
+Plan
+  Config   /home/you/.config/cfgd/cfgd.yaml
+  Profile  work
+  Modules  dev-tools, localmod
+  Phases   Prerequisites, Packages, Post-Scripts
+
+Phase: Prerequisites
+  cfgd:managers
+    - refresh brew index
+
+Phase: Packages
+  module:dev-tools
+    - brew install ripgrep (15.2.0) <- team
+  module:localmod
+    - brew install jq (1.8.2)
+
+Phase: Post-Scripts
+  module:localmod
+    - postApply: jq --version
+
+⊙ 4 actions planned
 ```
 
-`--phase modules` still selects every one of these — the section split is a
-display and payload refinement, not a new filter key.
+`--phase modules` selects every module-owned action wherever it was planned, so
+it stays the way to preview "just the modules".
+
+Dot-notation paths give the owner its own segment, so a module named `brew` and
+the `brew` package manager never collide:
+
+| Pattern | Selects |
+|---|---|
+| `packages.brew` | the brew package manager's work |
+| `packages.module:nvim` | the `nvim` module's package work |
+| `module:nvim` | everything the `nvim` module declares, in every phase |
+| `profile:work` | everything the `work` profile declares |
+| `cfgd:managers` | every package-manager bootstrap |
+
+`--phase`/`--skip`/`--only` all accept the same dot-notation one level up,
+scoped to a single phase: `<phase>.<selector>`, where the selector is either
+an owner group (`managers`, `env`, `session` — the three `Prerequisites`
+always carries), a manager name (family-collapsed, so `prerequisites.brew`
+also covers `brew-tap`/`brew-cask`), or a prerequisite tool a registered
+manager's installer shells out to (`prerequisites.curl`). A selector is only valid on
+`prerequisites` — a group or manager name after any other phase errors,
+naming the input and the legal shapes; `--phase packages.brew` errors
+pointing at `--phase prerequisites.brew` instead, since manager work lives in
+`Prerequisites`, not `Packages`:
+
+| Pattern | Selects |
+|---|---|
+| `prerequisites.managers` | every provisioned/refreshed package manager, INCLUDING any prerequisite tool a manager's own installer depends on (equivalent to `cfgd:managers`, scoped to `Prerequisites`) |
+| `prerequisites.env` | the `~/.cfgd.env`/rc-file write group |
+| `prerequisites.session` | the live-session broadcast (`RefreshLiveSession`) |
+| `prerequisites.brew` | just the brew manager's own node — NOT a prerequisite tool brew's installer shells out to (e.g. `curl`), which is keyed on its own name (`prerequisites.curl`) rather than on whichever manager's installer happens to need it |
+
+A manager name still selects exactly one manager when several share a node.
+Managers one mediator delivers by an ordinary package install collapse onto a
+single node (`provision npm, pipx via apt` — see
+[Package Managers](packages.md)), and every selector still addresses them one
+at a time: `--skip prerequisites.npm` leaves `provision pipx via apt` behind,
+and `--phase prerequisites.pipx` provisions `pipx` alone.
+
+`modules` and `modules.<name>` still work and print a deprecation naming their
+replacement.
+
+Skipping a manager's **bootstrap** (`prerequisites.managers`, `prerequisites.brew`,
+`cfgd:managers`) leaves the package installs that needed it in the plan —
+`cfgd` cannot know whether you meant to drop those too, so it strands them,
+warns with `printer.alert(...)`, and prints the `--skip packages.<manager>`
+flags that would drop those too. A prerequisite tool that existed only to
+satisfy the skipped manager's own bootstrap (`curl` for `brew`, say) is
+silently pruned along with it — nothing still depends on it, so there is
+nothing to strand. Skipping the other direction — the last package install
+that named a manager (`--skip packages.brew.ripgrep` when it's the only brew
+package left) — silently prunes that manager's now-purposeless bootstrap node
+instead: nothing in the plan needs it anymore, so there is nothing to warn
+about.
+
+**`--only` never prunes for lack of consumers.** `--only prerequisites.managers`
+(the recovery command the alert above prints) keeps every manager bootstrap
+node even though it drops every package install that used to justify them —
+an `--only` selector is explicit selection, and a node you named directly is
+its own justification. The consumer-prune described above applies to the
+`--skip` direction alone; `--only cfgd:managers` and `--only
+prerequisites.managers` both keep the full manager set with an empty
+`Packages` phase, never an empty plan.
+
+The `-o json` payload carries the same axes the tree draws: a phase holds owner
+groups, each group holds its actions. `token` is the rendered owner label, so a
+consumer never rebuilds the `kind:name` grammar itself, and groups arrive in the
+same order the tree prints them (`profile` before `cfgd` before `module` before
+`backup` before `source`, then by name).
+
+The payload is the complete inventory, so it holds one phase the tree does not
+print: `Modules`, carrying the platform-gated skips that the human render folds
+into the header's `Modules` row instead. A consumer diffing plans across hosts
+therefore sees that a module was gated out on one of them.
 
 ```jsonc
-// cfgd plan -o json  →  phases[]
+// cfgd plan -o json  →  phases[].groups[]
 {
-  "phase": "Modules",           // unchanged; the filter identity
-  "module": "dev-tools",        // module-scoped phases only
-  "section": "packages",        // module-scoped phases only
-  "actions": [
-    { "type": "install", "description": "[dev-tools] brew install ripgrep, fd <- team", "origin": "team" }
+  "phase": "Packages",              // the kind phase; module work routes here too
+  "groups": [
+    {
+      "owner": { "kind": "module", "name": "dev-tools" },
+      "token": "module:dev-tools",  // exactly what the tree prints
+      "actions": [
+        {
+          "type": "install",
+          "description": "brew install ripgrep (15.2.0) <- team",
+          "targets": ["ripgrep"],
+          "origin": "team"
+        }
+      ]
+    }
   ]
 }
+```
+
+A `Prerequisites` action carries a structured `manager` sub-object beside its
+`description`, so a consumer classifies a manager's state without parsing the
+sentence: `state` is `present` (an already-installed manager's index refresh),
+`provisioned` (a manager this run installs, `via` naming its bootstrap method),
+`prerequisite` (a tool a provision's installer shells out to — `manager` names
+the tool, `via` names the installer), or `refused` (a manager that can't be
+provisioned, `reason` naming why — a fourth state added on top of the 3-value
+enum spec'd for `provisioned`/`prerequisite`/`present`, since a refusal is
+still something the run decided and `-o json` must not drop it silently).
+`requires` holds the full node ids of the actions this one depends on,
+resolving one-to-one against a sibling action's own `description`:
+
+```jsonc
+// cfgd plan -o json  →  phases[] entry for Prerequisites
 {
-  "phase": "Environment",       // non-module phases carry no module/section keys
-  "actions": [ /* … */ ]
+  "phase": "Prerequisites",
+  "groups": [
+    {
+      "owner": { "kind": "cfgd", "name": "managers" },
+      "token": "cfgd:managers",
+      "actions": [
+        {
+          "type": "refresh",
+          "description": "refresh brew index",
+          "manager": { "manager": "brew", "state": "present" }
+        },
+        {
+          "type": "provision",
+          "description": "provision pipx via pip install pipx",
+          "manager": {
+            "manager": "pipx",
+            "state": "provisioned",
+            "via": "pip install pipx",
+            "requires": ["manager:prereq:curl"]
+          }
+        },
+        {
+          "type": "refuse",
+          "description": "cannot provision snap — no available system manager",
+          "manager": {
+            "manager": "snap",
+            "state": "refused",
+            "reason": "no available system manager"
+          }
+        }
+      ]
+    }
+  ]
 }
 ```
+
+`PackageAction::Bootstrap`'s payload shape is gone with the variant; `provision`/
+`refuse` rows replace it, planned as `cfgd:managers` DAG nodes rather than an
+inline package-install tier.
+
+Actions moved one level down, and a phase's module identity is now the group's
+owner rather than a `module`/`section` key on the phase:
+
+| Before | Now |
+|---|---|
+| `jq '.phases[].actions[]'` | `jq '.phases[].groups[].actions[]'` |
+| `jq '.phases[] \| select(.module=="nvim")'` | `jq '.phases[].groups[] \| select(.owner.name=="nvim")'` |
+
+A [source](sources.md#automatic-apply-decisions) item still awaiting `cfgd decide` — or one
+you rejected — is withheld from the plan: it is absent from the phases, from
+`totalActions`, and from what `apply` executes (with `--yes` or with the
+confirmation prompt). Both states are named rather than silently missing: the
+human render lists them under **Pending Decisions (not included in this plan)**
+and **Declined Decisions (not included in this plan)**, and the payload carries
+the same rows as `pendingDecisions` and `rejectedDecisions`, each omitted when
+empty — so a structured consumer can tell "in sync" from "waiting on you" from
+"you said no":
+
+```jsonc
+{
+  "totalActions": 1,
+  "pendingDecisions": [
+    {
+      "id": 1,
+      "source": "acme-corp",
+      "resource": "packages.brew.k9s",
+      "tier": "recommended",
+      "action": "install",
+      "summary": "recommended packages.brew.k9s (from acme-corp)",
+      "createdAt": "2026-08-09T17:04:11Z",
+      "resolvedAt": null,
+      "resolution": null
+    }
+  ],
+  "rejectedDecisions": [
+    {
+      "id": 2,
+      "source": "acme-corp",
+      "resource": "packages.brew.stern",
+      "tier": "recommended",
+      "action": "install",
+      "summary": "recommended packages.brew.stern (from acme-corp)",
+      "createdAt": "2026-08-09T17:04:11Z",
+      "resolvedAt": "2026-08-09T17:09:52Z",
+      "resolution": "rejected"
+    }
+  ]
+}
+```
+
+An `id` of `0` marks an item classified this run but **not yet recorded** in the
+decision store: `plan` is read-only, so the row is minted later — by `cfgd
+decide` when you answer it, or by the `cfgd apply` / daemon tick that follows.
+Every other field carries the same shape either way, and the item is withheld
+identically; only a recorded row has a real (non-zero) `id`. The same
+discriminator reaches the other two read surfaces: `cfgd status -o json`
+(`pendingDecisions`) and the bare `cfgd decide -o json` listing (`decisions`)
+fold in the same classified-but-unrecorded rows, `id: 0` included.
+
+A `Notify`-tier package the machine **already satisfies** never lands in
+`pendingDecisions` at all: the run's own package enumeration answers the
+question and the item is [auto-accepted](sources.md#edge-cases) — previewed as
+included by `plan`, recorded as a resolved row with resolution `auto-accepted`
+by the writing paths. "Satisfies" is judged against the version the manager's
+listing reports (an entry with no version spec is satisfied by any installed
+version; `tool@v1.2.3` pins with caret semantics, i.e. `^1.2.3`). A version
+conflict instead stays pending with the conflict annotated in the row's
+`summary` (e.g. `… — installed 13.0, source wants ^14`), on the recorded row
+and the `id: 0` shape alike — a manager whose listing reports no version reads
+`installed (version unknown), source wants ^14`.
+
+In the human render, an unrecorded item keeps the usual ``run `cfgd decide
+accept/reject` `` instruction only where that command could actually record it.
+On a config that cannot mint the row — a foreign `--config` without
+`--state-dir` — the suffix says so instead (*not yet recorded; decide from the
+machine's own config, or with `--state-dir`*); a recorded row resolves without
+a mint, so its instruction holds on every config.
+
+Only a source you are still subscribed to can withhold anything: a decision
+whose source has been removed from `spec.sources` is inert, and a real `cfgd
+apply` discards it — unless you pointed that run at a FOREIGN config (a
+`--config`, `--config-dir`, or `CFGD_CONFIG` that resolves somewhere other
+than the default config location) while leaving `--state-dir` at its default,
+in which case the rows are left alone because they belong to another config's
+picture of the machine. Ownership follows the resolved path, not the spelling:
+`--config ~/.config/cfgd/cfgd.yaml` names the machine's own config — the same
+`--config` every installed service unit bakes into its invocation — and still
+discards. The default location is the **run's scope's**: a user-scope run does
+not treat `/etc/cfgd/cfgd.yaml` as its own config, because the store it opened
+is the per-user one and the system picture's subscription list must not sweep
+it (and vice versa for a system-scope run). The store itself follows the same
+scope: with no `--state-dir`, a `--scope system` run opens the machine-wide
+state root (Linux `/var/lib/cfgd`, macOS `/Library/Application Support/cfgd/state`,
+Windows `%ProgramData%\cfgd\state`) rather than the per-user one, so the store
+a run judges ownership against is always the store it opened.
 
 ### `cfgd status`
 
@@ -190,13 +530,105 @@ cfgd status -o jsonpath='{.drift}'          # extract drift events
 cfgd status --module nvim                   # status for a single module (no profile required)
 ```
 
+`pendingDecisions` lists the same rows `cfgd decide` offers, including
+classified-but-unrecorded items with `id: 0` (see [`cfgd plan`](#cfgd-plan)).
+The dashboard degrades rather than failing on that classification: if it cannot
+be built (a malformed package manifest, say), status still renders everything
+else and prints a warning naming what it could not read. Under `-o json` the
+warning line is suppressed, so the degradation is part of the payload instead —
+`classificationDegraded` is always present, and the code and reason fields
+appear only when it is `true`, so a broken classification is never mistaken
+for a clean machine with nothing pending:
+
+```jsonc
+{
+  "classificationDegraded": true,
+  "classificationDegradedCode": "manifestUnreadable",
+  "classificationDegradedReason": "cargo manifest manifests/Cargo.toml: TOML parse error at line 1",
+  "pendingDecisions": []   // recorded rows only; the unrecorded ones could not be read
+}
+```
+
+`classificationDegradedCode` is the machine-stable half — a closed set a
+consumer can branch on: `decisionStoreUnreadable` (fix the state directory /
+database), `sourceUnreadable` (re-sync or inspect the source's cached
+config), `manifestUnreadable` (fix the referenced Brewfile / `package.json` /
+`Cargo.toml` / apt list), or `classificationFailed` (anything else). The
+reason string is the human detail and carries no stability promise.
+
+A source batch no decision row can name — packages under a
+[dotted custom manager](sources.md#edge-cases) — is withheld fail-closed, and
+the dashboard names it the same way `cfgd plan` does: the human render carries
+the warning line, and the payload carries a `warnings` array (omitted when
+empty) with the same strings the plan payload's `warnings` holds:
+
+```jsonc
+{
+  "warnings": [
+    "custom manager 'pip3.11' cannot carry source decisions — its name contains '.', which the decision path grammar splits on. Withheld from this run until the manager is renamed: requests (from acme-corp)"
+  ]
+}
+```
+
+The bare `cfgd decide -o json` listing carries the same fields — the
+degradation pair and `warnings` alike — alongside its `decisions` array.
+
 ### `cfgd diff`
 
 Show detailed file diffs with syntax highlighting.
 
 ```sh
+cfgd diff                    # human drift report
+cfgd diff --module nvim      # a single module's resources
+cfgd diff --exit-code        # exit 5 on drift, for CI gating
 cfgd diff -o json            # structured drift payload
 ```
+
+The human render uses the plan's own axes — phase, then owner group — so a drifted
+resource is named by the same coordinates the plan and apply trees would use to fix it:
+
+```
+Diff
+  Config   /home/you/.config/cfgd/cfgd.yaml
+  Profile  work
+
+Phase: Files
+  profile:work
+    ⊙ /home/you/.gitconfig (new file)
+[user]
+	name = You
+  module:nvim
+    ⊙ /home/you/.config/nvim/init.lua (new file)
+-- init
+    ⊙ /home/you/.config/nvim/lua/opts.lua (new file)
+-- opts
+  ⚠ File drift detected
+
+Phase: Packages
+  profile:work
+    ⚠ brew: missing — extra-tool
+    ⚠ nix: missing  — hello
+  cfgd:managers
+    ⚠ pipx: not installed — can bootstrap via pip install pipx
+    ⚠ snap: not installed — cannot bootstrap: no available system manager
+
+Phase: System
+  profile:work
+    ⚠ sysctl.net.core.somaxconn — want 8192, have 4096
+
+⚠ Drift detected
+```
+
+`cfgd:managers` reports package **managers** the plan itself would provision or
+refuse — not something the profile declared missing, but something `apply` would
+still change. It draws from the same planner the `Prerequisites` phase uses (see
+[Reconciliation](reconciliation.md#phases)), so a manager never reads
+"converged" here while `apply` still has work to do on it. A manager `apply` can
+self-heal reads `not installed — can bootstrap via <method>`; one it cannot reads
+`not installed — cannot bootstrap: <reason>`.
+
+File bodies render at column 0 under the file they belong to, so a diff hunk stays
+copy-pasteable.
 
 The payload carries `files[]`, `packages[]`, `system[]`, and a `summary`. `files[]` lists only the managed files that do NOT match desired state, in the same shape `cfgd verify` reports a resource:
 
@@ -217,6 +649,18 @@ The payload carries `files[]`, `packages[]`, `system[]`, and a `summary`. `files
 A file cfgd could not evaluate — an unparseable target, a filter that exited non-zero, a patch script a source is [barred from running](sources.md#noscripts) — appears with the reason as its `actual`, so the cause is visible without reading the terminal rendering.
 
 A managed file whose `source` cannot be found is reported as drift here and by `cfgd verify` / `cfgd status`: the desired content could not be determined, which is never the same as convergence.
+
+`packages[]` entries carry `manager`, `shape` (`missing` | `extra` | `provision` | `refused`), and `packages` (empty for the two manager-drift shapes). `shape: "provision"` matches the machine vocabulary `plan -o json`'s `Prerequisites` phase already uses for the same fact (`type: "provision"`); the mechanism itself still keeps the "bootstrap" word, in `bootstrapMethod` and in the human render above. A `provision` entry adds `bootstrapMethod`; a `refused` entry adds `reason` instead — the same fields [`cfgd doctor`](#cfgd-doctor)'s manager checks use, so a script reading either surface for "can this manager self-heal" reads one field name:
+
+```json
+{
+  "packages": [
+    { "manager": "cargo", "shape": "missing", "packages": ["ripgrep"] },
+    { "manager": "pipx", "shape": "provision", "bootstrapMethod": "pip install pipx" },
+    { "manager": "snap", "shape": "refused", "reason": "no available system manager" }
+  ]
+}
+```
 
 ### `cfgd verify`
 
@@ -254,6 +698,27 @@ cfgd log --limit 50         # last 50 entries
 cfgd log -o json            # JSON apply history
 cfgd log --show-output 42   # show captured script output for apply #42
 ```
+
+### `cfgd rollback <apply-id>`
+
+Restore the file backups cfgd took before a previous apply, undoing that apply's file writes.
+
+```sh
+cfgd log                          # find the apply ID
+cfgd rollback 42                  # restore the files that apply overwrote
+cfgd rollback 42 --yes            # skip the confirmation
+cfgd rollback 42 -o json          # structured result
+```
+
+| Flag | Meaning |
+|---|---|
+| `--yes` / `-y` | skip the confirmation prompt (also `CFGD_YES=1`) |
+
+Rollback covers **cfgd's own file writes** — the pre-overwrite backups stored inline in the state
+database, not the declarative `spec.backups[]` snapshots that
+[`cfgd backup restore`](#cfgd-backup) puts back. Packages installed and system settings changed by
+that apply are not reverted. See [File Safety](safety.md#file-backups) for what is captured and for
+how long.
 
 ### `cfgd sync`
 
@@ -322,6 +787,13 @@ cfgd explain --recursive machineconfig     # expand all fields
 Schemas are derived from the live resource types (the `cfgd-core` kind
 registry), so `explain` always matches what cfgd actually accepts.
 
+Drilling into an array-of-object field (`profile.backups`) lists the
+element's own fields, same as `kubectl explain`. A field that accepts more
+than one shape (e.g. `profile.scripts.preApply`, where each entry is either a
+bare string or a `{ run, timeout, … }` object) shows every accepted shape
+under a `Variants` section, each labeled by its own type and drillable into
+its own fields.
+
 Resource types: `module`, `profile`, `configsource`, `config` (aliases:
 `cfgdconfig`, `cfgd`), `machineconfig`, `configpolicy`, `clusterconfigpolicy`,
 `driftalert`, `module-crd` (the cluster-side Module CRD), `teamconfig`.
@@ -350,6 +822,20 @@ that passes `validate` is one the cluster will admit.
 A path argument reads that file; `-` reads from stdin. Exit code is `0` when the
 document is valid and `4` when it is invalid. With `-o json` the result is a
 `{"kind", "valid", "errors"}` payload for scripting.
+
+### `cfgd machineconfig` / `cfgd configpolicy` / `cfgd clusterconfigpolicy`
+
+Author-side commands for the three cluster CRD kinds. Each currently exposes a single subcommand,
+`validate`, documented together above under [`cfgd <kind> validate`](#cfgd-kind-validate); the
+schema for each kind is in [spec/machineconfig.md](spec/machineconfig.md),
+[spec/configpolicy.md](spec/configpolicy.md), and
+[spec/clusterconfigpolicy.md](spec/clusterconfigpolicy.md).
+
+```sh
+cfgd machineconfig validate mc.yaml
+cfgd configpolicy validate policy.yaml
+cfgd clusterconfigpolicy validate -
+```
 
 ### `cfgd skill`
 
@@ -639,13 +1125,19 @@ Search configured registries for modules matching a query.
 Manage module registries.
 
 ```sh
+cfgd module registry add cfgd-community/modules            # GitHub shorthand
 cfgd module registry add https://github.com/cfgd-community/modules.git
 cfgd module registry add https://github.com/myorg/modules.git --name myorg
+cfgd module registry add https://gitlab.example.com/myorg/modules.git --name myorg
 cfgd module registry list
 cfgd module registry remove community
 cfgd module registry remove community --ignore-not-found  # exit 0 if absent
 cfgd module registry rename community cfgd-community
 ```
+
+The URL may be any git URL, or the GitHub shorthand `owner/repo`. Only GitHub URLs
+can supply a default registry name (the org), so pass `--name` when adding a
+registry hosted anywhere else.
 
 `module registry remove --ignore-not-found` exits `0` with a no-op message
 instead of the strict not-found error (exit `6`) when the registry is absent.
@@ -663,6 +1155,23 @@ cfgd source add git@github.com:acme/dev-config.git \
   --accept-recommended \
   --sync-interval 1h
 ```
+
+The URL may be any git URL or the GitHub shorthand `owner/repo` — both equally
+supported:
+
+```sh
+cfgd source add acme/dev-config                              # GitHub shorthand
+cfgd source add https://github.com/acme/dev-config.git
+cfgd source add https://gitlab.example.com/acme/dev-config.git
+```
+
+A source origin must be a remote. A local path — absolute, relative or
+`file://` — is refused, because a source delivers files, packages and scripts
+to this machine and its origin has to be something a subscriber can fetch, pin
+and verify rather than a directory anything on the host can rewrite. An
+existing local path is never silently expanded into a GitHub URL either: it is
+reported as the local path it is. To try a source out before publishing it, see
+[testing a source locally](sources.md#testing-a-source-locally).
 
 ### `cfgd source list`
 
@@ -711,7 +1220,13 @@ Set or view source priority.
 
 ### `cfgd source replace <old> <new-url>`
 
-Replace one source with another.
+Replace one source with another. The new URL accepts the same forms as
+`cfgd source add` — any git URL, or the GitHub shorthand `owner/repo`.
+
+```sh
+cfgd source replace acme newco/dev-config                    # GitHub shorthand
+cfgd source replace acme https://gitlab.example.com/newco/dev-config.git
+```
 
 ### `cfgd source create`
 
@@ -723,6 +1238,10 @@ Open `cfgd-source.yaml` in `$EDITOR`.
 
 ## Secret Commands
 
+### `cfgd secret`
+
+Encrypt, decrypt, and edit SOPS-managed secret files in the config repository.
+
 ```sh
 cfgd secret init                    # generate age key + .sops.yaml
 cfgd secret encrypt <file>          # encrypt values in place
@@ -730,15 +1249,27 @@ cfgd secret decrypt <file>          # decrypt to stdout
 cfgd secret edit <file>             # decrypt, edit, re-encrypt
 ```
 
+No command-specific flags; each subcommand takes the file to operate on. See
+[Secrets](secrets.md) for the backend matrix (SOPS/age, 1Password, Bitwarden, Vault), key
+management, and how encrypted values are referenced from a profile.
+
 ## Daemon Commands
 
+### `cfgd daemon`
+
+Run the reconcile loop in the foreground, or manage it as a system service.
+
 ```sh
-cfgd daemon                # run in foreground (default)
+cfgd daemon                # run in foreground (default when no subcommand given)
 cfgd daemon run            # run in foreground (explicit)
-cfgd daemon install        # install as system service
-cfgd daemon status         # check running state
+cfgd daemon install        # install as a system service (systemd / launchd / Windows Service)
+cfgd daemon status         # check running state, PID, and socket path
 cfgd daemon uninstall      # stop the daemon and remove the service
 ```
+
+No command-specific flags; the daemon's behaviour is configured by the `daemon` block in
+`cfgd.yaml`. See [Daemon](daemon.md) for the timer set, drift policy, live config reload
+(`SIGHUP`), and which fields require a restart.
 
 ## Decision Commands
 
@@ -753,20 +1284,36 @@ cfgd decide accept --source acme-corp      # accept all from source
 cfgd decide accept --all                   # accept everything
 ```
 
+Bare `cfgd decide` lists the decisions still awaiting you. Only rows whose source is
+still in `spec.sources` are listed: a decision outliving its subscription can no longer
+withhold anything, so there is nothing left to accept or reject. `cfgd status` reports
+the same filtered set.
+
+Answering an item **records only that item**: an item `cfgd plan` classified but nothing
+has recorded yet is minted and resolved in the same step, and no source hash is stamped
+— so the daemon's notification for the source's *other* new items is preserved. If the
+classification needed to see unrecorded items cannot be built (an unreadable config or
+composition), a resolving `cfgd decide` refuses with the reason instead of reporting the
+decision as not found; already-recorded rows still resolve, and the bare listing shows
+them with a warning that the unrecorded ones could not be read. The refusal only applies
+where unrecorded items could exist: with no config file, or a config with no
+`spec.sources`, decide answers from the store alone and never runs the classification.
+
 ## Backup Commands
 
-Run, inspect, or restore declarative backups (`spec.backups[]`). See [backups.md](backups.md) for
-the full field reference and run semantics.
+### `cfgd backup`
+
+Run, inspect, or restore the declarative backups a profile declares in `spec.backups[]`.
 
 ```sh
-cfgd backup run                # run every backup declared in the active profile
-cfgd backup run openlist-db    # run just the named backup
-cfgd backup list                # inventory + last-run status + next scheduled run; alias: ls
-cfgd backup list openlist-db    # just that unit's row
-cfgd backup list openlist-db --snapshots   # its snapshots: name, created, size
-cfgd backup restore openlist-db                          # newest snapshot, back over the source
-cfgd backup restore openlist-db --at 20260730T120000Z    # pick an older one
-cfgd backup restore openlist-db --to /tmp/inspect --yes  # somewhere else, no prompt
+cfgd backup run                                       # run every backup declared in the active profile
+cfgd backup run notes-db                              # run just the named backup
+cfgd backup list                                      # inventory + last-run status + next scheduled run; alias: ls
+cfgd backup list notes-db                             # just that unit's row
+cfgd backup list notes-db --snapshots                 # its snapshots: name, created, size
+cfgd backup restore notes-db                          # newest snapshot, back over the source
+cfgd backup restore notes-db --at 20260730T120000Z    # pick an older one
+cfgd backup restore notes-db --to /tmp/inspect --yes  # somewhere else, no prompt
 cfgd --output json backup list
 ```
 
@@ -809,6 +1356,30 @@ unit (the `Next Run` column renders `-`). See [Declarative Backups](backups.md#c
 `backup run` always runs the units it names, schedule or not. A backup that declares a `schedule`
 additionally runs on the [daemon's timer](backups.md#daemon-scheduling), and a schedule-less one
 runs during `cfgd apply`.
+
+## Compliance Commands
+
+### `cfgd compliance`
+
+Collect a compliance snapshot of the machine — every managed file, package, and system setting
+scored against the effective desired state — and inspect the stored history.
+
+```sh
+cfgd compliance                          # collect and store a snapshot, print the summary
+cfgd compliance export                   # write the newest snapshot out
+cfgd compliance history                  # list stored snapshots, newest first
+cfgd compliance history --since 30d      # only snapshots newer than a duration
+cfgd compliance diff <base-id> <target-id>   # what changed between two snapshots
+```
+
+| Flag | Meaning |
+|---|---|
+| `--since <duration>` | (on `history`) only snapshots newer than `30d` / `12h` / `90m` |
+
+`cfgd compliance` run by hand always stores its snapshot. The daemon stores one only when the
+machine's content hash changed, so **history records changes, not ticks** — see
+[spec.compliance](spec/config.md#speccompliance) before treating row arrival as a liveness signal.
+Snapshot IDs for `diff` come from `history`.
 
 ## Image Commands
 
@@ -952,6 +1523,56 @@ The server's enrollment method is configured by the administrator. cfgd auto-det
 
 **Key auto-detection:** If neither `--ssh-key` nor `--gpg-key` is specified, cfgd checks the SSH agent first, then falls back to `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, and `~/.ssh/id_ecdsa` in order. The first available key is used.
 
+### `cfgd alias`
+
+Manage user-level CLI aliases stored in `cfgd.yaml` under `spec.aliases` — shorthands for cfgd
+invocations you type often.
+
+```sh
+cfgd alias set pu "profile update --file"   # add or update; alias: add
+cfgd alias show pu                          # print the command a single alias expands to
+cfgd alias list                             # alias: ls
+cfgd alias delete pu                        # alias: rm
+```
+
+No command-specific flags. `set` takes `<NAME> <COMMAND>`, where `COMMAND` is the argument string
+the alias expands to. Aliases live in the config file, so they travel with the config repository.
+
+### `cfgd state forget-prefix <manager>`
+
+Forget the global-install prefix cfgd persisted for a package manager, so the next
+install/uninstall/list derives it fresh.
+
+```sh
+cfgd state forget-prefix npm
+cfgd state forget-prefix pipx
+```
+
+No command-specific flags. cfgd already revalidates a persisted prefix that became unwritable —
+this is for the opposite case, where a *better* prefix became available (permissions fixed after
+cfgd fell back to a user-local directory).
+
+### `cfgd man`
+
+Emit a `roff(7)` man page for cfgd on stdout.
+
+```sh
+cfgd man > cfgd.1 && man ./cfgd.1
+cfgd man > /usr/local/share/man/man1/cfgd.1
+```
+
+No command-specific flags.
+
+### `cfgd help [command]`
+
+Print the top-level synopsis, or the help for a named command. Identical to `--help`:
+`cfgd help backup` and `cfgd backup --help` produce the same page.
+
+```sh
+cfgd help                  # top-level command list
+cfgd help backup restore   # help for a nested subcommand
+```
+
 ### `cfgd completion <shell>`
 
 Generate shell completions.
@@ -970,7 +1591,7 @@ Scripted consumers rely on distinct exit codes to decide follow-up actions witho
 | Code | Meaning | Emitted by |
 |---|---|---|
 | `0` | Operation succeeded. | All commands on success. |
-| `1` | Generic failure (network, IO, unclassified internal error). Also a `cfgd backup run` that recorded a failed or unclean snapshot (see [Run Semantics](backups.md#run-semantics)), and a `cfgd backup restore` whose overlay or hooks failed. | Any command whose `Result` resolves to a non-config error. |
+| `1` | Generic failure (network, IO, unclassified internal error). Also a `cfgd backup run` that recorded a failed or unclean snapshot (see [Run Semantics](backups.md#run-semantics)), a `cfgd backup restore` whose overlay or hooks failed, and `cfgd diff --exit-code` when a system configurator's own check failed — drift is undetermined rather than absent, which outranks `5`. | Any command whose `Result` resolves to a non-config error, and `cfgd diff --exit-code` on a failed configurator check. |
 | `2` | An upgrade is available but not installed. | `cfgd upgrade --check` only. |
 | `3` | No cfgd config file at the resolved path. | Any command when `--config` points to a missing file. |
 | `4` | Config file exists but failed parse or validation. | Any command when `--config` is malformed or schema-invalid. |
@@ -980,7 +1601,7 @@ Scripted consumers rely on distinct exit codes to decide follow-up actions witho
 | `130` | `apply` was cooperatively aborted by `SIGINT` (Ctrl-C). | `cfgd apply` interrupted with Ctrl-C; the in-flight action finishes, the lock releases, the run is recorded as `Aborted`. |
 | `143` | `apply` was cooperatively aborted by `SIGTERM`. | `cfgd apply` interrupted with `kill`; same cooperative-abort semantics as `130`. |
 
-Codes `130` / `143` follow the POSIX `128 + signal` convention and are not cfgd-specific. See [Graceful Interruption](safety.md#graceful-interruption-sigint--sigterm) for the abort semantics. The `--exit-code` / `-e` flag on `diff`, `status`, and `verify` follows the `git diff --exit-code` convention: without the flag these commands always exit `0`; with the flag they exit `5` whenever drift is present.
+Codes `130` / `143` follow the POSIX `128 + signal` convention and are not cfgd-specific. See [Graceful Interruption](safety.md#graceful-interruption-sigint--sigterm) for the abort semantics. The `--exit-code` / `-e` flag on `diff`, `status`, and `verify` follows the `git diff --exit-code` convention: without the flag these commands always exit `0`; with the flag they exit `5` whenever drift is present — except `cfgd diff --exit-code`, which exits `1` instead when a system configurator check itself failed, since an unknown state outranks a known one for a script deciding whether to apply.
 
 External-process passthrough (e.g. `kubectl exec` invoked by the `kubectl cfgd` plugin) forwards the inner tool's exit code unchanged — those codes are not part of the cfgd taxonomy.
 

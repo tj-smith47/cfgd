@@ -704,7 +704,7 @@ mod tests {
 
         // The success line reads as a full sentence ending in the new state path,
         // not merely a substring — the human-facing status shape is load-bearing.
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         let expected = format!("Migrated state database to {}", new_state.posix());
         let matched = out.lines().any(|l| l.trim_end().ends_with(&expected));
         assert!(

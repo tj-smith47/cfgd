@@ -203,7 +203,17 @@ pub enum FileError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PackageError {
-    #[error("package manager '{manager}' not available")]
+    // The manager IS registered, and two paths reach it: a `--phase packages`
+    // run that bypassed the `Prerequisites` phase, and an unfiltered run whose
+    // provision node FAILED — the install is not a dependent of that node, so
+    // it is still dispatched and still asks. Naming a filter is therefore a
+    // guess, and it read as one ("or drop --phase" against a command line
+    // carrying no --phase); what holds for both is the phase that owns
+    // provisioning, which is where the filtered run's recovery and the failed
+    // run's reason both live.
+    #[error(
+        "{manager} is not provisioned — provisioning is the Prerequisites phase's: `cfgd apply --phase prerequisites.managers`"
+    )]
     ManagerNotAvailable { manager: String },
 
     #[error("{manager} install failed: {message}")]
@@ -224,8 +234,43 @@ pub enum PackageError {
     #[error("{manager} bootstrap failed: {message}")]
     BootstrapFailed { manager: String, message: String },
 
-    #[error("package manager '{manager}' not found in registry")]
+    // The manager is not registered at all — no phase can provision a name
+    // that does not exist, so this carries no phase-run guidance (unlike
+    // `ManagerNotAvailable`, whose recovery is always the `Prerequisites`
+    // phase).
+    #[error("package manager '{manager}' not available")]
     ManagerNotFound { manager: String },
+
+    // A worker thread that unwinds without reporting would leave the apply
+    // coordinator waiting on a message that can no longer arrive, so a lane
+    // catches its own unwind and fails the action instead of hanging the run.
+    #[error("{manager} package work panicked")]
+    LanePanicked { manager: String },
+
+    // A coordinator invariant failure, not a package failure: `pick_next`
+    // left this action `Waiting` with nothing running and nothing left to
+    // dispatch, so no lane will ever run it. Reported as a failed action
+    // (rather than silently dropped) so the run's status — and its exit
+    // code — cannot read `Success` over a shortfall it walked away from.
+    #[error("{manager} dispatch stalled — no lane ever became available for this action")]
+    LaneStalled { manager: String },
+
+    // The coordinator's inbox disconnected with work still outstanding: every
+    // worker handle was dropped without a `Finished` message ever landing,
+    // which a lane's own panic guard cannot see (a worker the OS killed, a
+    // scoped thread that never started). Reported per outstanding action for
+    // the same reason `LaneStalled` is — an action neither the exit code nor
+    // the tree ever hears about is a shortfall the run would walk away from
+    // reporting success.
+    #[error("{manager} lane ended without reporting — this action never ran to completion")]
+    LaneLost { manager: String },
+
+    // A `Prerequisites` node whose dependency failed. It never ran: what it was
+    // waiting to be handed does not exist, so running it anyway would be the
+    // silent bootstrap that phase exists to replace. Named after the ROOT
+    // failure rather than the nearest link, so the line points at what to fix.
+    #[error("did not run — {dependency} failed earlier in this phase")]
+    DependencyFailed { dependency: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -479,6 +524,12 @@ pub enum StateError {
 
     #[error("apply lock held by another process: {holder}")]
     ApplyLockHeld { holder: String },
+
+    // Every SQLite access from a concurrent install lane is a message to the
+    // coordinator, which owns the one connection; this is that message failing
+    // to make the round trip.
+    #[error("package state unreachable from an install lane: {reason}")]
+    LaneUnreachable { reason: String },
 }
 
 impl From<rusqlite::Error> for StateError {

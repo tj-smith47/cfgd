@@ -3,8 +3,8 @@ use std::path::Path;
 use std::process::Command;
 
 use cfgd_core::errors::{CfgdError, Result};
-use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::output::Role;
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 // ---------------------------------------------------------------------------
 // KernelModuleConfigurator
@@ -132,7 +132,7 @@ impl SystemConfigurator for KernelModuleConfigurator {
         Ok(drifts)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let modules = match desired.as_sequence() {
             Some(s) => s,
             None => return Ok(()),
@@ -152,12 +152,12 @@ impl SystemConfigurator for KernelModuleConfigurator {
                 continue;
             }
 
-            printer.status_simple(Role::Info, format!("modprobe {}", module));
+            cx.report(Role::Info, format!("modprobe {}", module));
             Self::load_module(module)?;
         }
 
         if let Err(e) = Self::persist_modules(&desired_names) {
-            printer.status_simple(
+            cx.report(
                 Role::Warn,
                 format!("Failed to persist modules: {} (runtime loaded)", e),
             );

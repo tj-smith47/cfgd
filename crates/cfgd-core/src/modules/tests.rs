@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::{BTreeMap, HashMap};
 
 use std::path::Path;
 
@@ -195,6 +196,31 @@ fn dependency_order_three_node_cycle() {
     let result = resolve_dependency_order(&["a".into()], &modules);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("cycle"));
+}
+
+/// F4: the cycle's member list is built from a `HashSet`, whose iteration
+/// order is `RandomState` (reshuffled per process). Sorting before the
+/// `Err` fixes it to alphabetical, so the message is byte-identical every
+/// run instead of just "some order that happens to look stable within one
+/// process". Runs the same cycle detection many times over one process to
+/// prove it never drifts, and pins the exact sorted member list.
+#[test]
+fn dependency_order_cycle_chain_is_sorted_every_run() {
+    let modules = make_test_modules(&[
+        ("zeta", &["mid"]),
+        ("mid", &["alpha"]),
+        ("alpha", &["zeta"]),
+    ]);
+    let expected = "module error: module dependency cycle: [\"alpha\", \"mid\", \"zeta\"]";
+    for _ in 0..50 {
+        let result = resolve_dependency_order(&["zeta".into()], &modules);
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            expected,
+            "cycle member list must be sorted and identical on every run"
+        );
+    }
 }
 
 // --- Package resolution tests ---
@@ -1494,7 +1520,7 @@ fn diff_module_specs_no_changes() {
             env: vec![],
             aliases: vec![],
             scripts: None,
-            system: HashMap::new(),
+            system: BTreeMap::new(),
         },
         dir: PathBuf::from("/fake"),
         origin: None,
@@ -1546,7 +1572,7 @@ fn diff_module_specs_detects_changes() {
             env: vec![],
             aliases: vec![],
             scripts: None,
-            system: HashMap::new(),
+            system: BTreeMap::new(),
         },
         dir: PathBuf::from("/fake"),
         origin: None,
@@ -1592,7 +1618,7 @@ fn diff_module_specs_detects_changes() {
             env: vec![],
             aliases: vec![],
             scripts: None,
-            system: HashMap::new(),
+            system: BTreeMap::new(),
         },
         dir: PathBuf::from("/fake"),
         origin: None,
@@ -1942,7 +1968,7 @@ fn diff_module_specs_scripts_changed() {
                 post_apply: vec![crate::config::ScriptEntry::Simple("echo old".to_string())],
                 ..Default::default()
             }),
-            system: HashMap::new(),
+            system: BTreeMap::new(),
         },
         dir: PathBuf::from("/tmp"),
         origin: None,
@@ -1961,7 +1987,7 @@ fn diff_module_specs_scripts_changed() {
                 post_apply: vec![crate::config::ScriptEntry::Simple("echo new".to_string())],
                 ..Default::default()
             }),
-            system: HashMap::new(),
+            system: BTreeMap::new(),
         },
         dir: PathBuf::from("/tmp"),
         origin: None,
@@ -1991,7 +2017,7 @@ fn diff_module_specs_multiline_script_change_preserves_raw_body() {
                 post_apply: vec![],
                 ..Default::default()
             }),
-            system: HashMap::new(),
+            system: BTreeMap::new(),
         },
         dir: PathBuf::from("/tmp"),
         origin: None,
@@ -2011,7 +2037,7 @@ fn diff_module_specs_multiline_script_change_preserves_raw_body() {
                 post_apply: vec![crate::config::ScriptEntry::Simple(raw_body.to_string())],
                 ..Default::default()
             }),
-            system: HashMap::new(),
+            system: BTreeMap::new(),
         },
         dir: PathBuf::from("/tmp"),
         origin: None,
@@ -4537,7 +4563,7 @@ fn extract_registry_name_trailing_slash() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn resolve_package_bootstrappable_manager() {
+fn module_resolution_keeps_a_manager_whose_bootstrap_plan_is_satisfiable() {
     let mgr = MockManager::new("cargo").unavailable().bootstrappable();
     let managers = make_manager_map(&[("cargo", &mgr)]);
     let platform = linux_ubuntu_platform();
@@ -4558,6 +4584,28 @@ fn resolve_package_bootstrappable_manager() {
         result.version.is_none(),
         "bootstrappable manager should not have version"
     );
+}
+
+#[test]
+fn resolve_package_skips_an_unavailable_manager_that_plans_no_bootstrap() {
+    // The candidate predicate reads the manager's PLAN, not its presence: an
+    // unavailable manager that can be provisioned stays in the running, one that
+    // cannot is passed over for the next preference.
+    let cargo = MockManager::new("cargo").unavailable();
+    let brew = MockManager::new("brew").with_package("ripgrep", "14.1.0");
+    let managers = make_manager_map(&[("cargo", &cargo), ("brew", &brew)]);
+    let platform = linux_ubuntu_platform();
+
+    let entry = ModulePackageEntry {
+        name: "ripgrep".into(),
+        prefer: vec!["cargo".into(), "brew".into()],
+        ..Default::default()
+    };
+
+    let result = resolve_package(&entry, "test", &platform, &managers)
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.manager, "brew");
 }
 
 // -----------------------------------------------------------------------

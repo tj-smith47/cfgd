@@ -5,9 +5,13 @@
 use std::time::Duration;
 
 use crate::golden_doc;
-use crate::output::{Doc, Role};
+use crate::output::{Doc, OwnerLabel, Role};
 
 // BEFORE: cli/rollback.rs:108  printer.info(&format!("  {}", action));
+// The non-file actions a rollback cannot undo, listed under their own heading.
+// `Phase: Files` is the rollback's FILE work (status lines, no bullets) and is
+// anchored by the `rollback/*` command goldens; this list is the surface the
+// migrated call site produces, so the anchor keeps the heading it renders under.
 golden_doc!(regression, rollback_action, |p, cap| {
     let s = p.section("Actions");
     s.bullet("revert /etc/hosts");
@@ -45,13 +49,13 @@ golden_doc!(regression, registry_script, |p, cap| {
 
 // BEFORE: cli/compliance.rs:230  printer.success(&format!("  + {}", check_key(check)));
 golden_doc!(regression, compliance_added, |p, cap| {
-    let s = p.section_or_collapse("Added (1 check(s))");
+    let s = p.section_or_collapse("Added (1 check)");
     s.bullet("hardening.firewall.enabled");
 });
 
 // BEFORE: cli/compliance.rs:238  printer.warning(&format!("  - {}", check_key(check)));
 golden_doc!(regression, compliance_removed, |p, cap| {
-    let s = p.section_or_collapse("Removed (1 check(s))");
+    let s = p.section_or_collapse("Removed (1 check)");
     s.bullet("legacy.telnet.disabled");
 });
 
@@ -231,9 +235,19 @@ golden_doc!(regression, worked_example_status, |p, cap| {
             })
         })
         .section("Modules", |s| {
-            s.status(Role::Ok, "base       (3 files, 5 pkgs)")
-                .status(Role::Ok, "dev-tools  (12 files, 18 pkgs)")
-                .status(Role::Warn, "shell-config (4 files, 0 pkgs)")
+            // Subject is the owner token — the same string the module's group
+            // is headed with in an apply tree — and the detail is the producer's
+            // own `{pkgs}, {files}, {state}` order (`cli/status.rs`), so the
+            // worked example cannot model a line the command does not emit.
+            s.status_with(Role::Ok, "module:base", |sf| {
+                sf.detail("5 pkgs, 3 files, installed")
+            })
+            .status_with(Role::Ok, "module:dev-tools", |sf| {
+                sf.detail("18 pkgs, 12 files, installed")
+            })
+            .status_with(Role::Warn, "module:shell-config", |sf| {
+                sf.detail("0 pkgs, 4 files, error")
+            })
         });
     p.emit(doc);
 });
@@ -273,14 +287,12 @@ golden_doc!(regression, worked_example_compliance_diff, |p, cap| {
             ("Snapshot 1", "2026-05-13 10:14:02 UTC"),
             ("Snapshot 2", "2026-05-14 09:02:11 UTC"),
         ])
-        .section_or_collapse("Added (2 check(s))", |s| {
+        .section_or_collapse("Added (2 checks)", |s| {
             s.bullet("hardening.firewall.enabled")
                 .bullet("hardening.audit.enabled")
         })
-        .section_or_collapse("Removed (1 check(s))", |s| {
-            s.bullet("legacy.telnet.disabled")
-        })
-        .section_or_collapse("Changed (1 check(s))", |s| {
+        .section_or_collapse("Removed (1 check)", |s| s.bullet("legacy.telnet.disabled"))
+        .section_or_collapse("Changed (1 check)", |s| {
             s.status_with(Role::Fail, "ssh.password-auth (Pass → Violation)", |sf| {
                 sf.detail("sshd_config sets PasswordAuthentication=yes")
             })
@@ -319,28 +331,34 @@ golden_doc!(regression, module_list_table_styled_cells, |p, cap| {
     p.emit(Doc::new().heading("Modules").table(t));
 });
 
-// Surface: `cfgd sync` per-source pivot line. `Role::Secondary` status_simple
-// before each source's spinner block creates a visual group boundary when N>1
-// sources are configured. Snapshot anchors the placement — the marker emits
-// before the spinner-finish line.
-golden_doc!(regression, sync_per_source_secondary_marker, |p, cap| {
+// Surface: `cfgd sync`'s per-source owner group. Each source is a
+// `source:<name>` group and every line inside it names its outcome only —
+// the heading already says whose it is. Snapshot anchors the nesting and the
+// per-group alignment, which is what makes two sources readable as two blocks
+// rather than one stream.
+golden_doc!(regression, sync_per_source_owner_group, |p, cap| {
     let s = p.section("Sources");
-    s.status_simple(Role::Secondary, "Source: dotfiles");
-    s.status(Role::Ok, "'dotfiles' synced")
-        .detail("commit: abc1234");
-    s.status_simple(Role::Secondary, "Source: k8s-manifests");
-    s.status(Role::Fail, "Failed to sync 'k8s-manifests'")
+    {
+        let dotfiles = s.section_owner(&OwnerLabel::new("source", "dotfiles"));
+        dotfiles
+            .status(Role::Ok, "synced")
+            .detail("commit: abc1234");
+    }
+    let manifests = s.section_owner(&OwnerLabel::new("source", "k8s-manifests"));
+    manifests
+        .status(Role::Fail, "sync failed")
         .detail("network unreachable");
 });
 
 // Surface: the reminder `cfgd apply` prints once at the end of a run whose Env
 // phase changed something — the running shell predates the file, so the
 // bootstrapped manager's PATH entries are one command away. Anchors the exact
-// wording and the two-bullet shape.
+// wording and the warning shape: until the user acts, their shell disagrees
+// with what the run wrote, and a bullet would read as information rather than
+// something left to do.
 golden_doc!(regression, apply_shell_env_reminder, |p, cap| {
     let s = p.section("Shell environment changed");
-    s.bullet("run: source ~/.cfgd.env");
-    s.bullet("or open a new shell");
+    s.status_simple(Role::Warn, "run `source ~/.cfgd.env` — or open a new shell");
 });
 
 // Same reminder in its real position: emitted after the apply summary line.
@@ -353,12 +371,11 @@ golden_doc!(
         p.status(Role::Ok, "Applied 4 of 4 actions")
             .duration(Duration::from_millis(820));
         let s = p.section("Shell environment changed");
-        s.bullet("run: source ~/.cfgd.env");
-        s.bullet("or open a new shell");
+        s.status_simple(Role::Warn, "run `source ~/.cfgd.env` — or open a new shell");
     }
 );
 
-// Surface: `cfgd status` drift attribution. The `[source-name]` suffix is
+// Surface: `cfgd status` drift attribution. The `source:<name>` suffix is
 // styled in `secondary` so the warn subject's yellow stays intact up to the
 // suffix, then the suffix renders in pink. Tests run with colors off, so the
 // snapshot shows the plain composed subject — the regression target is that
@@ -369,5 +386,5 @@ golden_doc!(regression, status_drift_secondary_suffix, |p, cap| {
         Role::Warn,
         "file /etc/hosts — want: managed, have: external",
     )
-    .label(Role::Secondary, "[team-config]");
+    .label(Role::Secondary, "source:team-config");
 });

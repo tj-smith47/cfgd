@@ -26,21 +26,208 @@ log_warn()    { _yellow; printf "WARN";  _reset; printf ":  %s\n" "$1"; WARNINGS
 log_ok()      { _green;  printf "OK";    _reset; printf ":    %s\n" "$1"; }
 log_section() { printf "\n--- %s ---\n" "$1"; }
 
+# --- Shared awk library ---
+# Prepend to any awk program that counts braces or honours an `<x>-ok:` marker,
+# so every gate answers "is this code?" and "is this exempt?" the same way. A
+# brace inside a string literal, a `'{'` char literal or a `//` comment is not
+# code structure: counted raw, one `let closer = "}";` ends a span early and
+# everything after it stops being scanned. A marker inside a message string is
+# not an annotation either — that would let a call exempt itself by naming the
+# escape hatch in its own text.
+AWK_LIB='
+BEGIN { RAW_HASHES = -1; IN_STR = 0 }
+function hashes_str(n,   s) { s = ""; while (n-- > 0) s = s "#"; return s }
+# The code half of one line, with every literal and comment removed, plus the
+# comment half in LAST_COMMENT. Raw-string state carries across calls, so a
+# caller must invoke this exactly ONCE per line and feed the lines of a file in
+# order — twice on one line double-advances the state machine.
+function code_only(line,   q, out, i, j, n, c, h, closer, p) {
+    LAST_COMMENT = ""
+    # Fast path: nothing on this line can open a literal or a comment.
+    if (RAW_HASHES < 0 && !IN_STR && line !~ /["\047\/]/) return line
+    q = sprintf("%c", 39)
+    out = ""
+    i = 1
+    n = length(line)
+    while (i <= n) {
+        # A plain Rust string literal spans lines freely (with or without a
+        # trailing backslash), so an unterminated one carries its state to the
+        # next line. Read as code, its continuation lines pair the wrong quotes
+        # and a `layer";` tail parses as an `r"` raw-string opener that then
+        # swallows the rest of the file.
+        if (IN_STR) {
+            while (i <= n) {
+                c = substr(line, i, 1)
+                if (c == "\\") { i += 2; continue }
+                i++
+                if (c == "\"") { IN_STR = 0; break }
+            }
+            if (IN_STR) return out
+            continue
+        }
+        if (RAW_HASHES >= 0) {
+            closer = "\"" hashes_str(RAW_HASHES)
+            p = index(substr(line, i), closer)
+            if (p == 0) return out
+            i += p - 1 + length(closer)
+            RAW_HASHES = -1
+            continue
+        }
+        c = substr(line, i, 1)
+        if (c == "/") {
+            if (substr(line, i + 1, 1) == "/") { LAST_COMMENT = substr(line, i); return out }
+            out = out c
+            i++
+            continue
+        }
+        if (c == "r" || c == "b") {
+            h = raw_open_hashes(line, i)
+            if (h >= 0) {
+                j = i + RAW_OPEN_LEN
+                closer = "\"" hashes_str(h)
+                p = index(substr(line, j), closer)
+                if (p == 0) { RAW_HASHES = h; return out }
+                i = j + p - 1 + length(closer)
+                continue
+            }
+            out = out c
+            i++
+            continue
+        }
+        if (c == q) {
+            # A char literal is two or three characters inside the quotes;
+            # anything else opening with a quote is a lifetime, which is code.
+            if (substr(line, i + 1, 1) == "\\" && substr(line, i + 3, 1) == q) { i += 4; continue }
+            if (substr(line, i + 2, 1) == q) { i += 3; continue }
+            out = out q
+            i++
+            continue
+        }
+        if (c == "\"") {
+            j = i + 1
+            while (j <= n) {
+                c = substr(line, j, 1)
+                if (c == "\\") { j += 2; continue }
+                if (c == "\"") break
+                j++
+            }
+            if (j > n) { IN_STR = 1; return out }
+            i = j + 1
+            continue
+        }
+        out = out c
+        i++
+    }
+    return out
+}
+# Hash count of a raw-string opener (`r"`, `r#"`, `br##"`, …) starting at `i`,
+# or -1 when this is an ordinary identifier. Sets RAW_OPEN_LEN to the length of
+# the opener.
+function raw_open_hashes(line, i,   j, h) {
+    j = i
+    if (substr(line, j, 1) == "b") j++
+    if (substr(line, j, 1) != "r") return -1
+    j++
+    h = 0
+    while (substr(line, j, 1) == "#") { h++; j++ }
+    if (substr(line, j, 1) != "\"") return -1
+    RAW_OPEN_LEN = j - i + 1
+    return h
+}
+function is_comment_line(line) {
+    return (line ~ /^[^:]*:[0-9]+:[[:space:]]*\/\//)
+}
+# A marker counts only inside a comment and only with a reason after it, so a
+# call cannot exempt itself by naming the escape hatch in its own message.
+function carries_marker(comment, marker) {
+    return (comment ~ (marker "[[:space:]]*[^[:space:]]"))
+}
+# The line above only lends its marker when it IS a comment line: a previous
+# CALL carrying its own marker used to exempt the unmarked call beneath it.
+function marker_applies(comment, prev_line, prev_comment, marker) {
+    if (carries_marker(comment, marker)) return 1
+    if (is_comment_line(prev_line) && carries_marker(prev_comment, marker)) return 1
+    return 0
+}
+'
+
+# --- Fail loudly when a hard-coded scan directory no longer exists ---
+# A gate whose scope directory was renamed finds nothing and prints OK forever,
+# which is the one failure mode signature/domain anchoring exists to avoid.
+require_dirs() {
+    local label="$1"
+    shift
+    local missing=() d
+    for d in "$@"; do
+        [[ -d "$d" ]] || missing+=("$d")
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        log_error "$label: scan directory missing — this gate is scanning nothing (rename it here too): ${missing[*]}"
+        return 1
+    fi
+    return 0
+}
+
+# The file-list counterpart: a gate driven by an enumerated set of paths skips a
+# renamed member (`[[ -f ]] || continue`) and still reports the set clean.
+require_files() {
+    local label="$1"
+    shift
+    local missing=() f
+    for f in "$@"; do
+        [[ -f "$f" ]] || missing+=("$f")
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        log_error "$label: scanned file missing — this gate is skipping it (rename it here too): ${missing[*]}"
+        return 1
+    fi
+    return 0
+}
+
+require_dirs "workspace source scan" "${SRC_ROOTS[@]}" || true
+
+# --- Fail loudly when a tool a gate SEARCHES WITH is missing ---
+# Nine gates below are shaped `if hits=$(rg …) && [ -n "$hits" ]`, whose failure
+# arm is indistinguishable from "found nothing": on a host without ripgrep the
+# banned-old-API, indent-hack, kv-indent, direct-terminal-types,
+# structured-output-coverage, all four path-handling waves and the owner
+# comparator gates report a clean run having searched nothing at all. That is the
+# same vacuous-green shape require_dirs exists to prevent, so it is checked the
+# same way rather than trusted to the environment.
+if ! command -v rg >/dev/null 2>&1; then
+    log_error "ripgrep (rg) not found — the rg-based gates (banned old-API calls, indent hacks, direct terminal types, structured-output coverage, path-handling waves, owner ordering) would search nothing and pass silently"
+fi
+
 # --- Strip test blocks from a file and output non-test lines ---
+# Every gate below re-strips the same files, and the strip now parses literals
+# character by character, so the result is cached per file for the run.
+STRIP_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cfgd-audit.XXXXXX")"
+trap 'rm -rf "$STRIP_CACHE_DIR"' EXIT
+
 strip_test_blocks_from_file() {
     local filepath="$1"
-    awk -v filepath="$filepath" '
+    local cached="$STRIP_CACHE_DIR/${filepath//\//__}"
+    if [[ -f "$cached" ]]; then
+        cat "$cached"
+        return 0
+    fi
+    _strip_test_blocks_uncached "$filepath" | tee "$cached"
+}
+
+_strip_test_blocks_uncached() {
+    local filepath="$1"
+    awk -v filepath="$filepath" "$AWK_LIB"'
     BEGIN { in_test = 0; test_depth = 0 }
+    { code = code_only($0) }
     /^[[:space:]]*#\[cfg\(test\)\]/ {
         in_test = 1
         test_depth = 0
         next
     }
     in_test {
-        opens = gsub(/{/, "{")
-        test_depth += opens
-        closes = gsub(/}/, "}")
-        test_depth -= closes
+        opens = gsub(/{/, "{", code)
+        closes = gsub(/}/, "}", code)
+        test_depth += opens - closes
         if (test_depth <= 0 && opens + closes > 0) {
             in_test = 0
             test_depth = 0
@@ -55,6 +242,23 @@ strip_test_blocks_from_file() {
 # Usage: check_pattern <severity> <label> <pattern> <exclude_pattern>
 #   Searches ALL .rs files across all workspace crates (excluding test blocks).
 #   exclude_pattern: grep -v pattern to exclude allowed directories/files (optional)
+# The corpus every check_pattern gate reads: the workspace source roots
+# normally, and EXACTLY the path CFGD_AUDIT_PATH names when the audit-tests
+# driver scopes a run to one fixture. Without the second arm a check_pattern
+# gate is unreachable from a fixture — it would keep scanning crates/ and
+# report OK no matter what the fixture contains, so a `bad_*.txt` written to
+# prove such a gate proves nothing. The rg-based gates already honour the same
+# variable; this makes the scoping mechanism one mechanism.
+# Extension-blind on purpose: fixtures are `.txt` so they sit outside the cargo
+# source tree.
+audit_scan_files() {
+    if [[ -n "${CFGD_AUDIT_PATH:-}" ]]; then
+        find "$CFGD_AUDIT_PATH" -type f -print0 2>/dev/null
+    else
+        find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null
+    fi
+}
+
 check_pattern() {
     local severity="$1"
     local label="$2"
@@ -68,7 +272,7 @@ check_pattern() {
         if [[ -n "$file_results" ]]; then
             results="${results}${file_results}"$'\n'
         fi
-    done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null)
+    done < <(audit_scan_files)
 
     # Apply exclude filter
     if [[ -n "$exclude_pattern" ]]; then
@@ -127,10 +331,48 @@ check_core_boundary() {
 _bold; printf "=== cfgd Code Quality Audit ===\n"; _reset
 
 log_section "Output Centralization"
+# All four write macros, not just the `ln` pair: Hard Rule #1 bans `print!` and
+# `eprint!` by name, and a gate anchored on `println!\(` never sees either —
+# `print!("{}", …)` is one character away from the banned call and was invisible
+# here. The leading class keeps `eprint` from matching as `print`'s suffix, so
+# each macro is judged on its own name.
+# `src/bin/` joins main.rs: a `[[bin]]` entry point owns its stdout the same way
+# the crate's own main does (gen-crds streams a CRD document to a pipe).
 check_pattern error \
-    "No println!/eprintln! outside output/ and main.rs" \
-    'println!\(|eprintln!\(' \
-    'output/|main\.rs:'
+    "No print!/println!/eprint!/eprintln! outside output/, main.rs and src/bin/" \
+    '(^|[^[:alnum:]_])e?print(ln)?!\(' \
+    'output/|main\.rs:|src/bin/'
+
+log_section "systemctl Goes Through One Factory"
+# Five call sites across three crates spawn systemctl. Two shapes defeat both
+# the test seam and the timeout, so both are named:
+#   Command::new("systemctl")        — unshimmable AND unbounded, so a test
+#                                      reaches the host's own manager and a
+#                                      systemd-less host pays the ~90s D-Bus
+#                                      connect timeout per unit
+#   command_available("systemctl")   — answers from PATH while the spawn beside
+#                                      it answers from CFGD_SYSTEMCTL_BIN, so a
+#                                      shimmed test reports "unavailable" and
+#                                      silently skips the branch it shimmed
+# `util/process.rs` is the factory's own home and is where the string belongs.
+check_pattern error \
+    "systemctl spawned only via cfgd_core::systemctl_cmd (no raw Command/command_available)" \
+    'Command::new\("systemctl"\)|command_available\("systemctl"\)' \
+    'util/process\.rs:'
+
+log_section "One Rendering of a Child's Exit"
+# `status.code()` is None for a process a signal killed, so `unwrap_or(-1)`
+# prints `exit code -1` — a number no process ever returned, and the shape an
+# interrupted run produces most often. The sites that matter most are the ones
+# `command_output_with_timeout` KILLS on timeout: they are guaranteed to reach
+# the None arm. `cfgd_core::exit_status_reason` is the one rendering; it names
+# the signal instead.
+# `util/process.rs` is the function's own home, where the banned idiom is
+# quoted in its doc comment as the thing not to write.
+check_pattern error \
+    "Child-exit wording via cfgd_core::exit_status_reason (no status.code().unwrap_or(-1))" \
+    'code\(\)[[:space:]]*\.unwrap_or\(-1\)' \
+    'util/process\.rs:'
 
 log_section "No Unwrap in Library Code"
 # Match .unwrap() but NOT .unwrap_or(), .unwrap_or_default(), .unwrap_or_else()
@@ -152,6 +394,58 @@ check_pattern error \
     'use (console|indicatif|syntect)::' \
     'output/'
 
+log_section "User-Facing Advisories (config/module/source domains)"
+# tracing::warn!/error! is invisible without RUST_LOG — an advisory routed
+# there is one the user never sees. This is what happened to
+# warn_on_legacy_theme_keys before it was rerouted through
+# CfgdConfig.deprecations + printer.deprecation() (see output-module.md).
+#
+# Anchored on the DOMAIN: every non-test .rs under the three directories whose
+# whole job is turning user-authored YAML/TOML into cfgd's typed config. An
+# earlier revision anchored on a `fn (parse|load)_<name>(` signature and walked
+# the function's brace span, which selected the wrong set twice over:
+# warn_on_legacy_theme_keys — the exemplar this gate exists to prevent — is
+# named neither parse_ nor load_, and neither is any of the advisory helpers a
+# parse function calls (check_yaml_anchor_limit, read_manifest, …). Scanning the
+# whole domain covers all of them, and needs no span walk to be defeated by a
+# brace in a string literal or by a body-less trait signature. The domain
+# carries no legitimate tracing::warn!/error! today, so the marker below is the
+# whole allow-list; the separate "Config Parsing Boundary" gate above keeps
+# config-struct parsing from migrating out of these directories in the first
+# place.
+#
+# Escape hatch (mirrors native-ok / spawn-blocking-ok): a genuinely internal
+# diagnostic — one no interactive user is meant to read — stays legal when the
+# call line or the line directly above it carries
+#   // tracing-ok: <why this diagnostic is not user-facing>
+# The marker counts only inside a comment, and only with a reason after it, so
+# a call cannot exempt itself by naming the hatch in its own message string.
+advisory_scope_dirs=(crates/cfgd-core/src/config crates/cfgd-core/src/modules crates/cfgd-core/src/sources)
+require_dirs "user-facing advisory scan" "${advisory_scope_dirs[@]}" || true
+advisory_violations=""
+while IFS= read -r -d '' rsfile; do
+    case "$rsfile" in
+        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
+    esac
+    file_hits=$(strip_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
+        { code = code_only($0); comment = LAST_COMMENT }
+        code ~ /tracing::(warn|error)!/ &&
+        !is_comment_line($0) &&
+        !marker_applies(comment, prev, prev_comment, "tracing-ok:") { print }
+        { prev = $0; prev_comment = comment }
+    ')
+    if [[ -n "$file_hits" ]]; then
+        advisory_violations="${advisory_violations}${file_hits}"$'\n'
+    fi
+done < <(find "${advisory_scope_dirs[@]}" -name '*.rs' -print0 2>/dev/null)
+advisory_violations=$(echo "$advisory_violations" | sed '/^$/d')
+if [[ -n "$advisory_violations" ]]; then
+    log_error "tracing::warn!/error! in the config/module/source domains (invisible without RUST_LOG — route through the deprecations-Vec + printer.deprecation() pattern, or mark // tracing-ok: <why> if genuinely internal):"
+    echo "$advisory_violations" | head -20
+else
+    log_ok "No tracing::warn!/error! in the config/module/source domains"
+fi
+
 log_section "Controlled Shell Execution"
 # gateway/ allowed for SSH/GPG enrollment signature verification
 # output/ allowed for Printer::run (controlled execution layer for progress UI)
@@ -163,10 +457,13 @@ log_section "Controlled Shell Execution"
 #   command_output_with_timeout, launchctl/systemctl/setx session refresh).
 # test_helpers.rs is test scaffolding (Command::new appears only in #[cfg(test)]
 # submodules and doc comments).
+# providers/mod.rs only NAMES the type, in SystemContext::run_silent's signature,
+#   and forwards to output/; it constructs and spawns nothing. The exclusion is
+#   anchored to that exact parameter line so any other Command use there is caught.
 check_pattern warn \
     "std::process::Command confined to packages/, secrets/, system/, reconciler/, platform/, cli/, gateway/, output/, generate/, oci, daemon/, util/{git,process,env_session}.rs" \
     'std::process::Command|Command::new' \
-    'packages/|secrets/|system/|reconciler/|platform/|cli/|gateway/|output/|generate/|oci|daemon/|util/git\.rs:|util/process\.rs:|util/env_session\.rs:|test_helpers\.rs:|lib\.rs:'
+    'packages/|secrets/|system/|reconciler/|platform/|cli/|gateway/|output/|generate/|oci|daemon/|util/git\.rs:|util/process\.rs:|util/env_session\.rs:|providers/mod\.rs:[0-9]+:[[:space:]]+cmd: &mut std::process::Command,$|test_helpers\.rs:|lib\.rs:'
 
 log_section "Error Type Discipline"
 check_pattern error \
@@ -193,22 +490,46 @@ log_section "Dead Error Variants"
 #   - Direct construction: ::Variant { or ::Variant(
 #   - #[from] auto-conversion: variant has (#[from] ...) in definition
 dead_variants=""
+# A construction site inside the crate's own tests does not make a variant live:
+# the point of the gate is that PRODUCTION code reaches the variant, and an error
+# only ever built by the test that asserts its Display string is exactly the dead
+# variant this looks for. So the scan runs over the same test-stripped view every
+# other gate uses, with whole-file test modules skipped outright.
+# Concatenated ONCE, not per variant: this file is scanned for every variant of
+# every error enum, and re-stripping the tree inside that loop turns one pass
+# into (variants × files) of them.
+PRODUCTION_CORPUS="$STRIP_CACHE_DIR/production-corpus"
+build_production_corpus() {
+    local rsfile
+    : > "$PRODUCTION_CORPUS"
+    while IFS= read -r -d '' rsfile; do
+        case "$rsfile" in
+            */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
+        esac
+        strip_test_blocks_from_file "$rsfile" >> "$PRODUCTION_CORPUS"
+    done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null)
+}
+build_production_corpus
+production_construction_sites() {
+    grep -E "::${1}[[:space:]]*[{(]" "$PRODUCTION_CORPUS" \
+        | grep -v '#\[error' | grep -v 'enum ' || true
+}
 for errors_file in $(find "${SRC_ROOTS[@]}" -path '*/errors*' -name '*.rs' 2>/dev/null); do
-    # Extract PascalCase variant names (excluding #[from] variants which are auto-constructed)
-    variants=$(grep -oP '^\s+([A-Z][a-zA-Z]+)\s*[\{(]' "$errors_file" \
+    # Extract PascalCase variant names (excluding #[from] variants which are
+    # auto-constructed). Digits are part of a variant name — `Sha256Mismatch`
+    # matched neither regex below, so a digit-bearing variant could never be
+    # reported dead however unreachable it became.
+    variants=$(grep -oP '^\s+([A-Z][a-zA-Z0-9]+)\s*[\{(]' "$errors_file" \
         | sed 's/[[:space:]]*//g; s/[{(]$//' | sort -u || true)
     # Get list of #[from] variants — #[from] appears on the same line as the variant
     from_variants=$(grep '#\[from\]' "$errors_file" \
-        | grep -oP '([A-Z][a-zA-Z]+)\s*\(' | sed 's/\s*($//' || true)
+        | grep -oP '([A-Z][a-zA-Z0-9]+)\s*\(' | sed 's/\s*($//' || true)
     for variant in $variants; do
         # Skip #[from] variants — they're constructed via the ? operator
         if echo "$from_variants" | grep -qw "$variant" 2>/dev/null; then
             continue
         fi
-        # Count construction sites: ::Variant { or ::Variant( across all source
-        uses=$(grep -r "::${variant}\s*{\\|::${variant}\s*(" "${SRC_ROOTS[@]}" \
-            --include='*.rs' 2>/dev/null \
-            | grep -v '#\[error' | grep -v 'enum ' || true)
+        uses=$(production_construction_sites "$variant")
         if [[ -z "$uses" ]]; then
             dead_variants="${dead_variants}  ${errors_file}: ${variant}\n"
         fi
@@ -267,27 +588,55 @@ log_section "DRY — Duplicated Function Definitions"
 # question under one name, but dropping only the second site means a THIRD
 # definition still trips the gate. Adding a name to the awk list below instead
 # would blind the check to that name forever.
+# `Owner`'s constructors are named after the kind they mint, which is the whole
+# point of the closed vocabulary — the collisions are with unrelated
+# constructors on other types (`PatchBindings::profile`, `BackupJob::source`).
+# Excusing the `Owner` site keeps each name's budget for a real duplicate.
+# `ApplyRun::execute` runs one reconcile; `cli::execute` dispatches clap
+# subcommands. Nothing is shared between them but the verb.
+#
+# The remaining pairs excuse a name two unrelated TYPES both answer, where
+# nothing but the verb is shared: `Slot::lane` names a package-manager family
+# while `PackageContext::lane` hands back a live output region; `MemberState`'s
+# `node_id` delegates to `ManagerAction`'s own `*_node` derivations rather than
+# re-deriving them; the `cli::output_types` accessors (`token`, `owner`) read a
+# rendered payload's fields, not the reconciler types they name.
 ALLOWED_FN_PAIRS=(
     "is_clean crates/cfgd-core/src/backup/restore.rs"
+    "is_clean crates/cfgd-core/src/backup/mod.rs"
+    "profile crates/cfgd-core/src/reconciler/types.rs"
+    "module crates/cfgd-core/src/reconciler/types.rs"
+    "source crates/cfgd-core/src/reconciler/types.rs"
+    "execute crates/cfgd-core/src/reconciler/run.rs"
+    "lane crates/cfgd-core/src/providers/mod.rs"
+    "node_id crates/cfgd-core/src/reconciler/managers.rs"
+    "push crates/cfgd-core/src/daemon/service/windows_eventlog.rs"
+    "token crates/cfgd/src/cli/output_types.rs"
+    "owner crates/cfgd/src/cli/output_types.rs"
+    "actions crates/cfgd/src/cli/output_types.rs"
 )
-allowed_pairs_file=$(mktemp)
+allowed_pairs_file="$STRIP_CACHE_DIR/allowed-fn-pairs"
 printf '%s\n' "${ALLOWED_FN_PAIRS[@]}" > "$allowed_pairs_file"
-fn_dupes=""
-while IFS= read -r -d '' rsfile; do
+# A digit is a legal character in a Rust fn name, so the extraction takes
+# `[a-z0-9_]` — anchored on `[a-z_]` it read `fn sha256_hex(` as a definition of
+# `sha` and could never count the real name.
+fn_dupes=$(while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
         */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/output/*) continue ;;
     esac
     strip_test_blocks_from_file "$rsfile" \
-        | grep -E '^\S+:[0-9]+:\s*(pub\s+)?(async\s+)?fn [a-z_]+\(' \
-        | sed 's|^\([^:]*\):[0-9]*:.*fn \([a-z_]*\)(.*|\2 \1|' \
+        | grep -E '^\S+:[0-9]+:\s*(pub\s+)?(async\s+)?fn [a-z0-9_]+\(' \
+        | sed 's|^\([^:]*\):[0-9]*:.*fn \([a-z0-9_]*\)(.*|\2 \1|' \
         || true
 done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
     | sort -u | grep -vxF -f "$allowed_pairs_file" \
     | awk '{print $1}' | sort | uniq -c | sort -rn \
     | awk '$1 > 1 && \
         $2 != "new" && $2 != "default" && $2 != "from" && $2 != "fmt" && $2 != "drop" && \
-        $2 != "name" && $2 != "is_available" && $2 != "can_bootstrap" && $2 != "bootstrap" && \
-        $2 != "installed_packages" && $2 != "install" && $2 != "uninstall" && $2 != "update" && \
+        $2 != "name" && $2 != "is_available" && $2 != "bootstrap_plan" && $2 != "bootstrap" && \
+        $2 != "installed_packages" && $2 != "install" && $2 != "uninstall" && \
+        $2 != "refresh_index" && $2 != "has_index" && $2 != "listed_identity" && \
+        $2 != "plan_packages_observed" && \
         $2 != "diff" && $2 != "apply" && $2 != "current_state" && \
         $2 != "scan_source" && $2 != "scan_target" && \
         $2 != "get" && $2 != "set" && $2 != "delete" && $2 != "list" && $2 != "resolve" && \
@@ -307,6 +656,7 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "version_meets_minimum" && \
         $2 != "resolved_prefix" && $2 != "record_resolved_prefix" && \
         $2 != "run_migrations" && $2 != "request_challenge" && $2 != "path_dirs" && \
+        $2 != "created_path_dirs" && \
         $2 != "package_aliases" && $2 != "is_empty" && $2 != "expecting" && \
         $2 != "error" && $2 != "enroll_info" && $2 != "parse" && \
         $2 != "cmd_status" && \
@@ -329,10 +679,8 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "default_cache_dir" && $2 != "default_cache_dir_for" && \
         $2 != "field_tree" && $2 != "resolve_runtime_dir" && \
         $2 != "probe_dir_writable" && $2 != "surface_stale_skills" \
-        {print}' \
-    > /tmp/cfgd_fn_dupes 2>/dev/null || true
-fn_dupes=$(cat /tmp/cfgd_fn_dupes 2>/dev/null || true)
-rm -f /tmp/cfgd_fn_dupes "$allowed_pairs_file"
+        {print}' || true)
+rm -f "$allowed_pairs_file"
 if [[ -n "$fn_dupes" ]]; then
     log_warn "Function names defined in multiple files (potential duplication):"
     echo "$fn_dupes" | head -10
@@ -436,13 +784,27 @@ log_section "Effective-state routing (module↔profile coherence)"
 # does not match (the bans target the .system FIELD read, not .merged itself).
 # crates/cfgd-core/src/effective.rs is intentionally exempt — it IS the source
 # of truth and is simply not in the scanned list below.
+# The list is every command whose composition mode is `Report` in
+# output-module.md's table — the read paths — plus the two core engines they
+# share. It is enumerated rather than derived because "is this a read path?" is
+# a question about what the command MEANS, not about what it imports; the
+# maintenance rule is that a new `Report`-mode command joins this list in the
+# commit that adds it. `checkin.rs` was the gap that proves it matters: it
+# scanned drift against `resolved.merged.system`, so every system setting a
+# module contributed was invisible to the gateway and to the config hash.
 effective_read_paths=(
     crates/cfgd/src/cli/diff.rs
     crates/cfgd/src/cli/status.rs
     crates/cfgd/src/cli/live_drift.rs
+    crates/cfgd/src/cli/checkin.rs
+    crates/cfgd/src/cli/compliance.rs
+    crates/cfgd/src/cli/decide.rs
+    crates/cfgd/src/cli/verify.rs
+    crates/cfgd/src/cli/backup.rs
     crates/cfgd-core/src/reconciler/verify.rs
     crates/cfgd-core/src/compliance/mod.rs
 )
+require_files "effective-state routing scan" "${effective_read_paths[@]}" || true
 effective_pattern='desired_packages_for\(|desired_packages_for_spec\(|\.merged\.system|profile\.system|\.files\.managed'
 effective_violations=""
 for rsfile in "${effective_read_paths[@]}"; do
@@ -536,7 +898,7 @@ cmds_in_code=$(rg --type rust --color never -n \
       '^(pub(\(crate\)|(\(super\)))? fn |fn )cmd_' \
       crates/cfgd/src/cli/ --glob '!**/tests.rs' --glob '!**/tests/**' \
       2>/dev/null \
-      | sed -E 's/.*fn cmd_([a-z_]+).*/\1/' | LC_ALL=C sort -u)
+      | sed -E 's/.*fn cmd_([a-z0-9_]+).*/\1/' | LC_ALL=C sort -u)
 rule_file=".claude/rules/structured-output-coverage.md"
 if [ -f "$rule_file" ]; then
     # The whole file is the table; row cells are lowercase, the header cell is not.
@@ -548,6 +910,16 @@ if [ -f "$rule_file" ]; then
     if [ -n "$missing" ]; then
         log_error "Commands missing from structured-output coverage table in $rule_file:"
         echo "$missing"
+    fi
+    # The other direction: a row for a command that no longer exists. The table
+    # is read as the inventory of what cfgd exposes, so a stale row describes a
+    # payload no consumer can ever receive — and it hides the rename that left
+    # it behind, since the new name trips the check above while the old one sits
+    # there looking answered.
+    stale=$(LC_ALL=C comm -13 <(echo "$cmds_in_code") <(echo "$cmds_in_table" | tr ' ' '_'))
+    if [ -n "$stale" ]; then
+        log_error "Rows in $rule_file naming a cmd_* that no longer exists in crates/cfgd/src/cli/:"
+        echo "$stale"
     fi
 else
     log_error "Structured-output coverage table missing: $rule_file"
@@ -631,8 +1003,8 @@ if w4=$(rg --type rust -n '(tracing::(info|warn|error)!|anyhow!|bail!|printer\.(
   echo "$w4"
 fi
 
-log_section "Test-home-safe blocking dispatch (cfgd-core)"
-# Raw `tokio::task::spawn_blocking` in cfgd-core drops the test-home
+log_section "Test-home-safe blocking dispatch (workspace)"
+# Raw `tokio::task::spawn_blocking` drops the test-home
 # thread-local on the worker thread, so any closure that resolves `~`/$HOME
 # (default_state_dir, default_config_dir, …) silently touches the real
 # filesystem under tests. Production code must use
@@ -641,21 +1013,131 @@ log_section "Test-home-safe blocking dispatch (cfgd-core)"
 # annotate the call line or the line directly above it with
 #   // spawn-blocking-ok: <why the closure resolves no home paths>
 # util/paths.rs (the wrapper's own home) and test files are excluded.
+# Marker handling is the shared one (see AWK_LIB): in a comment, with a reason,
+# and inherited only from a comment line directly above — never from a previous
+# call that happened to carry its own marker.
 raw_spawns=$(while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
         */util/paths.rs|*/tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/tests/*) continue ;;
     esac
-    strip_test_blocks_from_file "$rsfile" | awk '
-        /tokio::task::spawn_blocking/ && !/spawn-blocking-ok/ && prev !~ /spawn-blocking-ok/ && !/^[^:]*:[0-9]+:[[:space:]]*\/\// { print }
-        { prev = $0 }
+    strip_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
+        { code = code_only($0); comment = LAST_COMMENT }
+        code ~ /tokio::task::spawn_blocking/ &&
+        !is_comment_line($0) &&
+        !marker_applies(comment, prev, prev_comment, "spawn-blocking-ok:") { print }
+        { prev = $0; prev_comment = comment }
     '
-done < <(find crates/cfgd-core/src -name '*.rs' -print0 2>/dev/null))
+done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null))
 if [[ -n "$raw_spawns" ]]; then
-    log_error "Raw tokio::task::spawn_blocking in cfgd-core (use crate::spawn_blocking_with_test_home, or annotate // spawn-blocking-ok: <why>):"
+    log_error "Raw tokio::task::spawn_blocking (use cfgd_core::spawn_blocking_with_test_home, or annotate // spawn-blocking-ok: <why>):"
     echo "$raw_spawns" | head -10
 else
-    log_ok "No raw spawn_blocking in cfgd-core production code"
+    log_ok "No raw spawn_blocking in workspace production code"
 fi
+
+cli_mod="crates/cfgd/src/cli/mod.rs"
+cli_ref="docs/cli-reference.md"
+
+# ONE walk of `pub enum Command { … }`, consumed by both gates below.
+#
+# Emits one TAB-separated record per top-level variant:
+#     <line>\t<Variant>\t<command-name>\t<long_about state>
+# where the state is one of `ok` / `missing` / `not-inline` / `no-examples`,
+# preceded by a `count\t<n>` record and, on failure, `__ENUM_NOT_FOUND__`.
+#
+# Derivation: walk the enum body by brace depth; at depth 1 accumulate the
+# pending `#[command(...)]` attribute (multi-line, tracked by paren balance)
+# and attach it to the next depth-1 `Pascal` line. The command NAME is that
+# attribute's `name = "..."` when present (MachineConfig → machineconfig,
+# McpServer → mcp-server) and the lowercased variant otherwise. The `name` key
+# is matched with a leading-boundary anchor so `value_name = "WHEN"` — a key
+# every flag-carrying variant may set — cannot be mistaken for it.
+#
+# Only the top-level enum is scanned; nested subcommand enums are out of scope.
+# Assumes rustfmt's default 4-space variant indent — the count cross-check
+# below is the tripwire if that ever drifts.
+cli_command_records() {
+    awk '
+        !in_enum && /^pub enum Command[[:space:]]*\{/ { in_enum = 1; entered = 1; depth = 1; next }
+        !in_enum { next }
+        { line = $0; opens = gsub(/{/, "{", line); closes = gsub(/}/, "}", line) }
+
+        depth == 1 && !collecting && /^[[:space:]]*#\[command\(/ {
+            collecting = 1; attr = ""; paren = 0; pending = ""
+        }
+        collecting {
+            attr = attr "\n" $0
+            if (match($0, /(^|[^_[:alnum:]])name[[:space:]]*=[[:space:]]*"[^"]+"/)) {
+                nm = substr($0, RSTART, RLENGTH)
+                sub(/^.*[^_[:alnum:]]?name[[:space:]]*=[[:space:]]*"/, "", nm)
+                sub(/"$/, "", nm)
+                pending = nm
+            }
+            paren += gsub(/\(/, "(")
+            paren -= gsub(/\)/, ")")
+            if (paren <= 0) { collecting = 0 }
+            depth += opens - closes
+            next
+        }
+
+        depth == 1 && /^[[:space:]]{4}[A-Z][A-Za-z0-9]*([[:space:]]*[({,]|[[:space:]]*$)/ {
+            variant = $0
+            sub(/^[[:space:]]+/, "", variant)
+            sub(/[[:space:]]*[({,].*$/, "", variant)
+            sub(/[[:space:]]+$/, "", variant)
+
+            # Isolate the long_about VALUE so `Examples:` is tested against IT
+            # and not against some other key (`about = "… Examples: …"`).
+            la = attr
+            has_la = (attr ~ /long_about[[:space:]]*=/)
+            sub(/.*long_about[[:space:]]*=[[:space:]]*/, "", la)
+            state = !has_la ? "missing" : (la !~ /^"/ ? "not-inline" : (la !~ /Examples:/ ? "no-examples" : "ok"))
+
+            printf "%d\t%s\t%s\t%s\n", NR, variant, (pending != "" ? pending : tolower(variant)), state
+            seen++
+            attr = ""; pending = ""
+            depth += opens - closes
+            if (depth <= 0) { in_enum = 0 }
+            next
+        }
+
+        { depth += opens - closes; if (in_enum && depth <= 0) in_enum = 0 }
+        END {
+            if (!entered) { print "__ENUM_NOT_FOUND__"; exit }
+            printf "count\t%d\n", seen + 0
+        }
+    ' "$cli_mod"
+}
+
+# Ground-truth variant count that CANNOT be truncated the way the walk above
+# can. rustfmt closes a top-level item with a bare `}` at column 0, so the enum
+# body is a line RANGE, and counting variants inside it never consults a brace:
+# an unbalanced `{` or `}` inside a doc comment or a `long_about` literal ends
+# the depth walk early, and a walker that stops after one variant reports every
+# name it saw as documented — a green, vacuous pass. The earlier cross-check
+# derived its "independent" count from the same depth walk, so it agreed with
+# the walker exactly when the walker was wrong.
+#
+# Attribute bodies are skipped by bracket balance (`#[` … `]`), which is a
+# different delimiter from the one at risk, so a brace inside an attribute's
+# string cannot reach this count either.
+cli_ground_truth_variant_count() {
+    awk '
+        !in_enum && /^pub enum Command[[:space:]]*\{/ { in_enum = 1; entered = 1; next }
+        !in_enum { next }
+        /^\}/ { in_enum = 0; next }
+        !in_attr && /^[[:space:]]*#\[/ { in_attr = 1; bracket = 0 }
+        in_attr {
+            bracket += gsub(/\[/, "[")
+            bracket -= gsub(/\]/, "]")
+            if (bracket <= 0) { in_attr = 0 }
+            next
+        }
+        /^[[:space:]]*\/\// { next }
+        /^[[:space:]]{4}[A-Z][A-Za-z0-9]*([[:space:]]*[({,]|[[:space:]]*$)/ { n++ }
+        END { if (!entered) print "__ENUM_NOT_FOUND__"; else print n + 0 }
+    ' "$cli_mod"
+}
 
 log_section "CLI long_about/Examples coverage (every top-level Command variant)"
 # CLAUDE.md convention: "Every top-level Command variant carries long_about
@@ -663,136 +1145,79 @@ log_section "CLI long_about/Examples coverage (every top-level Command variant)"
 # `cfgd skill` / `cfgd <kind> validate` surfaces (and every future variant)
 # can't ship without a worked example in `--help`.
 #
-# Detection (robust, errs toward flagging): walk the `pub enum Command {` body
-# by brace depth. At depth 1, accumulate the pending `#[command(...)]`
-# attribute (multi-line — tracked by paren balance) and, on reaching a variant
-# declaration (a depth-1 `Pascal` line), assert that pending attribute carried
-# `long_about` whose VALUE (isolated from other keys like `about`/`name`) is an
-# inline string literal containing the literal `Examples:`.
-#
-# Enforced constraints (each mis-shape gets a DISTINCT, accurate message):
-#   - no `#[command(...)]` / no `long_about=`        → "missing long_about"
-#   - `long_about` value is not an inline `"..."`    → "must be an inline string
+# Each mis-shape gets a DISTINCT, accurate message:
+#   - no `#[command(...)]` / no `long_about=`     → "missing long_about"
+#   - value is not an inline `"..."`              → "must be an inline string
 #     literal …" (include_str!/const are rejected so the Examples: block stays
 #     greppable — the whole point of this gate; do not relax this).
-#   - inline `long_about` value lacks `Examples:`    → "long_about lacks …"
+#   - inline value lacks `Examples:`              → "long_about lacks …"
 #
-# Two loud failure modes (never a silent/vacuous pass — this IS the guard):
-#   - if `pub enum Command {` is never found (renamed / brace reflowed onto its
-#     own line), awk emits `__ENUM_NOT_FOUND__` → wrapper hard-errors.
-#   - the walker's depth-1 variant count is cross-checked against a naive grep
-#     of PascalCase lines in the enum body; a mismatch (e.g. rustfmt changes the
-#     4-space indent the variant regex assumes) → `__COUNT_MISMATCH__:w:g`.
-#
-# Only the top-level enum is scanned — nested subcommand enums are out of scope.
-# Assumes rustfmt's default 4-space indent for variants; the count cross-check
-# is the tripwire if that assumption ever drifts.
-cli_mod="crates/cfgd/src/cli/mod.rs"
+# Never a silent pass: a missing enum, and any disagreement with the
+# brace-independent ground-truth count, are both hard errors.
 if [[ -f "$cli_mod" ]]; then
-    # Naive ground-truth variant count: PascalCase tokens at the start of an
-    # indented line inside the enum body, counted independently of the walker.
-    grep_variant_count=$(awk '
-        !in_enum && /^pub enum Command[[:space:]]*\{/ { in_enum = 1; depth = 1; next }
-        !in_enum { next }
-        {
-            line = $0
-            opens  = gsub(/{/, "{", line)
-            closes = gsub(/}/, "}", line)
-        }
-        # Count a variant only at depth 1 and only when not inside a still-open
-        # multi-line attribute (those carry no leading-PascalCase variant token).
-        depth == 1 && !collecting && /^[[:space:]]*#\[command\(/ { collecting = 1; paren = 0 }
-        collecting {
-            paren += gsub(/\(/, "(")
-            paren -= gsub(/\)/, ")")
-            if (paren <= 0) { collecting = 0 }
-            depth += opens - closes
-            next
-        }
-        depth == 1 && /^[[:space:]]+[A-Z][A-Za-z0-9]*([[:space:]]*[({,]|[[:space:]]*$)/ { n++ }
-        { depth += opens - closes; if (in_enum && depth <= 0) in_enum = 0 }
-        END { print n + 0 }
-    ' "$cli_mod")
-    long_about_gaps=$(awk -v gnt="$grep_variant_count" '
-    # Locate the top-level command enum opening brace.
-    !in_enum && /^pub enum Command[[:space:]]*\{/ { in_enum = 1; entered = 1; depth = 1; next }
-    !in_enum { next }
+    cli_records=$(cli_command_records)
+    cli_ground_truth=$(cli_ground_truth_variant_count)
+    cli_walked=$(awk -F'\t' '$1 == "count" { print $2 }' <<<"$cli_records")
+    if grep -q '__ENUM_NOT_FOUND__' <<<"$cli_records$cli_ground_truth"; then
+        log_error "CLI gates could not locate 'pub enum Command {' in $cli_mod (renamed or brace reflowed?); gates did not run"
+        cli_records=""
+    elif [[ "$cli_walked" != "$cli_ground_truth" ]]; then
+        log_error "Command-variant count mismatch (walker:$cli_walked ground-truth:$cli_ground_truth) in $cli_mod — a brace inside a doc comment or long_about literal can truncate the walk, hiding variants from both CLI gates"
+        cli_records=""
+    elif [[ "${cli_ground_truth:-0}" -eq 0 ]]; then
+        log_error "Extracted zero variants from 'pub enum Command' in $cli_mod (CLI gates could not run)"
+        cli_records=""
+    fi
 
-    {
-        # Track brace depth across the enum body (ignores nested struct/enum
-        # bodies so only depth-1 lines are treated as variants).
-        line = $0
-        opens  = gsub(/{/, "{", line)
-        closes = gsub(/}/, "}", line)
-    }
-
-    # Accumulate a (possibly multi-line) #[command(...)] attribute at depth 1.
-    depth == 1 && !collecting && /^[[:space:]]*#\[command\(/ {
-        collecting = 1
-        attr = ""
-        paren = 0
-    }
-    collecting {
-        attr = attr "\n" $0
-        paren += gsub(/\(/, "(")
-        paren -= gsub(/\)/, ")")
-        if (paren <= 0) { collecting = 0 }
-        # advance depth AFTER buffering (attr lines carry no enum-body braces)
-        depth += opens - closes
-        next
-    }
-
-    # A depth-1 PascalCase token starting a line is a variant declaration. The
-    # 4-space anchor matches the actual variants; the count cross-check (END)
-    # catches any indent drift that would make this regex skip variants.
-    depth == 1 && /^[[:space:]]{4}[A-Z][A-Za-z0-9]*([[:space:]]*[({,]|[[:space:]]*$)/ {
-        seen++
-        match($0, /[A-Z][A-Za-z0-9]*/)
-        variant = substr($0, RSTART, RLENGTH)
-        has_la = (attr ~ /long_about[[:space:]]*=/)
-        # Isolate the long_about VALUE so Examples: is tested against IT, not
-        # against some other key (e.g. about = "… Examples: …"). Strip up to and
-        # including the `long_about =`, leaving the value as the head of `la`.
-        la = attr
-        sub(/.*long_about[[:space:]]*=[[:space:]]*/, "", la)
-        is_inline = (la ~ /^"/)
-        has_ex = (la ~ /Examples:/)
-        if (!has_la) {
-            printf "  %s:%d: %s — missing long_about\n", FILENAME, NR, variant
-        } else if (!is_inline) {
-            printf "  %s:%d: %s — long_about must be an inline string literal containing an Examples: block (found include_str!/const)\n", FILENAME, NR, variant
-        } else if (!has_ex) {
-            printf "  %s:%d: %s — long_about lacks an \"Examples:\" block\n", FILENAME, NR, variant
-        }
-        attr = ""
-        depth += opens - closes
-        if (depth <= 0) { in_enum = 0 }
-        next
-    }
-
-    {
-        depth += opens - closes
-        if (in_enum && depth <= 0) { in_enum = 0 }
-    }
-    END {
-        if (!entered) { print "__ENUM_NOT_FOUND__"; exit }
-        if (seen != gnt) { printf "__COUNT_MISMATCH__:%d:%d\n", seen, gnt }
-    }
-    ' "$cli_mod")
-    if grep -q '__ENUM_NOT_FOUND__' <<<"$long_about_gaps"; then
-        log_error "long_about gate could not locate 'pub enum Command {' in $cli_mod (renamed or brace reflowed?); gate did not run"
-    elif mismatch=$(grep -o '__COUNT_MISMATCH__:[0-9]*:[0-9]*' <<<"$long_about_gaps"); then
-        log_error "long_about gate variant count mismatch ($mismatch = walker:grep) in $cli_mod — formatting drift may hide variants from the gate"
-        # Still surface any concrete gaps the walker did find alongside the mismatch.
-        printf "%s\n" "$long_about_gaps" | grep -v '__COUNT_MISMATCH__' | grep -v '^$' || true
-    elif [[ -n "$long_about_gaps" ]]; then
-        log_error "Top-level Command variants missing long_about/Examples: (CLAUDE.md CLI convention):"
-        printf "%s\n" "$long_about_gaps"
-    else
-        log_ok "Every top-level Command variant has long_about with an Examples: block"
+    if [[ -n "$cli_records" ]]; then
+        long_about_gaps=$(awk -F'\t' -v f="$cli_mod" '
+            $1 == "count" { next }
+            $4 == "missing"     { printf "  %s:%s: %s — missing long_about\n", f, $1, $2 }
+            $4 == "not-inline"  { printf "  %s:%s: %s — long_about must be an inline string literal containing an Examples: block (found include_str!/const)\n", f, $1, $2 }
+            $4 == "no-examples" { printf "  %s:%s: %s — long_about lacks an \"Examples:\" block\n", f, $1, $2 }
+        ' <<<"$cli_records")
+        if [[ -n "$long_about_gaps" ]]; then
+            log_error "Top-level Command variants missing long_about/Examples: (CLAUDE.md CLI convention):"
+            printf "%s\n" "$long_about_gaps"
+        else
+            log_ok "Every top-level Command variant has long_about with an Examples: block"
+        fi
     fi
 else
     log_error "CLI enum file not found: $cli_mod (long_about gate could not run)"
+fi
+
+log_section "cli-reference.md covers every top-level Command variant"
+# docs/cli-reference.md opens by promising "Every top-level command has an entry
+# here". That promise decayed silently once already — eleven commands (alias,
+# backup, compliance, daemon, rollback, secret, state, man, and the three CRD
+# kinds) shipped with no heading, and three more carried a bare code block where
+# every sibling carried a full entry. A reader who runs `cfgd rollback --help`
+# and then searches the reference has no way to tell a missing entry from a
+# missing feature, so completeness is enforced here rather than promised there.
+#
+# A command is covered when some Markdown heading names it as `cfgd <name>` —
+# one heading may cover several (the three CRD kinds share one), which is why
+# the match is on the heading LINE rather than on its opening token.
+#
+# `cfgd mcp` is injected at runtime from brontes rather than declared in this
+# enum, so it is outside this gate's reach; it is documented, and the gate that
+# would cover it is a brontes-side concern.
+if [[ ! -f "$cli_ref" ]]; then
+    log_error "Missing $cli_ref (cli-reference coverage gate could not run)"
+elif [[ -z "$cli_records" ]]; then
+    log_error "No Command variants available (cli-reference coverage gate could not run — see the error above)"
+else
+    undocumented=""
+    while IFS=$'\t' read -r _line _variant cmd _state; do
+        [[ -z "$cmd" || "$_line" == "count" ]] && continue
+        grep -qE "^#+ .*\`cfgd ${cmd}[\`[:space:]]" "$cli_ref" || undocumented="${undocumented}${undocumented:+, }${cmd}"
+    done <<< "$cli_records"
+    if [[ -n "$undocumented" ]]; then
+        log_error "Top-level commands with no heading in $cli_ref: $undocumented"
+    else
+        log_ok "Every top-level Command variant has a heading in $cli_ref"
+    fi
 fi
 
 log_section "Publisher-secret env lockstep (release.yml preflight ↔ publish-crate.yml)"
@@ -841,6 +1266,33 @@ if [[ -f "$rel_wf" && -f "$pub_wf" ]]; then
     fi
 else
     log_error "Publisher-secret lockstep gate could not run (missing $rel_wf or $pub_wf)"
+fi
+
+# --- One owner comparator ---
+# `Owner::sort_key` is the single rule for which owner precedes which, and it is
+# applied exactly once — where a phase's groups are built. A second call site is
+# a second comparator: the plan preview, the `-o json` payload and the apply
+# transcript all read the same groups, so one of them ordering owners for itself
+# is how two surfaces come to disagree about who owns what.
+#
+# `Phase.groups` is a private field, so rustc already rejects a struct literal
+# and a direct `groups.sort()` outside `types.rs`. What the compiler cannot see
+# is a caller re-sorting what `groups()` hands back, or applying `sort_key` to
+# owners it collected itself — that is what this grep catches.
+
+log_section "Owner ordering (one comparator)"
+
+owner_cmp_glob='!crates/cfgd-core/src/reconciler/types.rs'
+if oc=$(rg --type rust -n 'sort_key\(\)|groups(\(\))?[^;]*\.sort' \
+      "${CFGD_AUDIT_PATH:-crates/}" \
+      --glob "$owner_cmp_glob" \
+      --glob '!**/tests.rs' \
+      --glob '!**/tests/**' \
+      2>/dev/null) && [ -n "$oc" ]; then
+  log_error "Second owner comparator (Owner::sort_key is applied only where Phase::from_actions builds the groups):"
+  echo "$oc"
+else
+  log_ok "Owner::sort_key applied at exactly one site"
 fi
 
 # --- Summary ---

@@ -34,7 +34,7 @@ use cfgd_core::test_helpers::EditorGuard;
 #[cfg(unix)]
 use serial_test::serial;
 
-use common::{cli_for, normalize_profile_paths, source_test_config_setup};
+use common::{normalize_profile_paths, source_test_config_setup};
 
 const VALID_MANIFEST: &str = "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: edit-src\nspec:\n  provides:\n    profiles:\n      - default\n";
 
@@ -65,13 +65,12 @@ fn source_edit_valid_human() {
     // EDITOR=/bin/true exits 0 without touching the file, so the post-edit
     // validation reads the same valid manifest we wrote and lands in the
     // "Source manifest is valid" success arm.
-    let (config_dir, state_dir) = source_test_config_setup();
+    let (config_dir, _state_dir) = source_test_config_setup();
     std::fs::write(config_dir.path().join("cfgd-source.yaml"), VALID_MANIFEST).unwrap();
-    let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
     let _editor = EditorGuard::set("/usr/bin/true");
-    cmd_source_edit(&cli, &printer).expect("valid manifest must succeed");
+    cmd_source_edit(&printer, config_dir.path()).expect("valid manifest must succeed");
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
@@ -89,7 +88,7 @@ fn source_edit_validation_error_accept_retry_human() {
     // overwrites the file with a valid manifest on every invocation. The
     // first validation pass fails; the prompt receives Confirm(true), the
     // editor runs again and rewrites the file; the second pass succeeds.
-    let (config_dir, state_dir) = source_test_config_setup();
+    let (config_dir, _state_dir) = source_test_config_setup();
     let source_path = config_dir.path().join("cfgd-source.yaml");
     std::fs::write(&source_path, "not a ConfigSource document").unwrap();
 
@@ -107,12 +106,11 @@ fn source_edit_validation_error_accept_retry_human() {
     }
     std::fs::set_permissions(&editor_script, perms).unwrap();
 
-    let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
     let _editor = EditorGuard::set(editor_script.to_str().unwrap());
 
-    cmd_source_edit(&cli, &printer).expect("retry-accept path must succeed");
+    cmd_source_edit(&printer, config_dir.path()).expect("retry-accept path must succeed");
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
@@ -133,18 +131,17 @@ fn source_edit_validation_error_decline_human() {
     // Pre-stage an invalid manifest + EDITOR=/bin/true → editor is a no-op,
     // validation fails, prompt receives Confirm(false), command exits via
     // the "Saved with validation errors" Doc.
-    let (config_dir, state_dir) = source_test_config_setup();
+    let (config_dir, _state_dir) = source_test_config_setup();
     std::fs::write(
         config_dir.path().join("cfgd-source.yaml"),
         "not a ConfigSource document",
     )
     .unwrap();
-    let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
     let _editor = EditorGuard::set("/usr/bin/true");
 
-    cmd_source_edit(&cli, &printer).expect("save-with-errors must return Ok");
+    cmd_source_edit(&printer, config_dir.path()).expect("save-with-errors must return Ok");
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
@@ -160,11 +157,11 @@ fn source_edit_validation_error_decline_human() {
 
 #[test]
 fn source_edit_no_config_human() {
-    let (config_dir, state_dir) = source_test_config_setup();
-    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (config_dir, _state_dir) = source_test_config_setup();
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_source_edit(&cli, &printer).expect_err("missing manifest must return Err");
+    let err =
+        cmd_source_edit(&printer, config_dir.path()).expect_err("missing manifest must return Err");
     render_cli_error(&printer, &err);
     drop(printer);
 

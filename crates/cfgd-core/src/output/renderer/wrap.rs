@@ -39,7 +39,33 @@ const FALLBACK_WIDTH: usize = 100;
 /// wrapping onto a row indicatif will not rewind.
 pub(crate) fn available_width(sink: &dyn Writer, depth: usize) -> usize {
     let cols = sink.wrap_columns().unwrap_or(FALLBACK_WIDTH);
-    cols.saturating_sub(depth * 2 + 2).max(MIN_WRAP_WIDTH)
+    line_budget(cols, depth)
+        .saturating_sub(2)
+        .max(MIN_WRAP_WIDTH)
+}
+
+/// Columns a COMPLETE composed line rendered at `depth` may occupy: the
+/// terminal minus the `depth * 2` indent, and nothing else — the glyph, the
+/// subject, its alignment padding and the duration all live inside it.
+///
+/// The ONE formula shared by the alignment ceiling
+/// (`Renderer::affordable_column`, via `status.rs`'s `wrap_budget`) and the
+/// live repaint clamp (`line_width`, below). The ceiling pads a settled line
+/// out to exactly this budget, so a clamp read from any tighter formula —
+/// `available_width`'s, say, which is two columns narrower because it
+/// measures the room left AFTER the glyph — amputates the tail of the
+/// duration the padding just right-aligned.
+pub(crate) fn line_budget(cols: usize, depth: usize) -> usize {
+    cols.saturating_sub(depth * 2)
+}
+
+/// `line_budget` against the sink a live repaint is drawn to, with the same
+/// fallback and floor `available_width` applies. This is the clamp for a
+/// complete composed line that must stay one physical line — a live row's own
+/// repaint — not for a wrapped body, which keeps `available_width`.
+pub(crate) fn line_width(sink: &dyn Writer, depth: usize) -> usize {
+    let cols = sink.wrap_columns().unwrap_or(FALLBACK_WIDTH);
+    line_budget(cols, depth).max(MIN_WRAP_WIDTH)
 }
 
 /// Display width of `s` in terminal columns, ignoring characters that occupy
@@ -126,6 +152,12 @@ fn wrap_segment(
 
     let hang = cont_prefix;
     let mut out = Vec::new();
+    // Whether any physical row has been written, which is what decides between
+    // the first prefix and the hang. Not `out.is_empty()`: a break landing
+    // inside a run of alignment padding produces a row with nothing on it, and
+    // such a row is dropped rather than emitted — it reads as a blank line
+    // between an action and its own trailing column.
+    let mut wrote_row = false;
     let mut current = String::new();
     let mut current_width = 0usize;
     // Byte index into `current` just after the most recent space, so a break
@@ -166,13 +198,24 @@ fn wrap_segment(
                 ),
                 None => (current.clone(), String::new()),
             };
-            out.push(format!(
-                "{}{}",
-                if out.is_empty() { first_prefix } else { hang },
-                head
-            ));
-            limit = cols.saturating_sub(display_width(hang));
-            current = tail;
+            if super::super::strip_ansi(&head).trim().is_empty() {
+                // The break landed inside a run of alignment padding, so this
+                // row would carry nothing visible — and an empty row reads as
+                // a blank line between an action and its own trailing column.
+                // `head` is already trimmed of that padding, so what is left
+                // of it is styling, which moves onto the next row rather than
+                // leaving a style run open.
+                current = format!("{head}{tail}");
+            } else {
+                out.push(format!(
+                    "{}{}",
+                    if wrote_row { hang } else { first_prefix },
+                    head
+                ));
+                wrote_row = true;
+                current = tail;
+            }
+            limit = cols.saturating_sub(display_width(if wrote_row { hang } else { first_prefix }));
             current_width = super::super::strip_ansi(&current)
                 .chars()
                 .filter_map(UnicodeWidthChar::width)
@@ -185,12 +228,21 @@ fn wrap_segment(
         current.push(c);
         current_width += w;
     }
-    if !current.is_empty() {
+    if !super::super::strip_ansi(&current).trim().is_empty() {
         out.push(format!(
             "{}{}",
-            if out.is_empty() { first_prefix } else { hang },
+            if wrote_row { hang } else { first_prefix },
             current
         ));
+    } else if !current.is_empty() {
+        // Nothing visible is left, so this is styling with no text under it —
+        // usually the reset closing the run above. It rides on the last row
+        // rather than claiming a blank one of its own, and a message that was
+        // nothing BUT styling still gets a row so the reset is written.
+        match out.last_mut() {
+            Some(last) => last.push_str(&current),
+            None => out.push(format!("{first_prefix}{current}")),
+        }
     }
     out
 }
@@ -297,6 +349,43 @@ mod tests {
         assert_eq!(out[0], "⊙ head");
         assert_eq!(out[1], "  alpha bravo charlie");
         assert_eq!(out[2], "  delta echo");
+    }
+
+    #[test]
+    fn a_break_inside_alignment_padding_leaves_no_blank_row() {
+        // A subject padded to a plan-wide column wider than the window: the
+        // break lands inside the run of spaces, and a row carrying only
+        // padding reads as a blank line between an action and its own
+        // duration.
+        let padded = format!("\u{2713} install ripgrep{} (12.1s)", " ".repeat(100));
+        let out = wrap_body(&padded, "  ", Some(40));
+        assert!(
+            out.iter().all(|line| !line.trim().is_empty()),
+            "got: {out:?}"
+        );
+        assert!(
+            out.iter().any(|line| line.contains("(12.1s)")),
+            "the duration survives the drop: {out:?}"
+        );
+    }
+
+    #[test]
+    fn styling_a_dropped_row_carried_moves_onto_the_row_that_follows_it() {
+        // The dropped row is padding plus whatever escapes happened to fall in
+        // it. Dropping those with the row would leave the style run opened
+        // above it never closed, and the colour would bleed down the screen.
+        let padded = format!(
+            "\u{2713} subject{}\u{1b}[32m{}\u{1b}[0m (12.1s)",
+            " ".repeat(60),
+            " ".repeat(60)
+        );
+        let out = wrap_body(&padded, "", Some(40));
+        let escapes: usize = out.iter().map(|line| line.matches('\u{1b}').count()).sum();
+        assert_eq!(escapes, 2, "every escape survives the drop: {out:?}");
+        assert!(
+            out.iter().all(|line| !line.trim().is_empty()),
+            "got: {out:?}"
+        );
     }
 
     #[test]

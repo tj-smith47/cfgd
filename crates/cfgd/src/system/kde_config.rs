@@ -1,9 +1,9 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::Role;
 
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 use super::read_command_output;
 
@@ -102,7 +102,7 @@ impl SystemConfigurator for KdeConfigConfigurator {
         Ok(drifts)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let files = match desired.as_mapping() {
             Some(m) => m,
             None => return Ok(()),
@@ -135,7 +135,7 @@ impl SystemConfigurator for KdeConfigConfigurator {
                     };
                     let val_str = yaml_value_to_string(value);
 
-                    printer.status_simple(
+                    cx.report(
                         Role::Info,
                         format!(
                             "{} --file {} --group {} --key {} {}",
@@ -159,7 +159,7 @@ impl SystemConfigurator for KdeConfigConfigurator {
                         .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                     if !output.status.success() {
-                        printer.status_simple(
+                        cx.report(
                             Role::Warn,
                             format!(
                                 "{} failed for {}.{}.{}: {}",
@@ -196,11 +196,32 @@ mod tests {
     }
 
     #[test]
-    fn kde_availability_depends_on_command() {
+    #[serial_test::serial]
+    fn kde_is_available_for_either_kwriteconfig_generation() {
+        let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
         let kc = KdeConfigConfigurator;
-        let expected = cfgd_core::command_available("kwriteconfig6")
-            || cfgd_core::command_available("kwriteconfig5");
-        assert_eq!(kc.is_available(), expected);
+
+        {
+            let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+            assert!(
+                !kc.is_available(),
+                "a host resolving no binaries is not a KDE host"
+            );
+        }
+
+        // Plasma 5 and 6 ship differently-suffixed binaries and a host carries
+        // one or the other, so each generation is asserted on its own — an
+        // either-or checked only against a host that has both would not notice
+        // one arm being dropped.
+        #[cfg(unix)]
+        for generation in ["kwriteconfig6", "kwriteconfig5"] {
+            let _probe = cfgd_core::test_helpers::ProbePath::containing(&[generation]);
+            assert!(
+                kc.is_available(),
+                "{generation} alone must make this configurator available"
+            );
+        }
     }
 
     #[test]
@@ -208,7 +229,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let kc = KdeConfigConfigurator;
         let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        kc.apply(&yaml, &printer).unwrap();
+        kc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -216,7 +238,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let kc = KdeConfigConfigurator;
         let yaml = serde_yaml::Value::String("not a mapping".into());
-        kc.apply(&yaml, &printer).unwrap();
+        kc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -229,7 +252,8 @@ mod tests {
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        kc.apply(&yaml, &printer).unwrap();
+        kc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -242,7 +266,8 @@ mod tests {
             serde_yaml::Value::String("not a mapping".into()),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        kc.apply(&yaml, &printer).unwrap();
+        kc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -260,7 +285,8 @@ mod tests {
             serde_yaml::Value::Mapping(groups),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        kc.apply(&yaml, &printer).unwrap();
+        kc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -278,7 +304,8 @@ mod tests {
             serde_yaml::Value::Mapping(groups),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        kc.apply(&yaml, &printer).unwrap();
+        kc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -301,7 +328,8 @@ mod tests {
             serde_yaml::Value::Mapping(groups),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        kc.apply(&yaml, &printer).unwrap();
+        kc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]

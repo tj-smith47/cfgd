@@ -51,7 +51,7 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
             // renderer-owned label SGR; matches `StatusBuilder::Drop`'s
             // boundary handling so both Doc and streaming paths stay
             // byte-identical.
-            let subject_owned = finalize_subject(&renderer.theme, subject, label.as_ref());
+            let subject_owned = finalize_subject(&renderer.theme, subject, None, label.as_ref());
             renderer.render_status(
                 sink,
                 depth,
@@ -61,6 +61,8 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
                     detail: detail.as_deref(),
                     duration: duration_ms.map(|ms| Duration::from_millis(ms as u64)),
                     target: target_pb.as_deref(),
+                    subject_style: None,
+                    detail_style: None,
                 },
             );
         }
@@ -114,7 +116,6 @@ mod row_roles_round_trip_tests {
 
     use super::*;
     use crate::output::renderer::Renderer;
-    use crate::output::test_support::ColorsEnabledGuard;
     use crate::output::{Role, Theme, Verbosity};
     use crate::test_helpers::EnvVarGuard;
     use std::sync::{Arc, Mutex};
@@ -130,15 +131,13 @@ mod row_roles_round_trip_tests {
     #[test]
     #[serial_test::serial]
     fn doc_table_row_roles_reach_renderer_with_truecolor_escapes() {
-        // `NO_COLOR`/`COLORTERM` and the `console` colour flags are all
-        // process-global; every guard below restores on unwind. The colour
-        // guard also pins the flags, so a concurrent structured-output
-        // `Printer` construction cannot clear them mid-render.
+        // `NO_COLOR` and `COLORTERM` are process-global and decide the
+        // truecolor arm; both guards restore on unwind. The theme's own colour
+        // stamp is what makes the render styled, so no flag is pinned here.
         let _no_color = EnvVarGuard::unset("NO_COLOR");
         let _colorterm = EnvVarGuard::set("COLORTERM", "truecolor");
-        let _colors = ColorsEnabledGuard::set(true);
 
-        let theme = Theme::from_preset("dracula");
+        let theme = Theme::from_preset("dracula").with_colors(true);
         let renderer = Renderer::new(theme, Verbosity::Normal);
         let buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
         let sink = StringSink(buf.clone());

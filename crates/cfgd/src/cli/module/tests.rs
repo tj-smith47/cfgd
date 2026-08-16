@@ -277,6 +277,7 @@ spec:
         verbose: 0,
         quiet: true,
         no_color: false,
+        color: crate::cli::ColorWhen::Auto,
         output: super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
         jsonpath: None,
@@ -326,6 +327,7 @@ fn test_cli(dir: &std::path::Path) -> super::Cli {
         verbose: 0,
         quiet: true,
         no_color: true,
+        color: crate::cli::ColorWhen::Auto,
         output: super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
         jsonpath: None,
@@ -1229,6 +1231,52 @@ fn cmd_module_registry_add_creates_entry() {
     assert!(
         contents.contains("team"),
         "config should contain registry name, got: {contents}"
+    );
+}
+
+#[test]
+fn cmd_module_registry_add_expands_github_shorthand() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    // No --name: the name must be derived from the EXPANDED URL, which is only
+    // possible if the shorthand became a github.com URL before extraction.
+    cmd_module_registry_add(&cli, &printer, "cfgd-community/modules", None).unwrap();
+
+    let contents = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
+    assert!(
+        contents.contains("https://github.com/cfgd-community/modules.git"),
+        "shorthand must be persisted as a full clone URL, got: {contents}"
+    );
+    assert!(
+        contents.contains("cfgd-community"),
+        "registry name must be derived from the expanded URL, got: {contents}"
+    );
+}
+
+#[test]
+fn cmd_module_registry_add_leaves_non_github_url_untouched() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    cmd_module_registry_add(
+        &cli,
+        &printer,
+        "https://gitlab.example.com/acme/modules.git",
+        Some("acme"),
+    )
+    .unwrap();
+
+    let contents = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
+    assert!(
+        contents.contains("https://gitlab.example.com/acme/modules.git"),
+        "a self-hosted URL must be persisted verbatim, got: {contents}"
+    );
+    assert!(
+        !contents.contains("github.com"),
+        "a self-hosted URL must never be redirected to github.com, got: {contents}"
     );
 }
 
@@ -2725,11 +2773,12 @@ fn cmd_module_edit_with_invalid_yaml_and_prompt_declined_breaks_with_warning() {
 #[test]
 #[serial_test::serial]
 fn cmd_module_create_with_apply_and_yes_drives_full_apply_sequence() {
-    // Drives crud.rs:230-298 — the `if args.apply { ... }` block at the end
-    // of cmd_module_create. With args.apply=true and args.yes=true the
-    // prompt is bypassed and the reconciler.plan + apply path runs. An
-    // empty-spec module has no packages/files so the plan ends up empty
-    // and the "Nothing to do" success branch fires at crud.rs:267-268.
+    // Drives the `if args.apply { ... }` block at the end of
+    // cmd_module_create. With args.apply=true and args.yes=true the prompt is
+    // bypassed and the reconciler.plan + run-skeleton path runs. An empty-spec
+    // module has no packages/files so the plan ends up empty: the run renders
+    // its header and the shared nothing-to-do verdict, and no heading of its
+    // own.
     let dir = setup_config_dir();
     let _home = cfgd_core::with_test_home_guard(dir.path());
     let cli = test_cli(dir.path());
@@ -2750,10 +2799,22 @@ fn cmd_module_create_with_apply_and_yes_drives_full_apply_sequence() {
         .expect("create-with-apply-yes (empty spec) should succeed");
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
     assert!(
         output.contains("Created module 'apply-noop-mod'"),
         "should announce create: {output}"
+    );
+    assert!(
+        output.contains("Modules  apply-noop-mod"),
+        "the --apply run renders the shared header naming its one owner: {output}"
+    );
+    assert!(
+        output.contains(cfgd_core::reconciler::MSG_NOTHING_TO_DO),
+        "an empty plan closes on the shared verdict: {output}"
+    );
+    assert!(
+        !output.contains("Applying"),
+        "the run header replaced the old 'Applying Module' heading: {output}"
     );
 }
 
@@ -4637,8 +4698,11 @@ fn print_module_review_summary_emits_subheader_and_commit_integrity() {
         "sha256:def456",
     );
     drop(printer);
-    let out = buf.lock().unwrap().clone();
-    assert!(out.contains("Module: vim-config"), "subheader: {out}");
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains("module:vim-config"),
+        "the review heads the module with its owner token: {out}"
+    );
     assert!(out.contains("Commit"), "commit kv missing: {out}");
     assert!(out.contains("abc123"), "commit value missing: {out}");
     assert!(out.contains("Integrity"), "integrity kv missing: {out}");
@@ -6328,7 +6392,7 @@ fn cmd_module_create_interactive_imports_file_and_script_with_empty_description(
 fn cmd_module_create_apply_declined_emits_applied_false_and_leaves_unapplied() {
     // Drives the `if args.apply` block with a NON-empty plan and the
     // confirmation prompt DECLINED. This exercises the plan-table render
-    // + "N action(s) planned" + prompt_confirm(false) early-return arm
+    // + "N actions planned" + prompt_confirm(false) early-return arm
     // that emits {"applied": false} and returns before acquiring the
     // apply lock or mutating anything. An env-var spec gives the plan a
     // single action without needing any package manager.

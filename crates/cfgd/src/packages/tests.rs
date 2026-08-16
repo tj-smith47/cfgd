@@ -2,13 +2,25 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 use cfgd_core::output::{Printer, Verbosity};
-use cfgd_core::providers::PackageContext;
+use cfgd_core::providers::{PackageContext, PackageManagerExt};
 
 use super::cargo::{cargo_available, cargo_cmd};
 use super::go::{find_go, go_available, go_cmd};
 use super::npm::{find_npm, npm_available, npm_cmd};
 use super::pipx::{find_pipx, pipx_available, pipx_cmd};
 use super::*;
+
+/// Render each action through the real producer (`format_plan_item`) rather
+/// than a hand-rolled duplicate, so these tests fail the moment the display
+/// grammar drifts instead of asserting against a second copy of it.
+fn plan_items(actions: Vec<PackageAction>) -> Vec<String> {
+    actions
+        .into_iter()
+        .map(|a| {
+            cfgd_core::reconciler::format_plan_item(&cfgd_core::reconciler::Action::Package(a))
+        })
+        .collect()
+}
 
 struct MockPackageManager {
     mgr_name: &'static str,
@@ -56,11 +68,12 @@ impl PackageManager for MockPackageManager {
         self.available
     }
 
-    fn can_bootstrap(&self) -> bool {
+    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
         self.bootstrappable
+            .then(|| cfgd_core::providers::BootstrapPlan::new("stub"))
     }
 
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
 
@@ -82,10 +95,6 @@ impl PackageManager for MockPackageManager {
 
     fn uninstall(&self, packages: &[String], _cx: &PackageContext<'_>) -> Result<()> {
         self.uninstalls.lock().unwrap().push(packages.to_vec());
-        Ok(())
-    }
-
-    fn update(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
 
@@ -120,10 +129,10 @@ impl PackageManager for GoLikeMockManager {
     fn is_available(&self) -> bool {
         self.available
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+        None
     }
-    fn bootstrap(&self, _: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
@@ -134,9 +143,6 @@ impl PackageManager for GoLikeMockManager {
     }
     fn uninstall(&self, packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         self.uninstalls.lock().unwrap().push(packages.to_vec());
-        Ok(())
-    }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _: &str) -> Result<Option<String>> {
@@ -258,11 +264,6 @@ fn plan_skips_manager_with_no_desired_packages() {
 #[test]
 fn format_actions_produces_readable_strings() {
     let actions = vec![
-        PackageAction::Bootstrap {
-            manager: "cargo".into(),
-            method: "rustup".into(),
-            origin: "local".into(),
-        },
         PackageAction::Install {
             manager: "brew".into(),
             packages: vec!["ripgrep".into(), "fd".into()],
@@ -275,13 +276,11 @@ fn format_actions_produces_readable_strings() {
         },
     ];
 
-    let formatted = format_package_actions(&actions);
-    assert_eq!(formatted.len(), 3);
-    assert!(formatted[0].contains("bootstrap"));
-    assert!(formatted[0].contains("rustup"));
-    assert!(formatted[1].contains("brew"));
-    assert!(formatted[1].contains("ripgrep"));
-    assert!(formatted[2].contains("skip"));
+    let formatted = plan_items(actions);
+    assert_eq!(formatted.len(), 2);
+    assert!(formatted[0].contains("brew"));
+    assert!(formatted[0].contains("ripgrep"));
+    assert!(formatted[1].contains("skip"));
 }
 
 #[test]
@@ -586,7 +585,7 @@ fn plan_multiple_managers() {
 }
 
 #[test]
-fn plan_bootstrap_unavailable_bootstrappable_manager() {
+fn plan_installs_unavailable_bootstrappable_manager_optimistically() {
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
@@ -602,10 +601,13 @@ fn plan_bootstrap_unavailable_bootstrappable_manager() {
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
-    assert_eq!(actions.len(), 2);
-    assert!(matches!(&actions[0], PackageAction::Bootstrap { manager, .. } if manager == "cargo"));
+    // An unavailable-but-bootstrappable manager gets its Install planned
+    // optimistically here; provisioning the manager itself is the
+    // Prerequisites phase's job (`ManagerAction::Provision`), planned
+    // separately and not visible to this per-manager planner.
+    assert_eq!(actions.len(), 1);
     assert!(
-        matches!(&actions[1], PackageAction::Install { manager, packages, .. } if manager == "cargo" && packages.len() == 2)
+        matches!(&actions[0], PackageAction::Install { manager, packages, .. } if manager == "cargo" && packages.len() == 2)
     );
 }
 
@@ -659,11 +661,11 @@ fn plan_sub_manager_installs_when_parent_bootstrapping() {
     let managers: Vec<&dyn PackageManager> = vec![&brew_mock, &tap_mock];
     let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
-    // Should have: Bootstrap(brew), Install(brew: ripgrep), Install(brew-tap: some/tap)
-    assert_eq!(actions.len(), 3);
-    assert!(matches!(&actions[0], PackageAction::Bootstrap { manager, .. } if manager == "brew"));
-    assert!(matches!(&actions[1], PackageAction::Install { manager, .. } if manager == "brew"));
-    assert!(matches!(&actions[2], PackageAction::Install { manager, .. } if manager == "brew-tap"));
+    // Should have: Install(brew: ripgrep), Install(brew-tap: some/tap) — brew's
+    // own provisioning is a Prerequisites-phase concern this planner never sees.
+    assert_eq!(actions.len(), 2);
+    assert!(matches!(&actions[0], PackageAction::Install { manager, .. } if manager == "brew"));
+    assert!(matches!(&actions[1], PackageAction::Install { manager, .. } if manager == "brew-tap"));
 }
 
 // --- Declarative prune (Uninstall generation) tests ---
@@ -1461,12 +1463,13 @@ fn plan_with_new_managers() {
         } if manager == "pacman" && packages.contains(&"neovim".to_string())
     )));
 
-    // snap: unavailable but bootstrappable → Bootstrap + Install
-    assert!(
-        actions
-            .iter()
-            .any(|a| matches!(a, PackageAction::Bootstrap { manager, .. } if manager == "snap"))
-    );
+    // snap: unavailable but bootstrappable → Install planned optimistically
+    // (provisioning is a separate Prerequisites-phase concern)
+    assert!(actions.iter().any(|a| matches!(
+        a,
+        PackageAction::Install { manager, packages, .. }
+            if manager == "snap" && packages.contains(&"nvim".to_string())
+    )));
 }
 
 #[test]
@@ -1536,7 +1539,7 @@ fn yum_skipped_when_dnf_available() {
     // the manager's name is correct
     let yum = yum_manager();
     assert_eq!(yum.name(), "yum");
-    assert!(!yum.can_bootstrap());
+    assert!(yum.bootstrap_plan().is_none());
 }
 
 #[test]
@@ -1606,21 +1609,6 @@ fn apply_packages_uninstall() {
     apply_packages(&actions, &managers, &cx).unwrap();
     let uninstalls = mock.uninstalls.lock().unwrap();
     assert_eq!(uninstalls.len(), 1);
-}
-
-#[test]
-fn apply_packages_bootstrap() {
-    let mock = MockPackageManager::new("cargo", false, vec![]).with_bootstrap();
-    let printer = cfgd_core::test_helpers::test_printer();
-    let state = cfgd_core::test_helpers::test_state();
-    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    let actions = vec![PackageAction::Bootstrap {
-        manager: "cargo".into(),
-        method: "rustup".into(),
-        origin: "local".into(),
-    }];
-    let managers: Vec<&dyn PackageManager> = vec![&mock];
-    apply_packages(&actions, &managers, &cx).unwrap();
 }
 
 #[test]
@@ -1766,56 +1754,147 @@ fn test_simple_manager_no_aliases_for_pacman() {
 
 // --- parse_scoop_list edge cases ---
 
-// --- bootstrap_method tests ---
+// --- bootstrap-method cascade tests ---
+//
+// The per-manager plans live beside each manager; these pin the two shared
+// cascade detectors every one of those plans resolves its method through.
 
+#[cfg(target_os = "linux")]
 #[test]
-fn bootstrap_method_brew_returns_homebrew_installer() {
-    let mock = MockPackageManager::new("brew", false, vec![]);
-    let method = bootstrap_method(&mock);
-    assert_eq!(method, "homebrew installer");
-}
-
-#[test]
-fn bootstrap_method_cargo_returns_rustup() {
-    let mock = MockPackageManager::new("cargo", false, vec![]);
-    let method = bootstrap_method(&mock);
-    assert_eq!(method, "rustup");
-}
-
-#[test]
-fn bootstrap_method_nix_returns_nix_installer() {
-    let mock = MockPackageManager::new("nix", false, vec![]);
-    let method = bootstrap_method(&mock);
-    assert_eq!(method, "nix installer");
-}
-
-#[test]
-fn bootstrap_method_unknown_returns_system() {
-    let mock = MockPackageManager::new("unknown-pm", false, vec![]);
-    let method = bootstrap_method(&mock);
-    assert_eq!(method, "system");
-}
-
-#[test]
-fn detect_system_method_returns_valid_manager() {
-    // detect_system_method cascades apt → dnf → zypper
-    let method = detect_system_method();
-    assert!(
-        method == "apt" || method == "dnf" || method == "zypper",
-        "expected apt, dnf, or zypper, got: {}",
-        method
-    );
+fn detect_system_method_names_only_a_manager_this_host_can_run() {
+    // The detector answers `None` rather than a hopeful default: a plan's
+    // method is binding at execution, so naming a manager that is not here
+    // would be a guaranteed failure. Whichever it picks, the command that
+    // would run it must resolve.
+    let runnable = |tool: &str| {
+        cfgd_core::command_available_with_seam(
+            &format!("CFGD_{}_BIN", tool.to_uppercase().replace('-', "_")),
+            tool,
+        )
+    };
+    match shared::detect_system_method() {
+        Some("apt") => assert!(runnable("apt-get")),
+        Some("dnf") => assert!(runnable("dnf")),
+        Some("zypper") => assert!(runnable("zypper")),
+        Some(other) => panic!("expected apt, dnf, or zypper, got: {other}"),
+        None => assert!(
+            !["apt-get", "dnf", "zypper"].into_iter().any(runnable),
+            "a runnable system manager must not be answered with None"
+        ),
+    }
 }
 
 #[test]
 fn detect_brew_system_method_returns_valid_manager() {
     // detect_brew_system_method cascades brew → apt → dnf → fallback
-    let method = detect_brew_system_method("pip");
+    let method = shared::detect_brew_system_method("pip");
     assert!(
         method == "brew" || method == "apt" || method == "dnf" || method == "pip",
         "expected brew, apt, dnf, or pip, got: {}",
         method
     );
+}
+
+// --- pip user-scripts directory (the pipx `pip` arm's declared dir) ---
+
+#[test]
+fn a_pip_version_banner_yields_the_interpreter_version() {
+    assert_eq!(
+        shared::parse_pip_python_version(
+            r"pip 25.2 from C:\Python314\Lib\site-packages\pip (python 3.14)"
+        )
+        .as_deref(),
+        Some("3.14")
+    );
+    assert_eq!(
+        shared::parse_pip_python_version(
+            "pip 24.0 from /usr/lib/python3/dist-packages/pip (python 3.12)"
+        )
+        .as_deref(),
+        Some("3.12")
+    );
+    // A banner without the tail names no version, and no version means no
+    // declared directory — never a guessed one.
+    assert_eq!(shared::parse_pip_python_version("pip 24.0"), None);
+    assert_eq!(shared::parse_pip_python_version("pip 24.0 (python )"), None);
+}
+
+#[test]
+fn the_windows_user_scripts_dir_is_appdata_plus_the_dotless_version() {
+    // The value that reaches the generated env file is the FOLDED one, so the
+    // assertion is made on the plan rather than on the composed `PathBuf`.
+    let plan = cfgd_core::providers::BootstrapPlan::new("pip").creating(
+        shared::compose_pip_user_scripts_dir(r"C:\Users\t\AppData\Roaming", "3.14"),
+    );
+    assert_eq!(
+        plan.creates_path_dirs,
+        vec!["C:/Users/t/AppData/Roaming/Python/Python314/Scripts".to_string()]
+    );
+}
+
+#[test]
+fn an_unreadable_windows_scripts_dir_is_declared_as_nothing() {
+    for (appdata, version) in [
+        (r"C:\Users\t\AppData\Roaming", "3"),   // no minor
+        (r"C:\Users\t\AppData\Roaming", "3.x"), // not a number
+        (r"C:\Users\t\AppData\Roaming", ""),    // nothing at all
+        ("", "3.14"),                           // no roaming root
+    ] {
+        assert_eq!(
+            shared::compose_pip_user_scripts_dir(appdata, version),
+            None,
+            "APPDATA {appdata:?} + version {version:?} must name no directory"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn the_unix_pip_arm_declares_the_home_local_bin() {
+    let home = tempfile::tempdir().unwrap();
+    cfgd_core::with_test_home(home.path(), || {
+        assert_eq!(
+            shared::pip_user_scripts_dir("pip3"),
+            Some(home.path().join(".local").join("bin")),
+            "the unix arm names one dir for every interpreter, and probes nothing"
+        );
+    });
+}
+
+#[cfg(windows)]
+#[test]
+fn the_windows_pip_arm_declares_a_scripts_dir_under_roaming_appdata() {
+    use cfgd_core::providers::PackageManager;
+
+    let _guard = cfgd_core::test_helpers::path_env_read_guard();
+    let pip_present = ["pip3", "pip"]
+        .iter()
+        .any(|t| cfgd_core::command_available(t));
+    let plan = super::pipx::PipxManager.bootstrap_plan();
+
+    match plan {
+        None => assert!(!pip_present, "a resolvable pip owes the pip arm a plan"),
+        Some(p) if p.method == "pip" => {
+            let appdata = std::env::var("APPDATA")
+                .unwrap_or_default()
+                .replace('\\', "/");
+            assert!(!appdata.is_empty(), "a Windows host without APPDATA");
+            assert_eq!(
+                p.creates_path_dirs.len(),
+                1,
+                "the pip arm declares exactly the user scripts dir: {:?}",
+                p.creates_path_dirs
+            );
+            let dir = &p.creates_path_dirs[0];
+            assert!(
+                dir.starts_with(&format!("{appdata}/Python/Python")) && dir.ends_with("/Scripts"),
+                "declared dir is not the nt_user scripts dir: {dir}"
+            );
+        }
+        // brew or a system manager answered the cascade first; that arm lands
+        // pipx on the system PATH and declares nothing of its own.
+        Some(_) => {}
+    }
 }
 
 // --- extract_caveats tests ---
@@ -1990,11 +2069,11 @@ fn add_package_custom_manager() {
     assert_eq!(packages.custom[0].packages, vec!["existing", "new-pkg"]);
 }
 
-// --- format_package_actions edge cases ---
+// --- format_plan_item (package arms) edge cases ---
 
 #[test]
 fn format_package_actions_empty() {
-    let formatted = format_package_actions(&[]);
+    let formatted = plan_items(vec![]);
     assert!(formatted.is_empty());
 }
 
@@ -2005,7 +2084,7 @@ fn format_package_actions_uninstall() {
         packages: vec!["eslint".into(), "prettier".into()],
         origin: "local".into(),
     }];
-    let formatted = format_package_actions(&actions);
+    let formatted = plan_items(actions);
     assert_eq!(formatted.len(), 1);
     assert!(formatted[0].contains("uninstall"));
     assert!(formatted[0].contains("npm"));
@@ -2037,12 +2116,12 @@ fn plan_packages_no_managers() {
 // --- MockPackageManager trait methods ---
 
 #[test]
-fn mock_manager_update_is_noop() {
+fn mock_manager_refresh_index_is_noop() {
     let mock = MockPackageManager::new("test", true, vec![]);
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    mock.update(&cx).unwrap();
+    mock.refresh_index(&cx).unwrap();
 }
 
 #[test]
@@ -2055,7 +2134,8 @@ fn mock_manager_available_version_is_none() {
 fn mock_manager_bootstrap_is_noop() {
     let mock = MockPackageManager::new("test", false, vec![]).with_bootstrap();
     let printer = cfgd_core::test_helpers::test_printer();
-    mock.bootstrap(&printer).unwrap();
+    mock.bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&printer))
+        .unwrap();
 }
 
 // --- Brewfile parsing edge cases ---
@@ -2280,8 +2360,6 @@ fn apply_packages_unknown_manager_skipped() {
     apply_packages(&actions, &[], &cx).unwrap();
 }
 
-// --- PostInstallNote and print_caveats ---
-
 // --- SimpleManager installed_packages_with_versions default ---
 
 #[test]
@@ -2295,19 +2373,38 @@ fn simple_manager_default_versions_unknown() {
 
 // --- SimpleManager available_version dispatch ---
 
+#[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn simple_manager_available_version_dispatches() {
-    // Verify the function pointer is set (can't run without actual managers)
-    let apt = apt_manager();
-    // query_version is a function pointer — it exists
-    assert_eq!(apt.mgr_name, "apt");
+    // apt's query_version pointer is `query_version_apt`, which asks
+    // `apt-cache policy` rather than `apt info` — the dispatch this test is
+    // named for. Asserting only that the manager is called "apt" pinned its
+    // name, not the pointer.
+    let shim = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_APT_CACHE_BIN",
+        0,
+        "vim:\n  Installed: (none)\n  Candidate: 2:9.0.1378-2\n",
+        "",
+    );
+    let version = apt_manager().available_version("vim").expect("Ok");
+    assert_eq!(
+        version.as_deref(),
+        Some("9.0.1378"),
+        "the epoch and revision are stripped from apt's candidate"
+    );
+    assert_eq!(
+        shim.argv_log().trim(),
+        "policy vim",
+        "apt versions come from `apt-cache policy`"
+    );
 }
 
 // =========================================================================
 // Additional coverage tests
 // =========================================================================
 
-// --- Concrete manager name/can_bootstrap/trait verification ---
+// --- Concrete manager name/bootstrap-plan/trait verification ---
 
 // --- BrewManager path_dirs tests ---
 
@@ -2337,16 +2434,11 @@ fn simple_manager_available_version_dispatches() {
 
 // --- parse_scoop_list additional cases ---
 
-// --- format_package_actions comprehensive ---
+// --- format_plan_item (package arms) comprehensive ---
 
 #[test]
 fn format_package_actions_all_action_types() {
     let actions = vec![
-        PackageAction::Bootstrap {
-            manager: "brew".into(),
-            method: "homebrew installer".into(),
-            origin: "local".into(),
-        },
         PackageAction::Install {
             manager: "cargo".into(),
             packages: vec!["ripgrep".into(), "fd-find".into(), "bat".into()],
@@ -2364,13 +2456,12 @@ fn format_package_actions_all_action_types() {
         },
     ];
 
-    let formatted = format_package_actions(&actions);
-    assert_eq!(formatted.len(), 4);
+    let formatted = plan_items(actions);
+    assert_eq!(formatted.len(), 3);
 
-    assert_eq!(formatted[0], "bootstrap brew via homebrew installer");
-    assert_eq!(formatted[1], "install via cargo: ripgrep, fd-find, bat");
-    assert_eq!(formatted[2], "uninstall via npm: old-pkg");
-    assert_eq!(formatted[3], "skip snap: 'snap' not available");
+    assert_eq!(formatted[0], "cargo install ripgrep, fd-find, bat");
+    assert_eq!(formatted[1], "npm uninstall old-pkg");
+    assert_eq!(formatted[2], "skip snap: 'snap' not available");
 }
 
 #[test]
@@ -2380,8 +2471,8 @@ fn format_package_actions_single_package_install() {
         packages: vec!["curl".into()],
         origin: "local".into(),
     }];
-    let formatted = format_package_actions(&actions);
-    assert_eq!(formatted[0], "install via apt: curl");
+    let formatted = plan_items(actions);
+    assert_eq!(formatted[0], "apt install curl");
 }
 
 // --- plan_packages comprehensive scenarios ---
@@ -2429,12 +2520,8 @@ fn plan_packages_mixed_available_and_unavailable() {
         PackageAction::Skip { manager, .. } if manager == "snap"
     )));
 
-    // nix: unavailable + bootstrappable → bootstrap + install
-    assert!(
-        actions
-            .iter()
-            .any(|a| matches!(a, PackageAction::Bootstrap { manager, .. } if manager == "nix"))
-    );
+    // nix: unavailable + bootstrappable → install planned optimistically
+    // (provisioning is a separate Prerequisites-phase concern)
     assert!(actions.iter().any(|a| matches!(
         a,
         PackageAction::Install { manager, packages, .. }
@@ -2713,60 +2800,6 @@ fn resolve_manifest_packages_duplicate_merging() {
 
 // --- custom_managers tests ---
 
-// --- bootstrap_method comprehensive ---
-
-#[test]
-fn bootstrap_method_snap_or_flatpak_returns_system_method() {
-    let snap_mock = MockPackageManager::new("snap", false, vec![]);
-    let method = bootstrap_method(&snap_mock);
-    assert!(
-        method == "apt" || method == "dnf" || method == "zypper",
-        "expected system method, got: {}",
-        method
-    );
-
-    let flatpak_mock = MockPackageManager::new("flatpak", false, vec![]);
-    let method = bootstrap_method(&flatpak_mock);
-    assert!(
-        method == "apt" || method == "dnf" || method == "zypper",
-        "expected system method, got: {}",
-        method
-    );
-}
-
-#[test]
-fn bootstrap_method_npm_detects_method() {
-    let mock = MockPackageManager::new("npm", false, vec![]);
-    let method = bootstrap_method(&mock);
-    assert!(
-        method == "brew" || method == "apt" || method == "dnf" || method == "nvm",
-        "expected brew/apt/dnf/nvm, got: {}",
-        method
-    );
-}
-
-#[test]
-fn bootstrap_method_pipx_detects_method() {
-    let mock = MockPackageManager::new("pipx", false, vec![]);
-    let method = bootstrap_method(&mock);
-    assert!(
-        method == "brew" || method == "apt" || method == "dnf" || method == "pip",
-        "expected brew/apt/dnf/pip, got: {}",
-        method
-    );
-}
-
-#[test]
-fn bootstrap_method_go_detects_method() {
-    let mock = MockPackageManager::new("go", false, vec![]);
-    let method = bootstrap_method(&mock);
-    assert!(
-        method == "brew" || method == "apt" || method == "dnf",
-        "expected brew/apt/dnf, got: {}",
-        method
-    );
-}
-
 // --- apply_packages with skip action ---
 
 #[test]
@@ -2775,11 +2808,6 @@ fn apply_packages_mixed_actions() {
     let npm_mock = MockPackageManager::new("npm", true, vec!["old-pkg"]);
 
     let actions = vec![
-        PackageAction::Bootstrap {
-            manager: "cargo".into(),
-            method: "rustup".into(),
-            origin: "local".into(),
-        },
         PackageAction::Install {
             manager: "cargo".into(),
             packages: vec!["ripgrep".into(), "bat".into()],
@@ -2813,8 +2841,6 @@ fn apply_packages_mixed_actions() {
 }
 
 // --- extract_caveats comprehensive ---
-
-// --- print_caveats with multiple notes ---
 
 // --- Brewfile parsing edge cases ---
 
@@ -2984,7 +3010,7 @@ fn all_package_managers_unique_names() {
 fn all_package_managers_bootstrap_consistency() {
     let managers = all_package_managers();
 
-    // snap and flatpak are Linux-only; can_bootstrap() always returns false elsewhere.
+    // snap and flatpak are Linux-only; they plan nothing elsewhere.
     #[cfg(target_os = "linux")]
     let bootstrappable: HashSet<&str> = [
         "brew",
@@ -3050,7 +3076,7 @@ fn all_package_managers_bootstrap_consistency() {
             // own manager, and claiming otherwise would drive a nonsensical
             // install attempt.
             assert!(
-                !m.can_bootstrap(),
+                m.bootstrap_plan().is_none(),
                 "{} should NOT be bootstrappable",
                 m.name()
             );
@@ -3065,26 +3091,120 @@ fn all_package_managers_bootstrap_consistency() {
             // this test cannot guarantee.
             #[cfg(not(target_os = "freebsd"))]
             {
-                use super::shared::any_system_manager_available;
-
-                // `go` alone bootstraps only through a *system* package manager
-                // (not curl, which the others fall back to), so a shell without
-                // one on PATH — e.g. brew not exported into a non-login macOS
-                // session — correctly reports it non-bootstrappable. Assert the
-                // wiring in whichever direction the environment dictates instead
-                // of a blanket true that false-fails there; CI runners have a
-                // system manager, so this still asserts go IS bootstrappable.
+                // `go` alone bootstraps only through brew or a *system* package
+                // manager (not curl, which the others fall back to), so a shell
+                // without one on PATH — e.g. brew not exported into a non-login
+                // macOS session — correctly reports it non-bootstrappable.
+                // Assert the wiring in whichever direction the environment
+                // dictates instead of a blanket true that false-fails there;
+                // CI runners have a system manager, so this still asserts go IS
+                // bootstrappable. The mediators are named here rather than read
+                // back from the detector, so a detector that stopped seeing one
+                // of them fails this test instead of agreeing with itself.
                 if m.name() == "go" {
+                    let mediator_present = super::shared::brew_available()
+                        || ["apt-get", "dnf", "zypper"].into_iter().any(|tool| {
+                            cfgd_core::command_available_with_seam(
+                                &format!("CFGD_{}_BIN", tool.to_uppercase().replace('-', "_")),
+                                tool,
+                            )
+                        });
                     assert_eq!(
-                        m.can_bootstrap(),
-                        any_system_manager_available(),
-                        "go bootstrappability must track system-manager availability"
+                        m.bootstrap_plan().is_some(),
+                        mediator_present,
+                        "go bootstrappability must track the mediators its bootstrap can run"
                     );
                 } else {
-                    assert!(m.can_bootstrap(), "{} should be bootstrappable", m.name());
+                    assert!(
+                        m.bootstrap_plan().is_some(),
+                        "{} should be bootstrappable",
+                        m.name()
+                    );
                 }
             }
         }
+    }
+}
+
+#[test]
+fn every_bootstrap_plan_declares_usable_tools_and_dirs() {
+    // One gate over the whole registry, so a manager added later cannot declare
+    // a prerequisite nothing can install or a PATH entry nothing can resolve.
+    // The read guard brackets BOTH probe passes: `feasible == obtainable`
+    // holds only while the PATH answers stay put, and a concurrent
+    // PATH-emptying test between the two passes turns an obtainable `curl`
+    // into a refusal on one side of the comparison.
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
+    let home = tempfile::tempdir().unwrap();
+    let plans: Vec<(String, cfgd_core::providers::BootstrapPlan, bool)> =
+        cfgd_core::with_test_home(home.path(), || {
+            all_package_managers()
+                .iter()
+                .filter_map(|m| {
+                    m.bootstrap_plan().map(|p| {
+                        (
+                            m.name().to_string(),
+                            p,
+                            m.feasible_bootstrap_plan().is_some(),
+                        )
+                    })
+                })
+                .collect()
+        });
+    assert!(!plans.is_empty(), "no manager planned a bootstrap");
+
+    for (name, plan, feasible) in plans {
+        assert!(!plan.method.trim().is_empty(), "{name}: empty method");
+        // The prerequisite population is closed on purpose: a plan may only
+        // name a tool a system manager can actually install for it.
+        for tool in &plan.requires {
+            assert!(
+                ["curl", "pip3", "pip"].contains(&tool.as_str()),
+                "{name}: unknown prerequisite {tool}"
+            );
+        }
+        // The plan describes the cascade whatever this host carries;
+        // feasibility is the separate question asked of the same plan, and the
+        // two must agree. A tool that is missing and that no system manager
+        // installs under that name (`pip3` — apt calls the package
+        // `python3-pip`) makes the plan infeasible, which is what lets the
+        // planner refuse the manager with the cause named instead of dropping
+        // it silently.
+        let obtainable = plan
+            .requires
+            .iter()
+            .all(|tool| cfgd_core::providers::prerequisite_obtainable(tool));
+        assert_eq!(
+            feasible, obtainable,
+            "{name}: feasibility must follow the plan's own tools ({:?})",
+            plan.requires
+        );
+        for dir in &plan.creates_path_dirs {
+            assert!(
+                !dir.contains('\\'),
+                "{name}: unfolded path separator in {dir}"
+            );
+            // Judged on the folded string, not `Path::is_absolute`: a declared
+            // dir is a cross-OS value, and Windows calls the POSIX-rooted
+            // `/nix/var/nix/profiles/default/bin` relative because it names no
+            // drive. Rooted means a leading `/` or a `C:/`-style drive root.
+            let drive_rooted = {
+                let b = dir.as_bytes();
+                b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'/'
+            };
+            assert!(
+                dir.starts_with('/') || drive_rooted,
+                "{name}: relative PATH dir {dir}"
+            );
+        }
+        let mut unique = plan.creates_path_dirs.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            plan.creates_path_dirs.len(),
+            "{name}: duplicate PATH dir"
+        );
     }
 }
 
@@ -3271,8 +3391,6 @@ fn mock_manager_installed_packages_empty() {
 // =========================================================================
 // Additional coverage — output verification, error paths
 // =========================================================================
-
-// --- print_caveats output verification ---
 
 // --- ScriptedManager error variants ---
 
@@ -3554,7 +3672,7 @@ fn all_package_managers_ends_with_windows_managers() {
 
 // --- extract_caveats brew edge case: caveats section with only blank lines ---
 
-// --- format_package_actions with single-element lists ---
+// --- format_plan_item (package arms) with single-element lists ---
 
 #[test]
 fn format_package_actions_single_package_uninstall() {
@@ -3563,19 +3681,8 @@ fn format_package_actions_single_package_uninstall() {
         packages: vec!["vim".into()],
         origin: "local".into(),
     }];
-    let formatted = format_package_actions(&actions);
-    assert_eq!(formatted[0], "uninstall via apt: vim");
-}
-
-#[test]
-fn format_package_actions_bootstrap_with_long_method() {
-    let actions = vec![PackageAction::Bootstrap {
-        manager: "npm".into(),
-        method: "nvm".into(),
-        origin: "local".into(),
-    }];
-    let formatted = format_package_actions(&actions);
-    assert_eq!(formatted[0], "bootstrap npm via nvm");
+    let formatted = plan_items(actions);
+    assert_eq!(formatted[0], "apt uninstall vim");
 }
 
 // --- parse_simple_lines deduplication behavior ---
@@ -3689,7 +3796,7 @@ fn remove_package_snap_from_packages_list() {
 
 // --- SimpleManager::bootstrap() is no-op ---
 
-// --- Concrete manager can_bootstrap and is_available ---
+// --- Concrete manager bootstrap_plan and is_available ---
 
 // --- run_pkg_cmd error kind dispatch (exercised through real commands) ---
 // These use sh -c to create controlled failures that exercise run_pkg_cmd_prefixed
@@ -3736,7 +3843,7 @@ fn cmd_builders_return_valid_commands() {
 
 // --- WingetManager::bootstrap error ---
 
-// --- ChocolateyManager and ScoopManager can_bootstrap ---
+// --- ChocolateyManager and ScoopManager bootstrap plans ---
 
 // --- BrewManager::path_dirs called through trait ---
 
@@ -3777,3 +3884,246 @@ fn brew_path_dirs_through_trait() {
 // --- GoInstallManager::update is no-op ---
 
 // --- NixManager::update is no-op ---
+
+// --- plan_packages_observed: the versioned enumeration feeds the satisfies-gate ---
+
+/// Mock in the shape of a case-insensitive manager (chocolatey / winget /
+/// scoop): the versioned listing keeps the REGISTERED display case while
+/// `package_identity` folds to lowercase — the exact pair the planner must
+/// reconcile when it derives its diff set from the versioned enumeration.
+struct CiVersionedMockManager;
+
+impl PackageManager for CiVersionedMockManager {
+    fn name(&self) -> &str {
+        "winget"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+        None
+    }
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
+        Ok(HashSet::from(["tool".to_string(), "fzf".to_string()]))
+    }
+    fn installed_packages_with_versions(
+        &self,
+        _cx: &PackageContext<'_>,
+    ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
+        Ok(vec![
+            cfgd_core::providers::PackageInfo {
+                name: "Tool".into(),
+                version: "14.2.0".into(),
+            },
+            cfgd_core::providers::PackageInfo {
+                name: "Fzf".into(),
+                version: "0.46.1".into(),
+            },
+        ])
+    }
+    fn package_identity(&self, entry: &str) -> String {
+        entry.to_lowercase()
+    }
+    fn listed_identity(&self, listed_name: &str) -> String {
+        listed_name.to_lowercase()
+    }
+    fn install(&self, _: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn uninstall(&self, _: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn observed_enumeration_threads_manager_versions_into_the_satisfies_gate() {
+    // End-to-end through the production wiring: the planner's OWN versioned
+    // enumeration (no second shell-out) is what the source classification
+    // judges a pinned item against, with names folded through
+    // `package_identity` on both sides.
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+    let mock = CiVersionedMockManager;
+    let profile = test_profile(PackagesSpec {
+        winget: vec!["Tool@^14".into(), "Fzf".into()],
+        ..Default::default()
+    });
+    let managers: Vec<&dyn PackageManager> = vec![&mock];
+
+    let (actions, actual) =
+        plan_packages_observed(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
+
+    // The diff still compares the folded identity space: `Fzf` is installed
+    // (as `fzf`), while the pinned entry's identity holds real plan work —
+    // accepting a satisfied pin converges it, never silently skips it.
+    let items = plan_items(actions);
+    assert!(
+        items.iter().any(|i| i.contains("Tool@^14")),
+        "the pinned entry still plans its converging install: {items:?}"
+    );
+    assert!(
+        !items.iter().any(|i| i.contains("Fzf")),
+        "the display-case listing folds onto the installed identity: {items:?}"
+    );
+
+    // The classification consumes that same observation: a satisfied pin
+    // auto-accepts with the manager-reported version in its provenance, and
+    // the verbatim-installed item auto-accepts with its version named.
+    let layer = cfgd_core::config::ProfileLayer {
+        source: "acme".to_string(),
+        profile_name: "offered".to_string(),
+        priority: 500,
+        policy: cfgd_core::config::LayerPolicy::Recommended,
+        spec: cfgd_core::config::ProfileSpec {
+            packages: Some(PackagesSpec {
+                winget: vec!["Tool@^14".into(), "Fzf".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    };
+    let delivered = cfgd_core::reconciler::DeliveredItems::from_layers(&[layer]);
+    let review = cfgd_core::reconciler::review_source_policy(
+        &state,
+        "acme",
+        &delivered,
+        &cfgd_core::config::AutoApplyPolicyConfig::default(),
+        &actual,
+    )
+    .unwrap();
+
+    let mut accepted: Vec<(String, String)> = review
+        .auto_accepted
+        .iter()
+        .map(|a| (a.resource.clone(), a.reason.clone()))
+        .collect();
+    accepted.sort();
+    assert_eq!(
+        accepted,
+        vec![
+            (
+                "packages.winget.Fzf".to_string(),
+                "already installed (0.46.1)".to_string()
+            ),
+            (
+                "packages.winget.Tool@^14".to_string(),
+                "installed 14.2.0 satisfies ^14".to_string()
+            ),
+        ],
+        "the production enumeration answers both shapes: {review:?}"
+    );
+    assert!(
+        review.to_mint.is_empty(),
+        "nothing left to ask: {:?}",
+        review.to_mint
+    );
+}
+
+/// Mock in FreeBSD `pkg`'s shape: `package_identity` strips a trailing
+/// `-VERSION` and is NOT a fixed point (`drm-510-kmod` strips again to
+/// `drm`), while the versioned listing is the trait default — names already
+/// in identity space, stripped once by the listing parse.
+struct PkgLikeMockManager;
+
+impl PackageManager for PkgLikeMockManager {
+    fn name(&self) -> &str {
+        "pkg"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+        None
+    }
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
+        // What `parse_pkg_lines` yields for a listed `drm-510-kmod-5.10.163_1`.
+        Ok(HashSet::from(["drm-510-kmod".to_string()]))
+    }
+    fn package_identity(&self, entry: &str) -> String {
+        super::shared::strip_version_suffix(entry)
+    }
+    fn install(&self, _: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn uninstall(&self, _: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn a_non_fixed_point_identity_never_collapses_a_listed_name() {
+    // The listing already reports identities (stripped once); applying the
+    // entry-side fold to it again would collapse `drm-510-kmod` onto `drm` —
+    // suppressing a real install and, worse, minting auto-accept consent for
+    // a package that is NOT installed. Fail-closed means neither may happen.
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+    let mock = PkgLikeMockManager;
+    let profile = test_profile(PackagesSpec {
+        pkg: vec!["drm".into()],
+        ..Default::default()
+    });
+    let managers: Vec<&dyn PackageManager> = vec![&mock];
+
+    let (actions, actual) =
+        plan_packages_observed(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
+
+    let items = plan_items(actions);
+    assert!(
+        items.iter().any(|i| i.contains("drm")),
+        "`drm` is not installed — `drm-510-kmod` is a different package — so \
+         the install must be planned: {items:?}"
+    );
+
+    let layer = cfgd_core::config::ProfileLayer {
+        source: "acme".to_string(),
+        profile_name: "offered".to_string(),
+        priority: 500,
+        policy: cfgd_core::config::LayerPolicy::Recommended,
+        spec: cfgd_core::config::ProfileSpec {
+            packages: Some(PackagesSpec {
+                pkg: vec!["drm".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    };
+    let delivered = cfgd_core::reconciler::DeliveredItems::from_layers(&[layer]);
+    let review = cfgd_core::reconciler::review_source_policy(
+        &state,
+        "acme",
+        &delivered,
+        &cfgd_core::config::AutoApplyPolicyConfig::default(),
+        &actual,
+    )
+    .unwrap();
+
+    assert!(
+        review.auto_accepted.is_empty(),
+        "a listed `drm-510-kmod` is not consent for `drm`: {:?}",
+        review.auto_accepted
+    );
+    assert_eq!(
+        review
+            .to_mint
+            .iter()
+            .map(|m| m.resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["packages.pkg.drm"],
+        "the not-installed item still owes its question"
+    );
+}

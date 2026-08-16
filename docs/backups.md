@@ -22,18 +22,18 @@ metadata:
   name: workstation
 spec:
   backups:
-    - name: openlist-db
-      source: /var/lib/openlist/data.db
+    - name: notes-db
+      source: ~/.local/share/notes/notes.db
       retention: 7
       preBackup:
-        - systemctl stop openlist
+        - sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
       postBackup:
-        - systemctl start openlist
+        - sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
 ```
 
-That declaration snapshots `data.db` into `<state_dir>/backups/openlist-db/` as
-`data.db.20260801T031500Z`, keeps the newest 7, and stops/starts the service around the copy so
-the snapshot is consistent.
+That declaration snapshots `notes.db` into `<state_dir>/backups/notes-db/` as
+`notes.db.20260813T061306Z`, keeps the newest 7, and folds the write-ahead log into the database
+before the copy so the snapshot is a consistent point in time rather than half of one.
 
 ## CLI
 
@@ -49,48 +49,58 @@ A failed or unclean unit downgrades the apply's overall status from `success` to
 exits nonzero (`ExitCode::ApplyFailed`, code `7`) the same way a failed reconciler action would —
 see [Exit Codes](cli-reference.md#exit-codes).
 
+A backup run is a run like any other: a `Backup` header, a `Backups` phase with one
+`backup:<name>` group per unit, and a rollup. Each unit's group carries one line per `preBackup` /
+`postBackup` hook and one for the snapshot itself, so the rollup's counts are the lines on screen.
+
 ```console
 $ cfgd backup run
-Run Backups
+Backup
+  Config   /home/me/.config/cfgd/cfgd.yaml
+  Profile  workstation
+  Actions  4 planned
 
-✓ backup 'openlist-db'
+Backups
+  backup:notes-db
+    ◐ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
+      0|0|0
+    ✓ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)" (0.1s)
+    ◐ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
+      ok
+    ✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"             (0.1s)
+    ✓ snapshot notes.db.20260813T061306Z                                                 — 8.0 KB
+  backup:journal
+    ✓ snapshot journal.20260813T061306Z                                                  — 24 B
 
-✓ backup 'weekly'
-
-$ cfgd backup run openlist-db
-Run Backups
-
-✓ backup 'openlist-db'
+✓ Backup complete — 4 actions succeeded (0.2s)
 
 $ cfgd backup run missing-name
-Run Backups
-
 ✗ Backup 'missing-name' not found
 
-→ valid backups: openlist-db, weekly
+→ valid backups: notes-db, journal
 
 $ cfgd backup list
 Backups
 
-Name          Source                       Schedule    Retention  Last Run                        Next Run
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-openlist-db   /var/lib/openlist/data.db    -           7          success @ 2026-08-01T03:15:00Z   -
-weekly        ~/Pictures                   0 3 * * *   3          never                            2026-08-02T03:00:00Z
+Name      Source                         Schedule   Retention  Last Run                        Next Run
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+notes-db  ~/.local/share/notes/notes.db  -          7          success @ 2026-08-13T06:13:06Z  -
+journal   ~/Documents/journal            0 3 * * *  3          success @ 2026-08-13T06:13:06Z  2026-08-14T03:00:00Z
 
-$ cfgd --output json backup run openlist-db
+$ cfgd --output json backup run notes-db
 [
   {
-    "name": "openlist-db",
-    "status": "success",
     "clean": true,
-    "destinationPath": "/home/me/.local/state/cfgd/backups/openlist-db/data.db.20260801T031500Z"
+    "destinationPath": "/home/me/.local/state/cfgd/backups/notes-db/notes.db.20260813T061322Z",
+    "name": "notes-db",
+    "status": "success"
   }
 ]
 
 $ cfgd --output json backup run missing-name
 {
   "error": "not_found",
-  "hint": "valid backups: openlist-db, weekly",
+  "hint": "valid backups: notes-db, journal",
   "name": "missing-name"
 }
 ```
@@ -111,26 +121,27 @@ consumers.
 [`cfgd backup restore`](#restoring) can put back:
 
 ```console
-$ cfgd backup list openlist-db --snapshots
-Snapshots: openlist-db
+$ cfgd backup list notes-db --snapshots
+Snapshots: notes-db
 
-Snapshot                       Created               Size
-─────────────────────────────────────────────────────────
-data.db.20260801T231502Z       2026-08-01T23:15:02Z  1.2 MB
-data.db.20260730T120000Z       2026-07-30T12:00:00Z  1.1 MB
+Snapshot                   Created               Size
+───────────────────────────────────────────────────────
+notes.db.20260813T061322Z  2026-08-13T06:13:22Z  8.0 KB
+notes.db.20260813T061321Z  2026-08-13T06:13:21Z  8.0 KB
+notes.db.20260813T061306Z  2026-08-13T06:13:06Z  8.0 KB
 
-$ cfgd --output json backup list openlist-db --snapshots
+$ cfgd --output json backup list notes-db --snapshots
 [
   {
-    "name": "data.db.20260801T231502Z",
-    "created": "2026-08-01T23:15:02Z",
-    "sizeBytes": 1258291
+    "created": "2026-08-13T06:13:22Z",
+    "name": "notes.db.20260813T061322Z",
+    "sizeBytes": 8192
   }
 ]
 ```
 
 `name` is the snapshot's path **relative to the backup's `destination`**, so a nested
-`namePattern` lists `daily/data.db.20260801T231502Z` — the exact string `restore --at` accepts.
+`namePattern` lists `daily/notes.db.20260813T061322Z` — the exact string `restore --at` accepts.
 `created` is the ISO 8601 UTC time the run that wrote it finished, on the same scale as
 `backup list`'s Last Run column — not a `namePattern`-style stamp, so it lines up with every other
 time cfgd prints. The `Size` column uses the same `1.2 MB` / `4.0 KB` / `12 B` scale
@@ -243,7 +254,7 @@ The filename each snapshot gets, defaulting to `{filename}.{timestamp}`.
 | `{timestamp}` | UTC in `%Y%m%dT%H%M%SZ` form, e.g. `20260801T031500Z` |
 
 ```yaml
-namePattern: "{name}-{timestamp}.snap"   # openlist-db-20260801T031500Z.snap
+namePattern: "{name}-{timestamp}.snap"   # notes-db-20260813T061306Z.snap
 namePattern: "daily/{filename}"          # nests snapshots in a subdirectory
 ```
 
@@ -262,11 +273,14 @@ second — `{timestamp}` resolves to the second) take **distinct** names: cfgd a
 until the path is free.
 
 ```console
-$ cfgd backup list openlist-db --snapshots
-Snapshot                       Created               Size
-─────────────────────────────────────────────────────────
-data.db.20260801T231502Z-1     2026-08-01T23:15:02Z  1.2 MB
-data.db.20260801T231502Z       2026-08-01T23:15:02Z  1.2 MB
+$ cfgd backup list journal --snapshots
+Snapshots: journal
+
+Snapshot                    Created               Size
+──────────────────────────────────────────────────────
+journal.20260813T061710Z-1  2026-08-13T06:17:10Z  24 B
+journal.20260813T061710Z    2026-08-13T06:17:10Z  24 B
+journal.20260813T061547Z    2026-08-13T06:15:47Z  24 B
 ```
 
 Nothing is overwritten, because each recorded run must own exactly one payload: two rows pointing
@@ -306,8 +320,8 @@ full period out.
 
 ```yaml
 backups:
-  - name: openlist-db
-    source: /var/lib/openlist/data.db
+  - name: notes-db
+    source: ~/.local/share/notes/notes.db
     schedule: "0 3 * * *"    # 3am local, daily
   - name: scratch
     source: ~/scratch
@@ -338,8 +352,8 @@ quiesce for one and drop-and-recreate for the other branches on `CFGD_OPERATION`
 ```yaml
 preBackup:
   - run: |
-      systemctl stop openlist
-      [ "$CFGD_OPERATION" = restore ] && rm -f /var/lib/openlist/data.db-wal
+      sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
+      [ "$CFGD_OPERATION" = restore ] && rm -f ~/.local/share/notes/notes.db-wal
 ```
 
 Snapshots do not pause a concurrently running `cfgd apply`: each file is copied atomically, but a
@@ -401,13 +415,26 @@ The lock is per unit, not global: different backups still run at the same time. 
 same unit is firing is refused rather than interleaved:
 
 ```console
-$ cfgd backup run openlist-db
-Run Backups
+$ cfgd backup run notes-db
+Backup
+  Config   /home/me/.config/cfgd/cfgd.yaml
+  Profile  workstation
+  Actions  3 planned
 
-— backup 'openlist-db' — already running (pid 4127)
+Backups
+  backup:notes-db
+    — snapshot                           — already running (pid 3349308)
+
+— Backup did not run — 3 actions not attempted (0.0s)
 $ echo $?
 1
 ```
+
+The skip is one line in the unit's own group — the heading already names the unit, so the line
+names only what did not happen. Nothing it planned ran, so all three items are `not attempted`
+rather than failed — and the rollup says the run *did not run* rather than claiming it completed,
+because a `✓` above a nonzero exit code leaves the two things on screen that report the outcome
+contradicting each other.
 
 Every surface renders the collision the same way — a **skip**, because the unit *is* being backed
 up, just not by the caller. Only the exit code differs: `cfgd backup run` exits `1` (you asked for a
@@ -426,18 +453,38 @@ for a CLI-driven one.
 ```console
 $ cfgd daemon
 Daemon
-
-Starting cfgd daemon...
-
-✓ Health: /run/user/1000/cfgd/cfgd.sock
-
+⊙ Starting cfgd daemon...
+✓ Health: /home/me/.cache/cfgd/runtime/cfgd.sock
 ✓ Intervals: reconcile=300s, backups=2 scheduled
+⊙ Daemon running — press Ctrl+C to stop
+ INFO scheduled backup tick backup=notes-db
 
-Daemon running — press Ctrl+C to stop
- INFO scheduled backup tick backup=openlist-db
+Backup
+  Config   /home/me/.config/cfgd/cfgd.yaml
+  Profile  workstation
+  Trigger  schedule
+  Actions  3 planned
 
-✓ backup 'openlist-db'
+Backups
+  backup:notes-db
+    ◐ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
+      0|0|0
+    ✓ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)" (0.1s)
+    ◐ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
+      ok
+    ✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"             (0.1s)
+    ✓ snapshot notes.db.20260813T061559Z                                                 — 8.0 KB
+
+✓ Backup complete — 3 actions succeeded (0.2s)
+ INFO scheduled backup completed backup=notes-db
 ```
+
+A scheduled fire renders the same group a hand-run does — one shared renderer, so the journal a
+background run leaves behind is what you would have seen on the terminal. Each unit also gets one
+`tracing` line naming its own outcome (`completed`, `completed with errors`, or
+`skipped: the unit is already running elsewhere` **with the holder**), taken from that unit's own
+result rather than from a read-back of the store, which would report the previous run's row for a
+unit that was skipped here.
 
 Timer behaviour:
 
@@ -461,7 +508,7 @@ Timer behaviour:
   retries on its own, so one `SIGHUP` over a transient error can never retire a working timer set:
 
   ```console
-  ⚠ Backup schedules NOT reloaded: config did not fully resolve — keeping the 2 running schedule(s), retrying automatically
+  ⚠ Backup schedules NOT reloaded: config did not fully resolve — keeping the 2 running schedules, retrying automatically
   ```
 - **A degraded start is visible and temporary.** If sources cannot be composed at startup, the
   daemon installs the locally-declared backups rather than none, says so in the banner, holds their
@@ -515,24 +562,35 @@ Timer behaviour:
 ## Restoring
 
 `cfgd backup restore <name>` puts a snapshot back where it came from. With no `--at` it picks the
-**newest** snapshot; the confirmation names the snapshot and the path it is about to overwrite:
+**newest** snapshot. On a terminal it asks first, naming the snapshot and the path it is about to
+overwrite:
+
+```
+? Restore 'notes-db' from snapshot notes.db.20260813T061322Z into
+  /home/me/.local/share/notes/notes.db? (y/N)
+```
+
+`--yes` answers it up front, which is the form that fits in a script:
 
 ```console
-$ cfgd backup restore openlist-db
+$ cfgd backup restore notes-db --yes
 Restore Backup
+◐ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
+  0|0|0
+✓ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)" (0.1s)
+◐ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
+  ok
+✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check" (0.1s)
+✓ backup:notes-db restored from notes.db.20260813T061333Z — into /home/me/.local/share/notes/notes.db
 
-Restore 'openlist-db' from snapshot data.db.20260801T231502Z into /var/lib/openlist/data.db? [y/N] y
-
-✓ backup 'openlist-db' restored from data.db.20260801T231502Z — into /var/lib/openlist/data.db
-
-→ previous contents saved to /home/me/.local/state/cfgd/backups/openlist-db/data.db.20260802T044026Z
+→ previous contents saved to /home/me/.local/state/cfgd/backups/notes-db/notes.db.20260813T061347Z
 ```
 
 ```bash
-cfgd backup restore openlist-db                              # newest snapshot
-cfgd backup restore openlist-db --at 20260730T120000Z        # by the timestamp portion
-cfgd backup restore openlist-db --at data.db.20260730T120000Z  # or the full snapshot name
-cfgd backup restore openlist-db --to /tmp/inspect --yes      # somewhere else, no prompt
+cfgd backup restore notes-db                                  # newest snapshot
+cfgd backup restore notes-db --at 20260730T120000Z            # by the timestamp portion
+cfgd backup restore notes-db --at notes.db.20260730T120000Z   # or the full snapshot name
+cfgd backup restore notes-db --to /tmp/inspect --yes          # somewhere else, no prompt
 ```
 
 `--to` redirects where the snapshot lands. A path outside the backup's source leaves the live
@@ -540,7 +598,7 @@ source untouched and takes no safety backup; a path at or inside the source is a
 in all but spelling, and behaves like one.
 
 `--at` matches the full snapshot name first, then any snapshot name **containing** the value —
-which is what lets a bare timestamp reach `data.db.20260730T120000Z` without you knowing the
+which is what lets a bare timestamp reach `notes.db.20260730T120000Z` without you knowing the
 unit's `namePattern`. A value matching more than one snapshot is refused rather than resolved to
 the newest match: a restore overwrites live data, so an ambiguous selection is never guessed at.
 An unknown value lists every available snapshot and exits `6`, the same treatment an unknown
@@ -639,12 +697,10 @@ is the right call when you want mirror semantics (`rsync --delete`) rather than 
 
 ```bash
 # file snapshot
-sudo systemctl stop openlist
-sudo cp ~/.local/state/cfgd/backups/openlist-db/data.db.20260801T031500Z /var/lib/openlist/data.db
-sudo systemctl start openlist
+cp ~/.local/state/cfgd/backups/notes-db/notes.db.20260813T061306Z ~/.local/share/notes/notes.db
 
 # directory snapshot
-rsync -a --delete ~/.local/state/cfgd/backups/photos/Pictures.20260801T031500Z/ ~/Pictures/
+rsync -a --delete ~/.local/state/cfgd/backups/journal/journal.20260813T061306Z/ ~/Documents/journal/
 ```
 
 ## Limitations

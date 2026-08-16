@@ -26,8 +26,7 @@ use tokio::net::UnixListener;
 use tokio::sync::{Mutex, mpsc};
 
 use crate::config::{
-    self, AutoApplyPolicyConfig, CfgdConfig, MergedProfile, NotifyMethod, OriginType, PolicyAction,
-    ResolvedProfile,
+    self, CfgdConfig, LOCAL_LAYER, MergedProfile, NotifyMethod, OriginType, ResolvedProfile,
 };
 use crate::errors::{DaemonError, Result};
 use crate::output::{Printer, Role};
@@ -58,6 +57,27 @@ pub trait DaemonHooks: Send + Sync {
         cfgd_installed: &std::collections::HashSet<String>,
         cx: &PackageContext<'_>,
     ) -> Result<Vec<PackageAction>>;
+
+    /// [`Self::plan_packages`] plus what its enumeration observed, as the
+    /// [`crate::reconciler::ActualPackages`] the source-decision classification
+    /// consumes.
+    ///
+    /// The default records nothing — a hook that does not capture its
+    /// enumeration leaves the classification fail-closed, so nothing
+    /// auto-accepts on a guess. The workstation binary overrides this with the
+    /// planner's real observation.
+    fn plan_packages_observed(
+        &self,
+        profile: &MergedProfile,
+        managers: &[&dyn PackageManager],
+        cfgd_installed: &std::collections::HashSet<String>,
+        cx: &PackageContext<'_>,
+    ) -> Result<(Vec<PackageAction>, crate::reconciler::ActualPackages)> {
+        Ok((
+            self.plan_packages(profile, managers, cfgd_installed, cx)?,
+            crate::reconciler::ActualPackages::default(),
+        ))
+    }
 
     /// Extend the registry with custom (user-defined) package managers from the profile.
     fn extend_registry_custom_managers(
@@ -363,7 +383,7 @@ impl DaemonState {
             last_sync: None,
             drift_count: 0,
             sources: vec![SourceStatus {
-                name: "local".to_string(),
+                name: LOCAL_LAYER.to_string(),
                 last_sync: None,
                 last_reconcile: None,
                 drift_count: 0,
@@ -615,7 +635,11 @@ pub(super) fn build_pre_loop_setup(
     printer: &Printer,
     state_dir: Option<&Path>,
 ) -> Result<PreLoopSetup> {
-    let cfg = config::load_config(config_path)?;
+    let mut cfg = config::load_config(config_path)?;
+    // Once per process lifetime, not per reconcile tick: the daemon reloads
+    // config on every tick to detect drift, and re-draining there would repeat
+    // the same notice every interval for as long as the daemon runs.
+    cfg.drain_deprecations(printer);
     let daemon_cfg = cfg.spec.daemon.clone().unwrap_or(config::DaemonConfig {
         enabled: true,
         reconcile: None,
@@ -773,7 +797,7 @@ pub async fn run_daemon(
 /// daemon (env/default when `None`); the client side resolves identically via
 /// [`resolve_default_ipc_path`].
 ///
-/// `--state-dir` rides the same route: without it the loop falls through to
+/// `--state-dir` rides this route deliberately: without it the loop falls through to
 /// `default_state_dir_for(scope)`, which honors `CFGD_STATE_DIR` but NOT the
 /// flag — so a `cfgd --state-dir X daemon` would write its drift events,
 /// backups, and apply lock somewhere `cfgd --state-dir X status` never looks,
@@ -873,7 +897,11 @@ pub(super) async fn run_daemon_with(
     // Materialize the state dir from scope when no explicit override is given,
     // so every downstream site (reconcile ticks, /drift endpoint, the backup
     // timers' restart seeding) all agree on the same path rather than each
-    // re-deriving it independently from scope.
+    // re-deriving it independently from scope. The operator-explicit bit is
+    // captured FIRST: once the default is materialized, `is_some()` can no
+    // longer say whether `--state-dir` was passed, and store ownership hangs
+    // on exactly that fact.
+    let explicit_state_dir = overrides.state_dir_override.is_some();
     let resolved_state_dir: Option<PathBuf> = match overrides.state_dir_override {
         Some(ref d) => Some(d.clone()),
         None => crate::state::default_state_dir_for(overrides.scope).ok(),
@@ -1069,6 +1097,7 @@ pub(super) async fn run_daemon_with(
         compliance_config: setup.compliance_config.clone(),
         printer: Arc::clone(&printer),
         state_dir_override: resolved_state_dir.clone(),
+        explicit_state_dir,
         managed_paths: setup.managed_paths.clone(),
         scope: overrides.scope,
         cfgd_version: cfgd_version.to_string(),

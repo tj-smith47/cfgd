@@ -201,8 +201,15 @@ else
 fi
 
 begin_test "SRC21: source create"
+# source create scaffolds cfgd-source.yaml into the CWD (git-init style), so
+# run it from scratch: at the repo root it leaks a gitignored scaffold that
+# fails every rerun on the same checkout with "already exists".
+SRC21_DIR="$SCRATCH/src21-create"
+mkdir -p "$SRC21_DIR"
+pushd "$SRC21_DIR" >/dev/null
 run $C source create my-source --description "local source" --version "1.0.0"
-if assert_ok; then
+popd >/dev/null
+if assert_ok && [ -f "$SRC21_DIR/cfgd-source.yaml" ]; then
     pass_test "SRC21"
 else fail_test "SRC21"; fi
 
@@ -231,7 +238,11 @@ if assert_ok; then
 else fail_test "SRC25"; fi
 
 begin_test "SRC26: source edit"
+# source edit resolves cfgd-source.yaml from the CWD, so run it where SRC21
+# scaffolded one (it previously found the scaffold SRC21 leaked at repo root).
+pushd "$SRC21_DIR" >/dev/null
 EDITOR=true run $C source edit
+popd >/dev/null
 if assert_ok; then
     pass_test "SRC26"
 else fail_test "SRC26"; fi

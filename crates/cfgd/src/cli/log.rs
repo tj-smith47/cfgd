@@ -7,8 +7,9 @@ pub fn cmd_log(
     count: u32,
     show_output: Option<i64>,
     state_dir: Option<&Path>,
+    scope: cfgd_core::Scope,
 ) -> anyhow::Result<()> {
-    let state = open_state_store(state_dir)?;
+    let state = open_state_store(state_dir, scope)?;
 
     if let Some(apply_id) = show_output {
         return cmd_log_show_output(printer, &state, apply_id);
@@ -196,7 +197,7 @@ mod tests {
             .journal_begin(apply_id, 0, "PostScripts", "script", raw_body, None)
             .unwrap();
         state
-            .journal_complete(jid, None, Some("captured output"))
+            .journal_complete(jid, 0, None, Some("captured output"))
             .unwrap();
 
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);

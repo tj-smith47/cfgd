@@ -10,7 +10,6 @@
 //!   `crate::packages::BrewManager`, `crate::packages::plan_packages`, etc.
 //! - The reconciler (`plan_packages`, `apply_packages`, ...).
 //! - `add_package` / `remove_package` profile-spec mutators.
-//! - `bootstrap_method` cascade detection.
 //! - Native-manifest parsers (Brewfile, package.json, Cargo.toml, apt list)
 //!   and `resolve_manifest_packages`.
 //! - The provider registry (`all_package_managers`).
@@ -19,13 +18,15 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::command_available;
-use cfgd_core::config::{MergedProfile, PackagesSpec};
+use cfgd_core::config::{LOCAL_LAYER, MergedProfile, PackagesSpec};
 use cfgd_core::effective::effective_desired_packages;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::modules::ResolvedModule;
 use cfgd_core::output::Role;
-use cfgd_core::providers::{OrphanedPackage, PackageAction, PackageContext, PackageManager};
+use cfgd_core::providers::{
+    OrphanedPackage, PackageAction, PackageContext, PackageManager, PackageManagerExt,
+};
+use cfgd_core::reconciler::ActualPackages;
 
 mod brew;
 mod cargo;
@@ -65,50 +66,11 @@ pub use simple::SimpleManager;
 pub use snap::SnapManager;
 pub use winget::WingetManager;
 
-use shared::brew_available;
 use simple::{
     apk_manager, apt_manager, dnf_manager, pacman_manager, pkg_manager, yum_manager, zypper_manager,
 };
 
 // --- Package Reconciler ---
-
-/// Bootstrap method description for display in plan/doctor output.
-/// Detect which method will be used to bootstrap via brew→apt→dnf cascade.
-fn detect_brew_system_method(fallback: &'static str) -> &'static str {
-    if brew_available() {
-        "brew"
-    } else if command_available("apt") {
-        "apt"
-    } else if command_available("dnf") {
-        "dnf"
-    } else {
-        fallback
-    }
-}
-
-/// Detect which method will be used to bootstrap via apt→dnf→zypper cascade.
-fn detect_system_method() -> &'static str {
-    if command_available("apt") {
-        "apt"
-    } else if command_available("dnf") {
-        "dnf"
-    } else {
-        "zypper"
-    }
-}
-
-pub fn bootstrap_method(manager: &dyn PackageManager) -> &'static str {
-    match manager.name() {
-        "brew" => "homebrew installer",
-        "cargo" => "rustup",
-        "npm" => detect_brew_system_method("nvm"),
-        "pipx" => detect_brew_system_method("pip"),
-        "go" => detect_brew_system_method("dnf"),
-        "snap" | "flatpak" => detect_system_method(),
-        "nix" => "nix installer",
-        _ => "system",
-    }
-}
 
 /// Compute the packages to prune for one manager: cfgd-tracked, still installed,
 /// no longer desired. User-installed packages (not in `cfgd_installed`) are
@@ -140,8 +102,9 @@ fn uninstall_for_manager(
 }
 
 /// Plan package actions by diffing installed vs desired for all managers.
-/// Handles bootstrap: unavailable managers that can be bootstrapped get Bootstrap
-/// actions before their Install actions.
+/// An unavailable manager that can be bootstrapped still gets its Install
+/// action planned here; provisioning the manager itself is the Prerequisites
+/// phase's job (`ManagerAction::Provision`), planned separately.
 ///
 /// `cfgd_installed` carries the set of packages cfgd itself installed, as
 /// `"<manager>/<identity>"` entries (the installed-DB identity name — i.e. what
@@ -156,7 +119,41 @@ pub fn plan_packages(
     cfgd_installed: &HashSet<String>,
     cx: &PackageContext<'_>,
 ) -> Result<Vec<PackageAction>> {
+    Ok(plan_packages_observed(profile, modules, managers, cfgd_installed, cx)?.0)
+}
+
+/// The observation's version for one listed package: the version the manager
+/// reported, unless it reported none. `"unknown"` is the
+/// [`PackageManager::installed_packages_with_versions`] contract's sentinel
+/// for "this manager does not know", and an empty string is the same answer.
+fn known_version(pkg: &cfgd_core::providers::PackageInfo) -> Option<String> {
+    let v = pkg.version.trim();
+    if v.is_empty() || v == "unknown" {
+        None
+    } else {
+        Some(v.to_string())
+    }
+}
+
+/// [`plan_packages`] plus what its enumeration observed, for the callers that
+/// also classify source decisions.
+///
+/// The captured [`ActualPackages`] is the planner's OWN installed-state read —
+/// the single `installed_packages_with_versions` call and the same
+/// `package_identity` mapping the diff below runs on — so the source-decision
+/// auto-accept judges presence (and version satisfaction) exactly as the plan
+/// does, with no second shell-out. Only available managers are recorded: an
+/// unavailable or erroring manager contributes nothing, and the
+/// classification fails closed for its packages.
+pub fn plan_packages_observed(
+    profile: &MergedProfile,
+    modules: &[ResolvedModule],
+    managers: &[&dyn PackageManager],
+    cfgd_installed: &HashSet<String>,
+    cx: &PackageContext<'_>,
+) -> Result<(Vec<PackageAction>, ActualPackages)> {
     let mut actions = Vec::new();
+    let mut actual = ActualPackages::default();
 
     // Single-source the desired set from the effective (profile ⊕ modules) view
     // so this planner sees exactly what every other read/write surface does.
@@ -206,7 +203,41 @@ pub fn plan_packages(
         // Only available managers can read installed state to confirm the
         // package is still present before pruning.
         if manager.is_available() {
-            let installed = manager.installed_packages(cx)?;
+            // ONE enumeration serves both the install/prune diff and the
+            // source-decision observation: `installed_packages_with_versions`
+            // reads the same manager database as `installed_packages` and
+            // additionally carries the version the satisfies-gate judges a
+            // pinned source item against. Listed names fold through
+            // `listed_identity` — NOT `package_identity`, which maps declared
+            // entries and need not be a fixed point over listed names — so
+            // the diff below still compares the exact identity space it
+            // always has (a case-insensitive manager's display-case listing
+            // folds to its lowercase identity form; everyone else's listing
+            // already reports identities and passes through untouched).
+            // Managers whose enumeration reports no version record `None`,
+            // and a pinned item under them stays pending (fail-closed).
+            let listed = manager.installed_packages_with_versions(cx)?;
+            let installed: HashSet<String> = listed
+                .iter()
+                .map(|pkg| manager.listed_identity(&pkg.name))
+                .collect();
+            actual.record_enumeration(
+                manager.name(),
+                listed
+                    .iter()
+                    .map(|pkg| (manager.listed_identity(&pkg.name), known_version(pkg))),
+            );
+            for entry in &desired {
+                actual.record_identity(manager.name(), entry, &manager.package_identity(entry));
+                // A version-pinned entry is judged by its BARE name; record
+                // that name's identity too, so the classification looks the
+                // pin up in the same folded space the listing above uses.
+                if let Some((bare, _)) = entry.rsplit_once('@')
+                    && !bare.is_empty()
+                {
+                    actual.record_identity(manager.name(), bare, &manager.package_identity(bare));
+                }
+            }
 
             // Install before uninstall so a rename (old pkg dropped, new pkg
             // added) lands the replacement before removing the old. The diff
@@ -224,7 +255,7 @@ pub fn plan_packages(
                 actions.push(PackageAction::Install {
                     manager: manager.name().to_string(),
                     packages: to_install,
-                    origin: "local".to_string(),
+                    origin: LOCAL_LAYER.to_string(),
                 });
             }
 
@@ -234,7 +265,7 @@ pub fn plan_packages(
                 actions.push(PackageAction::Uninstall {
                     manager: manager.name().to_string(),
                     packages: to_uninstall,
-                    origin: "local".to_string(),
+                    origin: LOCAL_LAYER.to_string(),
                 });
             }
         } else if desired.is_empty() {
@@ -243,29 +274,21 @@ pub fn plan_packages(
             // safely prune — leave its packages untouched.
             continue;
         } else if manager.can_bootstrap() {
-            // Unavailable but bootstrappable: add Bootstrap + Install all desired
-            actions.push(PackageAction::Bootstrap {
-                manager: manager.name().to_string(),
-                method: bootstrap_method(*manager).to_string(),
-                origin: "local".to_string(),
-            });
+            // Unavailable but bootstrappable: the Prerequisites phase plans
+            // provisioning this manager separately (`ManagerAction::Provision`).
+            // Install all desired packages so they land once it lands.
             actions.push(PackageAction::Install {
                 manager: manager.name().to_string(),
                 packages: desired,
-                origin: "local".to_string(),
+                origin: LOCAL_LAYER.to_string(),
             });
-        } else if manager
-            .name()
-            .split('-')
-            .next()
-            .is_some_and(|prefix| bootstrapping.contains(prefix))
-        {
+        } else if bootstrapping.contains(cfgd_core::manager_family(manager.name())) {
             // Sub-manager whose parent is being bootstrapped (e.g. brew-tap when brew
             // is being bootstrapped). Install all desired — nothing is installed yet.
             actions.push(PackageAction::Install {
                 manager: manager.name().to_string(),
                 packages: desired,
-                origin: "local".to_string(),
+                origin: LOCAL_LAYER.to_string(),
             });
         } else {
             actions.push(PackageAction::Skip {
@@ -274,12 +297,12 @@ pub fn plan_packages(
                     "'{}' not available — cannot auto-install on this platform",
                     manager.name()
                 ),
-                origin: "local".to_string(),
+                origin: LOCAL_LAYER.to_string(),
             });
         }
     }
 
-    Ok(actions)
+    Ok((actions, actual))
 }
 
 /// Apply package actions.
@@ -291,13 +314,6 @@ pub fn apply_packages(
 ) -> Result<()> {
     for action in actions {
         match action {
-            PackageAction::Bootstrap {
-                manager: mgr_name, ..
-            } => {
-                if let Some(mgr) = managers.iter().find(|m| m.name() == mgr_name) {
-                    mgr.bootstrap(cx.printer)?;
-                }
-            }
             PackageAction::Install {
                 manager: mgr_name,
                 packages,
@@ -319,35 +335,12 @@ pub fn apply_packages(
             PackageAction::Skip {
                 manager, reason, ..
             } => {
-                cx.printer
-                    .status_simple(Role::Warn, format!("{}: {}", manager, reason));
+                cx.report(Role::Warn, manager, reason);
             }
         }
     }
 
     Ok(())
-}
-
-/// Format package actions as human-readable plan items.
-#[cfg(test)]
-pub fn format_package_actions(actions: &[PackageAction]) -> Vec<String> {
-    actions
-        .iter()
-        .map(|a| match a {
-            PackageAction::Bootstrap {
-                manager, method, ..
-            } => format!("bootstrap {} via {}", manager, method),
-            PackageAction::Install {
-                manager, packages, ..
-            } => format!("install via {}: {}", manager, packages.join(", ")),
-            PackageAction::Uninstall {
-                manager, packages, ..
-            } => format!("uninstall via {}: {}", manager, packages.join(", ")),
-            PackageAction::Skip {
-                manager, reason, ..
-            } => format!("skip {}: {}", manager, reason),
-        })
-        .collect()
 }
 
 /// Add a package to the profile's package spec.
@@ -418,7 +411,11 @@ pub fn add_package(
                     custom.packages.push(package_name.to_string());
                 }
             } else {
-                return Err(PackageError::ManagerNotAvailable {
+                // `manager_name` matches none of the known spec slots and no
+                // declared `custom` entry — this schema has no runtime
+                // registry to consult, so reaching here always means the
+                // name was never registered, never merely unprovisioned.
+                return Err(PackageError::ManagerNotFound {
                     manager: manager_name.to_string(),
                 }
                 .into());
@@ -521,7 +518,9 @@ pub fn remove_package(
                 custom.packages.retain(|p| p != package_name);
                 custom.packages.len() < before
             } else {
-                return Err(PackageError::ManagerNotAvailable {
+                // Same reasoning as `add_package`'s fallback: no declared
+                // slot for this name means it was never registered.
+                return Err(PackageError::ManagerNotFound {
                     manager: manager_name.to_string(),
                 }
                 .into());
@@ -580,8 +579,9 @@ pub fn prune_orphaned_packages(
                 .or_default()
                 .push(orphan.package.clone()),
             None => {
-                cx.printer.status_simple(
+                cx.report(
                     Role::Warn,
+                    &orphan.manager,
                     format!(
                         "orphaned {}/{} tracked but its custom manager left the config with no persisted uninstall script — remove it manually",
                         orphan.manager, orphan.package
@@ -600,8 +600,9 @@ pub fn prune_orphaned_packages(
                 }
             }
             Err(e) => {
-                cx.printer.status_simple(
+                cx.report(
                     Role::Warn,
+                    &manager,
                     format!(
                         "failed to uninstall orphaned packages via {manager}: {}",
                         cfgd_core::output::collapse_to_subject_line(&e)

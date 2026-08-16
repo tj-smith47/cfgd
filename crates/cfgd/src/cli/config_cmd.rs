@@ -80,7 +80,10 @@ pub fn cmd_config_show(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     }
 
     let cfg = match config::load_config(config_path) {
-        Ok(c) => c,
+        Ok(mut c) => {
+            drain_config_deprecations(printer, &mut c);
+            c
+        }
         Err(e) => {
             let msg = format!("{}", e);
             return Err(crate::cli::cli_error_ctx(
@@ -108,7 +111,8 @@ pub fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let mut valid = false;
     loop {
         match config::load_config(config_path) {
-            Ok(_) => {
+            Ok(mut c) => {
+                drain_config_deprecations(printer, &mut c);
                 valid = true;
                 break;
             }
@@ -486,6 +490,7 @@ mod tests {
             verbose: 0,
             quiet: true,
             no_color: true,
+            color: crate::cli::ColorWhen::Auto,
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
             jsonpath: None,

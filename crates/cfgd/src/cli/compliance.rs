@@ -8,14 +8,15 @@ use cfgd_core::state::ComplianceHistoryRow;
 /// Shared setup used by both `cmd_compliance_snapshot` and `cmd_compliance_export`.
 pub(super) fn collect_and_store_compliance_snapshot(
     cli: &Cli,
+    printer: &Printer,
 ) -> anyhow::Result<(CfgdConfig, ComplianceSnapshot)> {
-    let (cfg, _profile_name, local_resolved) = helpers::load_config_and_profile(cli)?;
+    let (cfg, _profile_name, local_resolved) = helpers::load_config_and_profile(cli, printer)?;
     let config_dir = config_dir(cli);
 
     // Compose with sources (cache-only — read paths stay offline) and resolve the
     // effective module set through the one shared resolver, so the compliance
     // snapshot reflects the same source-composed desired state that `apply` writes.
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let quiet_printer = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
     // Report mode: a source security-constraint violation surfaces as a compliance
     // check rather than aborting (exit 4). `compliance` reports state; it does not
     // gate on it — unlike apply/plan/daemon which compose in Enforce mode.
@@ -24,7 +25,7 @@ pub(super) fn collect_and_store_compliance_snapshot(
         &cfg,
         &local_resolved,
         None,
-        &printer,
+        &quiet_printer,
         false,
         composition::ConstraintMode::Report,
     )?;
@@ -37,6 +38,7 @@ pub(super) fn collect_and_store_compliance_snapshot(
     registry.file_manager = Some(Box::new(build_compliance_file_manager(
         &config_dir,
         &resolved,
+        Some((printer, &cli.config)),
     )?));
 
     let profile_name = cli
@@ -53,7 +55,7 @@ pub(super) fn collect_and_store_compliance_snapshot(
 
     let sources: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
 
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let mut snapshot = cfgd_core::compliance::collect_snapshot(
         profile_name,
         &resolved.merged,
@@ -62,7 +64,7 @@ pub(super) fn collect_and_store_compliance_snapshot(
         &registry,
         &scope,
         &sources,
-        &printer,
+        &quiet_printer,
         &state,
     )?;
 
@@ -71,9 +73,7 @@ pub(super) fn collect_and_store_compliance_snapshot(
     // `summary.violation`, then recompute the summary over the combined set.
     append_constraint_violation_checks(&mut snapshot, &constraint_violations);
 
-    let json = serde_json::to_string(&snapshot).map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
-    let hash = cfgd_core::sha256_hex(json.as_bytes());
-    state.store_compliance_snapshot(&snapshot, &hash)?;
+    state.store_compliance_snapshot(&snapshot)?;
 
     Ok((cfg, snapshot))
 }
@@ -124,14 +124,14 @@ fn append_constraint_violation_checks(
 
 /// Build a snapshot and emit a compliance summary Doc.
 pub(super) fn cmd_compliance_snapshot(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    let (_cfg, snapshot) = collect_and_store_compliance_snapshot(cli)?;
+    let (_cfg, snapshot) = collect_and_store_compliance_snapshot(cli, printer)?;
     printer.emit(build_compliance_summary_doc(&snapshot));
     Ok(())
 }
 
 /// Export snapshot to the configured export path and emit a compliance summary Doc.
 pub(super) fn cmd_compliance_export(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    let (cfg, snapshot) = collect_and_store_compliance_snapshot(cli)?;
+    let (cfg, snapshot) = collect_and_store_compliance_snapshot(cli, printer)?;
 
     let export = cfg
         .spec
@@ -151,7 +151,7 @@ pub(super) fn cmd_compliance_history(
     printer: &Printer,
     since: Option<&str>,
 ) -> anyhow::Result<()> {
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
 
     let since_ts: Option<String> = since
         .map(|s| {
@@ -174,7 +174,7 @@ pub(super) fn cmd_compliance_diff(
     id1: i64,
     id2: i64,
 ) -> anyhow::Result<()> {
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let snap1 = state
         .get_compliance_snapshot(id1)?
         .ok_or_else(|| anyhow::anyhow!("snapshot #{} not found", id1))?;
@@ -199,6 +199,7 @@ pub(super) fn check_key(c: &ComplianceCheck) -> String {
     format!("{}:{}", c.category, id)
 }
 
+#[derive(Debug)]
 pub struct ComplianceDiff {
     pub added: Vec<ComplianceCheck>,
     pub removed: Vec<ComplianceCheck>,
@@ -206,23 +207,47 @@ pub struct ComplianceDiff {
 }
 
 /// Compute added/removed/changed between two snapshots; deterministically sorted.
+///
+/// `check_key` is not unique within a single snapshot — e.g. two `file`
+/// category checks (a permissions check and a "present" check) can share one
+/// target, or `effective_files` can list the same target twice (profile +
+/// module). Grouping by key into a `Vec` (rather than collapsing into a single
+/// map entry) and pairing positionally within each key's group keeps every
+/// check in either snapshot present in the diff exactly once: paired entries
+/// are compared for a status change, and any surplus on one side falls out as
+/// added/removed instead of being silently dropped.
 pub fn compute_compliance_diff(
     snap1: &ComplianceSnapshot,
     snap2: &ComplianceSnapshot,
 ) -> ComplianceDiff {
     use std::collections::HashMap;
 
-    let map1: HashMap<String, &ComplianceCheck> =
-        snap1.checks.iter().map(|c| (check_key(c), c)).collect();
-    let map2: HashMap<String, &ComplianceCheck> =
-        snap2.checks.iter().map(|c| (check_key(c), c)).collect();
+    let mut map1: HashMap<String, Vec<&ComplianceCheck>> = HashMap::new();
+    for c in &snap1.checks {
+        map1.entry(check_key(c)).or_default().push(c);
+    }
+    let mut map2: HashMap<String, Vec<&ComplianceCheck>> = HashMap::new();
+    for c in &snap2.checks {
+        map2.entry(check_key(c)).or_default().push(c);
+    }
 
     let mut added: Vec<ComplianceCheck> = Vec::new();
     let mut removed: Vec<ComplianceCheck> = Vec::new();
     let mut changed: Vec<ComplianceCheckChange> = Vec::new();
 
-    for (key, check2) in &map2 {
-        if let Some(check1) = map1.get(key) {
+    let empty: Vec<&ComplianceCheck> = Vec::new();
+    let mut keys: Vec<&String> = map1.keys().chain(map2.keys()).collect();
+    keys.sort();
+    keys.dedup();
+
+    for key in keys {
+        let list1 = map1.get(key).unwrap_or(&empty);
+        let list2 = map2.get(key).unwrap_or(&empty);
+        let paired = list1.len().min(list2.len());
+
+        for i in 0..paired {
+            let check1 = list1[i];
+            let check2 = list2[i];
             if check1.status != check2.status {
                 changed.push(ComplianceCheckChange {
                     key: key.clone(),
@@ -231,12 +256,11 @@ pub fn compute_compliance_diff(
                     detail: check2.detail.clone(),
                 });
             }
-        } else {
+        }
+        for check2 in &list2[paired..] {
             added.push((*check2).clone());
         }
-    }
-    for (key, check1) in &map1 {
-        if !map2.contains_key(key) {
+        for check1 in &list1[paired..] {
             removed.push((*check1).clone());
         }
     }
@@ -271,17 +295,26 @@ pub fn build_compliance_diff_doc(
         doc = doc.status(Role::Ok, "No differences between snapshots");
     } else {
         doc = doc.section_if_nonempty(
-            format!("Added ({} check(s))", diff.added.len()),
+            format!(
+                "Added ({})",
+                cfgd_core::pluralize(diff.added.len(), "check")
+            ),
             &diff.added,
             |s, items| items.iter().fold(s, |s, c| s.bullet(check_key(c))),
         );
         doc = doc.section_if_nonempty(
-            format!("Removed ({} check(s))", diff.removed.len()),
+            format!(
+                "Removed ({})",
+                cfgd_core::pluralize(diff.removed.len(), "check")
+            ),
             &diff.removed,
             |s, items| items.iter().fold(s, |s, c| s.bullet(check_key(c))),
         );
         doc = doc.section_if_nonempty(
-            format!("Changed ({} check(s))", diff.changed.len()),
+            format!(
+                "Changed ({})",
+                cfgd_core::pluralize(diff.changed.len(), "check")
+            ),
             &diff.changed,
             |s, items| {
                 items.iter().fold(s, |s, c| {
@@ -372,7 +405,10 @@ pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot) -> Doc {
             snapshot.summary.compliant, snapshot.summary.warning, snapshot.summary.violation
         )
     } else {
-        format!("All {} check(s) compliant", snapshot.summary.compliant)
+        format!(
+            "All {} compliant",
+            cfgd_core::pluralize(snapshot.summary.compliant, "check")
+        )
     };
     doc = doc.status(role, summary_line);
 
@@ -477,6 +513,7 @@ mod tests {
             verbose: 0,
             quiet: true,
             no_color: true,
+            color: crate::cli::ColorWhen::Auto,
             output: OutputFormatArg(OutputFormat::Table),
             list_envelope: false,
             jsonpath: None,
@@ -490,10 +527,8 @@ mod tests {
     }
 
     fn store_snapshot(state_dir: &std::path::Path, snapshot: &ComplianceSnapshot) {
-        let state = open_state_store(Some(state_dir)).unwrap();
-        let json = serde_json::to_string(snapshot).unwrap();
-        let hash = cfgd_core::sha256_hex(json.as_bytes());
-        state.store_compliance_snapshot(snapshot, &hash).unwrap();
+        let state = open_state_store(Some(state_dir), cfgd_core::Scope::User).unwrap();
+        state.store_compliance_snapshot(snapshot).unwrap();
     }
 
     // --- build_compliance_summary_doc ---
@@ -518,7 +553,7 @@ mod tests {
             "should print hostname, got: {output}"
         );
         assert!(
-            output.contains("All 2 check(s) compliant"),
+            output.contains("All 2 checks compliant"),
             "should print all-compliant summary, got: {output}"
         );
     }
@@ -645,21 +680,80 @@ mod tests {
 
         let output = cap.human();
         assert!(
-            output.contains("Added (1 check(s))") && output.contains("file:/c"),
+            output.contains("Added (1 check)") && output.contains("file:/c"),
             "should report added check file:/c, got: {output}"
         );
         assert!(
-            output.contains("Removed (1 check(s))") && output.contains("file:/b"),
+            output.contains("Removed (1 check)") && output.contains("file:/b"),
             "should report removed check file:/b, got: {output}"
         );
         assert!(
-            output.contains("Changed (1 check(s))") && output.contains("file:/a"),
+            output.contains("Changed (1 check)") && output.contains("file:/a"),
             "should report changed check file:/a, got: {output}"
         );
         assert!(
             output.contains("Compliant") && output.contains("Violation"),
             "changed line should include old + new status, got: {output}"
         );
+    }
+
+    // --- compute_compliance_diff: duplicate check_key within one snapshot ---
+
+    #[test]
+    fn compute_compliance_diff_pairs_duplicate_keys_instead_of_collapsing() {
+        // Two checks share `file:/a` in each snapshot (e.g. `effective_files`
+        // listing the same target twice via profile + module). A HashMap
+        // collapse keyed on `check_key` would silently drop every check but
+        // the last inserted per key before a diff is ever computed — this
+        // pins that the first-in-snap1/first-in-snap2 pair is compared too,
+        // not just whichever pair a map's last-write-wins happened to keep.
+        let snap1 = sample_snapshot(vec![
+            check("file", "/a", ComplianceStatus::Compliant),
+            check("file", "/a", ComplianceStatus::Compliant),
+        ]);
+        let snap2 = sample_snapshot(vec![
+            check("file", "/a", ComplianceStatus::Violation),
+            check("file", "/a", ComplianceStatus::Compliant),
+        ]);
+
+        let diff = compute_compliance_diff(&snap1, &snap2);
+
+        assert!(diff.added.is_empty(), "no surplus checks: {diff:?}");
+        assert!(diff.removed.is_empty(), "no surplus checks: {diff:?}");
+        assert_eq!(
+            diff.changed.len(),
+            1,
+            "the first pair (Compliant -> Violation) must be reported; the \
+             second pair (Compliant -> Compliant) is unchanged: {diff:?}"
+        );
+        assert_eq!(diff.changed[0].key, "file:/a");
+        assert_eq!(diff.changed[0].new_status, "Violation");
+    }
+
+    #[test]
+    fn compute_compliance_diff_reports_duplicate_key_surplus_as_added() {
+        // snap2 carries one extra check under a key snap1 has only once. The
+        // shared instance pairs and compares; the surplus must surface as
+        // `added`, not vanish because a map already had that key occupied.
+        let snap1 = sample_snapshot(vec![check("file", "/a", ComplianceStatus::Compliant)]);
+        let snap2 = sample_snapshot(vec![
+            check("file", "/a", ComplianceStatus::Compliant),
+            check("file", "/a", ComplianceStatus::Violation),
+        ]);
+
+        let diff = compute_compliance_diff(&snap1, &snap2);
+
+        assert!(
+            diff.changed.is_empty(),
+            "the shared pair is unchanged: {diff:?}"
+        );
+        assert!(diff.removed.is_empty(), "{diff:?}");
+        assert_eq!(
+            diff.added.len(),
+            1,
+            "the surplus check must be added, not dropped: {diff:?}"
+        );
+        assert_eq!(diff.added[0].status, ComplianceStatus::Violation);
     }
 
     #[test]

@@ -3,19 +3,30 @@ use std::path::Path;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Printer, Role};
 
-/// Returns true if the value is a clonable git source (URL or local git repo).
-pub(super) fn is_git_source(value: &str) -> bool {
-    // Remote URLs
-    if value.starts_with("https://")
-        || value.starts_with("http://")
-        || value.starts_with("ssh://")
-        || value.starts_with("git://")
-        || value.starts_with("git@")
+/// Returns true if the value is a clonable source: a git URL, a `file://` URL,
+/// a repository directory named `<name>.git`, or a local directory that is a
+/// git work tree.
+///
+/// The remote half is [`cfgd_core::modules::is_git_source`], the workspace's one
+/// git-URL predicate. The three extra arms exist only for `--from`, which may be
+/// pointed at a repository on the same machine: a module file source naming a
+/// local checkout must stay a path, so no arm may widen the shared predicate.
+///
+/// `file://` is answered here rather than deferred to the shared predicate,
+/// which gates it behind the process-global `CFGD_ALLOW_LOCAL_SOURCES`. That
+/// gate protects COMPOSED sources — a subscription that pushes files and scripts
+/// onto the machine — from naming the local filesystem. `--from` is the user
+/// naming their own config repo on the command line, and a `file://` URL cannot
+/// be opened as a path anyway, so classifying it by an env var no `--from`
+/// caller sets would only make the answer depend on whatever else the process
+/// has done.
+pub(super) fn is_clonable_source(value: &str) -> bool {
+    if cfgd_core::modules::is_git_source(value)
+        || value.starts_with("file://")
         || value.ends_with(".git")
     {
         return true;
     }
-    // Local git repos
     let path = cfgd_core::expand_tilde(Path::new(value));
     path.join(".git").exists()
 }
@@ -29,7 +40,8 @@ pub(crate) fn resolve_from(
     branch: &str,
     printer: &Printer,
 ) -> anyhow::Result<std::path::PathBuf> {
-    if is_git_source(from) {
+    let from = &*cfgd_core::resolve_repo_reference(from);
+    if is_clonable_source(from) {
         let dest = target
             .map(|p| p.to_path_buf())
             .unwrap_or_else(cfgd_core::default_config_dir);

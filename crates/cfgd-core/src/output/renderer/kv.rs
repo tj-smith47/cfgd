@@ -4,15 +4,18 @@
 //! `KvBlock`; the buffer is flushed by the next non-kv emission, by section
 //! close, or by an explicit `flush_kv_buffer`.
 //!
-//! ## Recursion trap
+//! ## Recursion, and why it is safe here
 //!
-//! `renderer::write_line` flushes the kv buffer at the top of its body (so
-//! pending kvs render *before* a following non-kv line, not after). That means
-//! a kv-emission path MUST NOT call `self.write_line(...)` — that would recurse
-//! into `flush_kv_buffer_internal` → `render_kv_block_no_flush` → `write_line`.
-//! Every line emission below uses `w.write_line(...)` directly, with blank-
-//! pending handled inline.
-use super::{Renderer, Writer};
+//! `Emitting::push_line` drains the kv buffer at the top of its body (so
+//! pending kvs render *before* a following non-kv line, not after), and the
+//! block below can itself reach `push_line` through a deferred section header.
+//! That recursion terminates because `drain_kv_buffer` takes the buffer before
+//! rendering it, so the nested drain sees an empty one.
+//!
+//! The rule that keeps it safe is structural rather than remembered: the block
+//! is built by a collector holding `&mut RenderState`, which can reach neither
+//! the state lock nor a sink, so it cannot become a second exit.
+use super::{Emitting, Renderer, Writer};
 use crate::output::Verbosity;
 
 const KEY_WIDTH_CAP: usize = 24;
@@ -28,48 +31,49 @@ impl Renderer {
         s.kv_buffer.push((key.into(), value.into()));
     }
 
-    /// Render a KvBlock immediately without first flushing any pending kvs.
-    /// This is the `write_line`-bypassing variant — every emit uses
-    /// `w.write_line(...)` directly to avoid recursing into the buffer flush
-    /// performed at the top of `Renderer::write_line`.
-    pub(crate) fn render_kv_block_no_flush(
-        &self,
-        w: &dyn Writer,
-        depth: usize,
-        pairs: &[(String, String)],
-    ) {
+    /// Render a KvBlock immediately. Public crate entry — callers passing a
+    /// pre-built block (e.g. the Doc render path) reach the renderer here.
+    pub(crate) fn render_kv_block(&self, w: &dyn Writer, depth: usize, pairs: &[(String, String)]) {
+        self.emit_with(w, |e| e.render_kv_block(depth, pairs));
+    }
+
+    /// Flush any buffered kvs as one aligned block at the current depth.
+    /// Public crate API — wired through `Printer::flush` (see interfaces.md).
+    pub(crate) fn flush_kv_buffer(&self, w: &dyn Writer) {
+        self.emit_with(w, |e| e.drain_kv_buffer());
+    }
+}
+
+impl Emitting<'_> {
+    /// Collect one aligned kv block at `depth`.
+    pub(crate) fn render_kv_block(&mut self, depth: usize, pairs: &[(String, String)]) {
         if self.verbosity == Verbosity::Quiet || pairs.is_empty() {
             return;
         }
-        // Flush deferred section headers FIRST so this kv block lands under
-        // them, not above. (Section header emission goes through `write_line`,
-        // but that path is safe — at that moment the kv buffer has already
-        // been drained by the caller.)
-        self.flush_pending_section_headers(w);
+        // Collect deferred section headers FIRST so this kv block lands under
+        // them, not above.
+        self.flush_section_headers();
 
-        // Honor blank-pending / leading without recursing through write_line.
-        // Also consume the heading-just-emitted flag: when the previous
-        // emission was a top-level heading and we're still at root, re-anchor
-        // this kv_block one level deeper so it visually nests under the
-        // heading. When we bump, also SUPPRESS the would-be blank between
-        // heading and kv_block — heading + kv_block render as one bound unit
-        // with no blank between them.
-        let effective_depth = {
-            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            let bump = depth == 0 && s.section_stack.is_empty() && s.last_was_top_heading;
-            s.last_was_top_heading = false;
-            if s.leading {
-                s.leading = false;
-                s.blank_pending = false;
-            } else if s.blank_pending && !bump {
-                w.write_line("");
-                s.blank_pending = false;
-            } else if bump {
-                // kv_block consuming heading-flag: drop the would-be blank.
-                s.blank_pending = false;
-            }
-            if bump { depth + 1 } else { depth }
-        };
+        // Honor blank-pending / leading. Also consume the heading-just-emitted
+        // flag: when the previous emission was a top-level heading and we're
+        // still at root, re-anchor this kv_block one level deeper so it
+        // visually nests under the heading. When we bump, also SUPPRESS the
+        // would-be blank between heading and kv_block — heading + kv_block
+        // render as one bound unit with no blank between them.
+        let bump =
+            depth == 0 && self.state.section_stack.is_empty() && self.state.last_was_top_heading;
+        self.state.last_was_top_heading = false;
+        if self.state.leading {
+            self.state.leading = false;
+            self.state.blank_pending = false;
+        } else if self.state.blank_pending && !bump {
+            self.out.push(String::new());
+            self.state.blank_pending = false;
+        } else if bump {
+            // kv_block consuming heading-flag: drop the would-be blank.
+            self.state.blank_pending = false;
+        }
+        let effective_depth = if bump { depth + 1 } else { depth };
 
         let prefix = "  ".repeat(effective_depth);
         let key_col = pairs
@@ -82,38 +86,19 @@ impl Renderer {
             if k.len() <= KEY_WIDTH_CAP {
                 let key = self
                     .theme
-                    .header
+                    .secondary
                     .apply_to(format!("{:<width$}", k, width = key_col));
-                w.write_line(&format!("{}{}{}{}", prefix, key, KEY_VALUE_GAP, v));
+                self.out
+                    .push(format!("{}{}{}{}", prefix, key, KEY_VALUE_GAP, v));
             } else {
                 // Long key: render on its own line, value wrapped to the
                 // following line indented one extra level.
-                let key = self.theme.header.apply_to(k);
-                w.write_line(&format!("{}{}", prefix, key));
-                w.write_line(&format!("{}  {}", prefix, v));
+                let key = self.theme.secondary.apply_to(k);
+                self.out.push(format!("{}{}", prefix, key));
+                self.out.push(format!("{}  {}", prefix, v));
             }
         }
         self.mark_top_level_group(super::TopGroup::KvBlock);
-    }
-
-    /// Render a KvBlock immediately. Public crate entry — thin forwarder to
-    /// `render_kv_block_no_flush`. Callers passing a pre-built block (e.g. the
-    /// Doc render path) reach the renderer through here.
-    pub(crate) fn render_kv_block(&self, w: &dyn Writer, depth: usize, pairs: &[(String, String)]) {
-        self.render_kv_block_no_flush(w, depth, pairs);
-    }
-
-    /// Flush any buffered kvs as one aligned block at the current depth.
-    /// Public crate API — wired through `Printer::flush` (see interfaces.md).
-    pub(crate) fn flush_kv_buffer(&self, w: &dyn Writer) {
-        let (pairs, depth) = {
-            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if s.kv_buffer.is_empty() {
-                return;
-            }
-            (std::mem::take(&mut s.kv_buffer), s.indent_depth)
-        };
-        self.render_kv_block(w, depth, &pairs);
     }
 }
 
@@ -176,5 +161,31 @@ mod tests {
         let r = Renderer::new(Theme::default(), Verbosity::Quiet);
         r.render_kv_block(&sink, 0, &[("Foo".into(), "1".into())]);
         assert!(buf.lock().unwrap().is_empty());
+    }
+
+    /// Keys are a structural pivot, not a header: they take `theme.secondary`.
+    /// A key painted with `theme.header` competes with the section header
+    /// above it for the same weight.
+    #[test]
+    #[serial_test::serial]
+    fn kv_keys_take_the_secondary_slot() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(
+            Theme::from_preset("dracula").with_colors(true),
+            Verbosity::Normal,
+        );
+        r.render_kv_block(&sink, 0, &[("Profile".into(), "work".into())]);
+        let out = buf.lock().unwrap().clone();
+
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        assert!(
+            out.contains(&theme.secondary.apply_to("Profile").to_string()),
+            "key is not painted with the secondary slot: {out:?}"
+        );
+        assert!(
+            !out.contains(&theme.header.apply_to("Profile").to_string()),
+            "key is still painted with the header slot: {out:?}"
+        );
     }
 }

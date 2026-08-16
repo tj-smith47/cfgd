@@ -482,9 +482,9 @@ pub fn cmd_skill_remove(
     if !yes
         && !targets.is_empty()
         && !printer.prompt_confirm(&format!(
-            "Remove the {} skill from {} provider(s)?",
+            "Remove the {} skill from {}?",
             core_kind.as_str(),
-            targets.len()
+            cfgd_core::pluralize(targets.len(), "provider")
         ))?
     {
         let doc = results_section(

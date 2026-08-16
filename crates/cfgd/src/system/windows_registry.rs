@@ -1,9 +1,9 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::Role;
 
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 use super::{diff_yaml_mapping, parse_reg_line, yaml_value_with_numeric_bools};
 
@@ -73,7 +73,7 @@ impl WindowsRegistryConfigurator {
         key_path: &str,
         value_name: &str,
         value: &str,
-        printer: &Printer,
+        cx: &SystemContext<'_>,
     ) -> Result<()> {
         if !cfg!(windows) {
             return Ok(());
@@ -103,7 +103,7 @@ impl WindowsRegistryConfigurator {
             .map_err(cfgd_core::errors::CfgdError::Io)?;
 
         if !output.status.success() {
-            printer.status_simple(
+            cx.report(
                 Role::Warn,
                 format!(
                     "reg add failed for {}\\{}: {}",
@@ -179,7 +179,7 @@ impl SystemConfigurator for WindowsRegistryConfigurator {
         Ok(drifts)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let mapping = match desired.as_mapping() {
             Some(m) => m,
             None => return Ok(()),
@@ -200,8 +200,8 @@ impl SystemConfigurator for WindowsRegistryConfigurator {
                     None => continue,
                 };
                 let desired_str = yaml_value_with_numeric_bools(desired_val);
-                Self::write_reg_value(key_path, name, &desired_str, printer)?;
-                printer.status_simple(
+                Self::write_reg_value(key_path, name, &desired_str, cx)?;
+                cx.report(
                     Role::Ok,
                     format!("Set {}\\{} = {}", key_path, name, desired_str),
                 );
@@ -430,6 +430,11 @@ mod tests {
         // Expect drift entries for both child values (actual is empty on non-Windows).
         assert_eq!(drifts.len(), 2);
         assert!(drifts.iter().all(|d| d.actual.is_empty()));
+        // The registry path key never opens with "windowsRegistry." — this
+        // configurator names the key path itself, not its own name — so this
+        // must hold on every OS, not just the ones that can actually read the
+        // registry.
+        crate::system::assert_keys_undoubled(&wrc, &drifts);
     }
 
     #[test]
@@ -462,7 +467,10 @@ mod tests {
     fn registry_apply_no_mapping_value_is_noop() {
         let wrc = WindowsRegistryConfigurator;
         let (printer, _buf) = cfgd_core::output::Printer::for_test();
-        let result = wrc.apply(&serde_yaml::Value::String("not a mapping".into()), &printer);
+        let result = wrc.apply(
+            &serde_yaml::Value::String("not a mapping".into()),
+            &cfgd_core::providers::SystemContext::new(&printer),
+        );
         assert!(result.is_ok());
     }
 
@@ -504,7 +512,10 @@ mod tests {
             serde_yaml::Value::Number(7.into()),
             serde_yaml::Value::Mapping(inner_skip),
         );
-        let result = wrc.apply(&serde_yaml::Value::Mapping(outer), &printer);
+        let result = wrc.apply(
+            &serde_yaml::Value::Mapping(outer),
+            &cfgd_core::providers::SystemContext::new(&printer),
+        );
         assert!(result.is_ok());
     }
 
@@ -558,7 +569,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let wrc = WindowsRegistryConfigurator;
         let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        wrc.apply(&yaml, &printer).unwrap();
+        wrc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -566,7 +578,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let wrc = WindowsRegistryConfigurator;
         let yaml = serde_yaml::Value::String("not a mapping".into());
-        wrc.apply(&yaml, &printer).unwrap();
+        wrc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -579,7 +592,8 @@ mod tests {
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        wrc.apply(&yaml, &printer).unwrap();
+        wrc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -592,7 +606,8 @@ mod tests {
             serde_yaml::Value::String("not a mapping".into()),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        wrc.apply(&yaml, &printer).unwrap();
+        wrc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -610,15 +625,21 @@ mod tests {
             serde_yaml::Value::Mapping(inner),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        wrc.apply(&yaml, &printer).unwrap();
+        wrc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
     fn registry_write_reg_value_noop_on_non_windows() {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         // On non-Windows, write_reg_value returns Ok(()) immediately
-        WindowsRegistryConfigurator::write_reg_value(r"HKCU\Test", "TestValue", "42", &printer)
-            .unwrap();
+        WindowsRegistryConfigurator::write_reg_value(
+            r"HKCU\Test",
+            "TestValue",
+            "42",
+            &cfgd_core::providers::SystemContext::new(&printer),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -635,5 +656,68 @@ mod tests {
             WindowsRegistryConfigurator::read_reg_type(r"HKCU\Test", "Key"),
             None
         );
+    }
+
+    // Cross-platform on purpose: `apply()`'s narration is unconditional and
+    // `write_reg_value` no-ops before it ever reaches `Command::new("reg")`
+    // off Windows (see the guard at the top of `write_reg_value`), so this is
+    // the one bridge fixture in this crate that produces the SAME golden
+    // whichever OS runs it — including Windows, where `reg add` also runs for
+    // real against a key this fixture doesn't need to exist first.
+    mod bridge {
+        use super::*;
+        use crate::system::tests_snapshot_bridge::{
+            BridgeApply, assert_single_seam, capture_attached_apply,
+        };
+        use cfgd_core::output::Role;
+        use cfgd_core::output::test_capture::assert_snapshot_at;
+
+        fn snapshot_dir() -> std::path::PathBuf {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system/snapshots")
+        }
+
+        fn assert_snapshot(name: &str, actual: &str) {
+            assert_snapshot_at(&snapshot_dir(), name, actual);
+        }
+
+        #[derive(serde::Serialize)]
+        struct RegistryApplySummary {
+            keys_processed: usize,
+        }
+
+        #[test]
+        fn snapshot_windows_registry_clean() {
+            let mut inner = serde_yaml::Mapping::new();
+            inner.insert(
+                serde_yaml::Value::String("HideFileExt".into()),
+                serde_yaml::Value::Number(0.into()),
+            );
+            let mut outer = serde_yaml::Mapping::new();
+            outer.insert(
+                serde_yaml::Value::String(
+                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced".into(),
+                ),
+                serde_yaml::Value::Mapping(inner),
+            );
+            let desired = serde_yaml::Value::Mapping(outer);
+
+            let wrc = WindowsRegistryConfigurator;
+            let summary = RegistryApplySummary { keys_processed: 1 };
+            let captured = capture_attached_apply(
+                &BridgeApply {
+                    configurator: &wrc,
+                    desired: &desired,
+                    key: r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced.HideFileExt",
+                    current: "1",
+                    target: "0",
+                    summary_role: Role::Ok,
+                    summary: "Windows registry applied",
+                },
+                &summary,
+            );
+
+            assert_single_seam("windows_registry_clean", &captured);
+            assert_snapshot("windows_registry_clean.txt", &captured);
+        }
     }
 }

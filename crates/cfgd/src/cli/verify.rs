@@ -16,7 +16,7 @@ pub fn cmd_verify(
     exit_code: bool,
 ) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
 
     let (resolved, resolved_modules, mut registry) = if let Some(mod_name) = module_filter {
         let resolved = empty_resolved_profile(mod_name, &active_profile_name(cli, None));
@@ -36,7 +36,7 @@ pub fn cmd_verify(
         .unwrap_or_default();
         (resolved, mods, registry)
     } else {
-        let (cfg, _profile_name, local_resolved) = load_config_and_profile(cli)?;
+        let (cfg, _profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
         // Compose with sources (cache-only — read paths stay offline) and resolve
         // the effective module set through the one shared resolver, so `verify`
         // checks the same source-composed desired state that `apply` writes.
@@ -74,6 +74,20 @@ pub fn cmd_verify(
         &config_dir,
         &resolved,
         &resolved_modules,
+    )?);
+    // Managers: the reconciler's own `verify` only walks
+    // `available_package_managers`, so a manager the plan would provision or
+    // refuse contributes no row there — the same gap `diff` and `status -e`
+    // close via `plan_managers`. Fold that half in here too, so `verify -e`
+    // cannot report clean on a host `diff`/`status -e` both flag as drifted.
+    let cfgd_installed = cfgd_installed_packages(&state)?;
+    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
+    results.extend(super::live_drift::manager_verify_results(
+        &resolved,
+        &registry,
+        &resolved_modules,
+        &cfgd_installed,
+        &pkg_cx,
     )?);
     let pass_count = results.iter().filter(|r| r.matches).count();
     let fail_count = results.iter().filter(|r| !r.matches).count();
@@ -122,7 +136,11 @@ pub fn build_verify_doc(output: &VerifyOutput) -> Doc {
     doc = if output.fail_count == 0 {
         doc.status(
             Role::Ok,
-            format!("All {} resource(s) match desired state", output.pass_count),
+            format!(
+                "All {} {} desired state",
+                cfgd_core::pluralize(output.pass_count, "resource"),
+                cfgd_core::agreeing_verb(output.pass_count, "match")
+            ),
         )
     } else {
         doc.status(
@@ -179,7 +197,7 @@ mod tests {
             "expected expected-value, got: {human}"
         );
         assert!(
-            human.contains("All 1 resource(s) match desired state"),
+            human.contains("All 1 resource matches desired state"),
             "expected summary line, got: {human}"
         );
     }

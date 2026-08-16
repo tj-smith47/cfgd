@@ -52,6 +52,7 @@ fn teamconfig_schema() -> ResourceSchema {
             required,
             description: description.to_string(),
             children: Vec::new(),
+            variants: Vec::new(),
         }
     }
     fn obj(
@@ -67,6 +68,7 @@ fn teamconfig_schema() -> ResourceSchema {
             required,
             description: description.to_string(),
             children,
+            variants: Vec::new(),
         }
     }
 
@@ -163,6 +165,17 @@ pub fn find_schema(name: &str) -> Option<ResourceSchema> {
 }
 
 /// Walk a dot-separated field path to find nested fields.
+///
+/// Each segment matches a field by name within the current candidate list.
+/// A matched field with direct `children` (a plain object, or an array of
+/// plain objects) resolves the next segment against those. A matched field
+/// that is instead a genuine multi-shape union (`variants` non-empty, e.g.
+/// a `ScriptEntry` — a bare string or a `{ run, timeout, ... }` object) has
+/// NO children of its own, so the next segment is resolved against every
+/// variant's own children in turn — the first variant that resolves the
+/// REST of the path wins, deterministically, so a caller can drill straight
+/// past the variant boundary (`scripts.preApply.run` finds `run` inside the
+/// object variant without ever naming `object` in the path).
 fn resolve_field_path<'a>(fields: &'a [FieldNode], path_parts: &[&str]) -> Option<&'a [FieldNode]> {
     if path_parts.is_empty() {
         return Some(fields);
@@ -177,7 +190,15 @@ fn resolve_field_path<'a>(fields: &'a [FieldNode], path_parts: &[&str]) -> Optio
                 }
                 return Some(&field.children);
             }
-            return resolve_field_path(&field.children, &path_parts[1..]);
+            if !field.children.is_empty() {
+                return resolve_field_path(&field.children, &path_parts[1..]);
+            }
+            for variant in &field.variants {
+                if let Some(found) = resolve_field_path(&variant.children, &path_parts[1..]) {
+                    return Some(found);
+                }
+            }
+            return None;
         }
     }
     None
@@ -204,6 +225,13 @@ pub struct ExplainField {
     pub description: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<ExplainField>,
+    /// Every accepted shape of a genuine multi-shape (`oneOf`/`anyOf`) union
+    /// field — e.g. a `ScriptEntry` yields a `string` variant and an `object`
+    /// variant carrying its own `children`. Empty for every field that is not
+    /// such a union. Additive: existing `-o json` consumers reading `children`
+    /// see no change.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<ExplainField>,
 }
 
 /// Drill-down payload (`cfgd explain <resource>.<field.path>`).
@@ -221,6 +249,7 @@ fn schema_field_to_explain(field: &FieldNode) -> ExplainField {
         required: field.required,
         description: field.description.clone(),
         children: field.children.iter().map(schema_field_to_explain).collect(),
+        variants: field.variants.iter().map(schema_field_to_explain).collect(),
     }
 }
 
@@ -235,20 +264,25 @@ fn schema_to_output(schema: &ResourceSchema) -> ExplainOutput {
     }
 }
 
-/// Append a schema field as a Status row, recursively nesting children under a
+/// Append a schema field as a Status row, recursively nesting children (and, for
+/// a genuine multi-shape union field, every accepted `variants` shape) under a
 /// subsection when `recursive` is set. Nested indentation comes from the
-/// renderer's section depth — never manual whitespace.
+/// renderer's section depth — never manual whitespace. A `variants` entry is a
+/// [`FieldNode`] named by its own type description (`string`, `object`, …) —
+/// see `cfgd_core::schema::union_variants` — so it renders through the same
+/// path as a real field, with its own `children` when the shape is an object.
 fn append_field(s: SectionBuilder, f: &FieldNode, recursive: bool) -> SectionBuilder {
+    let expandable = !f.children.is_empty() || !f.variants.is_empty();
     let req = if f.required { " (required)" } else { "" };
-    let leaf = if !f.children.is_empty() && !recursive {
-        " [+]"
-    } else {
-        ""
-    };
+    let leaf = if expandable && !recursive { " [+]" } else { "" };
     let header = format!("{} <{}>{}{}", f.name, f.type_desc, req, leaf);
     let s = s.status_with(Role::Info, header, |sf| sf.detail(f.description.clone()));
-    if recursive && !f.children.is_empty() {
+    if recursive && expandable {
         s.subsection(f.name.clone(), |sub| {
+            let sub = f
+                .variants
+                .iter()
+                .fold(sub, |sub, v| append_field(sub, v, true));
             f.children
                 .iter()
                 .fold(sub, |sub, c| append_field(sub, c, true))
@@ -326,13 +360,31 @@ pub fn build_explain_drilldown_doc(
         field_path.join(".")
     );
     let mut doc = Doc::new().heading(path_str.clone());
-    if fields.len() == 1 && fields[0].children.is_empty() {
-        let f = &fields[0];
+    if let [f] = fields {
+        // resolve_field_path returns a single-element slice in two cases
+        // that are indistinguishable from the slice alone: the path names a
+        // leaf field with no children (the common case), or it names a
+        // parent whose own children list happens to contain exactly one
+        // field. Either way, showing that one field's own name/type/
+        // description is the correct view — a one-field "Fields" listing
+        // and a genuine leaf's own header render identically here — so the
+        // force-expand into `Variants`/`Fields` below is unconditionally
+        // correct regardless of which case produced it.
         let req = if f.required { " (required)" } else { "" };
         doc = doc
             .kv("field", f.name.clone())
             .kv("type", format!("{}{}", f.type_desc, req))
             .status(Role::Info, f.description.clone());
+        doc = doc.section_if_nonempty("Variants", &f.variants, |s, variants| {
+            variants
+                .iter()
+                .fold(s, |s, v| append_field(s, v, recursive))
+        });
+        doc = doc.section_if_nonempty("Fields", &f.children, |s, children| {
+            children
+                .iter()
+                .fold(s, |s, c| append_field(s, c, recursive))
+        });
     } else {
         doc = doc.section("Fields", |s| {
             fields.iter().fold(s, |s, f| append_field(s, f, recursive))

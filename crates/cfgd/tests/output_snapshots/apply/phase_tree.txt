@@ -1,0 +1,19 @@
+Apply
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  tiny
+  Phases   Prerequisites, Packages, Files
+  Actions  3 planned
+
+Phase: Prerequisites
+  cfgd:managers
+    ✓ refresh brew index
+
+Phase: Packages
+  profile:tiny
+    ✓ brew install ripgrep
+
+Phase: Files
+  profile:tiny
+    ✓ create <TARGET>
+
+✓ Apply complete — 3 actions succeeded (XXs)

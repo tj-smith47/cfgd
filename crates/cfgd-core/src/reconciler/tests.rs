@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -12,6 +12,11 @@ use crate::test_helpers::{
     MockSecretBackend, MockSecretProvider, MockSystemConfigurator, make_empty_resolved,
     make_resolved_module, test_package_context, test_printer, test_state,
 };
+
+/// Plan item strings for a whole phase, in the plan's own order.
+fn plan_items(phase: &Phase) -> Vec<String> {
+    phase.actions().map(format_plan_item).collect()
+}
 
 #[test]
 fn empty_plan_has_no_phases() {
@@ -120,7 +125,7 @@ fn plan_includes_script_actions() {
         .iter()
         .find(|p| p.name == PhaseName::PreScripts)
         .unwrap();
-    assert_eq!(pre_phase.actions.len(), 1);
+    assert_eq!(pre_phase.action_count(), 1);
 
     // Post-scripts phase should have the post_reconcile script
     let post_phase = plan
@@ -128,7 +133,7 @@ fn plan_includes_script_actions() {
         .iter()
         .find(|p| p.name == PhaseName::PostScripts)
         .unwrap();
-    assert_eq!(post_phase.actions.len(), 1);
+    assert_eq!(post_phase.action_count(), 1);
 }
 
 #[test]
@@ -328,10 +333,10 @@ fn aborted_planned_total_counts_only_filtered_actions() {
     // `--phase files` filter keeps only the 2 file actions in scope.
     let plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::Files,
-                scope: None,
-                actions: vec![
+            Phase::from_actions(
+                PhaseName::Files,
+                &Owner::profile("test"),
+                vec![
                     Action::File(FileAction::Create {
                         source: src_a,
                         target: dir.path().join("a.txt"),
@@ -349,16 +354,16 @@ fn aborted_planned_total_counts_only_filtered_actions() {
                         patch: None,
                     }),
                 ],
-            },
-            Phase {
-                name: PhaseName::Packages,
-                scope: None,
-                actions: vec![Action::Package(PackageAction::Install {
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![Action::Package(PackageAction::Install {
                     manager: "brew".to_string(),
                     packages: vec!["ripgrep".to_string()],
                     origin: "local".to_string(),
                 })],
-            },
+            ),
         ],
         warnings: vec![],
     };
@@ -374,7 +379,7 @@ fn aborted_planned_total_counts_only_filtered_actions() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Files),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &[],
             ReconcileContext::Apply,
             true,
@@ -396,7 +401,7 @@ fn aborted_planned_total_counts_only_filtered_actions() {
 fn phase_name_roundtrip() {
     for name in &[
         PhaseName::PreScripts,
-        PhaseName::Env,
+        PhaseName::Prerequisites,
         PhaseName::Modules,
         PhaseName::Packages,
         PhaseName::System,
@@ -412,10 +417,10 @@ fn phase_name_roundtrip() {
 
 #[test]
 fn format_plan_items_for_display() {
-    let phase = Phase {
-        name: PhaseName::Packages,
-        scope: None,
-        actions: vec![
+    let phase = Phase::from_actions(
+        PhaseName::Packages,
+        &Owner::profile("test"),
+        vec![
             Action::Package(PackageAction::Install {
                 manager: "brew".to_string(),
                 packages: vec!["ripgrep".to_string(), "fd".to_string()],
@@ -427,9 +432,9 @@ fn format_plan_items_for_display() {
                 origin: "local".to_string(),
             }),
         ],
-    };
+    );
 
-    let items = format_plan_items(&phase);
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 2); // Skip items are now shown
     assert!(items[0].contains("ripgrep"));
     assert!(items[1].contains("skip apt: not available"));
@@ -470,15 +475,15 @@ fn verify_returns_results() {
 #[test]
 fn plan_hash_string() {
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Install {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("test"),
+            vec![Action::Package(PackageAction::Install {
                 manager: "brew".to_string(),
                 packages: vec!["ripgrep".to_string()],
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
     let hash = plan.to_hash_string();
@@ -524,7 +529,7 @@ fn apply_result_counts() {
 use crate::modules::{ResolvedFile, ResolvedModule, ResolvedPackage};
 
 #[test]
-fn plan_includes_module_phase() {
+fn plan_routes_module_packages_into_the_packages_phase() {
     let state = test_state();
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
@@ -544,19 +549,18 @@ fn plan_includes_module_phase() {
     let module_phase = plan
         .phases
         .iter()
-        .find(|p| p.name == PhaseName::Modules)
+        .find(|p| p.name == PhaseName::Packages)
         .unwrap();
 
-    // Module phase should have at least 1 action (InstallPackages)
-    assert!(!module_phase.actions.is_empty());
+    assert!(!module_phase.is_empty());
 
     // Check that actions are ModuleAction
-    for action in &module_phase.actions {
+    for action in module_phase.actions() {
         match action {
             Action::Module(ma) => {
                 assert_eq!(ma.module_name, "nvim");
             }
-            _ => panic!("expected Module action in Modules phase"),
+            _ => panic!("expected Module action in the Packages phase"),
         }
     }
 }
@@ -588,7 +592,7 @@ fn plan_module_with_files() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -608,11 +612,15 @@ fn plan_module_with_files() {
     let module_phase = plan
         .phases
         .iter()
-        .find(|p| p.name == PhaseName::Modules)
+        .find(|p| p.name == PhaseName::Files)
         .unwrap();
-    assert_eq!(module_phase.actions.len(), 1);
+    assert_eq!(module_phase.action_count(), 1);
 
-    match &module_phase.actions[0] {
+    match module_phase
+        .actions()
+        .next()
+        .expect("phase holds an action")
+    {
         Action::Module(ma) => match &ma.kind {
             ModuleActionKind::DeployFiles { files } => {
                 assert_eq!(files.len(), 1);
@@ -646,7 +654,7 @@ fn plan_module_with_scripts() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -666,11 +674,11 @@ fn plan_module_with_scripts() {
     let module_phase = plan
         .phases
         .iter()
-        .find(|p| p.name == PhaseName::Modules)
+        .find(|p| p.name == PhaseName::PostScripts)
         .unwrap();
-    assert_eq!(module_phase.actions.len(), 2);
+    assert_eq!(module_phase.action_count(), 2);
 
-    for action in &module_phase.actions {
+    for action in module_phase.actions() {
         match action {
             Action::Module(ma) => match &ma.kind {
                 ModuleActionKind::RunScript { script, .. } => {
@@ -712,7 +720,7 @@ fn plan_multiple_modules_in_dependency_order() {
             post_reconcile_scripts: Vec::new(),
             on_change_scripts: Vec::new(),
             on_drift_scripts: Vec::new(),
-            system: HashMap::new(),
+            system: BTreeMap::new(),
             depends: vec![],
             dir: PathBuf::from("."),
             origin: None,
@@ -739,7 +747,7 @@ fn plan_multiple_modules_in_dependency_order() {
             post_reconcile_scripts: Vec::new(),
             on_change_scripts: Vec::new(),
             on_drift_scripts: Vec::new(),
-            system: HashMap::new(),
+            system: BTreeMap::new(),
             depends: vec!["node".to_string()],
             dir: PathBuf::from("."),
             origin: None,
@@ -757,32 +765,120 @@ fn plan_multiple_modules_in_dependency_order() {
         )
         .unwrap();
 
-    // Each module's packages land in their own scoped phase — different
-    // modules never merge into one Packages run even though both are
-    // "packages" sections back to back.
-    let module_phases: Vec<&Phase> = plan
+    // Each module gets its own group inside the one Packages phase — two
+    // modules never merge into one group even when both declare only packages.
+    let packages = plan
         .phases
         .iter()
-        .filter(|p| p.name == PhaseName::Modules)
-        .collect();
-    assert_eq!(module_phases.len(), 2);
-    let total_actions: usize = module_phases.iter().map(|p| p.actions.len()).sum();
-    assert_eq!(total_actions, 2);
+        .find(|p| p.name == PhaseName::Packages)
+        .expect("packages phase");
+    assert_eq!(packages.groups().len(), 2);
+    assert_eq!(packages.action_count(), 2);
 
-    // First phase should be for "node" (leaf dependency)
-    match &module_phases[0].actions[0] {
-        Action::Module(ma) => assert_eq!(ma.module_name, "node"),
-        _ => panic!("expected Module action"),
+    let owners: Vec<&Owner> = packages.groups().iter().map(|g| &g.owner).collect();
+    assert_eq!(owners, vec![&Owner::module("node"), &Owner::module("nvim")]);
+    for group in packages.groups() {
+        match group.actions.first().expect("group holds an action") {
+            Action::Module(ma) => assert_eq!(ma.module_name, group.owner.name),
+            other => panic!("expected Module action, got {other:?}"),
+        }
     }
-    // Second for "nvim"
-    match &module_phases[1].actions[0] {
-        Action::Module(ma) => assert_eq!(ma.module_name, "nvim"),
-        _ => panic!("expected Module action"),
+}
+
+/// F2: a module declaring packages across two managers of the same
+/// availability class (both unresolved against an empty registry, so both
+/// fall into the "unknown" tier) used to route through
+/// `by_manager.keys().collect()` — a `HashMap`, whose key order is
+/// `RandomState` and reshuffled per process. `sort_by_key` is stable, so
+/// same-class managers kept whatever order the `HashMap` handed them: the
+/// plan tree's bullet order, the `-o json` payload order, the journal
+/// `action_index`, and the phase's execution offer order all drew from it.
+/// Runs `plan()` many times over one process on a fixed module and asserts
+/// the two `InstallPackages` actions land in the same (alphabetical by
+/// manager name) order every time.
+#[test]
+fn plan_package_actions_order_ties_by_manager_name_every_run() {
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let module = ResolvedModule {
+        name: "toolchain".to_string(),
+        packages: vec![
+            ResolvedPackage {
+                canonical_name: "typescript".to_string(),
+                resolved_name: "typescript".to_string(),
+                manager: "npm".to_string(),
+                version: None,
+                script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
+            },
+            ResolvedPackage {
+                canonical_name: "ripgrep".to_string(),
+                resolved_name: "ripgrep".to_string(),
+                manager: "cargo".to_string(),
+                version: None,
+                script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
+            },
+        ],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: BTreeMap::new(),
+        depends: vec![],
+        dir: PathBuf::from("."),
+        origin: None,
+        platform_skip_reason: None,
+    };
+
+    for _ in 0..50 {
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                Vec::new(),
+                vec![module.clone()],
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+
+        let packages = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::Packages)
+            .expect("packages phase");
+        let managers: Vec<&str> = packages
+            .actions()
+            .map(|action| match action {
+                Action::Module(ma) => match &ma.kind {
+                    ModuleActionKind::InstallPackages { resolved } => resolved[0].manager.as_str(),
+                    other => panic!("expected InstallPackages, got {other:?}"),
+                },
+                other => panic!("expected Module action, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            managers,
+            vec!["cargo", "npm"],
+            "same-class managers must tie-break on name, identically every run"
+        );
     }
 }
 
 #[test]
-fn plan_single_module_splits_into_per_section_phases() {
+fn plan_routes_module_work_to_the_phase_of_its_kind() {
     // packages + files + postApply script → three consecutive, correctly
     // ordered Modules phases, each scoped to its own section.
     let state = test_state();
@@ -819,7 +915,7 @@ fn plan_single_module_splits_into_per_section_phases() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -836,48 +932,52 @@ fn plan_single_module_splits_into_per_section_phases() {
         )
         .unwrap();
 
-    let module_phases: Vec<&Phase> = plan
-        .phases
-        .iter()
-        .filter(|p| p.name == PhaseName::Modules)
-        .collect();
-    assert_eq!(
-        module_phases.len(),
-        3,
-        "packages/files/post-scripts each split into their own phase: {module_phases:?}"
+    let owned = |name: PhaseName| -> Vec<(&Owner, &Action)> {
+        plan.phases
+            .iter()
+            .filter(|p| p.name == name)
+            .flat_map(|p| p.owned_actions())
+            .collect()
+    };
+
+    assert!(
+        !plan.phases.iter().any(|p| p.name == PhaseName::Modules),
+        "a module with real work leaves the meta phase empty: {:?}",
+        plan.phases
     );
 
-    let scopes: Vec<(&str, ModuleSection)> = module_phases
-        .iter()
-        .map(|p| {
-            let scope = p.scope.as_ref().expect("module phase must carry a scope");
-            (scope.module.as_str(), scope.section.clone())
-        })
-        .collect();
-    assert_eq!(scopes[0], ("nvim", ModuleSection::Packages));
-    assert_eq!(scopes[1], ("nvim", ModuleSection::Files));
-    assert_eq!(scopes[2], ("nvim", ModuleSection::PostScripts));
-
-    match &module_phases[0].actions[0] {
-        Action::Module(ModuleAction {
-            kind: ModuleActionKind::InstallPackages { .. },
-            ..
-        }) => {}
-        other => panic!("expected InstallPackages in the Packages phase, got {other:?}"),
-    }
-    match &module_phases[1].actions[0] {
-        Action::Module(ModuleAction {
-            kind: ModuleActionKind::DeployFiles { .. },
-            ..
-        }) => {}
-        other => panic!("expected DeployFiles in the Files phase, got {other:?}"),
-    }
-    match &module_phases[2].actions[0] {
-        Action::Module(ModuleAction {
-            kind: ModuleActionKind::RunScript { .. },
-            ..
-        }) => {}
-        other => panic!("expected RunScript in the Post-Scripts phase, got {other:?}"),
+    for (phase, expect) in [
+        (PhaseName::Packages, "InstallPackages"),
+        (PhaseName::Files, "DeployFiles"),
+        (PhaseName::PostScripts, "RunScript"),
+    ] {
+        let actions = owned(phase.clone());
+        assert_eq!(actions.len(), 1, "one nvim action in {phase:?}");
+        let (owner, action) = actions[0];
+        assert_eq!(owner, &Owner::module("nvim"), "owned by the module");
+        let matches = matches!(
+            (action, expect),
+            (
+                Action::Module(ModuleAction {
+                    kind: ModuleActionKind::InstallPackages { .. },
+                    ..
+                }),
+                "InstallPackages"
+            ) | (
+                Action::Module(ModuleAction {
+                    kind: ModuleActionKind::DeployFiles { .. },
+                    ..
+                }),
+                "DeployFiles"
+            ) | (
+                Action::Module(ModuleAction {
+                    kind: ModuleActionKind::RunScript { .. },
+                    ..
+                }),
+                "RunScript"
+            )
+        );
+        assert!(matches, "expected {expect} in {phase:?}, got {action:?}");
     }
 }
 
@@ -910,7 +1010,7 @@ fn resolved_module_with_package(name: &str, pkg: &str, manager: &str) -> Resolve
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -919,7 +1019,7 @@ fn resolved_module_with_package(name: &str, pkg: &str, manager: &str) -> Resolve
 }
 
 #[test]
-fn plan_two_modules_with_packages_never_merge_sections_across_modules() {
+fn plan_two_modules_with_packages_get_one_group_each() {
     // Two independent modules, each with only a packages action: consecutive-
     // run splitting must not merge them into one "packages" run just because
     // the section repeats back to back — every phase's scope must name the
@@ -944,50 +1044,28 @@ fn plan_two_modules_with_packages_never_merge_sections_across_modules() {
         )
         .unwrap();
 
-    let module_phases: Vec<&Phase> = plan
+    let packages = plan
         .phases
         .iter()
-        .filter(|p| p.name == PhaseName::Modules)
-        .collect();
+        .find(|p| p.name == PhaseName::Packages)
+        .expect("packages phase");
+    let owners: Vec<&Owner> = packages.groups().iter().map(|g| &g.owner).collect();
     assert_eq!(
-        module_phases.len(),
-        2,
-        "each module's packages land in their own scoped phase: {module_phases:?}"
+        owners,
+        vec![&Owner::module("alpha"), &Owner::module("beta")],
+        "one group per module, never merged: {:?}",
+        packages.groups()
     );
-
-    let scope0 = module_phases[0].scope.as_ref().expect("scoped");
-    let scope1 = module_phases[1].scope.as_ref().expect("scoped");
-    assert_eq!(scope0.module, "alpha");
-    assert_eq!(scope0.section, ModuleSection::Packages);
-    assert_eq!(scope1.module, "beta");
-    assert_eq!(scope1.section, ModuleSection::Packages);
+    for group in packages.groups() {
+        assert_eq!(group.actions.len(), 1, "one install per module");
+    }
 }
 
 #[test]
-fn display_label_composes_module_and_section_or_falls_back_to_phase_name() {
-    let scoped = Phase {
-        name: PhaseName::Modules,
-        actions: vec![],
-        scope: Some(ModuleScope {
-            module: "nvim".to_string(),
-            section: ModuleSection::Packages,
-        }),
-    };
-    assert_eq!(scoped.display_label(), "nvim / Packages");
-
-    let unscoped = Phase {
-        name: PhaseName::Env,
-        actions: vec![],
-        scope: None,
-    };
-    assert_eq!(unscoped.display_label(), "Environment");
-}
-
-#[test]
-fn phase_modules_filter_selects_actions_from_every_split_phase() {
-    // `--phase modules` must keep matching every split phase, not just the
-    // first — action_matches_phase_filter compares `phase_name == filter`,
-    // and every split phase still carries `PhaseName::Modules`.
+fn phase_modules_filter_selects_module_work_from_every_kind_phase() {
+    // `--phase modules` is an OWNER filter after the kind routing: a module's
+    // packages, files and scripts sit in three different phases, so a filter
+    // that compared phase names would select at most one of them.
     let state = test_state();
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
@@ -1008,36 +1086,34 @@ fn phase_modules_filter_selects_actions_from_every_split_phase() {
         )
         .unwrap();
 
-    let module_phases: Vec<&Phase> = plan
-        .phases
-        .iter()
-        .filter(|p| p.name == PhaseName::Modules)
-        .collect();
-    assert_eq!(module_phases.len(), 2, "sanity: two split phases expected");
-
     let mut matched_modules: Vec<&str> = Vec::new();
-    for phase_item in &module_phases {
-        for action in &phase_item.actions {
-            if action_matches_phase_filter(&phase_item.name, action, &PhaseName::Modules)
-                && let Action::Module(ma) = action
+    for phase_item in &plan.phases {
+        for (owner, action) in phase_item.owned_actions() {
+            if action_matches_phase_filter(
+                &phase_item.name,
+                owner,
+                action,
+                &PhaseFilter::ModuleOwners,
+            ) && let Action::Module(ma) = action
             {
                 matched_modules.push(ma.module_name.as_str());
             }
         }
     }
+    matched_modules.sort_unstable();
     assert_eq!(
         matched_modules,
         vec!["alpha", "beta"],
-        "the modules filter must select actions from every split phase, not just the first"
+        "`--phase modules` selects module work in every kind-phase it routed to"
     );
 }
 
 #[test]
 fn format_module_plan_items_packages() {
-    let phase = Phase {
-        name: PhaseName::Modules,
-        scope: None,
-        actions: vec![Action::Module(ModuleAction {
+    let phase = Phase::from_actions(
+        PhaseName::Packages,
+        &Owner::profile("test"),
+        vec![Action::Module(ModuleAction {
             module_name: "nvim".to_string(),
             kind: ModuleActionKind::InstallPackages {
                 resolved: vec![
@@ -1065,21 +1141,25 @@ fn format_module_plan_items_packages() {
             },
             origin: None,
         })],
-    };
+    );
 
-    let items = format_plan_items(&phase);
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
-    assert!(items[0].contains("[nvim]"));
-    // Should show alias info for fd→fd-find
-    assert!(items[0].contains("fd-find"));
+    // Exact string: manager groups must render in first-appearance order of
+    // the resolved list — this description is also the plan payload, and a
+    // hashed grouping reshuffled multi-manager modules on every plan.
+    assert_eq!(
+        items[0],
+        "brew install neovim (0.10.2); apt install fd-find (8.7.0, alias: fd)"
+    );
 }
 
 #[test]
 fn format_module_plan_items_files() {
-    let phase = Phase {
-        name: PhaseName::Modules,
-        scope: None,
-        actions: vec![Action::Module(ModuleAction {
+    let phase = Phase::from_actions(
+        PhaseName::Files,
+        &Owner::profile("test"),
+        vec![Action::Module(ModuleAction {
             module_name: "nvim".to_string(),
             kind: ModuleActionKind::DeployFiles {
                 files: vec![ResolvedFile {
@@ -1094,34 +1174,31 @@ fn format_module_plan_items_files() {
             },
             origin: None,
         })],
-    };
+    );
 
-    let items = format_plan_items(&phase);
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
-    assert!(items[0].contains("[nvim]"));
-    assert!(items[0].contains("deploy"));
+    assert!(items[0].starts_with("deploy "));
     assert!(items[0].contains(".config/nvim"));
 }
 
 #[test]
 fn format_module_plan_items_skip() {
-    let phase = Phase {
-        name: PhaseName::Modules,
-        scope: None,
-        actions: vec![Action::Module(ModuleAction {
+    let phase = Phase::from_actions(
+        PhaseName::Modules,
+        &Owner::profile("test"),
+        vec![Action::Module(ModuleAction {
             module_name: "bad".to_string(),
             kind: ModuleActionKind::Skip {
                 reason: "dependency not met".to_string(),
             },
             origin: None,
         })],
-    };
+    );
 
-    let items = format_plan_items(&phase);
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
-    assert!(items[0].contains("[bad]"));
-    assert!(items[0].contains("skip"));
-    assert!(items[0].contains("dependency not met"));
+    assert_eq!(items[0], "skip: dependency not met");
 }
 
 #[test]
@@ -1290,10 +1367,10 @@ fn phase_name_modules_roundtrip() {
 #[test]
 fn plan_hash_includes_module_actions() {
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "nvim".to_string(),
                 kind: ModuleActionKind::InstallPackages {
                     resolved: vec![ResolvedPackage {
@@ -1309,7 +1386,7 @@ fn plan_hash_includes_module_actions() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -1399,7 +1476,7 @@ fn verify_routes_through_package_identity_for_name_remapping_manager() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -1449,7 +1526,7 @@ fn verify_module_script_packages_not_false_drift() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -1677,7 +1754,7 @@ fn plan_module_with_script_packages() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -1697,11 +1774,15 @@ fn plan_module_with_script_packages() {
     let module_phase = plan
         .phases
         .iter()
-        .find(|p| p.name == PhaseName::Modules)
+        .find(|p| p.name == PhaseName::Packages)
         .unwrap();
-    assert_eq!(module_phase.actions.len(), 1);
+    assert_eq!(module_phase.action_count(), 1);
 
-    match &module_phase.actions[0] {
+    match module_phase
+        .actions()
+        .next()
+        .expect("phase holds an action")
+    {
         Action::Module(ma) => {
             assert_eq!(ma.module_name, "rustup");
             match &ma.kind {
@@ -1719,10 +1800,10 @@ fn plan_module_with_script_packages() {
 
 #[test]
 fn format_module_plan_script_packages() {
-    let phase = Phase {
-        name: PhaseName::Modules,
-        scope: None,
-        actions: vec![Action::Module(ModuleAction {
+    let phase = Phase::from_actions(
+        PhaseName::Packages,
+        &Owner::profile("test"),
+        vec![Action::Module(ModuleAction {
             module_name: "rustup".to_string(),
             kind: ModuleActionKind::InstallPackages {
                 resolved: vec![ResolvedPackage {
@@ -1738,11 +1819,10 @@ fn format_module_plan_script_packages() {
             },
             origin: None,
         })],
-    };
+    );
 
-    let items = format_plan_items(&phase);
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
-    assert!(items[0].contains("[rustup]"));
     assert!(items[0].contains("script"));
     assert!(items[0].contains("rustup"));
 }
@@ -1807,7 +1887,7 @@ fn conflict_detection_different_content() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -1928,7 +2008,7 @@ fn conflict_detection_identical_content_ok() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -1964,7 +2044,7 @@ fn conflict_detection_identical_content_ok() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -2015,7 +2095,7 @@ fn conflict_detection_no_overlap_ok() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -2049,7 +2129,7 @@ fn conflict_detection_no_overlap_ok() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -2197,7 +2277,7 @@ fn plan_env_module_wins_on_conflict() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -2242,10 +2322,18 @@ fn plan_env_generates_file_matching_expected() {
 }
 
 #[test]
-fn phase_name_env_roundtrip() {
-    assert_eq!(PhaseName::Env.as_str(), "env");
-    assert_eq!(PhaseName::Env.display_name(), "Environment");
-    assert_eq!("env".parse::<PhaseName>().unwrap(), PhaseName::Env);
+fn phase_name_prerequisites_roundtrip() {
+    assert_eq!(PhaseName::Prerequisites.as_str(), "prerequisites");
+    assert_eq!(PhaseName::Prerequisites.display_name(), "Prerequisites");
+    assert_eq!(
+        "prerequisites".parse::<PhaseName>().unwrap(),
+        PhaseName::Prerequisites
+    );
+    // The pre-merge spelling still selects the phase that holds the env work.
+    assert_eq!(
+        "env".parse::<PhaseName>().unwrap(),
+        PhaseName::Prerequisites
+    );
 }
 
 #[test]
@@ -2330,7 +2418,7 @@ fn plan_env_module_alias_wins_on_conflict() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -2730,10 +2818,10 @@ impl PackageManager for TrackingPackageManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
     }
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
@@ -2755,7 +2843,11 @@ impl PackageManager for TrackingPackageManager {
         }
         Ok(())
     }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
@@ -2894,10 +2986,16 @@ fn apply_package_install_calls_mock_and_records_state() {
         .unwrap();
 
     assert_eq!(result.status, ApplyStatus::Success);
-    assert_eq!(result.action_results.len(), 1);
-    assert!(result.action_results[0].success);
-    assert!(result.action_results[0].error.is_none());
-    assert!(result.action_results[0].description.contains("ripgrep"));
+    // The install, and ahead of it the `Prerequisites` node refreshing the
+    // index it reads.
+    assert_eq!(result.action_results.len(), 2);
+    assert!(result.action_results.iter().all(|r| r.success));
+    assert!(result.action_results.iter().all(|r| r.error.is_none()));
+    assert_eq!(
+        result.action_results[0].description, "manager:refresh:brew",
+        "the manager's index is refreshed before the packages that read it"
+    );
+    assert!(result.action_results[1].description.contains("ripgrep"));
 
     // Verify install was actually called on the tracking mock
     let pm = registry.package_managers[0].as_ref();
@@ -2921,10 +3019,10 @@ impl PackageManager for ScriptedLikeManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
     }
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
@@ -2936,7 +3034,11 @@ impl PackageManager for ScriptedLikeManager {
     fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
@@ -3328,7 +3430,9 @@ fn apply_env_write_env_file_to_tempdir() {
     };
 
     let printer = test_printer();
-    let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
+    let desc =
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .unwrap();
 
     // Verify file was written
     let written = std::fs::read_to_string(&env_path).unwrap();
@@ -3358,7 +3462,9 @@ fn apply_env_write_skips_when_content_matches() {
     };
 
     let printer = test_printer();
-    let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
+    let desc =
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .unwrap();
 
     // Should report skipped
     assert!(desc.contains("skipped"), "Expected skip: {}", desc);
@@ -3375,7 +3481,9 @@ fn apply_env_inject_source_line_creates_file() {
     };
 
     let printer = test_printer();
-    let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
+    let desc =
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .unwrap();
 
     let written = std::fs::read_to_string(&rc_path).unwrap();
     assert!(written.contains(". ~/.cfgd.env"));
@@ -3400,7 +3508,9 @@ fn apply_env_inject_skips_when_already_present() {
     };
 
     let printer = test_printer();
-    let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
+    let desc =
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .unwrap();
 
     assert!(desc.contains("skipped"), "Expected skip: {}", desc);
 }
@@ -3418,6 +3528,7 @@ fn apply_env_live_session_reports_the_planned_resource_id() {
     let desc = Reconciler::apply_env_action(
         &EnvAction::RefreshLiveSession { vars: Vec::new() },
         &printer,
+        crate::providers::NoteSink::discarded(),
     )
     .unwrap();
 
@@ -3449,7 +3560,8 @@ fn apply_env_inject_migrates_legacy_source_keyword() {
     };
 
     let printer = test_printer();
-    Reconciler::apply_env_action(&action, &printer).unwrap();
+    Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+        .unwrap();
 
     let written = std::fs::read_to_string(&rc_path).unwrap();
     // The legacy line is upgraded in place, not duplicated.
@@ -3476,7 +3588,8 @@ fn apply_env_inject_appends_to_existing_content() {
     };
 
     let printer = test_printer();
-    Reconciler::apply_env_action(&action, &printer).unwrap();
+    Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+        .unwrap();
 
     let written = std::fs::read_to_string(&rc_path).unwrap();
     assert!(written.starts_with("# my config\n"));
@@ -3534,7 +3647,8 @@ fn apply_full_flow_plan_apply_verify_consistent() {
         .unwrap();
 
     assert_eq!(result.status, ApplyStatus::Success);
-    assert_eq!(result.succeeded(), 1);
+    // The install, and the `Prerequisites` node refreshing its manager's index.
+    assert_eq!(result.succeeded(), 2);
     assert_eq!(result.failed(), 0);
 
     // State store should show the apply
@@ -3597,8 +3711,9 @@ fn apply_records_summary_json() {
     let last = state.last_apply().unwrap().unwrap();
     let summary = last.summary.unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&summary).unwrap();
-    assert_eq!(parsed["total"], 1);
-    assert_eq!(parsed["succeeded"], 1);
+    // The install, and the `Prerequisites` node refreshing its manager's index.
+    assert_eq!(parsed["total"], 2);
+    assert_eq!(parsed["succeeded"], 2);
     assert_eq!(parsed["failed"], 0);
     assert_eq!(result.apply_id, last.id);
 }
@@ -3640,7 +3755,7 @@ fn apply_with_phase_filter_only_runs_matching_phase() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Env),
+            Some(&PhaseFilter::Phase(PhaseName::Prerequisites)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -3650,8 +3765,14 @@ fn apply_with_phase_filter_only_runs_matching_phase() {
         .unwrap();
 
     assert_eq!(result.status, ApplyStatus::Success);
-    // No actions executed because Env phase is empty and Packages phase was filtered out
-    assert_eq!(result.action_results.len(), 0);
+    // Only the manager node the `Prerequisites` phase owns: the install the
+    // filter excluded did not run.
+    let descriptions: Vec<&str> = result
+        .action_results
+        .iter()
+        .map(|r| r.description.as_str())
+        .collect();
+    assert_eq!(descriptions, vec!["manager:refresh:brew"]);
 }
 
 #[test]
@@ -3681,6 +3802,27 @@ fn apply_with_phase_filter_runs_only_packages() {
         )
         .unwrap();
 
+    // The plan model always includes brew's index refresh in Prerequisites —
+    // proving the assertion below is the filter excluding an existing node,
+    // not the node having never been planned in the first place.
+    let prereq_phase = plan
+        .phases
+        .iter()
+        .find(|p| p.name == PhaseName::Prerequisites);
+    assert!(
+        prereq_phase.is_some(),
+        "the plan model always includes the manager refresh: {:?}",
+        plan.phases
+    );
+    assert!(
+        prereq_phase
+            .unwrap()
+            .actions()
+            .any(|a| format_action_description(a).starts_with("manager:")),
+        "the unfiltered plan must carry a manager: node for the filter to exclude: {:?}",
+        plan.phases
+    );
+
     let printer = test_printer();
 
     // Apply with filter set to Packages phase — should run the install
@@ -3690,7 +3832,7 @@ fn apply_with_phase_filter_runs_only_packages() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Packages),
+            Some(&PhaseFilter::Phase(PhaseName::Packages)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -3702,6 +3844,16 @@ fn apply_with_phase_filter_runs_only_packages() {
     assert_eq!(result.status, ApplyStatus::Success);
     assert_eq!(result.action_results.len(), 1);
     assert!(result.action_results[0].success);
+    // `--phase packages` filters, and never adds: no `manager:*` node — the
+    // index refresh belongs to Prerequisites and must not run here.
+    assert!(
+        !result
+            .action_results
+            .iter()
+            .any(|r| r.description.starts_with("manager:")),
+        "`--phase packages` must plan zero manager actions: {:?}",
+        result.action_results
+    );
 }
 
 #[test]
@@ -3744,7 +3896,7 @@ fn apply_file_create_action_writes_file() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Files),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -3817,8 +3969,9 @@ fn apply_multiple_package_actions_all_succeed() {
         .unwrap();
 
     assert_eq!(result.status, ApplyStatus::Success);
-    assert_eq!(result.action_results.len(), 2);
-    assert_eq!(result.succeeded(), 2);
+    // Two installs, each preceded by its manager's index refresh.
+    assert_eq!(result.action_results.len(), 4);
+    assert_eq!(result.succeeded(), 4);
     assert_eq!(result.failed(), 0);
 
     // Verify both managers had their install called
@@ -3827,6 +3980,268 @@ fn apply_multiple_package_actions_all_succeed() {
     let cx = test_package_context(&printer, &state);
     assert!(brew.installed_packages(&cx).unwrap().contains("jq"));
     assert!(cargo.installed_packages(&cx).unwrap().contains("bat"));
+}
+
+/// A package manager that counts its index refreshes — the evidence for a
+/// refresh cfgd was NOT asked to perform.
+struct UpdateCountingPackageManager {
+    name: String,
+    updates: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl UpdateCountingPackageManager {
+    fn new(name: &str, updates: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        Self {
+            name: name.to_string(),
+            updates,
+        }
+    }
+}
+
+impl PackageManager for UpdateCountingPackageManager {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
+    }
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
+        Ok(HashSet::new())
+    }
+    fn install(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> Result<()> {
+        self.updates
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+    fn available_version(&self, _package: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+/// A plan carrying package work and NO `Prerequisites` node — what a run whose
+/// manager node was pruned (`--skip prerequisites.<name>`) hands to `apply`.
+/// Built by hand because `Reconciler::plan` mints a node for every manager its
+/// package work names.
+fn plan_of_package_actions(actions: Vec<PackageAction>) -> Plan {
+    let profile = Owner::profile("test");
+    Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &profile,
+            actions.into_iter().map(Action::Package).collect(),
+        )],
+        warnings: Vec::new(),
+    }
+}
+
+#[test]
+fn a_pruned_refresh_node_leaves_the_index_alone() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    let updates = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    registry
+        .package_managers
+        .push(Box::new(UpdateCountingPackageManager::new(
+            "apt",
+            updates.clone(),
+        )));
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    // The shape `--skip prerequisites.apt` leaves behind: the install the user
+    // kept, without the refresh they removed. The refresh belongs to the phase,
+    // so nothing else may perform it on the phase's behalf.
+    let plan = plan_of_package_actions(vec![PackageAction::Install {
+        manager: "apt".to_string(),
+        packages: vec!["ripgrep".to_string()],
+        origin: "local".to_string(),
+    }]);
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert_eq!(result.action_results.len(), 1, "only the install ran");
+
+    assert_eq!(
+        updates.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a refresh the user removed from the plan must not run anyway"
+    );
+}
+
+#[test]
+fn a_prerequisite_is_never_recorded_as_a_user_managed_resource() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(TrackingPackageManager::new("apt")));
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let profile = Owner::profile("test");
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &profile,
+                vec![
+                    Action::Manager(ManagerAction::RefreshIndex {
+                        manager: "apt".to_string(),
+                    }),
+                    Action::Manager(ManagerAction::Prerequisite {
+                        tool: "curl".to_string(),
+                        installer: "apt".to_string(),
+                        required_by: vec!["brew".to_string()],
+                        depends_on: vec![ManagerAction::refresh_node("apt")],
+                    }),
+                ],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &profile,
+                vec![Action::Package(PackageAction::Install {
+                    manager: "apt".to_string(),
+                    packages: vec!["ripgrep".to_string()],
+                    origin: "local".to_string(),
+                })],
+            ),
+        ],
+        warnings: Vec::new(),
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    let recorded: Vec<String> = state
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .map(|r| format!("{}:{}", r.resource_type, r.resource_id))
+        .collect();
+    assert!(
+        recorded.iter().all(|id| !id.starts_with("manager:")),
+        "curl is a tool cfgd needed, not a resource the user declared: cfgd never \
+         removes it and `cfgd status` never claims it: {recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|id| id.contains("ripgrep")),
+        "the user's own package is still recorded: {recorded:?}"
+    );
+    // The journal still carries the work, which is where a prerequisite belongs.
+    let journalled: Vec<String> = state
+        .journal_entries(result.apply_id)
+        .unwrap()
+        .into_iter()
+        .map(|e| format!("{}:{}", e.action_type, e.resource_id))
+        .collect();
+    assert!(
+        journalled.contains(&"manager:prereq:curl".to_string()),
+        "the journal records what cfgd did: {journalled:?}"
+    );
+}
+
+#[test]
+fn a_refusal_states_its_reason_once() {
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let reason = "curl is missing and no system manager is available";
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("test"),
+            vec![Action::Manager(ManagerAction::Refuse {
+                manager: "nix".to_string(),
+                reason: reason.to_string(),
+            })],
+        )],
+        warnings: Vec::new(),
+    };
+
+    let (printer, buf) = Printer::for_test();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Failed);
+
+    let rendered = crate::test_helpers::captured_text(&buf);
+    assert_eq!(
+        rendered.matches(reason).count(),
+        1,
+        "the subject already IS the reason; the error it settles through must not \
+         reprint it: {rendered}"
+    );
+    assert!(
+        rendered.contains("cannot provision nix — curl is missing"),
+        "the line still names the manager and the cause: {rendered}"
+    );
+    // The journal keeps the self-contained reason, which is what a later reader has.
+    let journalled: Vec<String> = state
+        .journal_entries(result.apply_id)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| e.error)
+        .collect();
+    assert!(
+        journalled.iter().any(|e| e.contains(reason)),
+        "the journal records why: {journalled:?}"
+    );
 }
 
 #[test]
@@ -3895,7 +4310,8 @@ fn apply_env_write_with_aliases_produces_correct_file() {
     };
 
     let printer = test_printer();
-    Reconciler::apply_env_action(&action, &printer).unwrap();
+    Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+        .unwrap();
 
     let written = std::fs::read_to_string(&env_path).unwrap();
     assert!(written.contains("export EDITOR=\"nvim\""));
@@ -4044,8 +4460,8 @@ fn plan_scripts_with_apply_context_uses_pre_post_apply() {
         .iter()
         .find(|p| p.name == PhaseName::PreScripts)
         .unwrap();
-    assert_eq!(pre_phase.actions.len(), 1);
-    match &pre_phase.actions[0] {
+    assert_eq!(pre_phase.action_count(), 1);
+    match pre_phase.actions().next().expect("phase holds an action") {
         Action::Script(ScriptAction::Run { entry, phase, .. }) => {
             assert_eq!(entry.run_str(), "scripts/pre.sh");
             assert_eq!(*phase, ScriptPhase::PreApply);
@@ -4058,8 +4474,8 @@ fn plan_scripts_with_apply_context_uses_pre_post_apply() {
         .iter()
         .find(|p| p.name == PhaseName::PostScripts)
         .unwrap();
-    assert_eq!(post_phase.actions.len(), 1);
-    match &post_phase.actions[0] {
+    assert_eq!(post_phase.action_count(), 1);
+    match post_phase.actions().next().expect("phase holds an action") {
         Action::Script(ScriptAction::Run { entry, phase, .. }) => {
             assert_eq!(entry.run_str(), "scripts/post.sh");
             assert_eq!(*phase, ScriptPhase::PostApply);
@@ -4103,8 +4519,8 @@ fn plan_scripts_carries_full_entry() {
         .iter()
         .find(|p| p.name == PhaseName::PreScripts)
         .unwrap();
-    assert_eq!(pre_phase.actions.len(), 1);
-    match &pre_phase.actions[0] {
+    assert_eq!(pre_phase.action_count(), 1);
+    match pre_phase.actions().next().expect("phase holds an action") {
         Action::Script(ScriptAction::Run { entry, .. }) => match entry {
             ScriptEntry::Full {
                 run,
@@ -4177,6 +4593,7 @@ fn execute_script_inline_command() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .unwrap();
     assert!(desc.contains("echo hello"));
@@ -4198,6 +4615,7 @@ fn execute_script_failure_returns_error() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     );
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
@@ -4232,6 +4650,7 @@ fn execute_script_with_timeout_override() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .unwrap();
     assert_eq!(output, Some("fast".to_string()));
@@ -4253,6 +4672,7 @@ fn execute_script_injects_env_vars() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .unwrap();
     assert_eq!(output, Some("test_value".to_string()));
@@ -4279,6 +4699,7 @@ fn execute_script_runs_executable_file() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .unwrap();
     assert_eq!(output, Some("from_file".to_string()));
@@ -4305,6 +4726,7 @@ fn execute_script_rejects_non_executable_file() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     );
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
@@ -4341,6 +4763,7 @@ fn execute_script_idle_timeout_kills_idle_process() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     );
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
@@ -4371,7 +4794,7 @@ fn rollback_restores_file_content() {
     let jid1 = state
         .journal_begin(apply_id_1, 0, "files", "file", &resource_id, None)
         .unwrap();
-    state.journal_complete(jid1, None, None).unwrap();
+    state.journal_complete(jid1, 0, None, None).unwrap();
     std::fs::write(&target, "v1 content").unwrap();
 
     // Apply 2: modifies file to v2 content. Backup captures v1 content.
@@ -4386,7 +4809,7 @@ fn rollback_restores_file_content() {
     let jid2 = state
         .journal_begin(apply_id_2, 0, "files", "file", &update_resource_id, None)
         .unwrap();
-    state.journal_complete(jid2, None, None).unwrap();
+    state.journal_complete(jid2, 0, None, None).unwrap();
     std::fs::write(&target, "v2 content").unwrap();
 
     // Rollback to apply 1 — should restore v1 content
@@ -4433,7 +4856,7 @@ fn rollback_removes_files_created_by_later_apply() {
             None,
         )
         .unwrap();
-    state.journal_complete(ja, None, None).unwrap();
+    state.journal_complete(ja, 0, None, None).unwrap();
     std::fs::write(&f, "v1").unwrap();
     // Post-apply snapshot for A captures F at v1.
     let f_snap_a = crate::capture_file_resolved_state(&f).unwrap().unwrap();
@@ -4458,7 +4881,7 @@ fn rollback_removes_files_created_by_later_apply() {
             None,
         )
         .unwrap();
-    state.journal_complete(jb_f, None, None).unwrap();
+    state.journal_complete(jb_f, 0, None, None).unwrap();
     std::fs::write(&f, "v2").unwrap();
 
     state.store_absent_backup(apply_b, &g_path).unwrap();
@@ -4472,7 +4895,9 @@ fn rollback_removes_files_created_by_later_apply() {
             None,
         )
         .unwrap();
-    state.journal_complete(jb_g, None, None).unwrap();
+    // The completion counter is monotonic within a run, so two rows of one
+    // apply can never share an index.
+    state.journal_complete(jb_g, 1, None, None).unwrap();
     std::fs::write(&g, "g-content").unwrap();
 
     // Post-apply snapshots for B.
@@ -4551,7 +4976,7 @@ fn rollback_lists_non_file_actions() {
             None,
         )
         .unwrap();
-    state.journal_complete(journal_id, None, None).unwrap();
+    state.journal_complete(journal_id, 0, None, None).unwrap();
 
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
@@ -4582,6 +5007,54 @@ fn rollback_records_new_apply_entry() {
     assert!(last.id > apply_id);
 }
 
+#[test]
+fn rollback_dedups_same_apply_backups_by_highest_id_every_run() {
+    // A single apply can store more than one backup row for the same path —
+    // an absent marker before the CREATE, then the post-apply resolved
+    // snapshot once the write lands. The row with the HIGHEST id is the one
+    // rollback must keep: it is the state the apply actually settled on, not
+    // a step on the way there. `target_snapshot`'s dedup walks
+    // `get_apply_backups` (already `ORDER BY id`) in reverse so the first
+    // row seen per path is always that one; a `HashMap`-driven walk could
+    // keep either row depending on process-random iteration order, silently
+    // restoring the wrong content on some runs and not others.
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("f.txt");
+    let file_path = target.display().to_string();
+    let state = test_state();
+
+    let apply_id = state
+        .record_apply("test", "hash1", ApplyStatus::Success, None)
+        .unwrap();
+    // Row 1 (lowest id): pre-action absent marker.
+    state.store_absent_backup(apply_id, &file_path).unwrap();
+    // Row 2 (highest id): the post-apply resolved snapshot — the desired
+    // dedup winner.
+    std::fs::write(&target, "settled content").unwrap();
+    let settled = crate::capture_file_resolved_state(&target)
+        .unwrap()
+        .unwrap();
+    state
+        .store_file_backup(apply_id, &file_path, &settled)
+        .unwrap();
+
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+
+    for _ in 0..5 {
+        std::fs::write(&target, "later content").unwrap();
+        let result = reconciler.rollback_apply(apply_id, &printer).unwrap();
+        assert_eq!(result.files_restored, 1, "must restore exactly once");
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "settled content",
+            "must restore the highest-id row (the settled post-apply state), \
+             not the pre-action absent marker, every run"
+        );
+    }
+}
+
 // --- Partial apply tests ---
 
 /// A package manager that always fails on install.
@@ -4604,10 +5077,10 @@ impl PackageManager for FailingPackageManager {
     fn is_available(&self) -> bool {
         true
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
     }
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
@@ -4623,7 +5096,11 @@ impl PackageManager for FailingPackageManager {
     fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
@@ -4687,7 +5164,8 @@ fn apply_partial_when_some_actions_fail() {
         .unwrap();
 
     assert_eq!(result.status, ApplyStatus::Partial);
-    assert_eq!(result.succeeded(), 1);
+    // brew's install and both managers' index refreshes; only apt's install fails.
+    assert_eq!(result.succeeded(), 3);
     assert_eq!(result.failed(), 1);
 
     // Verify state store records partial status
@@ -4713,15 +5191,9 @@ fn apply_failed_when_all_actions_fail() {
         origin: "local".to_string(),
     }];
 
-    let plan = reconciler
-        .plan(
-            &resolved,
-            Vec::new(),
-            pkg_actions,
-            Vec::new(),
-            ReconcileContext::Apply,
-        )
-        .unwrap();
+    // Hand-built so the failing install is the run's ONLY action, and "every
+    // action failed" stays expressible.
+    let plan = plan_of_package_actions(pkg_actions);
 
     let printer = test_printer();
     let result = reconciler
@@ -4746,6 +5218,121 @@ fn apply_failed_when_all_actions_fail() {
 
     let last = state.last_apply().unwrap().unwrap();
     assert_eq!(last.status, ApplyStatus::Failed);
+}
+
+/// A package manager whose `install` panics mid-call, standing in for a lane
+/// worker that unwinds instead of returning — the shape a real bug (an
+/// indexing slip, a `.unwrap()` a provider was never supposed to reach) takes
+/// in production.
+struct PanickingPackageManager {
+    name: String,
+}
+
+impl PackageManager for PanickingPackageManager {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
+    }
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
+        Ok(HashSet::new())
+    }
+    fn install(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
+        panic!("simulated lane worker panic");
+    }
+    fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _package: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn apply_survives_a_panicking_lane_worker_instead_of_hanging() {
+    // F12 regression: a panic anywhere in a lane worker used to leave
+    // `Finished` unsent, `running` never decrementing, and the coordinator
+    // blocked in `inbox.recv()` forever. `apply` must still return (failed,
+    // not hanging), so the whole call runs on a detached thread and the test
+    // bounds it with `recv_timeout`: a regression here fails the assertion
+    // instead of hanging the suite.
+    //
+    // This panic is caught by `run_one_action`'s own (pre-existing) inner
+    // `catch_unwind` before it ever reaches the outer worker-closure guard
+    // added in the same fix (the one around `lane.finish()`/`notes.take()`/
+    // `tx.send`). That outer arm has no black-box trigger: every
+    // `Printer::for_test*` constructor pins `live_region: false`, so
+    // `LaneHandle::finish()` reduces to `Mutex::into_inner`/`lock` calls that
+    // already recover from poisoning and cannot panic under test. What this
+    // test proves instead — and what a hang here would still catch — is the
+    // end-to-end contract: a worker panic anywhere in the dispatch loop
+    // fails the run rather than wedging the coordinator, exercising the
+    // coordinator's `tx`-drop and `inbox.recv()` disconnect path along with
+    // it.
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(PanickingPackageManager {
+            name: "panicky".to_string(),
+        }));
+
+    let pkg_actions = vec![PackageAction::Install {
+        manager: "panicky".to_string(),
+        packages: vec!["whatever".to_string()],
+        origin: "local".to_string(),
+    }];
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let state = test_state();
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+        // Hand-built so the panicking install is the run's ONLY action, and
+        // "every action failed" stays expressible.
+        let plan = plan_of_package_actions(pkg_actions);
+        let printer = test_printer();
+        let result = reconciler.apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        );
+        let last_status = state.last_apply().unwrap().map(|a| a.status);
+        let _ = tx.send(result.map(|r| (r.status.clone(), r.succeeded(), r.failed(), last_status)));
+    });
+
+    let (status, succeeded, failed, last_status) = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect(
+            "apply did not complete within 10s — a lane worker panic outside \
+             run_one_action's catch_unwind hung the coordinator in inbox.recv()",
+        )
+        .unwrap();
+
+    assert_eq!(status, ApplyStatus::Failed);
+    assert_eq!(succeeded, 0);
+    assert_eq!(failed, 1);
+    assert_eq!(last_status, Some(ApplyStatus::Failed));
 }
 
 // --- continueOnError script tests ---
@@ -4809,9 +5396,10 @@ fn apply_continue_on_error_post_script_continues() {
         )
         .unwrap();
 
-    // Package install succeeded, post-script failed but continued
+    // Package install and its manager's index refresh succeeded, post-script
+    // failed but continued
     assert_eq!(result.status, ApplyStatus::Partial);
-    assert_eq!(result.succeeded(), 1); // package install
+    assert_eq!(result.succeeded(), 2); // index refresh + package install
     assert_eq!(result.failed(), 1); // failed post-script
 
     // Verify the failed action is the script
@@ -5299,7 +5887,7 @@ fn apply_guard_skipped_module_script_does_not_fire_on_change() {
             on_change_marker.display()
         ))],
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -5307,10 +5895,10 @@ fn apply_guard_skipped_module_script_does_not_fire_on_change() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::PostScripts,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "testmod".to_string(),
                 kind: ModuleActionKind::RunScript {
                     script: guarded,
@@ -5318,7 +5906,7 @@ fn apply_guard_skipped_module_script_does_not_fire_on_change() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -5329,7 +5917,7 @@ fn apply_guard_skipped_module_script_does_not_fire_on_change() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::PostScripts)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -5399,7 +5987,7 @@ fn apply_guard_permitted_module_script_fires_on_change() {
             on_change_marker.display()
         ))],
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -5407,10 +5995,10 @@ fn apply_guard_permitted_module_script_fires_on_change() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::PostScripts,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "testmod".to_string(),
                 kind: ModuleActionKind::RunScript {
                     script: guarded,
@@ -5418,7 +6006,7 @@ fn apply_guard_permitted_module_script_fires_on_change() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -5429,7 +6017,7 @@ fn apply_guard_permitted_module_script_fires_on_change() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::PostScripts)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -5487,7 +6075,7 @@ fn apply_skipped_module_does_not_fire_on_change() {
             on_change_marker.display()
         ))],
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -5495,17 +6083,17 @@ fn apply_skipped_module_does_not_fire_on_change() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "skippedmod".to_string(),
                 kind: ModuleActionKind::Skip {
                     reason: "platform not matched".to_string(),
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -5516,7 +6104,7 @@ fn apply_skipped_module_does_not_fire_on_change() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -5576,11 +6164,53 @@ fn parse_resource_from_description_cases() {
         // the string) and dropped the configurator name; now the whole
         // remainder after the first colon is preserved.
         ("system:brew:skip", "system", "brew:skip"),
+        // Env rows: the write/inject verb is dropped, leaving the target path
+        // as the id; the live-session refresh leaves the literal "refresh".
+        // `JournalEntry::is_file_work` keys its env disjunct on exactly these
+        // shapes (path = file-backed, "refresh" = nothing to restore), so a
+        // change here must move that predicate with it.
+        ("env:write:/home/u/.cfgd.env", "env", "/home/u/.cfgd.env"),
+        ("env:inject:~/.bashrc", "env", "~/.bashrc"),
+        (super::format::LIVE_SESSION_RESOURCE_ID, "env", "refresh"),
     ];
     for (input, expected_type, expected_id) in cases {
         let (rtype, rid) = super::parse_resource_from_description(input);
         assert_eq!(rtype, *expected_type, "wrong type for {input:?}");
         assert_eq!(rid, *expected_id, "wrong id for {input:?}");
+    }
+}
+
+#[test]
+fn a_manager_nodes_description_parses_back_to_the_id_it_is_recorded_under() {
+    use super::types::{ManagerAction, action_resource_info};
+
+    let actions = [
+        Action::Manager(ManagerAction::RefreshIndex {
+            manager: "brew".to_string(),
+        }),
+        Action::Manager(ManagerAction::Provision {
+            manager: "npm".to_string(),
+            via: "brew".to_string(),
+            batched: vec![],
+            depends_on: vec![ManagerAction::refresh_node("brew")],
+        }),
+        Action::Manager(ManagerAction::Prerequisite {
+            tool: "curl".to_string(),
+            installer: "apt".to_string(),
+            required_by: vec!["nix".to_string()],
+            depends_on: vec![ManagerAction::refresh_node("apt")],
+        }),
+    ];
+    for action in &actions {
+        let desc = super::format_action_description(action);
+        // The journal writes one of these and the restore path reads the
+        // other; a manager node whose description parsed back to a different
+        // id would be recorded under a row nothing can find again.
+        assert_eq!(
+            action_resource_info(action),
+            super::parse_resource_from_description(&desc),
+            "the recorded id and the id parsed back out of {desc:?} must agree"
+        );
     }
 }
 
@@ -5619,9 +6249,9 @@ fn parse_resource_from_description_keeps_module_name_in_the_id() {
 #[test]
 fn parse_resource_from_description_keeps_manager_name_in_the_package_id() {
     // `package:{manager}:{verb}` has the same shape hazard as `module`. Only
-    // bootstrap/skip reach this parser — install/uninstall are split
-    // per-package by `parse_package_description` first — and both of those
-    // collapsed onto the bare verb, so every manager shared one row.
+    // skip reaches this parser — install/uninstall are split per-package by
+    // `parse_package_description` first — and it collapsed onto the bare
+    // verb, so every manager shared one row.
     let (ty_brew, id_brew) = super::parse_resource_from_description("package:brew:skip");
     let (ty_apt, id_apt) = super::parse_resource_from_description("package:apt:skip");
     assert_eq!(ty_brew, "package");
@@ -5920,19 +6550,19 @@ fn plan_to_hash_string_empty_plan_is_empty() {
 fn plan_to_hash_string_multiple_phases() {
     let plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::Packages,
-                scope: None,
-                actions: vec![Action::Package(PackageAction::Install {
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["jq".into()],
                     origin: "local".into(),
                 })],
-            },
-            Phase {
-                name: PhaseName::Files,
-                scope: None,
-                actions: vec![Action::File(FileAction::Create {
+            ),
+            Phase::from_actions(
+                PhaseName::Files,
+                &Owner::profile("test"),
+                vec![Action::File(FileAction::Create {
                     source: PathBuf::from("/src"),
                     target: PathBuf::from("/dst"),
                     origin: "local".into(),
@@ -5940,7 +6570,7 @@ fn plan_to_hash_string_multiple_phases() {
                     source_hash: None,
                     patch: None,
                 })],
-            },
+            ),
         ],
         warnings: vec![],
     };
@@ -5953,10 +6583,10 @@ fn plan_to_hash_string_multiple_phases() {
 fn plan_total_actions_sums_across_phases() {
     let plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::Packages,
-                scope: None,
-                actions: vec![
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![
                     Action::Package(PackageAction::Install {
                         manager: "brew".into(),
                         packages: vec!["a".into()],
@@ -5968,16 +6598,16 @@ fn plan_total_actions_sums_across_phases() {
                         origin: "local".into(),
                     }),
                 ],
-            },
-            Phase {
-                name: PhaseName::Files,
-                scope: None,
-                actions: vec![Action::File(FileAction::Skip {
+            ),
+            Phase::from_actions(
+                PhaseName::Files,
+                &Owner::profile("test"),
+                vec![Action::File(FileAction::Skip {
                     target: PathBuf::from("/x"),
                     reason: "n/a".into(),
                     origin: "local".into(),
                 })],
-            },
+            ),
         ],
         warnings: vec![],
     };
@@ -6178,7 +6808,7 @@ fn plan_modules_reconcile_context_uses_pre_post_reconcile() {
         post_reconcile_scripts: vec![ScriptEntry::Simple("post-reconcile.sh".into())],
         on_change_scripts: vec![],
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -6190,7 +6820,7 @@ fn plan_modules_reconcile_context_uses_pre_post_reconcile() {
     assert_eq!(actions.len(), 2); // pre-reconcile + post-reconcile
 
     // First action should be pre-reconcile
-    match &actions[0] {
+    match &actions[0].1 {
         Action::Module(ma) => match &ma.kind {
             ModuleActionKind::RunScript { script, phase } => {
                 assert_eq!(script.run_str(), "pre-reconcile.sh");
@@ -6202,7 +6832,7 @@ fn plan_modules_reconcile_context_uses_pre_post_reconcile() {
     }
 
     // Second action should be post-reconcile
-    match &actions[1] {
+    match &actions[1].1 {
         Action::Module(ma) => match &ma.kind {
             ModuleActionKind::RunScript { script, phase } => {
                 assert_eq!(script.run_str(), "post-reconcile.sh");
@@ -6216,10 +6846,10 @@ fn plan_modules_reconcile_context_uses_pre_post_reconcile() {
 
 #[test]
 fn format_plan_items_all_action_types() {
-    let phase = Phase {
-        name: PhaseName::System,
-        scope: None,
-        actions: vec![
+    let phase = Phase::from_actions(
+        PhaseName::System,
+        &Owner::profile("test"),
+        vec![
             Action::System(SystemAction::SetValue {
                 configurator: "sysctl".into(),
                 key: "net.ipv4.ip_forward".into(),
@@ -6234,8 +6864,8 @@ fn format_plan_items_all_action_types() {
                 unknown: false,
             }),
         ],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 2);
     assert!(items[0].contains("set sysctl.net.ipv4.ip_forward"));
     assert!(items[0].contains("0 \u{2192} 1"));
@@ -6244,10 +6874,10 @@ fn format_plan_items_all_action_types() {
 
 #[test]
 fn format_plan_items_secret_actions() {
-    let phase = Phase {
-        name: PhaseName::Secrets,
-        scope: None,
-        actions: vec![
+    let phase = Phase::from_actions(
+        PhaseName::Secrets,
+        &Owner::profile("test"),
+        vec![
             Action::Secret(SecretAction::Decrypt {
                 source: PathBuf::from("secret.enc"),
                 target: PathBuf::from("/out/secret"),
@@ -6272,8 +6902,8 @@ fn format_plan_items_secret_actions() {
                 origin: "local".into(),
             }),
         ],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 4);
     assert!(items[0].contains("decrypt"));
     assert!(items[0].contains("<- corp"));
@@ -6285,10 +6915,10 @@ fn format_plan_items_secret_actions() {
 
 #[test]
 fn format_plan_items_env_actions() {
-    let phase = Phase {
-        name: PhaseName::Env,
-        scope: None,
-        actions: vec![
+    let phase = Phase::from_actions(
+        PhaseName::Prerequisites,
+        &Owner::profile("test"),
+        vec![
             Action::Env(EnvAction::WriteEnvFile {
                 path: PathBuf::from("/home/user/.cfgd.env"),
                 content: "content".into(),
@@ -6298,8 +6928,8 @@ fn format_plan_items_env_actions() {
                 line: ". ~/.cfgd.env".into(),
             }),
         ],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 2);
     assert!(items[0].contains("write"));
     assert!(items[0].contains(".cfgd.env"));
@@ -6309,39 +6939,38 @@ fn format_plan_items_env_actions() {
 
 #[test]
 fn format_plan_items_script_action_with_provenance() {
-    let phase = Phase {
-        name: PhaseName::PreScripts,
-        scope: None,
-        actions: vec![Action::Script(ScriptAction::Run {
+    let phase = Phase::from_actions(
+        PhaseName::PreScripts,
+        &Owner::profile("test"),
+        vec![Action::Script(ScriptAction::Run {
             entry: ScriptEntry::Simple("setup.sh".into()),
             phase: ScriptPhase::PreApply,
             origin: "corp-source".into(),
         })],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(items[0].contains("run preApply script: setup.sh"));
     assert!(items[0].contains("<- corp-source"));
 }
 
-// `format_plan_items`'s Script arm feeds BOTH the human
-// `display_plan_table` preview AND `build_plan_output`'s
-// `PlanActionOutput.description` JSON payload — it must return the raw,
-// uncondensed `run_str()` body; condensing is the exclusive job of the
-// human render sites (`display_plan_table`, `cli/apply.rs`'s dry-run preview).
+// `format_plan_items`'s Script arm feeds BOTH the human `ApplyRun::preview`
+// tree AND `build_plan_output`'s `PlanActionOutput.description` JSON payload —
+// it must return the raw, uncondensed `run_str()` body; condensing is the
+// exclusive job of the human render site.
 #[test]
 fn format_plan_items_script_action_preserves_raw_multiline_body() {
     let raw_body = "echo line-one\necho line-two\necho line-three";
-    let phase = Phase {
-        name: PhaseName::PreScripts,
-        scope: None,
-        actions: vec![Action::Script(ScriptAction::Run {
+    let phase = Phase::from_actions(
+        PhaseName::PreScripts,
+        &Owner::profile("test"),
+        vec![Action::Script(ScriptAction::Run {
             entry: ScriptEntry::Simple(raw_body.into()),
             phase: ScriptPhase::PreApply,
             origin: "test".into(),
         })],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(
         items[0].contains(raw_body),
@@ -6369,7 +6998,7 @@ fn format_module_action_item_deploy_truncates_many_files() {
         origin: None,
     };
     let item = super::format_module_action_item(&action);
-    assert!(item.contains("[big]"));
+    assert!(item.starts_with("deploy "));
     assert!(item.contains("5 files"));
 }
 
@@ -6417,7 +7046,7 @@ fn detect_file_conflicts_skip_and_delete_actions_ignored() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -6498,7 +7127,7 @@ fn merge_module_env_aliases_merges_correctly() {
         post_reconcile_scripts: vec![],
         on_change_scripts: vec![],
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -6634,10 +7263,10 @@ impl PackageManager for BootstrappablePackageManager {
     fn is_available(&self) -> bool {
         *self.bootstrapped.lock().unwrap()
     }
-    fn can_bootstrap(&self) -> bool {
-        true
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        Some(crate::providers::BootstrapPlan::new("stub"))
     }
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         *self.bootstrapped.lock().unwrap() = true;
         Ok(())
     }
@@ -6658,7 +7287,11 @@ impl PackageManager for BootstrappablePackageManager {
         }
         Ok(())
     }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
@@ -6667,50 +7300,34 @@ impl PackageManager for BootstrappablePackageManager {
 }
 
 #[test]
-fn apply_package_bootstrap_makes_manager_available() {
+fn apply_manager_provision_makes_manager_available() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry
         .package_managers
         .push(Box::new(BootstrappablePackageManager::new("snap")));
 
-    let reconciler = Reconciler::new(&registry, &state);
-    let resolved = make_empty_resolved();
-
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Bootstrap {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("test"),
+            vec![Action::Manager(ManagerAction::Provision {
                 manager: "snap".to_string(),
-                method: "auto".to_string(),
-                origin: "local".to_string(),
+                via: "stub".to_string(),
+                batched: vec![],
+                depends_on: vec![],
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
-    let printer = test_printer();
-    let result = reconciler
-        .apply(
-            &plan,
-            &resolved,
-            Path::new("."),
-            &printer,
-            Some(&PhaseName::Packages),
-            &[],
-            ReconcileContext::Apply,
-            false,
-            None,
-            &crate::AbortFlag::new(),
-        )
-        .unwrap();
+    let (result, _) = apply_manager_plan(&registry, &state, &plan);
 
     assert_eq!(result.status, ApplyStatus::Success);
     assert_eq!(result.action_results.len(), 1);
     assert!(result.action_results[0].success);
     assert!(
-        result.action_results[0].description.contains("bootstrap"),
+        result.action_results[0].description.contains("provision"),
         "desc: {}",
         result.action_results[0].description
     );
@@ -6720,45 +7337,87 @@ fn apply_package_bootstrap_makes_manager_available() {
 }
 
 #[test]
-fn apply_package_bootstrap_unknown_manager_errors() {
+fn apply_manager_provision_unknown_manager_errors() {
     let state = test_state();
     let registry = ProviderRegistry::new(); // no managers
-    let reconciler = Reconciler::new(&registry, &state);
-    let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Bootstrap {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("test"),
+            vec![Action::Manager(ManagerAction::Provision {
                 manager: "nonexistent".to_string(),
-                method: "auto".to_string(),
-                origin: "local".to_string(),
+                via: "stub".to_string(),
+                batched: vec![],
+                depends_on: vec![],
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
-    let printer = test_printer();
-    let result = reconciler
-        .apply(
-            &plan,
-            &resolved,
-            Path::new("."),
-            &printer,
-            Some(&PhaseName::Packages),
-            &[],
-            ReconcileContext::Apply,
-            false,
-            None,
-            &crate::AbortFlag::new(),
-        )
-        .unwrap();
+    let (result, _) = apply_manager_plan(&registry, &state, &plan);
 
     // Should fail — unknown manager
     assert_eq!(result.status, ApplyStatus::Failed);
     assert_eq!(result.failed(), 1);
     assert!(result.action_results[0].error.is_some());
+}
+
+#[test]
+fn an_unprovisioned_managers_install_names_a_recovery_that_holds_off_a_filter() {
+    // The reach path the error's own comment once denied: no phase filter, a
+    // provision node that ran and failed, and the install behind it still
+    // dispatched — so a recovery naming `--phase` would name a flag the user
+    // never typed.
+    let harness = crate::test_helpers::ReconcilerTestHarness::builder()
+        .with_package_manager(
+            crate::test_helpers::MockPackageManager::new("stub")
+                .unavailable()
+                .bootstrappable(),
+        )
+        .build();
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::cfgd("managers"),
+                vec![Action::Manager(ManagerAction::Provision {
+                    manager: "stub".to_string(),
+                    via: "mock".to_string(),
+                    batched: vec![],
+                    depends_on: vec![],
+                })],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![Action::Package(PackageAction::Install {
+                    manager: "stub".to_string(),
+                    packages: vec!["foo".to_string()],
+                    origin: "local".to_string(),
+                })],
+            ),
+        ],
+        warnings: vec![],
+    };
+
+    let (result, _) = apply_manager_plan(&harness.registry, &harness.state, &plan);
+
+    assert_eq!(result.status, ApplyStatus::Failed);
+    let install = result
+        .action_results
+        .iter()
+        .find(|r| r.description.contains("package:stub"))
+        .expect("the install is reported");
+    let err = install.error.clone().unwrap_or_default();
+    assert!(
+        err.contains("stub is not provisioned") && err.contains("--phase prerequisites.managers"),
+        "the install must name where provisioning happens: {err}"
+    );
+    assert!(
+        !err.contains("drop --phase"),
+        "this run carried no --phase to drop: {err}"
+    );
 }
 
 #[test]
@@ -6769,15 +7428,15 @@ fn apply_package_install_unknown_manager_errors() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Install {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("test"),
+            vec![Action::Package(PackageAction::Install {
                 manager: "nonexistent".to_string(),
                 packages: vec!["foo".to_string()],
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -6788,7 +7447,7 @@ fn apply_package_install_unknown_manager_errors() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Packages),
+            Some(&PhaseFilter::Phase(PhaseName::Packages)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -6799,6 +7458,14 @@ fn apply_package_install_unknown_manager_errors() {
 
     assert_eq!(result.status, ApplyStatus::Failed);
     assert_eq!(result.failed(), 1);
+    let error = result.action_results[0]
+        .error
+        .as_deref()
+        .unwrap_or_default();
+    assert!(
+        error.contains("nonexistent") && !error.contains("prerequisites"),
+        "a manager never registered at all gets no phase-run guidance — nothing can provision a name that doesn't exist: {error}"
+    );
 }
 
 #[test]
@@ -6809,15 +7476,15 @@ fn apply_package_uninstall_unknown_manager_errors() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Uninstall {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("test"),
+            vec![Action::Package(PackageAction::Uninstall {
                 manager: "nonexistent".to_string(),
                 packages: vec!["foo".to_string()],
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -6828,7 +7495,7 @@ fn apply_package_uninstall_unknown_manager_errors() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Packages),
+            Some(&PhaseFilter::Phase(PhaseName::Packages)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -6839,6 +7506,14 @@ fn apply_package_uninstall_unknown_manager_errors() {
 
     assert_eq!(result.status, ApplyStatus::Failed);
     assert_eq!(result.failed(), 1);
+    let error = result.action_results[0]
+        .error
+        .as_deref()
+        .unwrap_or_default();
+    assert!(
+        error.contains("nonexistent") && !error.contains("prerequisites"),
+        "a manager never registered at all gets no phase-run guidance — nothing can provision a name that doesn't exist: {error}"
+    );
 }
 
 // --- apply_secret_action: Decrypt, Resolve, ResolveEnv ---
@@ -6882,16 +7557,16 @@ fn apply_secret_decrypt_writes_decrypted_file() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Secrets,
-            scope: None,
-            actions: vec![Action::Secret(SecretAction::Decrypt {
+        phases: vec![Phase::from_actions(
+            PhaseName::Secrets,
+            &Owner::profile("test"),
+            vec![Action::Secret(SecretAction::Decrypt {
                 source: source.clone(),
                 target: target.clone(),
                 backend: "test-sops".to_string(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -6902,7 +7577,7 @@ fn apply_secret_decrypt_writes_decrypted_file() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Secrets),
+            Some(&PhaseFilter::Phase(PhaseName::Secrets)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -6972,16 +7647,16 @@ fn apply_secret_decrypt_no_backend_errors() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Secrets,
-            scope: None,
-            actions: vec![Action::Secret(SecretAction::Decrypt {
+        phases: vec![Phase::from_actions(
+            PhaseName::Secrets,
+            &Owner::profile("test"),
+            vec![Action::Secret(SecretAction::Decrypt {
                 source: source.clone(),
                 target: target.clone(),
                 backend: "sops".to_string(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -6992,7 +7667,7 @@ fn apply_secret_decrypt_no_backend_errors() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Secrets),
+            Some(&PhaseFilter::Phase(PhaseName::Secrets)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7020,16 +7695,16 @@ fn apply_secret_resolve_writes_provider_value_to_file() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Secrets,
-            scope: None,
-            actions: vec![Action::Secret(SecretAction::Resolve {
+        phases: vec![Phase::from_actions(
+            PhaseName::Secrets,
+            &Owner::profile("test"),
+            vec![Action::Secret(SecretAction::Resolve {
                 provider: "vault".to_string(),
                 reference: "secret/data/app#key".to_string(),
                 target: target.clone(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7040,7 +7715,7 @@ fn apply_secret_resolve_writes_provider_value_to_file() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Secrets),
+            Some(&PhaseFilter::Phase(PhaseName::Secrets)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7073,16 +7748,16 @@ fn apply_secret_resolve_unknown_provider_errors() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Secrets,
-            scope: None,
-            actions: vec![Action::Secret(SecretAction::Resolve {
+        phases: vec![Phase::from_actions(
+            PhaseName::Secrets,
+            &Owner::profile("test"),
+            vec![Action::Secret(SecretAction::Resolve {
                 provider: "vault".to_string(),
                 reference: "secret/data/app#key".to_string(),
                 target: target.clone(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7093,7 +7768,7 @@ fn apply_secret_resolve_unknown_provider_errors() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Secrets),
+            Some(&PhaseFilter::Phase(PhaseName::Secrets)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7119,7 +7794,7 @@ fn apply_secret_resolve_env_collects_env_vars() {
         MockSecretProvider::new("vault").with_resolve_result("env-secret-value"),
     ));
     let reconciler = Reconciler::new(&registry, &state);
-    let printer = test_printer();
+
     let tmp = tempfile::tempdir().unwrap();
 
     let mut collector: Vec<(String, String)> = Vec::new();
@@ -7131,7 +7806,7 @@ fn apply_secret_resolve_env_collects_env_vars() {
     };
 
     let desc = reconciler
-        .apply_secret_action(&action, tmp.path(), &printer, &mut collector)
+        .apply_secret_action(&action, tmp.path(), &mut collector)
         .expect("resolve-env should succeed");
 
     assert!(desc.contains("resolve-env"), "desc: {}", desc);
@@ -7161,7 +7836,7 @@ fn apply_secret_action_resource_ids_fold_the_target_path_to_posix() {
         MockSecretProvider::new("vault").with_resolve_result("resolved"),
     ));
     let reconciler = Reconciler::new(&registry, &state);
-    let printer = test_printer();
+
     let tmp = tempfile::tempdir().unwrap();
 
     let source = tmp.path().join("token.enc");
@@ -7195,7 +7870,7 @@ fn apply_secret_action_resource_ids_fold_the_target_path_to_posix() {
         ),
     ] {
         let desc = reconciler
-            .apply_secret_action(&action, tmp.path(), &printer, &mut collector)
+            .apply_secret_action(&action, tmp.path(), &mut collector)
             .expect("secret action should succeed");
         assert!(
             !desc.contains('\\'),
@@ -7214,16 +7889,16 @@ fn apply_secret_resolve_env_unknown_provider_errors() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Secrets,
-            scope: None,
-            actions: vec![Action::Secret(SecretAction::ResolveEnv {
+        phases: vec![Phase::from_actions(
+            PhaseName::Secrets,
+            &Owner::profile("test"),
+            vec![Action::Secret(SecretAction::ResolveEnv {
                 provider: "vault".to_string(),
                 reference: "secret/data/gh#token".to_string(),
                 envs: vec!["GH_TOKEN".to_string()],
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7234,7 +7909,7 @@ fn apply_secret_resolve_env_unknown_provider_errors() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Secrets),
+            Some(&PhaseFilter::Phase(PhaseName::Secrets)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7255,15 +7930,15 @@ fn apply_secret_skip_succeeds() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Secrets,
-            scope: None,
-            actions: vec![Action::Secret(SecretAction::Skip {
+        phases: vec![Phase::from_actions(
+            PhaseName::Secrets,
+            &Owner::profile("test"),
+            vec![Action::Secret(SecretAction::Skip {
                 source: "vault://test".to_string(),
                 reason: "not available".to_string(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7274,7 +7949,7 @@ fn apply_secret_skip_succeeds() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Secrets),
+            Some(&PhaseFilter::Phase(PhaseName::Secrets)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7305,14 +7980,14 @@ fn apply_file_delete_action_removes_file() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Files,
-            scope: None,
-            actions: vec![Action::File(FileAction::Delete {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::File(FileAction::Delete {
                 target: target.clone(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7323,7 +7998,7 @@ fn apply_file_delete_action_removes_file() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Files),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7354,15 +8029,15 @@ fn apply_file_set_permissions_action() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Files,
-            scope: None,
-            actions: vec![Action::File(FileAction::SetPermissions {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::File(FileAction::SetPermissions {
                 target: target.clone(),
                 mode: 0o755,
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7373,7 +8048,7 @@ fn apply_file_set_permissions_action() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Files),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7404,15 +8079,15 @@ fn apply_file_skip_action_succeeds() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Files,
-            scope: None,
-            actions: vec![Action::File(FileAction::Skip {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::File(FileAction::Skip {
                 target: PathBuf::from("/nonexistent"),
                 reason: "unchanged".to_string(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7423,7 +8098,7 @@ fn apply_file_skip_action_succeeds() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Files),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7453,10 +8128,10 @@ fn apply_file_update_action_overwrites_target() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Files,
-            scope: None,
-            actions: vec![Action::File(FileAction::Update {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::File(FileAction::Update {
                 source: source.clone(),
                 target: target.clone(),
                 diff: "diff output".to_string(),
@@ -7465,7 +8140,7 @@ fn apply_file_update_action_overwrites_target() {
                 source_hash: None,
                 patch: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7476,7 +8151,7 @@ fn apply_file_update_action_overwrites_target() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Files),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7520,17 +8195,17 @@ fn apply_system_set_value_calls_configurator() {
     );
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::System,
-            scope: None,
-            actions: vec![Action::System(SystemAction::SetValue {
+        phases: vec![Phase::from_actions(
+            PhaseName::System,
+            &Owner::profile("test"),
+            vec![Action::System(SystemAction::SetValue {
                 configurator: "sysctl".to_string(),
                 key: "net.ipv4.ip_forward".to_string(),
                 desired: "1".to_string(),
                 current: "0".to_string(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7541,7 +8216,7 @@ fn apply_system_set_value_calls_configurator() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::System),
+            Some(&PhaseFilter::Phase(PhaseName::System)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7591,17 +8266,17 @@ fn apply_system_set_value_applies_module_contributed_system() {
     );
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::System,
-            scope: None,
-            actions: vec![Action::System(SystemAction::SetValue {
+        phases: vec![Phase::from_actions(
+            PhaseName::System,
+            &Owner::profile("test"),
+            vec![Action::System(SystemAction::SetValue {
                 configurator: "sysctl".to_string(),
                 key: "net.ipv4.ip_forward".to_string(),
                 desired: "1".to_string(),
                 current: "0".to_string(),
                 origin: "local".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7612,7 +8287,7 @@ fn apply_system_set_value_applies_module_contributed_system() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::System),
+            Some(&PhaseFilter::Phase(PhaseName::System)),
             std::slice::from_ref(&module),
             ReconcileContext::Apply,
             false,
@@ -7640,16 +8315,16 @@ fn apply_system_skip_logs_warning() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::System,
-            scope: None,
-            actions: vec![Action::System(SystemAction::Skip {
+        phases: vec![Phase::from_actions(
+            PhaseName::System,
+            &Owner::profile("test"),
+            vec![Action::System(SystemAction::Skip {
                 configurator: "customThing".to_string(),
                 reason: "no configurator registered".to_string(),
                 origin: "local".to_string(),
                 unknown: true,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7660,7 +8335,7 @@ fn apply_system_skip_logs_warning() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::System),
+            Some(&PhaseFilter::Phase(PhaseName::System)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -7678,39 +8353,68 @@ fn apply_system_skip_logs_warning() {
     );
 }
 
-#[test]
-fn apply_system_action_unknown_key_renders_warn() {
-    // An unknown system key (no configurator registered) is a likely typo and
-    // must surface as a real warning (⚠), not a neutral skip line.
+/// Drive a one-action `System` plan through the full apply and return the
+/// stripped human transcript, so a skip's role is asserted where it renders.
+fn system_skip_transcript(action: SystemAction) -> String {
     let state = test_state();
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
-    let profile = MergedProfile::default();
-
-    let action = SystemAction::Skip {
-        configurator: "gti".to_string(),
-        reason: "no configurator registered for 'gti'".to_string(),
-        origin: "local".to_string(),
-        unknown: true,
+    let resolved = make_empty_resolved();
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::System,
+            &Owner::profile("test"),
+            vec![Action::System(action)],
+        )],
+        warnings: vec![],
     };
 
     let (printer, cap) = crate::output::Printer::for_test_doc();
     reconciler
-        .apply_system_action(&action, &profile, &[], &printer)
-        .unwrap();
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("a system skip applies cleanly");
+    crate::output::strip_ansi(&cap.human())
+}
 
-    let out = crate::output::strip_ansi(&cap.human());
+#[test]
+fn apply_system_action_unknown_key_renders_warn() {
+    // An unknown system key (no configurator registered) is a likely typo and
+    // must surface as a real warning (⚠) on its own action line in the tree,
+    // not a neutral skip.
+    let out = system_skip_transcript(SystemAction::Skip {
+        configurator: "gti".to_string(),
+        reason: "no configurator registered for 'gti'".to_string(),
+        origin: "local".to_string(),
+        unknown: true,
+    });
+
     assert!(
         out.contains('\u{26A0}'),
         "unknown key must warn (⚠), got: {out}"
     );
-    assert!(
-        out.contains("unknown system key 'gti'"),
-        "warning must name the typo'd key, got: {out}"
-    );
-    assert!(
-        !out.contains("gti: "),
-        "must not render as a neutral skip line ('<key>: <reason>'), got: {out}"
+    // Byte-identical, not a substring: the sentence R3 moved out of
+    // `apply_system_action` into `format_plan_items` includes the
+    // ` — no such configurator (ignored)` half, and a substring assertion
+    // would pass with that half missing.
+    let line = out
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with('\u{26A0}'))
+        .unwrap_or_else(|| panic!("no warn line in: {out}"));
+    assert_eq!(
+        line,
+        "\u{26A0} unknown system key 'gti' — no such configurator (ignored)"
     );
 }
 
@@ -7718,24 +8422,13 @@ fn apply_system_action_unknown_key_renders_warn() {
 fn apply_system_action_unavailable_renders_non_warn() {
     // A registered-but-unavailable configurator is expected; it must render
     // neutrally (Skipped, — glyph), never as a warning.
-    let state = test_state();
-    let registry = ProviderRegistry::new();
-    let reconciler = Reconciler::new(&registry, &state);
-    let profile = MergedProfile::default();
-
-    let action = SystemAction::Skip {
+    let out = system_skip_transcript(SystemAction::Skip {
         configurator: "systemdUnits".to_string(),
         reason: "'systemdUnits' is not available on this host".to_string(),
         origin: "local".to_string(),
         unknown: false,
-    };
+    });
 
-    let (printer, cap) = crate::output::Printer::for_test_doc();
-    reconciler
-        .apply_system_action(&action, &profile, &[], &printer)
-        .unwrap();
-
-    let out = crate::output::strip_ansi(&cap.human());
     assert!(
         !out.contains('\u{26A0}'),
         "an expected platform skip must not warn (⚠), got: {out}"
@@ -7907,7 +8600,7 @@ fn apply_module_install_packages_calls_manager() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -7915,10 +8608,10 @@ fn apply_module_install_packages_calls_manager() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "nvim".to_string(),
                 kind: ModuleActionKind::InstallPackages {
                     resolved: vec![ResolvedPackage {
@@ -7934,7 +8627,7 @@ fn apply_module_install_packages_calls_manager() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -7945,7 +8638,7 @@ fn apply_module_install_packages_calls_manager() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Packages)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -8006,7 +8699,7 @@ fn apply_module_deploy_files_creates_target() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -8014,10 +8707,10 @@ fn apply_module_deploy_files_creates_target() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "mymod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![ResolvedFile {
@@ -8032,7 +8725,7 @@ fn apply_module_deploy_files_creates_target() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -8043,7 +8736,7 @@ fn apply_module_deploy_files_creates_target() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -8059,6 +8752,263 @@ fn apply_module_deploy_files_creates_target() {
         std::fs::read_to_string(&target_file).unwrap(),
         "module content"
     );
+}
+
+#[test]
+fn apply_module_deploy_files_leaves_a_target_that_already_holds_the_source_bytes() {
+    // Re-deploying content the target already holds must not back it up,
+    // rewrite it, or report the run as having changed anything.
+    let dir = tempfile::tempdir().unwrap();
+    let source_file = dir.path().join("module-source.txt");
+    let target_file = dir.path().join("module-target.txt");
+    std::fs::write(&source_file, "module content").unwrap();
+    std::fs::write(&target_file, "module content").unwrap();
+    // A hard link shares the target's inode; an atomic rewrite rename-replaces
+    // the target and breaks that identity, so this witnesses the write itself
+    // rather than a timestamp the filesystem may round.
+    let witness = dir.path().join("witness");
+    std::fs::hard_link(&target_file, &witness).unwrap();
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let file = ResolvedFile {
+        source: source_file.clone(),
+        target: target_file.clone(),
+        is_git_source: false,
+        strategy: Some(crate::config::FileStrategy::Copy),
+        encryption: None,
+        permissions: None,
+        patch: None,
+    };
+    let modules = vec![ResolvedModule {
+        name: "mymod".to_string(),
+        packages: vec![],
+        files: vec![file.clone()],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: BTreeMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+        origin: None,
+        platform_skip_reason: None,
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
+                module_name: "mymod".to_string(),
+                kind: ModuleActionKind::DeployFiles { files: vec![file] },
+                origin: None,
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(
+        !result.action_results[0].changed,
+        "a deployment that wrote nothing must not claim a change"
+    );
+    assert!(
+        crate::is_same_inode(&target_file, &witness),
+        "a converged target must not be rewritten"
+    );
+    // One row, not two: the post-apply rollback snapshot every managed target
+    // gets, without the pre-write backup an actual overwrite would have added.
+    let key = crate::to_posix_fs_key(&target_file);
+    let rows = state
+        .get_apply_backups(result.apply_id)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.file_path == key)
+        .count();
+    assert_eq!(
+        rows, 1,
+        "a file that was never overwritten needs no pre-write backup row"
+    );
+    // The manifest row still records the file as this module's, so removal
+    // still cleans it up.
+    assert!(
+        state
+            .module_deployed_files("mymod")
+            .unwrap()
+            .iter()
+            .any(|f| f.file_path == crate::to_posix_fs_key(&target_file)),
+        "the module must still own the file it deployed earlier"
+    );
+}
+
+/// Deploy one module file under a global `fileStrategy: copy`, the way a config
+/// that sets `spec.fileStrategy` and a module that declares nothing per-file do.
+fn deploy_one_module_file_under_global_copy(
+    dir: &std::path::Path,
+    state: &crate::state::StateStore,
+    file: ResolvedFile,
+) -> crate::reconciler::ApplyResult {
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+    let reconciler = Reconciler::new(&registry, state);
+    let resolved = make_empty_resolved();
+
+    let modules = vec![ResolvedModule {
+        name: "mymod".to_string(),
+        packages: vec![],
+        files: vec![file.clone()],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: BTreeMap::new(),
+        depends: vec![],
+        dir: dir.to_path_buf(),
+        origin: None,
+        platform_skip_reason: None,
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
+                module_name: "mymod".to_string(),
+                kind: ModuleActionKind::DeployFiles { files: vec![file] },
+                origin: None,
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir,
+            &printer,
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap()
+}
+
+#[test]
+fn apply_module_deploy_files_short_circuits_a_file_that_declares_no_strategy() {
+    // The GLOBAL `fileStrategy` is what decides the write, so it is what has to
+    // decide convergence. Judged on the per-file field, a module file that
+    // declares no strategy answers "not a whole-content write" and is copied
+    // aside and rewritten on every single apply.
+    let dir = tempfile::tempdir().unwrap();
+    let source_file = dir.path().join("module-source.txt");
+    let target_file = dir.path().join("module-target.txt");
+    std::fs::write(&source_file, "module content").unwrap();
+    std::fs::write(&target_file, "module content").unwrap();
+    let witness = dir.path().join("witness");
+    std::fs::hard_link(&target_file, &witness).unwrap();
+
+    let state = test_state();
+    let result = deploy_one_module_file_under_global_copy(
+        dir.path(),
+        &state,
+        ResolvedFile {
+            source: source_file,
+            target: target_file.clone(),
+            is_git_source: false,
+            strategy: None,
+            encryption: None,
+            permissions: None,
+            patch: None,
+        },
+    );
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(
+        !result.action_results[0].changed,
+        "a deployment that wrote nothing must not claim a change"
+    );
+    assert!(
+        crate::is_same_inode(&target_file, &witness),
+        "a file inheriting the global copy strategy must not be rewritten"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_module_deploy_files_short_circuits_a_target_carrying_its_declared_setuid_bit() {
+    // A declared mode may name a setuid/setgid/sticky bit (`parse_octal_mode`
+    // accepts up to 0o7777). Compared against an actual masked to 0o777, such a
+    // mode can never match, and the short-circuit is dead for the file's life.
+    let dir = tempfile::tempdir().unwrap();
+    let source_file = dir.path().join("module-source.sh");
+    let target_file = dir.path().join("module-target.sh");
+    std::fs::write(&source_file, "#!/bin/sh\n").unwrap();
+    std::fs::write(&target_file, "#!/bin/sh\n").unwrap();
+    crate::set_file_permissions(&target_file, 0o4755).unwrap();
+    let witness = dir.path().join("witness");
+    std::fs::hard_link(&target_file, &witness).unwrap();
+
+    let state = test_state();
+    let result = deploy_one_module_file_under_global_copy(
+        dir.path(),
+        &state,
+        ResolvedFile {
+            source: source_file,
+            target: target_file.clone(),
+            is_git_source: false,
+            strategy: Some(crate::config::FileStrategy::Copy),
+            encryption: None,
+            permissions: Some("4755".to_string()),
+            patch: None,
+        },
+    );
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(
+        !result.action_results[0].changed,
+        "a target already carrying its declared special bits is converged"
+    );
+    assert!(
+        crate::is_same_inode(&target_file, &witness),
+        "a converged target must not be rewritten over a special-bit comparison"
+    );
+    let mode = crate::file_permissions_mode_full(&std::fs::metadata(&target_file).unwrap());
+    assert_eq!(mode, Some(0o4755), "the declared special bit must survive");
 }
 
 #[test]
@@ -8105,7 +9055,7 @@ fn apply_module_deploy_files_patch_merges_into_the_target() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -8113,18 +9063,15 @@ fn apply_module_deploy_files_patch_merges_into_the_target() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "mymod".to_string(),
                 kind: ModuleActionKind::DeployFiles { files: vec![file] },
                 origin: None,
             })],
-            scope: Some(ModuleScope {
-                module: "mymod".to_string(),
-                section: ModuleSection::Files,
-            }),
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -8135,7 +9082,7 @@ fn apply_module_deploy_files_patch_merges_into_the_target() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -8192,7 +9139,7 @@ fn deploy_patch_module_file(module_dir: &std::path::Path, target: &std::path::Pa
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: module_dir.to_path_buf(),
         origin: None,
@@ -8200,18 +9147,15 @@ fn deploy_patch_module_file(module_dir: &std::path::Path, target: &std::path::Pa
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "mymod".to_string(),
                 kind: ModuleActionKind::DeployFiles { files: vec![file] },
                 origin: None,
             })],
-            scope: Some(ModuleScope {
-                module: "mymod".to_string(),
-                section: ModuleSection::Files,
-            }),
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -8222,7 +9166,7 @@ fn deploy_patch_module_file(module_dir: &std::path::Path, target: &std::path::Pa
             &resolved,
             module_dir,
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -8317,7 +9261,7 @@ fn apply_module_deploy_files_symlink_strategy() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -8325,10 +9269,10 @@ fn apply_module_deploy_files_symlink_strategy() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "linkmod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![ResolvedFile {
@@ -8343,7 +9287,7 @@ fn apply_module_deploy_files_symlink_strategy() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -8354,7 +9298,7 @@ fn apply_module_deploy_files_symlink_strategy() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -8379,17 +9323,17 @@ fn apply_module_skip_reports_skipped() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "broken".to_string(),
                 kind: ModuleActionKind::Skip {
                     reason: "dependency not met".to_string(),
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -8400,7 +9344,7 @@ fn apply_module_skip_reports_skipped() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &[],
             ReconcileContext::Apply,
             false,
@@ -8423,7 +9367,7 @@ fn apply_module_skip_reports_skipped() {
 }
 
 #[test]
-fn apply_module_install_packages_bootstraps_when_needed() {
+fn apply_module_install_packages_provisions_manager_when_needed() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry
@@ -8454,7 +9398,7 @@ fn apply_module_install_packages_bootstraps_when_needed() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -8462,26 +9406,33 @@ fn apply_module_install_packages_bootstraps_when_needed() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
-                module_name: "tools".to_string(),
-                kind: ModuleActionKind::InstallPackages {
-                    resolved: vec![ResolvedPackage {
-                        canonical_name: "jq".to_string(),
-                        resolved_name: "jq".to_string(),
-                        manager: "brew".to_string(),
-                        version: None,
-                        script: None,
-                        creates: None,
-                        only_if: None,
-                        unless: None,
-                    }],
-                },
-                origin: None,
-            })],
-        }],
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::profile("test"),
+                vec![provision_node("brew", "stub", &[])],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![Action::Module(ModuleAction {
+                    module_name: "tools".to_string(),
+                    kind: ModuleActionKind::InstallPackages {
+                        resolved: vec![ResolvedPackage {
+                            canonical_name: "jq".to_string(),
+                            resolved_name: "jq".to_string(),
+                            manager: "brew".to_string(),
+                            version: None,
+                            script: None,
+                            creates: None,
+                            only_if: None,
+                            unless: None,
+                        }],
+                    },
+                    origin: None,
+                })],
+            ),
+        ],
         warnings: vec![],
     };
 
@@ -8492,7 +9443,7 @@ fn apply_module_install_packages_bootstraps_when_needed() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Modules),
+            None,
             &modules,
             ReconcileContext::Apply,
             false,
@@ -8502,9 +9453,9 @@ fn apply_module_install_packages_bootstraps_when_needed() {
         .unwrap();
 
     assert_eq!(result.status, ApplyStatus::Success);
-    assert!(result.action_results[0].success);
+    assert!(result.action_results.iter().all(|r| r.success));
 
-    // Manager should have been bootstrapped and package installed
+    // Manager should have been provisioned and package installed
     assert!(registry.package_managers[0].is_available());
     let cx = test_package_context(&printer, &state);
     assert!(
@@ -8538,7 +9489,7 @@ fn rollback_restores_symlink_target() {
     let jid1 = state
         .journal_begin(apply_id_1, 0, "files", "file", &resource_id, None)
         .unwrap();
-    state.journal_complete(jid1, None, None).unwrap();
+    state.journal_complete(jid1, 0, None, None).unwrap();
 
     // Apply 2: replaces symlink with a regular file. Backup captures symlink state.
     let file_state = crate::capture_file_state(&target).unwrap().unwrap();
@@ -8553,7 +9504,7 @@ fn rollback_restores_symlink_target() {
     let jid2 = state
         .journal_begin(apply_id_2, 0, "files", "file", &update_resource_id, None)
         .unwrap();
-    state.journal_complete(jid2, None, None).unwrap();
+    state.journal_complete(jid2, 0, None, None).unwrap();
 
     // Replace the symlink with a regular file (simulating apply 2)
     std::fs::remove_file(&target).unwrap();
@@ -8608,7 +9559,7 @@ fn plan_modules_encryption_always_with_symlink_skips() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -8618,7 +9569,7 @@ fn plan_modules_encryption_always_with_symlink_skips() {
     let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
     // Should produce a Skip action because encryption=Always + symlink is incompatible
     assert_eq!(actions.len(), 1);
-    match &actions[0] {
+    match &actions[0].1 {
         Action::Module(ma) => match &ma.kind {
             ModuleActionKind::Skip { reason } => {
                 assert!(
@@ -8661,7 +9612,7 @@ fn plan_modules_platform_skipped_emits_single_skip_and_no_other_actions() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -8670,7 +9621,7 @@ fn plan_modules_platform_skipped_emits_single_skip_and_no_other_actions() {
 
     let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
     assert_eq!(actions.len(), 1, "expected exactly one action: {actions:?}");
-    match &actions[0] {
+    match &actions[0].1 {
         Action::Module(ma) => {
             assert_eq!(ma.module_name, "macstuff");
             match &ma.kind {
@@ -8723,7 +9674,7 @@ fn plan_modules_encryption_always_with_copy_proceeds() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -8733,7 +9684,7 @@ fn plan_modules_encryption_always_with_copy_proceeds() {
     let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
     // Should produce DeployFiles (encryption=Always + copy is OK, and file has sops marker)
     assert_eq!(actions.len(), 1);
-    match &actions[0] {
+    match &actions[0].1 {
         Action::Module(ma) => match &ma.kind {
             ModuleActionKind::DeployFiles { files } => {
                 assert_eq!(files.len(), 1);
@@ -8781,7 +9732,7 @@ fn plan_modules_encryption_check_err_skips_with_error_reason() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -8790,7 +9741,7 @@ fn plan_modules_encryption_check_err_skips_with_error_reason() {
 
     let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
     assert_eq!(actions.len(), 1);
-    match &actions[0] {
+    match &actions[0].1 {
         Action::Module(ma) => match &ma.kind {
             ModuleActionKind::Skip { reason } => {
                 assert!(reason.contains("encryption check failed"), "got: {reason}");
@@ -8850,7 +9801,7 @@ fn plan_modules_encryption_check_err_breaks_after_first_file() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -8862,7 +9813,7 @@ fn plan_modules_encryption_check_err_breaks_after_first_file() {
     // single Skip is the only module action emitted.
     let kinds: Vec<&ModuleActionKind> = actions
         .iter()
-        .filter_map(|a| match a {
+        .filter_map(|(_, a)| match a {
             Action::Module(ma) => Some(&ma.kind),
             _ => None,
         })
@@ -8916,7 +9867,7 @@ fn plan_modules_encryption_file_not_encrypted_skips() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -8926,7 +9877,7 @@ fn plan_modules_encryption_file_not_encrypted_skips() {
     let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
     // Should skip because file requires encryption but isn't encrypted
     assert_eq!(actions.len(), 1);
-    match &actions[0] {
+    match &actions[0].1 {
         Action::Module(ma) => match &ma.kind {
             ModuleActionKind::Skip { reason } => {
                 assert!(
@@ -9018,7 +9969,7 @@ fn apply_module_run_script_executes_in_module_dir() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -9026,10 +9977,10 @@ fn apply_module_run_script_executes_in_module_dir() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::PostScripts,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "testmod".to_string(),
                 kind: ModuleActionKind::RunScript {
                     script: ScriptEntry::Simple(format!("touch {}", marker.display())),
@@ -9037,7 +9988,7 @@ fn apply_module_run_script_executes_in_module_dir() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -9048,7 +9999,7 @@ fn apply_module_run_script_executes_in_module_dir() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::PostScripts)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -9355,7 +10306,7 @@ fn verify_module_files_produce_no_reconciler_rows() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -9564,14 +10515,15 @@ fn format_action_description_module_skip_dependency() {
 }
 
 #[test]
-fn format_action_description_package_bootstrap() {
-    let action = Action::Package(PackageAction::Bootstrap {
+fn format_action_description_manager_provision() {
+    let action = Action::Manager(ManagerAction::Provision {
         manager: "brew".to_string(),
-        method: "curl".to_string(),
-        origin: "local".to_string(),
+        via: "homebrew installer".to_string(),
+        batched: vec![],
+        depends_on: vec![],
     });
     let desc = format_action_description(&action);
-    assert_eq!(desc, "package:brew:bootstrap");
+    assert_eq!(desc, "manager:provision:brew");
 }
 
 #[test]
@@ -9602,7 +10554,7 @@ fn format_action_description_file_set_permissions() {
 fn phase_name_all_variants_roundtrip() {
     let variants = [
         ("pre-scripts", PhaseName::PreScripts, "Pre-Scripts"),
-        ("env", PhaseName::Env, "Environment"),
+        ("prerequisites", PhaseName::Prerequisites, "Prerequisites"),
         ("modules", PhaseName::Modules, "Modules"),
         ("packages", PhaseName::Packages, "Packages"),
         ("system", PhaseName::System, "System"),
@@ -9731,7 +10683,7 @@ fn merge_module_env_aliases_combines_profile_and_modules() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -9770,7 +10722,7 @@ fn merge_module_env_aliases_module_overrides_profile() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -9803,10 +10755,10 @@ fn apply_module_deploy_files_hardlink_strategy() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "hardmod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![ResolvedFile {
@@ -9821,7 +10773,7 @@ fn apply_module_deploy_files_hardlink_strategy() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -9845,7 +10797,7 @@ fn apply_module_deploy_files_hardlink_strategy() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -9859,7 +10811,7 @@ fn apply_module_deploy_files_hardlink_strategy() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -9904,10 +10856,10 @@ fn apply_module_deploy_files_copy_strategy() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "copymod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![ResolvedFile {
@@ -9922,7 +10874,7 @@ fn apply_module_deploy_files_copy_strategy() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -9946,7 +10898,7 @@ fn apply_module_deploy_files_copy_strategy() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -9960,7 +10912,7 @@ fn apply_module_deploy_files_copy_strategy() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -10015,17 +10967,17 @@ fn apply_module_deploy_files_applies_permissions() {
     };
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "permmod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![file.clone()],
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -10041,7 +10993,7 @@ fn apply_module_deploy_files_applies_permissions() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -10055,7 +11007,7 @@ fn apply_module_deploy_files_applies_permissions() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -10093,10 +11045,10 @@ fn apply_module_deploy_files_directory_copy_strategy() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "dirmod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![ResolvedFile {
@@ -10111,7 +11063,7 @@ fn apply_module_deploy_files_directory_copy_strategy() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -10135,7 +11087,7 @@ fn apply_module_deploy_files_directory_copy_strategy() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -10149,7 +11101,7 @@ fn apply_module_deploy_files_directory_copy_strategy() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -10189,10 +11141,10 @@ fn apply_module_deploy_files_overwrites_existing_file() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "overmod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![ResolvedFile {
@@ -10207,7 +11159,7 @@ fn apply_module_deploy_files_overwrites_existing_file() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -10223,7 +11175,7 @@ fn apply_module_deploy_files_overwrites_existing_file() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -10237,7 +11189,7 @@ fn apply_module_deploy_files_overwrites_existing_file() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -10273,10 +11225,10 @@ fn apply_module_on_change_script_runs_when_module_has_changes() {
     let resolved = make_empty_resolved();
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "changemod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![ResolvedFile {
@@ -10291,7 +11243,7 @@ fn apply_module_on_change_script_runs_when_module_has_changes() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -10310,7 +11262,7 @@ fn apply_module_on_change_script_runs_when_module_has_changes() {
             marker.display()
         ))],
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -10372,7 +11324,7 @@ fn apply_module_on_change_script_does_not_run_when_no_changes() {
             marker.display()
         ))],
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -10506,7 +11458,7 @@ fn rollback_removes_file_created_after_target_apply() {
             None,
         )
         .unwrap();
-    state.journal_complete(j_id, None, None).unwrap();
+    state.journal_complete(j_id, 0, None, None).unwrap();
     state
         .update_apply_status(apply_id_2, ApplyStatus::Success, None)
         .unwrap();
@@ -10552,7 +11504,7 @@ fn rollback_keeps_file_that_existed_at_target_apply() {
             None,
         )
         .unwrap();
-    state.journal_complete(j_id, None, None).unwrap();
+    state.journal_complete(j_id, 0, None, None).unwrap();
     // Store backup so phase 1 handles it
     let file_state = crate::FileState {
         content: b"original".to_vec(),
@@ -10587,7 +11539,7 @@ fn rollback_keeps_file_that_existed_at_target_apply() {
             None,
         )
         .unwrap();
-    state.journal_complete(j_id, None, None).unwrap();
+    state.journal_complete(j_id, 0, None, None).unwrap();
     state
         .update_apply_status(apply_id_2, ApplyStatus::Success, None)
         .unwrap();
@@ -10632,7 +11584,7 @@ fn rollback_collects_non_file_actions_from_subsequent_applies() {
     let j1 = state
         .journal_begin(apply_id_2, 0, "Packages", "install", "brew:ripgrep", None)
         .unwrap();
-    state.journal_complete(j1, None, None).unwrap();
+    state.journal_complete(j1, 0, None, None).unwrap();
     let j2 = state
         .journal_begin(
             apply_id_2,
@@ -10643,7 +11595,9 @@ fn rollback_collects_non_file_actions_from_subsequent_applies() {
             None,
         )
         .unwrap();
-    state.journal_complete(j2, None, None).unwrap();
+    // The completion counter is monotonic within a run, so two rows of one
+    // apply can never share an index.
+    state.journal_complete(j2, 1, None, None).unwrap();
     state
         .update_apply_status(apply_id_2, ApplyStatus::Success, None)
         .unwrap();
@@ -10702,7 +11656,11 @@ fn verify_system_configurator_reports_drift() {
                 },
             ])
         }
-        fn apply(&self, _: &serde_yaml::Value, _: &Printer) -> crate::errors::Result<()> {
+        fn apply(
+            &self,
+            _: &serde_yaml::Value,
+            _: &crate::providers::SystemContext<'_>,
+        ) -> crate::errors::Result<()> {
             Ok(())
         }
     }
@@ -10713,7 +11671,7 @@ fn verify_system_configurator_reports_drift() {
         .system_configurators
         .push(Box::new(DriftingConfigurator));
 
-    let mut system = HashMap::new();
+    let mut system = BTreeMap::new();
     system.insert(
         "sysctl".to_string(),
         serde_yaml::to_value(serde_yaml::Mapping::new()).unwrap(),
@@ -10788,7 +11746,11 @@ fn verify_system_configurator_reports_healthy_when_no_drift() {
         ) -> crate::errors::Result<Vec<crate::providers::SystemDrift>> {
             Ok(vec![])
         }
-        fn apply(&self, _: &serde_yaml::Value, _: &Printer) -> crate::errors::Result<()> {
+        fn apply(
+            &self,
+            _: &serde_yaml::Value,
+            _: &crate::providers::SystemContext<'_>,
+        ) -> crate::errors::Result<()> {
             Ok(())
         }
     }
@@ -10799,7 +11761,7 @@ fn verify_system_configurator_reports_healthy_when_no_drift() {
         .system_configurators
         .push(Box::new(HealthyConfigurator));
 
-    let mut system = HashMap::new();
+    let mut system = BTreeMap::new();
     system.insert(
         "sysctl".to_string(),
         serde_yaml::to_value(serde_yaml::Mapping::new()).unwrap(),
@@ -10838,9 +11800,9 @@ fn verify_system_configurator_reports_healthy_when_no_drift() {
     assert_eq!(sysctl_results[0].resource_id, "sysctl");
 }
 
-// `Reconciler::apply` streams per-action status via `status_simple` (warn/fail
-// lines with `[N/M]` prefixes). Callers that want a buffered summary (e.g.
-// `cmd_apply`'s `ApplyOutput`) emit a `Doc` on the same `Printer` right after.
+// `Reconciler::apply` streams one status line per action inside its phase/owner
+// tree. Callers that want a buffered summary (e.g. `cmd_apply`'s `ApplyOutput`)
+// emit a `Doc` on the same `Printer` right after.
 // The renderer's blank-line accounting must produce exactly one blank line
 // between the last streaming line and the buffered Doc's first visible line —
 // zero blanks would let the spinner's tail bleed into the summary; two would
@@ -10882,7 +11844,7 @@ mod bridge {
     #[cfg(unix)]
     fn run_minimal_bridge() -> String {
         let (printer, cap) = Printer::for_test_doc();
-        printer.status_simple(Role::Ok, "[1/1] Wrote /etc/hosts");
+        printer.status_simple(Role::Ok, "write /etc/hosts");
         let doc = Doc::new().status(Role::Ok, "Apply complete");
         printer.emit(doc);
         drop(printer);
@@ -11087,16 +12049,16 @@ mod bridge {
 
 #[test]
 fn format_plan_items_file_skip() {
-    let phase = Phase {
-        name: PhaseName::Files,
-        scope: None,
-        actions: vec![Action::File(FileAction::Skip {
+    let phase = Phase::from_actions(
+        PhaseName::Files,
+        &Owner::profile("test"),
+        vec![Action::File(FileAction::Skip {
             target: PathBuf::from("/home/user/.config/skipped"),
             reason: "unchanged".into(),
             origin: "corp".into(),
         })],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(items[0].contains("skip"), "got: {}", items[0]);
     assert!(items[0].contains("unchanged"), "got: {}", items[0]);
@@ -11105,16 +12067,16 @@ fn format_plan_items_file_skip() {
 
 #[test]
 fn format_plan_items_file_set_permissions() {
-    let phase = Phase {
-        name: PhaseName::Files,
-        scope: None,
-        actions: vec![Action::File(FileAction::SetPermissions {
+    let phase = Phase::from_actions(
+        PhaseName::Files,
+        &Owner::profile("test"),
+        vec![Action::File(FileAction::SetPermissions {
             target: PathBuf::from("/home/user/.ssh/id_rsa"),
             mode: 0o600,
             origin: "local".into(),
         })],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(items[0].contains("chmod"), "got: {}", items[0]);
     assert!(items[0].contains("0o600"), "got: {}", items[0]);
@@ -11122,35 +12084,35 @@ fn format_plan_items_file_set_permissions() {
 }
 
 #[test]
-fn format_plan_items_package_bootstrap() {
-    let phase = Phase {
-        name: PhaseName::Packages,
-        scope: None,
-        actions: vec![Action::Package(PackageAction::Bootstrap {
+fn format_plan_items_manager_provision() {
+    let phase = Phase::from_actions(
+        PhaseName::Prerequisites,
+        &Owner::profile("test"),
+        vec![Action::Manager(ManagerAction::Provision {
             manager: "brew".into(),
-            method: "curl | bash".into(),
-            origin: "corp".into(),
+            via: "curl | bash".into(),
+            batched: vec![],
+            depends_on: vec![],
         })],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
-    assert!(items[0].contains("bootstrap brew"), "got: {}", items[0]);
+    assert!(items[0].contains("provision brew"), "got: {}", items[0]);
     assert!(items[0].contains("curl | bash"), "got: {}", items[0]);
-    assert!(items[0].contains("<- corp"), "got: {}", items[0]);
 }
 
 #[test]
 fn format_plan_items_package_uninstall() {
-    let phase = Phase {
-        name: PhaseName::Packages,
-        scope: None,
-        actions: vec![Action::Package(PackageAction::Uninstall {
+    let phase = Phase::from_actions(
+        PhaseName::Packages,
+        &Owner::profile("test"),
+        vec![Action::Package(PackageAction::Uninstall {
             manager: "apt".into(),
             packages: vec!["vim".into(), "nano".into()],
             origin: "local".into(),
         })],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(items[0].contains("uninstall"), "got: {}", items[0]);
     assert!(items[0].contains("vim"), "got: {}", items[0]);
@@ -11159,10 +12121,10 @@ fn format_plan_items_package_uninstall() {
 
 #[test]
 fn format_module_action_item_run_script() {
-    let phase = Phase {
-        name: PhaseName::Modules,
-        scope: None,
-        actions: vec![Action::Module(ModuleAction {
+    let phase = Phase::from_actions(
+        PhaseName::PostScripts,
+        &Owner::profile("test"),
+        vec![Action::Module(ModuleAction {
             module_name: "nvim".into(),
             kind: ModuleActionKind::RunScript {
                 script: ScriptEntry::Simple("make install".into()),
@@ -11170,11 +12132,10 @@ fn format_module_action_item_run_script() {
             },
             origin: None,
         })],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
-    assert!(items[0].contains("[nvim]"), "got: {}", items[0]);
-    assert!(items[0].contains("postApply"), "got: {}", items[0]);
+    assert!(items[0].starts_with("postApply:"), "got: {}", items[0]);
     assert!(items[0].contains("make install"), "got: {}", items[0]);
 }
 
@@ -11182,10 +12143,10 @@ fn format_module_action_item_run_script() {
 fn format_module_action_item_source_delivered_shows_origin_suffix() {
     // A source-delivered module (origin = Some) gets the same ` <- <source>`
     // provenance suffix as source-delivered files/packages.
-    let phase = Phase {
-        name: PhaseName::Modules,
-        scope: None,
-        actions: vec![Action::Module(ModuleAction::with_origin(
+    let phase = Phase::from_actions(
+        PhaseName::Files,
+        &Owner::profile("test"),
+        vec![Action::Module(ModuleAction::with_origin(
             "nvim",
             ModuleActionKind::DeployFiles {
                 files: vec![ResolvedFile {
@@ -11200,10 +12161,10 @@ fn format_module_action_item_source_delivered_shows_origin_suffix() {
             },
             Some("acme".to_string()),
         ))],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
-    assert!(items[0].contains("[nvim]"), "got: {}", items[0]);
+    assert!(items[0].starts_with("deploy "), "got: {}", items[0]);
     assert!(items[0].ends_with(" <- acme"), "got: {}", items[0]);
 }
 
@@ -11211,10 +12172,10 @@ fn format_module_action_item_source_delivered_shows_origin_suffix() {
 fn format_module_action_item_local_has_no_origin_suffix() {
     // A consumer-local module (origin = None) renders with no provenance suffix,
     // exactly as before — regression guard for local modules.
-    let phase = Phase {
-        name: PhaseName::Modules,
-        scope: None,
-        actions: vec![Action::Module(ModuleAction::local(
+    let phase = Phase::from_actions(
+        PhaseName::Files,
+        &Owner::profile("test"),
+        vec![Action::Module(ModuleAction::local(
             "nvim",
             ModuleActionKind::DeployFiles {
                 files: vec![ResolvedFile {
@@ -11228,8 +12189,8 @@ fn format_module_action_item_local_has_no_origin_suffix() {
                 }],
             },
         ))],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(!items[0].contains(" <- "), "got: {}", items[0]);
 }
@@ -11247,16 +12208,16 @@ fn format_module_action_item_deploy_many_files_truncates() {
             patch: None,
         })
         .collect();
-    let phase = Phase {
-        name: PhaseName::Modules,
-        scope: None,
-        actions: vec![Action::Module(ModuleAction {
+    let phase = Phase::from_actions(
+        PhaseName::Files,
+        &Owner::profile("test"),
+        vec![Action::Module(ModuleAction {
             module_name: "big".into(),
             kind: ModuleActionKind::DeployFiles { files },
             origin: None,
         })],
-    };
-    let items = format_plan_items(&phase);
+    );
+    let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
     assert!(items[0].contains("5 files"), "got: {}", items[0]);
 }
@@ -11682,7 +12643,7 @@ fn apply_file_action_direct_update_replaces_existing() {
 // DeployFiles with no parent, RunScript with no module dir)
 // -----------------------------------------------------------------------
 
-/// A package manager that reports unavailable, can_bootstrap=true,
+/// A package manager that reports unavailable, carries a bootstrap plan,
 /// and emits path_dirs so the planner's PATH-entry branch fires.
 struct BootstrappingPackageManager {
     name: String,
@@ -11690,6 +12651,10 @@ struct BootstrappingPackageManager {
     bootstrap_called: std::sync::Mutex<bool>,
     install_calls: std::sync::Mutex<Vec<Vec<String>>>,
     path_dirs_after: Vec<String>,
+    bootstrap_creates: Vec<String>,
+    install_creates: Vec<String>,
+    path_dirs_per_method: bool,
+    install_fails: bool,
 }
 
 impl BootstrappingPackageManager {
@@ -11700,7 +12665,54 @@ impl BootstrappingPackageManager {
             bootstrap_called: std::sync::Mutex::new(false),
             install_calls: std::sync::Mutex::new(Vec::new()),
             path_dirs_after: path_dirs.iter().map(|s| s.to_string()).collect(),
+            bootstrap_creates: Vec::new(),
+            install_creates: Vec::new(),
+            path_dirs_per_method: false,
+            install_fails: false,
         }
+    }
+
+    /// The user-installed shape: available before this run does anything, so
+    /// the planner has no reason to provision it and nothing records its
+    /// directories at bootstrap time.
+    fn already_available(self) -> Self {
+        *self.available.lock().unwrap() = true;
+        self
+    }
+
+    /// Report `dirs` as directories this manager's `install()` created — npm's
+    /// `~/.npm-global` shape, where the prefix is cfgd's own doing rather than
+    /// the installer's.
+    fn creating_on_install(mut self, dirs: &[&str]) -> Self {
+        self.install_creates = dirs.iter().map(|s| s.to_string()).collect();
+        self
+    }
+
+    /// Fail every `install()`. The prefix a real manager makes is created
+    /// before the packages are fetched, so the failure arrives with the
+    /// directory already on disk.
+    fn failing_install(mut self) -> Self {
+        self.install_fails = true;
+        self
+    }
+
+    /// Answer `path_dirs` from the method the plan chose — pipx's shape, where
+    /// the directories depend on which mediator installed the manager. With no
+    /// planned method in the context it answers `PROBED_PATH_DIR` instead,
+    /// standing in for the live re-probe whose answer has already moved by the
+    /// time the record is written.
+    fn path_dirs_per_method(mut self) -> Self {
+        self.path_dirs_per_method = true;
+        self
+    }
+
+    /// Also declare `dirs` on the `BootstrapPlan` itself — the population
+    /// `fold_provision_path_dirs` reads at plan time, before any bootstrap
+    /// has run. Kept separate from `path_dirs_after` (what a real bootstrap
+    /// would later record) so a test can exercise the two independently.
+    fn declaring_path_dirs(mut self, dirs: &[&str]) -> Self {
+        self.bootstrap_creates = dirs.iter().map(|s| s.to_string()).collect();
+        self
     }
 }
 
@@ -11711,10 +12723,10 @@ impl PackageManager for BootstrappingPackageManager {
     fn is_available(&self) -> bool {
         *self.available.lock().unwrap()
     }
-    fn can_bootstrap(&self) -> bool {
-        true
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        Some(crate::providers::BootstrapPlan::new("stub").creating(self.bootstrap_creates.clone()))
     }
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         *self.bootstrap_called.lock().unwrap() = true;
         *self.available.lock().unwrap() = true;
         Ok(())
@@ -11724,20 +12736,301 @@ impl PackageManager for BootstrappingPackageManager {
     }
     fn install(&self, packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         self.install_calls.lock().unwrap().push(packages.to_vec());
+        if self.install_fails {
+            return Err(crate::errors::PackageError::InstallFailed {
+                manager: self.name.clone(),
+                message: format!("stub failure installing {}", packages.join(",")),
+            }
+            .into());
+        }
         Ok(())
     }
     fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
-    fn update(&self, _: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
         Ok(None)
     }
-    fn path_dirs(&self, _: &PackageContext<'_>) -> Vec<String> {
+    fn path_dirs(&self, cx: &PackageContext<'_>) -> Vec<String> {
+        if self.path_dirs_per_method {
+            return match cx.planned_method() {
+                Some(via) => vec![format!("/opt/{via}/bin")],
+                None => vec![PROBED_PATH_DIR.to_string()],
+            };
+        }
         self.path_dirs_after.clone()
     }
+    fn created_path_dirs(&self, _: &PackageContext<'_>) -> Vec<String> {
+        self.install_creates.clone()
+    }
+}
+
+/// What a live re-probe would answer at record time, once the bootstrap it is
+/// supposed to describe has already changed the machine.
+const PROBED_PATH_DIR: &str = "/opt/probed-after-the-fact/bin";
+
+/// A one-provision plan for `manager`, naming `via` as the method the planner
+/// chose — the string the action line the user read says.
+fn provision_only_plan(manager: &str, via: &str) -> Plan {
+    Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("work"),
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: manager.to_string(),
+                via: via.to_string(),
+                batched: vec![],
+                depends_on: vec![],
+            })],
+        )],
+        warnings: vec![],
+    }
+}
+
+/// A one-install plan for `manager`, with no `Provision` node anywhere in it.
+fn install_only_plan(manager: &str, package: &str) -> Plan {
+    Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("work"),
+            vec![Action::Package(PackageAction::Install {
+                manager: manager.to_string(),
+                packages: vec![package.to_string()],
+                origin: "local".to_string(),
+            })],
+        )],
+        warnings: vec![],
+    }
+}
+
+/// A directory cfgd created earns an env entry however the manager got onto
+/// the machine: this manager is available from the start, so nothing
+/// provisions it and no bootstrap records anything — yet the prefix its
+/// `install()` made still has to reach the recorded directories the generated
+/// env file is built from.
+#[test]
+#[serial_test::serial]
+fn an_install_records_the_directories_it_created_with_no_provision_in_the_run() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    // The apply registers the created directory into the process-global
+    // registry, which production never clears.
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        BootstrappingPackageManager::new("npm", &[])
+            .already_available()
+            .creating_on_install(&["/home/u/.npm-global/bin"]),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+
+    reconciler
+        .apply(
+            &install_only_plan("npm", "typescript"),
+            &make_empty_resolved(),
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.bootstrapped_managers().unwrap(),
+        vec![(
+            "npm".to_string(),
+            vec!["/home/u/.npm-global/bin".to_string()]
+        )],
+    );
+}
+
+/// The record a provision writes comes from the method the plan named, so a
+/// manager whose directories depend on its mediator records what the plan
+/// promised. The bootstrap itself changes what a live probe sees, so a record
+/// derived by re-probing would disagree with the plan-time answer and the env
+/// file would never converge.
+#[test]
+#[serial_test::serial]
+fn a_provision_records_the_directories_the_planned_method_names() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        BootstrappingPackageManager::new("pipx", &[]).path_dirs_per_method(),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+
+    reconciler
+        .apply(
+            &provision_only_plan("pipx", "pip"),
+            &make_empty_resolved(),
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.bootstrapped_managers().unwrap(),
+        vec![("pipx".to_string(), vec!["/opt/pip/bin".to_string()])],
+        "the recorded directories must come from the plan's method, not from a \
+         re-probe at record time"
+    );
+}
+
+/// The directory is on disk whether or not the install that followed it
+/// succeeded, so it is recorded either way. Leaving a created directory
+/// unrecorded is the state where a binary a later run installs lands somewhere
+/// no login shell reads; a record for a directory holding nothing yet costs a
+/// PATH entry and nothing else.
+#[test]
+#[serial_test::serial]
+fn a_failed_install_still_records_the_directory_it_had_already_created() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        BootstrappingPackageManager::new("npm", &[])
+            .already_available()
+            .creating_on_install(&["/home/u/.npm-global/bin"])
+            .failing_install(),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+
+    let result = reconciler
+        .apply(
+            &install_only_plan("npm", "typescript"),
+            &make_empty_resolved(),
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    assert_eq!(result.status, ApplyStatus::Failed);
+    assert_eq!(
+        state.bootstrapped_managers().unwrap(),
+        vec![(
+            "npm".to_string(),
+            vec!["/home/u/.npm-global/bin".to_string()]
+        )],
+    );
+}
+
+/// A manager whose install creates one prefix while its bootstrap declared
+/// several keeps them all: the created directory is ADDED to the record, so a
+/// narrower answer cannot cost a provision's other directories their place in
+/// the generated env file.
+#[test]
+#[serial_test::serial]
+fn an_install_that_created_one_directory_keeps_the_rest_of_the_recorded_row() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
+    let state = test_state();
+    record_brew_bootstrap(&state);
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        BootstrappingPackageManager::new("brew", &BREW_PATH_DIRS)
+            .already_available()
+            .creating_on_install(&[BREW_PATH_DIRS[0]]),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+
+    reconciler
+        .apply(
+            &install_only_plan("brew", "ripgrep"),
+            &make_empty_resolved(),
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.bootstrapped_managers().unwrap(),
+        vec![(
+            "brew".to_string(),
+            BREW_PATH_DIRS.iter().map(|d| d.to_string()).collect()
+        )],
+        "a created directory adds to the row and never replaces it"
+    );
+}
+
+/// A manager that created nothing queues no record at all, so an ordinary
+/// install costs no write and an earlier provision's directories are read back
+/// exactly as recorded.
+#[test]
+#[serial_test::serial]
+fn an_install_that_creates_nothing_leaves_an_earlier_provisions_record_intact() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    let state = test_state();
+    record_brew_bootstrap(&state);
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        BootstrappingPackageManager::new("brew", &BREW_PATH_DIRS).already_available(),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+
+    reconciler
+        .apply(
+            &install_only_plan("brew", "ripgrep"),
+            &make_empty_resolved(),
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        state.bootstrapped_managers().unwrap(),
+        vec![(
+            "brew".to_string(),
+            BREW_PATH_DIRS.iter().map(|d| d.to_string()).collect()
+        )],
+    );
 }
 
 /// Build the single-module fixture both out-of-band-write tests drive:
@@ -11766,7 +13059,7 @@ fn brew_install_fixture() -> (Vec<ResolvedModule>, ModuleAction) {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -11814,6 +13107,7 @@ fn run_brew_module_action(path_dirs: &[&str]) -> crate::state::StateStore {
             &modules,
             None,
             &crate::AbortFlag::new(),
+            &crate::providers::NoteSink::default(),
         )
         .expect("module action must succeed");
     assert!(
@@ -11830,16 +13124,33 @@ fn apply_module_install_packages_bootstraps_without_writing_env_out_of_band() {
 
     let tmp_home = tempfile::tempdir().unwrap();
     let _home = with_test_home_guard(tmp_home.path());
+    // The provision below registers `path_dirs` into the process-global
+    // resolution registry, which production never clears. Without this the
+    // real host directories named here stay resolvable for every later test
+    // in the binary.
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
 
-    let state = run_brew_module_action(&["/opt/homebrew/bin", "/opt/homebrew/sbin"]);
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(BootstrappingPackageManager::new(
+            "brew",
+            &["/opt/homebrew/bin", "/opt/homebrew/sbin"],
+        )));
 
-    // The generated env file has exactly one writer — the Env phase. An
-    // out-of-band append here would be erased by the next plan's wholesale
-    // rewrite, so the bootstrapped PATH would vanish on the second apply.
+    let plan = prerequisites_phase(vec![provision_node("brew", "stub", &[])]);
+    let (result, _text) = apply_manager_plan(&registry, &state, &plan);
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    // The generated env file has exactly one writer — the Env phase. A
+    // Prerequisites-phase provision that writes it out of band would be
+    // erased by the next plan's wholesale rewrite, so the bootstrapped PATH
+    // would vanish on the second apply.
     let env_path = tmp_home.path().join(".cfgd.env");
     assert!(
         !env_path.exists(),
-        "the Modules phase must not write {}",
+        "the Prerequisites phase must not write {}",
         env_path.posix()
     );
 
@@ -11854,7 +13165,7 @@ fn apply_module_install_packages_bootstraps_without_writing_env_out_of_band() {
                 "/opt/homebrew/sbin".to_string()
             ]
         )],
-        "a successful bootstrap must record the manager's PATH directories in order"
+        "a successful provision must record the manager's PATH directories in order"
     );
 }
 
@@ -11921,9 +13232,8 @@ fn record_brew_bootstrap(state: &crate::state::StateStore) {
 fn planned_env_file_content(plan: &Plan) -> Option<String> {
     plan.phases
         .iter()
-        .find(|p| p.name == PhaseName::Env)?
-        .actions
-        .iter()
+        .find(|p| p.name == PhaseName::Prerequisites)?
+        .actions()
         .find_map(|a| match a {
             Action::Env(EnvAction::WriteEnvFile { path, content })
                 if path.file_name() == Some(std::ffi::OsStr::new(".cfgd.env")) =>
@@ -12010,15 +13320,14 @@ fn plan_env_injects_source_line_for_bootstrap_only_profile() {
     let env_phase = plan
         .phases
         .iter()
-        .find(|p| p.name == PhaseName::Env)
+        .find(|p| p.name == PhaseName::Prerequisites)
         .expect("env phase");
     assert!(
         env_phase
-            .actions
-            .iter()
+            .actions()
             .any(|a| matches!(a, Action::Env(EnvAction::InjectSourceLine { .. }))),
         "a written env file no shell sources is inert: {:?}",
-        env_phase.actions
+        env_phase.actions().collect::<Vec<_>>()
     );
 }
 
@@ -12051,14 +13360,134 @@ fn plan_env_writes_nothing_for_a_manager_cfgd_never_bootstrapped() {
     // Rewriting a user's `.bashrc` because a profile happens to name a manager
     // the user installed themselves claims ownership of a machine change cfgd
     // never made. No env actions ⇒ the phase is dropped entirely.
-    assert!(
-        !plan.phases.iter().any(|p| p.name == PhaseName::Env),
+    let env_actions = plan
+        .phases
+        .iter()
+        .flat_map(|phase| phase.actions())
+        .filter(|action| matches!(action, Action::Env(_)))
+        .count();
+    assert_eq!(
+        env_actions, 0,
         "an unbootstrapped manager must earn no env file and no rc source line: {:?}",
         plan.phases
     );
     assert!(
         !tmp_home.path().join(".cfgd.env").exists(),
         "planning must not write the env file"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn plan_env_folds_in_a_to_be_provisioned_managers_declared_path_dirs() {
+    use crate::with_test_home_guard;
+
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = with_test_home_guard(tmp_home.path());
+
+    // No bootstrap has ever run — the state store holds no record — but the
+    // manager this run is about to provision names, on its own
+    // `BootstrapPlan`, where its binaries will land. `plan()` must fold that
+    // declaration in itself, without waiting for the bootstrap to actually
+    // run and record it.
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        BootstrappingPackageManager::new("brew", &[]).declaring_path_dirs(&[
+            "/home/linuxbrew/.linuxbrew/bin",
+            "/home/linuxbrew/.linuxbrew/sbin",
+        ]),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let modules = vec![make_resolved_module("tools")];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            modules,
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let content = planned_env_file_content(&plan)
+        .expect("a to-be-provisioned manager's declared dirs must plan a .cfgd.env write");
+    assert!(
+        content.contains(
+            "export PATH=\"/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH\""
+        ),
+        "the planner must fold the Provision node's declared dirs in at plan time: {content}"
+    );
+}
+
+#[test]
+fn env_targets_folded_path_dirs_render_into_the_fish_managed_file() {
+    // The same folded PATH-dir set `plan_env_folds_in_a_to_be_provisioned_managers_declared_path_dirs`
+    // pins through the bash `.cfgd.env` render — proven here through fish's
+    // dialect too, so a divergence in `generate_fish_env_content`'s PATH
+    // folding (a different join char, a missing per-entry quote) cannot hide
+    // behind bash-only coverage.
+    let home = Path::new("/h");
+    let mut probe = env_probe("/bin/bash");
+    probe.fish_present = true;
+    let dirs: Vec<String> = BREW_PATH_DIRS.iter().map(|d| d.to_string()).collect();
+    let t = env_targets(
+        &[],
+        &[],
+        &dirs,
+        EnvScope::Interactive,
+        home,
+        &probe,
+        EnvPlatform::Linux,
+    );
+    let fish_content = t
+        .iter()
+        .find_map(|target| match target {
+            EnvTarget::ManagedFile { path, content } if path.ends_with("cfgd-env.fish") => {
+                Some(content.clone())
+            }
+            _ => None,
+        })
+        .expect("fish_present must plan the fish managed file");
+    assert!(
+        fish_content.contains(
+            "set -gx PATH '/home/linuxbrew/.linuxbrew/bin' '/home/linuxbrew/.linuxbrew/sbin' $PATH"
+        ),
+        "fish must fold the same PATH dirs bash renders, single-quoted per entry: {fish_content}"
+    );
+}
+
+#[test]
+fn env_targets_folded_path_dirs_render_into_the_powershell_managed_file() {
+    // PowerShell counterpart of the fish assertion above: same folded PATH-dir
+    // set, `;`-joined and double-quoted for `$env:PATH` interpolation.
+    let home = Path::new("/h");
+    let dirs: Vec<String> = BREW_PATH_DIRS.iter().map(|d| d.to_string()).collect();
+    let t = env_targets(
+        &[],
+        &[],
+        &dirs,
+        EnvScope::Interactive,
+        home,
+        &env_probe(""),
+        EnvPlatform::Windows,
+    );
+    let ps_content = t
+        .iter()
+        .find_map(|target| match target {
+            EnvTarget::ManagedFile { path, content } if path.ends_with(".cfgd-env.ps1") => {
+                Some(content.clone())
+            }
+            _ => None,
+        })
+        .expect("Windows must plan the PowerShell managed file");
+    assert!(
+        ps_content.contains(
+            "$env:PATH = \"/home/linuxbrew/.linuxbrew/bin;/home/linuxbrew/.linuxbrew/sbin;$env:PATH\""
+        ),
+        "PowerShell must fold the same PATH dirs bash renders, `;`-joined: {ps_content}"
     );
 }
 
@@ -12139,6 +13568,175 @@ fn apply_converges_env_file_in_the_same_run_that_bootstraps() {
     );
 }
 
+// -----------------------------------------------------------------------
+// path_dirs_changed: order-insensitive convergence-net comparison
+// -----------------------------------------------------------------------
+
+#[test]
+fn path_dirs_changed_is_false_when_only_order_differs() {
+    let now = vec![
+        "/home/linuxbrew/.linuxbrew/bin".to_string(),
+        "/home/u/.npm-global/bin".to_string(),
+    ];
+    let at_plan = vec![
+        "/home/u/.npm-global/bin".to_string(),
+        "/home/linuxbrew/.linuxbrew/bin".to_string(),
+    ];
+    assert!(
+        !super::apply::path_dirs_changed(&now, &at_plan),
+        "the same set of directories in a different order must not read as drift"
+    );
+}
+
+#[test]
+fn path_dirs_changed_is_true_when_the_set_actually_differs() {
+    // Models npm: its resolved global prefix is only knowable once the
+    // install finishes, so the plan-time fold cannot have named it.
+    let now = vec![
+        "/home/u/.npm-global/bin".to_string(),
+        "/usr/local/lib/node_modules/.bin".to_string(),
+    ];
+    let at_plan = vec!["/home/u/.npm-global/bin".to_string()];
+    assert!(
+        super::apply::path_dirs_changed(&now, &at_plan),
+        "a genuinely new directory must still trigger regeneration"
+    );
+}
+
+#[test]
+fn path_dirs_changed_is_false_for_identical_input() {
+    let dirs = vec!["/opt/homebrew/bin".to_string()];
+    assert!(!super::apply::path_dirs_changed(&dirs, &dirs));
+}
+
+/// Two package managers: `brew`, unavailable so this run provisions it, and
+/// `npm`, already satisfied so it earns no action of its own — only its
+/// state-store record, seeded by the caller before planning.
+fn brew_and_npm_module_fixture() -> Vec<ResolvedModule> {
+    let brew_package = ResolvedPackage {
+        canonical_name: "ripgrep".to_string(),
+        resolved_name: "ripgrep".to_string(),
+        manager: "brew".to_string(),
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+    };
+    let npm_package = ResolvedPackage {
+        canonical_name: "prettier".to_string(),
+        resolved_name: "prettier".to_string(),
+        manager: "npm".to_string(),
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+    };
+    vec![ResolvedModule {
+        name: "tools".to_string(),
+        packages: vec![brew_package, npm_package],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: BTreeMap::new(),
+        depends: vec![],
+        dir: PathBuf::from("."),
+        origin: None,
+        platform_skip_reason: None,
+    }]
+}
+
+#[test]
+#[serial_test::serial]
+fn apply_does_not_reorder_the_env_file_when_a_new_manager_joins_an_already_recorded_one() {
+    use crate::with_test_home_guard;
+
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = with_test_home_guard(tmp_home.path());
+
+    // npm is already recorded from a prior run. `state::bootstrapped_managers`
+    // reads managers back `ORDER BY manager` — "brew" sorts ahead of "npm" —
+    // while the plan-time fold appends a newly-provisioned manager's dirs
+    // AFTER whatever was already recorded. The two orders disagree on
+    // purpose: this is what the convergence-net comparison must tolerate
+    // without rewriting the file.
+    let state = test_state();
+    state
+        .record_bootstrapped_path_dirs("npm", &["/home/u/.npm-global/bin".to_string()])
+        .expect("record npm bootstrap path dirs");
+    // Unlike `registry_with_bootstrappable_brew` (which leaves the plan-time
+    // declaration empty on purpose, to model npm's late-known prefix), this
+    // manager declares the SAME dirs it will later record — the ordinary,
+    // reconciled shape every real `PackageManager` now has (Task 10). Only
+    // that shape can prove "an ordinary provision does not spuriously
+    // regenerate": if the declared and recorded sets differed, this test
+    // could not tell a real divergence apart from an ordering artifact.
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        BootstrappingPackageManager::new("brew", &BREW_PATH_DIRS)
+            .declaring_path_dirs(&BREW_PATH_DIRS),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let modules = brew_and_npm_module_fixture();
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            modules.clone(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+    let planned_content = planned_env_file_content(&plan)
+        .expect("the pre-recorded npm dir alone must already plan an env write");
+    assert!(
+        planned_content.contains(
+            "export PATH=\"/home/u/.npm-global/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH\""
+        ),
+        "npm (already recorded) must lead, brew (declared by this run's Provision) must \
+         follow, in fold order: {planned_content}"
+    );
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    // brew is now ALSO recorded, so a post-run read of `bootstrapped_managers`
+    // comes back alphabetically ("brew" then "npm") — the opposite of the
+    // fold order above. A convergence net that compared those two orderings
+    // directly would rewrite the file into the alphabetical order; the file
+    // on disk must stay byte-identical to what the Env phase already wrote.
+    let contents = std::fs::read_to_string(tmp_home.path().join(".cfgd.env"))
+        .expect("apply must leave a .cfgd.env behind");
+    assert_eq!(
+        contents, planned_content,
+        "an ordinary provision beside an already-recorded manager must not reorder PATH \
+         between the plan-time write and the end of this same apply: {contents}"
+    );
+}
+
 #[test]
 #[serial_test::serial]
 fn apply_reports_one_result_per_env_surface_when_env_and_bootstrap_coincide() {
@@ -12174,12 +13772,12 @@ fn apply_reports_one_result_per_env_surface_when_env_and_bootstrap_coincide() {
             ReconcileContext::Apply,
         )
         .unwrap();
-    let planned_total: usize = plan.phases.iter().map(|p| p.actions.len()).sum();
+    let planned_total: usize = plan.phases.iter().map(|p| p.action_count()).sum();
     assert!(
         !plan
             .phases
             .iter()
-            .flat_map(|p| &p.actions)
+            .flat_map(|p| p.actions())
             .any(|a| matches!(a, Action::Env(EnvAction::RefreshLiveSession { .. }))),
         "no live-session refresh may be planned before this test applies"
     );
@@ -12236,8 +13834,7 @@ fn apply_reports_one_result_per_env_surface_when_env_and_bootstrap_coincide() {
         plan.phases
             .iter()
             .flat_map(|p| p
-                .actions
-                .iter()
+                .actions()
                 .map(crate::reconciler::format_action_description))
             .collect::<Vec<_>>(),
         result
@@ -12290,7 +13887,7 @@ fn plan_env_all_scope_appends_a_live_session_refresh_after_the_file_surfaces() {
     let env_actions: Vec<&Action> = plan
         .phases
         .iter()
-        .flat_map(|p| &p.actions)
+        .flat_map(|p| p.actions())
         .filter(|a| matches!(a, Action::Env(_)))
         .collect();
     let refresh_at = env_actions
@@ -12357,7 +13954,7 @@ fn apply_phase_modules_bootstraps_without_touching_any_env_surface() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -12454,7 +14051,7 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -12462,10 +14059,10 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "ghost".to_string(),
                 kind: ModuleActionKind::InstallPackages {
                     resolved: vec![ResolvedPackage {
@@ -12481,7 +14078,7 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -12492,7 +14089,7 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
             &resolved,
             Path::new("."),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Packages)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -12536,7 +14133,7 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -12544,10 +14141,10 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "scripted".to_string(),
                 kind: ModuleActionKind::InstallPackages {
                     resolved: vec![
@@ -12575,7 +14172,7 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -12586,7 +14183,7 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Packages)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -12621,7 +14218,7 @@ fn apply_module_install_packages_script_manager_failure_returns_err() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -12629,10 +14226,10 @@ fn apply_module_install_packages_script_manager_failure_returns_err() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "bad-script".to_string(),
                 kind: ModuleActionKind::InstallPackages {
                     resolved: vec![ResolvedPackage {
@@ -12648,7 +14245,7 @@ fn apply_module_install_packages_script_manager_failure_returns_err() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -12659,7 +14256,7 @@ fn apply_module_install_packages_script_manager_failure_returns_err() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Packages)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -12702,7 +14299,7 @@ fn run_guarded_script_install(
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.to_path_buf(),
         origin: None,
@@ -12710,10 +14307,10 @@ fn run_guarded_script_install(
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "guarded".to_string(),
                 kind: ModuleActionKind::InstallPackages {
                     resolved: vec![ResolvedPackage {
@@ -12729,7 +14326,7 @@ fn run_guarded_script_install(
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -12740,7 +14337,7 @@ fn run_guarded_script_install(
             &resolved,
             dir,
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Packages)),
             &modules,
             ReconcileContext::Apply,
             false,
@@ -12887,7 +14484,7 @@ fn apply_module_on_change_script_runs_when_module_changed() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: vec![ScriptEntry::Simple(format!("touch {}", marker.display()))],
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -12897,10 +14494,10 @@ fn apply_module_on_change_script_runs_when_module_changed() {
     // Plan includes a file action that affects this module → records a
     // `module:mymod:files:1` change entry → the module-level on_change runs.
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "mymod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![crate::modules::ResolvedFile {
@@ -12915,7 +14512,7 @@ fn apply_module_on_change_script_runs_when_module_changed() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -12926,7 +14523,7 @@ fn apply_module_on_change_script_runs_when_module_changed() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &module_actions,
             ReconcileContext::Apply,
             false,
@@ -12965,7 +14562,7 @@ fn apply_module_on_change_script_does_not_run_when_module_unchanged() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: vec![ScriptEntry::Simple(format!("touch {}", marker.display()))],
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -12985,7 +14582,7 @@ fn apply_module_on_change_script_does_not_run_when_module_unchanged() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Modules)),
             &module_actions,
             ReconcileContext::Apply,
             false,
@@ -13027,7 +14624,7 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: vec![ScriptEntry::Simple(format!("touch {}", marker.display()))],
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -13035,10 +14632,10 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "skipmod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![crate::modules::ResolvedFile {
@@ -13053,7 +14650,7 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -13065,7 +14662,7 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &module_actions,
             ReconcileContext::Apply,
             true,
@@ -13125,11 +14722,11 @@ fn apply_resolve_env_action_collects_secret_into_env_actions() {
         origin: "local".to_string(),
     });
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Secrets,
-            scope: None,
-            actions: vec![secret_action],
-        }],
+        phases: vec![Phase::from_actions(
+            PhaseName::Secrets,
+            &Owner::profile("test"),
+            vec![secret_action],
+        )],
         warnings: Vec::new(),
     };
 
@@ -13181,13 +14778,13 @@ fn apply_resolve_env_action_collects_secret_into_env_actions() {
 }
 
 // ---------------------------------------------------------------------------
-// plan_modules: manager-priority sort exercises plan.rs's can_bootstrap arm
+// plan_modules: manager-priority sort exercises plan.rs's bootstrap-plan arm
 // when a manager is registered but not currently available.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
-    // brew = bootstrappable (not available now, but can_bootstrap=true) → 1
+    // brew = bootstrappable (not available now, but plans a bootstrap) → 1
     // unknown-mgr (not in registry) → 2
     // apt = available → 0
     let state = test_state();
@@ -13243,7 +14840,7 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
         origin: None,
@@ -13254,7 +14851,7 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
     // Order in actions reflects the sorted manager order: apt (0), brew (1), unknown (2).
     let install_managers: Vec<String> = actions
         .iter()
-        .filter_map(|a| match a {
+        .filter_map(|(_, a)| match a {
             Action::Module(ma) => match &ma.kind {
                 ModuleActionKind::InstallPackages { resolved } => {
                     resolved.first().map(|p| p.manager.clone())
@@ -13313,7 +14910,7 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -13321,10 +14918,10 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "gitmod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![crate::modules::ResolvedFile {
@@ -13339,7 +14936,7 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -13350,7 +14947,7 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &module_actions,
             ReconcileContext::Apply,
             true,
@@ -13405,7 +15002,7 @@ fn apply_module_on_change_failure_continues_with_default_continue_on_error() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: vec![ScriptEntry::Simple("exit 7".to_string())],
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -13413,10 +15010,10 @@ fn apply_module_on_change_failure_continues_with_default_continue_on_error() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "failmod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![crate::modules::ResolvedFile {
@@ -13431,7 +15028,7 @@ fn apply_module_on_change_failure_continues_with_default_continue_on_error() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -13442,7 +15039,7 @@ fn apply_module_on_change_failure_continues_with_default_continue_on_error() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &module_actions,
             ReconcileContext::Apply,
             false,
@@ -13496,7 +15093,7 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
             interactive: false,
         }],
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -13504,10 +15101,10 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
     }];
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![Action::Module(ModuleAction {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
                 module_name: "abortmod".to_string(),
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![crate::modules::ResolvedFile {
@@ -13522,7 +15119,7 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
                 },
                 origin: None,
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -13533,7 +15130,7 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
             &module_actions,
             ReconcileContext::Apply,
             false,
@@ -13712,79 +15309,239 @@ fn action_matches_phase_filter_table() {
         origin: "local".to_string(),
     });
 
-    // Strict phase-equality cases.
-    assert!(action_matches_phase_filter(
-        &PhaseName::PostScripts,
-        &post_script_action,
-        &PhaseName::PostScripts,
-    ));
-    assert!(action_matches_phase_filter(
-        &PhaseName::PreScripts,
-        &pre_script_action,
-        &PhaseName::PreScripts,
-    ));
-    assert!(action_matches_phase_filter(
-        &PhaseName::Packages,
-        &pkg_install,
-        &PhaseName::Packages,
-    ));
+    let module_owner = Owner::module("m");
+    let profile_owner = Owner::profile("work");
+    let managers_owner = Owner::cfgd(MANAGERS_GROUP);
+    let env_owner = Owner::cfgd("env");
+    let brew_provision = Action::Manager(ManagerAction::Provision {
+        manager: "brew".to_string(),
+        via: "curl".to_string(),
+        batched: vec![],
+        depends_on: vec![],
+    });
+    let npm_refresh = Action::Manager(ManagerAction::RefreshIndex {
+        manager: "npm".to_string(),
+    });
+    // A Prerequisite node's tool and installer deliberately differ, so a case
+    // pinned to only one of them would pass even if the matcher regressed
+    // onto `manager()` (the installer) instead of `filter_subject()` (the
+    // tool) — the exact drift finding 3 fixed.
+    let curl_prereq = Action::Manager(ManagerAction::Prerequisite {
+        tool: "curl".to_string(),
+        installer: "brew".to_string(),
+        required_by: vec!["brew".to_string()],
+        depends_on: vec![],
+    });
+    let cases: Vec<(&str, bool, &PhaseName, &Owner, &Action, PhaseFilter)> = vec![
+        // Strict phase-equality cases.
+        (
+            "post script under its own phase",
+            true,
+            &PhaseName::PostScripts,
+            &profile_owner,
+            &post_script_action,
+            PhaseFilter::Phase(PhaseName::PostScripts),
+        ),
+        (
+            "pre script under its own phase",
+            true,
+            &PhaseName::PreScripts,
+            &profile_owner,
+            &pre_script_action,
+            PhaseFilter::Phase(PhaseName::PreScripts),
+        ),
+        (
+            "package install under Packages",
+            true,
+            &PhaseName::Packages,
+            &profile_owner,
+            &pkg_install,
+            PhaseFilter::Phase(PhaseName::Packages),
+        ),
+        // Module lifecycle scripts are swept in by their script-phase filter
+        // wherever they landed.
+        (
+            "module post script under PostScripts",
+            true,
+            &PhaseName::PostScripts,
+            &module_owner,
+            &module_post_script,
+            PhaseFilter::Phase(PhaseName::PostScripts),
+        ),
+        (
+            "module pre script under PreScripts",
+            true,
+            &PhaseName::PreScripts,
+            &module_owner,
+            &module_pre_script,
+            PhaseFilter::Phase(PhaseName::PreScripts),
+        ),
+        // Non-script module actions are NOT swept in by script filters.
+        (
+            "module install under PostScripts",
+            false,
+            &PhaseName::Packages,
+            &module_owner,
+            &module_install,
+            PhaseFilter::Phase(PhaseName::PostScripts),
+        ),
+        (
+            "module install under PreScripts",
+            false,
+            &PhaseName::Packages,
+            &module_owner,
+            &module_install,
+            PhaseFilter::Phase(PhaseName::PreScripts),
+        ),
+        // Cross-phase mismatch.
+        (
+            "module pre script under PostScripts",
+            false,
+            &PhaseName::PreScripts,
+            &module_owner,
+            &module_pre_script,
+            PhaseFilter::Phase(PhaseName::PostScripts),
+        ),
+        (
+            "module post script under PreScripts",
+            false,
+            &PhaseName::PostScripts,
+            &module_owner,
+            &module_post_script,
+            PhaseFilter::Phase(PhaseName::PreScripts),
+        ),
+        // Unrelated filter only matches phase-equal actions.
+        (
+            "module post script under Packages",
+            false,
+            &PhaseName::PostScripts,
+            &module_owner,
+            &module_post_script,
+            PhaseFilter::Phase(PhaseName::Packages),
+        ),
+        (
+            "package install under a foreign phase filter",
+            false,
+            &PhaseName::Files,
+            &profile_owner,
+            &pkg_install,
+            PhaseFilter::Phase(PhaseName::Packages),
+        ),
+        // `--phase modules` is an owner filter: it reaches module work in every
+        // phase its kind routed to, and never reaches profile work.
+        (
+            "module install under ModuleOwners",
+            true,
+            &PhaseName::Packages,
+            &module_owner,
+            &module_install,
+            PhaseFilter::ModuleOwners,
+        ),
+        (
+            "module post script under ModuleOwners",
+            true,
+            &PhaseName::PostScripts,
+            &module_owner,
+            &module_post_script,
+            PhaseFilter::ModuleOwners,
+        ),
+        (
+            "profile package under ModuleOwners",
+            false,
+            &PhaseName::Packages,
+            &profile_owner,
+            &pkg_install,
+            PhaseFilter::ModuleOwners,
+        ),
+        // `--phase prerequisites.managers` / `.env` — the dotted group-selector
+        // grammar reaches the cfgd owner group by name, regardless of action kind.
+        (
+            "cfgd managers-group provision under prerequisites.managers",
+            true,
+            &PhaseName::Prerequisites,
+            &managers_owner,
+            &brew_provision,
+            PhaseFilter::Selector(PhaseName::Prerequisites, "managers".to_string()),
+        ),
+        (
+            "cfgd env-group action under prerequisites.env",
+            true,
+            &PhaseName::Prerequisites,
+            &env_owner,
+            &pkg_install,
+            PhaseFilter::Selector(PhaseName::Prerequisites, "env".to_string()),
+        ),
+        (
+            "cfgd managers-group provision under prerequisites.env misses",
+            false,
+            &PhaseName::Prerequisites,
+            &managers_owner,
+            &brew_provision,
+            PhaseFilter::Selector(PhaseName::Prerequisites, "env".to_string()),
+        ),
+        (
+            "cfgd managers-group under a foreign phase misses",
+            false,
+            &PhaseName::Packages,
+            &managers_owner,
+            &brew_provision,
+            PhaseFilter::Selector(PhaseName::Prerequisites, "managers".to_string()),
+        ),
+        // `--phase prerequisites.brew` — a literal manager name selects that
+        // manager's own DAG nodes, already family-collapsed at plan time.
+        (
+            "brew provision under prerequisites.brew",
+            true,
+            &PhaseName::Prerequisites,
+            &managers_owner,
+            &brew_provision,
+            PhaseFilter::Selector(PhaseName::Prerequisites, "brew".to_string()),
+        ),
+        (
+            "npm refresh under prerequisites.brew misses",
+            false,
+            &PhaseName::Prerequisites,
+            &managers_owner,
+            &npm_refresh,
+            PhaseFilter::Selector(PhaseName::Prerequisites, "brew".to_string()),
+        ),
+        (
+            "brew provision under prerequisites.npm misses",
+            false,
+            &PhaseName::Prerequisites,
+            &managers_owner,
+            &brew_provision,
+            PhaseFilter::Selector(PhaseName::Prerequisites, "npm".to_string()),
+        ),
+        // A Prerequisite node is keyed on its TOOL (`curl`), not its
+        // installer (`brew`) — `prerequisites.curl` reaches it and
+        // `prerequisites.brew` does not, even though `brew` is the command
+        // that actually runs it.
+        (
+            "curl prerequisite under prerequisites.curl (its tool)",
+            true,
+            &PhaseName::Prerequisites,
+            &managers_owner,
+            &curl_prereq,
+            PhaseFilter::Selector(PhaseName::Prerequisites, "curl".to_string()),
+        ),
+        (
+            "curl prerequisite under prerequisites.brew (its installer) misses",
+            false,
+            &PhaseName::Prerequisites,
+            &managers_owner,
+            &curl_prereq,
+            PhaseFilter::Selector(PhaseName::Prerequisites, "brew".to_string()),
+        ),
+    ];
 
-    // Module-level script under PostScripts filter — the bug fix.
-    assert!(action_matches_phase_filter(
-        &PhaseName::Modules,
-        &module_post_script,
-        &PhaseName::PostScripts,
-    ));
-    assert!(action_matches_phase_filter(
-        &PhaseName::Modules,
-        &module_pre_script,
-        &PhaseName::PreScripts,
-    ));
-
-    // Non-script module actions are NOT swept in by script filters.
-    assert!(!action_matches_phase_filter(
-        &PhaseName::Modules,
-        &module_install,
-        &PhaseName::PostScripts,
-    ));
-    assert!(!action_matches_phase_filter(
-        &PhaseName::Modules,
-        &module_install,
-        &PhaseName::PreScripts,
-    ));
-
-    // Cross-phase mismatch (PreApply script under PostScripts filter, etc.).
-    assert!(!action_matches_phase_filter(
-        &PhaseName::Modules,
-        &module_pre_script,
-        &PhaseName::PostScripts,
-    ));
-    assert!(!action_matches_phase_filter(
-        &PhaseName::Modules,
-        &module_post_script,
-        &PhaseName::PreScripts,
-    ));
-
-    // Unrelated filter (Packages) only matches phase-equal actions.
-    assert!(!action_matches_phase_filter(
-        &PhaseName::Modules,
-        &module_post_script,
-        &PhaseName::Packages,
-    ));
-    assert!(!action_matches_phase_filter(
-        &PhaseName::Files,
-        &pkg_install,
-        &PhaseName::Packages,
-    ));
-
-    // Profile-level scripts still match their script-phase filter when they
-    // happen to live in PhaseName::Modules (defensive — never happens in
-    // practice but the helper is action-shape-based, not phase-name-based).
-    assert!(action_matches_phase_filter(
-        &PhaseName::Modules,
-        &post_script_action,
-        &PhaseName::PostScripts,
-    ));
+    for (label, expected, phase_name, owner, action, filter) in cases {
+        assert_eq!(
+            action_matches_phase_filter(phase_name, owner, action, &filter),
+            expected,
+            "{label}"
+        );
+    }
 }
 
 #[test]
@@ -13809,7 +15566,7 @@ fn apply_post_scripts_filter_runs_module_post_scripts() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -13818,30 +15575,27 @@ fn apply_post_scripts_filter_runs_module_post_scripts() {
 
     let plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::Modules,
-                scope: None,
-                actions: vec![
-                    Action::Module(ModuleAction {
-                        module_name: "nvim".to_string(),
-                        kind: ModuleActionKind::InstallPackages { resolved: vec![] },
-                        origin: None,
-                    }),
-                    Action::Module(ModuleAction {
-                        module_name: "nvim".to_string(),
-                        kind: ModuleActionKind::RunScript {
-                            script: ScriptEntry::Simple(format!("touch {}", marker.display())),
-                            phase: ScriptPhase::PostApply,
-                        },
-                        origin: None,
-                    }),
-                ],
-            },
-            Phase {
-                name: PhaseName::PostScripts,
-                scope: None,
-                actions: vec![],
-            },
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![Action::Module(ModuleAction {
+                    module_name: "nvim".to_string(),
+                    kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+                    origin: None,
+                })],
+            ),
+            Phase::from_actions(
+                PhaseName::PostScripts,
+                &Owner::profile("test"),
+                vec![Action::Module(ModuleAction {
+                    module_name: "nvim".to_string(),
+                    kind: ModuleActionKind::RunScript {
+                        script: ScriptEntry::Simple(format!("touch {}", marker.display())),
+                        phase: ScriptPhase::PostApply,
+                    },
+                    origin: None,
+                })],
+            ),
         ],
         warnings: vec![],
     };
@@ -13853,7 +15607,7 @@ fn apply_post_scripts_filter_runs_module_post_scripts() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::PostScripts),
+            Some(&PhaseFilter::Phase(PhaseName::PostScripts)),
             std::slice::from_ref(&module),
             ReconcileContext::Apply,
             false,
@@ -13910,7 +15664,7 @@ fn apply_pre_scripts_filter_runs_module_pre_scripts() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -13919,30 +15673,27 @@ fn apply_pre_scripts_filter_runs_module_pre_scripts() {
 
     let plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::PreScripts,
-                scope: None,
-                actions: vec![],
-            },
-            Phase {
-                name: PhaseName::Modules,
-                scope: None,
-                actions: vec![
-                    Action::Module(ModuleAction {
-                        module_name: "nvim".to_string(),
-                        kind: ModuleActionKind::RunScript {
-                            script: ScriptEntry::Simple(format!("touch {}", marker.display())),
-                            phase: ScriptPhase::PreApply,
-                        },
-                        origin: None,
-                    }),
-                    Action::Module(ModuleAction {
-                        module_name: "nvim".to_string(),
-                        kind: ModuleActionKind::InstallPackages { resolved: vec![] },
-                        origin: None,
-                    }),
-                ],
-            },
+            Phase::from_actions(
+                PhaseName::PreScripts,
+                &Owner::profile("test"),
+                vec![Action::Module(ModuleAction {
+                    module_name: "nvim".to_string(),
+                    kind: ModuleActionKind::RunScript {
+                        script: ScriptEntry::Simple(format!("touch {}", marker.display())),
+                        phase: ScriptPhase::PreApply,
+                    },
+                    origin: None,
+                })],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![Action::Module(ModuleAction {
+                    module_name: "nvim".to_string(),
+                    kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+                    origin: None,
+                })],
+            ),
         ],
         warnings: vec![],
     };
@@ -13954,7 +15705,7 @@ fn apply_pre_scripts_filter_runs_module_pre_scripts() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::PreScripts),
+            Some(&PhaseFilter::Phase(PhaseName::PreScripts)),
             std::slice::from_ref(&module),
             ReconcileContext::Apply,
             false,
@@ -14008,7 +15759,7 @@ fn apply_modules_phase_filter_runs_all_module_actions() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -14016,32 +15767,40 @@ fn apply_modules_phase_filter_runs_all_module_actions() {
     };
 
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Modules,
-            scope: None,
-            actions: vec![
-                Action::Module(ModuleAction {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Modules,
+                &Owner::profile("test"),
+                vec![Action::Module(ModuleAction {
+                    module_name: "nvim".to_string(),
+                    kind: ModuleActionKind::Skip {
+                        reason: "exercised by test".to_string(),
+                    },
+                    origin: None,
+                })],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![Action::Module(ModuleAction {
+                    module_name: "nvim".to_string(),
+                    kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+                    origin: None,
+                })],
+            ),
+            Phase::from_actions(
+                PhaseName::PostScripts,
+                &Owner::profile("test"),
+                vec![Action::Module(ModuleAction {
                     module_name: "nvim".to_string(),
                     kind: ModuleActionKind::RunScript {
                         script: ScriptEntry::Simple(format!("touch {}", marker.display())),
                         phase: ScriptPhase::PostApply,
                     },
                     origin: None,
-                }),
-                Action::Module(ModuleAction {
-                    module_name: "nvim".to_string(),
-                    kind: ModuleActionKind::InstallPackages { resolved: vec![] },
-                    origin: None,
-                }),
-                Action::Module(ModuleAction {
-                    module_name: "nvim".to_string(),
-                    kind: ModuleActionKind::Skip {
-                        reason: "exercised by test".to_string(),
-                    },
-                    origin: None,
-                }),
-            ],
-        }],
+                })],
+            ),
+        ],
         warnings: vec![],
     };
 
@@ -14052,7 +15811,7 @@ fn apply_modules_phase_filter_runs_all_module_actions() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::Modules),
+            Some(&PhaseFilter::ModuleOwners),
             std::slice::from_ref(&module),
             ReconcileContext::Apply,
             false,
@@ -14061,8 +15820,8 @@ fn apply_modules_phase_filter_runs_all_module_actions() {
         )
         .unwrap();
 
-    // All three module actions should have run — Modules filter does NOT
-    // narrow to scripts-only.
+    // All three module actions should have run: the owner filter selects
+    // module-owned work in every phase it landed in, not scripts only.
     assert_eq!(result.action_results.len(), 3);
     let descs: Vec<&str> = result
         .action_results
@@ -14096,7 +15855,7 @@ fn apply_post_scripts_filter_skips_other_phases() {
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
         on_drift_scripts: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
         origin: None,
@@ -14105,38 +15864,38 @@ fn apply_post_scripts_filter_skips_other_phases() {
 
     let plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::Files,
-                scope: None,
-                actions: vec![Action::File(FileAction::Skip {
+            Phase::from_actions(
+                PhaseName::Files,
+                &Owner::profile("test"),
+                vec![Action::File(FileAction::Skip {
                     target: PathBuf::from("/tmp/should_not_run"),
                     reason: "blocked".to_string(),
                     origin: "local".to_string(),
                 })],
-            },
-            Phase {
-                name: PhaseName::System,
-                scope: None,
-                actions: vec![Action::System(SystemAction::Skip {
+            ),
+            Phase::from_actions(
+                PhaseName::System,
+                &Owner::profile("test"),
+                vec![Action::System(SystemAction::Skip {
                     configurator: "shell".to_string(),
                     reason: "blocked".to_string(),
                     origin: "local".to_string(),
                     unknown: false,
                 })],
-            },
-            Phase {
-                name: PhaseName::Packages,
-                scope: None,
-                actions: vec![Action::Package(PackageAction::Skip {
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![Action::Package(PackageAction::Skip {
                     manager: "apt".to_string(),
                     reason: "blocked".to_string(),
                     origin: "local".to_string(),
                 })],
-            },
-            Phase {
-                name: PhaseName::Modules,
-                scope: None,
-                actions: vec![Action::Module(ModuleAction {
+            ),
+            Phase::from_actions(
+                PhaseName::PostScripts,
+                &Owner::profile("test"),
+                vec![Action::Module(ModuleAction {
                     module_name: "nvim".to_string(),
                     kind: ModuleActionKind::RunScript {
                         script: ScriptEntry::Simple(format!("touch {}", marker.display())),
@@ -14144,7 +15903,7 @@ fn apply_post_scripts_filter_skips_other_phases() {
                     },
                     origin: None,
                 })],
-            },
+            ),
         ],
         warnings: vec![],
     };
@@ -14156,7 +15915,7 @@ fn apply_post_scripts_filter_skips_other_phases() {
             &resolved,
             dir.path(),
             &printer,
-            Some(&PhaseName::PostScripts),
+            Some(&PhaseFilter::Phase(PhaseName::PostScripts)),
             std::slice::from_ref(&module),
             ReconcileContext::Apply,
             false,
@@ -14639,12 +16398,15 @@ fn dedup_rp(name: &str, manager: &str) -> ResolvedPackage {
     }
 }
 
-fn install_packages_action(module: &str, resolved: Vec<ResolvedPackage>) -> Action {
-    Action::Module(ModuleAction {
-        module_name: module.to_string(),
-        kind: ModuleActionKind::InstallPackages { resolved },
-        origin: None,
-    })
+fn install_packages_action(module: &str, resolved: Vec<ResolvedPackage>) -> (PhaseName, Action) {
+    (
+        PhaseName::Packages,
+        Action::Module(ModuleAction {
+            module_name: module.to_string(),
+            kind: ModuleActionKind::InstallPackages { resolved },
+            origin: None,
+        }),
+    )
 }
 
 fn resolved_names_of(action: &Action) -> Vec<String> {
@@ -14679,7 +16441,10 @@ fn dedup_profile_loses_to_module_same_manager_name() {
         "profile Install emptied by dedup must be dropped, got {filtered:?}"
     );
     // module keeps gh
-    assert_eq!(resolved_names_of(&module_phase[0]), vec!["gh".to_string()]);
+    assert_eq!(
+        resolved_names_of(&module_phase[0].1),
+        vec!["gh".to_string()]
+    );
 }
 
 #[test]
@@ -14720,11 +16485,14 @@ fn dedup_earlier_module_wins_over_later() {
         1,
         "later duplicate action must be dropped"
     );
-    match &module_phase[0] {
+    match &module_phase[0].1 {
         Action::Module(ModuleAction { module_name, .. }) => assert_eq!(module_name, "a"),
         other => panic!("expected Module action, got {other:?}"),
     }
-    assert_eq!(resolved_names_of(&module_phase[0]), vec!["fd".to_string()]);
+    assert_eq!(
+        resolved_names_of(&module_phase[0].1),
+        vec!["fd".to_string()]
+    );
 }
 
 #[test]
@@ -14741,11 +16509,11 @@ fn dedup_script_manager_never_dropped() {
     );
     assert_eq!(module_phase.len(), 2, "both script installs must survive");
     assert_eq!(
-        resolved_names_of(&module_phase[0]),
+        resolved_names_of(&module_phase[0].1),
         vec!["setup".to_string()]
     );
     assert_eq!(
-        resolved_names_of(&module_phase[1]),
+        resolved_names_of(&module_phase[1].1),
         vec!["setup".to_string()]
     );
 }
@@ -14759,9 +16527,15 @@ fn dedup_mixed_kept_and_dropped_in_one_action() {
     Reconciler::dedup_module_packages(&mut module_phase);
 
     assert_eq!(module_phase.len(), 2);
-    assert_eq!(resolved_names_of(&module_phase[0]), vec!["fd".to_string()]);
+    assert_eq!(
+        resolved_names_of(&module_phase[0].1),
+        vec!["fd".to_string()]
+    );
     // module b's fd dropped, bat retained
-    assert_eq!(resolved_names_of(&module_phase[1]), vec!["bat".to_string()]);
+    assert_eq!(
+        resolved_names_of(&module_phase[1].1),
+        vec!["bat".to_string()]
+    );
 }
 
 #[test]
@@ -14793,11 +16567,6 @@ fn dedup_passes_through_non_install_package_actions() {
             .collect(),
     );
     let pkg_actions = vec![
-        PackageAction::Bootstrap {
-            manager: "brew".to_string(),
-            method: "curl".to_string(),
-            origin: "profile".to_string(),
-        },
         PackageAction::Uninstall {
             manager: "brew".to_string(),
             packages: vec!["gh".to_string()],
@@ -14812,8 +16581,8 @@ fn dedup_passes_through_non_install_package_actions() {
     let filtered = Reconciler::filter_profile_packages(pkg_actions, &claimed);
     assert_eq!(
         filtered.len(),
-        3,
-        "Bootstrap/Uninstall/Skip must pass through untouched"
+        2,
+        "Uninstall/Skip must pass through untouched"
     );
 }
 
@@ -14837,6 +16606,7 @@ fn execute_script_working_dir_is_a_file_errors() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     );
     let err = result.unwrap_err().to_string();
     assert!(
@@ -14863,6 +16633,7 @@ fn execute_script_working_dir_missing_errors() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     );
     let err = result.unwrap_err().to_string();
     assert!(
@@ -14979,6 +16750,7 @@ fn execute_script_creates_guard_skips_when_path_exists() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .unwrap();
     assert!(!changed, "creates guard must mark the run as a no-op");
@@ -15008,6 +16780,7 @@ fn execute_script_unless_guard_skips_when_condition_holds() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .unwrap();
     assert!(!changed, "unless-holds must skip the body");
@@ -15035,6 +16808,7 @@ fn execute_script_only_if_guard_skips_when_condition_unmet() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .unwrap();
     assert!(!changed, "onlyIf-unmet must skip the body");
@@ -15055,7 +16829,9 @@ fn apply_env_inject_refuses_a_non_utf8_rc_and_leaves_it_byte_identical() {
         line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
     };
     let printer = test_printer();
-    let err = Reconciler::apply_env_action(&action, &printer).unwrap_err();
+    let err =
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .unwrap_err();
 
     assert!(
         err.to_string().contains("not valid UTF-8"),
@@ -15084,7 +16860,9 @@ fn apply_env_write_regenerates_a_corrupt_managed_file() {
         content: content.to_string(),
     };
     let printer = test_printer();
-    let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
+    let desc =
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .unwrap();
 
     assert!(
         !desc.ends_with(super::apply::ENV_SKIPPED_SUFFIX),
@@ -15107,7 +16885,10 @@ fn apply_env_inject_propagates_a_non_notfound_read_error() {
         line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
     };
     let printer = test_printer();
-    assert!(Reconciler::apply_env_action(&action, &printer).is_err());
+    assert!(
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .is_err()
+    );
     assert!(rc_path.is_dir(), "the target must be left untouched");
 }
 
@@ -15127,7 +16908,8 @@ fn apply_env_inject_refuses_an_unreadable_rc() {
         line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
     };
     let printer = test_printer();
-    let outcome = Reconciler::apply_env_action(&action, &printer);
+    let outcome =
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded());
 
     // The kernel's read check does not apply to uid 0, so what stops an
     // elevated run from rewriting this file is cfgd's own mode-based guard, and
@@ -15166,7 +16948,9 @@ fn apply_env_inject_refuses_a_read_only_rc() {
         line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
     };
     let printer = test_printer();
-    let err = Reconciler::apply_env_action(&action, &printer).unwrap_err();
+    let err =
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .unwrap_err();
     assert!(err.to_string().contains("read-only"), "{err}");
     assert_eq!(std::fs::read_to_string(&rc_path).unwrap(), original);
 
@@ -15260,14 +17044,14 @@ fn apply_env_inject_stores_a_file_backup_for_the_rc() {
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Env,
-            scope: None,
-            actions: vec![Action::Env(EnvAction::InjectSourceLine {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("test"),
+            vec![Action::Env(EnvAction::InjectSourceLine {
                 rc_path: rc_path.clone(),
                 line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -15315,14 +17099,14 @@ fn apply_env_records_one_managed_resource_across_a_converged_second_run() {
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Env,
-            scope: None,
-            actions: vec![Action::Env(EnvAction::InjectSourceLine {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("test"),
+            vec![Action::Env(EnvAction::InjectSourceLine {
                 rc_path: rc_path.clone(),
                 line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
@@ -15497,14 +17281,14 @@ fn apply_env_inject_backs_up_and_rolls_back_through_a_symlinked_rc() {
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
     let plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Env,
-            scope: None,
-            actions: vec![Action::Env(EnvAction::InjectSourceLine {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("test"),
+            vec![Action::Env(EnvAction::InjectSourceLine {
                 rc_path: rc_path.clone(),
                 line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
     let printer = test_printer();
@@ -15577,14 +17361,16 @@ fn apply_env_write_refuses_a_link_redirecting_it_out_of_the_owner_s_tree() {
     if !crate::is_root() {
         // Only root can stage a foreign owner, so unprivileged this asserts the
         // permitted half: link and target share one uid, the write follows.
-        Reconciler::apply_env_action(&action, &printer).unwrap();
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .unwrap();
         assert!(std::fs::read_to_string(&outside).unwrap().contains("EVIL"));
         return;
     }
 
     std::os::unix::fs::chown(&env_path, Some(12345), Some(12345)).unwrap();
-    let err = Reconciler::apply_env_action(&action, &printer)
-        .expect_err("a link out of the owner's tree must be refused");
+    let err =
+        Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+            .expect_err("a link out of the owner's tree must be refused");
 
     assert!(
         err.to_string().contains("refusing to write through it"),
@@ -15623,7 +17409,8 @@ fn apply_env_inject_writes_through_a_symlinked_rc() {
         line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
     };
     let printer = test_printer();
-    Reconciler::apply_env_action(&action, &printer).unwrap();
+    Reconciler::apply_env_action(&action, &printer, crate::providers::NoteSink::discarded())
+        .unwrap();
 
     assert!(
         std::fs::symlink_metadata(&rc_path)
@@ -15636,5 +17423,3757 @@ fn apply_env_inject_writes_through_a_symlinked_rc() {
     assert_eq!(
         repo_body,
         "export FOO=bar\n[ -f ~/.cfgd.env ] && . ~/.cfgd.env\n"
+    );
+}
+
+// --- owner groups, Rule P dispatch, and the journal index ---
+
+/// A package manager that appends every bootstrap and install to a log shared
+/// with its siblings, so a test can assert the ORDER the reconciler reached
+/// them in rather than merely that each ran.
+struct DispatchLogManager {
+    name: String,
+    log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    available: std::sync::Mutex<bool>,
+    installed: std::sync::Mutex<HashSet<String>>,
+    /// The rendezvous a concurrency test drives this manager's operations
+    /// through. `None` for every ordering-only fixture, which then behaves
+    /// exactly as it did before lanes existed.
+    probe: Option<std::sync::Arc<LaneProbe>>,
+    /// Bootstrapping leaves the manager unavailable, so every one of its
+    /// actions keeps draining the phase — the "forced to one lane" half of the
+    /// concurrent-versus-sequential comparison.
+    stays_unavailable: bool,
+    /// Write and read this manager's resolved prefix from inside `install`,
+    /// which in a lane reaches the coordinator's connection through the proxy.
+    touches_state: bool,
+    /// Panic inside `install`, so a test can drive the lane-panic path.
+    panics: bool,
+    /// Lines pushed into the lane around this manager's rendezvous, so a test
+    /// can force two lanes to interleave their child output.
+    lane_lines: Option<(String, String)>,
+    /// Where `bootstrap` writes the method the plan named, for the test that
+    /// pins the `via` reaching execution. A slot rather than a log line
+    /// because every other fixture asserts on the log's exact contents.
+    seen_provision_via: Option<std::sync::Arc<std::sync::Mutex<Option<String>>>>,
+}
+
+impl DispatchLogManager {
+    fn new(
+        name: &str,
+        log: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        available: bool,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            log: std::sync::Arc::clone(log),
+            available: std::sync::Mutex::new(available),
+            installed: std::sync::Mutex::new(HashSet::new()),
+            probe: None,
+            stays_unavailable: false,
+            touches_state: false,
+            panics: false,
+            lane_lines: None,
+            seen_provision_via: None,
+        }
+    }
+
+    fn with_probe(mut self, probe: &std::sync::Arc<LaneProbe>) -> Self {
+        self.probe = Some(std::sync::Arc::clone(probe));
+        self
+    }
+
+    fn stays_unavailable(mut self) -> Self {
+        self.stays_unavailable = true;
+        self
+    }
+
+    fn with_state_writes(mut self) -> Self {
+        self.touches_state = true;
+        self
+    }
+
+    fn panicking(mut self) -> Self {
+        self.panics = true;
+        self
+    }
+
+    fn with_lane_lines(mut self, first: &str, second: &str) -> Self {
+        self.lane_lines = Some((first.to_string(), second.to_string()));
+        self
+    }
+
+    fn recording_provision_via(
+        mut self,
+        slot: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    ) -> Self {
+        self.seen_provision_via = Some(std::sync::Arc::clone(slot));
+        self
+    }
+
+    fn record(&self, event: String) {
+        self.log.lock().unwrap().push(event);
+    }
+
+    /// Report this operation to the probe and block while the test holds it.
+    fn rendezvous(&self, label: &str) {
+        if let Some(probe) = &self.probe {
+            probe.enter(label);
+        }
+    }
+}
+
+/// A rendezvous a fixture manager blocks in, so a concurrency test pins the
+/// exact interleaving two lanes reach rather than racing for it.
+///
+/// Every wait is bounded: a scheduler that never dispatches must fail the
+/// assertion that follows rather than hang the suite.
+#[derive(Default)]
+struct LaneProbe {
+    state: std::sync::Mutex<LaneProbeState>,
+    signal: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct LaneProbeState {
+    /// `start:<label>` / `end:<label>`, in the order the operations reached
+    /// them — the completion order, which is what plan order is not.
+    events: Vec<String>,
+    in_flight: usize,
+    peak: usize,
+    held: HashSet<String>,
+}
+
+/// How long a probe waits before it gives up and reports what it saw. It turns
+/// a hang into a failure, so it is not a rendezvous budget and nothing here
+/// spends it on a green run.
+///
+/// Generous because a lane worker is SPAWNED, and a spawn takes the shared
+/// `PATH` guard: another test in this binary holding the exclusive one
+/// (`CwdGuard`, any `PATH` mutation) stalls every worker for as long as its
+/// body runs, and several such bodies can queue. A wait that expires early
+/// reports the harness rather than the code.
+///
+/// It is not what makes the dispatch tests reliable, and widening it never
+/// was: the stall they used to hit was a gate deadlock rather than slowness —
+/// a worker inside the read side, a writer queued behind it, and the sibling
+/// worker the test is waiting for shut out by that writer. `PATH_ENV_LOCK`'s
+/// admission rule is what removed it (see
+/// `a_lane_dispatch_is_not_stalled_by_a_test_that_is_waiting_to_mutate_path`);
+/// this only decides how long a future one takes to go red.
+const LANE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+impl LaneProbe {
+    /// A probe whose named operations block until the test releases them.
+    fn holding(labels: &[&str]) -> std::sync::Arc<Self> {
+        let probe = Self::default();
+        probe.state.lock().unwrap().held = labels.iter().map(|l| (*l).to_string()).collect();
+        std::sync::Arc::new(probe)
+    }
+
+    fn locked(&self) -> std::sync::MutexGuard<'_, LaneProbeState> {
+        self.state.lock().unwrap()
+    }
+
+    /// One whole operation: record its start, block while the test holds it,
+    /// then record its end.
+    fn enter(&self, label: &str) {
+        let mut state = self.locked();
+        state.events.push(format!("start:{label}"));
+        state.in_flight += 1;
+        state.peak = state.peak.max(state.in_flight);
+        self.signal.notify_all();
+        let (mut state, _) = self
+            .signal
+            .wait_timeout_while(state, LANE_PROBE_TIMEOUT, |s| s.held.contains(label))
+            .unwrap();
+        state.events.push(format!("end:{label}"));
+        state.in_flight -= 1;
+        self.signal.notify_all();
+    }
+
+    fn release(&self, label: &str) {
+        self.locked().held.remove(label);
+        self.signal.notify_all();
+    }
+
+    fn release_all(&self) {
+        self.locked().held.clear();
+        self.signal.notify_all();
+    }
+
+    /// Wait until `predicate` holds. False on timeout, which every caller
+    /// asserts on rather than ignoring.
+    fn await_state(&self, predicate: impl Fn(&LaneProbeState) -> bool) -> bool {
+        let state = self.locked();
+        let (state, _) = self
+            .signal
+            .wait_timeout_while(state, LANE_PROBE_TIMEOUT, |s| !predicate(s))
+            .unwrap();
+        predicate(&state)
+    }
+
+    fn await_in_flight(&self, n: usize) -> bool {
+        self.await_state(|s| s.in_flight >= n)
+    }
+
+    fn await_started(&self, label: &str) -> bool {
+        let want = format!("start:{label}");
+        self.await_state(|s| s.events.contains(&want))
+    }
+
+    fn await_finished(&self, label: &str) -> bool {
+        let want = format!("end:{label}");
+        self.await_state(|s| s.events.contains(&want))
+    }
+
+    fn started(&self, label: &str) -> bool {
+        let want = format!("start:{label}");
+        self.locked().events.contains(&want)
+    }
+
+    fn in_flight(&self) -> usize {
+        self.locked().in_flight
+    }
+
+    fn peak(&self) -> usize {
+        self.locked().peak
+    }
+
+    fn events(&self) -> Vec<String> {
+        self.locked().events.clone()
+    }
+}
+
+/// Position of a probe event, panicking when it never happened — an ordering
+/// assertion over a missing event would otherwise pass vacuously.
+fn event_at(events: &[String], event: &str) -> usize {
+    events
+        .iter()
+        .position(|e| e == event)
+        .unwrap_or_else(|| panic!("no {event:?} in {events:?}"))
+}
+
+impl PackageManager for DispatchLogManager {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn is_available(&self) -> bool {
+        *self.available.lock().unwrap()
+    }
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        Some(crate::providers::BootstrapPlan::new("stub"))
+    }
+    fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
+        let label = format!("bootstrap:{}", self.name);
+        self.record(label.clone());
+        if let Some(slot) = &self.seen_provision_via {
+            *slot.lock().unwrap() = cx.planned_method().map(str::to_string);
+        }
+        if !self.stays_unavailable {
+            *self.available.lock().unwrap() = true;
+        }
+        self.rendezvous(&label);
+        Ok(())
+    }
+    fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
+        Ok(self.installed.lock().unwrap().clone())
+    }
+    fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
+        let label = format!("{}:{}", self.name, packages.join(","));
+        self.record(format!("install:{label}"));
+        assert!(!self.panics, "install:{label} panicked");
+        if self.touches_state {
+            cx.state
+                .record_resolved_prefix(&self.name, &format!("/opt/{}", self.name), false)?;
+        }
+        if let Some((first, _)) = &self.lane_lines
+            && let Some(lane) = cx.lane()
+        {
+            lane.push_line(first);
+        }
+        self.rendezvous(&label);
+        if let Some((_, second)) = &self.lane_lines
+            && let Some(lane) = cx.lane()
+        {
+            lane.push_line(second);
+        }
+        if self.touches_state {
+            let stored = cx.state.resolved_prefix(&self.name)?;
+            assert_eq!(
+                stored.map(|(prefix, _)| prefix),
+                Some(format!("/opt/{}", self.name)),
+                "a lane must read back what it wrote through the coordinator"
+            );
+        }
+        let mut installed = self.installed.lock().unwrap();
+        for p in packages {
+            installed.insert(p.clone());
+        }
+        Ok(())
+    }
+    fn uninstall(&self, packages: &[String], _: &PackageContext<'_>) -> Result<()> {
+        let mut installed = self.installed.lock().unwrap();
+        for p in packages {
+            installed.remove(p);
+        }
+        Ok(())
+    }
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, cx: &PackageContext<'_>) -> Result<()> {
+        // npm's refresh resolves its global prefix from `cx.state`, and an
+        // index refresh now runs on a lane like every other action. Nothing
+        // is recorded in the log, so every ordering fixture is unaffected.
+        if self.touches_state {
+            cx.state
+                .record_resolved_prefix(&self.name, &format!("/opt/{}", self.name), false)?;
+            let stored = cx.state.resolved_prefix(&self.name)?;
+            assert_eq!(
+                stored.map(|(prefix, _)| prefix),
+                Some(format!("/opt/{}", self.name)),
+                "an index refresh must read back what it wrote through the coordinator"
+            );
+        }
+        Ok(())
+    }
+    fn available_version(&self, _package: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+fn new_dispatch_log() -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
+    std::sync::Arc::new(std::sync::Mutex::new(Vec::new()))
+}
+
+fn dispatch_log(log: &std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Vec<String> {
+    log.lock().unwrap().clone()
+}
+
+fn install_action(manager: &str, packages: &[&str]) -> Action {
+    Action::Package(PackageAction::Install {
+        manager: manager.to_string(),
+        packages: packages.iter().map(|p| (*p).to_string()).collect(),
+        origin: "local".to_string(),
+    })
+}
+
+fn uninstall_action(manager: &str, packages: &[&str]) -> Action {
+    Action::Package(PackageAction::Uninstall {
+        manager: manager.to_string(),
+        packages: packages.iter().map(|p| (*p).to_string()).collect(),
+        origin: "local".to_string(),
+    })
+}
+
+fn owner_resolved_package(manager: &str, package: &str) -> ResolvedPackage {
+    ResolvedPackage {
+        canonical_name: package.to_string(),
+        resolved_name: package.to_string(),
+        manager: manager.to_string(),
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+    }
+}
+
+fn module_install_action(module: &str, manager: &str, package: &str) -> Action {
+    Action::Module(ModuleAction {
+        module_name: module.to_string(),
+        kind: ModuleActionKind::InstallPackages {
+            resolved: vec![owner_resolved_package(manager, package)],
+        },
+        origin: None,
+    })
+}
+
+/// A `prefer: [script]` package: the pseudo-manager `script` plus the body the
+/// module ships instead of a package name.
+fn script_resolved_package(package: &str, script: &str) -> ResolvedPackage {
+    ResolvedPackage {
+        script: Some(script.to_string()),
+        ..owner_resolved_package("script", package)
+    }
+}
+
+fn module_script_install_action(module: &str, package: &str, script: &str) -> Action {
+    Action::Module(ModuleAction {
+        module_name: module.to_string(),
+        kind: ModuleActionKind::InstallPackages {
+            resolved: vec![script_resolved_package(package, script)],
+        },
+        origin: None,
+    })
+}
+
+fn module_for(name: &str, manager: &str, package: &str) -> ResolvedModule {
+    module_with(name, &[(manager, package)])
+}
+
+/// A resolved module declaring one package per `(manager, package)` pair.
+fn module_with(name: &str, packages: &[(&str, &str)]) -> ResolvedModule {
+    let mut module = make_resolved_module(name);
+    module.packages = packages
+        .iter()
+        .map(|(manager, package)| owner_resolved_package(manager, package))
+        .collect();
+    module
+}
+
+fn owner_tokens(phase: &Phase) -> Vec<String> {
+    phase.groups().iter().map(|g| g.owner.token()).collect()
+}
+
+fn packages_phase(actions: Vec<Action>) -> Plan {
+    Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("work"),
+            actions,
+        )],
+        warnings: vec![],
+    }
+}
+
+fn run_apply(
+    reconciler: &Reconciler<'_>,
+    plan: &Plan,
+    modules: &[ResolvedModule],
+    filter: Option<&PhaseFilter>,
+) -> ApplyResult {
+    let resolved = make_empty_resolved();
+    let printer = test_printer();
+    reconciler
+        .apply(
+            plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            filter,
+            modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply")
+}
+
+#[test]
+fn interleaved_owner_actions_collapse_into_one_group_each() {
+    let phase = Phase::from_actions(
+        PhaseName::Packages,
+        &Owner::profile("work"),
+        vec![
+            module_install_action("nvim", "brew", "neovim"),
+            install_action("brew", &["ripgrep"]),
+            module_install_action("zsh", "brew", "zsh"),
+            module_install_action("nvim", "brew", "tree-sitter"),
+            install_action("brew", &["fd"]),
+        ],
+    );
+
+    assert_eq!(
+        owner_tokens(&phase),
+        vec!["profile:work", "module:nvim", "module:zsh"],
+        "one group per owner, in sort_key order, however the actions interleave"
+    );
+    let nvim = &phase.groups()[1].actions;
+    assert_eq!(nvim.len(), 2);
+    assert!(
+        format_plan_item(&nvim[0]).contains("neovim"),
+        "first-appearance order survives inside a group: {:?}",
+        plan_items(&phase)
+    );
+    assert!(format_plan_item(&nvim[1]).contains("tree-sitter"));
+    assert_eq!(phase.action_count(), 5, "grouping loses no action");
+}
+
+#[test]
+fn owner_order_is_profile_first_in_every_phase() {
+    let profile = Owner::profile("work");
+    let phases = vec![
+        Phase::from_actions(
+            PhaseName::Packages,
+            &profile,
+            vec![
+                module_install_action("nvim", "brew", "neovim"),
+                install_action("brew", &["ripgrep"]),
+            ],
+        ),
+        Phase::from_actions(
+            PhaseName::Files,
+            &profile,
+            vec![
+                Action::Module(ModuleAction {
+                    module_name: "nvim".to_string(),
+                    kind: ModuleActionKind::DeployFiles { files: vec![] },
+                    origin: None,
+                }),
+                Action::File(FileAction::Skip {
+                    target: PathBuf::from("/home/u/.gitconfig"),
+                    reason: "in sync".to_string(),
+                    origin: "local".to_string(),
+                }),
+            ],
+        ),
+        Phase::from_actions(
+            PhaseName::System,
+            &profile,
+            vec![
+                Action::Module(ModuleAction {
+                    module_name: "nvim".to_string(),
+                    kind: ModuleActionKind::Skip {
+                        reason: "platform".to_string(),
+                    },
+                    origin: None,
+                }),
+                Action::System(SystemAction::SetValue {
+                    configurator: "sysctl".to_string(),
+                    key: "net.ipv4.ip_forward".to_string(),
+                    desired: "1".to_string(),
+                    current: "0".to_string(),
+                    origin: "local".to_string(),
+                }),
+            ],
+        ),
+    ];
+
+    for phase in &phases {
+        assert_eq!(
+            owner_tokens(phase),
+            vec!["profile:work", "module:nvim"],
+            "{} must read profile-first like every other phase",
+            phase.name.as_str()
+        );
+    }
+}
+
+#[test]
+fn managers_group_is_built_at_rank_one() {
+    let phase = Phase::from_actions(
+        PhaseName::Prerequisites,
+        &Owner::profile("work"),
+        vec![
+            Action::Manager(ManagerAction::Provision {
+                manager: "brew".to_string(),
+                via: "homebrew installer".to_string(),
+                batched: vec![],
+                depends_on: vec![],
+            }),
+            module_install_action("nvim", "brew", "neovim"),
+        ],
+    );
+
+    assert_eq!(
+        owner_tokens(&phase),
+        vec!["cfgd:managers", "module:nvim"],
+        "a manager action is cfgd's, not the profile's whose planner emitted it"
+    );
+    assert_eq!(phase.groups()[0].actions.len(), 1);
+}
+
+#[test]
+fn no_manager_action_builds_no_managers_group() {
+    let phase = Phase::from_actions(
+        PhaseName::Packages,
+        &Owner::profile("work"),
+        vec![
+            install_action("brew", &["ripgrep"]),
+            module_install_action("nvim", "brew", "neovim"),
+        ],
+    );
+
+    assert_eq!(owner_tokens(&phase), vec!["profile:work", "module:nvim"]);
+    assert!(
+        !phase
+            .groups()
+            .iter()
+            .any(|g| g.owner.kind == OwnerKind::Cfgd),
+        "an owner with no actions in a phase produces no group"
+    );
+}
+
+#[test]
+fn module_package_work_dispatches_before_profile_package_work() {
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("brew", &log, true)));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let plan = packages_phase(vec![
+        install_action("brew", &["fd"]),
+        module_install_action("nvim", "brew", "neovim"),
+    ]);
+    let modules = vec![module_for("nvim", "brew", "neovim")];
+
+    let result = run_apply(&reconciler, &plan, &modules, None);
+
+    assert_eq!(
+        dispatch_log(&log),
+        vec!["install:brew:neovim", "install:brew:fd"],
+        "a module's package work is a barrier ahead of the profile's, whatever the display order"
+    );
+    assert_eq!(result.status, ApplyStatus::Success);
+}
+
+#[test]
+fn apply_manager_provision_is_skipped_when_already_available() {
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("brew", &log, true)));
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("test"),
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: "brew".to_string(),
+                via: "homebrew installer".to_string(),
+                batched: vec![],
+                depends_on: vec![],
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    let (result, _) = apply_manager_plan(&registry, &state, &plan);
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(result.action_results[0].success);
+    assert!(
+        !dispatch_log(&log).iter().any(|e| e == "bootstrap:brew"),
+        "an already-available manager's bootstrap() is never called: {:?}",
+        dispatch_log(&log)
+    );
+}
+
+#[test]
+fn action_index_is_the_plan_position_not_the_dispatch_counter() {
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let build_plan = || Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::profile("work"),
+                vec![Action::Manager(ManagerAction::Provision {
+                    manager: "brew".to_string(),
+                    via: "homebrew installer".to_string(),
+                    batched: vec![],
+                    depends_on: vec![],
+                })],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("work"),
+                vec![
+                    install_action("brew", &["fd"]),
+                    module_install_action("nvim", "brew", "neovim"),
+                ],
+            ),
+            Phase::from_actions(
+                PhaseName::Files,
+                &Owner::profile("work"),
+                vec![Action::File(FileAction::Skip {
+                    target: PathBuf::from("/home/u/.gitconfig"),
+                    reason: "in sync".to_string(),
+                    origin: "local".to_string(),
+                })],
+            ),
+        ],
+        warnings: vec![],
+    };
+    let modules = vec![module_for("nvim", "brew", "neovim")];
+
+    let plan = build_plan();
+    let result = run_apply(&reconciler, &plan, &modules, None);
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    // `journal_entries` orders by `action_index`, so this vec IS the recorded
+    // plan order.
+    let entries = state.journal_entries(result.apply_id).unwrap();
+    assert_eq!(
+        entries.iter().map(|e| e.action_index).collect::<Vec<_>>(),
+        vec![0, 1, 2, 3],
+        "the column stays dense across the run"
+    );
+    let by_plan: Vec<&str> = entries.iter().map(|e| e.resource_id.as_str()).collect();
+    assert_eq!(
+        by_plan,
+        vec![
+            "provision:brew",
+            "brew:install:fd",
+            "nvim:packages:neovim",
+            "/home/u/.gitconfig",
+        ],
+        "indices follow the flattened group order, not dispatch order"
+    );
+
+    // Row ids ascend in insertion order, which is dispatch order — and it is a
+    // different order, which is what makes the derivation change observable:
+    // module-owned Packages work dispatches before the profile's, even though
+    // the profile's action was declared first.
+    let mut by_dispatch: Vec<(i64, &str)> = entries
+        .iter()
+        .map(|e| (e.id, e.resource_id.as_str()))
+        .collect();
+    by_dispatch.sort_by_key(|(id, _)| *id);
+    assert_eq!(
+        by_dispatch.iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+        vec![
+            "provision:brew",
+            "nvim:packages:neovim",
+            "brew:install:fd",
+            "/home/u/.gitconfig",
+        ]
+    );
+
+    // A `--phase`-filtered run indexes only the actions that survive the
+    // filter, dense from zero — exactly what the pre-change dispatch counter
+    // produced.
+    let filtered_plan = build_plan();
+    let filtered = run_apply(
+        &reconciler,
+        &filtered_plan,
+        &modules,
+        Some(&PhaseFilter::Phase(PhaseName::Files)),
+    );
+    let filtered_entries = state.journal_entries(filtered.apply_id).unwrap();
+    assert_eq!(
+        filtered_entries
+            .iter()
+            .map(|e| (e.action_index, e.resource_id.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(0, "/home/u/.gitconfig")]
+    );
+}
+
+// --- concurrent package lanes ---
+
+/// An apply driven on a worker thread, so the test thread can steer a fixture's
+/// rendezvous while lanes are still in flight.
+struct ConcurrentApply {
+    registry: ProviderRegistry,
+    state: crate::state::StateStore,
+    plan: Plan,
+    modules: Vec<ResolvedModule>,
+    abort: crate::AbortFlag,
+}
+
+struct ConcurrentOutcome {
+    result: ApplyResult,
+    state: crate::state::StateStore,
+    transcript: String,
+}
+
+impl ConcurrentApply {
+    fn new(registry: ProviderRegistry, plan: Plan) -> Self {
+        Self {
+            registry,
+            state: test_state(),
+            plan,
+            modules: Vec::new(),
+            abort: crate::AbortFlag::new(),
+        }
+    }
+
+    fn with_modules(mut self, modules: Vec<ResolvedModule>) -> Self {
+        self.modules = modules;
+        self
+    }
+
+    /// Drive the run with a flag the test also holds, so a driver closure can
+    /// request cancellation at a rendezvous it chose rather than racing a
+    /// timer for it.
+    fn with_abort(mut self, abort: crate::AbortFlag) -> Self {
+        self.abort = abort;
+        self
+    }
+
+    fn run(self, drive: impl FnOnce()) -> ConcurrentOutcome {
+        self.run_watching(|_| drive())
+    }
+
+    /// [`ConcurrentApply::run`] with the transcript readable from the driving
+    /// thread, for an assertion about what is on screen WHILE the lanes are
+    /// still holding rather than about what the run left behind.
+    fn run_watching(self, drive: impl FnOnce(&crate::output::DocCapture)) -> ConcurrentOutcome {
+        let (printer, cap) = crate::output::Printer::for_test_doc();
+        let watch = cap.clone();
+        let (result, state) = self.run_on(printer, || drive(&watch));
+        ConcurrentOutcome {
+            result,
+            state,
+            transcript: crate::output::strip_ansi(&cap.human()),
+        }
+    }
+
+    /// The run as a TERMINAL leaves it: the phase's rows are drawn in a live
+    /// region, and the transcript is the permanent scrollback they committed
+    /// to — what the reader still has once the region is gone.
+    fn run_live(self, drive: impl FnOnce()) -> ConcurrentOutcome {
+        let (printer, buf) = crate::output::Printer::for_test_live_scrollback();
+        let (result, state) = self.run_on(printer, drive);
+        let transcript = crate::output::strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        ConcurrentOutcome {
+            result,
+            state,
+            transcript,
+        }
+    }
+
+    /// Apply on a worker thread with `printer`, running `drive` here meanwhile.
+    fn run_on(
+        self,
+        printer: crate::output::Printer,
+        drive: impl FnOnce(),
+    ) -> (ApplyResult, crate::state::StateStore) {
+        let Self {
+            registry,
+            state,
+            plan,
+            modules,
+            abort,
+        } = self;
+        let worker = std::thread::spawn(move || {
+            let result = {
+                let reconciler = Reconciler::new(&registry, &state);
+                reconciler
+                    .apply(
+                        &plan,
+                        &make_empty_resolved(),
+                        Path::new("."),
+                        &printer,
+                        None,
+                        &modules,
+                        ReconcileContext::Apply,
+                        false,
+                        None,
+                        &abort,
+                    )
+                    .expect("apply")
+            };
+            (result, state)
+        });
+        drive();
+        worker.join().expect("apply thread")
+    }
+}
+
+fn lane_registry(managers: Vec<DispatchLogManager>) -> ProviderRegistry {
+    let mut registry = ProviderRegistry::new();
+    for manager in managers {
+        registry.package_managers.push(Box::new(manager));
+    }
+    registry
+}
+
+#[test]
+fn worked_example_nvim_takes_brew_while_tmux_holds_apt() {
+    // `tmux` declares apt only; `nvim` declares brew and apt.
+    let probe = LaneProbe::holding(&["brew:neovim", "apt:tmux"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("nvim", "apt", "ripgrep"),
+        module_install_action("tmux", "apt", "tmux"),
+    ]);
+    let modules = vec![
+        module_with("nvim", &[("brew", "neovim"), ("apt", "ripgrep")]),
+        module_for("tmux", "apt", "tmux"),
+    ];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            // 1. `nvim` takes brew, because nothing holds it.
+            // 2. `tmux` takes apt.
+            assert!(
+                driver.await_in_flight(2),
+                "two managers, two lanes: {:?}",
+                driver.events()
+            );
+            assert!(driver.started("brew:neovim") && driver.started("apt:tmux"));
+            assert!(
+                !driver.started("apt:ripgrep"),
+                "an owner already holding a lane must not take a second one \
+                 while another owner's only manager is idle: {:?}",
+                driver.events()
+            );
+
+            // 3. brew finishes; `nvim`'s apt work waits, because `tmux` still
+            //    holds apt.
+            driver.release("brew:neovim");
+            assert!(driver.await_finished("brew:neovim"));
+            assert!(
+                !driver.started("apt:ripgrep"),
+                "nvim's apt work started while tmux still held apt: {:?}",
+                driver.events()
+            );
+
+            // 4. `tmux`'s apt finishes; `nvim`'s apt proceeds.
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let events = probe.events();
+    assert!(
+        event_at(&events, "start:apt:ripgrep") > event_at(&events, "end:apt:tmux"),
+        "{events:?}"
+    );
+    assert_eq!(probe.peak(), 2, "the phase really ran two lanes at once");
+}
+
+#[test]
+fn one_owners_actions_still_fill_every_free_lane() {
+    // The other half of the owner's-turn rule: with no second owner to yield a
+    // lane to, one owner's actions run across every manager in the phase, which
+    // is the concurrency bound rule 1 states.
+    let probe = LaneProbe::holding(&["brew:fd", "apt:curl"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        install_action("brew", &["fd"]),
+        install_action("apt", &["curl"]),
+    ]);
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan).run(move || {
+        assert!(
+            driver.await_in_flight(2),
+            "one owner, two managers, two lanes: {:?}",
+            driver.events()
+        );
+        driver.release_all();
+    });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    assert_eq!(probe.peak(), 2);
+}
+
+#[test]
+fn an_owners_second_lane_keeps_it_busy_after_its_first_finishes() {
+    // `nvim` holds two lanes at once (brew:neovim, apt:ripgrep) and has a
+    // third, still-pending action on brew (tree-sitter) that can only become
+    // eligible once brew frees. `zsh`'s only action also wants brew and is
+    // blocked the same way. Occupancy accounting is what decides who gets the
+    // lane brew frees: correct accounting still counts nvim as busy — its
+    // apt:ripgrep lane is still running — so zsh, the owner with no lane at
+    // all, takes it. A `HashSet` that dropped nvim from `owners_busy` the
+    // moment its FIRST lane finished would hand the freed lane back to nvim's
+    // own tree-sitter action instead, since that action is earlier in
+    // dispatch order than zsh's.
+    let probe = LaneProbe::holding(&[
+        "brew:neovim",
+        "apt:ripgrep",
+        "brew:tree-sitter",
+        "brew:zshpkg",
+    ]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("nvim", "apt", "ripgrep"),
+        module_install_action("nvim", "brew", "tree-sitter"),
+        module_install_action("zsh", "brew", "zshpkg"),
+    ]);
+    let modules = vec![
+        module_with(
+            "nvim",
+            &[
+                ("brew", "neovim"),
+                ("apt", "ripgrep"),
+                ("brew", "tree-sitter"),
+            ],
+        ),
+        module_for("zsh", "brew", "zshpkg"),
+    ];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            assert!(
+                driver.await_in_flight(2),
+                "nvim holds both lanes at once: {:?}",
+                driver.events()
+            );
+            assert!(driver.started("brew:neovim") && driver.started("apt:ripgrep"));
+            assert!(
+                !driver.started("brew:tree-sitter") && !driver.started("brew:zshpkg"),
+                "brew is fully occupied by neovim: {:?}",
+                driver.events()
+            );
+
+            // Free brew, but leave apt (nvim's second lane) running.
+            driver.release("brew:neovim");
+            assert!(driver.await_finished("brew:neovim"));
+            assert!(
+                driver.await_started("brew:zshpkg"),
+                "zsh must take the freed lane; nvim is still busy on apt: {:?}",
+                driver.events()
+            );
+            assert!(
+                !driver.started("brew:tree-sitter"),
+                "brew is exclusive: nvim's own pending action cannot also be running: {:?}",
+                driver.events()
+            );
+
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let events = probe.events();
+    assert!(
+        event_at(&events, "start:brew:zshpkg") < event_at(&events, "start:brew:tree-sitter"),
+        "the fresh owner takes the freed lane before nvim's own remaining action: {events:?}"
+    );
+    assert!(
+        event_at(&events, "start:brew:tree-sitter") > event_at(&events, "end:brew:zshpkg"),
+        "brew is one lane: nvim's third action only starts once zsh's is done: {events:?}"
+    );
+}
+
+#[test]
+fn profile_packages_never_dispatch_before_module_packages_complete() {
+    // The assertion a partition cannot make and a barrier must: the profile's
+    // lane is free the whole time and it still does not start.
+    let probe = LaneProbe::holding(&["apt:neovim"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        install_action("brew", &["fd"]),
+        module_install_action("nvim", "apt", "neovim"),
+    ]);
+    let modules = vec![module_for("nvim", "apt", "neovim")];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            assert!(driver.await_started("apt:neovim"));
+            assert!(
+                !driver.started("brew:fd"),
+                "tier 1 dispatched while tier 0 was still running: {:?}",
+                driver.events()
+            );
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let events = probe.events();
+    assert!(
+        event_at(&events, "start:brew:fd") > event_at(&events, "end:apt:neovim"),
+        "a tier is released when the tier above COMPLETES: {events:?}"
+    );
+}
+
+#[test]
+fn a_lane_worker_resolves_tilde_against_the_callers_test_home() {
+    // `dispatch_package_lanes` spawns each action on a fresh `thread::scope`
+    // worker, and a fresh thread does not inherit `TEST_HOME_OVERRIDE` — a
+    // thread-local — unless the coordinator explicitly carries it across. A
+    // `prefer: [script]` package install resolves its default working
+    // directory from `~` (`script_default_workdir`) ON the worker thread, so
+    // it is the one production call this dispatcher makes that can prove the
+    // override actually made the trip: run the apply synchronously (so this
+    // test thread is the one `dispatch_package_lanes` spawns FROM, the same
+    // thread the guard below is installed on) and assert the script's own
+    // child process actually ran with that directory as its CWD — proof at
+    // the OS level, not just a re-read of the Rust-side thread-local.
+    let home = tempfile::tempdir().expect("tempdir");
+    let _guard = crate::with_test_home_guard(home.path());
+
+    let registry = lane_registry(vec![]);
+    let modules = vec![make_resolved_module("toolbox")];
+    let plan = packages_phase(vec![module_script_install_action(
+        "toolbox",
+        "widget",
+        "touch marker.txt",
+    )]);
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &make_empty_resolved(),
+            Path::new("."),
+            &printer,
+            None,
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply");
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(
+        home.path().join("marker.txt").exists(),
+        "the lane worker's script did not run against the test home {:?}: {:?}",
+        home.path(),
+        std::fs::read_dir(home.path())
+            .map(|entries| entries
+                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .collect::<Vec<_>>())
+            .unwrap_or_default()
+    );
+}
+
+#[test]
+fn a_dependents_packages_wait_for_its_dependencys_packages_to_complete() {
+    let probe = LaneProbe::holding(&["apt:gcc"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("base", "apt", "gcc"),
+    ]);
+    let mut nvim = module_for("nvim", "brew", "neovim");
+    nvim.depends = vec!["base".to_string()];
+    let modules = vec![nvim, module_for("base", "apt", "gcc")];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            assert!(driver.await_started("apt:gcc"));
+            assert!(
+                !driver.started("brew:neovim"),
+                "a dependent started while its dependency was still running: {:?}",
+                driver.events()
+            );
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let events = probe.events();
+    assert!(
+        event_at(&events, "start:brew:neovim") > event_at(&events, "end:apt:gcc"),
+        "{events:?}"
+    );
+    assert_eq!(probe.peak(), 1, "a declared edge is not concurrency");
+}
+
+#[test]
+fn a_dispatch_stall_fails_the_run_and_names_the_stuck_action() {
+    // Two modules whose `depends` point at each other: neither's
+    // `depends_satisfied` can ever be true, so nothing is ever dispatched —
+    // `pick_next` returns `None` forever with no worker in flight to unblock
+    // it. Before this fix that silently ended the run `Success` (the
+    // `running == 0` branch only logged a `tracing::warn!`); the fix collects
+    // every still-`Waiting` slot as a failed action, so a stall reads as the
+    // failed run it is and names the manager it never got a lane on. Run on a
+    // bounded channel rather than joined directly: a regression that turned
+    // this back into a real loop must fail the test, not hang the suite.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![DispatchLogManager::new("brew", &log, true)]);
+    let plan = packages_phase(vec![
+        module_install_action("alpha", "brew", "alpha-pkg"),
+        module_install_action("beta", "brew", "beta-pkg"),
+    ]);
+    let mut alpha = module_for("alpha", "brew", "alpha-pkg");
+    alpha.depends = vec!["beta".to_string()];
+    let mut beta = module_for("beta", "brew", "beta-pkg");
+    beta.depends = vec!["alpha".to_string()];
+    let modules = vec![alpha, beta];
+    let state = test_state();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let reconciler = Reconciler::new(&registry, &state);
+        let outcome = run_apply(&reconciler, &plan, &modules, None);
+        let _ = tx.send(outcome);
+    });
+    let result = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("a dispatch stall must terminate the run, not hang it");
+
+    assert_eq!(result.status, ApplyStatus::Failed);
+    assert_eq!(
+        result.action_results.len(),
+        2,
+        "{:?}",
+        result.action_results
+    );
+    for stuck in &result.action_results {
+        assert!(!stuck.success, "{stuck:?}");
+        assert!(
+            stuck
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("brew") && e.contains("stalled")),
+            "the stuck action's own manager must be named: {stuck:?}"
+        );
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn a_lane_worker_blocks_behind_an_exclusively_held_path_lock() {
+    // The write half of `PATH_ENV_LOCK` is taken here, on the TEST thread,
+    // before `ConcurrentApply` ever spawns the worker that runs
+    // `dispatch_package_lanes` — so `path_env_exclusive_guard_held()`'s
+    // own-thread precondition check (evaluated on the worker thread) never
+    // trips, and the write guard is provably held for the worker's entire
+    // dispatch window. If the lane worker takes its own
+    // `path_env_read_guard()` before running the action (the fix), it blocks
+    // on `PATH_ENV_LOCK` for as long as this thread holds the write half, so
+    // `install` cannot have recorded anything by the time `drive()` checks.
+    // A worker missing that guard races straight past the held lock and
+    // finishes near-instantly instead.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![DispatchLogManager::new("brew", &log, true)]);
+    let plan = packages_phase(vec![module_install_action("alpha", "brew", "alpha-pkg")]);
+    let modules = vec![module_for("alpha", "brew", "alpha-pkg")];
+
+    let excl = crate::test_helpers::path_env_mutation_guard();
+    let drive_log = std::sync::Arc::clone(&log);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            assert!(
+                dispatch_log(&drive_log).is_empty(),
+                "a lane worker without its own path_env_read_guard() raced \
+                 ahead of the held write lock and ran the action anyway: {:?}",
+                dispatch_log(&drive_log)
+            );
+            drop(excl);
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    assert_eq!(
+        dispatch_log(&log),
+        vec!["install:brew:alpha-pkg".to_string()],
+        "the action must still run to completion once the lock is released"
+    );
+}
+
+#[test]
+fn unavailable_manager_action_drains_the_phase() {
+    // A manager the registry reports unavailable forces every action naming
+    // it to run alone in the phase — provisioning now happens ahead of time,
+    // in Prerequisites, so this is the defensive floor for a manager that is
+    // STILL unavailable when Packages runs (a provision that failed, or a
+    // manager no Prerequisites node ever named).
+    let probe = LaneProbe::holding(&["brew:neovim"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, false).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("tmux", "apt", "tmux"),
+    ]);
+    let modules = vec![
+        module_for("nvim", "brew", "neovim"),
+        module_for("tmux", "apt", "tmux"),
+    ];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            assert!(driver.await_started("brew:neovim"));
+            assert_eq!(
+                driver.in_flight(),
+                1,
+                "an action on a not-currently-available manager must run alone: {:?}",
+                driver.events()
+            );
+            assert!(!driver.started("apt:tmux"));
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let events = probe.events();
+    assert!(event_at(&events, "end:brew:neovim") < event_at(&events, "start:apt:tmux"));
+    assert_eq!(probe.peak(), 1);
+}
+
+#[test]
+// `set_hook` is process-wide: without this, a concurrently running test that
+// panics loses its message to the silencer below, and two tests swapping the
+// hook race on restoring it.
+#[serial_test::serial]
+fn a_panicking_lane_fails_its_action_and_the_phase_finishes() {
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true).panicking(),
+        DispatchLogManager::new("apt", &log, true),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("tmux", "apt", "tmux"),
+    ]);
+    let modules = vec![
+        module_for("nvim", "brew", "neovim"),
+        module_for("tmux", "apt", "tmux"),
+    ];
+
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(|| {});
+    std::panic::set_hook(hook);
+
+    let failed = outcome
+        .result
+        .action_results
+        .iter()
+        .find(|r| !r.success)
+        .expect("the panicking lane's action failed");
+    assert!(
+        failed.error.as_deref().unwrap_or_default().contains("brew"),
+        "the failure names the lane's manager: {:?}",
+        failed.error
+    );
+    assert!(
+        dispatch_log(&log).contains(&"install:apt:tmux".to_string()),
+        "a panicking worker must not stall the coordinator: {:?}",
+        dispatch_log(&log)
+    );
+}
+
+#[test]
+fn lane_state_writes_are_serialized_through_the_coordinator() {
+    // Both lanes write and read package state while the coordinator is parked
+    // in `recv()`: the proxy has to be serviced from the same loop that
+    // collects completions, or this deadlocks.
+    let probe = LaneProbe::holding(&["brew:neovim", "apt:tmux"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true)
+            .with_probe(&probe)
+            .with_state_writes(),
+        DispatchLogManager::new("apt", &log, true)
+            .with_probe(&probe)
+            .with_state_writes(),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("tmux", "apt", "tmux"),
+    ]);
+    let modules = vec![
+        module_for("nvim", "brew", "neovim"),
+        module_for("tmux", "apt", "tmux"),
+    ];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            assert!(driver.await_in_flight(2), "{:?}", driver.events());
+            driver.release_all();
+        });
+
+    use crate::providers::PackageStateStore as _;
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    for manager in ["brew", "apt"] {
+        assert_eq!(
+            outcome
+                .state
+                .resolved_prefix(manager)
+                .unwrap()
+                .map(|(prefix, _)| prefix),
+            Some(format!("/opt/{manager}")),
+            "a lane's write reached the one connection"
+        );
+    }
+}
+
+#[test]
+fn rollback_report_reads_in_completion_order_not_plan_order() {
+    // Plan order and completion order have to DISAGREE, or the report's
+    // ordering column is unobservable. The tier barrier is what makes them
+    // disagree without a race: the profile's package sorts first in the plan
+    // and dispatches last, because tier 1 is released only once every tier-0
+    // action has completed. Forcing the same inversion by holding one lane
+    // would leave the last two completions racing for the channel.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true),
+        DispatchLogManager::new("apt", &log, true),
+    ]);
+    let plan = packages_phase(vec![
+        install_action("brew", &["fd"]),
+        module_install_action("nvim", "apt", "neovim"),
+    ]);
+    let modules = vec![module_for("nvim", "apt", "neovim")];
+
+    let job = ConcurrentApply::new(registry, plan).with_modules(modules);
+    // The apply to roll back TO: the report collects what ran AFTER it.
+    let baseline = job
+        .state
+        .record_apply("test", "hash1", ApplyStatus::Success, None)
+        .unwrap();
+    let outcome = job.run(|| {});
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let entries = outcome
+        .state
+        .journal_entries(outcome.result.apply_id)
+        .unwrap();
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| (e.action_index, e.resource_id.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(0, "brew:install:fd"), (1, "nvim:packages:neovim"),],
+        "the plan position is unchanged by the dispatch order"
+    );
+
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &outcome.state);
+    let rollback = reconciler
+        .rollback_apply(baseline, &test_printer())
+        .expect("rollback");
+    assert_eq!(
+        rollback
+            .non_file_actions
+            .iter()
+            .map(|(_, resource)| resource.as_str())
+            .collect::<Vec<_>>(),
+        vec!["brew:install:fd", "nvim:packages:neovim"],
+        "most recent first is COMPLETION order, not plan order"
+    );
+    assert_eq!(
+        (rollback.files_restored, rollback.files_removed),
+        (0, 0),
+        "the restore reads file_backups and is untouched by the report's order"
+    );
+}
+
+#[test]
+fn aborted_dispatch_starts_nothing_new_and_records_aborted() {
+    let probe = LaneProbe::holding(&["apt:neovim"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    // One lane, two actions: the second cannot already be in flight when the
+    // abort lands, so "dispatches nothing new" is observable.
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "apt", "neovim"),
+        module_install_action("tmux", "apt", "tmux"),
+    ]);
+    let modules = vec![
+        module_for("nvim", "apt", "neovim"),
+        module_for("tmux", "apt", "tmux"),
+    ];
+
+    let job = ConcurrentApply::new(registry, plan).with_modules(modules);
+    let abort = job.abort.clone();
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = job.run(move || {
+        assert!(driver.await_started("apt:neovim"));
+        abort.set(130);
+        driver.release_all();
+    });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Aborted);
+    assert!(
+        !probe.started("apt:tmux"),
+        "an action dispatched after the abort: {:?}",
+        probe.events()
+    );
+    assert!(
+        probe.events().contains(&"end:apt:neovim".to_string()),
+        "an in-flight lane still finishes: {:?}",
+        probe.events()
+    );
+}
+
+#[test]
+fn concurrent_phase_tree_matches_sequential_tree() {
+    let tree_for = |forced_to_one_lane: bool| {
+        let log = new_dispatch_log();
+        let manager = |name: &str| {
+            let m = DispatchLogManager::new(name, &log, !forced_to_one_lane);
+            if forced_to_one_lane {
+                m.stays_unavailable()
+            } else {
+                m
+            }
+        };
+        let registry = lane_registry(vec![manager("brew"), manager("apt")]);
+        let plan = packages_phase(vec![
+            module_install_action("nvim", "brew", "neovim"),
+            module_install_action("tmux", "apt", "tmux"),
+        ]);
+        let modules = vec![
+            module_for("nvim", "brew", "neovim"),
+            module_for("tmux", "apt", "tmux"),
+        ];
+        let outcome = ConcurrentApply::new(registry, plan)
+            .with_modules(modules)
+            .run(|| {});
+        assert_eq!(outcome.result.status, ApplyStatus::Success);
+        packages_tree(&outcome.transcript)
+    };
+
+    assert_eq!(
+        tree_for(false),
+        tree_for(true),
+        "the phase tree is the plan's shape, never the dispatch's"
+    );
+}
+
+/// The `Packages` phase block of a transcript, with elapsed times folded — the
+/// tree, without the run header the index refresh differs in.
+fn packages_tree(transcript: &str) -> Vec<String> {
+    let normalized = crate::normalize_snapshot_durations(transcript);
+    normalized
+        .lines()
+        .skip_while(|l| !l.trim_start().starts_with("Phase: Packages"))
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn non_tty_concurrent_phase_captures_not_streams() {
+    // Two lanes interleave their child output in TIME; off a TTY each action's
+    // output has to come back as one contiguous block, or a CI log and every
+    // golden are non-deterministic. The capture path is reachable here without
+    // a redirected suite, because a test printer pins its live region off.
+    let probe = LaneProbe::holding(&["brew:neovim", "apt:tmux"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true)
+            .with_probe(&probe)
+            .with_lane_lines("brew-line-one", "brew-line-two"),
+        DispatchLogManager::new("apt", &log, true)
+            .with_probe(&probe)
+            .with_lane_lines("apt-line-one", "apt-line-two"),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("tmux", "apt", "tmux"),
+    ]);
+    let modules = vec![
+        module_for("nvim", "brew", "neovim"),
+        module_for("tmux", "apt", "tmux"),
+    ];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            // Both lanes have written their FIRST line by now, so a streaming
+            // lane would have put them side by side.
+            assert!(driver.await_in_flight(2), "{:?}", driver.events());
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let lines = transcript_lines(&outcome.transcript);
+    let at = |needle: &str| {
+        lines
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no {needle:?} in {lines:?}"))
+    };
+    assert_eq!(
+        at("brew-line-two"),
+        at("brew-line-one") + 1,
+        "a lane's body is one block: {lines:?}"
+    );
+    assert_eq!(
+        at("apt-line-two"),
+        at("apt-line-one") + 1,
+        "a lane's body is one block: {lines:?}"
+    );
+    assert!(
+        at("brew install neovim") < at("brew-line-one"),
+        "the body sits beneath the action it belongs to: {lines:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_script_install_reports_through_its_lane() {
+    // A `prefer: [script]` install is the one package arm whose child process
+    // cfgd spawns itself, so it is the arm most likely to be routed at the
+    // printer by hand. Through the printer its body streams at ambient phase
+    // depth WHILE the action runs — above the line naming it, interleaved with
+    // every other lane — and the script settles a second status line beside the
+    // coordinator's. Through the lane it does neither.
+    let plan = packages_phase(vec![module_script_install_action(
+        "nvim",
+        "pynvim",
+        "echo script-body-line",
+    )]);
+    let mut module = make_resolved_module("nvim");
+    module.packages = vec![script_resolved_package("pynvim", "echo script-body-line")];
+
+    let outcome = ConcurrentApply::new(lane_registry(vec![]), plan)
+        .with_modules(vec![module])
+        .run(|| {});
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let lines = transcript_lines(&outcome.transcript);
+    let at = |needle: &str| {
+        lines
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no {needle:?} in {lines:?}"))
+    };
+    assert!(
+        at("pynvim") < at("script-body-line"),
+        "the script's body sits beneath the action it belongs to: {lines:?}"
+    );
+    assert_eq!(
+        status_line_count(&outcome.transcript),
+        1,
+        "the action's one status line is the coordinator's: {lines:?}"
+    );
+}
+
+#[test]
+fn a_failing_laned_script_install_reports_its_own_exit_status() {
+    // Inside a lane the script settles no line of its own, so the coordinator's
+    // is the ONLY one the reader gets. A mapped error that discarded the
+    // script's message would open with "something failed" and say nothing about
+    // what — the captured body below it is not a substitute for the first line.
+    let plan = packages_phase(vec![module_script_install_action(
+        "nvim", "pynvim", "exit 3",
+    )]);
+    let mut module = make_resolved_module("nvim");
+    module.packages = vec![script_resolved_package("pynvim", "exit 3")];
+
+    let outcome = ConcurrentApply::new(lane_registry(vec![]), plan)
+        .with_modules(vec![module])
+        .run(|| {});
+
+    assert_eq!(outcome.result.status, ApplyStatus::Failed);
+    let failure = outcome
+        .result
+        .action_results
+        .iter()
+        .find(|r| !r.success)
+        .and_then(|r| r.error.clone())
+        .unwrap_or_else(|| panic!("no failed action in {:?}", outcome.result.action_results));
+    assert!(
+        failure.contains("exit 3"),
+        "the coordinator's error carries the script's own exit status: {failure}"
+    );
+    let settled = crate::test_helpers::settled_status_lines(&outcome.transcript);
+    assert!(
+        settled.iter().any(|l| l.contains("exit 3")),
+        "and reaches the action's status line: {settled:?}"
+    );
+}
+
+#[test]
+fn a_live_region_commits_each_lane_action_once_and_in_dispatch_order() {
+    // The whole contract, through the real dispatcher: `tmux`'s apt work is
+    // released FIRST and still commits second, because `nvim`'s brew work was
+    // dispatched ahead of it and a row never moves. Each line is written
+    // exactly once — the tree settles what it drew, so `emit_phase_tree` has
+    // nothing left to re-emit.
+    //
+    // `zsh` is the rendezvous rather than a third subject: it shares tmux's
+    // apt lane, and the coordinator collects a finished action — settling its
+    // row — BEFORE the dispatch pass that can hand that lane to the next
+    // action. So `start:apt:zsh` is the observable that tmux is SETTLED,
+    // where `end:apt:tmux` says only that the manager's `install` returned.
+    // Waiting on the weaker one leaves "nvim still running while tmux is
+    // already settled" to timing; waiting on this one establishes it. Its name
+    // sorts last because groups render in `Owner::sort_key` order, which is
+    // the dispatch order this test is about.
+    let probe = LaneProbe::holding(&["brew:neovim", "apt:tmux", "apt:zsh"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("tmux", "apt", "tmux"),
+        module_install_action("zsh", "apt", "zsh"),
+    ]);
+    let modules = vec![
+        module_for("nvim", "brew", "neovim"),
+        module_for("tmux", "apt", "tmux"),
+        module_for("zsh", "apt", "zsh"),
+    ];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run_live(move || {
+            assert!(driver.await_in_flight(2), "{:?}", driver.events());
+            driver.release("apt:tmux");
+            assert!(driver.await_started("apt:zsh"), "{:?}", driver.events());
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let transcript = &outcome.transcript;
+    for once in [
+        "brew install neovim",
+        "apt install tmux",
+        "apt install zsh",
+        "module:nvim",
+        "module:tmux",
+        "module:zsh",
+    ] {
+        assert_eq!(
+            transcript.matches(once).count(),
+            1,
+            "{once:?} reached the scrollback twice: {transcript}"
+        );
+    }
+    let at = |needle: &str| {
+        transcript
+            .find(needle)
+            .unwrap_or_else(|| panic!("no {needle:?} in {transcript}"))
+    };
+    assert!(
+        at("brew install neovim") < at("apt install tmux"),
+        "the scrollback followed completion order rather than dispatch order: {transcript}"
+    );
+    assert!(
+        at("apt install tmux") < at("apt install zsh"),
+        "the rest of the phase followed the head out of order: {transcript}"
+    );
+}
+
+#[test]
+fn a_lane_dispatch_is_not_stalled_by_a_test_that_is_waiting_to_mutate_path() {
+    // The shape that made the ordering test above flaky under a loaded suite.
+    // Every lane worker takes the shared `PATH` guard for its whole body, so a
+    // worker parked in this probe is a READER that cannot leave until the
+    // dispatch moves on — and the dispatch cannot move on until the NEXT
+    // worker, a fresh thread taking a real read, starts. Any of the binary's
+    // `PATH`-mutating tests queueing a writer between those two acquisitions
+    // used to shut the second one out, deadlocking the probe, the writer and
+    // every other reader until the probe's timeout expired a minute later.
+    let probe = LaneProbe::holding(&["brew:neovim", "apt:tmux", "apt:zsh"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("tmux", "apt", "tmux"),
+        module_install_action("zsh", "apt", "zsh"),
+    ]);
+    let modules = vec![
+        module_for("nvim", "brew", "neovim"),
+        module_for("tmux", "apt", "tmux"),
+        module_for("zsh", "apt", "zsh"),
+    ];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run_live(move || {
+            assert!(driver.await_in_flight(2), "{:?}", driver.events());
+            let mutator = std::thread::spawn(|| {
+                let _exclusive = crate::test_helpers::path_env_mutation_guard();
+            });
+            assert!(
+                crate::test_helpers::await_queued_path_writer(LANE_PROBE_TIMEOUT),
+                "the mutating test never reached the gate"
+            );
+            // `zsh` is dispatched onto the lane `tmux` frees, so its worker
+            // takes its read guard with the writer already queued and `neovim`
+            // still inside.
+            driver.release("apt:tmux");
+            assert!(driver.await_started("apt:zsh"), "{:?}", driver.events());
+            driver.release_all();
+            mutator.join().expect("the mutation window closes");
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+}
+
+#[test]
+fn a_live_region_commits_swept_dependents_once_in_dispatch_order() {
+    // Concern 3 of the elision re-review: the only test driving
+    // `fail_dependents` (`a_failed_node_fails_its_dependents_with_the_root_cause`)
+    // runs off a TTY, where `settles_in_place == false` and `PhaseTree::settled`
+    // is never reached — so no test proved the real `LaneCollector`/
+    // `fail_dependents` wiring reaches a LIVE tree at all. This re-drives the
+    // same failure — brew's provision fails, npm and pnpm sweep behind it,
+    // neither ever dispatched — through the real dispatcher with a live
+    // region, end to end through `apply.rs`'s own settle closure. (The
+    // `held_unseen()` summary claim — that the swept rows are counted while
+    // genuinely held, not yet committed — is pinned deterministically in
+    // `lanes.rs`'s own test module, where the tree's head can be pinned
+    // Running without a race.)
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, false).stays_unavailable(),
+        DispatchLogManager::new("npm", &log, false),
+        DispatchLogManager::new("pnpm", &log, false),
+    ]);
+    let plan = prerequisites_phase(vec![
+        provision_node("brew", "curl", &[]),
+        provision_node("npm", "brew", &[ManagerAction::provision_node("brew")]),
+        provision_node("pnpm", "npm", &[ManagerAction::provision_node("npm")]),
+    ]);
+
+    let outcome = ConcurrentApply::new(registry, plan).run_live(|| {});
+    assert_eq!(outcome.result.status, ApplyStatus::Failed);
+    let transcript = &outcome.transcript;
+    for once in ["provision npm via brew", "provision pnpm via npm"] {
+        assert_eq!(
+            transcript.matches(once).count(),
+            1,
+            "{once:?} did not commit exactly once: {transcript}"
+        );
+    }
+    assert_eq!(
+        transcript
+            .matches("did not run — brew failed earlier in this phase")
+            .count(),
+        2,
+        "both dependents must name the root cause: {transcript}"
+    );
+    let at = |needle: &str| {
+        transcript
+            .find(needle)
+            .unwrap_or_else(|| panic!("no {needle:?} in {transcript}"))
+    };
+    assert!(
+        at("provision npm via brew") < at("provision pnpm via npm"),
+        "the sweep did not commit in dispatch order: {transcript}"
+    );
+}
+
+#[test]
+fn wait_line_never_reaches_the_transcript() {
+    let probe = LaneProbe::holding(&["apt:tmux"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, true).with_probe(&probe),
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = packages_phase(vec![
+        module_install_action("nvim", "brew", "neovim"),
+        module_install_action("nvim", "apt", "ripgrep"),
+        module_install_action("tmux", "apt", "tmux"),
+    ]);
+    let modules = vec![
+        module_with("nvim", &[("brew", "neovim"), ("apt", "ripgrep")]),
+        module_for("tmux", "apt", "tmux"),
+    ];
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_modules(modules)
+        .run(move || {
+            // nvim's apt work is genuinely blocked here — the state a wait line
+            // describes — and it still leaves no trace in the transcript.
+            assert!(driver.await_started("apt:tmux"));
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    assert!(
+        !outcome.transcript.contains("waiting on"),
+        "a wait line is live-region only: {}",
+        outcome.transcript
+    );
+}
+
+/// Position of a phase in the plan, panicking when the plan does not hold it —
+/// an ordering assertion on a missing phase would otherwise pass vacuously.
+fn phase_index(plan: &Plan, name: PhaseName) -> usize {
+    plan.phases
+        .iter()
+        .position(|p| p.name == name)
+        .unwrap_or_else(|| panic!("plan holds no {} phase", name.as_str()))
+}
+
+#[test]
+fn profile_files_precede_system_phase() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.system_configurators.push(Box::new(
+        MockSystemConfigurator::new("systemdUnits").with_drift(vec![
+            crate::providers::SystemDrift {
+                key: "cfgd-agent.service".to_string(),
+                expected: "enabled".to_string(),
+                actual: "disabled".to_string(),
+            },
+        ]),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let mut resolved = make_empty_resolved();
+    resolved.merged.system.insert(
+        "systemdUnits".to_string(),
+        serde_yaml::from_str("{cfgd-agent.service: enabled}").unwrap(),
+    );
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            vec![FileAction::Create {
+                source: PathBuf::from("/src/cfgd-agent.service"),
+                target: PathBuf::from("/etc/systemd/system/cfgd-agent.service"),
+                origin: "local".to_string(),
+                strategy: crate::config::FileStrategy::default(),
+                source_hash: None,
+                patch: None,
+            }],
+            Vec::new(),
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    assert!(
+        phase_index(&plan, PhaseName::Files) < phase_index(&plan, PhaseName::System),
+        "a unit file must be on disk before the configurator that enables it runs: {:?}",
+        plan.phases
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn deployed_unit_file_precedes_systemd_enable() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.system_configurators.push(Box::new(
+        MockSystemConfigurator::new("systemdUnits").with_drift(vec![
+            crate::providers::SystemDrift {
+                key: "cfgd-agent.service".to_string(),
+                expected: "enabled".to_string(),
+                actual: "disabled".to_string(),
+            },
+        ]),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let mut resolved = make_empty_resolved();
+    resolved.merged.system.insert(
+        "systemdUnits".to_string(),
+        serde_yaml::from_str("{cfgd-agent.service: enabled}").unwrap(),
+    );
+
+    let mut module = make_resolved_module("agent");
+    module.packages = vec![];
+    module.files = vec![ResolvedFile {
+        source: PathBuf::from("/tmp/cfgd-agent.service"),
+        target: PathBuf::from("/etc/systemd/system/cfgd-agent.service"),
+        is_git_source: false,
+        strategy: None,
+        encryption: None,
+        permissions: None,
+        patch: None,
+    }];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let files = phase_index(&plan, PhaseName::Files);
+    assert!(
+        files < phase_index(&plan, PhaseName::System),
+        "a module-deployed unit file must precede the systemdUnits action for the same unit: {:?}",
+        plan.phases
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>()
+    );
+    let deploy = plan.phases[files]
+        .actions()
+        .next()
+        .expect("the Files phase holds the module deploy");
+    assert!(format_plan_item(deploy).contains("cfgd-agent.service"));
+}
+
+#[test]
+fn retain_actions_drops_the_groups_it_empties() {
+    let profile = Owner::profile("work");
+    let mut phase = Phase::from_actions(
+        PhaseName::Packages,
+        &profile,
+        vec![
+            install_action("brew", &["ripgrep"]),
+            Action::Manager(ManagerAction::Provision {
+                manager: "brew".to_string(),
+                via: "homebrew installer".to_string(),
+                batched: vec![],
+                depends_on: vec![],
+            }),
+            module_install_action("nvim", "brew", "neovim"),
+        ],
+    );
+
+    phase.retain_actions(|a| !matches!(a, Action::Manager(_)));
+
+    assert_eq!(
+        phase
+            .groups()
+            .iter()
+            .map(|g| g.owner.token())
+            .collect::<Vec<_>>(),
+        vec!["profile:work", "module:nvim"],
+        "the emptied cfgd:managers group must not survive as a zero-action group"
+    );
+    assert_eq!(phase.action_count(), 2);
+}
+
+#[test]
+fn retain_actions_and_batches_shrinks_a_batch_before_dropping_it() {
+    // A filter that names ONE package must not take the whole batch with it:
+    // the action survives carrying the packages that passed, and is dropped
+    // only when nothing is left to install.
+    let profile = Owner::profile("work");
+    let mut phase = Phase::from_actions(
+        PhaseName::Packages,
+        &profile,
+        vec![
+            install_action("brew", &["ripgrep", "fd"]),
+            uninstall_action("brew", &["exa"]),
+            module_install_action("nvim", "brew", "neovim"),
+        ],
+    );
+
+    phase.retain_actions_and_batches(
+        |_| true,
+        |manager, package| !(manager == "brew" && matches!(package, "fd" | "exa" | "neovim")),
+        |_| true,
+    );
+
+    assert_eq!(
+        owner_tokens(&phase),
+        vec!["profile:work"],
+        "both emptied batches drop their action, and the module group with it"
+    );
+    let Action::Package(PackageAction::Install { packages, .. }) = phase
+        .actions()
+        .next()
+        .expect("the shrunk install batch survives")
+    else {
+        panic!("the survivor is the install batch");
+    };
+    assert_eq!(packages, &vec!["ripgrep".to_string()]);
+}
+
+#[test]
+fn retain_actions_leaves_an_already_empty_batch_exactly_as_it_found_it() {
+    // `retain_actions` retains every package, so it must stay a pure
+    // action-level filter: only a batch the filter EMPTIED loses its action.
+    let profile = Owner::profile("work");
+    let mut phase = Phase::from_actions(
+        PhaseName::Packages,
+        &profile,
+        vec![install_action("brew", &[]), install_action("apt", &["fd"])],
+    );
+
+    phase.retain_actions(|_| true);
+
+    assert_eq!(phase.action_count(), 2);
+}
+
+#[test]
+fn retain_groups_keeps_the_surviving_owners_in_sort_key_order() {
+    let profile = Owner::profile("work");
+    let mut phase = Phase::from_actions(
+        PhaseName::Packages,
+        &profile,
+        vec![
+            install_action("brew", &["ripgrep"]),
+            Action::Manager(ManagerAction::Provision {
+                manager: "brew".to_string(),
+                via: "homebrew installer".to_string(),
+                batched: vec![],
+                depends_on: vec![],
+            }),
+            module_install_action("nvim", "brew", "neovim"),
+            module_install_action("apt-mod", "apt", "fd"),
+        ],
+    );
+
+    phase.retain_groups(|owner| owner.kind != OwnerKind::Profile);
+
+    assert_eq!(
+        phase
+            .groups()
+            .iter()
+            .map(|g| g.owner.token())
+            .collect::<Vec<_>>(),
+        vec!["cfgd:managers", "module:apt-mod", "module:nvim"],
+    );
+}
+
+#[test]
+fn groups_mut_cannot_reorder_the_owners_it_edits() {
+    // The mutable view hands out an owner's actions, never the group vec, so a
+    // caller can empty or rewrite a group but not move one past another.
+    let profile = Owner::profile("work");
+    let mut phase = Phase::from_actions(
+        PhaseName::Packages,
+        &profile,
+        vec![
+            install_action("brew", &["ripgrep"]),
+            module_install_action("nvim", "brew", "neovim"),
+        ],
+    );
+
+    for (owner, actions) in phase.groups_mut() {
+        if owner.kind == OwnerKind::Profile {
+            actions.clear();
+        }
+    }
+    phase.prune_empty_groups();
+
+    assert_eq!(
+        phase
+            .groups()
+            .iter()
+            .map(|g| g.owner.token())
+            .collect::<Vec<_>>(),
+        vec!["module:nvim"],
+    );
+}
+
+#[test]
+fn to_hash_string_is_stable_across_group_permutation() {
+    let profile = Owner::profile("work");
+    // Group ORDER is not permutable — `Phase::from_actions` is the only
+    // constructor and always sorts. What a caller still controls is the order
+    // actions arrive in, which sets both the walk order and each group's
+    // internal order, so that is the permutation the hash must ignore. The
+    // Provision node lives in its own Prerequisites phase — the planner never
+    // puts one in Packages — so only the Packages actions are permuted here.
+    let prereq_actions = || vec![provision_node("brew", "homebrew installer", &[])];
+    let package_actions = || {
+        vec![
+            install_action("brew", &["ripgrep"]),
+            module_install_action("nvim", "brew", "neovim"),
+            install_action("apt", &["fd"]),
+        ]
+    };
+    let permuted_package_actions = || {
+        let mut a = package_actions();
+        a.reverse();
+        a
+    };
+
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(PhaseName::Prerequisites, &profile, prereq_actions()),
+            Phase::from_actions(PhaseName::Packages, &profile, package_actions()),
+        ],
+        warnings: vec![],
+    };
+
+    let permuted = Plan {
+        phases: vec![
+            Phase::from_actions(PhaseName::Prerequisites, &profile, prereq_actions()),
+            Phase::from_actions(PhaseName::Packages, &profile, permuted_package_actions()),
+        ],
+        warnings: vec![],
+    };
+
+    let walk: Vec<String> = plan.phases[1].actions().map(format_plan_item).collect();
+    let permuted_walk: Vec<String> = permuted.phases[1].actions().map(format_plan_item).collect();
+    assert_ne!(
+        walk, permuted_walk,
+        "the fixture must actually permute the walk order, or the assertion below is vacuous"
+    );
+
+    assert_eq!(
+        plan.to_hash_string(),
+        permuted.to_hash_string(),
+        "the hash identifies the SET of planned actions, not the walk order"
+    );
+}
+
+// --- the Prerequisites phase's cfgd:managers DAG ---
+
+fn prerequisites_phase(actions: Vec<Action>) -> Plan {
+    Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("work"),
+            actions,
+        )],
+        warnings: vec![],
+    }
+}
+
+fn provision_node(manager: &str, via: &str, depends_on: &[String]) -> Action {
+    Action::Manager(ManagerAction::Provision {
+        manager: manager.to_string(),
+        via: via.to_string(),
+        batched: vec![],
+        depends_on: depends_on.to_vec(),
+    })
+}
+
+fn prerequisite_node(tool: &str, installer: &str, required_by: &[&str]) -> Action {
+    Action::Manager(ManagerAction::Prerequisite {
+        tool: tool.to_string(),
+        installer: installer.to_string(),
+        required_by: required_by.iter().map(|m| (*m).to_string()).collect(),
+        depends_on: Vec::new(),
+    })
+}
+
+/// Apply a manager-node plan on this thread, returning the run, the tree it
+/// rendered and the state it wrote — the shape for every node test that needs
+/// no rendezvous.
+fn apply_manager_plan(
+    registry: &ProviderRegistry,
+    state: &crate::state::StateStore,
+    plan: &Plan,
+) -> (ApplyResult, String) {
+    let (printer, buf) = Printer::for_test();
+    let reconciler = Reconciler::new(registry, state);
+    let result = reconciler
+        .apply(
+            plan,
+            &make_empty_resolved(),
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply");
+    (result, crate::test_helpers::captured_text(&buf))
+}
+
+#[test]
+fn a_node_waits_for_the_node_it_names() {
+    // The §3.3 edge `apt(index) -> curl(prereq) -> brew(provision)`, minus the
+    // refresh: brew's provision may not begin while the tool its cascade shells
+    // out to is still being installed.
+    let probe = LaneProbe::holding(&["apt:curl"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+        DispatchLogManager::new("brew", &log, false).with_probe(&probe),
+    ]);
+    let plan = prerequisites_phase(vec![
+        prerequisite_node("curl", "apt", &["brew"]),
+        provision_node("brew", "curl", &[ManagerAction::prereq_node("curl")]),
+    ]);
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan).run(move || {
+        assert!(
+            driver.await_started("apt:curl"),
+            "the prerequisite never ran: {:?}",
+            driver.events()
+        );
+        assert!(
+            !driver.started("bootstrap:brew"),
+            "a provision started while the prerequisite it named was still \
+             running: {:?}",
+            driver.events()
+        );
+        driver.release_all();
+    });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    let events = probe.events();
+    assert!(
+        event_at(&events, "start:bootstrap:brew") > event_at(&events, "end:apt:curl"),
+        "{events:?}"
+    );
+    assert_eq!(probe.peak(), 1, "a declared edge is not concurrency");
+}
+
+#[test]
+fn independent_provisions_run_concurrently() {
+    // The drain rule removed. Both managers are ABSENT — exactly the condition
+    // `drains_phase` keys on — so under the `Packages` sub-gate each would wait
+    // for an empty phase and the graph would run one node at a time. Nothing
+    // connects them, so the phase whose purpose is provisioning runs them at
+    // once.
+    let probe = LaneProbe::holding(&["bootstrap:brew", "bootstrap:cargo"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, false).with_probe(&probe),
+        DispatchLogManager::new("cargo", &log, false).with_probe(&probe),
+    ]);
+    let plan = prerequisites_phase(vec![
+        provision_node("brew", "curl", &[]),
+        provision_node("cargo", "rustup", &[]),
+    ]);
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan).run(move || {
+        assert!(
+            driver.await_in_flight(2),
+            "two unconnected provisions, two lanes: {:?}",
+            driver.events()
+        );
+        driver.release_all();
+    });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    assert_eq!(probe.peak(), 2, "the phase really provisioned two at once");
+}
+
+#[test]
+fn two_nodes_on_one_manager_share_its_lane() {
+    // Mutual exclusion survives the drain rule's removal: two prerequisites
+    // installed by apt are two `apt install` commands, and one manager runs one
+    // command at a time whatever the graph says.
+    let probe = LaneProbe::holding(&["apt:curl"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("apt", &log, true).with_probe(&probe),
+    ]);
+    let plan = prerequisites_phase(vec![
+        prerequisite_node("curl", "apt", &["brew"]),
+        prerequisite_node("git", "apt", &["cargo"]),
+    ]);
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan).run(move || {
+        assert!(driver.await_started("apt:curl"), "{:?}", driver.events());
+        assert!(
+            !driver.started("apt:git"),
+            "two nodes ran one manager's command at once: {:?}",
+            driver.events()
+        );
+        driver.release_all();
+    });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    assert_eq!(probe.peak(), 1);
+}
+
+#[test]
+fn a_failed_node_fails_its_dependents_with_the_root_cause() {
+    // §3.4: brew's provision fails, so neither npm nor pnpm — which install
+    // through it, one at a remove — runs at all, and each names brew rather
+    // than the link above it.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, false).stays_unavailable(),
+        DispatchLogManager::new("npm", &log, false),
+        DispatchLogManager::new("pnpm", &log, false),
+    ]);
+    let state = test_state();
+    let plan = prerequisites_phase(vec![
+        provision_node("brew", "curl", &[]),
+        provision_node("npm", "brew", &[ManagerAction::provision_node("brew")]),
+        provision_node("pnpm", "npm", &[ManagerAction::provision_node("npm")]),
+    ]);
+
+    let (result, rendered) = apply_manager_plan(&registry, &state, &plan);
+
+    assert_eq!(result.status, ApplyStatus::Failed);
+    assert_eq!(
+        result.action_results.iter().filter(|r| !r.success).count(),
+        3,
+        "the failed node and both of its dependents are failures: {:?}",
+        result.action_results
+    );
+    let events = dispatch_log(&log);
+    assert_eq!(
+        events,
+        vec!["bootstrap:brew"],
+        "a node whose dependency failed must not run: {events:?}"
+    );
+    assert_eq!(
+        rendered
+            .matches("did not run — brew failed earlier in this phase")
+            .count(),
+        2,
+        "both dependents name the ROOT failure, not the link above them: {rendered}"
+    );
+    // A node that never ran opens no journal row — the same treatment a
+    // stalled action gets, and for the same reason: there is nothing to
+    // record beginning.
+    let journalled: Vec<String> = state
+        .journal_entries(result.apply_id)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.resource_id)
+        .collect();
+    assert_eq!(journalled, vec!["provision:brew".to_string()]);
+}
+
+#[test]
+fn an_aborted_run_reports_neither_a_failures_dependents_nor_its_siblings() {
+    // One rule for everything an abort stopped. npm's provision fails at the
+    // instant cancellation arrives, taking down a node that depends on it and
+    // leaving a sibling queued behind its lane. Reporting the dependent as a
+    // failure while the sibling says nothing would be two rules for one
+    // "planned, never began" fact inside a single run — so an aborted run
+    // reports what it BEGAN, and the shortfall is the rollup's to name.
+    let probe = LaneProbe::holding(&["bootstrap:npm"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("npm", &log, false)
+            .stays_unavailable()
+            .with_probe(&probe),
+        DispatchLogManager::new("pipx", &log, false),
+    ]);
+    let plan = prerequisites_phase(vec![
+        // `provision npm via brew` occupies its mediator's lane — the
+        // command that runs is brew's.
+        provision_node("npm", "brew", &[]),
+        // Downstream of the failure.
+        provision_node("pipx", "npm", &[ManagerAction::provision_node("npm")]),
+        // A sibling with no edge at all, held only by the brew lane its own
+        // installer shares with the running provision's mediator.
+        prerequisite_node("git", "brew", &["pipx"]),
+    ]);
+
+    let abort = crate::AbortFlag::new();
+    let requested = abort.clone();
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan)
+        .with_abort(abort)
+        .run(move || {
+            assert!(
+                driver.await_started("bootstrap:npm"),
+                "the provision never began: {:?}",
+                driver.events()
+            );
+            requested.set(130);
+            driver.release_all();
+        });
+
+    assert_eq!(outcome.result.aborted, Some(130));
+    assert_eq!(outcome.result.status, ApplyStatus::Aborted);
+    let reported: Vec<&str> = outcome
+        .result
+        .action_results
+        .iter()
+        .map(|r| r.description.as_str())
+        .collect();
+    assert_eq!(
+        reported,
+        vec!["manager:provision:npm"],
+        "only the action the run began may be reported"
+    );
+    assert!(
+        !outcome.transcript.contains("did not run —"),
+        "an aborted run must not blame a dependent it never began: {}",
+        outcome.transcript
+    );
+    assert_eq!(
+        dispatch_log(&log),
+        vec!["bootstrap:npm"],
+        "nothing may be dispatched after the abort"
+    );
+    // The shortfall is named once, numerically, for the dependent and the
+    // sibling alike — the record must not read as a clean sweep of a
+    // three-action plan that only ever attempted one.
+    assert_eq!(outcome.result.planned_total, 3);
+    let summary = outcome
+        .state
+        .get_apply(outcome.result.apply_id)
+        .unwrap()
+        .and_then(|record| record.summary)
+        .unwrap_or_default();
+    let parsed: serde_json::Value = serde_json::from_str(&summary).expect("summary json");
+    assert_eq!(parsed["total"], 3, "total is the plan, not what it reached");
+    assert_eq!(parsed["notRun"], 2, "both unstarted actions are accounted");
+}
+
+#[test]
+fn an_edge_naming_a_node_the_run_does_not_hold_is_satisfied() {
+    // A phase filter selects actions, not sub-graphs, so a surviving node can
+    // name one that was never planned. Waiting for it would stall the run the
+    // user asked for.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![DispatchLogManager::new("brew", &log, false)]);
+    let state = test_state();
+    let plan = prerequisites_phase(vec![provision_node(
+        "brew",
+        "curl",
+        &[ManagerAction::refresh_node("apt")],
+    )]);
+
+    let (result, _rendered) = apply_manager_plan(&registry, &state, &plan);
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert_eq!(dispatch_log(&log), vec!["bootstrap:brew"]);
+}
+
+#[test]
+fn a_manager_node_journals_under_the_phase_that_planned_it() {
+    // The dispatcher serves two phases now, so the journal's phase column is
+    // read from the plan rather than assumed — a row filed under the wrong
+    // phase is a row no phase query finds.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![DispatchLogManager::new("apt", &log, true)]);
+    let state = test_state();
+    let plan = prerequisites_phase(vec![prerequisite_node("curl", "apt", &["brew"])]);
+
+    let (result, _rendered) = apply_manager_plan(&registry, &state, &plan);
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    let phases: Vec<String> = state
+        .journal_entries(result.apply_id)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.phase)
+        .collect();
+    assert_eq!(phases, vec![PhaseName::Prerequisites.as_str().to_string()]);
+}
+
+#[test]
+// `set_hook` is process-wide — see the note on the package-lane panic test.
+#[serial_test::serial]
+fn a_panicking_node_fails_the_run_rather_than_stalling_the_graph() {
+    // Panic containment reaches the new action kind: the worker still sends a
+    // completion, so the coordinator settles the node AND everything waiting
+    // behind it instead of parking forever on a message that cannot arrive.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("apt", &log, true).panicking(),
+        DispatchLogManager::new("brew", &log, false),
+    ]);
+    let state = test_state();
+    let plan = prerequisites_phase(vec![
+        prerequisite_node("curl", "apt", &["brew"]),
+        provision_node("brew", "curl", &[ManagerAction::prereq_node("curl")]),
+    ]);
+
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let (result, rendered) = apply_manager_plan(&registry, &state, &plan);
+    std::panic::set_hook(hook);
+
+    assert_eq!(result.status, ApplyStatus::Failed);
+    assert!(
+        !dispatch_log(&log).contains(&"bootstrap:brew".to_string()),
+        "the provision ran on a tool that never arrived: {:?}",
+        dispatch_log(&log)
+    );
+    assert!(
+        rendered.contains("did not run — curl failed earlier in this phase"),
+        "the dependent names what stopped it: {rendered}"
+    );
+}
+
+#[test]
+fn a_cyclic_edge_fails_the_run_instead_of_hanging_it() {
+    // The planner's graph is acyclic by construction, so this is the
+    // dispatcher's guard against a plan it did not build: nothing runnable and
+    // nothing in flight is a FAILED run, never a green tick over work that
+    // never ran and never a wait with no end.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, false),
+        DispatchLogManager::new("npm", &log, false),
+    ]);
+    let state = test_state();
+    let plan = prerequisites_phase(vec![
+        provision_node("brew", "npm", &[ManagerAction::provision_node("npm")]),
+        provision_node("npm", "brew", &[ManagerAction::provision_node("brew")]),
+    ]);
+
+    let (result, rendered) = apply_manager_plan(&registry, &state, &plan);
+
+    assert_eq!(result.status, ApplyStatus::Failed);
+    assert!(
+        dispatch_log(&log).is_empty(),
+        "neither node ran: {:?}",
+        dispatch_log(&log)
+    );
+    assert_eq!(
+        rendered.matches("dispatch stalled").count(),
+        2,
+        "every slot the dispatcher walked away from is reported: {rendered}"
+    );
+}
+
+#[test]
+fn an_index_refresh_in_a_lane_reads_the_real_state_store() {
+    // npm resolves its global prefix from `cx.state` inside `update()`. Backed
+    // by a stub that store would answer nothing and swallow the write; a lane
+    // is backed by the proxy, which messages the one thread that owns the
+    // SQLite connection, so the refresh reads and writes the run's real state.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("npm", &log, true).with_state_writes(),
+    ]);
+    let state = test_state();
+    let plan = prerequisites_phase(vec![Action::Manager(ManagerAction::RefreshIndex {
+        manager: "npm".to_string(),
+    })]);
+
+    let (result, _rendered) = apply_manager_plan(&registry, &state, &plan);
+
+    use crate::providers::PackageStateStore;
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert_eq!(
+        state.resolved_prefix("npm").unwrap(),
+        Some(("/opt/npm".to_string(), false)),
+        "the refresh's write landed in the run's own state store"
+    );
+}
+
+#[test]
+fn the_managers_group_completes_before_the_env_group_begins() {
+    // §4's producer-before-consumer rule, which the phase's split dispatch is
+    // what could break: `cfgd:managers` creates the binaries and `cfgd:env`
+    // publishes where they live, so no env surface may be written while a
+    // provision is still running.
+    let home = tempfile::tempdir().unwrap();
+    let env_file = home.path().join(".cfgd.env");
+    let probe = LaneProbe::holding(&["bootstrap:brew"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, false).with_probe(&probe),
+    ]);
+    let plan = prerequisites_phase(vec![
+        provision_node("brew", "curl", &[]),
+        Action::Env(EnvAction::WriteEnvFile {
+            path: env_file.clone(),
+            content: "export PATH=\"/home/linuxbrew/.linuxbrew/bin:$PATH\"\n".to_string(),
+        }),
+    ]);
+
+    let driver = std::sync::Arc::clone(&probe);
+    let held = env_file.clone();
+    let outcome = ConcurrentApply::new(registry, plan).run(move || {
+        assert!(
+            driver.await_started("bootstrap:brew"),
+            "{:?}",
+            driver.events()
+        );
+        assert!(
+            !held.exists(),
+            "the env file was published while its producer was still running"
+        );
+        driver.release_all();
+    });
+
+    assert_eq!(outcome.result.status, ApplyStatus::Success);
+    assert!(env_file.exists(), "the env group still ran");
+    assert_eq!(
+        outcome
+            .transcript
+            .find("provision brew via curl")
+            .zip(outcome.transcript.find(".cfgd.env"))
+            .map(|(managers, env)| managers < env),
+        Some(true),
+        "the tree reads producer before consumer: {}",
+        outcome.transcript
+    );
+}
+
+// --- T5: the execution tree ---
+
+/// A `Reconciler` behind the `RunExecutor` seam, so a test can assert the FULL
+/// transcript of a run — header, tree and rollup — rather than the tree alone.
+struct ReconcilerExecutor<'a> {
+    reconciler: &'a Reconciler<'a>,
+    resolved: &'a crate::config::ResolvedProfile,
+    modules: &'a [ResolvedModule],
+}
+
+impl crate::reconciler::RunExecutor for ReconcilerExecutor<'_> {
+    fn apply(&mut self, plan: &Plan, printer: &Printer) -> Result<ApplyResult> {
+        self.reconciler.apply(
+            plan,
+            self.resolved,
+            Path::new("."),
+            printer,
+            None,
+            self.modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+    }
+}
+
+fn apply_transcript(
+    reconciler: &Reconciler<'_>,
+    plan: &Plan,
+    resolved: &crate::config::ResolvedProfile,
+    modules: &[ResolvedModule],
+) -> (ApplyResult, String) {
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    let result = reconciler
+        .apply(
+            plan,
+            resolved,
+            Path::new("."),
+            &printer,
+            None,
+            modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply");
+    let out = crate::output::strip_ansi(&cap.human());
+    (result, out)
+}
+
+/// How many settled status lines a transcript holds.
+fn status_line_count(out: &str) -> usize {
+    crate::test_helpers::settled_status_lines(out).len()
+}
+
+/// Every non-empty line of a transcript, trimmed — the shape assertions below
+/// are about ORDER, and a trailing-space diff is not what they are pinning.
+fn transcript_lines(out: &str) -> Vec<String> {
+    out.lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn resolved_for(profile: &str, brew_formulae: &[&str]) -> crate::config::ResolvedProfile {
+    let mut resolved = make_empty_resolved();
+    resolved.layers[0].profile_name = profile.to_string();
+    resolved.merged.packages.brew = Some(crate::config::BrewSpec {
+        formulae: brew_formulae.iter().map(|f| (*f).to_string()).collect(),
+        ..Default::default()
+    });
+    resolved
+}
+
+#[test]
+fn manager_action_renders_in_cfgd_managers_group() {
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let plan = packages_phase(vec![
+        install_action("brew", &["ripgrep"]),
+        Action::Manager(ManagerAction::Provision {
+            manager: "brew".to_string(),
+            via: "homebrew installer".to_string(),
+            batched: vec![],
+            depends_on: vec![],
+        }),
+        module_install_action("nvim", "brew", "neovim"),
+    ]);
+    let resolved = resolved_for("work", &["ripgrep"]);
+    let modules = vec![module_for("nvim", "brew", "neovim")];
+    let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &modules);
+    let lines = transcript_lines(&out);
+
+    assert!(
+        out.contains("Phase: Packages"),
+        "the phase opens a block: {out}"
+    );
+    let managers = lines
+        .iter()
+        .position(|l| l.trim() == "cfgd:managers")
+        .unwrap_or_else(|| panic!("no cfgd:managers heading in: {out}"));
+    let profile = lines
+        .iter()
+        .position(|l| l.trim() == "profile:work")
+        .expect("profile group");
+    let module = lines
+        .iter()
+        .position(|l| l.trim() == "module:nvim")
+        .expect("module group");
+    assert!(
+        profile < managers && managers < module,
+        "cfgd:managers renders second, between profile and modules: {out}"
+    );
+}
+
+#[test]
+fn manager_action_group_is_display_only() {
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let action = Action::Manager(ManagerAction::Provision {
+        manager: "brew".to_string(),
+        via: "homebrew installer".to_string(),
+        batched: vec![],
+        depends_on: vec![],
+    });
+    assert_eq!(
+        crate::reconciler::format_action_description(&action),
+        "manager:provision:brew",
+        "the resource id reads no owner"
+    );
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("work"),
+            vec![action],
+        )],
+        warnings: vec![],
+    };
+    let resolved = resolved_for("work", &["ripgrep"]);
+    let (result, _) = apply_transcript(&reconciler, &plan, &resolved, &[]);
+
+    assert_eq!(result.action_results.len(), 1);
+    assert_eq!(
+        result.action_results[0].description,
+        "manager:provision:brew"
+    );
+    assert_eq!(result.action_results[0].phase, "prerequisites");
+    assert_eq!(result.planned_total, 1);
+}
+
+#[test]
+fn the_prerequisites_serial_groups_render_below_the_managers_tree() {
+    // `cfgd:managers` runs in lanes and writes its tree the moment they drain;
+    // `cfgd:session` runs serially and streams its own line as it settles.
+    // Held back to phase close, the tree would print under a group that
+    // follows it in the plan and in every other phase.
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let plan = prerequisites_phase(vec![
+        provision_node("brew", "homebrew installer", &[]),
+        Action::Env(EnvAction::RefreshLiveSession { vars: vec![] }),
+    ]);
+    let resolved = make_empty_resolved();
+    let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
+    let lines = transcript_lines(&out);
+
+    let position = |needle: &str| {
+        lines
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no {needle} in: {out}"))
+    };
+    let managers = position("cfgd:managers");
+    let provision = position("provision brew via homebrew installer");
+    let session = position("cfgd:session");
+
+    assert!(
+        managers < provision && provision < session,
+        "the lane tree is written before the serial half streams: {out}"
+    );
+    assert!(
+        lines[managers].contains("cfgd:managers") && managers > position("Phase: Prerequisites"),
+        "the group label sits under its phase heading: {out}"
+    );
+}
+
+#[test]
+fn the_managers_label_is_on_screen_while_its_lanes_run() {
+    // `Prerequisites` carries exactly ONE lane group, so its label is written
+    // when the lanes start rather than when they drain: the wait bars and
+    // command windows of those nodes paint below the last committed line, so a
+    // label still deferred at that point lands under the very work it
+    // introduces. Read while a node is held mid-bootstrap, which is precisely
+    // the window a drain-time label is absent for.
+    let probe = LaneProbe::holding(&["bootstrap:brew"]);
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![
+        DispatchLogManager::new("brew", &log, false).with_probe(&probe),
+    ]);
+    let plan = prerequisites_phase(vec![provision_node("brew", "homebrew installer", &[])]);
+
+    let driver = std::sync::Arc::clone(&probe);
+    let outcome = ConcurrentApply::new(registry, plan).run_watching(move |screen| {
+        assert!(
+            driver.await_started("bootstrap:brew"),
+            "the node never reached its lane: {:?}",
+            driver.events()
+        );
+        let on_screen = crate::output::strip_ansi(&screen.human());
+        assert!(
+            on_screen.contains("cfgd:managers"),
+            "the group label must be committed before its lanes paint: {on_screen}"
+        );
+        driver.release_all();
+    });
+
+    assert_eq!(
+        outcome.result.succeeded(),
+        1,
+        "the held node still completes: {}",
+        outcome.transcript
+    );
+}
+
+#[test]
+fn metadata_detail_is_muted_and_error_detail_is_not() {
+    /// Whether the detail beginning at `needle` is preceded by styling — the
+    /// separator-to-text window carries an escape only when a detail style was
+    /// supplied.
+    fn detail_is_styled(raw: &str, needle: &str) -> bool {
+        let idx = raw
+            .find(needle)
+            .unwrap_or_else(|| panic!("no {needle} in {raw}"));
+        let head = &raw[..idx];
+        let sep = head
+            .rfind(" \u{2014} ")
+            .unwrap_or_else(|| panic!("no detail separator before {needle} in {raw}"));
+        head[sep..].contains('\u{1b}')
+    }
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    // `RefreshLiveSession` with no vars returns the skipped suffix, which is
+    // the tree's `unchanged` metadata detail.
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::cfgd("env"),
+                vec![Action::Env(EnvAction::RefreshLiveSession { vars: vec![] })],
+            ),
+            packages_phase(vec![install_action("nosuch", &["x"])])
+                .phases
+                .remove(0),
+        ],
+        warnings: vec![],
+    };
+
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply");
+    let raw = cap.human();
+
+    assert!(
+        detail_is_styled(&raw, "unchanged"),
+        "a metadata detail is muted"
+    );
+    assert!(
+        !detail_is_styled(&raw, "package error"),
+        "an error detail is never muted"
+    );
+}
+
+#[test]
+fn packages_tree_renders_profile_first_while_modules_execute_first() {
+    let log = new_dispatch_log();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(DispatchLogManager::new("brew", &log, true)));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let plan = packages_phase(vec![
+        install_action("brew", &["ripgrep"]),
+        module_install_action("nvim", "brew", "neovim"),
+    ]);
+    let resolved = resolved_for("work", &["ripgrep"]);
+    let modules = vec![module_for("nvim", "brew", "neovim")];
+    let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &modules);
+    let lines = transcript_lines(&out);
+
+    assert_eq!(
+        dispatch_log(&log),
+        vec!["install:brew:neovim", "install:brew:ripgrep"],
+        "Rule P dispatches module-owned work first"
+    );
+    let profile = lines
+        .iter()
+        .position(|l| l.trim() == "profile:work")
+        .expect("profile group");
+    let module = lines
+        .iter()
+        .position(|l| l.trim() == "module:nvim")
+        .expect("module group");
+    assert!(
+        profile < module,
+        "the deferred tree reads in Owner::sort_key order: {out}"
+    );
+}
+
+#[test]
+fn platform_skip_renders_as_header_annotation_not_a_phase() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(TrackingPackageManager::new("brew")));
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = resolved_for("work", &["ripgrep"]);
+
+    let skip = || {
+        Action::Module(ModuleAction {
+            module_name: "wsl-tools".to_string(),
+            kind: ModuleActionKind::Skip {
+                reason: "platform not matched (requires: windows)".to_string(),
+            },
+            origin: None,
+        })
+    };
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(PhaseName::Modules, &Owner::profile("work"), vec![skip()]),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("work"),
+                vec![install_action("brew", &["ripgrep"])],
+            ),
+        ],
+        warnings: vec![],
+    };
+
+    let module_names = vec!["nvim".to_string(), "wsl-tools".to_string()];
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    let mut exec = ReconcilerExecutor {
+        reconciler: &reconciler,
+        resolved: &resolved,
+        modules: &[],
+    };
+    crate::reconciler::ApplyRun::new(
+        crate::reconciler::RunContext {
+            title: crate::reconciler::RunTitle::Apply,
+            config_path: None,
+            profile: Some("work"),
+            modules: &module_names,
+            trigger: None,
+        },
+        &plan,
+    )
+    .execute(&printer, crate::reconciler::Confirm::Skip, &mut exec)
+    .expect("apply");
+    let out = crate::output::strip_ansi(&cap.human());
+
+    assert!(
+        !out.contains("Phase: Modules"),
+        "no Modules block, ever: {out}"
+    );
+    assert!(
+        out.contains(
+            "Modules   nvim (wsl-tools skipped: platform not matched (requires: windows))"
+        ) || out.contains(
+            "Modules  nvim (wsl-tools skipped: platform not matched (requires: windows))"
+        ),
+        "the row carries the skip's own reason string: {out}"
+    );
+    assert!(
+        out.contains("Phases   Packages") || out.contains("Phases  Packages"),
+        "Modules is not listed among the phases: {out}"
+    );
+    assert!(!out.contains("Phases   Modules"), "got: {out}");
+    assert!(
+        out.contains("2 planned"),
+        "a skip is an in-scope action and is counted: {out}"
+    );
+    assert!(
+        out.contains("2 actions succeeded"),
+        "the rollup reconciles against the planned count: {out}"
+    );
+
+    // A run whose ONLY in-scope work is a platform-gated skip renders header +
+    // annotation + rollup and NOTHING else — asserted as the complete
+    // transcript, because "no heading" is what a stray warning line satisfies.
+    let skip_only = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Modules,
+            &Owner::profile("work"),
+            vec![skip()],
+        )],
+        warnings: vec![],
+    };
+    let only_names = vec!["wsl-tools".to_string()];
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    let mut exec = ReconcilerExecutor {
+        reconciler: &reconciler,
+        resolved: &resolved,
+        modules: &[],
+    };
+    crate::reconciler::ApplyRun::new(
+        crate::reconciler::RunContext {
+            title: crate::reconciler::RunTitle::Apply,
+            config_path: None,
+            profile: Some("work"),
+            modules: &only_names,
+            trigger: None,
+        },
+        &skip_only,
+    )
+    .execute(&printer, crate::reconciler::Confirm::Skip, &mut exec)
+    .expect("apply");
+    let lines: Vec<String> = crate::output::strip_ansi(&cap.human())
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            // Only the rollup carries a wall-clock suffix, and it is always the
+            // LAST parenthesis on the line — a skip reason has parentheses of
+            // its own that must survive.
+            match l.rfind(" (") {
+                Some(i) if l.ends_with("s)") && l.starts_with('\u{2713}') => l[..i].to_string(),
+                _ => l.to_string(),
+            }
+        })
+        .collect();
+
+    assert_eq!(
+        lines,
+        vec![
+            "Apply".to_string(),
+            "Profile  work".to_string(),
+            "Modules  wsl-tools skipped: platform not matched (requires: windows)".to_string(),
+            "Actions  1 planned".to_string(),
+            "\u{2713} Apply complete \u{2014} 1 action succeeded".to_string(),
+        ],
+        "header + annotation + rollup and nothing else"
+    );
+}
+
+#[test]
+fn every_action_emits_exactly_one_line() {
+    // One action from each arm whose bespoke status line the tree replaced,
+    // except the one that cannot share a run (`SecretAction::ResolveEnv` feeds
+    // the collector that triggers a late env regeneration, so it is pinned by
+    // `a_resolve_env_action_emits_one_line`): if any comes back, this run emits
+    // more lines than actions.
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(TrackingPackageManager::new("brew")));
+    registry.secret_backend = Some(Box::new(TestSecretBackend {
+        decrypted_value: "my-secret-token".to_string(),
+    }));
+    registry.secret_providers.push(Box::new(
+        MockSecretProvider::new("vault").with_resolve_result("provider-secret-value"),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let tmp = tempfile::tempdir().unwrap();
+    let modules = vec![make_resolved_module("nvim")];
+    let enc = tmp.path().join("token.enc");
+    std::fs::write(&enc, "encrypted-data").unwrap();
+
+    let actions = vec![
+        Action::Module(ModuleAction {
+            module_name: "nvim".to_string(),
+            kind: ModuleActionKind::DeployFiles { files: vec![] },
+            origin: None,
+        }),
+        Action::Module(ModuleAction {
+            module_name: "nvim".to_string(),
+            kind: ModuleActionKind::Skip {
+                reason: "encryption mode Always incompatible".to_string(),
+            },
+            origin: None,
+        }),
+        Action::Env(EnvAction::WriteEnvFile {
+            path: tmp.path().join(".cfgd.env"),
+            content: "export A=1\n".to_string(),
+        }),
+        Action::Env(EnvAction::InjectSourceLine {
+            rc_path: tmp.path().join(".bashrc"),
+            line: "source ~/.cfgd.env".to_string(),
+        }),
+        Action::Env(EnvAction::RefreshLiveSession { vars: vec![] }),
+        Action::Package(PackageAction::Skip {
+            manager: "apt".to_string(),
+            reason: "not available on this host".to_string(),
+            origin: "local".to_string(),
+        }),
+        Action::Secret(SecretAction::Decrypt {
+            source: enc.clone(),
+            target: tmp.path().join("token.txt"),
+            backend: "test-sops".to_string(),
+            origin: "local".to_string(),
+        }),
+        Action::Secret(SecretAction::Resolve {
+            provider: "vault".to_string(),
+            reference: "secret/data/app#key".to_string(),
+            target: tmp.path().join("resolved.txt"),
+            origin: "local".to_string(),
+        }),
+        Action::Secret(SecretAction::Skip {
+            source: "creds.enc".to_string(),
+            reason: "sops not installed".to_string(),
+            origin: "local".to_string(),
+        }),
+        Action::System(SystemAction::Skip {
+            configurator: "sysctl".to_string(),
+            reason: "not available on this host".to_string(),
+            origin: "local".to_string(),
+            unknown: false,
+        }),
+        Action::System(SystemAction::Skip {
+            configurator: "gti".to_string(),
+            reason: "no configurator registered".to_string(),
+            origin: "local".to_string(),
+            unknown: true,
+        }),
+    ];
+    let planned = actions.len();
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            actions,
+        )],
+        warnings: vec![],
+    };
+    let (result, out) = apply_transcript(&reconciler, &plan, &resolved, &modules);
+
+    assert_eq!(result.action_results.len(), planned);
+    assert_eq!(
+        status_line_count(&out),
+        planned,
+        "one line per action, no more: {out}"
+    );
+}
+
+#[test]
+fn a_resolve_env_action_emits_one_line() {
+    // Applied on its own because a resolved env secret feeds the collector that
+    // regenerates the shell env files at the end of the run: that regeneration
+    // appends results, so this arm cannot be counted alongside the others.
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.secret_providers.push(Box::new(
+        MockSecretProvider::new("vault").with_resolve_result("ghp_abc123"),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let mut resolved = make_empty_resolved();
+    // The regeneration would otherwise reach the developer's real login session,
+    // which no test home can sandbox; the surfaces that stay on disk are enough.
+    resolved.merged.env_scope = crate::config::EnvScope::Interactive;
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Secrets,
+            &Owner::profile("test"),
+            vec![Action::Secret(SecretAction::ResolveEnv {
+                provider: "vault".to_string(),
+                reference: "secret/data/gh#token".to_string(),
+                envs: vec!["GH_TOKEN".to_string()],
+                origin: "local".to_string(),
+            })],
+        )],
+        warnings: vec![],
+    };
+    let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
+
+    assert_eq!(
+        status_line_count(&out),
+        1,
+        "the resolved-env action owns one line; the regeneration owns none: {out}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_script_phase_emits_one_line_per_script_not_two() {
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let entry = |run: &str| crate::config::ScriptEntry::Simple(run.to_string());
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::PostScripts,
+            &Owner::profile("test"),
+            vec![
+                Action::Script(ScriptAction::Run {
+                    entry: entry("true"),
+                    phase: ScriptPhase::PostApply,
+                    origin: "local".to_string(),
+                }),
+                Action::Script(ScriptAction::Run {
+                    entry: entry("echo two"),
+                    phase: ScriptPhase::PostApply,
+                    origin: "local".to_string(),
+                }),
+            ],
+        )],
+        warnings: vec![],
+    };
+    let (result, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
+
+    assert_eq!(result.action_results.len(), 2);
+    assert_eq!(
+        status_line_count(&out),
+        2,
+        "n scripts emit n status lines, not 2n: {out}"
+    );
+}
+
+#[test]
+fn failure_renders_inside_its_owner_group() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(FailingPackageManager::new("brew")));
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("work"),
+            vec![module_install_action("nvim", "brew", "neovim")],
+        )],
+        warnings: vec![],
+    };
+    let (_, out) = apply_transcript(
+        &reconciler,
+        &plan,
+        &resolved,
+        &[module_for("nvim", "brew", "neovim")],
+    );
+    let lines = transcript_lines(&out);
+
+    let group = lines
+        .iter()
+        .position(|l| l.trim() == "module:nvim")
+        .expect("owner group");
+    let failure = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with('\u{2717}'))
+        .expect("failure line");
+    assert!(
+        group < failure,
+        "the failure lands inside its owner group: {out}"
+    );
+    assert!(
+        !out.contains("Failed:"),
+        "the [i/total] failure prefix is gone: {out}"
+    );
+    assert!(!out.contains("[1/1]"), "no positional prefix: {out}");
+}
+
+#[cfg(unix)]
+#[test]
+fn streaming_phase_lines_appear_as_work_completes() {
+    // A file phase streams: the first action's line is on the wire before the
+    // second action runs. Driven by a script that reads the capture mid-run
+    // is not available, so the ordering is asserted structurally — the second
+    // action's own window output must appear AFTER the first action's status.
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let entry = |run: &str| crate::config::ScriptEntry::Simple(run.to_string());
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::PostScripts,
+            &Owner::profile("work"),
+            vec![
+                Action::Script(ScriptAction::Run {
+                    entry: entry("echo first-body"),
+                    phase: ScriptPhase::PostApply,
+                    origin: "local".to_string(),
+                }),
+                Action::Script(ScriptAction::Run {
+                    entry: entry("echo second-body"),
+                    phase: ScriptPhase::PostApply,
+                    origin: "local".to_string(),
+                }),
+            ],
+        )],
+        warnings: vec![],
+    };
+    let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
+
+    let first_status = out
+        .find("\u{2713} run postApply script: echo first-body")
+        .expect("first status");
+    let second_body = out.find("second-body").expect("second body");
+    assert!(
+        first_status < second_body,
+        "a live section emits as work completes, not at close: {out}"
+    );
+}
+
+#[test]
+fn action_notes_render_under_the_status_they_belong_to() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(NotePushingManager::new("brew")));
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = resolved_for("work", &["neovim"]);
+
+    let plan = packages_phase(vec![install_action("brew", &["neovim"])]);
+    let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
+    let lines = transcript_lines(&out);
+
+    // Targets the install action's own status rather than the first checkmark
+    // seen: other lines in the transcript carry the same marker.
+    let status = lines
+        .iter()
+        .position(|l| l.contains("brew install neovim"))
+        .expect("the action's status");
+    assert_eq!(
+        lines[status + 1].trim(),
+        "\u{26A0} [brew] add /opt/brew/bin to PATH",
+        "one warn line per note, in order, under the status: {out}"
+    );
+    assert_eq!(
+        lines[status + 2].trim(),
+        "\u{26A0} [brew] restart your shell",
+        "in order: {out}"
+    );
+    assert!(
+        !out.contains("Post-install notes"),
+        "the sub-header is gone with print_caveats: {out}"
+    );
+}
+
+#[test]
+fn an_empty_note_drain_emits_nothing() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(TrackingPackageManager::new("brew")));
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = resolved_for("work", &["neovim"]);
+
+    let plan = packages_phase(vec![install_action("brew", &["neovim"])]);
+    let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
+
+    assert!(!out.contains('\u{26A0}'), "no note, no line: {out}");
+}
+
+/// A manager that pushes two post-install notes from `install`, the way a real
+/// one does from its captured output.
+struct NotePushingManager {
+    name: String,
+}
+
+impl NotePushingManager {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+        }
+    }
+}
+
+impl PackageManager for NotePushingManager {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
+    }
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
+        Ok(HashSet::new())
+    }
+    fn install(&self, _packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
+        for message in ["add /opt/brew/bin to PATH", "restart your shell"] {
+            cx.notes
+                .push(crate::providers::ActionNote::warn(&self.name, message));
+        }
+        Ok(())
+    }
+    fn uninstall(&self, _: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _package: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+/// A configurator that narrates from `apply`, the way every real one does while
+/// it walks the keys it is setting.
+struct NarratingConfigurator;
+
+impl crate::providers::SystemConfigurator for NarratingConfigurator {
+    fn name(&self) -> &str {
+        "sysctl"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn current_state(&self) -> Result<serde_yaml::Value> {
+        Ok(serde_yaml::Value::Null)
+    }
+    fn diff(&self, _: &serde_yaml::Value) -> Result<Vec<crate::providers::SystemDrift>> {
+        Ok(vec![])
+    }
+    fn apply(&self, _: &serde_yaml::Value, cx: &crate::providers::SystemContext<'_>) -> Result<()> {
+        cx.report(crate::output::Role::Info, "sysctl -w net.ipv4.ip_forward=1");
+        cx.report(
+            crate::output::Role::Warn,
+            "reload deferred: /proc is read-only",
+        );
+        Ok(())
+    }
+}
+
+fn sysctl_set_value_plan() -> Plan {
+    Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::System,
+            &Owner::profile("work"),
+            vec![Action::System(SystemAction::SetValue {
+                configurator: "sysctl".to_string(),
+                key: "net.ipv4.ip_forward".to_string(),
+                desired: "1".to_string(),
+                current: "0".to_string(),
+                origin: "local".to_string(),
+            })],
+        )],
+        warnings: vec![],
+    }
+}
+
+fn resolved_with_sysctl_key() -> crate::config::ResolvedProfile {
+    let mut resolved = make_empty_resolved();
+    resolved.layers[0].profile_name = "work".to_string();
+    let mut settings = serde_yaml::Mapping::new();
+    settings.insert(
+        serde_yaml::Value::String("net.ipv4.ip_forward".to_string()),
+        serde_yaml::Value::String("1".to_string()),
+    );
+    resolved
+        .merged
+        .system
+        .insert("sysctl".to_string(), serde_yaml::Value::Mapping(settings));
+    resolved
+}
+
+#[test]
+fn configurator_narration_renders_attached_under_its_system_action_line() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .system_configurators
+        .push(Box::new(NarratingConfigurator));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let (_, out) = apply_transcript(
+        &reconciler,
+        &sysctl_set_value_plan(),
+        &resolved_with_sysctl_key(),
+        &[],
+    );
+    let lines = transcript_lines(&out);
+
+    let status = lines
+        .iter()
+        .position(|l| l.contains("set sysctl.net.ipv4.ip_forward"))
+        .unwrap_or_else(|| panic!("the action's own status line: {out}"));
+    assert!(
+        lines[status].trim_start().starts_with('\u{2713}'),
+        "the action settles its own line first: {out}"
+    );
+    // Untagged: the line above already says which configurator spoke.
+    assert_eq!(
+        lines[status + 1].trim(),
+        "\u{2299} sysctl -w net.ipv4.ip_forward=1",
+        "narration attaches under the action, keeping its Info role: {out}"
+    );
+    assert_eq!(
+        lines[status + 2].trim(),
+        "\u{26A0} reload deferred: /proc is read-only",
+        "and the Warn role survives the trip through the sink: {out}"
+    );
+    let attached_indent = lines[status + 1].len() - lines[status + 1].trim_start().len();
+    let status_indent = lines[status].len() - lines[status].trim_start().len();
+    assert!(
+        attached_indent > status_indent,
+        "an attached note sits one level deeper than the line it belongs to: {out}"
+    );
+}
+
+#[test]
+fn configurator_narration_settles_on_its_own_when_no_caller_drains_it() {
+    // The standalone shape — a `SystemContext::new` caller owns no action line,
+    // so a report the sink would otherwise hold is the only output the user
+    // gets and must still reach the terminal.
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    let cx = crate::providers::SystemContext::new(&printer);
+    crate::providers::SystemConfigurator::apply(
+        &NarratingConfigurator,
+        &serde_yaml::Value::Null,
+        &cx,
+    )
+    .expect("apply");
+    let out = crate::output::strip_ansi(&cap.human());
+
+    assert!(
+        out.contains("sysctl -w net.ipv4.ip_forward=1"),
+        "an undrained report still settles rather than vanishing: {out}"
+    );
+    assert!(
+        out.contains("reload deferred: /proc is read-only"),
+        "including the warning: {out}"
+    );
+}
+
+#[test]
+fn decision_store_ownership_matches_only_the_runs_own_scope() {
+    // The store a run opens is resolved from ITS scope, so only that scope's
+    // default config speaks for it: judged cross-scope, `cfgd --config
+    // /etc/cfgd/cfgd.yaml apply` (a user-scope run) would sweep the per-user
+    // store with the system picture's subscription list.
+    let staging = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(staging.path());
+    let user_cfg = crate::default_config_dir_for(crate::Scope::User).join("cfgd.yaml");
+    let system_cfg = crate::default_config_dir_for(crate::Scope::System).join("cfgd.yaml");
+
+    assert!(
+        owns_decision_store(&user_cfg, false, crate::Scope::User),
+        "the user scope's own default config owns the user store"
+    );
+    assert!(
+        !owns_decision_store(&system_cfg, false, crate::Scope::User),
+        "the system config is a different machine picture to the user store"
+    );
+    assert!(
+        owns_decision_store(&system_cfg, false, crate::Scope::System),
+        "the system scope's own default config owns the system store"
+    );
+    assert!(
+        !owns_decision_store(&user_cfg, false, crate::Scope::System),
+        "and the user config does not own the system store"
+    );
+    assert!(
+        owns_decision_store(
+            Path::new("/somewhere/else/cfgd.yaml"),
+            true,
+            crate::Scope::User
+        ),
+        "a --state-dir override grants ownership regardless: the swept store is the one the config was aimed at"
+    );
+}
+
+/// The mediator the plan named has to reach the bootstrap that runs, or the
+/// manager re-probes and can pick a different one — installing outside the
+/// concurrency lane the action was serialized on, and contradicting the line
+/// the user read.
+#[test]
+fn a_provisions_planned_via_reaches_the_bootstrap_that_executes_it() {
+    let log = new_dispatch_log();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        DispatchLogManager::new("npm", &log, false).recording_provision_via(&seen),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("work"),
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: "npm".to_string(),
+                via: "apt".to_string(),
+                batched: vec![],
+                depends_on: vec![],
+            })],
+        )],
+        warnings: vec![],
+    };
+    let resolved = resolved_for("work", &[]);
+    let (result, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
+
+    assert!(result.action_results[0].success, "the provision ran: {out}");
+    assert_eq!(
+        seen.lock().unwrap().as_deref(),
+        Some("apt"),
+        "bootstrap must see the method the plan resolved, not None"
     );
 }

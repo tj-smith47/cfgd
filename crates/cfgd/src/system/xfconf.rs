@@ -1,9 +1,9 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::Role;
 
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 use super::read_command_output;
 
@@ -45,7 +45,7 @@ impl SystemConfigurator for XfconfConfigurator {
         diff_nested_mapping(desired, read_xfconf_value)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let mapping = match desired.as_mapping() {
             Some(m) => m,
             None => return Ok(()),
@@ -69,7 +69,7 @@ impl SystemConfigurator for XfconfConfigurator {
 
                 let val_str = yaml_value_to_string(desired_value);
 
-                printer.status_simple(
+                cx.report(
                     Role::Info,
                     format!("xfconf-query -c {} -p {} -s {}", channel, property, val_str),
                 );
@@ -102,7 +102,7 @@ impl SystemConfigurator for XfconfConfigurator {
                         .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                     if !create_output.status.success() {
-                        printer.status_simple(
+                        cx.report(
                             Role::Warn,
                             format!(
                                 "xfconf-query set failed for {}.{}: {}",
@@ -125,10 +125,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn xfconf_availability_depends_on_command() {
+    #[serial_test::serial]
+    fn xfconf_is_available_exactly_when_an_xfconf_query_binary_resolves() {
+        let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
         let xc = XfconfConfigurator;
-        let expected = cfgd_core::command_available("xfconf-query");
-        assert_eq!(xc.is_available(), expected);
+
+        {
+            let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+            assert!(
+                !xc.is_available(),
+                "a host resolving no binaries is not an xfconf host"
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            let _probe = cfgd_core::test_helpers::ProbePath::containing(&["xfconf-query"]);
+            assert!(
+                xc.is_available(),
+                "the binary this configurator probes for is named `xfconf-query`"
+            );
+        }
     }
 
     #[test]
@@ -136,7 +154,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let xc = XfconfConfigurator;
         let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        xc.apply(&yaml, &printer).unwrap();
+        xc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -144,7 +163,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let xc = XfconfConfigurator;
         let yaml = serde_yaml::Value::String("not a mapping".into());
-        xc.apply(&yaml, &printer).unwrap();
+        xc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -157,7 +177,8 @@ mod tests {
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        xc.apply(&yaml, &printer).unwrap();
+        xc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -170,7 +191,8 @@ mod tests {
             serde_yaml::Value::String("not a mapping".into()),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        xc.apply(&yaml, &printer).unwrap();
+        xc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -188,7 +210,8 @@ mod tests {
             serde_yaml::Value::Mapping(inner),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        xc.apply(&yaml, &printer).unwrap();
+        xc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]

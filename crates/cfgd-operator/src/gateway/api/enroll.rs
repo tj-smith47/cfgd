@@ -217,6 +217,7 @@ pub(super) async fn verify_enrollment(
     let key_type = req.key_type.clone();
     let owned_keys: Vec<crate::gateway::db::UserPublicKey> =
         matching_keys.iter().map(|k| (*k).clone()).collect();
+    // spawn-blocking-ok: closure resolves no home paths (both verifiers build a per-key homedir under a tempdir)
     let verified = match tokio::task::spawn_blocking(move || {
         let key_refs: Vec<_> = owned_keys.iter().collect();
         match key_type.as_str() {

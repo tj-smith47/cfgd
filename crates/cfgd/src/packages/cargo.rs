@@ -4,14 +4,12 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 
-use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
-use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    bootstrap_via_shell_script, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
-    tool_cmd_with_resolver,
+    bootstrap_via_shell_script, home_relative_dir, resolve_tool_with_fallbacks, run_pkg_cmd,
+    run_pkg_cmd_live, tool_cmd_with_resolver,
 };
 
 pub struct CargoManager;
@@ -35,6 +33,12 @@ pub(super) fn cargo_cmd() -> Command {
     tool_cmd_with_resolver("cargo", find_cargo)
 }
 
+// Single source for the rustup-installed bin dir, so `bootstrap_plan`'s
+// declaration and `path_dirs`'s recording can never drift apart.
+fn cargo_bin_dir() -> Option<PathBuf> {
+    home_relative_dir("~/.cargo/bin")
+}
+
 impl PackageManager for CargoManager {
     fn name(&self) -> &str {
         "cargo"
@@ -44,13 +48,28 @@ impl PackageManager for CargoManager {
         cargo_available()
     }
 
-    fn can_bootstrap(&self) -> bool {
-        command_available("curl")
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        Some(
+            BootstrapPlan::new("rustup")
+                .requiring(["curl"])
+                .creating(cargo_bin_dir()),
+        )
     }
 
-    fn bootstrap(&self, printer: &Printer) -> Result<()> {
+    // Reads `cargo_bin_dir()` directly rather than the recorded state row: the
+    // rustup cascade always lands cargo in the same `~`-relative place, so
+    // there is nothing a live probe would learn that the plan's own
+    // declaration does not already know.
+    fn path_dirs(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
+        cargo_bin_dir()
+            .into_iter()
+            .map(cfgd_core::to_posix_string)
+            .collect()
+    }
+
+    fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         bootstrap_via_shell_script(
-            printer,
+            cx,
             "cargo",
             "Installing Rust via rustup",
             "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
@@ -75,7 +94,7 @@ impl PackageManager for CargoManager {
         for pkg in packages {
             let label = format!("cargo install {}", pkg);
             run_pkg_cmd_live(
-                cx.printer,
+                cx,
                 "cargo",
                 cargo_cmd().args(["install", pkg]),
                 &label,
@@ -93,18 +112,13 @@ impl PackageManager for CargoManager {
         for pkg in packages {
             let label = format!("cargo uninstall {}", pkg);
             run_pkg_cmd_live(
-                cx.printer,
+                cx,
                 "cargo",
                 cargo_cmd().args(["uninstall", pkg]),
                 &label,
                 "uninstall",
             )?;
         }
-        Ok(())
-    }
-
-    fn update(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        // cargo install re-installs to update; no separate update command
         Ok(())
     }
 
@@ -259,15 +273,6 @@ mod tests {
     }
 
     #[test]
-    fn cargo_manager_update_is_noop() {
-        let mgr = CargoManager;
-        let printer = cfgd_core::test_helpers::test_printer();
-        let state = cfgd_core::test_helpers::test_state();
-        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-        mgr.update(&cx).unwrap();
-    }
-
-    #[test]
     fn parse_cargo_install_list_multiple_binaries() {
         let output = "cargo-edit v0.12.2:\n    cargo-add\n    cargo-rm\n    cargo-upgrade\n    cargo-set-version\n";
         let pkgs = parse_cargo_install_list(output);
@@ -335,14 +340,40 @@ tokei v12.1.2:
     }
 
     #[test]
-    fn cargo_manager_can_bootstrap_depends_on_curl() {
+    fn cargo_bootstrap_plan_names_rustup_curl_and_the_cargo_bin_dir() {
         // Both sides read `PATH`; without the guard a concurrent test's
         // `PATH` mutation can land between them and they disagree.
         let _path = cfgd_core::test_helpers::path_env_read_guard();
-        let mgr = CargoManager;
-        let can = mgr.can_bootstrap();
-        // Should be true if curl is available
-        assert_eq!(can, command_available("curl"));
+        let home = tempfile::tempdir().unwrap();
+        let plan = cfgd_core::with_test_home(home.path(), || CargoManager.bootstrap_plan());
+        // The plan is unconditional: it describes what the cascade needs, and
+        // whether this host can carry that out is `feasible_bootstrap_plan`'s
+        // question — so the planner can name `curl` as the cause when it
+        // cannot.
+        assert!(plan.is_some());
+        let Some(plan) = plan else { return };
+        // What `bootstrap` runs: rustup's install script, fetched with curl,
+        // landing cargo (and everything `cargo install` builds) in ~/.cargo/bin.
+        assert_eq!(plan.method, "rustup");
+        assert_eq!(plan.requires, ["curl"]);
+        assert_eq!(
+            plan.creates_path_dirs,
+            [cfgd_core::to_posix_string(home.path().join(".cargo/bin"))]
+        );
+    }
+
+    #[test]
+    fn cargo_path_dirs_matches_the_bootstrap_plans_declaration() {
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
+        let home = tempfile::tempdir().unwrap();
+        cfgd_core::with_test_home(home.path(), || {
+            let plan = CargoManager.bootstrap_plan().unwrap();
+            let printer = cfgd_core::test_helpers::test_printer();
+            let state = cfgd_core::test_helpers::test_state();
+            let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+            let mgr: Box<dyn PackageManager> = Box::new(CargoManager);
+            assert_eq!(mgr.path_dirs(&cx), plan.creates_path_dirs);
+        });
     }
 
     #[test]
@@ -350,15 +381,6 @@ tokei v12.1.2:
         let mgr = CargoManager;
         let available = mgr.is_available();
         assert_eq!(available, cargo_available());
-    }
-
-    #[test]
-    fn cargo_update_returns_ok() {
-        let mgr = CargoManager;
-        let printer = cfgd_core::test_helpers::test_printer();
-        let state = cfgd_core::test_helpers::test_state();
-        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-        mgr.update(&cx).unwrap();
     }
 
     // --- parse_cargo_install_list_packages ---
@@ -481,16 +503,20 @@ tokei v12.1.2:
 
         #[test]
         #[serial]
-        fn cargo_update_is_noop_no_command_spawned() {
+        fn refreshing_the_index_declares_none_and_spawns_nothing() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
-            CargoManager.update(&cx).expect("Ok");
+            assert!(
+                !CargoManager.has_index(),
+                "every install resolves against the remote, so there is no index to refresh"
+            );
+            CargoManager.refresh_index(&cx).expect("Ok");
             assert_eq!(
                 s.invocation_count(),
                 0,
-                "cargo update is documented no-op (re-install is the convention)"
+                "a manager with no index must spawn nothing under a refresh"
             );
         }
 
@@ -587,7 +613,9 @@ tokei v12.1.2:
         fn cargo_bootstrap_runs_sh_rustup_pipeline_ok() {
             let (_bin, _path) = install_named_path_shim("sh", 0, "", "");
             let p = test_printer();
-            CargoManager.bootstrap(&p).expect("bootstrap Ok via shim");
+            CargoManager
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
+                .expect("bootstrap Ok via shim");
         }
 
         #[test]
@@ -596,7 +624,7 @@ tokei v12.1.2:
             let (_bin, _path) = install_named_path_shim("sh", 1, "", "rustup unreachable");
             let p = test_printer();
             let err = CargoManager
-                .bootstrap(&p)
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
                 .expect_err("non-zero sh must error");
             let msg = err.to_string();
             assert!(

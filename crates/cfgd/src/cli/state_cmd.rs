@@ -42,8 +42,9 @@ pub fn cmd_state_forget_prefix(
     printer: &Printer,
     manager: &str,
     state_dir: Option<&Path>,
+    scope: cfgd_core::Scope,
 ) -> anyhow::Result<()> {
-    let state = open_state_store(state_dir)?;
+    let state = open_state_store(state_dir, scope)?;
     let forgotten = state.forget_package_manager_prefix(manager)?;
     printer.emit(build_forget_prefix_doc(manager, forgotten.as_ref()));
     Ok(())
@@ -64,7 +65,7 @@ mod tests {
     fn cmd_state_forget_prefix_reports_no_row_when_nothing_persisted() {
         let dir = test_state_dir();
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        cmd_state_forget_prefix(&printer, "npm", Some(dir.path())).unwrap();
+        cmd_state_forget_prefix(&printer, "npm", Some(dir.path()), cfgd_core::Scope::User).unwrap();
         drop(printer);
 
         let output = buf.lock().unwrap();
@@ -84,7 +85,7 @@ mod tests {
         drop(state);
 
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        cmd_state_forget_prefix(&printer, "npm", Some(dir.path())).unwrap();
+        cmd_state_forget_prefix(&printer, "npm", Some(dir.path()), cfgd_core::Scope::User).unwrap();
         drop(printer);
 
         let output = buf.lock().unwrap();

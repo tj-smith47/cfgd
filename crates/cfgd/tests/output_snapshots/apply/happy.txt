@@ -1,9 +1,11 @@
 Apply
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  tiny
+  Phases   Files
+  Actions  1 planned
 
-Plan preview
-  Files
-    - create <TARGET>
+Phase: Files
+  profile:tiny
+    ✓ create <TARGET>
 
-✓ Apply complete — 1 action(s) succeeded (XXs)
+✓ Apply complete — 1 action succeeded (XXs)

@@ -4,12 +4,26 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
-use cfgd_core::providers::{PackageInfo, PackageManager};
+use cfgd_core::providers::{BootstrapPlan, PackageInfo, PackageManager};
 
 use super::shared::{canonical_ci_pkg_name, run_pkg_cmd, run_pkg_cmd_live};
 
 pub struct ChocolateyManager;
+
+/// Where the Chocolatey installer puts the shims it creates. `ChocolateyInstall`
+/// is set by an existing install; the literal is the installer's own default for
+/// the machine-wide install cfgd's bootstrap performs. Windows-only, because the
+/// bootstrap is a PowerShell script that runs nowhere else.
+fn choco_bin_dir() -> Option<std::path::PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    Some(
+        std::env::var_os("ChocolateyInstall")
+            .map(|root| std::path::PathBuf::from(root).join("bin"))
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData\chocolatey\bin")),
+    )
+}
 
 /// Extract `(name, version)` for each real package line of `choco list` output,
 /// skipping the `Chocolatey vX` banner and the `N packages installed.` footer. The
@@ -67,13 +81,20 @@ impl PackageManager for ChocolateyManager {
         cfgd_core::command_available("choco")
     }
 
-    fn can_bootstrap(&self) -> bool {
-        true
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        Some(BootstrapPlan::new("system").creating(choco_bin_dir()))
     }
 
-    fn bootstrap(&self, printer: &Printer) -> Result<()> {
+    fn path_dirs(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
+        choco_bin_dir()
+            .into_iter()
+            .map(cfgd_core::to_posix_string)
+            .collect()
+    }
+
+    fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
-            printer,
+            cx,
             "chocolatey",
             Command::new("powershell").args([
                 "-NoProfile",
@@ -106,6 +127,13 @@ impl PackageManager for ChocolateyManager {
         canonical_ci_pkg_name(entry)
     }
 
+    /// The versioned listing keeps the REGISTERED case for display; fold a
+    /// listed name to the same lowercase identity form the matching surfaces
+    /// use.
+    fn listed_identity(&self, listed_name: &str) -> String {
+        canonical_ci_pkg_name(listed_name)
+    }
+
     /// Display surface (scan/status): keep the REGISTERED name case and the real
     /// version, rather than the lowercase identity form used for matching.
     fn installed_packages_with_versions(
@@ -127,7 +155,7 @@ impl PackageManager for ChocolateyManager {
         let pkg_refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
         args.extend(pkg_refs);
         run_pkg_cmd_live(
-            cx.printer,
+            cx,
             "chocolatey",
             Command::new("choco").args(&args),
             "Installing chocolatey packages",
@@ -145,22 +173,11 @@ impl PackageManager for ChocolateyManager {
         let pkg_refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
         args.extend(pkg_refs);
         run_pkg_cmd_live(
-            cx.printer,
+            cx,
             "chocolatey",
             Command::new("choco").args(&args),
             "Uninstalling chocolatey packages",
             "uninstall",
-        )?;
-        Ok(())
-    }
-
-    fn update(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        run_pkg_cmd_live(
-            cx.printer,
-            "chocolatey",
-            Command::new("choco").args(["upgrade", "all", "-y"]),
-            "Upgrading all chocolatey packages",
-            "install",
         )?;
         Ok(())
     }
@@ -316,7 +333,7 @@ mod tests {
     fn chocolatey_manager_name_and_traits() {
         let mgr = ChocolateyManager;
         assert_eq!(mgr.name(), "chocolatey");
-        assert!(mgr.can_bootstrap());
+        assert!(mgr.bootstrap_plan().is_some());
     }
 
     #[test]
@@ -478,9 +495,33 @@ Tags: git vcs dvcs
     }
 
     #[test]
-    fn chocolatey_manager_can_bootstrap_true() {
-        let mgr = ChocolateyManager;
-        assert!(mgr.can_bootstrap());
+    fn chocolatey_bootstrap_plan_declares_the_installer_shim_dir_on_windows() {
+        let plan = ChocolateyManager.bootstrap_plan().expect("always planned");
+        assert_eq!(plan.method, "system");
+        assert!(plan.requires.is_empty());
+        // `bootstrap` is a PowerShell install script; the shims it creates only
+        // exist on the platform that can run it.
+        if cfg!(windows) {
+            assert_eq!(plan.creates_path_dirs.len(), 1);
+            assert!(
+                plan.creates_path_dirs[0].ends_with("/bin"),
+                "{:?}",
+                plan.creates_path_dirs
+            );
+            assert!(!plan.creates_path_dirs[0].contains('\\'));
+        } else {
+            assert!(plan.creates_path_dirs.is_empty());
+        }
+    }
+
+    #[test]
+    fn chocolatey_path_dirs_matches_the_bootstrap_plans_declaration() {
+        let plan = ChocolateyManager.bootstrap_plan().expect("always planned");
+        let printer = cfgd_core::test_helpers::test_printer();
+        let state = cfgd_core::test_helpers::test_state();
+        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+        let mgr: Box<dyn PackageManager> = Box::new(ChocolateyManager);
+        assert_eq!(mgr.path_dirs(&cx), plan.creates_path_dirs);
     }
 
     // ---------------------------------------------------------------------------
@@ -515,8 +556,39 @@ Tags: git vcs dvcs
             let (_bin, _path) = install_named_path_shim("powershell", 0, "", "");
             let p = test_printer();
             ChocolateyManager
-                .bootstrap(&p)
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
                 .expect("bootstrap Ok via shim");
+        }
+
+        /// The chocolatey install script warns on stderr about things the user
+        /// must act on (an execution policy left in place, a shell restart).
+        /// Those notes are the reason `bootstrap` takes the whole context and
+        /// not a bare printer: they belong to the caller's sink, which renders
+        /// them under the action's own status line.
+        #[test]
+        #[serial]
+        fn bootstrap_caveats_reach_the_callers_sink() {
+            let (_bin, _path) = install_named_path_shim(
+                "powershell",
+                0,
+                "",
+                "WARNING: Restart your shell to pick up choco",
+            );
+            let p = test_printer();
+            let notes = cfgd_core::providers::NoteSink::default();
+            ChocolateyManager
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context_with_notes(
+                    &p, &notes,
+                ))
+                .expect("bootstrap Ok via shim");
+            let drained = notes.take();
+            assert_eq!(drained.len(), 1, "expected one caveat, got {drained:?}");
+            assert_eq!(drained[0].tag.as_deref(), Some("chocolatey"));
+            assert!(
+                drained[0].message.contains("Restart your shell"),
+                "got: {}",
+                drained[0].message
+            );
         }
 
         #[test]
@@ -525,7 +597,7 @@ Tags: git vcs dvcs
             let (_bin, _path) = install_named_path_shim("powershell", 1, "", "install failed");
             let p = test_printer();
             let err = ChocolateyManager
-                .bootstrap(&p)
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
                 .expect_err("nonzero powershell must error");
             let _ = err.to_string();
         }
@@ -582,12 +654,16 @@ Tags: git vcs dvcs
 
         #[test]
         #[serial]
-        fn update_runs_upgrade_all() {
+        fn choco_declares_no_index_and_refreshing_upgrades_nothing() {
             let (_bin, _path) = install_choco_shim(0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
-            ChocolateyManager.update(&cx).expect("update Ok");
+            assert!(
+                !ChocolateyManager.has_index(),
+                "`choco upgrade all -y` upgrades every package the user never declared"
+            );
+            ChocolateyManager.refresh_index(&cx).expect("refresh Ok");
         }
 
         #[test]

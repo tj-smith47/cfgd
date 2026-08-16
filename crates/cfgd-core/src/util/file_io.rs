@@ -286,7 +286,41 @@ pub fn atomic_write(
     // persist() does atomic rename on Unix
     tmp.persist(target).map_err(|e| e.error)?;
 
+    // The temp file's own `sync_all` above puts the CONTENT on the platter; the
+    // rename that names it is a directory update, and until the directory is
+    // synced too, a power loss can surface the old name, the temp name, or
+    // neither. One `fsync` on the parent closes that gap for a backup sidecar,
+    // whose whole reason to exist is surviving the crash.
+    #[cfg(unix)]
+    fsync_dir(parent);
+
     Ok(hash)
+}
+
+/// Flush a directory's own entries to stable storage.
+///
+/// Best-effort by design: some filesystems (several network ones, and Windows,
+/// where this is not compiled at all) refuse to open or sync a directory, and a
+/// write that already landed must not be reported as failed because its
+/// durability could only be made best-effort.
+#[cfg(unix)]
+fn fsync_dir(dir: &std::path::Path) {
+    match std::fs::File::open(dir) {
+        Ok(handle) => {
+            if let Err(e) = handle.sync_all() {
+                tracing::debug!(
+                    dir = %dir.posix(),
+                    error = %e,
+                    "atomic_write: parent directory fsync failed; the rename is durable only once the filesystem flushes it",
+                );
+            }
+        }
+        Err(e) => tracing::debug!(
+            dir = %dir.posix(),
+            error = %e,
+            "atomic_write: parent directory could not be opened for fsync",
+        ),
+    }
 }
 
 /// Create the parent directory of `target` (and every missing ancestor).

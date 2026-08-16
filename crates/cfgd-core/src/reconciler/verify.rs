@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 
-use crate::config::{EnvScope, ResolvedProfile};
+use crate::config::{EnvScope, LOCAL_LAYER, ResolvedProfile};
 use crate::errors::Result;
 use crate::expand_tilde;
 use crate::modules::ResolvedModule;
@@ -43,7 +43,7 @@ pub fn verify(
     modules: &[ResolvedModule],
 ) -> Result<Vec<VerifyResult>> {
     let mut results = Vec::new();
-    let cx = crate::providers::PackageContext { printer, state };
+    let cx = crate::providers::PackageContext::new(printer, state);
 
     // Verify packages — profile and module packages share one effective desired
     // set so a `(manager, name)` declared in both is checked once, and the
@@ -108,7 +108,7 @@ pub fn verify(
                 &resource_id,
                 Some("installed"),
                 Some("missing"),
-                "local",
+                LOCAL_LAYER,
             );
         }
     }
@@ -143,7 +143,7 @@ pub fn verify(
                         &format!("{}.{}", sc.name(), drift.key),
                         Some(&drift.expected),
                         Some(&drift.actual),
-                        "local",
+                        LOCAL_LAYER,
                     );
                 }
             }
@@ -256,7 +256,7 @@ pub(super) fn verify_env(
                         &to_posix_string(&rc_path),
                         Some("source line present"),
                         Some("source line missing"),
-                        "local",
+                        LOCAL_LAYER,
                     );
                 }
             }
@@ -299,7 +299,7 @@ pub(super) fn verify_env_file(
                 &to_posix_string(path),
                 Some("current"),
                 Some("stale"),
-                "local",
+                LOCAL_LAYER,
             );
         }
         Err(_) => {
@@ -316,7 +316,7 @@ pub(super) fn verify_env_file(
                 &to_posix_string(path),
                 Some("present"),
                 Some("missing"),
-                "local",
+                LOCAL_LAYER,
             );
         }
     }

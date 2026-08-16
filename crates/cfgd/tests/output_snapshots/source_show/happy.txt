@@ -1,4 +1,4 @@
-Source: team-config
+source:team-config
   URL                 https://github.com/team/config
   Branch              main
   Priority            100

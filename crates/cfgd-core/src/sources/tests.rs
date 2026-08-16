@@ -797,6 +797,41 @@ fn load_source_rejects_dash_leading_url() {
 }
 
 #[test]
+#[serial]
+fn load_source_names_a_dash_leading_url_as_injection_even_where_local_origins_are_allowed() {
+    use crate::test_helpers::with_test_env_var;
+    // A dash-leading origin carries no scheme and no `host:`, so the
+    // local-origin guard would happily claim it — and answer an injection
+    // attempt with "that is a local path". The dash check runs first, and it
+    // runs whether or not local origins are permitted.
+    for allow in [Some("1"), None] {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", allow, || {
+            let dir = tempfile::tempdir().unwrap();
+            let mut mgr = SourceManager::new(dir.path());
+            let printer = test_printer();
+            let spec = crate::config::SourceSpec {
+                name: "evil".into(),
+                origin: crate::config::OriginSpec {
+                    origin_type: OriginType::Git,
+                    url: "--upload-pack=touch /tmp/pwned".into(),
+                    branch: "main".into(),
+                    auth: None,
+                    ssh_strict_host_key_checking: Default::default(),
+                },
+                subscription: Default::default(),
+                sync: Default::default(),
+            };
+            let err = mgr.load_source(&spec, &printer).unwrap_err().to_string();
+            assert!(
+                err.contains("must not begin with '-'"),
+                "CFGD_ALLOW_LOCAL_SOURCES={allow:?} must not reclassify an injected git \
+                 option as a local path, got: {err}"
+            );
+        });
+    }
+}
+
+#[test]
 fn remove_source_success() {
     let dir = tempfile::tempdir().unwrap();
     let mut mgr = SourceManager::new(dir.path());
@@ -2865,6 +2900,187 @@ mod local_source_fixture {
             );
         });
     }
+
+    #[test]
+    #[serial]
+    fn load_source_discards_cache_cloned_from_a_different_origin() {
+        // The cache is keyed by NAME alone. A cached checkout whose recorded
+        // origin disagrees with the spec must be discarded and re-cloned from
+        // the spec's origin — never fetched from the stale clone's remote.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare_a = make_bare_with_manifest(&tmp, "origin-swap", None, &[]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec_a = build_spec(
+                "origin-swap",
+                &crate::test_helpers::file_url(&bare_a),
+                &detect_branch(&bare_a),
+            );
+            mgr.load_source(&spec_a, &test_printer()).unwrap();
+            let head_a = head_oid(&cache_dir, "origin-swap");
+
+            // Same source NAME, different upstream. The manifest must also
+            // declare "origin-swap" or parse_manifest rejects the mismatch —
+            // build B under a scratch name, then rename its manifest identity.
+            let bare_b = {
+                let bare = tmp.path().join("origin-swap-b-bare.git");
+                git2::Repository::init_bare(&bare).unwrap();
+                let src = tmp.path().join("origin-swap-b-src");
+                let src_repo = git2::Repository::init(&src).unwrap();
+                let manifest = "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: origin-swap\nspec:\n  provides:\n    profiles:\n      - default\n";
+                std::fs::write(src.join("cfgd-source.yaml"), manifest).unwrap();
+                let mut index = src_repo.index().unwrap();
+                index
+                    .add_path(std::path::Path::new("cfgd-source.yaml"))
+                    .unwrap();
+                index.write().unwrap();
+                let tree_id = index.write_tree().unwrap();
+                let tree = src_repo.find_tree(tree_id).unwrap();
+                let sig = git2::Signature::now("t", "t@example.com").unwrap();
+                src_repo
+                    .commit(Some("HEAD"), &sig, &sig, "manifest from B", &tree, &[])
+                    .unwrap();
+                drop(tree);
+                let bare_url = crate::test_helpers::file_url(&bare);
+                let mut remote = src_repo.remote("origin", &bare_url).unwrap();
+                let branch = src_repo
+                    .head()
+                    .unwrap()
+                    .shorthand()
+                    .unwrap_or("master")
+                    .to_string();
+                remote
+                    .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+                    .unwrap();
+                bare
+            };
+            let spec_b = build_spec(
+                "origin-swap",
+                &crate::test_helpers::file_url(&bare_b),
+                &detect_branch(&bare_b),
+            );
+            let (printer, buf) =
+                crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+            mgr.load_source(&spec_b, &printer)
+                .expect("origin mismatch must re-clone, not fail");
+
+            let head_b = head_oid(&cache_dir, "origin-swap");
+            assert_ne!(
+                head_b, head_a,
+                "checkout must now be B's history, not the stale A clone"
+            );
+            let recorded = git2::Repository::open(cache_dir.join("origin-swap"))
+                .unwrap()
+                .find_remote("origin")
+                .unwrap()
+                .url()
+                .unwrap()
+                .to_string();
+            assert_eq!(
+                recorded, spec_b.origin.url,
+                "re-clone must record the spec's origin"
+            );
+            let out = crate::test_helpers::captured_text(&buf);
+            assert!(
+                out.contains("different origin"),
+                "the discard must be announced: {out}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_cached_skips_cache_cloned_from_a_different_origin() {
+        // The read path never fetches, so it cannot heal a mismatched cache —
+        // it must degrade exactly like a cache miss: warn, and do not compose
+        // the other repository's content under this source's name.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "cached-swap", None, &[]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = build_spec(
+                "cached-swap",
+                &crate::test_helpers::file_url(&bare),
+                &detect_branch(&bare),
+            );
+            mgr.load_source(&spec, &test_printer()).unwrap();
+            mgr.sources.clear();
+
+            let mut other = spec.clone();
+            other.origin.url = "https://example.com/some/other-repo.git".to_string();
+            let (printer, buf) =
+                crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+            mgr.load_source_cached(&other, &printer)
+                .expect("mismatch on the read path degrades, never errors");
+            assert!(
+                mgr.get("cached-swap").is_none(),
+                "a mismatched cache must not be composed"
+            );
+            let out = crate::test_helpers::captured_text(&buf);
+            assert!(
+                out.contains("different origin") && out.contains("cfgd sync"),
+                "warn must name the mismatch and the fix: {out}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_reclones_a_cache_that_is_not_a_repository() {
+        // A cache directory with no git repository in it records no origin, so
+        // the sync path cannot fetch it. It takes the same discard-and-reclone
+        // self-heal as an origin mismatch instead of failing on the fetch.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "nonrepo-heal", None, &[]);
+            let cache_dir = tmp.path().join("cache");
+            let planted = cache_dir.join("nonrepo-heal");
+            std::fs::create_dir_all(&planted).unwrap();
+            std::fs::write(planted.join("cfgd-source.yaml"), "::: garbage :::").unwrap();
+
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = build_spec(
+                "nonrepo-heal",
+                &crate::test_helpers::file_url(&bare),
+                &detect_branch(&bare),
+            );
+            mgr.load_source(&spec, &test_printer())
+                .expect("a non-repository cache must be discarded and re-cloned");
+            assert!(mgr.get("nonrepo-heal").is_some());
+            assert!(
+                !head_oid(&cache_dir, "nonrepo-heal").is_empty(),
+                "the re-clone is a real checkout"
+            );
+            let manifest = std::fs::read_to_string(planted.join("cfgd-source.yaml")).unwrap();
+            assert!(
+                !manifest.contains("garbage"),
+                "the planted non-repo content must be gone"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_cached_still_hard_errors_on_a_corrupt_non_repo_cache() {
+        // The read-path origin check must not swallow the fail-closed contract:
+        // a cache that is not a repository records no origin, so it falls
+        // through to manifest parsing, and a corrupt manifest stays a hard
+        // error rather than a warn-and-skip.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let cache_dir = tmp.path().join("cache");
+            let planted = cache_dir.join("corrupt");
+            std::fs::create_dir_all(&planted).unwrap();
+            std::fs::write(planted.join("cfgd-source.yaml"), "::: garbage :::").unwrap();
+
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = build_spec("corrupt", "https://example.test/team.git", "master");
+            mgr.load_source_cached(&spec, &test_printer())
+                .expect_err("a corrupt cached manifest is a hard error, never a silent skip");
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3212,6 +3428,74 @@ fn load_source_rejects_absolute_path_origin_without_allow_env() {
             "rejection must mention absolute paths: {msg}"
         );
     });
+}
+
+#[test]
+#[serial]
+fn load_source_rejects_relative_path_origin_without_allow_env() {
+    use crate::test_helpers::with_test_env_var;
+    // A relative origin is cloned from the process working directory just as
+    // readily as an absolute one, so the guard has to reject both or it names a
+    // rule it does not enforce.
+    with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", None, || {
+        for url in ["acme/config", "./config", "../config", r"C:\src\config"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut mgr = SourceManager::new(&tmp.path().join("cache"));
+            let printer = test_printer();
+            let spec = crate::config::SourceSpec {
+                name: "relative".into(),
+                origin: crate::config::OriginSpec {
+                    origin_type: OriginType::Git,
+                    url: url.into(),
+                    branch: "main".into(),
+                    auth: None,
+                    ssh_strict_host_key_checking: Default::default(),
+                },
+                subscription: Default::default(),
+                sync: Default::default(),
+            };
+            let err = mgr.load_source(&spec, &printer).unwrap_err().to_string();
+            assert!(
+                err.contains("local path"),
+                "'{url}' must be rejected as a local origin, got: {err}"
+            );
+        }
+    });
+}
+
+#[test]
+fn remote_origin_urls_are_told_from_local_ones() {
+    for remote in [
+        "https://github.com/acme/config.git",
+        "http://internal/acme/config",
+        "ssh://git@github.com/acme/config.git",
+        "git://github.com/acme/config",
+        "git@github.com:acme/config.git",
+        "deploy@10.0.0.5:srv/config.git",
+        "gitserver:acme/config",
+    ] {
+        assert!(
+            super::is_remote_origin_url(remote),
+            "must stay a remote origin: {remote}"
+        );
+    }
+    for local in [
+        "file:///srv/git/config.git",
+        "FILE:///srv/git/config.git",
+        "/srv/git/config.git",
+        "acme/config",
+        "./config",
+        "../config",
+        "config",
+        r"C:\src\config",
+        "C:/src/config",
+        r"\\server\share\config",
+    ] {
+        assert!(
+            !super::is_remote_origin_url(local),
+            "must be judged a local origin: {local}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

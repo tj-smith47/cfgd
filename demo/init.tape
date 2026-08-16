@@ -9,7 +9,7 @@ Require docker
 Set Shell "bash"
 # LazyVim's tree, tabline and statusline are drawn with Nerd Font glyphs; the
 # default font renders every one of them as a tofu box.
-Set FontFamily "JetBrainsMono Nerd Font Mono"
+Set FontFamily "FiraCode Nerd Font Mono"
 # 1320x1000 at font 15 is a measured 125x47 terminal (cell 10.24x20.43 after
 # the 20px padding each side) — wide and tall enough that LazyVim's tree,
 # tabline and statusline frame a real editing view rather than a cropped one,
@@ -58,7 +58,7 @@ Type "nvim"
 Enter
 Sleep 3s
 
-Type "cfgd init --from https://github.com/tj-smith47/cfgd-config.git --apply-module nvim --theme dracula --yes"
+Type "cfgd init --from tj-smith47/cfgd-config --apply-module nvim --theme dracula --yes"
 Sleep 700ms
 Enter
 # apt + brew + rustup + Lazy/Mason/treesitter bootstrap; minutes, not seconds.

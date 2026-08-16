@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 use crate::errors::Result;
 use crate::output::Printer;
-use crate::state::ApplyStatus;
+use crate::state::{ApplyStatus, FileBackupRecord};
 
 use super::restore::{RestoreOutcome, restore_file_from_backup};
 use super::types::RollbackResult;
@@ -29,11 +29,27 @@ impl<'a> super::Reconciler<'a> {
         let after_backups = self.state.file_backups_after_apply(apply_id)?;
         let after_entries = self.state.journal_entries_after_apply(apply_id)?;
 
-        // Build a map of file_path -> last backup from the target apply
-        // (last = post-apply snapshot, which has the highest id)
-        let mut target_snapshot: HashMap<String, &crate::state::FileBackupRecord> = HashMap::new();
-        for bk in &target_backups {
-            target_snapshot.insert(bk.file_path.clone(), bk);
+        // Build the post-apply snapshot AND fix the restore order in the same
+        // pass: `target_backups` is `ORDER BY id` (chronological), so walking
+        // it in REVERSE means the first record seen for a path is the one
+        // with the highest id — the post-apply snapshot the comment above
+        // describes — and every later (older) duplicate for that path is
+        // dropped. The resulting `Vec` is therefore already in
+        // reverse-apply order: most-recently-written files first, working
+        // backward toward the oldest. A `HashMap` here previously threw that
+        // order away and restored files in `RandomState` order, which is
+        // doubly wrong for a destructive operation — the on-screen warning
+        // order reshuffled per run, and so did the order files were actually
+        // overwritten or deleted in. Reverse-apply order is chosen to match
+        // ordinary undo semantics: if this rollback is interrupted partway
+        // through, the newest overwrites are the ones already undone rather
+        // than the oldest.
+        let mut seen_paths: HashSet<String> = HashSet::new();
+        let mut target_snapshot: Vec<&FileBackupRecord> = Vec::new();
+        for bk in target_backups.iter().rev() {
+            if seen_paths.insert(bk.file_path.clone()) {
+                target_snapshot.push(bk);
+            }
         }
 
         let mut files_restored = 0usize;
@@ -42,9 +58,7 @@ impl<'a> super::Reconciler<'a> {
 
         // Collect non-file actions from subsequent applies
         for entry in &after_entries {
-            let is_file = entry.phase == "files"
-                || entry.action_type == "file"
-                || entry.resource_id.starts_with("file:");
+            let is_file = entry.is_file_work();
             let already_listed = non_file_actions
                 .iter()
                 .any(|(_, rid): &(String, String)| rid == &entry.resource_id);
@@ -54,12 +68,13 @@ impl<'a> super::Reconciler<'a> {
         }
 
         // Track which file paths we've already restored (avoid duplicate restores)
-        let mut restored_paths = std::collections::HashSet::new();
+        let mut restored_paths = HashSet::new();
 
-        // Restore from target apply's post-apply snapshots.
-        for (path, bk) in &target_snapshot {
-            restored_paths.insert(path.clone());
-            let target = std::path::Path::new(path);
+        // Restore from target apply's post-apply snapshots, in reverse-apply
+        // (newest-first) order — see the comment above `target_snapshot`.
+        for bk in &target_snapshot {
+            restored_paths.insert(bk.file_path.clone());
+            let target = std::path::Path::new(&bk.file_path);
             let result = restore_file_from_backup(target, bk, printer);
             match result {
                 RestoreOutcome::Restored => files_restored += 1,
@@ -68,9 +83,26 @@ impl<'a> super::Reconciler<'a> {
             }
         }
 
-        // Fall back to earliest backup after target for remaining paths. Files
-        // created by a later apply surface here as absent markers (existed=0),
-        // which restore_file_from_backup removes — undoing the CREATE.
+        // Fall back to the earliest backup after target for remaining paths,
+        // walked FORWARD (ascending id) — the opposite of `target_snapshot`
+        // above, and deliberately so. `file_backups_after_apply` dedupes
+        // ACROSS applies (one apply_id per path: the earliest apply after
+        // target) but NOT within that one apply: an apply that both backs up
+        // a path pre-write and stores a post-apply resolved snapshot for it
+        // contributes two rows here under the same apply_id. The EARLIEST of
+        // those (lowest id) is the pre-action backup — the state that
+        // existed the instant before that apply touched the path, which is
+        // exactly the target apply's own settled output, since nothing ran
+        // between target completing and this apply starting. The latest
+        // (post-apply) row is that LATER apply's own result and must lose.
+        // Walking forward with first-seen-wins picks the earliest row per
+        // path; reversing here (as `target_snapshot` correctly does for ITS
+        // own, opposite, latest-wins requirement) silently restores files to
+        // a later apply's content instead of the target's — observed as
+        // `rollback_removes_files_created_by_later_apply` restoring a
+        // later-apply's created file instead of removing it. Files created
+        // by a later apply surface here as absent markers (existed=0), which
+        // restore_file_from_backup removes — undoing the CREATE.
         for bk in &after_backups {
             if restored_paths.contains(&bk.file_path) {
                 continue;

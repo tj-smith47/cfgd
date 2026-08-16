@@ -117,8 +117,8 @@ begin_test "CO09: compliance after restore shows compliant"
 run $CO08 apply --yes
 if assert_ok; then
     run $CO08 compliance
-    # All-compliant message: "All N check(s) compliant"
-    if assert_ok && assert_contains "$OUTPUT" "check(s) compliant"; then
+    # All-compliant message: "All N checks compliant" (pluralize agreement)
+    if assert_ok && assert_contains "$OUTPUT" "checks compliant"; then
         pass_test "CO09"
     else fail_test "CO09" "Expected all-compliant after restore"; fi
 else fail_test "CO09" "Apply failed"; fi

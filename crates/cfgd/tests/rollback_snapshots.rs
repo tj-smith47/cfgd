@@ -15,25 +15,34 @@ use cfgd::cli::output_types::RollbackOutput;
 use cfgd::cli::rollback::{build_rollback_doc, cmd_rollback};
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, PromptAnswer, Role, Verbosity};
+use cfgd_core::reconciler::PhaseName;
 use pretty_assertions::assert_eq;
 
 use common::{
     rollback_state_no_changes_setup, rollback_state_with_backups_setup,
-    rollback_state_with_multiline_script_action_setup, rollback_state_with_non_file_actions_setup,
+    rollback_state_with_created_files_setup, rollback_state_with_multiline_script_action_setup,
+    rollback_state_with_non_file_actions_setup,
 };
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
 /// Real `cmd_rollback` against a seeded state DB with file backups — restores
 /// v1 content of one file from apply 2's backup row. Locks the kv prelude,
-/// the Restoring section status, the buffered "Rollback complete" line.
+/// the `Phase: Files` section status, the buffered "Rollback complete" line.
 #[test]
 fn rollback_happy_human() {
     let (_workspace, state_dir, target, apply_id) = rollback_state_with_backups_setup();
 
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_rollback(&printer, apply_id, true, Some(state_dir.path())).unwrap();
+    cmd_rollback(
+        &printer,
+        apply_id,
+        true,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     drop(printer);
 
     let normalized = cap
@@ -41,6 +50,41 @@ fn rollback_happy_human() {
         .replace(&target.display().to_string(), "<TARGET>");
     let stripped = strip_ansi(&normalized);
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "rollback/happy.txt", &stripped);
+}
+
+/// A rollback that UNDOES a create rather than restoring content — the
+/// `N newly created files removed` line, which no other golden covers and
+/// which is a count and a noun in the middle of a sentence rather than at the
+/// head of one.
+#[test]
+fn rollback_removed_files_human() {
+    let (_workspace, state_dir, created, apply_id) = rollback_state_with_created_files_setup();
+
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_rollback(
+        &printer,
+        apply_id,
+        true,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
+    drop(printer);
+
+    for path in &created {
+        assert!(!path.exists(), "{} must be removed", path.display());
+    }
+    let mut normalized = cap.human();
+    for (index, path) in created.iter().enumerate() {
+        normalized = normalized.replace(&path.display().to_string(), &format!("<TARGET{index}>"));
+    }
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "rollback/removed_files.txt",
+        &stripped
+    );
 }
 
 /// JSON payload roundtrip — RollbackOutput shape via build_rollback_doc + cap.json().
@@ -73,7 +117,14 @@ fn rollback_no_changes_human() {
 
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_rollback(&printer, apply_id, true, Some(state_dir.path())).unwrap();
+    cmd_rollback(
+        &printer,
+        apply_id,
+        true,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -97,7 +148,14 @@ fn rollback_accept_human() {
         Verbosity::Normal,
     );
 
-    cmd_rollback(&printer, apply_id, false, Some(state_dir.path())).unwrap();
+    cmd_rollback(
+        &printer,
+        apply_id,
+        false,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     printer.flush();
     drop(printer);
 
@@ -118,7 +176,14 @@ fn rollback_aborted_human() {
         Verbosity::Normal,
     );
 
-    cmd_rollback(&printer, apply_id, false, Some(state_dir.path())).unwrap();
+    cmd_rollback(
+        &printer,
+        apply_id,
+        false,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     printer.flush();
     drop(printer);
 
@@ -129,7 +194,7 @@ fn rollback_aborted_human() {
 }
 
 /// Seeded state has a non-file (package) action after the target apply.
-/// `cmd_rollback` lists the action under the "Non-file action(s) require
+/// `cmd_rollback` lists the action under the "non-file actions require
 /// manual review" section with bullets — proves the indent-hack closure
 /// at rollback.rs:108 under real data (bullets render at section depth,
 /// not at column 0).
@@ -139,7 +204,14 @@ fn rollback_non_file_actions_human() {
 
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_rollback(&printer, apply_id, true, Some(state_dir.path())).unwrap();
+    cmd_rollback(
+        &printer,
+        apply_id,
+        true,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -161,7 +233,14 @@ fn rollback_non_file_script_action_condenses_multiline_bullet() {
 
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_rollback(&printer, apply_id, true, Some(state_dir.path())).unwrap();
+    cmd_rollback(
+        &printer,
+        apply_id,
+        true,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     drop(printer);
 
     let human = strip_ansi(&cap.human());
@@ -194,8 +273,8 @@ fn rollback_bridge_one_blank_line() {
         ("File backups to restore".to_string(), "1".to_string()),
     ]);
     {
-        let rb_sec = printer.section("Restoring");
-        rb_sec.status_simple(Role::Ok, "1 file(s) processed");
+        let rb_sec = printer.section_phase(&PhaseName::Files.section_label());
+        rb_sec.status_simple(Role::Ok, "1 file processed");
     }
 
     let doc = Doc::new()

@@ -336,6 +336,28 @@ files:
 
 Files can be marked `private: true` to exclude them from git (added to `.gitignore`).
 
+> **One writer per rc file.** `spec.env` maintains its own loader line inside
+> shell rc files: `~/.bashrc` / `~/.zshrc` get
+> `[ -f ~/.cfgd.env ] && . ~/.cfgd.env` injected so declared vars and
+> bootstrapped `PATH` entries reach new shells. A `files.managed` entry whose
+> `target` is the same rc file puts a second writer on that path:
+>
+> ```yaml
+> env:
+>   - name: EDITOR
+>     value: nvim          # injects its loader line into ~/.zshrc
+> files:
+>   managed:
+>     - source: shell/.zshrc
+>       target: ~/.zshrc   # re-deploys ~/.zshrc from the repo copy
+> ```
+>
+> Each writer undoes the other across runs (the file entry deploys an rc
+> without the injected line, the env writer adds it back), so reconcile keeps
+> finding drift on a target that never converges. Keep the rc file under one
+> writer: put the loader line in the rc source you deploy, or leave the rc
+> file out of `files.managed` and let `spec.env` own it.
+
 ### Partial-file edits (`strategy: Patch`)
 
 `Patch` is the strategy for files cfgd must *share* rather than own — a
@@ -756,7 +778,7 @@ On Linux, cfgd supports desktop environment-specific system configurators in add
 | Desktop configurators | `gsettings` (GNOME/GTK), `kdeConfig` (KDE Plasma), `xfconf` (XFCE) — each active only when its CLI tool is installed |
 | System configurators | `systemdUnits`, `environment`; plus node-level configurators (`sysctl`, `kernelModules`, `containerd`, `kubelet`, `apparmor`, `seccomp`, `certificates`) |
 | `spec.env` reach | `envScope: All` (default) writes `~/.config/environment.d/cfgd.conf` (read by `systemd --user` + Wayland GUI sessions) and refreshes the live session via `systemctl --user set-environment` |
-| Bootstrapped `PATH` | An apply that bootstraps Homebrew records `/home/linuxbrew/.linuxbrew/{bin,sbin}` and exports them from `~/.cfgd.env`, sourced by `~/.bashrc`/`~/.zshrc` — no `brew shellenv` line to add by hand. A brew you installed yourself is left untouched |
+| Bootstrapped `PATH` | An apply that bootstraps Homebrew records `/home/linuxbrew/.linuxbrew/{bin,sbin}` and exports them from `~/.cfgd.env`, sourced by `~/.bashrc`/`~/.zshrc` — no `brew shellenv` line to add by hand. A brew you installed yourself is left untouched. A prefix cfgd created for a manager you installed (npm's `$HOME/.npm-global`) is exported all the same |
 | Daemon service | Registered as a systemd user service; starts at login |
 
 ## Windows
@@ -821,7 +843,8 @@ These flags work with any subcommand:
 | `--profile <name>` | | `CFGD_PROFILE` | Override the active profile |
 | `--verbose` | `-v` | `CFGD_VERBOSE` | Show debug output (`-vv` = trace) |
 | `--quiet` | `-q` | `CFGD_QUIET` | Suppress all non-error output |
-| `--no-color` | | `NO_COLOR` | Disable colored terminal output |
+| `--color <auto\|always\|never>` | | `CFGD_COLOR` | When to colorize terminal output. `auto` (default) follows the terminal, `NO_COLOR` and `TERM=dumb`; `always` colorizes even when stderr is not a terminal, for a pager that renders escapes (`less -R`) or a captured transcript; `never` disables it. Colour is never emitted under `-o json`/`yaml`/`name`/`jsonpath`/`template` whatever this says — an escape inside a payload string is corrupt data |
+| `--no-color` | | `NO_COLOR` | Disable colored terminal output (alias for `--color never`) |
 | `--output <format>` | `-o` | | Output format: `table` (default), `wide`, `json`, `yaml`, `name`, `jsonpath=EXPR`, `template=TMPL`, `template-file=PATH` |
 | `--list-envelope` | | `CFGD_LIST_ENVELOPE` | Under `-o json`/`-o yaml`, wrap a top-level array in a KRM `List` envelope (`{apiVersion, kind: List, items}`) |
 | `--scope <user\|system>` | | `CFGD_SCOPE` | Installation scope: `user` (default) or `system`. `system` switches all four directory roots to system/FHS defaults (`/etc/cfgd`, `/var/lib/cfgd`, …). See [System scope](configuration.md#system-scope). |

@@ -465,7 +465,8 @@ fn service_apply_empty_sequence_is_noop() {
     let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
     let wsc = WindowsServiceConfigurator;
     let yaml = serde_yaml::Value::Sequence(Vec::new());
-    wsc.apply(&yaml, &printer).unwrap();
+    wsc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+        .unwrap();
 }
 
 #[test]
@@ -473,7 +474,8 @@ fn service_apply_non_sequence_is_noop() {
     let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
     let wsc = WindowsServiceConfigurator;
     let yaml = serde_yaml::Value::String("not a sequence".into());
-    wsc.apply(&yaml, &printer).unwrap();
+    wsc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+        .unwrap();
 }
 
 #[test]
@@ -695,6 +697,11 @@ fn service_diff_missing_service_with_binary_path_emits_absent_drift() {
     assert_eq!(d.key, "GhostService.exists");
     assert_eq!(d.expected, "present");
     assert_eq!(d.actual, "absent");
+    // The service name never opens with "windowsServices." — `diff()` keys
+    // on the service's own name, not this configurator's — so this holds on
+    // every OS; `query_service` returning `None` off Windows is exactly what
+    // produces the drift this test is pinning in the first place.
+    crate::system::assert_keys_undoubled(&wsc, &drifts);
 }
 
 #[test]

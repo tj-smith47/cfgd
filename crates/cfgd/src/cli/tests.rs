@@ -1,6 +1,8 @@
 use super::*;
 use std::sync::{Arc, Mutex};
 
+use cfgd_core::PathDisplayExt;
+
 const TEST_CONFIG_YAML: &str =
     "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n";
 
@@ -190,6 +192,7 @@ impl CliTestHarness {
             config_explicit: false,
             profile: None,
             no_color: true,
+            color: crate::cli::ColorWhen::Auto,
             verbose: 0,
             quiet: true,
             output: OutputFormatArg(self.output_format.clone()),
@@ -226,9 +229,12 @@ impl CliTestHarness {
         self.state_dir.path()
     }
 
+    /// The captured transcript, ANSI-stripped. Colour follows the terminal
+    /// the suite was invoked from, so a raw read makes every assertion below
+    /// depend on how `cargo test` was started rather than on what ran.
     fn output(&self) -> String {
         self.printer.flush();
-        self.buf.lock().unwrap().clone()
+        cfgd_core::test_helpers::captured_text(&self.buf)
     }
 
     fn json_output(&self) -> serde_json::Value {
@@ -372,6 +378,34 @@ fn cli_output_flag_has_short_alias() {
 }
 
 #[test]
+fn resolve_color_choice_no_color_wins_over_color_always() {
+    // `--no-color --color always` is a contradiction only in spelling; the
+    // user's intent is unambiguous because `--no-color` cannot have been
+    // typed to mean anything but "off". Both the primary CLI and the kubectl
+    // plugin route through this one function so they can't disagree.
+    assert_eq!(
+        resolve_color_choice(true, ColorWhen::Always),
+        cfgd_core::output::ColorChoice::Never
+    );
+}
+
+#[test]
+fn resolve_color_choice_without_no_color_follows_the_color_flag() {
+    assert_eq!(
+        resolve_color_choice(false, ColorWhen::Always),
+        cfgd_core::output::ColorChoice::Always
+    );
+    assert_eq!(
+        resolve_color_choice(false, ColorWhen::Never),
+        cfgd_core::output::ColorChoice::Never
+    );
+    assert_eq!(
+        resolve_color_choice(false, ColorWhen::Auto),
+        cfgd_core::output::ColorChoice::Auto
+    );
+}
+
+#[test]
 fn cli_init_has_apply_flag() {
     use clap::CommandFactory;
     let cmd = Cli::command();
@@ -489,6 +523,55 @@ fn cli_has_alias_subcommand() {
     assert!(Cli::try_parse_from(["cfgd", "alias", "list"]).is_ok());
     assert!(Cli::try_parse_from(["cfgd", "alias", "ls"]).is_ok());
     assert!(Cli::try_parse_from(["cfgd", "alias", "show", "n"]).is_ok());
+}
+
+/// `--model` / `--provider` / `--yes` govern every `generate` target, not just
+/// the bare form, so they are `global = true`. Declared beside the subcommand
+/// without that, they parse only BEFORE it — and the invocation the docs and
+/// `--help` both show, `cfgd generate profile <name> --model <m>`, errored.
+#[test]
+fn generate_backend_flags_may_follow_the_subcommand() {
+    use crate::cli::generate::GenerateTarget;
+
+    let parsed = Cli::try_parse_from([
+        "cfgd",
+        "generate",
+        "profile",
+        "laptop",
+        "--model",
+        "claude-opus-5",
+        "--provider",
+        "anthropic",
+        "--yes",
+    ])
+    .expect("backend flags must parse after the subcommand");
+
+    let Some(Command::Generate(args)) = parsed.command else {
+        panic!("expected the generate command");
+    };
+    assert_eq!(args.model.as_deref(), Some("claude-opus-5"));
+    assert_eq!(args.provider.as_deref(), Some("anthropic"));
+    assert!(args.yes);
+    assert!(
+        matches!(args.target, Some(GenerateTarget::Profile { .. })),
+        "the subcommand itself must still route"
+    );
+
+    // The pre-subcommand spelling keeps working — a global arg accepts both
+    // positions, so this is not a swap of one broken order for another.
+    let before = Cli::try_parse_from([
+        "cfgd",
+        "generate",
+        "--model",
+        "claude-opus-5",
+        "profile",
+        "laptop",
+    ])
+    .expect("backend flags must still parse before the subcommand");
+    let Some(Command::Generate(args)) = before.command else {
+        panic!("expected the generate command");
+    };
+    assert_eq!(args.model.as_deref(), Some("claude-opus-5"));
 }
 
 #[test]
@@ -723,15 +806,15 @@ fn display_source_manifest_summarizes_required_recommended_locked_counts() {
     let out = buf.lock().unwrap().clone();
     assert!(out.contains("Policy"), "Policy header missing: {out}");
     assert!(
-        out.contains("1 locked item(s)") && out.contains("cannot override"),
+        out.contains("1 item locked") && out.contains("cannot override"),
         "locked tier line missing: {out}"
     );
     assert!(
-        out.contains("1 required item(s)") && out.contains("team requirement"),
+        out.contains("1 item required") && out.contains("team requirement"),
         "required tier line missing: {out}"
     );
     assert!(
-        out.contains("2 recommended item(s)"),
+        out.contains("2 items recommended"),
         "recommended count line missing: {out}"
     );
 }
@@ -745,7 +828,7 @@ fn display_source_manifest_omits_zero_count_tiers() {
     drop(printer);
     let out = buf.lock().unwrap().clone();
     assert!(
-        !out.contains("required item(s)") && !out.contains("recommended item(s)"),
+        !out.contains("item required") && !out.contains("items recommended"),
         "zero-count tiers must be suppressed, got: {out}"
     );
 }
@@ -1152,6 +1235,7 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
         config_explicit: false,
         profile: None,
         no_color: true,
+        color: crate::cli::ColorWhen::Auto,
         verbose: 0,
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
@@ -2111,15 +2195,19 @@ fn config_show_fails_without_config() {
 
 #[test]
 fn source_create_scaffolds_manifest() {
-    let dir = create_test_config_dir();
-    std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+    // `dir` (the srcrepo) and the machine config dir are deliberately
+    // SEPARATE tempdirs -- `cfgd source create` is an authoring command
+    // that writes into the current directory, never the resolved
+    // machine config dir (see cmd_source_create's `dir: &Path` param).
+    let config_dir = tempfile::tempdir().unwrap();
+    std::fs::write(config_dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
-    let cli = test_cli(dir.path());
+    let srcrepo = create_test_config_dir();
     let printer = test_printer();
 
     let result = source::cmd_source_create(
-        &cli,
         &printer,
+        srcrepo.path(),
         Some("my-source"),
         Some("Test"),
         Some("1.0.0"),
@@ -2130,8 +2218,12 @@ fn source_create_scaffolds_manifest() {
         result.err()
     );
 
-    let source_path = dir.path().join("cfgd-source.yaml");
-    assert!(source_path.exists());
+    let source_path = srcrepo.path().join("cfgd-source.yaml");
+    assert!(source_path.exists(), "manifest must land in the given dir");
+    assert!(
+        !config_dir.path().join("cfgd-source.yaml").exists(),
+        "manifest must NOT land in the machine config dir"
+    );
 
     let contents = std::fs::read_to_string(&source_path).unwrap();
     assert_eq!(
@@ -2155,33 +2247,65 @@ fn source_create_scaffolds_manifest() {
 }
 
 #[test]
+fn source_create_writes_to_given_dir_not_config_dir() {
+    // Regression pin for the "source create writes to CWD" contract:
+    // a distinct config tempdir (with its own cfgd.yaml) must never
+    // receive the manifest, and the default name must come from the
+    // srcrepo dir's own name, not the config dir's.
+    let config_dir = tempfile::tempdir().unwrap();
+    std::fs::write(config_dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
+
+    let srcrepo = create_test_config_dir();
+    let printer = test_printer();
+    let expected_name = srcrepo
+        .path()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap()
+        .to_string();
+
+    let result =
+        source::cmd_source_create(&printer, srcrepo.path(), None, Some("d"), Some("2.0.0"));
+    assert!(result.is_ok(), "create should succeed: {:?}", result.err());
+
+    let source_path = srcrepo.path().join("cfgd-source.yaml");
+    assert!(source_path.exists(), "manifest must exist in srcrepo");
+    assert!(
+        !config_dir.path().join("cfgd-source.yaml").exists(),
+        "manifest must NOT be written to the config dir"
+    );
+
+    let contents = std::fs::read_to_string(&source_path).unwrap();
+    assert!(
+        contents.contains(&expected_name),
+        "default name must come from the srcrepo dir name '{expected_name}', got: {contents}"
+    );
+}
+
+#[test]
 fn source_create_refuses_duplicate() {
     let dir = create_test_config_dir();
-    std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
     std::fs::write(dir.path().join("cfgd-source.yaml"), "existing").unwrap();
 
-    let cli = test_cli(dir.path());
     let printer = test_printer();
-    let result = source::cmd_source_create(&cli, &printer, Some("x"), Some("x"), Some("1.0"));
+    let result = source::cmd_source_create(&printer, dir.path(), Some("x"), Some("x"), Some("1.0"));
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("already exists"));
 }
 
 #[test]
 fn source_create_interactive_mode_prompts_for_name_and_description() {
-    // All three flags (name/description/version) are None → is_interactive
-    // is true → cmd_source_create.rs:30-31 + 41-42 prompt branches fire.
+    // All three flags (name/description/version) are None -- is_interactive
+    // is true -- cmd_source_create's name/description prompt branches fire.
     // Queue Text answers via Printer::for_test_with_prompt_responses.
     let dir = create_test_config_dir();
-    std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
-    let cli = test_cli(dir.path());
     let (printer, _cap) = cfgd_core::output::Printer::for_test_doc_with_prompt_responses(vec![
         cfgd_core::output::PromptAnswer::Text("interactive-source".to_string()),
         cfgd_core::output::PromptAnswer::Text("Interactive description".to_string()),
     ]);
 
-    source::cmd_source_create(&cli, &printer, None, None, None)
+    source::cmd_source_create(&printer, dir.path(), None, None, None)
         .expect("interactive create should succeed");
 
     let contents = std::fs::read_to_string(dir.path().join("cfgd-source.yaml")).unwrap();
@@ -2212,7 +2336,6 @@ fn source_edit_with_valid_manifest_reports_valid_and_returns_ok() {
     // file, so the post-edit validation reads the same valid manifest we
     // wrote and lands in the "Source manifest is valid" success arm.
     let dir = create_test_config_dir();
-    let cli = test_cli(dir.path());
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
     std::fs::write(
         dir.path().join("cfgd-source.yaml"),
@@ -2221,7 +2344,7 @@ fn source_edit_with_valid_manifest_reports_valid_and_returns_ok() {
     .unwrap();
 
     let _editor = EditorGuard::set("/usr/bin/true");
-    source::cmd_source_edit(&cli, &printer).expect("valid manifest + no-op editor → Ok");
+    source::cmd_source_edit(&printer, dir.path()).expect("valid manifest + no-op editor -> Ok");
 
     drop(printer);
     let out = cap.human();
@@ -2229,6 +2352,10 @@ fn source_edit_with_valid_manifest_reports_valid_and_returns_ok() {
         out.contains("Source manifest is valid"),
         "happy-path validation arm should announce validity: {out}"
     );
+
+    let json = cap.json().expect("emit(doc) must carry a data payload");
+    let path = json["path"].as_str().expect("path field must be a string");
+    assert!(!path.contains('\\'), "path payload must be posix: {path}");
 }
 
 #[cfg(unix)]
@@ -2237,7 +2364,7 @@ fn source_edit_with_valid_manifest_reports_valid_and_returns_ok() {
 fn source_edit_with_invalid_manifest_and_prompt_declined_breaks_with_warning() {
     // Mirrors the profile/edit and config_cmd patterns: pre-stage an
     // invalid manifest, route through the no-op editor, queue
-    // Confirm(false) so the prompt at source/edit.rs:25 takes the
+    // Confirm(false) so the prompt at source/edit.rs takes the
     // "Saved with validation errors" branch.
     let dir = create_test_config_dir();
     std::fs::write(
@@ -2245,13 +2372,12 @@ fn source_edit_with_invalid_manifest_and_prompt_declined_breaks_with_warning() {
         "not a ConfigSource document",
     )
     .unwrap();
-    let cli = test_cli(dir.path());
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc_with_prompt_responses(vec![
         cfgd_core::output::PromptAnswer::Confirm(false),
     ]);
 
     let _editor = EditorGuard::set("/usr/bin/true");
-    source::cmd_source_edit(&cli, &printer).expect("save-with-errors must return Ok");
+    source::cmd_source_edit(&printer, dir.path()).expect("save-with-errors must return Ok");
 
     drop(printer);
     let out = cap.human();
@@ -2259,14 +2385,17 @@ fn source_edit_with_invalid_manifest_and_prompt_declined_breaks_with_warning() {
         out.contains("Saved with validation errors"),
         "prompt-decline branch must warn: {out}"
     );
+
+    let json = cap.json().expect("emit(doc) must carry a data payload");
+    let path = json["path"].as_str().expect("path field must be a string");
+    assert!(!path.contains('\\'), "path payload must be posix: {path}");
 }
 
 #[test]
 fn source_edit_fails_without_manifest() {
     let dir = create_test_config_dir();
-    let cli = test_cli(dir.path());
     let printer = test_printer();
-    let result = source::cmd_source_edit(&cli, &printer);
+    let result = source::cmd_source_edit(&printer, dir.path());
     assert!(result.is_err());
     assert!(
         result
@@ -2462,12 +2591,11 @@ fn source_create_with_modules() {
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: neovim\nspec:\n  packages: []\n  files: []\n  depends: []\n",
     );
 
-    let cli = test_cli(dir.path());
     let printer = test_printer();
 
     let result = source::cmd_source_create(
-        &cli,
         &printer,
+        dir.path(),
         Some("test-source"),
         Some("Test"),
         Some("1.0.0"),
@@ -2492,12 +2620,11 @@ fn source_create_output_is_parseable() {
     let dir = create_test_config_dir();
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
-    let cli = test_cli(dir.path());
     let printer = test_printer();
 
     source::cmd_source_create(
-        &cli,
         &printer,
+        dir.path(),
         Some("my-source"),
         Some("desc"),
         Some("0.1.0"),
@@ -2924,7 +3051,9 @@ fn is_unmanaged_file_tracked_in_state() {
     let state = StateStore::open_in_memory().unwrap();
     let target = dir.path().join("tracked-file");
     std::fs::write(&target, "content").unwrap();
-    let target_str = target.display().to_string();
+    // Posix-folded to match the id production mints (`reconciler::format`);
+    // `is_unmanaged_file` folds its lookup the same way.
+    let target_str = cfgd_core::to_posix_string(&target);
     state
         .upsert_managed_resource("file", &target_str, "local", None, None)
         .unwrap();
@@ -4467,7 +4596,14 @@ fn cmd_verify_module() {
 #[test]
 fn cmd_log_with_empty_state() {
     let h = CliTestHarness::builder().build();
-    super::log::cmd_log(h.printer(), 10, None, Some(h.state_path())).unwrap();
+    super::log::cmd_log(
+        h.printer(),
+        10,
+        None,
+        Some(h.state_path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     h.assert_header("Apply History");
     h.assert_output_contains("No applies recorded yet");
 }
@@ -4476,6 +4612,7 @@ fn cmd_log_with_empty_state() {
 fn cmd_apply_dry_run_empty_profile() {
     let h = CliTestHarness::builder().build();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -4492,7 +4629,9 @@ fn cmd_apply_dry_run_empty_profile() {
     h.assert_header("Plan");
     let output = h.output();
     assert!(
-        output.contains("Nothing to do") || output.contains("action(s) planned"),
+        output.contains("Nothing to do")
+            || output.contains("action planned")
+            || output.contains("actions planned"),
         "should indicate plan result, got: {output}"
     );
 
@@ -4511,6 +4650,7 @@ fn cmd_apply_from_flag_parses() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: Some("https://github.com/example/config.git".to_string()),
         dry_run: true,
         phase: None,
@@ -4569,6 +4709,7 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
         config_explicit: false,
         profile: None,
         no_color: true,
+        color: crate::cli::ColorWhen::Auto,
         verbose: 0,
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
@@ -4586,6 +4727,7 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
     };
     let printer = test_printer();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -4628,9 +4770,10 @@ fn cmd_apply_dry_run_with_phase_filter() {
         .profile("default", ENV_ONLY_PROFILE_YAML)
         .build();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
-        phase: Some(ApplyPhase::Packages),
+        phase: Some(PhaseArg::bare(ApplyPhase::Packages)),
         yes: true,
         skip: vec![],
         only: vec![],
@@ -4643,14 +4786,18 @@ fn cmd_apply_dry_run_with_phase_filter() {
     h.assert_header("Plan");
     let output = h.output();
     // The requested phase planned no actions, so it is not among the plan's
-    // phases at all; the empty-plan line stands in for it, and the warning below
-    // it names the phases that do have work.
+    // phases at all; the run renders no tree and reports the scope verdict
+    // instead, and the hint below it names the phases that do have work.
     assert!(
-        output.contains("(nothing to do)"),
+        !output.contains("Phase: "),
+        "a filter matching no planned actions must render no tree, got: {output}"
+    );
+    assert!(
+        output.contains("No actions in scope"),
         "a filter matching no planned actions must still say so, got: {output}"
     );
     assert!(
-        output.contains("actions exist in phase(s): Environment"),
+        output.contains("actions exist in phase: Prerequisites"),
         "the filter warning must point at the phases that do have work, got: {output}"
     );
 }
@@ -4663,6 +4810,7 @@ fn cmd_apply_dry_run_with_phase_filter() {
 fn cmd_apply_dry_run_with_skip() {
     let h = CliTestHarness::builder().build();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -4687,6 +4835,7 @@ fn cmd_apply_dry_run_with_skip() {
 fn cmd_apply_dry_run_with_only() {
     let h = CliTestHarness::builder().build();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -4720,6 +4869,7 @@ fn cmd_apply_real_with_empty_profile() {
             .profile("empty", "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: empty\nspec:\n  inherits: []\n  modules: []\n")
             .build();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -4759,6 +4909,7 @@ fn cmd_status_after_apply() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -4796,6 +4947,7 @@ fn cmd_log_after_apply() {
     let printer = test_printer();
 
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -4810,7 +4962,14 @@ fn cmd_log_after_apply() {
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
 
     let (log_printer, log_buf) = test_printer_capture();
-    super::log::cmd_log(&log_printer, 10, None, Some(state_dir.path())).unwrap();
+    super::log::cmd_log(
+        &log_printer,
+        10,
+        None,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     drop(log_printer);
     let output = log_buf.lock().unwrap();
     assert!(
@@ -4864,6 +5023,7 @@ fn cmd_apply_dry_run_with_files() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -4922,6 +5082,7 @@ fn cmd_apply_creates_file() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -4970,6 +5131,7 @@ fn cmd_apply_idempotent() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -5059,7 +5221,14 @@ fn cmd_status_structured_output() {
 #[test]
 fn cmd_log_structured_output() {
     let h = CliTestHarness::builder().json().build();
-    super::log::cmd_log(h.printer(), 5, None, Some(h.state_path())).unwrap();
+    super::log::cmd_log(
+        h.printer(),
+        5,
+        None,
+        Some(h.state_path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     let parsed = h.json_output();
     assert_eq!(
         parsed,
@@ -5080,6 +5249,7 @@ fn execute_with_no_subcommand_prints_help_and_returns_ok() {
         config_explicit: false,
         profile: None,
         no_color: true,
+        color: crate::cli::ColorWhen::Auto,
         verbose: 0,
         quiet: false,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
@@ -5218,6 +5388,7 @@ fn execute_config_set() {
 fn execute_apply_dry_run() {
     let h = CliTestHarness::builder().build();
     let cli = h.cli_with_command(Command::Apply(ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -5407,6 +5578,7 @@ fn cmd_apply_with_module_filter() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -5430,9 +5602,49 @@ fn cmd_apply_with_module_filter() {
     );
 }
 
-#[test]
-fn cmd_apply_with_env_vars() {
+/// Declares a host with no fish, no pre-existing `.bash_profile`/`.bash_login`
+/// — the only variable across hosts left open is `zsh_present`, which each
+/// caller pins explicitly. `EnvHostProbe::detect` reads `$SHELL` and PATH,
+/// neither of which `with_test_home_guard` isolates, so a real `cmd_apply`
+/// run gets whatever shell shape the *runner* happens to have rather than
+/// what the test declares — pinning through this seam is what makes the
+/// planned-action count below deterministic on every host.
+fn declared_env_host_probe(zsh_present: bool) -> cfgd_core::reconciler::EnvHostProbeOverride {
+    cfgd_core::reconciler::EnvHostProbeOverride {
+        shell: "/bin/bash".to_string(),
+        fish_present: false,
+        bash_profile_exists: false,
+        bash_login_exists: false,
+        git_bash_present: false,
+        zsh_present,
+    }
+}
+
+/// The per-platform session-file env target: `environment.d` on Linux, the
+/// LaunchAgent plist on macOS. Other Unixes (FreeBSD) run neither systemd nor
+/// launchd, so `env_engine`'s `reaches_all` block deliberately plans neither
+/// and their env surface is one action smaller.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const SESSION_FILE_TARGETS: u32 = 1;
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+const SESSION_FILE_TARGETS: u32 = 0;
+
+/// Shared body for the zsh-present / no-zsh env-target-count variants below.
+/// `expected_actions` is the exact `env_targets` count for the declared shape
+/// (see `EnvHostProbe`'s field docs for which target each flag adds/removes):
+/// `.cfgd.env` + interactive rc + `.profile` + live-session refresh (4), plus
+/// the platform's session file when it has one (`SESSION_FILE_TARGETS`), plus
+/// `.zshenv` only when `zsh_present`.
+fn cmd_apply_with_env_vars_for_host(zsh_present: bool, expected_actions: u32) {
     let (config_dir, state_dir) = setup_test_env();
+    // A real (non-dry-run) apply of a profile carrying `spec.env` writes the
+    // managed env surfaces under `~`; without this the run rewrites the
+    // operator's own `~/.cfgd.env`.
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let _probe = cfgd_core::reconciler::with_env_host_probe_override_guard(
+        declared_env_host_probe(zsh_present),
+    );
 
     // Profile with env vars
     let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n    - name: PAGER\n      value: less\n  modules: []\n";
@@ -5445,6 +5657,7 @@ fn cmd_apply_with_env_vars() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -5466,19 +5679,24 @@ fn cmd_apply_with_env_vars() {
 
     printer.flush();
     {
-        let output = buf.lock().unwrap().clone();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("Apply"),
             "should contain Apply header, got: {output}"
         );
+        // `--yes` drops the pre-confirmation preview, so the header's count is
+        // where an executing run states the work it took on. The host shape
+        // is pinned above, so the count is exact rather than a fallback.
+        let expected = format!("Actions  {expected_actions} planned");
         assert!(
-            output.contains("Plan preview") || output.contains("Nothing to do"),
-            "should mention plan preview or nothing to do, got: {output}"
+            output.contains(&expected),
+            "should state {expected}, got: {output}"
         );
     }
 
     // Verify the profile was loaded with env vars by loading config+profile
-    let (_, _, resolved) = super::load_config_and_profile(&cli).unwrap();
+    let (_, _, resolved) =
+        super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer()).unwrap();
     assert!(
         resolved.merged.env.iter().any(|e| e.name == "EDITOR"),
         "resolved profile should contain EDITOR env var"
@@ -5487,6 +5705,27 @@ fn cmd_apply_with_env_vars() {
         resolved.merged.env.iter().any(|e| e.name == "PAGER"),
         "resolved profile should contain PAGER env var"
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn cmd_apply_with_env_vars() {
+    cmd_apply_with_env_vars_for_host(true, 5 + SESSION_FILE_TARGETS);
+}
+
+#[test]
+#[cfg(unix)]
+fn cmd_apply_with_env_vars_no_zsh() {
+    cmd_apply_with_env_vars_for_host(false, 4 + SESSION_FILE_TARGETS);
+}
+
+// The Windows env plan never consults the probe's shell shape: its target set
+// is `.cfgd-env.ps1` + both PowerShell profile injections + the live-session
+// refresh, all under the test home — 4 actions on every Windows host.
+#[test]
+#[cfg(windows)]
+fn cmd_apply_with_env_vars_windows() {
+    cmd_apply_with_env_vars_for_host(false, 4);
 }
 
 #[test]
@@ -5542,6 +5781,7 @@ fn cmd_status_with_drift_events() {
     let printer = test_printer();
 
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -5556,7 +5796,7 @@ fn cmd_status_with_drift_events() {
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
 
     // Record a drift event
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     state
         .record_drift(
             "package",
@@ -5638,17 +5878,17 @@ fn cmd_decide_accept_all_empty() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let result = super::decide::cmd_decide(
+        &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         None,
         None,
         true,
-        Some(state_dir.path()),
     );
     assert!(result.is_ok(), "decide failed: {:?}", result.err());
     drop(printer);
 
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     assert!(state.pending_decisions().unwrap().is_empty());
 
     let output = buf.lock().unwrap();
@@ -5666,17 +5906,17 @@ fn cmd_decide_reject_all_empty() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let result = super::decide::cmd_decide(
+        &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Reject,
         None,
         None,
         true,
-        Some(state_dir.path()),
     );
     assert!(result.is_ok(), "decide failed: {:?}", result.err());
     drop(printer);
 
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     assert!(state.pending_decisions().unwrap().is_empty());
 
     let output = buf.lock().unwrap();
@@ -5698,17 +5938,17 @@ fn cmd_decide_accept_specific_resource() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let result = super::decide::cmd_decide(
+        &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         Some("packages.brew.curl"),
         None,
         false,
-        Some(state_dir.path()),
     );
     assert!(result.is_ok(), "decide failed: {:?}", result.err());
     drop(printer);
 
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     let pending = state.pending_decisions().unwrap();
     assert_eq!(pending.len(), 0, "no decisions should remain pending");
 
@@ -5729,12 +5969,12 @@ fn cmd_decide_reject_by_source() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let result = super::decide::cmd_decide(
+        &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Reject,
         None,
         Some("acme"),
         false,
-        Some(state_dir.path()),
     );
     assert!(
         result.is_ok(),
@@ -5743,7 +5983,7 @@ fn cmd_decide_reject_by_source() {
     );
     drop(printer);
 
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     let pending = state.pending_decisions().unwrap();
     assert_eq!(
         pending.len(),
@@ -5885,7 +6125,7 @@ fn cmd_apply_dry_run_each_phase() {
 
     let all_phases = [
         ApplyPhase::PreScripts,
-        ApplyPhase::Env,
+        ApplyPhase::Prerequisites,
         ApplyPhase::Modules,
         ApplyPhase::Packages,
         ApplyPhase::System,
@@ -5895,9 +6135,10 @@ fn cmd_apply_dry_run_each_phase() {
     ];
     for phase in all_phases {
         let args = ApplyArgs {
+            on_conflict: crate::cli::OnConflict::Ask,
             from: None,
             dry_run: true,
-            phase: Some(phase),
+            phase: Some(PhaseArg::bare(phase)),
             yes: true,
             skip: vec![],
             only: vec![],
@@ -5922,6 +6163,11 @@ fn cmd_apply_dry_run_each_phase() {
 #[test]
 fn cmd_verify_after_apply_with_env() {
     let (config_dir, state_dir) = setup_test_env();
+    // A real (non-dry-run) apply of a profile carrying `spec.env` writes the
+    // managed env surfaces under `~` and injects a source line into the shell
+    // rc files there.
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
 
     let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n  modules: []\n";
     std::fs::write(
@@ -5934,6 +6180,7 @@ fn cmd_verify_after_apply_with_env() {
     let printer = test_printer();
 
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -6133,7 +6380,7 @@ fn cmd_plan_with_phase_filter() {
     let (printer, buf) = test_printer_capture();
     let args = PlanArgs {
         from: None,
-        phase: Some(ApplyPhase::Packages),
+        phase: Some(PhaseArg::bare(ApplyPhase::Packages)),
         skip: vec![],
         only: vec![],
         module: None,
@@ -6267,7 +6514,13 @@ fn cmd_rollback_invalid_id_empty_state() {
     let state_dir = tempfile::tempdir().unwrap();
     let printer = test_printer();
 
-    let result = super::rollback::cmd_rollback(&printer, 9999, true, Some(state_dir.path()));
+    let result = super::rollback::cmd_rollback(
+        &printer,
+        9999,
+        true,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    );
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no apply found"));
 }
@@ -6299,6 +6552,7 @@ fn cmd_rollback_after_file_apply() {
 
     // Apply to create the file
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -6314,7 +6568,7 @@ fn cmd_rollback_after_file_apply() {
     assert!(target.exists());
 
     // Get the apply ID from history
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     let history = state.history(1).unwrap();
     assert!(
         !history.is_empty(),
@@ -6323,7 +6577,13 @@ fn cmd_rollback_after_file_apply() {
     let apply_id = history[0].id;
 
     let (printer, buf) = test_printer_capture();
-    let result = super::rollback::cmd_rollback(&printer, apply_id, true, Some(state_dir.path()));
+    let result = super::rollback::cmd_rollback(
+        &printer,
+        apply_id,
+        true,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    );
     assert!(
         result.is_ok(),
         "rollback should succeed for valid apply ID: {:?}",
@@ -6372,6 +6632,7 @@ fn apply_one_file_and_record(
     let printer = test_printer();
 
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
         phase: None,
@@ -6385,7 +6646,7 @@ fn apply_one_file_and_record(
     };
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
 
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     let history = state.history(1).unwrap();
     let apply_id = history[0].id;
     (config_dir, state_dir, target, apply_id)
@@ -6401,7 +6662,13 @@ fn cmd_rollback_without_yes_and_prompt_confirmed_proceeds() {
         cfgd_core::output::Verbosity::Normal,
     );
 
-    let result = super::rollback::cmd_rollback(&printer, apply_id, false, Some(state_dir.path()));
+    let result = super::rollback::cmd_rollback(
+        &printer,
+        apply_id,
+        false,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    );
     assert!(
         result.is_ok(),
         "prompt-confirmed rollback must succeed: {:?}",
@@ -6429,7 +6696,13 @@ fn cmd_rollback_without_yes_and_prompt_declined_aborts() {
         cfgd_core::output::Verbosity::Normal,
     );
 
-    let result = super::rollback::cmd_rollback(&printer, apply_id, false, Some(state_dir.path()));
+    let result = super::rollback::cmd_rollback(
+        &printer,
+        apply_id,
+        false,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    );
     assert!(result.is_ok(), "prompt-declined rollback must return Ok");
     drop(printer);
     let output = buf.lock().unwrap();
@@ -6460,7 +6733,7 @@ fn cmd_compliance_snapshot_basic() {
     );
 
     // Verify snapshot was recorded in state store
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     let entries = state.compliance_history(None, 10).unwrap();
     assert!(
         !entries.is_empty(),
@@ -6512,7 +6785,7 @@ fn cmd_compliance_history_empty() {
     );
 
     // Verify state store has no compliance entries
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     let entries = state.compliance_history(None, 10).unwrap();
     assert_eq!(
         entries.len(),
@@ -6593,7 +6866,7 @@ fn cmd_compliance_diff_after_two_snapshots() {
     super::compliance::cmd_compliance_snapshot(&cli, &printer).unwrap();
 
     // Get snapshot IDs from history — must have exactly 2
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     let entries = state.compliance_history(None, 10).unwrap();
     assert_eq!(
         entries.len(),
@@ -6630,7 +6903,7 @@ fn cmd_compliance_history_after_snapshot() {
         result.err()
     );
 
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     let entries = state.compliance_history(None, 10).unwrap();
     assert_eq!(
         entries.len(),
@@ -6711,7 +6984,13 @@ fn cmd_log_show_output_nonexistent_apply() {
     let printer = test_printer();
 
     // show_output for a nonexistent apply ID should fail
-    let result = super::log::cmd_log(&printer, 10, Some(9999), Some(state_dir.path()));
+    let result = super::log::cmd_log(
+        &printer,
+        10,
+        Some(9999),
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    );
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no apply found"));
 }
@@ -6725,6 +7004,7 @@ fn cmd_apply_dry_run_with_skip_scripts() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -7204,7 +7484,7 @@ fn cmd_plan_module_with_packages() {
 fn open_state_store_creates_dir() {
     let dir = tempfile::tempdir().unwrap();
     let subdir = dir.path().join("nested").join("state");
-    let result = super::open_state_store(Some(&subdir));
+    let result = super::open_state_store(Some(&subdir), cfgd_core::Scope::User);
     assert!(
         result.is_ok(),
         "open_state_store should create nested directories: {:?}",
@@ -7223,7 +7503,7 @@ fn open_state_store_default() {
     // Verify the default path variant does not panic and creates a DB.
     // Serialized against other tests that touch the default DB path so
     // parallel SQLite access doesn't trigger 'database is locked'.
-    let result = super::open_state_store(None);
+    let result = super::open_state_store(None, cfgd_core::Scope::User);
     assert!(
         result.is_ok(),
         "open_state_store with default path should not panic: {:?}",
@@ -8968,7 +9248,7 @@ fn load_config_and_profile_default_profile() {
 
     let cli = test_cli(dir.path());
 
-    let result = super::load_config_and_profile(&cli);
+    let result = super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer());
     assert!(
         result.is_ok(),
         "loading config and default profile should succeed: {:?}",
@@ -8988,7 +9268,7 @@ fn load_config_and_profile_with_override() {
     let mut cli = test_cli(dir.path());
     cli.profile = Some("work".to_string());
 
-    let result = super::load_config_and_profile(&cli);
+    let result = super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer());
     assert!(
         result.is_ok(),
         "loading config with profile override should succeed: {:?}",
@@ -9006,7 +9286,7 @@ fn load_config_and_profile_missing_config_errors() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
 
-    let result = super::load_config_and_profile(&cli);
+    let result = super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer());
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -9026,7 +9306,7 @@ fn load_config_and_profile_missing_profile_errors() {
 
     let cli = test_cli(dir.path());
 
-    let result = super::load_config_and_profile(&cli);
+    let result = super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer());
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -9062,7 +9342,8 @@ fn load_config_and_profile_active_profile_delivered_by_source_emits_wrap_hint() 
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
 
-    let err = super::load_config_and_profile(&cli).unwrap_err();
+    let err =
+        super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer()).unwrap_err();
 
     // Exit code survives the metadata wrap (typed ProfileNotFound → exit 6).
     assert_eq!(
@@ -9148,7 +9429,8 @@ fn load_config_and_profile_explicit_profile_delivered_by_source_emits_wrap_hint(
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
 
-    let err = super::load_config_and_profile(&cli).unwrap_err();
+    let err =
+        super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer()).unwrap_err();
 
     assert_eq!(
         super::exit_code_for_anyhow(&err),
@@ -9191,7 +9473,8 @@ fn load_config_and_profile_plain_typo_returns_bare_not_found() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
 
-    let err = super::load_config_and_profile(&cli).unwrap_err();
+    let err =
+        super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer()).unwrap_err();
 
     assert_eq!(
         super::exit_code_for_anyhow(&err),
@@ -9384,21 +9667,49 @@ fn action_type_str_package_variants() {
     );
 
     assert_eq!(
-        super::action_type_str(&Action::Package(PackageAction::Bootstrap {
-            manager: "brew".into(),
-            method: "curl".into(),
-            origin: "local".into(),
-        })),
-        "bootstrap"
-    );
-
-    assert_eq!(
         super::action_type_str(&Action::Package(PackageAction::Skip {
             manager: "brew".into(),
             reason: "test".into(),
             origin: "local".into(),
         })),
         "skip"
+    );
+}
+
+#[test]
+fn action_type_str_manager_variants() {
+    use cfgd_core::reconciler::{Action, ManagerAction};
+
+    assert_eq!(
+        super::action_type_str(&Action::Manager(ManagerAction::RefreshIndex {
+            manager: "brew".to_string(),
+        })),
+        "refresh"
+    );
+    assert_eq!(
+        super::action_type_str(&Action::Manager(ManagerAction::Provision {
+            manager: "brew".to_string(),
+            via: "homebrew installer".to_string(),
+            batched: vec![],
+            depends_on: vec![],
+        })),
+        "provision"
+    );
+    assert_eq!(
+        super::action_type_str(&Action::Manager(ManagerAction::Prerequisite {
+            tool: "xcode-select".to_string(),
+            installer: "xcode-select --install".to_string(),
+            required_by: vec!["brew".to_string()],
+            depends_on: vec![],
+        })),
+        "prerequisite"
+    );
+    assert_eq!(
+        super::action_type_str(&Action::Manager(ManagerAction::Refuse {
+            manager: "brew".to_string(),
+            reason: "no supported installer for this platform".to_string(),
+        })),
+        "refuse"
     );
 }
 
@@ -9561,7 +9872,7 @@ fn build_plan_output_empty_plan() {
         phases: vec![],
         warnings: vec![],
     };
-    let output = super::build_plan_output(&plan, "apply", None, &[]);
+    let output = super::build_plan_output(&plan, "apply", None, &[], &Default::default());
     assert_eq!(output.context, "apply");
     assert_eq!(output.total_actions, 0);
     assert!(output.phases.is_empty());
@@ -9570,18 +9881,18 @@ fn build_plan_output_empty_plan() {
 #[test]
 fn build_plan_output_with_actions() {
     let plan = reconciler::Plan {
-        phases: vec![reconciler::Phase {
-            name: reconciler::PhaseName::Packages,
-            scope: None,
-            actions: vec![reconciler::Action::Package(PackageAction::Install {
+        phases: vec![reconciler::Phase::from_actions(
+            reconciler::PhaseName::Packages,
+            &reconciler::Owner::profile("test"),
+            vec![reconciler::Action::Package(PackageAction::Install {
                 manager: "brew".into(),
                 packages: vec!["curl".into()],
                 origin: "local".into(),
             })],
-        }],
+        )],
         warnings: vec!["something".into()],
     };
-    let output = super::build_plan_output(&plan, "reconcile", None, &[]);
+    let output = super::build_plan_output(&plan, "reconcile", None, &[], &Default::default());
     assert_eq!(output.context, "reconcile");
     assert_eq!(output.total_actions, 1);
     assert_eq!(output.phases.len(), 1);
@@ -9592,19 +9903,19 @@ fn build_plan_output_with_actions() {
 fn build_plan_output_with_phase_filter() {
     let plan = reconciler::Plan {
         phases: vec![
-            reconciler::Phase {
-                name: reconciler::PhaseName::Packages,
-                scope: None,
-                actions: vec![reconciler::Action::Package(PackageAction::Install {
+            reconciler::Phase::from_actions(
+                reconciler::PhaseName::Packages,
+                &reconciler::Owner::profile("test"),
+                vec![reconciler::Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["curl".into()],
                     origin: "local".into(),
                 })],
-            },
-            reconciler::Phase {
-                name: reconciler::PhaseName::Files,
-                scope: None,
-                actions: vec![reconciler::Action::File(FileAction::Create {
+            ),
+            reconciler::Phase::from_actions(
+                reconciler::PhaseName::Files,
+                &reconciler::Owner::profile("test"),
+                vec![reconciler::Action::File(FileAction::Create {
                     source: "/a".into(),
                     target: "/b".into(),
                     origin: "local".into(),
@@ -9612,12 +9923,18 @@ fn build_plan_output_with_phase_filter() {
                     source_hash: None,
                     patch: None,
                 })],
-            },
+            ),
         ],
         warnings: vec![],
     };
     // Filter to only Files phase
-    let output = super::build_plan_output(&plan, "apply", Some(&reconciler::PhaseName::Files), &[]);
+    let output = super::build_plan_output(
+        &plan,
+        "apply",
+        Some(&PhaseFilter::Phase(reconciler::PhaseName::Files)),
+        &[],
+        &Default::default(),
+    );
     assert_eq!(output.total_actions, 1);
     assert_eq!(output.phases.len(), 1);
     assert_eq!(output.phases[0].phase, "Files");
@@ -9631,33 +9948,33 @@ fn strip_scripts_removes_script_phases() {
 
     let mut plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::PreScripts,
-                scope: None,
-                actions: vec![reconciler::Action::Script(ScriptAction::Run {
+            Phase::from_actions(
+                PhaseName::PreScripts,
+                &reconciler::Owner::profile("test"),
+                vec![reconciler::Action::Script(ScriptAction::Run {
                     entry: cfgd_core::config::ScriptEntry::Simple("echo pre".into()),
                     phase: cfgd_core::reconciler::ScriptPhase::PreApply,
                     origin: "local".into(),
                 })],
-            },
-            Phase {
-                name: PhaseName::Packages,
-                scope: None,
-                actions: vec![reconciler::Action::Package(PackageAction::Install {
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &reconciler::Owner::profile("test"),
+                vec![reconciler::Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["curl".into()],
                     origin: "local".into(),
                 })],
-            },
-            Phase {
-                name: PhaseName::PostScripts,
-                scope: None,
-                actions: vec![reconciler::Action::Script(ScriptAction::Run {
+            ),
+            Phase::from_actions(
+                PhaseName::PostScripts,
+                &reconciler::Owner::profile("test"),
+                vec![reconciler::Action::Script(ScriptAction::Run {
                     entry: cfgd_core::config::ScriptEntry::Simple("echo post".into()),
                     phase: cfgd_core::reconciler::ScriptPhase::PostApply,
                     origin: "local".into(),
                 })],
-            },
+            ),
         ],
         warnings: vec![],
     };
@@ -9671,34 +9988,26 @@ fn strip_scripts_removes_script_phases() {
 
 #[test]
 fn strip_scripts_removes_module_run_script_actions() {
-    use cfgd_core::reconciler::{
-        ModuleAction, ModuleActionKind, ModuleScope, ModuleSection, Phase, PhaseName, Plan,
-    };
+    use cfgd_core::reconciler::{ModuleAction, ModuleActionKind, Phase, PhaseName, Plan};
 
-    // Realistic post-split shape: one Phase per (module, section) run, never
-    // one combined "Modules" phase holding install + run_script + deploy_files
-    // together — `split_module_phases` can never produce that shape.
+    // Realistic post-routing shape: a module's install, script and file work
+    // are planned into three different kind-phases, never one combined
+    // "Modules" bucket.
     let mut plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::Modules,
-                scope: Some(ModuleScope {
-                    module: "m".into(),
-                    section: ModuleSection::Packages,
-                }),
-                actions: vec![reconciler::Action::Module(ModuleAction {
+            Phase::from_actions(
+                PhaseName::Packages,
+                &reconciler::Owner::profile("test"),
+                vec![reconciler::Action::Module(ModuleAction {
                     module_name: "m".into(),
                     kind: ModuleActionKind::InstallPackages { resolved: vec![] },
                     origin: None,
                 })],
-            },
-            Phase {
-                name: PhaseName::Modules,
-                scope: Some(ModuleScope {
-                    module: "m".into(),
-                    section: ModuleSection::PostScripts,
-                }),
-                actions: vec![reconciler::Action::Module(ModuleAction {
+            ),
+            Phase::from_actions(
+                PhaseName::PostScripts,
+                &reconciler::Owner::profile("test"),
+                vec![reconciler::Action::Module(ModuleAction {
                     module_name: "m".into(),
                     kind: ModuleActionKind::RunScript {
                         script: cfgd_core::config::ScriptEntry::Simple("echo hello".into()),
@@ -9706,19 +10015,16 @@ fn strip_scripts_removes_module_run_script_actions() {
                     },
                     origin: None,
                 })],
-            },
-            Phase {
-                name: PhaseName::Modules,
-                scope: Some(ModuleScope {
-                    module: "m".into(),
-                    section: ModuleSection::Files,
-                }),
-                actions: vec![reconciler::Action::Module(ModuleAction {
+            ),
+            Phase::from_actions(
+                PhaseName::Files,
+                &reconciler::Owner::profile("test"),
+                vec![reconciler::Action::Module(ModuleAction {
                     module_name: "m".into(),
                     kind: ModuleActionKind::DeployFiles { files: vec![] },
                     origin: None,
                 })],
-            },
+            ),
         ],
         warnings: vec![],
     };
@@ -9733,13 +10039,7 @@ fn strip_scripts_removes_module_run_script_actions() {
         "only the Packages and Files phases should remain: {:?}",
         plan.phases
     );
-    assert!(plan.phases.iter().all(|p| !matches!(
-        &p.scope,
-        Some(ModuleScope {
-            section: ModuleSection::PostScripts,
-            ..
-        })
-    )));
+    assert!(plan.phases.iter().all(|p| p.name != PhaseName::PostScripts));
 }
 
 // --- filter_plan edge cases ---
@@ -9749,10 +10049,10 @@ fn filter_plan_skip_file_by_target() {
     use cfgd_core::reconciler::{Action, Phase, PhaseName, Plan};
 
     let mut plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Files,
-            scope: None,
-            actions: vec![
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &reconciler::Owner::profile("test"),
+            vec![
                 Action::File(FileAction::Create {
                     source: "/tmp/a".into(),
                     target: "/etc/foo".into(),
@@ -9770,12 +10070,19 @@ fn filter_plan_skip_file_by_target() {
                     patch: None,
                 }),
             ],
-        }],
+        )],
         warnings: vec![],
     };
 
-    super::filter_plan(&mut plan, &["files:/etc/foo".into()], &[]);
-    assert_eq!(plan.phases[0].actions.len(), 1);
+    super::filter_plan(
+        &mut plan,
+        &["files:/etc/foo".into()],
+        &[],
+        None,
+        &test_printer(),
+        &ProviderRegistry::new(),
+    );
+    assert_eq!(plan.phases[0].action_count(), 1);
 }
 
 #[test]
@@ -9783,20 +10090,27 @@ fn filter_plan_empty_skip_and_only_noop() {
     use cfgd_core::reconciler::{Action, Phase, PhaseName, Plan};
 
     let mut plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Install {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &reconciler::Owner::profile("test"),
+            vec![Action::Package(PackageAction::Install {
                 manager: "brew".into(),
                 packages: vec!["curl".into()],
                 origin: "local".into(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
-    super::filter_plan(&mut plan, &[], &[]);
-    assert_eq!(plan.phases[0].actions.len(), 1);
+    super::filter_plan(
+        &mut plan,
+        &[],
+        &[],
+        None,
+        &test_printer(),
+        &ProviderRegistry::new(),
+    );
+    assert_eq!(plan.phases[0].action_count(), 1);
 }
 
 #[test]
@@ -9804,21 +10118,28 @@ fn filter_plan_skip_uninstall_packages() {
     use cfgd_core::reconciler::{Action, Phase, PhaseName, Plan};
 
     let mut plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Uninstall {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &reconciler::Owner::profile("test"),
+            vec![Action::Package(PackageAction::Uninstall {
                 manager: "brew".into(),
                 packages: vec!["old-tool".into(), "keep-me".into()],
                 origin: "local".into(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
-    super::filter_plan(&mut plan, &["packages.brew.old-tool".into()], &[]);
+    super::filter_plan(
+        &mut plan,
+        &["packages.brew.old-tool".into()],
+        &[],
+        None,
+        &test_printer(),
+        &ProviderRegistry::new(),
+    );
 
-    match &plan.phases[0].actions[0] {
+    match plan.phases[0].actions().next().expect("one action") {
         reconciler::Action::Package(PackageAction::Uninstall { packages, .. }) => {
             assert_eq!(packages, &["keep-me".to_string()]);
         }
@@ -9831,21 +10152,28 @@ fn filter_plan_only_with_uninstall() {
     use cfgd_core::reconciler::{Action, Phase, PhaseName, Plan};
 
     let mut plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Uninstall {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &reconciler::Owner::profile("test"),
+            vec![Action::Package(PackageAction::Uninstall {
                 manager: "apt".into(),
                 packages: vec!["vim".into(), "nano".into()],
                 origin: "local".into(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
-    super::filter_plan(&mut plan, &[], &["packages.apt.vim".into()]);
+    super::filter_plan(
+        &mut plan,
+        &[],
+        &["packages.apt.vim".into()],
+        None,
+        &test_printer(),
+        &ProviderRegistry::new(),
+    );
 
-    match &plan.phases[0].actions[0] {
+    match plan.phases[0].actions().next().expect("one action") {
         reconciler::Action::Package(PackageAction::Uninstall { packages, .. }) => {
             assert_eq!(packages, &["vim".to_string()]);
         }
@@ -10226,12 +10554,12 @@ fn cmd_decide_no_args_shows_pending() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         None,
         None,
         false,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -10249,7 +10577,7 @@ fn cmd_decide_with_pending_decision() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_pending_decision(
             "team-config",
@@ -10261,12 +10589,12 @@ fn cmd_decide_with_pending_decision() {
         .unwrap();
 
     let result = super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         Some("packages.brew.curl"),
         None,
         false,
-        Some(state_dir.path()),
     );
     assert!(
         result.is_ok(),
@@ -10294,7 +10622,7 @@ fn cmd_decide_accept_all_with_pending() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_pending_decision(
             "team",
@@ -10309,12 +10637,12 @@ fn cmd_decide_accept_all_with_pending() {
         .unwrap();
 
     let result = super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         None,
         None,
         true,
-        Some(state_dir.path()),
     );
     assert!(
         result.is_ok(),
@@ -10339,7 +10667,7 @@ fn cmd_decide_reject_by_source_with_pending() {
     let (printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_pending_decision(
             "team",
@@ -10354,12 +10682,12 @@ fn cmd_decide_reject_by_source_with_pending() {
         .unwrap();
 
     let result = super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Reject,
         None,
         Some("team"),
         false,
-        Some(state_dir.path()),
     );
     assert!(
         result.is_ok(),
@@ -10413,7 +10741,13 @@ fn cmd_log_show_output_nonexistent_apply_via_dispatch() {
     let printer = test_printer();
 
     // Nonexistent apply ID should fail (routes through cmd_log → cmd_log_show_output)
-    let result = super::log::cmd_log(&printer, 10, Some(9999), Some(state_dir.path()));
+    let result = super::log::cmd_log(
+        &printer,
+        10,
+        Some(9999),
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    );
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no apply found"));
 }
@@ -10480,6 +10814,7 @@ fn cmd_apply_module_only_no_profile() {
     let cli = test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -10781,6 +11116,7 @@ fn cmd_apply_with_aliases() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -10801,7 +11137,7 @@ fn cmd_apply_with_aliases() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan"),
         "should contain Plan header, got: {output}"
@@ -10934,7 +11270,13 @@ fn cmd_log_show_output_for_nonexistent_apply() {
     let printer = test_printer();
 
     // Nonexistent apply ID should fail
-    let result = super::log::cmd_log(&printer, 10, Some(999), Some(state_dir.path()));
+    let result = super::log::cmd_log(
+        &printer,
+        10,
+        Some(999),
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    );
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no apply found"));
 }
@@ -11433,6 +11775,7 @@ fn cmd_apply_dry_run_with_skip_and_only() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: true,
         phase: None,
@@ -11772,7 +12115,8 @@ fn load_config_and_profile_returns_correct_config() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
 
-    let (cfg, _, resolved) = super::load_config_and_profile(&cli).unwrap();
+    let (cfg, _, resolved) =
+        super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer()).unwrap();
     assert_eq!(cfg.metadata.name, "t");
     assert!(
         !resolved.merged.env.is_empty(),
@@ -11788,7 +12132,7 @@ fn load_config_and_profile_missing_profile_fails() {
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
 
-    let result = super::load_config_and_profile(&cli);
+    let result = super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer());
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -11953,7 +12297,14 @@ fn cmd_verify_with_module_filter() {
 #[test]
 fn cmd_log_empty_state_succeeds() {
     let h = CliTestHarness::builder().build();
-    super::log::cmd_log(h.printer(), 10, None, Some(h.state_path())).unwrap();
+    super::log::cmd_log(
+        h.printer(),
+        10,
+        None,
+        Some(h.state_path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     let output = h.output();
     assert!(
         output.contains("Apply History") || output.contains("No applies"),
@@ -11964,7 +12315,14 @@ fn cmd_log_empty_state_succeeds() {
 #[test]
 fn cmd_log_structured_json_output() {
     let h = CliTestHarness::builder().json().build();
-    super::log::cmd_log(h.printer(), 10, None, Some(h.state_path())).unwrap();
+    super::log::cmd_log(
+        h.printer(),
+        10,
+        None,
+        Some(h.state_path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["entries"]);
     assert_eq!(
@@ -12003,6 +12361,7 @@ fn cmd_apply_real_records_state() {
     .unwrap();
 
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         dry_run: false,
         yes: true,
         phase: None,
@@ -12039,6 +12398,7 @@ fn cmd_apply_real_records_state() {
 fn cmd_apply_with_skip_and_only() {
     let h = CliTestHarness::builder().build();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         dry_run: true,
         yes: true,
         phase: None,
@@ -12065,6 +12425,7 @@ fn cmd_apply_with_skip_and_only() {
 fn cmd_apply_skip_scripts_flag() {
     let h = CliTestHarness::builder().build();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         dry_run: true,
         yes: true,
         phase: None,
@@ -12091,6 +12452,7 @@ fn cmd_apply_skip_scripts_flag() {
 fn cmd_apply_invalid_context_fails() {
     let h = CliTestHarness::builder().build();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         dry_run: true,
         yes: true,
         phase: None,
@@ -12164,6 +12526,7 @@ fn apply_shell_flag_rejects_unknown_value() {
 fn cmd_apply_reconcile_context_threads_through() {
     let h = CliTestHarness::builder().build();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         dry_run: true,
         yes: true,
         phase: None,
@@ -12179,7 +12542,9 @@ fn cmd_apply_reconcile_context_threads_through() {
     h.assert_header("Plan");
     let output = h.output();
     assert!(
-        output.contains("Nothing to do") || output.contains("action(s) planned"),
+        output.contains("Nothing to do")
+            || output.contains("action planned")
+            || output.contains("actions planned"),
         "apply --context reconcile dry-run should still produce a plan, got: {output}"
     );
 }
@@ -12219,9 +12584,10 @@ spec:
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
-        phase: Some(ApplyPhase::PostScripts),
+        phase: Some(PhaseArg::bare(ApplyPhase::PostScripts)),
         yes: true,
         skip: vec![],
         only: vec![],
@@ -12254,10 +12620,9 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: false,
             unfiltered_total: 0,
             phases_with_work: vec![],
-            modules_have_work: false,
             module_miss: None,
         };
-        report_no_in_scope_actions(&printer, &scope, None);
+        report_no_in_scope_actions(&printer, &scope);
         printer.flush();
         let out = buf.lock().unwrap().clone();
         assert!(
@@ -12267,17 +12632,16 @@ fn report_no_in_scope_actions_classifies_outcomes() {
     }
 
     // Filter active AND the unfiltered plan had pending work → honest warning,
-    // never "up to date"; the files→modules hint fires for --phase files.
+    // never "up to date", and the generic hint names the phases that held work.
     {
         let (printer, buf) = test_printer_capture();
         let scope = ScopeReport {
             filter_active: true,
             unfiltered_total: 3,
-            phases_with_work: vec!["nvim / Files".to_string()],
-            modules_have_work: true,
+            phases_with_work: vec!["Files".to_string()],
             module_miss: None,
         };
-        report_no_in_scope_actions(&printer, &scope, Some(&PhaseName::Files));
+        report_no_in_scope_actions(&printer, &scope);
         printer.flush();
         let out = buf.lock().unwrap().clone();
         assert!(
@@ -12289,8 +12653,8 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             "expected warning, got:\n{out}"
         );
         assert!(
-            out.contains("module-sourced files apply in the 'modules' phase"),
-            "expected files→modules hint, got:\n{out}"
+            out.contains("actions exist in phase: Files"),
+            "expected the phases-with-work hint, got:\n{out}"
         );
     }
 
@@ -12301,10 +12665,9 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: true,
             unfiltered_total: 0,
             phases_with_work: vec![],
-            modules_have_work: false,
             module_miss: None,
         };
-        report_no_in_scope_actions(&printer, &scope, Some(&PhaseName::Files));
+        report_no_in_scope_actions(&printer, &scope);
         printer.flush();
         let out = buf.lock().unwrap().clone();
         assert!(
@@ -12320,10 +12683,9 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: true,
             unfiltered_total: 0,
             phases_with_work: vec![],
-            modules_have_work: false,
             module_miss: Some("nvm".to_string()),
         };
-        report_no_in_scope_actions(&printer, &scope, None);
+        report_no_in_scope_actions(&printer, &scope);
         printer.flush();
         let out = buf.lock().unwrap().clone();
         assert!(
@@ -12338,11 +12700,10 @@ fn report_no_in_scope_actions_classifies_outcomes() {
 }
 
 #[test]
-fn apply_phase_files_warns_when_files_are_module_sourced() {
-    // Bug guard: `cfgd apply --phase files` for a config whose files come from a
-    // module (Modules phase) used to print "everything is up to date" while
-    // deploying nothing — a silent no-op. It must instead warn that the active
-    // filter excluded pending work, and must not deploy the module's files.
+fn apply_phase_files_deploys_module_sourced_files() {
+    // Phase-major routing: a module's file work is planned into `Files`, so the
+    // phase filter a user reaches for selects it. Before the re-route the same
+    // invocation deployed nothing and had to warn about work it had excluded.
     let (config_dir, state_dir) = setup_test_env();
     let target = config_dir.path().join("deployed-by-module.txt");
 
@@ -12384,9 +12745,10 @@ spec:
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
         from: None,
         dry_run: false,
-        phase: Some(ApplyPhase::Files),
+        phase: Some(PhaseArg::bare(ApplyPhase::Files)),
         yes: true,
         skip: vec![],
         only: vec![],
@@ -12405,16 +12767,16 @@ spec:
         "--phase files with module-sourced files must NOT claim up-to-date, got:\n{output}"
     );
     assert!(
-        output.contains("No actions in scope"),
-        "expected the filter-excluded-all warning, got:\n{output}"
+        !output.contains("No actions in scope"),
+        "module file work is in scope for --phase files, got:\n{output}"
     );
     assert!(
-        output.contains("module-sourced files apply in the 'modules' phase"),
-        "expected the files→modules hint, got:\n{output}"
+        target.exists(),
+        "--phase files must deploy module-sourced files. output:\n{output}"
     );
-    assert!(
-        !target.exists(),
-        "--phase files must not deploy module files; target unexpectedly created. output:\n{output}"
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "hello from module\n"
     );
 }
 
@@ -12852,7 +13214,7 @@ fn cmd_source_show_exists() {
 
     let output = buf.lock().unwrap();
     assert!(
-        output.contains("team-config") || output.contains("Source"),
+        output.contains("team-config") || output.contains("source:"),
         "source show should display source info, got: {output}"
     );
 }
@@ -12882,14 +13244,15 @@ fn cmd_source_show_structured_json() {
 
 #[test]
 fn cmd_source_create_initializes_manifest() {
-    let (config_dir, state_dir) = setup_test_env();
-    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let (config_dir, _state_dir) = setup_test_env();
     let printer = test_printer();
 
-    // source create writes manifest in the config directory itself
+    // source create is a CWD-authoring command: it writes into the dir
+    // it is given, which the caller resolves independently of the
+    // machine config dir (see cmd_source_create's `dir: &Path` param).
     let result = super::source::cmd_source_create(
-        &cli,
         &printer,
+        config_dir.path(),
         Some("my-source"),
         Some("A test source"),
         Some("1.0.0"),
@@ -12998,7 +13361,13 @@ fn cmd_rollback_missing_apply_id_fails() {
     let state_dir = tempfile::tempdir().unwrap();
     let printer = test_printer();
 
-    let result = super::rollback::cmd_rollback(&printer, 99, true, Some(state_dir.path()));
+    let result = super::rollback::cmd_rollback(
+        &printer,
+        99,
+        true,
+        Some(state_dir.path()),
+        cfgd_core::Scope::User,
+    );
     assert!(result.is_err(), "rollback with no history should fail");
 }
 
@@ -13008,7 +13377,7 @@ fn cmd_rollback_missing_apply_id_fails() {
 fn open_state_store_creates_db_file() {
     let state_dir = tempfile::tempdir().unwrap();
 
-    let result = super::open_state_store(Some(state_dir.path()));
+    let result = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User);
     assert!(
         result.is_ok(),
         "open_state_store should succeed: {:?}",
@@ -13036,14 +13405,14 @@ fn open_state_store_override_matches_default_filename() {
 
     // The default path honors CFGD_STATE_DIR; the override path is handed the
     // same dir. They must land on identical basenames.
-    let from_override = super::open_state_store(Some(dir.path()));
+    let from_override = super::open_state_store(Some(dir.path()), cfgd_core::Scope::User);
     assert!(
         from_override.is_ok(),
         "override open failed: {:?}",
         from_override.err()
     );
     drop(from_override);
-    let from_default = super::open_state_store(None);
+    let from_default = super::open_state_store(None, cfgd_core::Scope::User);
     assert!(
         from_default.is_ok(),
         "default open failed: {:?}",
@@ -13531,7 +13900,14 @@ fn json_schema_status_module() {
 #[test]
 fn json_schema_log() {
     let h = CliTestHarness::builder().json().build();
-    super::log::cmd_log(h.printer(), 10, None, Some(h.state_path())).unwrap();
+    super::log::cmd_log(
+        h.printer(),
+        10,
+        None,
+        Some(h.state_path()),
+        cfgd_core::Scope::User,
+    )
+    .unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["entries"]);
     assert_json_field_type(&parsed, "entries", "array");
@@ -13668,7 +14044,11 @@ fn secret_init_prints_header_and_key_path() {
 fn resolve_secret_backend_file_not_found() {
     let h = CliTestHarness::builder().rich_config().build();
     let nonexistent = h.config_path().join("does-not-exist.yaml");
-    let result = super::resolve_secret_backend(&h.cli(), &nonexistent);
+    let result = super::resolve_secret_backend(
+        &h.cli(),
+        &cfgd_core::test_helpers::test_printer(),
+        &nonexistent,
+    );
     assert_error_contains(&result.map(|_| ()), "File not found");
 }
 
@@ -13676,7 +14056,11 @@ fn resolve_secret_backend_file_not_found() {
 fn get_secret_backend_file_not_found() {
     let h = CliTestHarness::builder().rich_config().build();
     let nonexistent = h.config_path().join("nonexistent-secret.yaml");
-    let result = super::get_secret_backend(&h.cli(), &nonexistent);
+    let result = super::get_secret_backend(
+        &h.cli(),
+        &cfgd_core::test_helpers::test_printer(),
+        &nonexistent,
+    );
     assert_error_contains(&result.map(|_| ()), "File not found");
 }
 
@@ -13687,7 +14071,8 @@ fn resolve_secret_backend_no_config_file_errors() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
     let nonexistent = dir.path().join("secret.enc.yaml");
-    let result = super::resolve_secret_backend(&cli, &nonexistent);
+    let result =
+        super::resolve_secret_backend(&cli, &cfgd_core::test_helpers::test_printer(), &nonexistent);
     // Config file missing: load_config will fail
     match result {
         Ok(_) => panic!("expected error when config file is missing"),
@@ -14166,6 +14551,7 @@ fn workstation_daemon_hooks_build_registry_returns_populated_registry() {
             name: "test".into(),
         },
         spec: cfgd_core::config::ConfigSpec::default(),
+        deprecations: Vec::new(),
     };
     let registry = hooks.build_registry(&cfg);
     assert!(
@@ -14568,10 +14954,10 @@ fn filter_plan_skip_removes_matching_packages() {
     use cfgd_core::reconciler::{Action, Phase, Plan};
 
     let mut plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &reconciler::Owner::profile("test"),
+            vec![
                 Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["ripgrep".into(), "fd".into(), "bat".into()],
@@ -14583,14 +14969,21 @@ fn filter_plan_skip_removes_matching_packages() {
                     origin: "profile".into(),
                 }),
             ],
-        }],
+        )],
         warnings: vec![],
     };
 
-    super::filter_plan(&mut plan, &["packages.brew.fd".to_string()], &[]);
+    super::filter_plan(
+        &mut plan,
+        &["packages.brew.fd".to_string()],
+        &[],
+        None,
+        &test_printer(),
+        &ProviderRegistry::new(),
+    );
 
     // brew install should remain but without fd
-    let brew_action = &plan.phases[0].actions[0];
+    let brew_action = plan.phases[0].actions().next().expect("one action");
     match brew_action {
         Action::Package(PackageAction::Install { packages, .. }) => {
             assert!(
@@ -14607,7 +15000,7 @@ fn filter_plan_skip_removes_matching_packages() {
     }
     // cargo should be untouched
     assert_eq!(
-        plan.phases[0].actions.len(),
+        plan.phases[0].action_count(),
         2,
         "cargo action should remain"
     );
@@ -14619,19 +15012,19 @@ fn filter_plan_only_keeps_matching_phase() {
 
     let mut plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::Packages,
-                scope: None,
-                actions: vec![Action::Package(PackageAction::Install {
+            Phase::from_actions(
+                PhaseName::Packages,
+                &reconciler::Owner::profile("test"),
+                vec![Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["git".into()],
                     origin: "profile".into(),
                 })],
-            },
-            Phase {
-                name: PhaseName::Files,
-                scope: None,
-                actions: vec![Action::File(FileAction::Create {
+            ),
+            Phase::from_actions(
+                PhaseName::Files,
+                &reconciler::Owner::profile("test"),
+                vec![Action::File(FileAction::Create {
                     source: PathBuf::from("/src"),
                     target: PathBuf::from("/dst"),
                     origin: "profile".into(),
@@ -14639,16 +15032,23 @@ fn filter_plan_only_keeps_matching_phase() {
                     source_hash: None,
                     patch: None,
                 })],
-            },
+            ),
         ],
         warnings: vec![],
     };
 
-    super::filter_plan(&mut plan, &[], &["packages".to_string()]);
+    super::filter_plan(
+        &mut plan,
+        &[],
+        &["packages".to_string()],
+        None,
+        &test_printer(),
+        &ProviderRegistry::new(),
+    );
 
     // Packages phase should keep its action
     assert_eq!(
-        plan.phases[0].actions.len(),
+        plan.phases[0].action_count(),
         1,
         "packages phase should retain action"
     );
@@ -14668,21 +15068,28 @@ fn filter_plan_skip_uninstall_packages_env() {
     use cfgd_core::reconciler::{Action, Phase, Plan};
 
     let mut plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Uninstall {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &reconciler::Owner::profile("test"),
+            vec![Action::Package(PackageAction::Uninstall {
                 manager: "npm".into(),
                 packages: vec!["left-pad".into(), "is-odd".into()],
                 origin: "profile".into(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
-    super::filter_plan(&mut plan, &["packages.npm.left-pad".to_string()], &[]);
+    super::filter_plan(
+        &mut plan,
+        &["packages.npm.left-pad".to_string()],
+        &[],
+        None,
+        &test_printer(),
+        &ProviderRegistry::new(),
+    );
 
-    match &plan.phases[0].actions[0] {
+    match plan.phases[0].actions().next().expect("one action") {
         Action::Package(PackageAction::Uninstall { packages, .. }) => {
             assert_eq!(packages, &vec!["is-odd".to_string()]);
         }
@@ -14695,22 +15102,29 @@ fn filter_plan_empty_filters_is_noop() {
     use cfgd_core::reconciler::{Action, Phase, Plan};
 
     let mut plan = Plan {
-        phases: vec![Phase {
-            name: PhaseName::Packages,
-            scope: None,
-            actions: vec![Action::Package(PackageAction::Install {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &reconciler::Owner::profile("test"),
+            vec![Action::Package(PackageAction::Install {
                 manager: "apt".into(),
                 packages: vec!["vim".into()],
                 origin: "profile".into(),
             })],
-        }],
+        )],
         warnings: vec![],
     };
 
-    super::filter_plan(&mut plan, &[], &[]);
+    super::filter_plan(
+        &mut plan,
+        &[],
+        &[],
+        None,
+        &test_printer(),
+        &ProviderRegistry::new(),
+    );
 
     assert_eq!(
-        plan.phases[0].actions.len(),
+        plan.phases[0].action_count(),
         1,
         "empty filters should not change anything"
     );
@@ -14726,25 +15140,25 @@ fn strip_scripts_from_plan_removes_script_phases() {
 
     let mut plan = Plan {
         phases: vec![
-            Phase {
-                name: PhaseName::PreScripts,
-                scope: None,
-                actions: vec![],
-            },
-            Phase {
-                name: PhaseName::Packages,
-                scope: None,
-                actions: vec![Action::Package(PackageAction::Install {
+            Phase::from_actions(
+                PhaseName::PreScripts,
+                &reconciler::Owner::profile("test"),
+                vec![],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &reconciler::Owner::profile("test"),
+                vec![Action::Package(PackageAction::Install {
                     manager: "brew".into(),
                     packages: vec!["git".into()],
                     origin: "profile".into(),
                 })],
-            },
-            Phase {
-                name: PhaseName::PostScripts,
-                scope: None,
-                actions: vec![],
-            },
+            ),
+            Phase::from_actions(
+                PhaseName::PostScripts,
+                &reconciler::Owner::profile("test"),
+                vec![],
+            ),
         ],
         warnings: vec![],
     };
@@ -14799,8 +15213,11 @@ fn action_path_module() {
         kind: reconciler::ModuleActionKind::InstallPackages { resolved: vec![] },
         origin: None,
     });
-    let path = super::action_path(&PhaseName::Modules, &action);
-    assert_eq!(path, "modules.dev-tools");
+    let path = super::action_path(&PhaseName::Packages, &action);
+    assert_eq!(
+        path, "packages.module:dev-tools",
+        "the owner gets its own segment so a module named `brew` cannot collide with the manager"
+    );
 }
 
 #[test]
@@ -14809,8 +15226,8 @@ fn action_path_env_write() {
         path: PathBuf::from("/home/user/.config/cfgd/env.sh"),
         content: String::new(),
     });
-    let path = super::action_path(&PhaseName::Env, &action);
-    assert_eq!(path, "env:/home/user/.config/cfgd/env.sh");
+    let path = super::action_path(&PhaseName::Prerequisites, &action);
+    assert_eq!(path, "prerequisites:/home/user/.config/cfgd/env.sh");
 }
 
 // -----------------------------------------------------------------------
@@ -14908,7 +15325,8 @@ spec:
     );
     // Should mention actions or nothing-to-do
     assert!(
-        output.contains("action(s) planned")
+        output.contains("action planned")
+            || output.contains("actions planned")
             || output.contains("Nothing to do")
             || output.contains("Phase"),
         "should show plan summary, got: {output}"
@@ -15263,6 +15681,7 @@ fn build_registry_with_config_populates_secret_backend() {
             }),
             ..config::ConfigSpec::default()
         },
+        deprecations: Vec::new(),
     };
     let registry = super::build_registry_with_config_and_packages(Some(&cfg), None);
     assert!(
@@ -15490,14 +15909,15 @@ fn action_path_package_uninstall() {
 }
 
 #[test]
-fn action_path_package_bootstrap() {
-    let action = reconciler::Action::Package(PackageAction::Bootstrap {
+fn action_path_manager_provision() {
+    let action = reconciler::Action::Manager(reconciler::ManagerAction::Provision {
         manager: "brew".into(),
-        method: "curl install".into(),
-        origin: "profile".into(),
+        via: "homebrew installer".into(),
+        batched: vec![],
+        depends_on: vec![],
     });
-    let path = super::action_path(&PhaseName::Packages, &action);
-    assert_eq!(path, "packages.brew");
+    let path = super::action_path(&PhaseName::Prerequisites, &action);
+    assert_eq!(path, "prerequisites.brew");
 }
 
 #[test]
@@ -15577,8 +15997,8 @@ fn action_path_env_inject_source_line() {
         rc_path: PathBuf::from("/home/user/.zshrc"),
         line: ". ~/.cfgd.env".into(),
     });
-    let path = super::action_path(&PhaseName::Env, &action);
-    assert_eq!(path, "env:/home/user/.zshrc");
+    let path = super::action_path(&PhaseName::Prerequisites, &action);
+    assert_eq!(path, "prerequisites:/home/user/.zshrc");
 }
 
 #[test]
@@ -15890,7 +16310,7 @@ fn copy_files_to_dir_allows_home_directory() {
 fn cmd_source_list_table_shows_status_and_priority() {
     let h = CliTestHarness::builder().rich_config().build();
     // Populate state with source info so the table columns have values
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_config_source(
             "team-config",
@@ -15919,7 +16339,7 @@ fn cmd_source_list_table_shows_status_and_priority() {
 #[test]
 fn cmd_source_list_structured_json_includes_state_info() {
     let h = CliTestHarness::builder().rich_config().json().build();
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_config_source(
             "team-config",
@@ -15994,7 +16414,7 @@ fn cmd_source_show_displays_all_key_fields() {
 #[test]
 fn cmd_source_show_with_state_shows_status_section() {
     let h = CliTestHarness::builder().rich_config().build();
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_config_source(
             "team-config",
@@ -16035,7 +16455,7 @@ fn cmd_source_show_with_state_shows_status_section() {
 #[test]
 fn cmd_source_show_with_managed_resources_shows_table() {
     let h = CliTestHarness::builder().rich_config().build();
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_managed_resource("package", "brew/curl", "team-config", None, None)
         .unwrap();
@@ -16063,7 +16483,7 @@ fn cmd_source_show_with_managed_resources_shows_table() {
 #[test]
 fn cmd_source_show_json_includes_managed_resources() {
     let h = CliTestHarness::builder().rich_config().json().build();
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_managed_resource("env", "EDITOR", "team-config", None, None)
         .unwrap();
@@ -16087,7 +16507,7 @@ fn cmd_source_show_json_includes_managed_resources() {
 #[test]
 fn cmd_source_remove_keep_all_reassigns_resources_to_local() {
     let h = CliTestHarness::builder().rich_config().build();
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     // Pre-populate managed resources owned by team-config
     state
         .upsert_managed_resource("package", "brew/curl", "team-config", Some("hash1"), None)
@@ -16126,7 +16546,7 @@ fn cmd_source_remove_keep_all_reassigns_resources_to_local() {
 #[test]
 fn cmd_source_remove_remove_all_does_not_reassign() {
     let h = CliTestHarness::builder().rich_config().build();
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
         .upsert_managed_resource("package", "brew/curl", "team-config", None, None)
         .unwrap();
@@ -16157,7 +16577,9 @@ fn cmd_source_remove_prints_success_message() {
     super::source::cmd_source_remove(&h.cli(), h.printer(), "team-config", false, true, false)
         .unwrap();
 
-    h.assert_output_contains("Source 'team-config' removed");
+    // The heading names the source; the line below it names the outcome.
+    h.assert_output_contains("Remove source:team-config");
+    h.assert_output_contains("removed");
 }
 
 // -----------------------------------------------------------------------
@@ -16172,7 +16594,7 @@ fn cmd_compliance_diff_identical_snapshots_reports_no_differences() {
     super::compliance::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
     super::compliance::cmd_compliance_snapshot(&h.cli(), h.printer()).unwrap();
 
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     let entries = state.compliance_history(None, 10).unwrap();
     assert_eq!(entries.len(), 2);
 
@@ -16188,7 +16610,7 @@ fn cmd_compliance_diff_identical_snapshots_reports_no_differences() {
 #[test]
 fn cmd_compliance_diff_with_changes_shows_added_and_removed() {
     let h = CliTestHarness::builder().build();
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
 
     // Create first snapshot with one check
     let snap1 = cfgd_core::compliance::ComplianceSnapshot {
@@ -16212,7 +16634,7 @@ fn cmd_compliance_diff_with_changes_shows_added_and_removed() {
             violation: 0,
         },
     };
-    state.store_compliance_snapshot(&snap1, "hash1").unwrap();
+    state.store_compliance_snapshot(&snap1).unwrap();
 
     // Create second snapshot with a different check (curl removed, git added)
     let snap2 = cfgd_core::compliance::ComplianceSnapshot {
@@ -16236,7 +16658,7 @@ fn cmd_compliance_diff_with_changes_shows_added_and_removed() {
             violation: 0,
         },
     };
-    state.store_compliance_snapshot(&snap2, "hash2").unwrap();
+    state.store_compliance_snapshot(&snap2).unwrap();
 
     let entries = state.compliance_history(None, 10).unwrap();
     assert_eq!(entries.len(), 2);
@@ -16268,7 +16690,7 @@ fn cmd_compliance_diff_with_changes_shows_added_and_removed() {
 #[test]
 fn cmd_compliance_diff_with_status_change_shows_changed() {
     let h = CliTestHarness::builder().build();
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
 
     let snap1 = cfgd_core::compliance::ComplianceSnapshot {
         timestamp: "2026-01-01T00:00:00Z".into(),
@@ -16292,7 +16714,7 @@ fn cmd_compliance_diff_with_status_change_shows_changed() {
             violation: 0,
         },
     };
-    state.store_compliance_snapshot(&snap1, "hash1").unwrap();
+    state.store_compliance_snapshot(&snap1).unwrap();
 
     // Same check but status changed from Compliant to Violation
     let snap2 = cfgd_core::compliance::ComplianceSnapshot {
@@ -16317,7 +16739,7 @@ fn cmd_compliance_diff_with_status_change_shows_changed() {
             violation: 1,
         },
     };
-    state.store_compliance_snapshot(&snap2, "hash2").unwrap();
+    state.store_compliance_snapshot(&snap2).unwrap();
 
     let entries = state.compliance_history(None, 10).unwrap();
     let id1 = entries[1].id;
@@ -16343,7 +16765,7 @@ fn cmd_compliance_diff_with_status_change_shows_changed() {
 #[test]
 fn cmd_compliance_diff_structured_json_with_changes() {
     let h = CliTestHarness::builder().json().build();
-    let state = super::open_state_store(Some(h.state_path())).unwrap();
+    let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
 
     let snap1 = cfgd_core::compliance::ComplianceSnapshot {
         timestamp: "2026-01-01T00:00:00Z".into(),
@@ -16366,7 +16788,7 @@ fn cmd_compliance_diff_structured_json_with_changes() {
             violation: 0,
         },
     };
-    state.store_compliance_snapshot(&snap1, "hash1").unwrap();
+    state.store_compliance_snapshot(&snap1).unwrap();
 
     let snap2 = cfgd_core::compliance::ComplianceSnapshot {
         timestamp: "2026-01-02T00:00:00Z".into(),
@@ -16397,7 +16819,7 @@ fn cmd_compliance_diff_structured_json_with_changes() {
             violation: 0,
         },
     };
-    state.store_compliance_snapshot(&snap2, "hash2").unwrap();
+    state.store_compliance_snapshot(&snap2).unwrap();
 
     let entries = state.compliance_history(None, 10).unwrap();
     let id1 = entries[1].id;
@@ -17344,6 +17766,10 @@ spec:
   packages:
     custom:
       - name: my-tool
+        check: my-tool --version
+        listInstalled: my-tool list
+        install: my-tool install
+        uninstall: my-tool uninstall
         packages:
           - my-pkg
 "#;
@@ -17362,6 +17788,29 @@ fn cmd_doctor_with_custom_package_manager_declared_exercises_custom_branch() {
         output.contains("Doctor"),
         "should show Doctor header with custom package manager, got: {output}"
     );
+    assert!(
+        !output.contains("cannot carry decisions"),
+        "a dot-free custom manager raises no grammar note: {output}"
+    );
+}
+
+#[test]
+fn cmd_doctor_notes_the_decision_grammar_limit_of_a_dotted_custom_manager() {
+    let h = CliTestHarness::builder()
+        .config(CUSTOM_PKG_CONFIG_YAML)
+        .profile(
+            "default",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  packages:\n    custom:\n      - name: pip3.11\n        check: pip3.11 --version\n        listInstalled: pip3.11 list\n        install: pip3.11 install\n        uninstall: pip3.11 uninstall\n        packages:\n          - my-pkg\n",
+        )
+        .build();
+
+    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
+
+    let output = h.output();
+    assert!(
+        output.contains("pip3.11") && output.contains("cannot carry decisions"),
+        "doctor points at the source-decision limitation of a dotted manager name: {output}"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -17376,12 +17825,12 @@ fn cmd_decide_no_args_no_pending_shows_info() {
 
     // With no resource, no source, and all=false, should show pending list
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         None,
         None,
         false,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -17398,7 +17847,7 @@ fn cmd_decide_no_args_with_pending_shows_list() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
         .upsert_pending_decision("alpha", "pkg/git", "required", "install", "Install git")
@@ -17409,12 +17858,12 @@ fn cmd_decide_no_args_with_pending_shows_list() {
 
     // No resource/source/all — should display pending decisions
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         None,
         None,
         false,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -17456,7 +17905,7 @@ fn cmd_decide_reject_specific_resource_verifies_resolution() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
         .upsert_pending_decision(
@@ -17469,12 +17918,12 @@ fn cmd_decide_reject_specific_resource_verifies_resolution() {
         .unwrap();
 
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Reject,
         Some("packages.brew.jq"),
         None,
         false,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -17502,19 +17951,19 @@ fn cmd_decide_accept_specific_resource_verifies_messaging() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
         .upsert_pending_decision("team", "file/bashrc", "required", "create", "Create bashrc")
         .unwrap();
 
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         Some("file/bashrc"),
         None,
         false,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -17541,12 +17990,12 @@ fn cmd_decide_accept_nonexistent_resource_warns() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         Some("no.such.resource"),
         None,
         false,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -17567,7 +18016,7 @@ fn cmd_decide_accept_all_reports_count() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     for i in 0..3 {
         state
@@ -17582,12 +18031,12 @@ fn cmd_decide_accept_all_reports_count() {
     }
 
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         None,
         None,
         true,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -17615,7 +18064,7 @@ fn cmd_decide_reject_by_source_preserves_other_sources() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
         .upsert_pending_decision("alpha", "pkg/a", "recommended", "install", "A")
@@ -17628,12 +18077,12 @@ fn cmd_decide_reject_by_source_preserves_other_sources() {
         .unwrap();
 
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Reject,
         None,
         Some("alpha"),
         false,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -17664,19 +18113,19 @@ fn cmd_decide_reject_by_source_with_no_matching_decisions() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
         .upsert_pending_decision("alpha", "pkg/a", "recommended", "install", "A")
         .unwrap();
 
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Reject,
         None,
         Some("nonexistent-source"),
         false,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -17697,19 +18146,19 @@ fn cmd_decide_accept_single_item_singular_message() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let state = super::open_state_store(Some(state_dir.path())).unwrap();
+    let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
         .upsert_pending_decision("src", "pkg/only", "recommended", "install", "Only pkg")
         .unwrap();
 
     super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
         super::DecideAction::Accept,
         None,
         None,
         true,
-        Some(state_dir.path()),
     )
     .unwrap();
     drop(printer);
@@ -17769,8 +18218,8 @@ spec:
         "file:///nonexistent/new-config.git",
     );
     // The header should be printed regardless of success/failure
-    h.assert_output_contains("Replace Source: old-source");
-    h.assert_output_contains("Remove Source: old-source");
+    h.assert_output_contains("Replace source:old-source");
+    h.assert_output_contains("Remove source:old-source");
     // The add step will fail (can't clone), so the overall result should be Err
     assert!(
         result.is_err(),
@@ -17989,7 +18438,8 @@ spec:
     h.assert_output_contains("Sources");
     // The source sync will fail because the URL is non-existent — spinner
     // finishes with finish_fail("Failed to sync ...").
-    h.assert_output_contains("Failed to sync 'team-config'");
+    h.assert_output_contains("source:team-config");
+    h.assert_output_contains("sync failed");
 }
 
 // -----------------------------------------------------------------------
@@ -18093,7 +18543,7 @@ spec:
     let result = super::execute(&cli, h.printer(), &super::paths::DirSources::all_default());
     // Replace will fail on the add step, but dispatch arm is exercised
     assert!(result.is_err());
-    h.assert_output_contains("Replace Source: replaceable");
+    h.assert_output_contains("Replace source:replaceable");
 }
 
 #[test]
@@ -18168,7 +18618,7 @@ fn count_policy_items_counts_pipx_dnf_and_npm_global() {
 #[test]
 fn count_policy_items_counts_files_env_and_system_independently() {
     use cfgd_core::config::{EnvVar, ManagedFileSpec};
-    let mut system = std::collections::HashMap::new();
+    let mut system = std::collections::BTreeMap::new();
     system.insert(
         "shell".to_string(),
         serde_yaml::Value::String("bash".to_string()),
@@ -18215,7 +18665,7 @@ fn count_policy_items_counts_files_env_and_system_independently() {
 fn count_policy_items_sums_packages_files_env_and_system() {
     // End-to-end mixed bag: every contributing field set at once. Pin the
     // additive contract: no field silently swallows another.
-    let mut system = std::collections::HashMap::new();
+    let mut system = std::collections::BTreeMap::new();
     system.insert(
         "shell".to_string(),
         serde_yaml::Value::String("bash".to_string()),
@@ -18796,7 +19246,8 @@ mod cmd_source_add_local {
     // cmd_source_update then walks the happy-path arm that has previously
     // only had error-path coverage (no-sources, name-not-found, load-failure):
     // refresh the source manifest, upsert the state-store row, and emit
-    // "Updated source 'X'". The "load failure" arm is exercised by pointing
+    // the `source:<name>` group's `updated` line. The "load failure" arm is
+    // exercised by pointing
     // at a non-existent file:// URL.
 
     #[test]
@@ -18816,11 +19267,11 @@ mod cmd_source_add_local {
 
             // No name → updates every source. Drives the
             // `mgr.get(...).is_some()` happy path + upsert_config_source +
-            // "Updated source" success line.
+            // the group's `updated` success line.
             super::source::cmd_source_update(&h.cli(), h.printer(), None)
                 .expect("cmd_source_update should succeed against the staged source");
 
-            h.assert_output_contains("Updated source 'upd-src'");
+            h.assert_output_contains("source:upd-src");
 
             // The state store should now have a row recording the source.
             let store =
@@ -18878,11 +19329,11 @@ mod cmd_source_add_local {
             let full = h.output();
             let update_out = &full[baseline_len..];
             assert!(
-                update_out.contains("Updated source 'src-b'"),
+                update_out.contains("source:src-b"),
                 "named update should report src-b: {update_out}"
             );
             assert!(
-                !update_out.contains("Updated source 'src-a'"),
+                !update_out.contains("source:src-a"),
                 "named update must NOT touch src-a — the filter arm is broken if it does: {update_out}"
             );
         });
@@ -18985,7 +19436,7 @@ mod cmd_source_add_local {
             let show_out = &full[baseline_len..];
 
             assert!(
-                show_out.contains("Source: shown-src"),
+                show_out.contains("source:shown-src"),
                 "expected header, got: {show_out}"
             );
             assert!(
@@ -19024,7 +19475,7 @@ mod cmd_source_add_local {
         // the v2 manifest; detect_permission_changes returns "Required
         // items increased from 0 to 2"; the warning fires; prompt_confirm
         // in test mode returns Err → the Err(_) arm prints
-        // "Skipped source 'X' (prompt cancelled)" and continue's out of the
+        // the group's `skipped (prompt cancelled)` line and continue's out of the
         // loop. Pins the prompt-cancel branch (lines 72-77 in source/update.rs).
         with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
@@ -19057,7 +19508,7 @@ mod cmd_source_add_local {
             let full = h.output();
             let update_out = &full[baseline_len..];
             assert!(
-                update_out.contains("update changes permissions"),
+                update_out.contains("permission changes"),
                 "expected permission-change warning, got: {update_out}"
             );
             assert!(
@@ -19065,13 +19516,13 @@ mod cmd_source_add_local {
                 "expected required-items expansion message, got: {update_out}"
             );
             assert!(
-                update_out.contains("Skipped source 'perm-src' (prompt cancelled)"),
+                update_out.contains("skipped (prompt cancelled)"),
                 "expected prompt-cancelled skip line, got: {update_out}"
             );
             // The upsert_config_source success line MUST NOT appear — the
             // continue must short-circuit before the state-store write.
             assert!(
-                !update_out.contains("Updated source 'perm-src'"),
+                !update_out.contains("✓ updated"),
                 "perm-src should NOT have been marked updated when prompt is cancelled: {update_out}"
             );
         });
@@ -19152,6 +19603,7 @@ mod cmd_source_add_local {
 fn apply_phase_as_str_round_trips_every_variant_to_its_kebab_label() {
     let cases = [
         (super::ApplyPhase::PreScripts, "pre-scripts"),
+        (super::ApplyPhase::Prerequisites, "prerequisites"),
         (super::ApplyPhase::Env, "env"),
         (super::ApplyPhase::Modules, "modules"),
         (super::ApplyPhase::Packages, "packages"),
@@ -19160,27 +19612,424 @@ fn apply_phase_as_str_round_trips_every_variant_to_its_kebab_label() {
         (super::ApplyPhase::Secrets, "secrets"),
         (super::ApplyPhase::PostScripts, "post-scripts"),
     ];
+    assert_eq!(
+        cases.len(),
+        <super::ApplyPhase as clap::ValueEnum>::value_variants().len(),
+        "every phase spelling the CLI accepts needs a label pinned here"
+    );
     for (phase, label) in cases {
         assert_eq!(phase.as_str(), label);
     }
 }
 
 #[test]
-fn apply_phase_to_phase_name_maps_every_variant_to_matching_reconciler_phase() {
-    use cfgd_core::reconciler::PhaseName;
+fn apply_phase_to_filter_maps_every_variant_and_modules_is_an_owner_filter() {
+    use cfgd_core::reconciler::{PhaseFilter, PhaseName};
     let cases = [
-        (super::ApplyPhase::PreScripts, PhaseName::PreScripts),
-        (super::ApplyPhase::Env, PhaseName::Env),
-        (super::ApplyPhase::Modules, PhaseName::Modules),
-        (super::ApplyPhase::Packages, PhaseName::Packages),
-        (super::ApplyPhase::System, PhaseName::System),
-        (super::ApplyPhase::Files, PhaseName::Files),
-        (super::ApplyPhase::Secrets, PhaseName::Secrets),
-        (super::ApplyPhase::PostScripts, PhaseName::PostScripts),
+        (
+            super::ApplyPhase::PreScripts,
+            PhaseFilter::Phase(PhaseName::PreScripts),
+        ),
+        (
+            super::ApplyPhase::Prerequisites,
+            PhaseFilter::Phase(PhaseName::Prerequisites),
+        ),
+        // The deprecated spelling resolves to the same phase, so a script
+        // written against it keeps selecting the work it always selected.
+        (
+            super::ApplyPhase::Env,
+            PhaseFilter::Phase(PhaseName::Prerequisites),
+        ),
+        // The one variant that is NOT a plan phase: module work applies in the
+        // phase whose kind it is.
+        (super::ApplyPhase::Modules, PhaseFilter::ModuleOwners),
+        (
+            super::ApplyPhase::Packages,
+            PhaseFilter::Phase(PhaseName::Packages),
+        ),
+        (
+            super::ApplyPhase::System,
+            PhaseFilter::Phase(PhaseName::System),
+        ),
+        (
+            super::ApplyPhase::Files,
+            PhaseFilter::Phase(PhaseName::Files),
+        ),
+        (
+            super::ApplyPhase::Secrets,
+            PhaseFilter::Phase(PhaseName::Secrets),
+        ),
+        (
+            super::ApplyPhase::PostScripts,
+            PhaseFilter::Phase(PhaseName::PostScripts),
+        ),
     ];
+    assert_eq!(
+        cases.len(),
+        <super::ApplyPhase as clap::ValueEnum>::value_variants().len(),
+        "every phase spelling the CLI accepts needs a filter pinned here"
+    );
     for (input, expected) in cases {
-        assert_eq!(super::apply_phase_to_phase_name(input), expected);
+        assert_eq!(super::apply_phase_to_filter(input), expected);
     }
+}
+
+#[test]
+fn the_legacy_phase_spelling_resolves_and_says_it_is_on_the_way_out() {
+    use cfgd_core::reconciler::{PhaseFilter, PhaseName};
+
+    let (printer, buf) = test_printer_capture();
+    let filter = super::resolve_phase_filter(
+        Some(super::PhaseArg::bare(super::ApplyPhase::Env)),
+        &ProviderRegistry::new(),
+        &printer,
+    )
+    .unwrap();
+    printer.flush();
+    let out = buf.lock().unwrap().clone();
+
+    assert_eq!(filter, Some(PhaseFilter::Phase(PhaseName::Prerequisites)));
+    assert!(
+        out.contains("`--phase env` is deprecated") && out.contains("--phase prerequisites"),
+        "the notice must name both the spelling and its replacement:\n{out}"
+    );
+
+    let (printer, buf) = test_printer_capture();
+    super::resolve_phase_filter(
+        Some(super::PhaseArg::bare(super::ApplyPhase::Prerequisites)),
+        &ProviderRegistry::new(),
+        &printer,
+    )
+    .unwrap();
+    printer.flush();
+    assert!(
+        buf.lock().unwrap().is_empty(),
+        "the current spelling earns no notice"
+    );
+}
+
+#[test]
+fn phase_arg_parses_the_dotted_grammar() {
+    use std::str::FromStr;
+
+    let bare = super::PhaseArg::from_str("prerequisites").unwrap();
+    assert!(matches!(bare.phase, super::ApplyPhase::Prerequisites));
+    assert_eq!(bare.selector, None);
+
+    let dotted = super::PhaseArg::from_str("prerequisites.managers").unwrap();
+    assert!(matches!(dotted.phase, super::ApplyPhase::Prerequisites));
+    assert_eq!(dotted.selector.as_deref(), Some("managers"));
+
+    let manager_selector = super::PhaseArg::from_str("prerequisites.brew").unwrap();
+    assert!(matches!(
+        manager_selector.phase,
+        super::ApplyPhase::Prerequisites
+    ));
+    assert_eq!(manager_selector.selector.as_deref(), Some("brew"));
+
+    // The deprecated `env` spelling still parses, bare and dotted, unchanged.
+    let legacy = super::PhaseArg::from_str("env").unwrap();
+    assert!(matches!(legacy.phase, super::ApplyPhase::Env));
+    assert_eq!(legacy.selector, None);
+    let legacy_dotted = super::PhaseArg::from_str("env.session").unwrap();
+    assert!(matches!(legacy_dotted.phase, super::ApplyPhase::Env));
+    assert_eq!(legacy_dotted.selector.as_deref(), Some("session"));
+}
+
+#[test]
+fn phase_arg_rejects_an_unknown_phase_and_lists_the_visible_vocabulary() {
+    use std::str::FromStr;
+
+    let err = super::PhaseArg::from_str("bogus").unwrap_err();
+    assert!(
+        err.contains("invalid phase 'bogus'") && err.contains("possible values:"),
+        "error must name the rejected token and list the vocabulary:\n{err}"
+    );
+    // The deprecated `env` spelling still parses (pinned above) but must not be
+    // advertised in the possible-values listing shown for a typo.
+    assert!(
+        !err.contains("env"),
+        "the hidden legacy spelling must not appear in the possible-values listing:\n{err}"
+    );
+    assert!(
+        err.contains("prerequisites"),
+        "the current spelling must appear in the possible-values listing:\n{err}"
+    );
+}
+
+#[test]
+fn phase_arg_rejects_a_trailing_dot_with_an_empty_selector() {
+    use std::str::FromStr;
+
+    // "prerequisites." names no selector after the dot — a likely typo, so it
+    // errors with a message naming the bare-phase and dotted alternatives
+    // rather than silently swallowing the dangling '.' or misreporting the
+    // whole string (including the dot) as an unrecognized phase name.
+    let err = super::PhaseArg::from_str("prerequisites.").unwrap_err();
+    assert!(
+        err.contains("prerequisites.") && err.contains("prerequisites.managers"),
+        "error must name the input and show a valid dotted example:\n{err}"
+    );
+}
+
+// `PhaseArg::from_str` is only half the contract: `--phase` must actually
+// reach it through clap's `value_parser`, and a bad token must fail as a
+// clap USAGE error (exit code 2 in main.rs's mapping), not merely as an
+// `Err` returned from a unit-tested free function.
+#[test]
+fn phase_flag_parses_the_dotted_grammar_through_real_clap_parsing() {
+    use super::Command;
+
+    let cli = Cli::try_parse_from(["cfgd", "apply", "--phase", "prerequisites.brew", "--yes"])
+        .expect("--phase prerequisites.brew must parse");
+    match cli.command {
+        Some(Command::Apply(args)) => {
+            let phase = args.phase.expect("--phase must be Some after parse");
+            assert!(matches!(phase.phase, super::ApplyPhase::Prerequisites));
+            assert_eq!(phase.selector.as_deref(), Some("brew"));
+        }
+        _ => panic!("expected Command::Apply"),
+    }
+}
+
+#[test]
+fn phase_flag_rejects_a_trailing_dot_as_a_clap_usage_error() {
+    let err = match Cli::try_parse_from(["cfgd", "apply", "--phase", "prerequisites.", "--yes"]) {
+        Ok(_) => panic!("a trailing '.' must fail parsing"),
+        Err(e) => e,
+    };
+    assert_eq!(
+        err.kind(),
+        clap::error::ErrorKind::ValueValidation,
+        "must surface as a clap value-validation error, not merely an Err(String):\n{err}"
+    );
+    assert_eq!(
+        err.exit_code(),
+        2,
+        "a clap usage error exits 2, the shape a script branches on"
+    );
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("prerequisites.") && rendered.contains("prerequisites.managers"),
+        "the rendered clap error must still carry the FromStr message:\n{rendered}"
+    );
+}
+
+#[test]
+fn phase_flag_help_lists_the_phase_vocabulary() {
+    use clap::CommandFactory;
+
+    let cmd = Cli::command();
+    let apply = cmd
+        .find_subcommand("apply")
+        .expect("apply subcommand must exist");
+    let phase_arg = apply
+        .get_arguments()
+        .find(|a| a.get_id() == "phase")
+        .expect("--phase must be a defined argument");
+    let rendered = apply.clone().render_help().to_string();
+    assert!(
+        phase_arg.get_value_parser().possible_values().is_some(),
+        "--phase must carry a possible-values list for --help / completions"
+    );
+    assert!(
+        rendered.contains("prerequisites") && rendered.contains("packages"),
+        "--help must list the phase vocabulary:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("[possible values: env"),
+        "the hidden legacy 'env' spelling must not appear in --help:\n{rendered}"
+    );
+}
+
+#[test]
+fn resolve_phase_filter_combines_a_selector_onto_its_base_phase() {
+    use cfgd_core::reconciler::{PhaseFilter, PhaseName};
+
+    let (printer, _buf) = test_printer_capture();
+    let filter = super::resolve_phase_filter(
+        Some(super::PhaseArg {
+            phase: super::ApplyPhase::Prerequisites,
+            selector: Some("managers".to_string()),
+        }),
+        &ProviderRegistry::new(),
+        &printer,
+    )
+    .unwrap();
+    assert_eq!(
+        filter,
+        Some(PhaseFilter::Selector(
+            PhaseName::Prerequisites,
+            "managers".to_string()
+        ))
+    );
+}
+
+#[test]
+fn resolve_phase_filter_rejects_a_selector_on_the_modules_owner_filter() {
+    let (printer, _buf) = test_printer_capture();
+    let err = super::resolve_phase_filter(
+        Some(super::PhaseArg {
+            phase: super::ApplyPhase::Modules,
+            selector: Some("vim-config".to_string()),
+        }),
+        &ProviderRegistry::new(),
+        &printer,
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("--phase modules.vim-config") && msg.contains("--module vim-config"),
+        "error must name the rejected combo and the --module alternative:\n{msg}"
+    );
+}
+
+#[test]
+fn resolve_phase_filter_rejects_a_selector_on_packages_pointing_at_prerequisites() {
+    let (printer, _buf) = test_printer_capture();
+    let err = super::resolve_phase_filter(
+        Some(super::PhaseArg {
+            phase: super::ApplyPhase::Packages,
+            selector: Some("brew".to_string()),
+        }),
+        &ProviderRegistry::new(),
+        &printer,
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("--phase packages.brew") && msg.contains("--phase prerequisites.brew"),
+        "error must name the rejected combo and point at the prerequisites spelling:\n{msg}"
+    );
+}
+
+/// A named, always-available package manager, for tests that need
+/// `ProviderRegistry::manager_names()` to answer with a specific set without
+/// depending on a real `PackageManager` implementation. The second field names
+/// the tools its bootstrap cascade shells out to — the population a
+/// `Prerequisites` node is keyed on, and so part of the selector vocabulary.
+struct NamedManagerStub(&'static str, &'static [&'static str]);
+
+impl cfgd_core::providers::PackageManager for NamedManagerStub {
+    fn name(&self) -> &str {
+        self.0
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+        Some(cfgd_core::providers::BootstrapPlan::new("stub").requiring(self.1.to_vec()))
+    }
+    fn bootstrap(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<()> {
+        Ok(())
+    }
+    fn installed_packages(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<std::collections::HashSet<String>> {
+        Ok(std::collections::HashSet::new())
+    }
+    fn install(
+        &self,
+        _packages: &[String],
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<()> {
+        Ok(())
+    }
+    fn uninstall(
+        &self,
+        _packages: &[String],
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<()> {
+        Ok(())
+    }
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _package: &str) -> cfgd_core::errors::Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn resolve_phase_filter_rejects_an_unknown_selector_and_lists_the_legal_vocabulary() {
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(NamedManagerStub("brew", &[])));
+    let (printer, _buf) = test_printer_capture();
+    let err = super::resolve_phase_filter(
+        Some(super::PhaseArg {
+            phase: super::ApplyPhase::Prerequisites,
+            selector: Some("bogus".to_string()),
+        }),
+        &registry,
+        &printer,
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unknown selector 'bogus'") && msg.contains("brew") && msg.contains("env"),
+        "error must name the rejected selector and list groups + manager families:\n{msg}"
+    );
+}
+
+#[test]
+fn resolve_phase_filter_accepts_a_prerequisite_tool_as_a_selector() {
+    use cfgd_core::reconciler::{PhaseFilter, PhaseName};
+
+    // `ManagerAction::filter_subject` keys a prerequisite node on its TOOL, and
+    // `--skip prerequisites.curl` has always accepted that spelling — but the
+    // `--phase` validator listed manager families only, so one grammar was
+    // legal on one flag and rejected on the other.
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(NamedManagerStub("brew", &["curl"])));
+    let (printer, _buf) = test_printer_capture();
+    let filter = super::resolve_phase_filter(
+        Some(super::PhaseArg {
+            phase: super::ApplyPhase::Prerequisites,
+            selector: Some("curl".to_string()),
+        }),
+        &registry,
+        &printer,
+    )
+    .expect("a tool a registered manager's cascade names is a legal selector");
+    assert_eq!(
+        filter,
+        Some(PhaseFilter::Selector(
+            PhaseName::Prerequisites,
+            "curl".to_string()
+        ))
+    );
+
+    // Still a spelling gate: a name no manager and no cascade mentions is
+    // refused, and the tool now appears in what the refusal offers.
+    let err = super::resolve_phase_filter(
+        Some(super::PhaseArg {
+            phase: super::ApplyPhase::Prerequisites,
+            selector: Some("bogus".to_string()),
+        }),
+        &registry,
+        &printer,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("unknown selector 'bogus'") && err.contains("curl"),
+        "the legal list must offer the tool it now accepts:\n{err}"
+    );
 }
 
 #[test]
@@ -19659,7 +20508,14 @@ spec:
 }
 
 #[test]
+#[serial_test::serial]
 fn execute_source_create_dispatch() {
+    // The dispatch arm resolves `std::env::current_dir()` itself (source
+    // create is a CWD-authoring command) — pin CWD to a disposable
+    // tempdir so this test can never write `cfgd-source.yaml` into the
+    // real process working directory.
+    let dir = tempfile::tempdir().unwrap();
+    let _cwd = cfgd_core::test_helpers::CwdGuard::set(dir.path()).expect("cwd guard");
     let h = CliTestHarness::builder().build();
     let cli = h.cli_with_command(Command::Source {
         command: SourceCommand::Create {
@@ -19670,6 +20526,10 @@ fn execute_source_create_dispatch() {
     });
     super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
         .expect("Source Create dispatch must succeed");
+    assert!(
+        dir.path().join("cfgd-source.yaml").exists(),
+        "manifest must land in the CWD tempdir, not the harness's config dir"
+    );
 }
 
 #[test]
@@ -19888,4 +20748,2166 @@ fn build_doctor_doc_unscannable_profiles_dir_fails() {
         text.contains("Some checks failed"),
         "an unscannable profiles dir must fail doctor, got: {text}"
     );
+}
+
+// --- Source decisions: what `plan` and `apply` may execute ---
+//
+// `docs/sources.md` states one behaviour for a source-delivered item awaiting a
+// decision — recorded, notified, NOT applied — and one for an item the operator
+// declined: excluded from reconciliation. The interactive commands are held to
+// it here, at the same three levers the daemon is: the human preview, the
+// structured payload, and what a real (non-dry-run) apply writes to disk.
+
+/// A subscriber whose source `acme` delivers one managed file while the
+/// operator declares the other themselves.
+///
+/// The split is what lets these tests ask the real question. A decision names a
+/// source and a resource, and it may only withhold a resource that source
+/// delivers — so the withheld file has to come from `acme`'s own profile, and
+/// the file the operator declares has to stay untouched beside it. Only
+/// composition attributes a layer to a source, so the source is a real git
+/// checkout the subscription clones rather than a local profile relabelled.
+struct DecisionFixture {
+    h: CliTestHarness,
+    /// The file the operator declares in their own profile. No decision can
+    /// take it off the machine.
+    kept: PathBuf,
+    /// The file `acme` delivers — the one a decision covers.
+    withheld: PathBuf,
+    /// A second `acme`-delivered file, present when the shape asked for one —
+    /// for tests proving an answer about `withheld` leaves this one untouched.
+    sibling: PathBuf,
+    /// The staging root both targets live under. Bound for the fixture's
+    /// lifetime rather than leaked, so the directory is reaped with the test.
+    _staging: tempfile::TempDir,
+    /// The source's "remote"; the harness cache clones from it.
+    _remote: cfgd_core::test_helpers::BareGitRepo,
+    /// A `file://` origin is refused outside dev/test.
+    _allow_local: cfgd_core::test_helpers::EnvVarGuard,
+    /// `~` resolves under the staging root for the fixture's lifetime, so no
+    /// path these applies touch can reach the operator's own home.
+    _home: cfgd_core::TestHomeGuard,
+}
+
+impl DecisionFixture {
+    /// The decision path covering the source-delivered file.
+    fn resource(&self) -> String {
+        format!("files.{}", self.withheld.posix())
+    }
+
+    /// The decision path covering the second source-delivered file.
+    fn sibling_resource(&self) -> String {
+        format!("files.{}", self.sibling.posix())
+    }
+
+    /// The store, with the row `acme` would mint for its own file already in
+    /// it. Returned so a caller can resolve or re-read the decision.
+    fn with_pending_decision(&self) -> cfgd_core::state::StateStore {
+        let state =
+            super::open_state_store(Some(self.h.state_path()), cfgd_core::Scope::User).unwrap();
+        state
+            .upsert_pending_decision(
+                "acme",
+                &self.resource(),
+                "recommended",
+                "install",
+                "recommended withheld.txt (from acme)",
+            )
+            .unwrap();
+        state
+    }
+}
+
+/// Build the fixture. `output_json` selects the harness printer's format, so a
+/// payload test and a human-render test share one staging shape.
+fn decision_fixture(output_json: bool) -> DecisionFixture {
+    decision_fixture_with(output_json, "")
+}
+
+/// The fixture with `extra_spec` appended to the config's `spec:` block — for a
+/// test that needs a daemon auto-apply policy on the same staging shape.
+fn decision_fixture_with(output_json: bool, extra_spec: &str) -> DecisionFixture {
+    decision_fixture_shaped(DecisionShape {
+        output_json,
+        extra_spec,
+        ..Default::default()
+    })
+}
+
+/// Knobs on the decision fixture's staging shape. `..Default::default()` is the
+/// classic shape: one locally declared file, one source-delivered file, no
+/// auto-apply policy.
+struct DecisionShape<'a> {
+    output_json: bool,
+    /// Appended to the config's `spec:` block.
+    extra_spec: &'a str,
+    /// The operator's own profile declares `kept.txt`.
+    local_file: bool,
+    /// YAML appended to the local profile's `spec:` block (two-space indent).
+    extra_profile_spec: &'a str,
+    /// The source delivers `sibling.txt` alongside `withheld.txt`.
+    sibling: bool,
+    /// YAML appended to the SOURCE's team profile `spec:` block (two-space
+    /// indent), for a source that delivers more than the managed file.
+    extra_team_spec: &'a str,
+}
+
+impl Default for DecisionShape<'_> {
+    fn default() -> Self {
+        Self {
+            output_json: false,
+            extra_spec: "",
+            local_file: true,
+            extra_profile_spec: "",
+            sibling: false,
+            extra_team_spec: "",
+        }
+    }
+}
+
+fn decision_fixture_shaped(shape: DecisionShape<'_>) -> DecisionFixture {
+    let allow_local = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let staging = tempfile::tempdir().unwrap();
+    let home = cfgd_core::with_test_home_guard(staging.path());
+    let out = staging.path().join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let kept = out.join("kept.txt");
+    let withheld = out.join("withheld.txt");
+    let sibling = out.join("sibling.txt");
+
+    // A source-declared `source:` path resolves against the SUBSCRIBER's config
+    // directory, so both bodies are written there and only the declaration
+    // moves into the source.
+    let mut team = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n  files:\n    managed:\n      - source: files/withheld.txt\n        target: {}\n        strategy: Copy\n",
+        withheld.posix(),
+    );
+    if shape.sibling {
+        team.push_str(&format!(
+            "      - source: files/sibling.txt\n        target: {}\n        strategy: Copy\n",
+            sibling.posix(),
+        ));
+    }
+    team.push_str(shape.extra_team_spec);
+    let remote = cfgd_core::test_helpers::BareGitRepo::builder()
+        .commit(
+            "acme source",
+            &[
+                (
+                    "cfgd-source.yaml",
+                    "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\nspec:\n  provides:\n    profiles:\n      - team\n",
+                ),
+                ("profiles/team.yaml", &team),
+            ],
+        )
+        .build();
+
+    let local_files = if shape.local_file {
+        format!(
+            "  files:\n    managed:\n      - source: files/kept.txt\n        target: {}\n        strategy: Copy\n",
+            kept.posix(),
+        )
+    } else {
+        String::new()
+    };
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: sourced\nspec:\n  inherits: []\n  modules: []\n{local_files}{}",
+        shape.extra_profile_spec,
+    );
+    let config = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: sourced\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: {}\n        branch: {}\n      subscription:\n        profile: team\n{}",
+        remote.url(),
+        remote.head_branch(),
+        shape.extra_spec,
+    );
+    let mut builder = CliTestHarness::builder()
+        .config(&config)
+        .profile("sourced", &profile);
+    if shape.output_json {
+        builder = builder.json();
+    }
+    let h = builder.build();
+
+    let files_dir = h.config_path().join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join("kept.txt"), "kept body").unwrap();
+    std::fs::write(files_dir.join("withheld.txt"), "withheld body").unwrap();
+    std::fs::write(files_dir.join("sibling.txt"), "sibling body").unwrap();
+
+    DecisionFixture {
+        h,
+        kept,
+        withheld,
+        sibling,
+        _staging: staging,
+        _remote: remote,
+        _allow_local: allow_local,
+        _home: home,
+    }
+}
+
+fn plan_args() -> PlanArgs {
+    PlanArgs {
+        from: None,
+        phase: None,
+        skip: vec![],
+        only: vec![],
+        module: None,
+        skip_scripts: false,
+        context: "apply".to_string(),
+    }
+}
+
+/// `--yes`; the confirm path has its own test below.
+fn apply_args(dry_run: bool) -> ApplyArgs {
+    ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        from: None,
+        dry_run,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: None,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn plan_preview_excludes_the_resource_its_pending_block_names() {
+    let f = decision_fixture(false);
+    f.with_pending_decision();
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("Pending Decisions (not included in this plan)"),
+        "the pending block is the visibility surface and still renders, got:\n{output}"
+    );
+    assert!(
+        output.contains("1 action planned"),
+        "the count must describe the pruned plan — one file, not two:\n{output}"
+    );
+    // Everything from the phase tree down — the pending block sits above it and
+    // is the one place an undecided resource may be named.
+    let tree = output
+        .rsplit_once("Phase: Files")
+        .map(|(_, tail)| tail.to_string())
+        .expect("the plan tree renders a Files phase");
+    assert!(
+        tree.contains(&f.kept.posix().to_string()),
+        "the decided file is still planned:\n{output}"
+    );
+    assert!(
+        !tree.contains(&f.withheld.posix().to_string()),
+        "an undecided file must not appear outside the pending block:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn plan_preview_names_the_decision_that_declined_a_resource() {
+    // `docs/sources.md` promises that an item missing from a plan is always
+    // explained by a decision the operator can see. A declined row withholds
+    // exactly as a pending one does, so it needs a block of its own — without
+    // it the resource is simply absent, with nothing on screen accounting for
+    // it and no prompt to answer.
+    let f = decision_fixture(false);
+    let state = f.with_pending_decision();
+    state.resolve_decision(&f.resource(), "rejected").unwrap();
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("Declined Decisions (not included in this plan)"),
+        "a declined decision must account for the resource it removed:\n{output}"
+    );
+    assert!(
+        !output.contains("Pending Decisions (not included in this plan)"),
+        "an answered decision is not awaiting an answer:\n{output}"
+    );
+    assert!(
+        output.contains(&f.resource()),
+        "the block names the resource that left the plan:\n{output}"
+    );
+    assert!(
+        output.contains("1 action planned"),
+        "the count describes the pruned plan:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn plan_payload_counts_and_lists_only_the_decided_actions() {
+    let f = decision_fixture(true);
+    f.with_pending_decision();
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let json = f.h.json_output();
+
+    assert_eq!(
+        json["totalActions"], 1,
+        "the payload counts the pruned plan: {json}"
+    );
+    let phases = json["phases"].as_array().expect("phases array");
+    let action_text: String = phases
+        .iter()
+        .flat_map(|p| p["groups"].as_array().cloned().unwrap_or_default())
+        .flat_map(|g| g["actions"].as_array().cloned().unwrap_or_default())
+        .map(|a| a.to_string())
+        .collect();
+    assert!(
+        action_text.contains("kept.txt") && !action_text.contains("withheld.txt"),
+        "phases[].groups[].actions[] must hold the decided action only: {action_text}"
+    );
+    let pending = json["pendingDecisions"]
+        .as_array()
+        .expect("pendingDecisions present when a decision is pending");
+    assert_eq!(pending.len(), 1, "one pending decision: {json}");
+    assert!(
+        pending[0]["resource"]
+            .as_str()
+            .is_some_and(|r| r.contains("withheld.txt")),
+        "the payload names the withheld resource: {json}"
+    );
+    // The T7 payload shape: no `warnings` / `pendingBackups` keys when empty.
+    assert!(
+        json.get("warnings").is_none() && json.get("pendingBackups").is_none(),
+        "empty collections stay off the wire: {json}"
+    );
+    assert!(
+        json.get("rejectedDecisions").is_none(),
+        "nothing was declined, so the key stays off the wire: {json}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn plan_payload_reports_a_declined_decision_under_its_own_key() {
+    // The structured counterpart of the "Declined Decisions" block: under `-o
+    // json` every human row is suppressed, so a consumer diffing plans would
+    // otherwise see a resource vanish with nothing explaining it.
+    let f = decision_fixture(true);
+    let state = f.with_pending_decision();
+    state.resolve_decision(&f.resource(), "rejected").unwrap();
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let json = f.h.json_output();
+
+    assert_eq!(json["totalActions"], 1, "the plan is pruned: {json}");
+    assert!(
+        json.get("pendingDecisions").is_none(),
+        "an answered decision is not pending: {json}"
+    );
+    let rejected = json["rejectedDecisions"]
+        .as_array()
+        .expect("rejectedDecisions present when a decision was declined");
+    assert_eq!(rejected.len(), 1, "one declined decision: {json}");
+    assert_eq!(
+        rejected[0]["resolution"], "rejected",
+        "the entry says which way it was answered: {json}"
+    );
+    assert!(
+        rejected[0]["resolvedAt"].is_string(),
+        "a declined row carries the timestamp its state changed: {json}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn plan_payload_omits_pending_decisions_when_there_are_none() {
+    let f = decision_fixture(true);
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let json = f.h.json_output();
+
+    assert!(
+        json.get("pendingDecisions").is_none() && json.get("rejectedDecisions").is_none(),
+        "no decisions → neither key reaches the wire: {json}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn plan_payload_marks_an_unrecorded_decision_with_id_zero() {
+    // `plan` is read-only, so an item it classifies before any run has minted a
+    // row reaches the wire with `id` 0 — the documented "not yet recorded"
+    // discriminator. Every other field carries the recorded row's shape, and
+    // the store itself stays empty.
+    let f = decision_fixture_with(true, NOTIFYING_POLICY);
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let json = f.h.json_output();
+
+    let pending = json["pendingDecisions"]
+        .as_array()
+        .expect("an unrecorded classified item still reaches the payload");
+    assert_eq!(pending.len(), 1, "one withheld item: {json}");
+    let row = &pending[0];
+    assert_eq!(
+        row["id"], 0,
+        "id 0 marks a row nothing has recorded yet: {json}"
+    );
+    assert_eq!(row["source"], "acme", "the row names its source: {json}");
+    assert_eq!(
+        row["tier"], "recommended",
+        "the row carries its tier: {json}"
+    );
+    assert_eq!(
+        row["resource"],
+        serde_json::Value::String(f.resource()),
+        "the row names the withheld resource: {json}"
+    );
+    assert!(
+        row["resolution"].is_null(),
+        "an unrecorded row is unresolved: {json}"
+    );
+
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "the payload row is classification, not a store write"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn apply_does_not_execute_a_resource_awaiting_a_decision() {
+    let f = decision_fixture(false);
+    f.with_pending_decision();
+
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+
+    assert!(f.kept.exists(), "the decided file still applies");
+    assert!(
+        !f.withheld.exists(),
+        "a file awaiting a source decision must not be written by `cfgd apply`"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn an_interactively_confirmed_apply_withholds_the_undecided_resource_too() {
+    // `--yes` and the confirmation prompt are two entry points to one run, and
+    // the operator answering "yes" is answering for the plan they were shown —
+    // which is the pruned one. A withhold that only held under `--yes` would
+    // make the interactive path the one that installs an undecided item.
+    let f = decision_fixture(false);
+    f.with_pending_decision();
+
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output::PromptAnswer::Confirm(true)],
+        cfgd_core::output::Verbosity::Normal,
+    );
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        yes: false,
+        ..apply_args(false)
+    };
+    super::apply::cmd_apply(&f.h.cli(), &printer, &args).unwrap();
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+
+    assert!(
+        f.kept.exists(),
+        "the confirmed run applied the decided file:\n{output}"
+    );
+    assert!(
+        !f.withheld.exists(),
+        "confirming the prompt confirms the PRUNED plan — an undecided file is \
+         not part of it:\n{output}"
+    );
+    assert!(
+        output.contains("Pending Decisions (not included in this plan)"),
+        "the operator confirming must see what the plan is missing:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn apply_executes_a_resource_once_its_decision_is_accepted() {
+    let f = decision_fixture(false);
+    let state = f.with_pending_decision();
+
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        f.h.printer(),
+        super::DecideAction::Accept,
+        Some(&f.resource()),
+        None,
+        false,
+    )
+    .unwrap();
+
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+
+    assert!(f.kept.exists());
+    assert!(
+        f.withheld.exists(),
+        "an accepted decision releases its resource to the next apply"
+    );
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "accepting resolves the row"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn apply_never_executes_a_resource_whose_decision_was_rejected() {
+    let f = decision_fixture(false);
+    let state = f.with_pending_decision();
+
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        f.h.printer(),
+        super::DecideAction::Reject,
+        Some(&f.resource()),
+        None,
+        false,
+    )
+    .unwrap();
+
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+
+    assert!(f.kept.exists());
+    assert!(
+        !f.withheld.exists(),
+        "declining an item must exclude it from reconciliation — rejecting it \
+         cannot be the act that installs it"
+    );
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "a rejected item leaves the pending list"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_decision_never_withholds_what_the_operator_declares_themselves() {
+    // A decision names a path, and a path is not an owner. `kept.txt` is the
+    // subscriber's own declaration; a row about a source's offer of the same
+    // path must not be what takes it off the machine.
+    let f = decision_fixture(false);
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    let local_resource = format!("files.{}", f.kept.posix());
+    state
+        .upsert_pending_decision(
+            "acme",
+            &local_resource,
+            "recommended",
+            "install",
+            "recommended kept.txt (from acme)",
+        )
+        .unwrap();
+    state.resolve_decision(&local_resource, "rejected").unwrap();
+
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+
+    assert!(
+        f.kept.exists(),
+        "declining a source's offer cannot remove the operator's own declaration"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_decision_whose_source_is_not_subscribed_withholds_nothing() {
+    // The row a dropped source leaves is the row nobody can answer — `cfgd
+    // decide` acts against a source that is gone. A rejection especially: left
+    // live it would be a permanent, unanswerable block on the path.
+    let f = decision_fixture(false);
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    state
+        .upsert_pending_decision(
+            "gone",
+            &f.resource(),
+            "recommended",
+            "install",
+            "recommended withheld.txt (from gone)",
+        )
+        .unwrap();
+    state.resolve_decision(&f.resource(), "rejected").unwrap();
+
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+
+    assert!(
+        f.withheld.exists(),
+        "a decision naming a source this machine no longer subscribes to must \
+         not keep withholding its resource"
+    );
+}
+
+/// The auto-apply policy block that declines every newly recommended item.
+const REJECTING_POLICY: &str = "  daemon:\n    reconcile:\n      autoApply: true\n      policy:\n        newRecommended: Reject\n";
+
+#[test]
+#[serial_test::serial]
+fn apply_withholds_the_item_a_rejecting_policy_declines() {
+    // `newRecommended: Reject` is a standing answer, and a standing answer that
+    // only the daemon honoured would make `cfgd apply` the way to launder a
+    // declined item onto the machine — after which it is managed, stops looking
+    // new, and the daemon never declines it again.
+    let f = decision_fixture_with(false, REJECTING_POLICY);
+
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(f.kept.exists(), "the operator's own file still applies");
+    assert!(
+        !f.withheld.exists(),
+        "a manual apply must not install what the policy declines:\n{output}"
+    );
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "declining is silent — it records no row for the operator to answer"
+    );
+    assert!(
+        !output.contains("Decisions (not included in this plan)"),
+        "and it renders no block: the instruction is already in the config:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn plan_withholds_the_item_a_rejecting_policy_declines() {
+    let f = decision_fixture_with(false, REJECTING_POLICY);
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("1 action planned"),
+        "the preview counts what an apply would run — the declined item is not \
+         part of it:\n{output}"
+    );
+    assert!(
+        !output.contains("withheld.txt"),
+        "a declined item is absent from the plan, not listed in it:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_module_only_run_on_a_broken_config_keeps_every_decision_row() {
+    // `--module x` falls back to `minimal_config()` when the config will not
+    // parse, and that config subscribes to nothing. Read as an authoritative
+    // subscription list it would sweep the whole decision table — turning
+    // "awaiting your answer" into "applies silently", with nothing to recover
+    // from and no row left to explain it.
+    let f = decision_fixture(false);
+    let state = f.with_pending_decision();
+    std::fs::write(
+        f.h.config_path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nspec: [this is not a config]\n",
+    )
+    .unwrap();
+
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        module: Some("nonexistent".into()),
+        ..apply_args(false)
+    };
+    let _ = super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &args);
+
+    assert_eq!(
+        state
+            .pending_decisions()
+            .unwrap()
+            .into_iter()
+            .map(|d| d.resource)
+            .collect::<Vec<_>>(),
+        vec![f.resource()],
+        "a config cfgd could not read is not evidence that a source was dropped"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_foreign_config_with_its_own_state_dir_still_sweeps_dead_decision_rows() {
+    // The sweep is skipped only when a foreign config is paired with the
+    // DEFAULT state dir, where the rows belong to whatever config normally
+    // owns that store. A `--state-dir` of its own makes any config
+    // authoritative over the store it names, so the cleanup must still run.
+    let f = decision_fixture(false);
+    let state = f.with_pending_decision();
+    state
+        .upsert_pending_decision(
+            "gone",
+            "packages.brew.stern",
+            "recommended",
+            "install",
+            "recommended stern (from gone)",
+        )
+        .unwrap();
+
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+
+    assert_eq!(
+        state
+            .pending_decisions()
+            .unwrap()
+            .into_iter()
+            .map(|d| d.source)
+            .collect::<Vec<_>>(),
+        vec!["acme".to_string()],
+        "the dropped source's row is discarded, the subscribed one's is kept"
+    );
+}
+
+/// The auto-apply policy block that leaves every tier at its default — which
+/// makes `newRecommended` `Notify`, the disposition an operator gets simply by
+/// turning `autoApply` on.
+const NOTIFYING_POLICY: &str = "  daemon:\n    reconcile:\n      autoApply: true\n";
+
+#[test]
+#[serial_test::serial]
+fn apply_asks_about_a_source_item_no_run_has_seen_yet_instead_of_installing_it() {
+    // The window this closes: a source delivers an item, and until the daemon's
+    // next tick nothing has recorded a decision about it. `Notify` is the
+    // DEFAULT tier disposition, so an apply reaching the item first would
+    // install it, the item would become a managed resource, it would stop
+    // looking new — and the daemon would never ask. Ask-before-install is the
+    // contract on every path, so this run withholds the item AND mints the row
+    // that makes it answerable.
+    let f = decision_fixture_with(false, NOTIFYING_POLICY);
+
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(f.kept.exists(), "the operator's own file still applies");
+    assert!(
+        !f.withheld.exists(),
+        "a Notify-tier item is not installed before it is asked about:\n{output}"
+    );
+    assert!(
+        output.contains("Pending Decisions"),
+        "and the item is named rather than silently missing:\n{output}"
+    );
+
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    let rows = state.pending_decisions().unwrap();
+    assert_eq!(
+        rows.iter().map(|d| d.resource.clone()).collect::<Vec<_>>(),
+        vec![f.resource()],
+        "the row is recorded, so `cfgd decide` can answer it without waiting \
+         for a daemon tick"
+    );
+    assert_eq!(rows[0].source, "acme");
+    assert_eq!(rows[0].tier, "recommended");
+}
+
+#[test]
+#[serial_test::serial]
+fn apply_installs_the_item_once_its_freshly_minted_decision_is_accepted() {
+    // The other half of the same window: the row an apply mints is a real one,
+    // so answering it releases the item on the next apply.
+    let f = decision_fixture_with(false, NOTIFYING_POLICY);
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        state.resolve_decision(&f.resource(), "accepted").unwrap(),
+        "the minted row is resolvable by resource path, exactly as `cfgd decide` resolves it"
+    );
+    drop(state);
+
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+    assert!(
+        f.withheld.exists(),
+        "an accepted item applies on the next run:\n{}",
+        cfgd_core::output::strip_ansi(&f.h.output())
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn an_apply_declined_at_the_prompt_records_nothing() {
+    // The mint is a store write like apply's others, so it sits BEHIND the
+    // confirm gate: answering "no" leaves the machine and the store exactly as
+    // they were — no rows minted, no source hash stamped — so declining the
+    // apply really does change nothing, and the daemon's next tick still sees
+    // a changed source and sends its one notification for the items.
+    let f = decision_fixture_with(false, NOTIFYING_POLICY);
+
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output::PromptAnswer::Confirm(false)],
+        cfgd_core::output::Verbosity::Normal,
+    );
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        yes: false,
+        ..apply_args(false)
+    };
+    super::apply::cmd_apply(&f.h.cli(), &printer, &args).unwrap();
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+
+    assert!(
+        !f.kept.exists() && !f.withheld.exists(),
+        "a declined apply executed nothing:\n{output}"
+    );
+    assert!(
+        output.contains("Pending Decisions"),
+        "the operator declined AFTER seeing the withheld item:\n{output}"
+    );
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "declining the run declines its writes — the rows belong to the apply \
+         the operator refused"
+    );
+    assert!(
+        state.source_config_hash("acme").unwrap().is_none(),
+        "no hash is stamped either, or the daemon's next tick would treat the \
+         source as already seen and never notify"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn plan_withholds_an_unrecorded_item_without_recording_it() {
+    // `cfgd plan` is a preview and writes nothing — it consumes the same
+    // classification an apply does, so the preview and the apply withhold one
+    // set, but the row is left for the apply to mint.
+    let f = decision_fixture_with(false, NOTIFYING_POLICY);
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("1 action planned"),
+        "the preview counts what an apply would run — the undecided item is \
+         not part of it:\n{output}"
+    );
+    assert!(
+        output.contains("Pending Decisions"),
+        "the withheld item is named, not silently absent:\n{output}"
+    );
+
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "a preview records nothing"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_foreign_config_on_the_default_store_sweeps_none_of_its_decision_rows() {
+    // The protective arm of the ownership gate: a `--config` naming someone
+    // else's picture of the machine — any config that is NOT the file at the
+    // default config location — with the state dir left at its default, must
+    // not delete rows that config knows nothing about.
+    let f = decision_fixture(false);
+    let default_state = super::open_state_store(None, cfgd_core::Scope::User).unwrap();
+    default_state
+        .upsert_pending_decision(
+            "gone",
+            "packages.brew.stern",
+            "recommended",
+            "install",
+            "recommended stern (from gone)",
+        )
+        .unwrap();
+
+    let cli = Cli {
+        state_dir: None,
+        ..f.h.cli()
+    };
+    super::apply::cmd_apply(&cli, f.h.printer(), &apply_args(false)).unwrap();
+
+    assert_eq!(
+        default_state
+            .pending_decisions()
+            .unwrap()
+            .into_iter()
+            .map(|d| d.source)
+            .collect::<Vec<_>>(),
+        vec!["gone".to_string()],
+        "the row belongs to whatever config owns the default store, not to this run"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn an_apply_naming_the_default_config_still_sweeps_dead_decision_rows() {
+    // Ownership is SEMANTIC: the file at the default config location is the
+    // machine's own config however it was named, and every installed service
+    // unit names it — systemd/launchd/the SCM binPath all bake
+    // `--config <default path>` into the invocation. A gate keyed on the
+    // spelling would turn the sweep off for every installed deployment.
+    let staging = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(staging.path());
+    let config_root = cfgd_core::default_config_dir();
+    std::fs::create_dir_all(config_root.join("profiles")).unwrap();
+    std::fs::write(
+        config_root.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: solo\n",
+    )
+    .unwrap();
+    std::fs::write(
+        config_root.join("profiles").join("solo.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: solo\nspec: {}\n",
+    )
+    .unwrap();
+
+    let default_state = super::open_state_store(None, cfgd_core::Scope::User).unwrap();
+    default_state
+        .upsert_pending_decision(
+            "gone",
+            "packages.brew.stern",
+            "recommended",
+            "install",
+            "recommended stern (from gone)",
+        )
+        .unwrap();
+
+    // `config_explicit: true` mirrors the service-unit invocation — the path
+    // was typed, but it IS the machine's own config, so the run owns the store.
+    let cli = Cli {
+        config_explicit: true,
+        ..test_cli(&config_root)
+    };
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Quiet);
+    super::apply::cmd_apply(&cli, &printer, &apply_args(false)).unwrap();
+
+    assert!(
+        default_state.pending_decisions().unwrap().is_empty(),
+        "the machine's own config owns the default store no matter how it was named"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn status_lists_only_the_decisions_their_source_can_still_answer() {
+    let f = decision_fixture(false);
+    let state = f.with_pending_decision();
+    state
+        .upsert_pending_decision(
+            "gone",
+            "packages.brew.stern",
+            "recommended",
+            "install",
+            "recommended stern (from gone)",
+        )
+        .unwrap();
+
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("withheld.txt"),
+        "the subscribed source's decision is still awaiting an answer:\n{output}"
+    );
+    assert!(
+        !output.contains("packages.brew.stern"),
+        "a row whose source is gone withholds nothing, so reporting it as work \
+         awaiting review is reporting work no answer can release:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn decide_lists_only_the_decisions_their_source_can_still_answer() {
+    let f = decision_fixture(false);
+    let state = f.with_pending_decision();
+    state
+        .upsert_pending_decision(
+            "gone",
+            "packages.brew.stern",
+            "recommended",
+            "install",
+            "recommended stern (from gone)",
+        )
+        .unwrap();
+
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        f.h.printer(),
+        super::DecideAction::Accept,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("withheld.txt"),
+        "the answerable decision is listed:\n{output}"
+    );
+    assert!(
+        !output.contains("packages.brew.stern"),
+        "`cfgd decide` acts against a source — offering a row whose source is \
+         gone offers an action that changes nothing:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn decide_answers_an_item_no_run_has_recorded_yet() {
+    // `cfgd plan` names an unrecorded item with the instruction to run
+    // `cfgd decide` — so decide must be able to answer it. It mints the row
+    // through the same machinery apply mints with, then resolves it in one
+    // step; the instruction the plan prints is honoured by the command it
+    // names.
+    let f = decision_fixture_with(false, NOTIFYING_POLICY);
+    // A read-only plan classifies the item (and populates the source cache)
+    // without recording anything.
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "the premise: nothing has recorded the item the plan named"
+    );
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        &printer,
+        super::DecideAction::Reject,
+        Some(&f.resource()),
+        None,
+        false,
+    )
+    .unwrap();
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    assert!(
+        output.contains("REJECTED"),
+        "decide answers the unrecorded item instead of denying it exists:\n{output}"
+    );
+
+    // The answer is a real resolved row, and it sticks: the item stays off the
+    // machine on the next apply.
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "the minted row was resolved in the same step"
+    );
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+    assert!(f.kept.exists(), "the operator's own file still applies");
+    assert!(
+        !f.withheld.exists(),
+        "a rejection recorded by decide excludes the item exactly as one \
+         recorded by the daemon would"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn decide_lists_the_unrecorded_item_without_recording_it() {
+    // The bare listing is a read, like `cfgd plan`: it names the classified
+    // item alongside the recorded rows so the surfaces agree, but mints
+    // nothing until the operator actually answers.
+    let f = decision_fixture_with(false, NOTIFYING_POLICY);
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        &printer,
+        super::DecideAction::Accept,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+
+    assert!(
+        output.contains("withheld.txt"),
+        "the item the plan withheld is offered for an answer:\n{output}"
+    );
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "a listing records nothing"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn status_lists_the_unrecorded_item_the_plan_withholds() {
+    // `cfgd status` reads the same classification the plan renders, so an item
+    // the plan names under "Pending Decisions" is corroborated here rather
+    // than denied.
+    let f = decision_fixture_with(false, NOTIFYING_POLICY);
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::status::cmd_status(&f.h.cli(), &printer, None, false).unwrap();
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+
+    assert!(
+        output.contains("withheld.txt"),
+        "an item awaiting its first recorded decision is still work awaiting \
+         the operator, and status is where they look for it:\n{output}"
+    );
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "status is a read path and records nothing"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn decide_answers_one_item_without_consuming_the_other_items_notification() {
+    // `cfgd decide reject <resource>` answers ONE item. Recording the whole
+    // classification alongside it would mint rows the operator never asked for
+    // and stamp the source hash — after which the daemon's next tick sees an
+    // "unchanged" source and never sends the notification still owed for the
+    // sibling item.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        sibling: true,
+        ..Default::default()
+    });
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        &printer,
+        super::DecideAction::Reject,
+        Some(&f.resource()),
+        None,
+        false,
+    )
+    .unwrap();
+
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        state.has_decision("acme", &f.resource()).unwrap(),
+        "the answered item's row was minted and resolved"
+    );
+    assert!(
+        !state.has_decision("acme", &f.sibling_resource()).unwrap(),
+        "the sibling was never answered, so no row speaks for it"
+    );
+    assert!(
+        state.source_config_hash("acme").unwrap().is_none(),
+        "no hash is stamped — the source's delivered set was not reviewed, one \
+         item of it was answered — so the daemon's next tick still notifies"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn an_apply_with_nothing_else_to_do_still_records_the_withheld_item() {
+    // A converged machine is the common case once a fleet settles, and it is
+    // exactly where `docs/sources.md`'s "apply records once you let the run
+    // proceed" must still be true: the run named the withheld item in its
+    // header and ran to completion, so the item is recorded even though the
+    // plan held no other action.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        local_file: false,
+        ..Default::default()
+    });
+
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("Pending Decisions"),
+        "the item is named even when nothing else is planned:\n{output}"
+    );
+    assert!(!f.withheld.exists(), "the item itself is still withheld");
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert_eq!(
+        state
+            .pending_decisions()
+            .unwrap()
+            .into_iter()
+            .map(|d| d.resource)
+            .collect::<Vec<_>>(),
+        vec![f.resource()],
+        "a nothing-else-to-do apply still mints the row `cfgd decide` answers:\n{output}"
+    );
+    assert!(
+        state.source_config_hash("acme").unwrap().is_some(),
+        "and stamps the hash, exactly as an apply with actions does"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_foreign_config_plan_names_the_truth_instead_of_a_decide_that_will_refuse() {
+    // On a config that is not the machine's own (and with no `--state-dir`),
+    // `cfgd decide` cannot record an unrecorded item — so the withheld block
+    // must not advise a command it knows will answer "No pending decision
+    // found". It says what is true instead.
+    let f = decision_fixture_with(false, NOTIFYING_POLICY);
+    let cli = Cli {
+        state_dir: None,
+        ..f.h.cli()
+    };
+
+    super::plan::cmd_plan(&cli, f.h.printer(), &plan_args()).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("Pending Decisions"),
+        "the item is still withheld and named:\n{output}"
+    );
+    assert!(
+        !output.contains("run `cfgd decide accept/reject`"),
+        "no instruction naming a command that will refuse:\n{output}"
+    );
+    assert!(
+        output.contains("machine's own config"),
+        "the suffix says where the item CAN be decided:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_recorded_row_keeps_its_decide_instruction_on_every_config() {
+    // Resolving a recorded row is not a mint, so `cfgd decide` answers it on
+    // any config — the instruction holds even where an unrecorded item's would
+    // not.
+    let f = decision_fixture(false);
+    let default_state = super::open_state_store(None, cfgd_core::Scope::User).unwrap();
+    default_state
+        .upsert_pending_decision(
+            "acme",
+            &f.resource(),
+            "recommended",
+            "install",
+            "recommended withheld.txt (from acme)",
+        )
+        .unwrap();
+
+    let cli = Cli {
+        state_dir: None,
+        ..f.h.cli()
+    };
+    super::plan::cmd_plan(&cli, f.h.printer(), &plan_args()).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("run `cfgd decide accept/reject`"),
+        "a recorded row is answerable everywhere:\n{output}"
+    );
+}
+
+/// A source-delivered custom manager whose name carries a `.` — a name the
+/// decision path grammar cannot round-trip, so no row can ever be minted for
+/// its packages.
+const DOTTED_MANAGER_TEAM_SPEC: &str = "  packages:\n    custom:\n      - name: pip3.11\n        check: pip3.11 --version\n        listInstalled: pip3.11 list\n        install: pip3.11 install\n        uninstall: pip3.11 uninstall\n        packages:\n          - requests\n";
+
+#[test]
+#[serial_test::serial]
+fn a_source_batch_under_a_dotted_custom_manager_is_withheld_fail_closed() {
+    // No decision can carry `packages.pip3.11.requests` — the grammar splits
+    // on the first dot — so the batch must be withheld, not installed
+    // undecided: ask-before-install holds on every path, dotted manager or
+    // not. The payload's `warnings` explains the absence to a `-o json`
+    // consumer.
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: DOTTED_MANAGER_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let json = f.h.json_output();
+
+    let warnings = json["warnings"]
+        .as_array()
+        .expect("the payload names the undecidable batch in warnings");
+    assert!(
+        warnings.iter().any(|w| w
+            .as_str()
+            .is_some_and(|w| w.contains("pip3.11") && w.contains("'.'"))),
+        "the warning names the manager and the grammar limitation: {json}"
+    );
+    let action_text = json["phases"].to_string();
+    assert!(
+        !action_text.contains("requests"),
+        "the undecidable source package must not be planned: {action_text}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn the_dotted_manager_withholding_warns_on_the_plan_the_operator_reads() {
+    // The human half of the same contract: the warning lands in the run
+    // header the preview renders, not in a tracing stream nobody has enabled.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: DOTTED_MANAGER_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+    assert!(
+        output.contains("pip3.11") && output.contains("'.'"),
+        "the operator-visible plan names the withheld manager and why:\n{output}"
+    );
+    // The package's one appearance is the warning naming it as withheld — the
+    // phase tree below must not plan it.
+    let tree = output
+        .split_once("Phase:")
+        .map(|(_, tree)| tree)
+        .unwrap_or_default();
+    assert!(
+        !tree.contains("requests"),
+        "the undecidable source package must not be planned:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_local_declaration_under_a_dotted_manager_still_applies() {
+    // The fail-closed withhold is for the SOURCE's items only: the operator's
+    // own declaration under the same dotted manager is theirs, and local
+    // declarations are never suppressed.
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        extra_profile_spec: DOTTED_MANAGER_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let json = f.h.json_output();
+    assert!(
+        json.get("warnings").is_none(),
+        "a locally declared dotted manager raises no undecidable warning: {json}"
+    );
+}
+
+/// A source-delivered custom manager whose one package the machine ALREADY
+/// runs: `listInstalled` reports it (cross-OS — `echo` exists in `sh` and
+/// `cmd.exe` alike), so the planner's own enumeration sees it installed.
+const INSTALLED_CUSTOM_TEAM_SPEC: &str = "  packages:\n    custom:\n      - name: fakemgr\n        check: echo ok\n        listInstalled: echo kubectx\n        install: echo install\n        uninstall: echo uninstall\n        packages:\n          - kubectx\n";
+
+/// The same manager delivering a version-PINNED entry while the enumeration
+/// lists only the bare name — installed, but at an unverifiable version.
+const PINNED_CUSTOM_TEAM_SPEC: &str = "  packages:\n    custom:\n      - name: fakemgr\n        check: echo ok\n        listInstalled: echo tool\n        install: echo install\n        uninstall: echo uninstall\n        packages:\n          - \"tool@^14\"\n";
+
+/// The annotation the pinned-entry fixture's row must carry: something IS
+/// installed, but its version cannot answer the source's spec.
+const PINNED_CONFLICT_ANNOTATION: &str = "installed (version unknown), source wants ^14";
+
+#[test]
+#[serial_test::serial]
+fn plan_previews_an_installed_source_package_as_included_and_mints_nothing() {
+    // The satisfies-gate from the preview side: the machine already runs the
+    // source's package, so the plan neither withholds it as pending nor — as
+    // a strictly read-only surface — mints any row for it. The undelivered
+    // FILE the same source ships proves the contrast: not installed on any
+    // reading of the machine, so it stays pending.
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: INSTALLED_CUSTOM_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let json = f.h.json_output();
+
+    let pending = json["pendingDecisions"]
+        .as_array()
+        .expect("the source's file item still pends");
+    assert!(
+        pending.iter().any(|d| d["resource"]
+            .as_str()
+            .is_some_and(|r| r.contains("withheld.txt"))),
+        "the not-installed file is still asked about: {json}"
+    );
+    assert!(
+        !pending.iter().any(|d| d["resource"]
+            .as_str()
+            .is_some_and(|r| r.contains("kubectx"))),
+        "the installed package is included, not withheld: {json}"
+    );
+    let phases = json["phases"].to_string();
+    assert!(
+        !phases.contains("kubectx"),
+        "already installed — the plan holds no work for it: {phases}"
+    );
+
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        !state
+            .has_decision("acme", "packages.fakemgr.kubectx")
+            .unwrap(),
+        "plan is read-only: the auto-accept is previewed, never recorded"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn apply_records_an_installed_source_package_as_auto_accepted() {
+    // The writing path: `cfgd apply --yes` records the auto-acceptance as a
+    // resolved row (provenance shape pinned at the store level), so the item
+    // neither pends nor withholds afterwards.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: INSTALLED_CUSTOM_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
+
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        state
+            .has_decision("acme", "packages.fakemgr.kubectx")
+            .unwrap(),
+        "the acceptance is recorded, not merely skipped"
+    );
+    assert!(
+        !state
+            .pending_decisions()
+            .unwrap()
+            .iter()
+            .any(|d| d.resource.contains("kubectx")),
+        "the row is resolved, not pending"
+    );
+    assert!(
+        !state
+            .withheld_decisions()
+            .unwrap()
+            .iter()
+            .any(|d| d.resource.contains("kubectx")),
+        "an auto-accepted resolution releases the resource"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_declined_apply_records_no_auto_accepted_row() {
+    // Refusing the apply refuses ALL of its store writes — the auto-accepted
+    // resolution included. An operator answering "no" to the prompt must not
+    // find the classification recorded consent behind their back; the next
+    // writing run re-classifies and records it then.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: INSTALLED_CUSTOM_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output::PromptAnswer::Confirm(false)],
+        cfgd_core::output::Verbosity::Normal,
+    );
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        yes: false,
+        ..apply_args(false)
+    };
+    super::apply::cmd_apply(&f.h.cli(), &printer, &args).unwrap();
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    assert!(
+        output.contains("Aborted"),
+        "the run must actually reach and decline the confirm gate — a run \
+         with nothing to confirm proves nothing:\n{output}"
+    );
+
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        !state
+            .has_decision("acme", "packages.fakemgr.kubectx")
+            .unwrap(),
+        "a declined run records nothing — not even the auto-acceptance"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_version_conflict_annotates_the_pending_row_in_the_plan_payload() {
+    // A version-pinned entry whose installed version cannot be verified stays
+    // pending — fail-closed — and the row itself says why, so the `-o json`
+    // consumer reads the conflict as data on the row, not a free-floating line.
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: PINNED_CUSTOM_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let json = f.h.json_output();
+    let row = json["pendingDecisions"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter()
+                .find(|d| d["resource"] == serde_json::json!("packages.fakemgr.tool@^14"))
+        })
+        .unwrap_or_else(|| panic!("the mismatched item stays pending: {json}"));
+    assert_eq!(
+        row["id"],
+        serde_json::json!(0),
+        "classified, not yet recorded"
+    );
+    assert!(
+        row["summary"]
+            .as_str()
+            .is_some_and(|s| s.contains(PINNED_CONFLICT_ANNOTATION)),
+        "the conflict rides the row summary: {row}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn the_version_conflict_annotation_reaches_the_status_dashboard() {
+    // After a writing path records the annotated row, the dashboard the
+    // operator reads renders the conflict beside the item.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: PINNED_CUSTOM_TEAM_SPEC,
+        ..Default::default()
+    });
+    let (apply_printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::apply::cmd_apply(&f.h.cli(), &apply_printer, &apply_args(false)).unwrap();
+
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+    assert!(
+        output.contains(PINNED_CONFLICT_ANNOTATION),
+        "status names the version conflict on the pending row:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn the_version_conflict_annotation_reaches_the_decide_listing() {
+    // Same row, the answering surface, structured: `cfgd decide -o json`
+    // carries the annotation in the row's summary.
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: PINNED_CUSTOM_TEAM_SPEC,
+        ..Default::default()
+    });
+    let (apply_printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::apply::cmd_apply(&f.h.cli(), &apply_printer, &apply_args(false)).unwrap();
+
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        f.h.printer(),
+        super::DecideAction::Accept,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    let json = f.h.json_output();
+    assert!(
+        json["decisions"].as_array().is_some_and(|rows| {
+            rows.iter().any(|d| {
+                d["resource"] == serde_json::json!("packages.fakemgr.tool@^14")
+                    && d["summary"]
+                        .as_str()
+                        .is_some_and(|s| s.contains(PINNED_CONFLICT_ANNOTATION))
+            })
+        }),
+        "the decide listing carries the conflict as row data: {json}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn status_names_the_undecidable_source_batch_in_warnings() {
+    // The dashboard half of the fail-closed dotted-manager withhold: a user
+    // asking "why isn't requests installed?" must see the answer in `cfgd
+    // status`, structurally — not only on a plan/apply run header.
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: DOTTED_MANAGER_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    // Warm the source cache: status/decide compose cache-only (they stay
+    // offline), so the source's layers exist only after a run that fetches.
+    let (warm_printer, _warm) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::plan::cmd_plan(&f.h.cli(), &warm_printer, &plan_args()).unwrap();
+
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false).unwrap();
+    let json = f.h.json_output();
+    let warnings = json["warnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the status payload names the undecidable batch: {json}"));
+    assert!(
+        warnings.iter().any(|w| w
+            .as_str()
+            .is_some_and(|w| w.contains("pip3.11") && w.contains("'.'"))),
+        "the warning names the manager and the grammar limitation: {json}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn status_renders_the_undecidable_batch_warning_for_the_operator() {
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: DOTTED_MANAGER_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    // Warm the source cache: status/decide compose cache-only (they stay
+    // offline), so the source's layers exist only after a run that fetches.
+    let (warm_printer, _warm) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::plan::cmd_plan(&f.h.cli(), &warm_printer, &plan_args()).unwrap();
+
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+    assert!(
+        output.contains("pip3.11") && output.contains("'.'"),
+        "the human dashboard names the withheld manager and why:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn decide_listing_names_the_undecidable_source_batch() {
+    // Same contract on the answering surface: the bare listing must not read
+    // clean-empty while a batch nothing can answer for is withheld.
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: DOTTED_MANAGER_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    // Warm the source cache: status/decide compose cache-only (they stay
+    // offline), so the source's layers exist only after a run that fetches.
+    let (warm_printer, _warm) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::plan::cmd_plan(&f.h.cli(), &warm_printer, &plan_args()).unwrap();
+
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        f.h.printer(),
+        super::DecideAction::Accept,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    let json = f.h.json_output();
+    let warnings = json["warnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the decide payload names the undecidable batch: {json}"));
+    assert!(
+        warnings.iter().any(|w| w
+            .as_str()
+            .is_some_and(|w| w.contains("pip3.11") && w.contains("'.'"))),
+        "the warning names the manager and the grammar limitation: {json}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn decide_listing_renders_the_undecidable_batch_warning() {
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_team_spec: DOTTED_MANAGER_TEAM_SPEC,
+        ..Default::default()
+    });
+
+    // Warm the source cache: status/decide compose cache-only (they stay
+    // offline), so the source's layers exist only after a run that fetches.
+    let (warm_printer, _warm) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::plan::cmd_plan(&f.h.cli(), &warm_printer, &plan_args()).unwrap();
+
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        f.h.printer(),
+        super::DecideAction::Accept,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+    assert!(
+        output.contains("pip3.11") && output.contains("'.'"),
+        "the human listing names the withheld manager and why:\n{output}"
+    );
+}
+
+/// A cargo manifest reference whose file the tests below write as invalid TOML,
+/// so the shared source classification fails while the config itself parses.
+const BROKEN_MANIFEST_SPEC: &str =
+    "  packages:\n    cargo:\n      file: manifests/Cargo.toml\n      packages: []\n";
+
+fn write_broken_manifest(h: &CliTestHarness) {
+    let dir = h.config_path().join("manifests");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Cargo.toml"), "not [ toml").unwrap();
+}
+
+#[test]
+#[serial_test::serial]
+fn status_still_renders_when_the_source_classification_is_unreadable() {
+    // `cfgd status` is a dashboard: a malformed package manifest costs it the
+    // unrecorded-item rows (with a warning saying so), never the whole surface.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_profile_spec: BROKEN_MANIFEST_SPEC,
+        ..Default::default()
+    });
+    write_broken_manifest(&f.h);
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::status::cmd_status(&f.h.cli(), &printer, None, false)
+        .expect("a read-only dashboard renders through a classification failure");
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+
+    assert!(
+        output.contains("Status"),
+        "the dashboard itself still renders:\n{output}"
+    );
+    assert!(
+        output.contains("not classified") && output.contains("Cargo.toml"),
+        "the degradation is noted, naming the unreadable input:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_degraded_status_json_payload_says_so_structurally() {
+    // The human warning above is auto-quieted under `-o json`, so the payload
+    // itself must distinguish "nothing pending" from "could not classify" —
+    // without these fields a broken classification reads as a clean machine.
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        extra_profile_spec: BROKEN_MANIFEST_SPEC,
+        ..Default::default()
+    });
+    write_broken_manifest(&f.h);
+
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false)
+        .expect("a read-only dashboard renders through a classification failure");
+    let json = f.h.json_output();
+    assert_eq!(
+        json["classificationDegraded"],
+        serde_json::json!(true),
+        "the degradation is structural: {json}"
+    );
+    assert_eq!(
+        json["classificationDegradedCode"],
+        serde_json::json!("manifestUnreadable"),
+        "the machine-stable code names the cause class: {json}"
+    );
+    assert!(
+        json["classificationDegradedReason"]
+            .as_str()
+            .is_some_and(|r| r.contains("Cargo.toml")),
+        "the reason names the unreadable input: {json}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_clean_status_json_payload_marks_classification_undegraded() {
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        ..Default::default()
+    });
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false)
+        .expect("a clean classification renders");
+    let json = f.h.json_output();
+    assert_eq!(
+        json["classificationDegraded"],
+        serde_json::json!(false),
+        "a working classification is marked clean: {json}"
+    );
+    assert!(
+        json.get("classificationDegradedCode").is_none()
+            && json.get("classificationDegradedReason").is_none(),
+        "a clean payload carries no code or reason field: {json}"
+    );
+    assert!(
+        json.get("warnings").is_none(),
+        "no undecidable batches, no warnings field: {json}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_degraded_decide_json_listing_says_so_structurally() {
+    // Same contract as status: the recorded rows still list, and the payload
+    // says the unrecorded ones could not be read instead of impersonating a
+    // complete listing.
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        extra_profile_spec: BROKEN_MANIFEST_SPEC,
+        ..Default::default()
+    });
+    write_broken_manifest(&f.h);
+    f.with_pending_decision();
+
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        f.h.printer(),
+        super::DecideAction::Accept,
+        None,
+        None,
+        false,
+    )
+    .expect("a degraded listing renders, it does not refuse");
+    let json = f.h.json_output();
+    assert_eq!(
+        json["classificationDegraded"],
+        serde_json::json!(true),
+        "the degradation is structural: {json}"
+    );
+    assert_eq!(
+        json["classificationDegradedCode"],
+        serde_json::json!("manifestUnreadable"),
+        "the machine-stable code names the cause class: {json}"
+    );
+    assert!(
+        json["classificationDegradedReason"]
+            .as_str()
+            .is_some_and(|r| r.contains("Cargo.toml")),
+        "the reason names the unreadable input: {json}"
+    );
+    assert!(
+        json["decisions"]
+            .as_array()
+            .is_some_and(|d| d.iter().any(|row| row["resource"]
+                .as_str()
+                .is_some_and(|r| r.contains("withheld.txt")))),
+        "the recorded row still lists: {json}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_clean_decide_json_listing_marks_classification_undegraded() {
+    let f = decision_fixture_shaped(DecisionShape {
+        output_json: true,
+        extra_spec: NOTIFYING_POLICY,
+        ..Default::default()
+    });
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        f.h.printer(),
+        super::DecideAction::Accept,
+        None,
+        None,
+        false,
+    )
+    .expect("a clean listing renders");
+    let json = f.h.json_output();
+    assert_eq!(
+        json["classificationDegraded"],
+        serde_json::json!(false),
+        "a working classification is marked clean: {json}"
+    );
+    assert!(
+        json.get("classificationDegradedCode").is_none()
+            && json.get("classificationDegradedReason").is_none(),
+        "a clean payload carries no code or reason field: {json}"
+    );
+    assert!(
+        json.get("warnings").is_none(),
+        "no undecidable batches, no warnings field: {json}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_sourceless_status_skips_source_classification_entirely() {
+    // With no sources there is nothing to classify, so none of the
+    // classification's work runs — the broken manifest it would have read is
+    // never consulted.
+    let staging = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(staging.path());
+    let h = CliTestHarness::builder()
+        .config(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: solo\n",
+        )
+        .profile(
+            "solo",
+            &format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: solo\nspec:\n  inherits: []\n  modules: []\n{BROKEN_MANIFEST_SPEC}"
+            ),
+        )
+        .build();
+    write_broken_manifest(&h);
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::status::cmd_status(&h.cli(), &printer, None, false)
+        .expect("no sources, no classification, no failure");
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+
+    assert!(
+        !output.contains("not classified"),
+        "nothing was skipped, because nothing needed classifying:\n{output}"
+    );
+}
+
+#[test]
+fn a_sourceless_decide_answers_the_store_without_classifying() {
+    // With no sources an unrecorded item cannot exist, so the classification —
+    // and the broken manifest it would have read — never runs, and decide
+    // answers from the store alone instead of refusing.
+    let staging = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(staging.path());
+    let h = CliTestHarness::builder()
+        .config(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: solo\n",
+        )
+        .profile(
+            "solo",
+            &format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: solo\nspec:\n  inherits: []\n  modules: []\n{BROKEN_MANIFEST_SPEC}"
+            ),
+        )
+        .build();
+    write_broken_manifest(&h);
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::decide::cmd_decide(
+        &h.cli(),
+        &printer,
+        super::DecideAction::Accept,
+        Some("no.such.resource"),
+        None,
+        false,
+    )
+    .expect("no sources, no classification, no refusal");
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+
+    assert!(
+        output.contains("No pending decision found"),
+        "the store's truthful answer, not a refusal:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_degraded_decide_refuses_rather_than_denying_the_decision_exists() {
+    // With the classification unreadable, "No pending decision found" would be
+    // indistinguishable from an empty store — on the one command whose job is
+    // to answer. Decide refuses instead, naming the input it could not read.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_profile_spec: BROKEN_MANIFEST_SPEC,
+        ..Default::default()
+    });
+    write_broken_manifest(&f.h);
+
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let err = super::decide::cmd_decide(
+        &f.h.cli(),
+        &printer,
+        super::DecideAction::Accept,
+        Some(&f.resource()),
+        None,
+        false,
+    )
+    .expect_err("an unanswerable resolve refuses instead of reporting not-found");
+    let msg = format!("{err:#}");
+
+    assert!(
+        msg.contains("Cargo.toml"),
+        "the refusal names the unreadable input: {msg}"
+    );
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "nothing was minted from the broken picture"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_degraded_decide_listing_still_shows_the_recorded_rows() {
+    // A listing is a dashboard, not an answer: with the classification
+    // unreadable it degrades to the rows the store holds, warning that the
+    // unrecorded ones could not be read, instead of refusing like a resolve.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_profile_spec: BROKEN_MANIFEST_SPEC,
+        ..Default::default()
+    });
+    write_broken_manifest(&f.h);
+    f.with_pending_decision();
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        &printer,
+        super::DecideAction::Accept,
+        None,
+        None,
+        false,
+    )
+    .expect("a degraded listing renders, it does not refuse");
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+
+    assert!(
+        output.contains(&f.resource()),
+        "the recorded row still lists:\n{output}"
+    );
+    assert!(
+        output.contains("Unrecorded source items not listed") && output.contains("Cargo.toml"),
+        "the degradation is named, with the input it could not read:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn decide_still_answers_a_recorded_row_when_the_picture_is_unreadable() {
+    // The refusal is only for the case decide cannot see: a row that already
+    // exists is answerable however broken the classification is.
+    let f = decision_fixture_shaped(DecisionShape {
+        extra_spec: NOTIFYING_POLICY,
+        extra_profile_spec: BROKEN_MANIFEST_SPEC,
+        ..Default::default()
+    });
+    write_broken_manifest(&f.h);
+    f.with_pending_decision();
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        &printer,
+        super::DecideAction::Accept,
+        Some(&f.resource()),
+        None,
+        false,
+    )
+    .unwrap();
+    printer.flush();
+    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+
+    assert!(
+        output.contains("ACCEPTED"),
+        "an existing row resolves regardless of the classification:\n{output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn status_payload_marks_the_unrecorded_decision_with_id_zero() {
+    // The same discriminator `plan` puts on the wire: `cfgd status -o json`
+    // reads the same classification, so its `pendingDecisions` carries the
+    // synthetic row with `id` 0 and the store stays untouched.
+    let f = decision_fixture_with(true, NOTIFYING_POLICY);
+    let (plan_printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::plan::cmd_plan(&f.h.cli(), &plan_printer, &plan_args()).unwrap();
+
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false).unwrap();
+    let json = f.h.json_output();
+
+    let pending = json["pendingDecisions"]
+        .as_array()
+        .expect("the unrecorded item reaches the status payload");
+    assert_eq!(pending.len(), 1, "one unrecorded item: {json}");
+    assert_eq!(
+        pending[0]["id"], 0,
+        "id 0 marks a row nothing has recorded yet: {json}"
+    );
+    assert_eq!(
+        pending[0]["resource"],
+        serde_json::Value::String(f.resource()),
+        "the row names the withheld resource: {json}"
+    );
+
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "status is a read path and records nothing"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn decide_listing_payload_marks_the_unrecorded_item_with_id_zero() {
+    // And the third surface: the bare `cfgd decide -o json` listing carries
+    // the same `id` 0 discriminator for an item it offers but has not minted.
+    let f = decision_fixture_with(true, NOTIFYING_POLICY);
+    let (plan_printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::plan::cmd_plan(&f.h.cli(), &plan_printer, &plan_args()).unwrap();
+
+    super::decide::cmd_decide(
+        &f.h.cli(),
+        f.h.printer(),
+        super::DecideAction::Accept,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    let json = f.h.json_output();
+
+    let decisions = json["decisions"]
+        .as_array()
+        .expect("the unrecorded item reaches the listing payload");
+    assert_eq!(decisions.len(), 1, "one unrecorded item: {json}");
+    assert_eq!(
+        decisions[0]["id"], 0,
+        "id 0 marks a row nothing has recorded yet: {json}"
+    );
+
+    let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
+    assert!(
+        state.pending_decisions().unwrap().is_empty(),
+        "a listing records nothing"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn dry_run_apply_previews_the_pruned_plan() {
+    let f = decision_fixture(false);
+    f.with_pending_decision();
+
+    super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(true)).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("1 action planned"),
+        "a dry run previews the same pruned plan a real apply would run:\n{output}"
+    );
+    assert!(!f.withheld.exists(), "a dry run writes nothing either way");
 }

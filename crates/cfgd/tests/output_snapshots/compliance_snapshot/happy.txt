@@ -8,4 +8,4 @@ Compliant  3
 Warning    0
 Violation  0
 
-✓ All 3 check(s) compliant
+✓ All 3 checks compliant

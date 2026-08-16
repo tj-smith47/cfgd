@@ -1,3 +1,2 @@
 Shell environment changed
-  - run: source ~/.cfgd.env
-  - or open a new shell
+  ⚠ run `source ~/.cfgd.env` — or open a new shell

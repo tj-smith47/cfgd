@@ -269,11 +269,14 @@ change it did not make, so your rc files are left alone. Drop the manager from t
 directories age out of the file.
 
 Those directories are exported **first**, ahead of your own variables, so a `spec.env` value may
-reference a binary the manager just installed. The first apply on a bare machine converges inside
-that same run: the `Env` phase runs before `Modules`, so cfgd regenerates the file once the phases
-finish and the bootstrap is recorded. cfgd prints a reminder after any apply that wrote the file or
-injected a source line — your already-running shell does not pick either up until you
-`source ~/.cfgd.env` or open a new one.
+reference a binary the manager just installed. cfgd knows most managers' install locations before
+the bootstrap even runs, so the plan folds a to-be-provisioned manager's declared directories into
+the `Env` phase's write up front — the first apply on a bare machine is already correct. The one
+exception is a manager whose install location is only knowable once its bootstrap finishes (npm's
+global prefix depends on which Node install method wins); that manager still converges inside the
+same run — cfgd re-derives the file once every phase completes and the real directory is recorded.
+cfgd prints a reminder after any apply that wrote the file or injected a source line — your
+already-running shell does not pick either up until you `source ~/.cfgd.env` or open a new one.
 
 **Example:**
 ```yaml
@@ -716,6 +719,8 @@ Set `interactive: true` on a script entry that must prompt the user — for exam
 
 An interactive script requires a TTY. When stdin is **not** a terminal — CI, piped input, or any run by the `cfgd daemon` (the daemon never has a TTY) — the script is **skipped with a warning** instead of hanging on instant EOF, and reports `changed=false`. Interactive steps therefore run only during an attended `cfgd apply`, never under unattended reconcile.
 
+The child shares cfgd's own process group instead of getting a new detached one, so the terminal's foreground group still includes it: a Ctrl-C typed at the terminal reaches the script directly, and a raw-mode TUI or a `sudo` password prompt behaves normally. By default an interactive script has **no timeout at all** — force-killing a step that's mid-raw-mode or waiting on a password would be worse than an unbounded wait. Set `timeout:` on the entry when a step does need a ceiling; once it elapses cfgd terminates the script (SIGTERM, then SIGKILL after a grace period).
+
 ```yaml
 scripts:
   postApply:
@@ -724,6 +729,10 @@ scripts:
         read
       interactive: true
 ```
+
+See [Lifecycle Scripts](../lifecycle-scripts.md#interactive-scripts) for the
+full contract, including the process-group-sharing and opt-in-timeout
+rationale.
 
 Each entry can be a string or an object:
 
@@ -777,16 +786,16 @@ A schedule-less entry runs during `cfgd apply`; a scheduled one runs on the
 **Example:**
 ```yaml
 backups:
-  - name: openlist-db
-    source: /var/lib/openlist/data.db     # file or directory
-    destination: ~/backups/openlist       # optional; default <state_dir>/backups/<name>/
+  - name: notes-db
+    source: ~/.local/share/notes/notes.db # file or directory
+    destination: ~/backups/notes          # optional; default <state_dir>/backups/<name>/
     namePattern: "{filename}.{timestamp}" # optional; vars {name} {filename} {timestamp}
     schedule: "0 3 * * *"                 # optional; cron (local time) OR interval ("6h"); set → daemon timer, omitted → every apply
     retention: 7                          # optional; default 10; newest N kept per backup
     preBackup:                            # optional; existing ScriptEntry shape
-      - run: systemctl stop openlist
+      - run: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
     postBackup:
-      - run: systemctl start openlist
+      - run: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
 ```
 
 CRD parity for `spec.backups[]` is not yet implemented — this field is available in the YAML/TOML

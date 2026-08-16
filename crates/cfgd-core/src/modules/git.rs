@@ -22,17 +22,31 @@ pub struct GitSource {
     pub subdir: Option<String>,
 }
 
-/// Check whether a file source string is a git URL (not a local path).
+/// Check whether a source string is a git URL (not a local path).
+///
+/// The single git-URL predicate for the whole workspace: module file sources,
+/// registry-ref disambiguation, and the CLI's `--from` classification all judge
+/// a value here, so a URL accepted in one place is accepted in every place.
+///
+/// Recognises the four remote transports git speaks — `https://`, `http://`,
+/// `ssh://`, `git://` — plus the SCP-style `git@host:owner/repo` form.
 ///
 /// `file://` URLs are rejected by default to keep remote-module sources to
 /// proper network protocols. Tests can opt into local-file sources by setting
 /// `CFGD_ALLOW_LOCAL_SOURCES=1` — same gate `sources/mod.rs` uses for the
 /// composed-sources path.
+///
+/// A local directory that happens to be a git checkout is NOT a git source: a
+/// module declaring `source: files/nvim` must stay a path even when the config
+/// repo around it is a work tree. The one caller that also accepts a local repo
+/// (`cfgd init --from`) layers that probe on top of this predicate rather than
+/// widening it for everyone.
 pub fn is_git_source(source: &str) -> bool {
     if source.starts_with("https://")
         || source.starts_with("http://")
         || source.starts_with("git@")
         || source.starts_with("ssh://")
+        || source.starts_with("git://")
     {
         return true;
     }
@@ -490,6 +504,26 @@ mod tests {
     #[test]
     fn is_git_source_accepts_git_at() {
         assert!(is_git_source("git@github.com:user/repo.git"));
+    }
+
+    #[test]
+    fn is_git_source_accepts_git_protocol() {
+        assert!(is_git_source("git://github.com/user/repo.git"));
+    }
+
+    #[test]
+    fn is_git_source_rejects_local_git_checkout_directory() {
+        // A module file source naming a directory that happens to be a work
+        // tree stays a path; only `cfgd init --from` layers that probe on top.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join(".git")).expect("create .git");
+        assert!(!is_git_source(&dir.path().display().to_string()));
+    }
+
+    #[test]
+    fn is_git_source_rejects_bare_repo_suffix() {
+        assert!(!is_git_source("/srv/git/repo.git"));
+        assert!(!is_git_source("repo.git"));
     }
 
     #[test]

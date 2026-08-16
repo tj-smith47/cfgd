@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cfgd_core::errors::{CfgdError, Result};
-use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::output::Role;
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 use super::super::{diff_yaml_mapping, yaml_value_with_numeric_bools};
 
@@ -125,7 +125,7 @@ impl SystemConfigurator for SysctlConfigurator {
         ))
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let mapping = match desired.as_mapping() {
             Some(m) => m,
             None => return Ok(()),
@@ -140,14 +140,14 @@ impl SystemConfigurator for SysctlConfigurator {
             };
             let desired_val = yaml_value_with_numeric_bools(value);
 
-            printer.status_simple(Role::Info, format!("sysctl -w {}={}", key_str, desired_val));
+            cx.report(Role::Info, format!("sysctl -w {}={}", key_str, desired_val));
 
             Self::write_sysctl(key_str, &desired_val)?;
             all_entries.insert(key_str, desired_val);
         }
 
         if let Err(e) = Self::persist_all_sysctls(&all_entries) {
-            printer.status_simple(
+            cx.report(
                 Role::Warn,
                 format!("Failed to persist sysctls: {} (runtime values applied)", e),
             );

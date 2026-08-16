@@ -1,6 +1,23 @@
-use cfgd_core::output::{CommandOutput, Printer, Verbosity};
+use cfgd_core::output::CommandOutput;
+// Gated with their consumers: every fixture that builds a context drives a real
+// shell-out through a `/bin/sh`-backed `ToolShim`.
+#[cfg(unix)]
+use cfgd_core::output::Printer;
+#[cfg(unix)]
+use cfgd_core::providers::{NoteSink, PackageContext};
+#[cfg(unix)]
+use cfgd_core::test_helpers::NullPackageState;
 
 use super::*;
+
+/// The context `run_pkg_cmd_live` takes, over the printer and sink these
+/// fixtures already build. `caller_owns_status` stays false unless a case sets
+/// it: with nothing above emitting a line, the window is the action and must
+/// settle its own.
+#[cfg(unix)]
+fn cx_for<'a>(printer: &'a Printer, notes: &'a NoteSink) -> PackageContext<'a> {
+    PackageContext::with_notes(printer, &NullPackageState, notes)
+}
 
 fn test_cmd_output(stdout: &str, stderr: &str) -> CommandOutput {
     CommandOutput {
@@ -137,7 +154,7 @@ fn extract_caveats_brew_cask_works_same_as_brew() {
     let output = test_cmd_output("==> Caveats\nRestart to complete install.\n==> Done\n", "");
     let notes = extract_caveats("brew-cask", &output);
     assert_eq!(notes.len(), 1);
-    assert_eq!(notes[0].manager, "brew-cask");
+    assert_eq!(notes[0].tag.as_deref(), Some("brew-cask"));
     assert!(notes[0].message.contains("Restart to complete install"));
 }
 
@@ -165,7 +182,7 @@ fn extract_caveats_pnpm_warnings() {
     let output = test_cmd_output("", "npm warn deprecated some-pkg@1.0\n");
     let notes = extract_caveats("pnpm", &output);
     assert_eq!(notes.len(), 1);
-    assert_eq!(notes[0].manager, "pnpm");
+    assert_eq!(notes[0].tag.as_deref(), Some("pnpm"));
 }
 
 #[test]
@@ -234,31 +251,15 @@ fn strip_arch_suffix_empty_string() {
 }
 
 #[test]
-fn post_install_note_fields() {
-    let note = PostInstallNote {
-        manager: "brew".to_string(),
-        message: "test message".to_string(),
-    };
-    assert_eq!(note.manager, "brew");
+fn action_note_fields() {
+    let note = ActionNote::warn("brew", "test message");
+    assert_eq!(note.tag.as_deref(), Some("brew"));
     assert_eq!(note.message, "test message");
-}
-
-#[test]
-fn print_caveats_empty_is_noop() {
-    let printer = cfgd_core::test_helpers::test_printer();
-    // Should not panic
-    print_caveats(&printer, &[]);
-}
-
-#[test]
-fn print_caveats_non_empty() {
-    let printer = cfgd_core::test_helpers::test_printer();
-    let notes = vec![PostInstallNote {
-        manager: "brew".to_string(),
-        message: "Add to PATH".to_string(),
-    }];
-    // Should not panic
-    print_caveats(&printer, &notes);
+    assert_eq!(note.role, cfgd_core::output::Role::Warn);
+    assert_eq!(
+        ActionNote::info("go", "removed x").role,
+        cfgd_core::output::Role::Info
+    );
 }
 
 #[test]
@@ -309,27 +310,6 @@ fn extract_caveats_pip_in_stderr() {
 }
 
 #[test]
-fn print_caveats_multiple_notes() {
-    let printer = cfgd_core::test_helpers::test_printer();
-    let notes = vec![
-        PostInstallNote {
-            manager: "brew".to_string(),
-            message: "First note".to_string(),
-        },
-        PostInstallNote {
-            manager: "npm".to_string(),
-            message: "Second note".to_string(),
-        },
-        PostInstallNote {
-            manager: "pip".to_string(),
-            message: "Third note".to_string(),
-        },
-    ];
-    // Should not panic
-    print_caveats(&printer, &notes);
-}
-
-#[test]
 fn strip_sudo_for_exec_single_element_sudo() {
     let cmd: &[&str] = &["sudo"];
     let result = strip_sudo_for_exec(cmd);
@@ -347,46 +327,6 @@ fn strip_sudo_for_exec_non_sudo_first() {
     let result = strip_sudo_for_exec(cmd);
     // "sudo" is not the first element, so unchanged
     assert_eq!(result, &["apt-get", "install", "sudo"]);
-}
-
-#[test]
-fn print_caveats_outputs_subheader_and_warnings() {
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    let notes = vec![
-        PostInstallNote {
-            manager: "brew".to_string(),
-            message: "Add /opt/homebrew/bin to PATH".to_string(),
-        },
-        PostInstallNote {
-            manager: "npm".to_string(),
-            message: "npm warn deprecated request@2.88.2".to_string(),
-        },
-    ];
-    print_caveats(&printer, &notes);
-    let output = buf.lock().unwrap();
-    assert!(
-        output.contains("Post-install notes"),
-        "missing subheader, got: {}",
-        *output
-    );
-    assert!(
-        output.contains("[brew] Add /opt/homebrew/bin to PATH"),
-        "missing brew caveat, got: {}",
-        *output
-    );
-    assert!(
-        output.contains("[npm] npm warn deprecated request@2.88.2"),
-        "missing npm caveat, got: {}",
-        *output
-    );
-}
-
-#[test]
-fn print_caveats_empty_produces_no_output() {
-    let (printer, buf) = Printer::for_test();
-    print_caveats(&printer, &[]);
-    let output = buf.lock().unwrap();
-    assert!(output.is_empty(), "expected no output, got: {}", *output);
 }
 
 #[test]
@@ -413,7 +353,7 @@ fn extract_caveats_npm_warn_uppercase_and_lowercase() {
     let output = test_cmd_output("npm warn old-dep\nnpm WARN peer issue\n", "");
     let notes = extract_caveats("npm", &output);
     assert_eq!(notes.len(), 2);
-    assert!(notes.iter().all(|n| n.manager == "npm"));
+    assert!(notes.iter().all(|n| n.tag.as_deref() == Some("npm")));
 }
 
 #[test]
@@ -537,7 +477,7 @@ fn extract_caveats_brew_caveats_only_blank_lines() {
     let output = test_cmd_output("==> Caveats\n\n\n==> Summary\n", "");
     let notes = extract_caveats("brew", &output);
     // Blank lines are captured, joined, then trimmed — result is empty string
-    // but caveat_lines is non-empty so a PostInstallNote with empty message is produced
+    // but caveat_lines is non-empty so an ActionNote with empty message is produced
     assert_eq!(notes.len(), 1);
     assert!(
         notes[0].message.is_empty(),
@@ -763,8 +703,7 @@ fn brew_path_returns_option() {
 
 // ---------------------------------------------------------------------------
 // Pure-helper coverage for tool_seam_var, resolve_tool_with_fallbacks,
-// path_with_brew, brew_path_dirs, print_caveats, sudo_cmd_with_seam,
-// linux_system_manager_available, any_system_manager_available.
+// path_with_brew, brew_path_dirs, sudo_cmd_with_seam.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -866,6 +805,75 @@ fn brew_path_dirs_is_non_empty_on_linux_or_macos() {
     }
 }
 
+/// The macOS prefix must not move across the bootstrap boundary — the plan
+/// reads it before brew is installed and the record is written right after —
+/// so the probe asks for the brew BINARY. A `bin` directory that exists without
+/// one decides nothing: stock macOS ships `/usr/local/bin`, and a directory
+/// probe would answer `/usr/local` on a bare Apple Silicon machine and
+/// `/opt/homebrew` the moment the installer had run.
+#[test]
+fn a_bin_directory_with_no_brew_in_it_is_not_a_brew_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("bin")).unwrap();
+    assert!(
+        !brew_prefix_holds_brew(dir.path()),
+        "an empty bin directory is not evidence of brew"
+    );
+
+    std::fs::write(dir.path().join("bin/brew"), b"#!/bin/sh\n").unwrap();
+    assert!(
+        brew_prefix_holds_brew(dir.path()),
+        "an installed brew is authoritative about its own prefix"
+    );
+}
+
+/// With no brew installed the prefix is decided by the architecture the
+/// installer targets and by nothing the install itself would change, so the
+/// answer is identical before and after the bootstrap.
+#[test]
+fn the_macos_brew_prefix_with_no_brew_installed_comes_from_the_architecture() {
+    assert_eq!(macos_brew_prefix_for_arch("aarch64"), "/opt/homebrew");
+    assert_eq!(macos_brew_prefix_for_arch("x86_64"), "/usr/local");
+}
+
+/// The composition of the two: an installed brew wins over the architecture's
+/// answer, the FIRST candidate holding one wins when several do (which is what
+/// keeps an Apple Silicon machine on `/opt/homebrew` rather than on a stray
+/// Intel prefix), and a machine with none falls through to the architecture.
+#[test]
+fn the_macos_brew_prefix_prefers_an_installed_brew_in_candidate_order() {
+    let root = tempfile::tempdir().unwrap();
+    let install_brew = |name: &str| {
+        let prefix = root.path().join(name);
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+        std::fs::write(prefix.join("bin/brew"), b"#!/bin/sh\n").unwrap();
+    };
+    let bare = root.path().join("bare").to_string_lossy().into_owned();
+    let first = root.path().join("first").to_string_lossy().into_owned();
+    let second = root.path().join("second").to_string_lossy().into_owned();
+    std::fs::create_dir_all(root.path().join("bare/bin")).unwrap();
+
+    assert_eq!(
+        macos_brew_prefix_from(&[&bare, &first, &second], "aarch64"),
+        "/opt/homebrew",
+        "no candidate holds a brew, so the architecture decides"
+    );
+
+    install_brew("second");
+    assert_eq!(
+        macos_brew_prefix_from(&[&bare, &first, &second], "aarch64"),
+        second,
+        "an installed brew is authoritative even when it is not the first candidate"
+    );
+
+    install_brew("first");
+    assert_eq!(
+        macos_brew_prefix_from(&[&bare, &first, &second], "aarch64"),
+        first,
+        "with two installed brews the earlier candidate wins"
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn brew_path_dirs_linux_uses_linuxbrew_paths() {
@@ -873,49 +881,6 @@ fn brew_path_dirs_linux_uses_linuxbrew_paths() {
     assert!(dirs.iter().any(|d| d.contains("linuxbrew")));
     assert!(dirs.iter().any(|d| d.ends_with("/bin")));
     assert!(dirs.iter().any(|d| d.ends_with("/sbin")));
-}
-
-#[test]
-fn print_caveats_no_op_when_notes_empty() {
-    let (printer, output) = Printer::for_test();
-    print_caveats(&printer, &[]);
-    let captured = output.lock().unwrap().clone();
-    assert!(
-        captured.is_empty(),
-        "print_caveats should emit nothing for empty notes, got: {captured}"
-    );
-}
-
-#[test]
-fn print_caveats_emits_subheader_then_warning_per_note() {
-    let (printer, output) = Printer::for_test_at(Verbosity::Normal);
-    let notes = vec![
-        PostInstallNote {
-            manager: "brew".to_string(),
-            message: "run /usr/local/opt/foo/postinstall.sh".to_string(),
-        },
-        PostInstallNote {
-            manager: "npm".to_string(),
-            message: "deprecated package warning".to_string(),
-        },
-    ];
-    print_caveats(&printer, &notes);
-
-    let captured = output.lock().unwrap().clone();
-    // Subheader
-    assert!(
-        captured.contains("Post-install notes"),
-        "expected subheader, got: {captured}"
-    );
-    // Each note appears as a warning prefixed with [manager]
-    assert!(
-        captured.contains("[brew]") && captured.contains("postinstall.sh"),
-        "expected brew note, got: {captured}"
-    );
-    assert!(
-        captured.contains("[npm]") && captured.contains("deprecated"),
-        "expected npm note, got: {captured}"
-    );
 }
 
 #[test]
@@ -971,28 +936,24 @@ fn sudo_cmd_with_seam_falls_back_to_sudo_cmd_when_unset() {
     }
 }
 
-#[cfg(target_os = "linux")]
-#[test]
-fn linux_system_manager_available_returns_bool_without_panic() {
-    let _b = linux_system_manager_available();
-}
-
-#[test]
-fn any_system_manager_available_returns_bool_without_panic() {
-    let _b = any_system_manager_available();
-}
-
 #[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_success_returns_command_output() {
+    let notes = NoteSink::default();
     let _shim =
         cfgd_core::test_helpers::ToolShim::install("CFGD_SH_BIN", 0, "hello from shim\n", "");
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_BIN").unwrap());
     cmd.args(["arg1"]);
-    let out = run_pkg_cmd_live(&printer, "test-mgr", &mut cmd, "running test", "install")
-        .expect("run_pkg_cmd_live should succeed with exit 0");
+    let out = run_pkg_cmd_live(
+        &cx_for(&printer, &notes),
+        "test-mgr",
+        &mut cmd,
+        "running test",
+        "install",
+    )
+    .expect("run_pkg_cmd_live should succeed with exit 0");
     assert!(out.status.success(), "exit status should be success");
 }
 
@@ -1000,13 +961,20 @@ fn run_pkg_cmd_live_success_returns_command_output() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_install_failure_maps_to_install_failed() {
+    let notes = NoteSink::default();
     let _shim =
         cfgd_core::test_helpers::ToolShim::install("CFGD_SH_FAIL_BIN", 1, "", "install broke\n");
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_FAIL_BIN").unwrap());
-    let err = run_pkg_cmd_live(&printer, "test-mgr", &mut cmd, "running test", "install")
-        .err()
-        .expect("expected Err from exit-1 shim");
+    let err = run_pkg_cmd_live(
+        &cx_for(&printer, &notes),
+        "test-mgr",
+        &mut cmd,
+        "running test",
+        "install",
+    )
+    .err()
+    .expect("expected Err from exit-1 shim");
     assert!(
         matches!(&err, PackageError::InstallFailed { manager, message }
             if manager == "test-mgr" && message.contains("install broke")),
@@ -1019,6 +987,7 @@ fn run_pkg_cmd_live_install_failure_maps_to_install_failed() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_uninstall_failure_maps_to_uninstall_failed() {
+    let notes = NoteSink::default();
     let _shim = cfgd_core::test_helpers::ToolShim::install(
         "CFGD_SH_UNINST_BIN",
         2,
@@ -1027,9 +996,15 @@ fn run_pkg_cmd_live_uninstall_failure_maps_to_uninstall_failed() {
     );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_UNINST_BIN").unwrap());
-    let err = run_pkg_cmd_live(&printer, "test-mgr", &mut cmd, "removing test", "uninstall")
-        .err()
-        .expect("expected Err from exit-2 shim");
+    let err = run_pkg_cmd_live(
+        &cx_for(&printer, &notes),
+        "test-mgr",
+        &mut cmd,
+        "removing test",
+        "uninstall",
+    )
+    .err()
+    .expect("expected Err from exit-2 shim");
     assert!(
         matches!(&err, PackageError::UninstallFailed { manager, .. }
             if manager == "test-mgr"),
@@ -1042,12 +1017,19 @@ fn run_pkg_cmd_live_uninstall_failure_maps_to_uninstall_failed() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_failure_with_no_stderr_includes_exit_code() {
+    let notes = NoteSink::default();
     let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_SH_NOOUT_BIN", 42, "", "");
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_NOOUT_BIN").unwrap());
-    let err = run_pkg_cmd_live(&printer, "test-mgr", &mut cmd, "test label", "install")
-        .err()
-        .expect("expected Err from exit-42 shim");
+    let err = run_pkg_cmd_live(
+        &cx_for(&printer, &notes),
+        "test-mgr",
+        &mut cmd,
+        "test label",
+        "install",
+    )
+    .err()
+    .expect("expected Err from exit-42 shim");
     assert!(
         matches!(&err, PackageError::InstallFailed { message, .. }
             if message.contains("42")),
@@ -1060,6 +1042,7 @@ fn run_pkg_cmd_live_failure_with_no_stderr_includes_exit_code() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_install_success_extracts_brew_caveats() {
+    let notes = NoteSink::default();
     let _shim = cfgd_core::test_helpers::ToolShim::install(
         "CFGD_SH_CAVEAT_BIN",
         0,
@@ -1069,21 +1052,204 @@ fn run_pkg_cmd_live_install_success_extracts_brew_caveats() {
     let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_CAVEAT_BIN").unwrap());
     run_pkg_cmd_live(
-        &printer,
+        &cx_for(&printer, &notes),
         "brew",
         &mut cmd,
         "installing brew package",
         "install",
     )
     .expect("should succeed");
+    let drained = notes.take();
+    assert_eq!(drained.len(), 1, "expected one caveat, got: {drained:?}");
+    assert_eq!(drained[0].tag.as_deref(), Some("brew"));
+    assert!(
+        drained[0].message.contains("Add to PATH"),
+        "expected caveat message, got: {:?}",
+        drained[0].message
+    );
     let captured = buf.lock().unwrap().clone();
     assert!(
-        captured.contains("Post-install notes"),
-        "expected caveats header in output, got: {captured}"
+        !captured.contains("Post-install notes"),
+        "the note travels back to the reconciler; nothing prints here: {captured}"
+    );
+}
+
+/// Line ownership at its decision point, driven by a REAL shell-out rather than
+/// a mock manager: both arms run the same binary through the same entry point,
+/// so the only thing that may differ between the two transcripts is whether the
+/// window settled a line the reconciler is about to render itself.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn caller_owned_status_suppresses_the_windows_own_line() {
+    let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_SH_OWNER_BIN", 0, "ok\n", "");
+    let bin = std::env::var("CFGD_SH_OWNER_BIN").expect("shim seam is set");
+    let notes = NoteSink::default();
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut cmd = std::process::Command::new(&bin);
+    run_pkg_cmd_live(
+        &cx_for(&printer, &notes),
+        "brew",
+        &mut cmd,
+        "brew install jq",
+        "install",
+    )
+    .expect("shim exits 0");
+    let standalone = cfgd_core::output::strip_ansi(&buf.lock().unwrap().clone());
+    assert_eq!(
+        cfgd_core::test_helpers::settled_status_lines(&standalone).len(),
+        1,
+        "standalone, the window IS the action's only line: {standalone}"
+    );
+
+    let owned_notes = NoteSink::default();
+    let (owned_printer, owned_buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut owned_cmd = std::process::Command::new(&bin);
+    run_pkg_cmd_live(
+        &cx_for(&owned_printer, &owned_notes).caller_owns_status(),
+        "brew",
+        &mut owned_cmd,
+        "brew install jq",
+        "install",
+    )
+    .expect("shim exits 0");
+    let owned = cfgd_core::output::strip_ansi(&owned_buf.lock().unwrap().clone());
+    assert_eq!(
+        cfgd_core::test_helpers::settled_status_lines(&owned).len(),
+        0,
+        "the caller renders the action's line; the window must settle silently: {owned}"
+    );
+}
+
+/// The FAILURE arm of the same ownership contract. A failing command is where
+/// a window is most tempted to say something of its own — the stderr replay —
+/// and the caller's line has not been written yet, so anything emitted here
+/// lands above the status it belongs to. The diagnostic rides back in the
+/// error instead.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn caller_owned_status_suppresses_the_windows_own_line_on_failure() {
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_SH_FAIL_OWNER_BIN",
+        1,
+        "",
+        "Error: no available formula\n",
+    );
+    let bin = std::env::var("CFGD_SH_FAIL_OWNER_BIN").expect("shim seam is set");
+
+    let notes = NoteSink::default();
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut cmd = std::process::Command::new(&bin);
+    let err = match run_pkg_cmd_live(
+        &cx_for(&printer, &notes),
+        "brew",
+        &mut cmd,
+        "brew install neovim",
+        "install",
+    ) {
+        Err(e) => e,
+        Ok(_) => panic!("shim exits 1"),
+    };
+    let standalone = cfgd_core::output::strip_ansi(&buf.lock().unwrap().clone());
+    assert_eq!(
+        cfgd_core::test_helpers::settled_status_lines(&standalone).len(),
+        1,
+        "standalone, the window settles the one failure line: {standalone}"
+    );
+
+    let owned_notes = NoteSink::default();
+    let (owned_printer, owned_buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut owned_cmd = std::process::Command::new(&bin);
+    let owned_err = match run_pkg_cmd_live(
+        &cx_for(&owned_printer, &owned_notes).caller_owns_status(),
+        "brew",
+        &mut owned_cmd,
+        "brew install neovim",
+        "install",
+    ) {
+        Err(e) => e,
+        Ok(_) => panic!("shim exits 1"),
+    };
+    let owned = cfgd_core::output::strip_ansi(&owned_buf.lock().unwrap().clone());
+    assert_eq!(
+        cfgd_core::test_helpers::settled_status_lines(&owned).len(),
+        0,
+        "the caller renders the failure; the window must settle silently: {owned}"
     );
     assert!(
-        captured.contains("Add to PATH"),
-        "expected caveat message in output, got: {captured}"
+        owned_err.to_string().contains("no available formula"),
+        "the stderr the window did not print must ride back in the error: {owned_err}"
+    );
+    assert_eq!(
+        err.to_string(),
+        owned_err.to_string(),
+        "ownership decides where the failure RENDERS, never what it says"
+    );
+}
+
+/// A caller-owned window prints nothing, so every diagnostic has to travel in
+/// the value the caller renders. The batch path used to discard the batch error
+/// AND each retry error, leaving the reconciler's one line reading
+/// `✗ brew install a, b — failed to install: a, b` with the cause erased.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_failed_caller_owned_batch_install_carries_every_cause() {
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_BATCH_FAIL_BIN",
+        1,
+        "",
+        "Error: no available formula with the name\n",
+    );
+    let bin = std::env::var("CFGD_BATCH_FAIL_BIN").expect("shim seam is set");
+
+    let notes = NoteSink::default();
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let packages = vec!["nope-one".to_string(), "nope-two".to_string()];
+    let err = match install_batch_then_per_package(
+        &cx_for(&printer, &notes).caller_owns_status(),
+        "brew",
+        &packages,
+        |_| std::process::Command::new(&bin),
+    ) {
+        Err(e) => e,
+        Ok(()) => panic!("every shim invocation exits 1"),
+    };
+
+    let message = err.to_string();
+    for pkg in &packages {
+        assert!(
+            message.contains(pkg.as_str()),
+            "the error must name each package that failed: {message}"
+        );
+    }
+    assert!(
+        message.contains("no available formula with the name"),
+        "the underlying cause must survive into the caller's status line: {message}"
+    );
+    assert!(
+        !message.contains('\n'),
+        "a status subject may not carry an embedded newline: {message:?}"
+    );
+
+    let transcript = cfgd_core::output::strip_ansi(&buf.lock().unwrap().clone());
+    assert_eq!(
+        cfgd_core::test_helpers::settled_status_lines(&transcript).len(),
+        0,
+        "the caller still owns the one status line: {transcript}"
+    );
+    let retry_note = notes
+        .take()
+        .into_iter()
+        .find(|n| n.message.starts_with("batch install failed"))
+        .expect("the retry is announced as a note under the action's line");
+    assert!(
+        retry_note
+            .message
+            .contains("no available formula with the name"),
+        "the retry note must say why the batch failed: {}",
+        retry_note.message
     );
 }
 
@@ -1113,7 +1279,11 @@ fn bootstrap_via_system_manager_succeeds_with_apt_get_shim() {
         shim.to_str().expect("tempdir path is valid UTF-8"),
     );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let result = bootstrap_via_system_manager(&printer, "snapd", "snap");
+    let result = bootstrap_via_system_manager(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        "snapd",
+        "snap",
+    );
     assert!(result.is_ok(), "expected Ok when apt-get shim exits 0");
 }
 
@@ -1148,7 +1318,11 @@ fn bootstrap_via_system_manager_fails_when_all_managers_absent() {
         dir.path().to_str().expect("tempdir path is valid UTF-8"),
     );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let result = bootstrap_via_system_manager(&printer, "snapd", "snap");
+    let result = bootstrap_via_system_manager(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        "snapd",
+        "snap",
+    );
     assert!(
         result.is_err(),
         "expected BootstrapFailed when no package manager is available"
@@ -1171,7 +1345,13 @@ fn bootstrap_via_brew_then_system_succeeds_via_brew_shim() {
         "",
     );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let result = bootstrap_via_brew_then_system(&printer, "test-mgr", "ripgrep", &["ripgrep"]);
+    let result = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        "test-mgr",
+        "ripgrep",
+        &["ripgrep"],
+        "test-mgr-own-arm",
+    );
     assert!(
         result.expect("should succeed via brew"),
         "expected true when brew install exits 0"
@@ -1202,7 +1382,13 @@ fn bootstrap_via_brew_then_system_falls_back_when_brew_fails_and_no_system_manag
         dir.path().to_str().expect("tempdir path is valid UTF-8"),
     );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let result = bootstrap_via_brew_then_system(&printer, "test-mgr", "ripgrep", &["ripgrep"]);
+    let result = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        "test-mgr",
+        "ripgrep",
+        &["ripgrep"],
+        "test-mgr-own-arm",
+    );
     assert!(
         !result.expect("no error when both paths simply unavailable"),
         "expected false when brew fails and no system manager present"
@@ -1213,13 +1399,20 @@ fn bootstrap_via_brew_then_system_falls_back_when_brew_fails_and_no_system_manag
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_unknown_error_kind_maps_to_install_failed() {
+    let notes = NoteSink::default();
     let _shim =
         cfgd_core::test_helpers::ToolShim::install("CFGD_SH_UPDATE_BIN", 1, "", "update broke\n");
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_UPDATE_BIN").unwrap());
-    let err = run_pkg_cmd_live(&printer, "test-mgr", &mut cmd, "updating", "update")
-        .err()
-        .expect("expected Err from exit-1 shim");
+    let err = run_pkg_cmd_live(
+        &cx_for(&printer, &notes),
+        "test-mgr",
+        &mut cmd,
+        "updating",
+        "update",
+    )
+    .err()
+    .expect("expected Err from exit-1 shim");
     assert!(
         matches!(&err, PackageError::InstallFailed { manager, .. }
             if manager == "test-mgr"),
@@ -1251,7 +1444,11 @@ fn bootstrap_via_system_manager_continues_on_nonzero_exit_then_fails() {
         dir.path().to_str().expect("tempdir path is valid UTF-8"),
     );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let result = bootstrap_via_system_manager(&printer, "snapd", "snap");
+    let result = bootstrap_via_system_manager(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        "snapd",
+        "snap",
+    );
     assert!(
         result.is_err(),
         "expected BootstrapFailed when apt-get exits 1 and dnf/zypper absent"
@@ -1292,7 +1489,13 @@ fn bootstrap_via_brew_then_system_uses_apt_get_fallback_when_brew_absent() {
         shim.to_str().expect("tempdir path is valid UTF-8"),
     );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let result = bootstrap_via_brew_then_system(&printer, "test-mgr", "ripgrep", &["ripgrep"]);
+    let result = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        "test-mgr",
+        "ripgrep",
+        &["ripgrep"],
+        "test-mgr-own-arm",
+    );
     assert!(
         result.expect("apt-get fallback should succeed"),
         "expected true when apt-get shim exits 0"
@@ -1418,11 +1621,18 @@ fn windows_pkg_argv_unresolved_falls_back_to_bare_name() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_spawn_error_maps_to_command_failed() {
+    let notes = NoteSink::default();
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new("/nonexistent/binary/cfgd-test-path-xyz");
-    let err = run_pkg_cmd_live(&printer, "test-mgr", &mut cmd, "spawn test", "install")
-        .err()
-        .expect("expected Err when binary does not exist");
+    let err = run_pkg_cmd_live(
+        &cx_for(&printer, &notes),
+        "test-mgr",
+        &mut cmd,
+        "spawn test",
+        "install",
+    )
+    .err()
+    .expect("expected Err when binary does not exist");
     assert!(
         matches!(&err, PackageError::CommandFailed { manager, .. }
             if manager == "test-mgr"),
@@ -1439,8 +1649,13 @@ fn run_pkg_cmd_live_spawn_error_maps_to_command_failed() {
 #[serial_test::serial]
 fn bootstrap_via_shell_script_returns_ok_when_exit_zero() {
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    bootstrap_via_shell_script(&printer, "test-mgr", "Installing test", "exit 0")
-        .expect("exit 0 → Ok");
+    bootstrap_via_shell_script(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        "test-mgr",
+        "Installing test",
+        "exit 0",
+    )
+    .expect("exit 0 → Ok");
 }
 
 #[cfg(unix)]
@@ -1448,11 +1663,352 @@ fn bootstrap_via_shell_script_returns_ok_when_exit_zero() {
 #[serial_test::serial]
 fn bootstrap_via_shell_script_returns_err_when_exit_nonzero() {
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let err = bootstrap_via_shell_script(&printer, "test-mgr", "Installing test", "exit 7")
-        .expect_err("non-zero exit must surface BootstrapFailed");
+    let err = bootstrap_via_shell_script(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        "test-mgr",
+        "Installing test",
+        "exit 7",
+    )
+    .expect_err("non-zero exit must surface BootstrapFailed");
     let msg = err.to_string();
     assert!(
         msg.contains("test-mgr"),
         "error must surface manager name: {msg}"
     );
+}
+
+/// The apt shim reaches the cascade through `sudo_cmd_with_seam`'s
+/// `CFGD_APT_GET_BIN` seam rather than through `PATH`, so an unprivileged test
+/// never routes a real `sudo apt-get install` at the host.
+#[cfg(unix)]
+fn apt_get_shim() -> cfgd_core::test_helpers::ToolShim {
+    cfgd_core::test_helpers::ToolShim::install("CFGD_APT_GET_BIN", 0, "apt-get: done\n", "")
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_provision_planned_via_apt_never_reaches_brew_even_when_brew_is_available() {
+    let brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "brew ran\n", "");
+    let apt = apt_get_shim();
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let installed = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("apt"),
+        "test-mgr",
+        "ripgrep",
+        &["ripgrep"],
+        "test-mgr-own-arm",
+    )
+    .expect("the planned apt arm exits 0");
+
+    assert!(installed, "the planned method installed the manager");
+    assert_eq!(
+        brew.invocation_count(),
+        0,
+        "the plan said apt; brew must not run even though it is available: {}",
+        brew.argv_log()
+    );
+    assert!(
+        apt.argv_log().contains("install -y ripgrep"),
+        "the apt arm ran the install: {}",
+        apt.argv_log()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_provision_planned_via_a_vanished_mediator_fails_naming_it_instead_of_substituting() {
+    let brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "brew ran\n", "");
+    // No apt-get: neither on PATH nor behind the seam, which is exactly the
+    // "the mediator went away between plan and apply" shape.
+    let _no_apt = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_APT_GET_BIN");
+    let dir = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink("/bin/sh", dir.path().join("sh")).unwrap();
+    let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _path_env = cfgd_core::test_helpers::EnvVarGuard::set(
+        "PATH",
+        dir.path().to_str().expect("tempdir path is valid UTF-8"),
+    );
+
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let err = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("apt"),
+        "test-mgr",
+        "ripgrep",
+        &["ripgrep"],
+        "test-mgr-own-arm",
+    )
+    .expect_err("a planned method that cannot run fails the provision");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("apt") && msg.contains("test-mgr"),
+        "the error names the planned method and the manager: {msg}"
+    );
+    assert_eq!(
+        brew.invocation_count(),
+        0,
+        "an unavailable planned method is never substituted: {}",
+        brew.argv_log()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_planned_method_that_fails_is_reported_as_that_method_failing() {
+    let _no_brew = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
+    let apt = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_APT_GET_BIN",
+        100,
+        "",
+        "E: Unable to locate package ripgrep\n",
+    );
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let err = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("apt"),
+        "test-mgr",
+        "ripgrep",
+        &["ripgrep"],
+        "test-mgr-own-arm",
+    )
+    .expect_err("a failed planned method ends the provision");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("apt could not install test-mgr"),
+        "the error names the planned method: {msg}"
+    );
+    assert!(
+        msg.contains("Unable to locate package"),
+        "the abandoned step's diagnostic survives in the error: {msg}"
+    );
+    assert_eq!(apt.invocation_count(), 1, "exactly one arm ran");
+}
+
+/// A method naming no arm of this cascade belongs to the CALLER's own fallback
+/// (npm's `nvm`, pipx's `pip`), so the cascade declines without probing —
+/// brew must not run ahead of the arm the plan actually named.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_provision_planned_via_a_managers_own_fallback_skips_the_shared_cascade_entirely() {
+    let brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "brew ran\n", "");
+    let apt = apt_get_shim();
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let installed = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("nvm"),
+        "npm",
+        "node",
+        &["nodejs", "npm"],
+        "nvm",
+    )
+    .expect("declining is not an error");
+
+    assert!(!installed, "the cascade defers to the caller's own arm");
+    assert_eq!(
+        brew.invocation_count(),
+        0,
+        "brew never probed: {}",
+        brew.argv_log()
+    );
+    assert_eq!(
+        apt.invocation_count(),
+        0,
+        "apt never probed: {}",
+        apt.argv_log()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn an_unplanned_bootstrap_still_cascades_brew_then_system() {
+    let brew = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_BREW_BIN",
+        1,
+        "",
+        "Error: No available formula\n",
+    );
+    let apt = apt_get_shim();
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let installed = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer),
+        "test-mgr",
+        "ripgrep",
+        &["ripgrep"],
+        "test-mgr-own-arm",
+    )
+    .expect("the apt fallback exits 0");
+
+    assert!(installed, "the cascade fell through to apt");
+    assert_eq!(brew.invocation_count(), 1, "brew was tried first");
+    assert_eq!(apt.invocation_count(), 1, "apt finished the job");
+}
+
+/// The registry dirs a `Command` would carry, as `(key, value)` pairs — the
+/// only way to observe what [`hand_child_bootstrapped_path`] decided without
+/// spawning anything.
+fn child_path_env(cmd: &Command) -> Option<String> {
+    cmd.get_envs().find_map(|(key, value)| {
+        (key.eq_ignore_ascii_case("PATH"))
+            .then(|| value.unwrap_or_default().to_string_lossy().into_owned())
+    })
+}
+
+#[test]
+#[serial_test::serial]
+fn a_package_manager_child_inherits_the_dirs_bootstrapped_this_run() {
+    // The assert below reads the process PATH and counts its entries;
+    // `serial` excludes only other serial tests, and the non-serial majority
+    // is what empties PATH out from under a read like this.
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
+    let _registry = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let dir = tempfile::tempdir().unwrap();
+    let registered = cfgd_core::to_posix_string(dir.path());
+    cfgd_core::register_bootstrapped_path_dirs(std::slice::from_ref(&registered));
+
+    let mut cmd = Command::new("npm");
+    hand_child_bootstrapped_path(&mut cmd);
+
+    let path = child_path_env(&cmd).expect("a registered dir must reach the child");
+    assert_eq!(
+        std::env::split_paths(&path).next(),
+        Some(std::path::PathBuf::from(&registered)),
+        "the bootstrapped dir leads, so a freshly installed binary wins: {path}"
+    );
+    assert!(
+        std::env::split_paths(&path).count() > 1,
+        "the process PATH is kept behind it, not replaced: {path}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_path_the_command_builder_already_chose_is_left_alone() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
+    let _registry = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let dir = tempfile::tempdir().unwrap();
+    cfgd_core::register_bootstrapped_path_dirs(&[cfgd_core::to_posix_string(dir.path())]);
+
+    // brew_cmd's augmented PATH is the real instance of this: a deliberate
+    // override made with more context than pkg_run has.
+    let mut cmd = Command::new("brew");
+    cmd.env("PATH", "/opt/homebrew/bin");
+    hand_child_bootstrapped_path(&mut cmd);
+
+    assert_eq!(
+        child_path_env(&cmd).as_deref(),
+        Some("/opt/homebrew/bin"),
+        "a builder-set PATH must survive pkg_run untouched"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_run_that_bootstrapped_nothing_sets_no_path_at_all() {
+    let _registry = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let mut cmd = Command::new("apt-get");
+    hand_child_bootstrapped_path(&mut cmd);
+    assert_eq!(
+        child_path_env(&cmd),
+        None,
+        "with nothing registered the child's environment is not touched"
+    );
+}
+
+/// The cascade declines toward the caller's DECLARED fallback arm and nothing
+/// else. A method that is neither an arm here nor that string is a provision
+/// nothing can run, so it fails naming itself rather than being answered by
+/// whatever the caller happens to try next — the silent substitution this
+/// whole binding path exists to remove.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn a_planned_method_neither_this_cascade_nor_the_caller_can_run_fails_instead_of_deferring() {
+    let brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "brew ran\n", "");
+    let apt = apt_get_shim();
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    // zypper is a real system manager, and is NOT an arm of the brew cascade.
+    let err = bootstrap_via_brew_then_system(
+        &cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("zypper"),
+        "npm",
+        "node",
+        &["nodejs", "npm"],
+        "nvm",
+    )
+    .expect_err("a method this cascade cannot run must not be deferred to the nvm arm");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("zypper") && msg.contains("npm"),
+        "the error names the planned method and the manager: {msg}"
+    );
+    assert_eq!(
+        brew.invocation_count(),
+        0,
+        "brew never ran: {}",
+        brew.argv_log()
+    );
+    assert_eq!(
+        apt.invocation_count(),
+        0,
+        "apt never ran: {}",
+        apt.argv_log()
+    );
+}
+
+/// `run_pkg_cmd` and `run_pkg_query` spawn a manager's own queries — npm's
+/// `npm config get prefix` runs before every install through `run_pkg_query`.
+/// A resolved full-path npm still shells out to `node` via its shebang, so a
+/// query left un-augmented fails with exit 127 one call ahead of the install
+/// that was fixed, and the caller reads that as "no prefix configured".
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn every_package_manager_spawn_wrapper_hands_the_child_the_bootstrapped_dirs() {
+    use std::os::unix::fs::PermissionsExt;
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
+    let _registry = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+
+    // A probe that answers with the PATH it was handed, so each wrapper's
+    // child reports what it could actually resolve through.
+    let dir = tempfile::tempdir().unwrap();
+    let probe = dir.path().join("echo-path");
+    std::fs::write(&probe, "#!/bin/sh\nprintf '%s' \"$PATH\"\n").unwrap();
+    std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let registered = cfgd_core::to_posix_string(dir.path());
+    cfgd_core::register_bootstrapped_path_dirs(std::slice::from_ref(&registered));
+
+    let leads = |stdout: &[u8], wrapper: &str| {
+        let path = String::from_utf8_lossy(stdout).into_owned();
+        assert_eq!(
+            std::env::split_paths(&path).next(),
+            Some(std::path::PathBuf::from(&registered)),
+            "{wrapper} must hand its child the bootstrapped dir first: {path}"
+        );
+    };
+
+    let out =
+        run_pkg_cmd("test-mgr", &mut Command::new(&probe), "list").expect("the probe exits 0");
+    leads(&out.stdout, "run_pkg_cmd");
+
+    let out = run_pkg_query("test-mgr", &mut Command::new(&probe)).expect("the probe exits 0");
+    leads(&out.stdout, "run_pkg_query");
+
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let notes = NoteSink::default();
+    let out = pkg_run(
+        &cx_for(&printer, &notes),
+        &mut Command::new(&probe),
+        "probing",
+    )
+    .expect("the probe exits 0");
+    leads(out.stdout.as_bytes(), "pkg_run");
 }

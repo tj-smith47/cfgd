@@ -159,6 +159,7 @@ fn execute_script_workdir_override_absolute() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect("script with workdir override must run");
     assert!(
@@ -203,6 +204,7 @@ fn execute_script_workdir_override_expands_tilde_and_vars() {
             &printer,
             None,
             None,
+            ScriptReport::default(),
         )
         .expect("workdir ~ must run");
         assert!(home.path().join("from_tilde").exists());
@@ -233,6 +235,7 @@ fn execute_script_workdir_override_expands_tilde_and_vars() {
             &printer,
             None,
             None,
+            ScriptReport::default(),
         )
         .expect("workdir $CFGD_MODULE_DIR must run");
         assert!(module_dir.path().join("from_var").exists());
@@ -279,6 +282,7 @@ fn execute_script_rejects_missing_working_dir() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect_err("missing working_dir must error");
 
@@ -320,6 +324,7 @@ fn execute_script_rejects_non_directory_working_dir() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect_err("non-directory working_dir must error");
 
@@ -355,6 +360,7 @@ fn execute_script_runs_with_valid_working_dir() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect("valid working_dir + `true` must succeed");
 
@@ -386,6 +392,7 @@ fn execute_script_return_value_preserves_raw_multiline_body() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect("multi-line inline script must succeed");
 
@@ -398,6 +405,49 @@ fn execute_script_return_value_preserves_raw_multiline_body() {
     assert!(
         desc.contains('\n'),
         "raw multi-line body must be preserved byte-identical: {desc:?}"
+    );
+}
+
+// A caller that opens a pseudo-phase sizes its alignment column from
+// `hook_script_subject` BEFORE any script runs; `execute_script` composes the
+// status line's own copy as each one finishes. If the two ever stop agreeing,
+// every hook line in the group pads against a width measured off a different
+// string.
+#[test]
+fn hook_status_line_matches_the_precomputed_hook_subject() {
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    let tmp = tempfile::tempdir().unwrap();
+    // A long body, so the condensing half of the derivation is exercised too.
+    // `echo` and nothing else: a comment marker would not be one under
+    // `cmd.exe /C`, and the non-zero exit that follows would fail the call
+    // rather than the assertion.
+    let body = format!("echo {}", "x".repeat(120));
+    let entry = ScriptEntry::Simple(body.clone());
+
+    execute_script(
+        &entry,
+        tmp.path(),
+        tmp.path(),
+        &[],
+        std::time::Duration::from_secs(30),
+        &printer,
+        None,
+        None,
+        ScriptReport {
+            subject: super::ScriptSubject::Hook("onDrift"),
+            non_fatal: true,
+            ..ScriptReport::default()
+        },
+    )
+    .expect("`echo` must succeed on every shell ScriptShell::Auto dispatches to");
+    drop(printer);
+
+    let out = crate::output::strip_ansi(&buf.lock().unwrap());
+    let expected = crate::reconciler::hook_script_subject("onDrift", &body).to_string();
+    assert!(
+        out.contains(&expected),
+        "the rendered status must carry the same subject the width was derived from\n\
+         expected: {expected:?}\ngot:\n{out}"
     );
 }
 
@@ -592,6 +642,7 @@ fn shell_bash_runs_inline_with_bash() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect("bash inline script must succeed");
 
@@ -634,6 +685,7 @@ fn shell_field_rejected_on_file_scripts() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect_err("shell field on file script must be rejected");
 
@@ -663,6 +715,7 @@ fn bash_inline_prepends_env_source() {
         "echo $TEST_VAR",
         tmp.path(),
         Some(&env_file),
+        true,
     );
     let args: Vec<_> = cmd
         .get_args()
@@ -698,6 +751,7 @@ fn zsh_inline_prepends_env_source() {
         "echo $TEST_VAR",
         tmp.path(),
         Some(&env_file),
+        true,
     );
     let args: Vec<_> = cmd
         .get_args()
@@ -728,7 +782,13 @@ fn sh_inline_ignores_cfgd_env_path() {
     let env_file = tmp.path().join(".cfgd.env");
     std::fs::write(&env_file, "export TEST_VAR=hello\n").unwrap();
 
-    let cmd = build_inline_command(ScriptShell::Sh, "echo hello", tmp.path(), Some(&env_file));
+    let cmd = build_inline_command(
+        ScriptShell::Sh,
+        "echo hello",
+        tmp.path(),
+        Some(&env_file),
+        true,
+    );
     let args: Vec<_> = cmd
         .get_args()
         .map(|a| a.to_string_lossy().to_string())
@@ -749,12 +809,66 @@ fn sh_inline_ignores_cfgd_env_path() {
 fn bash_inline_no_env_file_skips_preamble() {
     let tmp = tempfile::tempdir().unwrap();
 
-    let cmd = build_inline_command(ScriptShell::Bash, "echo hello", tmp.path(), None);
+    let cmd = build_inline_command(ScriptShell::Bash, "echo hello", tmp.path(), None, true);
     let args: Vec<_> = cmd
         .get_args()
         .map(|a| a.to_string_lossy().to_string())
         .collect();
     assert_eq!(args, vec!["-c", "echo hello"], "no env file → no preamble");
+}
+
+// set_process_group=true (every non-interactive spawn arm) still puts the
+// child in its OWN new process group — child pgid == child pid — so a
+// timeout/idle kill can `kill(-pid, …)` the whole subtree without hitting
+// cfgd itself. This is the behavior every arm had before the interactive
+// fix, and must stay unchanged.
+#[cfg(unix)]
+#[test]
+fn build_inline_command_default_spawns_own_process_group() {
+    use nix::unistd::{Pid, getpgid};
+
+    let _path_guard = crate::test_helpers::path_env_read_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cmd = build_inline_command(ScriptShell::Sh, "sleep 0.3", tmp.path(), None, true);
+    let mut child = cmd.spawn().expect("spawn must succeed");
+    let child_pid = Pid::from_raw(child.id() as i32);
+    let child_pgid = getpgid(Some(child_pid)).expect("child must still be alive");
+    assert_eq!(
+        child_pgid, child_pid,
+        "set_process_group=true must make the child its own group leader"
+    );
+    // Signal the GROUP, not the leader: whether `sh -c 'sleep …'` execs the
+    // sleep or forks it is the host's choice of /bin/sh (dash execs, bash
+    // forks), and killing only the leader leaves a bash host's grandchild
+    // holding the test's stdio — which is what nextest reports as a leak.
+    // Safe here precisely because the assertion above proved the group is the
+    // child's own.
+    let _ = nix::sys::signal::killpg(child_pgid, nix::sys::signal::Signal::SIGKILL);
+    let _ = child.wait();
+}
+
+// set_process_group=false (the interactive `Run` arm only) leaves the
+// child in cfgd's OWN process group instead of a new one — the fix that
+// restores terminal Ctrl-C delivery and raw-mode TUI reads to an
+// interactive script (see execute_script_inner's `Run` arm doc comment).
+#[cfg(unix)]
+#[test]
+fn build_inline_command_interactive_shares_callers_process_group() {
+    use nix::unistd::{Pid, getpgid, getpgrp};
+
+    let _path_guard = crate::test_helpers::path_env_read_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let own_pgid = getpgrp();
+    let mut cmd = build_inline_command(ScriptShell::Sh, "sleep 0.3", tmp.path(), None, false);
+    let mut child = cmd.spawn().expect("spawn must succeed");
+    let child_pid = Pid::from_raw(child.id() as i32);
+    let child_pgid = getpgid(Some(child_pid)).expect("child must still be alive");
+    assert_eq!(
+        child_pgid, own_pgid,
+        "set_process_group=false must leave the child in the caller's own group"
+    );
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 // Auto-detection picks the file's shebang-implied interpreter (`sh`),
@@ -794,6 +908,7 @@ fn shell_auto_on_file_scripts_allowed() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     );
     assert!(result.is_ok(), "Auto shell on file scripts must be allowed");
 }
@@ -824,6 +939,7 @@ fn execute_script_uses_shell_override_for_inline_command() {
         &printer,
         Some(ScriptShell::Bash),
         None,
+        ScriptReport::default(),
     )
     .expect("inline script with bash override must succeed");
 
@@ -860,6 +976,7 @@ fn execute_script_override_ignored_on_file_shebang() {
         &printer,
         Some(ScriptShell::Bash),
         None,
+        ScriptReport::default(),
     )
     .expect("override on file-shebang script must not error");
 
@@ -905,6 +1022,7 @@ fn execute_script_entry_shell_on_file_script_still_errors_with_override() {
         &printer,
         Some(ScriptShell::Bash),
         None,
+        ScriptReport::default(),
     )
     .expect_err("entry-level shell on a file script must still be rejected");
 
@@ -958,6 +1076,7 @@ fn run_guarded(entry: &ScriptEntry, working_dir: &std::path::Path) -> (bool, boo
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect("guarded script must not error");
     let ran = working_dir.join("ran.marker").exists();
@@ -1148,6 +1267,7 @@ fn execute_script_guard_timeout_returns_err() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     );
 
     match result {
@@ -1189,9 +1309,12 @@ fn interactive_disposition_branches() {
     );
 }
 
-// The test process has no TTY, so an interactive script must be SKIPPED:
-// changed=false, the body does not run (sentinel absent), and a Warn line
-// names the script and the missing-TTY reason.
+// With no TTY an interactive script must be SKIPPED: changed=false, the body
+// does not run (sentinel absent), and a Warn line names the script and the
+// missing-TTY reason. The premise is SUPPLIED through `execute_script_with_tty`
+// rather than inherited from whatever the suite was invoked from — read from
+// the ambient terminal, the test asserts the skip path while running the run
+// path the moment the suite is started under a pty.
 #[cfg(all(unix, feature = "test-helpers"))]
 #[test]
 fn interactive_script_without_tty_skips_with_warn() {
@@ -1211,7 +1334,8 @@ fn interactive_script_without_tty_skips_with_warn() {
         interactive: true,
     };
 
-    let (_label, changed, captured) = execute_script(
+    let (_label, changed, captured) = execute_script_with_tty(
+        false,
         &entry,
         tmp.path(),
         tmp.path(),
@@ -1220,6 +1344,7 @@ fn interactive_script_without_tty_skips_with_warn() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect("interactive skip must not error");
     printer.flush();
@@ -1256,6 +1381,7 @@ fn guard_skip_emits_skipped_status_line() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect("skip must not error");
     printer.flush();
@@ -1270,6 +1396,241 @@ fn guard_skip_emits_skipped_status_line() {
 // -----------------------------------------------------------------------
 // run_str resolution, spawn-failure mapping, exit-code error path
 // -----------------------------------------------------------------------
+
+// A relative `run:` naming exactly an existing file, with no trailing
+// text, is direct exec — byte-identical to the behavior in place before
+// `run:` args were ever resolved at all. A pure function over its own
+// `script_dir` parameter, so no test-home fixture is needed.
+#[test]
+fn resolve_run_target_relative_no_args_is_direct_exec() {
+    let script_dir = tempfile::tempdir().unwrap();
+    std::fs::write(script_dir.path().join("foo.sh"), "#!/bin/sh\n").unwrap();
+    let target = resolve_run_target("foo.sh", script_dir.path(), ScriptShell::Auto);
+    match target {
+        RunTarget::File(resolved) => assert_eq!(resolved, script_dir.path().join("foo.sh")),
+        RunTarget::Inline(cmd) => panic!("expected direct exec, got inline: {cmd}"),
+    }
+}
+
+// N1 regression pin: a whole-string `run:` naming a DIRECTORY, not a file,
+// must not take the direct-exec arm — `exists()` accepted a directory just
+// as readily as a file, and the same defect this commit fixes for the
+// leading-token case also reached here.
+#[test]
+fn resolve_run_target_whole_string_naming_a_directory_is_left_untouched() {
+    let script_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(script_dir.path().join("subdir")).unwrap();
+    let target = resolve_run_target("subdir", script_dir.path(), ScriptShell::Auto);
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, "subdir"),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
+// The expectation for a substituted leading token under `ScriptShell::Auto`,
+// which quotes for the shell it will actually dispatch to: cmd.exe double
+// quoting on Windows, POSIX single quoting everywhere else (see
+// `quote_resolved_script_path`). The substitution/tail behavior under test is
+// identical on both arms; only the quote dialect follows the host.
+fn auto_quoted(path: &std::path::Path) -> String {
+    if cfg!(windows) {
+        crate::cmd_double_quoted(&path.to_string_lossy())
+    } else {
+        crate::posix_single_quoted(&path.to_string_lossy())
+    }
+}
+
+// A relative `run:` carrying trailing text is the shell arm (never
+// direct-exec, even though the leading token names a real file) — the
+// remainder is untouched so the shell, not this function, parses it. The
+// leading token IS resolved against `script_dir` and substituted back in,
+// shell-quoted, fixing the original triage bug (unresolved relative paths)
+// without taking shell parsing away from the shell (the C1 regression this
+// pins against).
+#[test]
+fn resolve_run_target_relative_with_args_substitutes_leading_token_only() {
+    let script_dir = tempfile::tempdir().unwrap();
+    std::fs::write(script_dir.path().join("foo.sh"), "#!/bin/sh\n").unwrap();
+    let target = resolve_run_target("foo.sh --flag value", script_dir.path(), ScriptShell::Auto);
+    let expected_path = auto_quoted(&script_dir.path().join("foo.sh"));
+    match target {
+        RunTarget::Inline(cmd) => {
+            assert_eq!(cmd, format!("{expected_path} --flag value"));
+        }
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
+// An absolute `run:` naming exactly an existing file, with no trailing
+// text, is direct exec and never joined onto `script_dir`.
+#[test]
+fn resolve_run_target_absolute_no_args_is_direct_exec() {
+    let target_dir = tempfile::tempdir().unwrap();
+    let script_dir = tempfile::tempdir().unwrap();
+    let absolute = target_dir.path().join("run-me");
+    std::fs::write(&absolute, "#!/bin/sh\n").unwrap();
+    let run_str = absolute.to_str().expect("tempdir path must be utf8");
+    let target = resolve_run_target(run_str, script_dir.path(), ScriptShell::Auto);
+    match target {
+        RunTarget::File(resolved) => assert_eq!(resolved, absolute),
+        RunTarget::Inline(cmd) => panic!("expected direct exec, got inline: {cmd}"),
+    }
+}
+
+// An absolute `run:` carrying trailing text is the shell arm, with the
+// leading absolute path substituted back in unchanged (never re-joined) and
+// shell-quoted.
+#[test]
+fn resolve_run_target_absolute_with_args_substitutes_leading_token_only() {
+    let target_dir = tempfile::tempdir().unwrap();
+    let script_dir = tempfile::tempdir().unwrap();
+    let absolute = target_dir.path().join("run-me");
+    std::fs::write(&absolute, "#!/bin/sh\n").unwrap();
+    let run_str = format!("{} --flag value", absolute.to_str().unwrap());
+    let target = resolve_run_target(&run_str, script_dir.path(), ScriptShell::Auto);
+    let expected_path = auto_quoted(&absolute);
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, format!("{expected_path} --flag value")),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
+// A leading token that does NOT resolve to a real file (an ordinary shell
+// command, e.g. `echo hello`) is left completely untouched — no
+// substitution, no existence assumption, exactly the shell-arm behavior
+// from before any `run:` resolution existed.
+#[test]
+fn resolve_run_target_unresolvable_leading_token_is_left_untouched() {
+    let script_dir = tempfile::tempdir().unwrap();
+    let target = resolve_run_target("echo hello", script_dir.path(), ScriptShell::Auto);
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, "echo hello"),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
+// A single relative token with no whitespace that doesn't exist as a file
+// (a PATH-resolved binary name) is also left untouched — the no-whitespace
+// early return in `resolve_run_target`.
+#[test]
+fn resolve_run_target_unresolvable_single_token_is_left_untouched() {
+    let script_dir = tempfile::tempdir().unwrap();
+    let target = resolve_run_target("does-not-exist.sh", script_dir.path(), ScriptShell::Auto);
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, "does-not-exist.sh"),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
+// N1 regression pin: a leading `.` (the POSIX dot-source builtin, e.g.
+// `run: . ~/.venv/bin/activate && python app.py`) must NOT resolve —
+// `script_dir.join(".")` names `script_dir` itself, which `exists()` (but
+// not `is_file()`) accepts, and substituting a directory in place of the
+// dot-source idiom silently rewrites `run:` into nonsense. The whole string
+// is left byte-identical, so the shell's own dot-source handling still runs.
+#[test]
+fn resolve_run_target_leading_dot_source_builtin_is_left_untouched() {
+    let script_dir = tempfile::tempdir().unwrap();
+    let run_str = ". ~/.venv/bin/activate && python app.py";
+    let target = resolve_run_target(run_str, script_dir.path(), ScriptShell::Auto);
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, run_str),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
+// N1 regression pin: a block scalar opening with a blank line
+// (`run_str == "\necho hi\n"`) has an empty leading token —
+// `script_dir.join("")` names `script_dir` itself, the same directory trap
+// as the dot-source case. Must not substitute `script_dir` in as argv[0].
+#[test]
+fn resolve_run_target_empty_leading_token_is_left_untouched() {
+    let script_dir = tempfile::tempdir().unwrap();
+    let run_str = "\necho hi\n";
+    let target = resolve_run_target(run_str, script_dir.path(), ScriptShell::Auto);
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, run_str),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
+// A single-line `run: |` block scalar clips to exactly one trailing
+// newline (YAML block-scalar "clip" chomping, the default). That newline
+// defeats the whole-string existence test (no real file is named
+// "foo.sh\n"), so this is the shell arm — same as any other trailing text
+// — with the leading token resolved and the newline preserved verbatim in
+// the tail, so the resolved command still ends the line the way the shell
+// expects.
+#[test]
+fn resolve_run_target_single_line_block_scalar_trailing_newline_is_shell_arm() {
+    let script_dir = tempfile::tempdir().unwrap();
+    std::fs::write(script_dir.path().join("foo.sh"), "#!/bin/sh\n").unwrap();
+    let target = resolve_run_target("foo.sh\n", script_dir.path(), ScriptShell::Auto);
+    let expected_path = auto_quoted(&script_dir.path().join("foo.sh"));
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, format!("{expected_path}\n")),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
+// `$CFGD_CONFIG_DIR/...` is a shell-expanded env-var reference the script's
+// own environment supplies at spawn time (`build_script_env`) — this
+// function only ever tests the LITERAL leading token against the
+// filesystem, so a literal directory named "$CFGD_CONFIG_DIR" never exists
+// and the whole string passes through byte-identical, unresolved, for the
+// shell to expand.
+#[test]
+fn resolve_run_target_config_dir_var_form_is_left_byte_identical() {
+    let script_dir = tempfile::tempdir().unwrap();
+    let target = resolve_run_target(
+        "$CFGD_CONFIG_DIR/foo.sh --flag",
+        script_dir.path(),
+        ScriptShell::Auto,
+    );
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, "$CFGD_CONFIG_DIR/foo.sh --flag"),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
+// C1 regression pin (unit level): `&&` in the trailing text must survive
+// into the substituted command unchanged — the discriminator that broke
+// this (splitting the WHOLE string on first whitespace and treating
+// everything after as argv) is gone.
+#[test]
+fn resolve_run_target_preserves_shell_metacharacters_in_tail() {
+    let script_dir = tempfile::tempdir().unwrap();
+    std::fs::write(script_dir.path().join("deploy.sh"), "#!/bin/sh\n").unwrap();
+    let target = resolve_run_target(
+        "deploy.sh && echo done",
+        script_dir.path(),
+        ScriptShell::Auto,
+    );
+    let expected_path = auto_quoted(&script_dir.path().join("deploy.sh"));
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, format!("{expected_path} && echo done")),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
+
+// C1 regression pin (unit level): quoted trailing arguments survive
+// unsplit — `resolve_run_target` never touches anything past the leading
+// token's own byte span.
+#[test]
+fn resolve_run_target_preserves_quoted_tail() {
+    let script_dir = tempfile::tempdir().unwrap();
+    std::fs::write(script_dir.path().join("greet.sh"), "#!/bin/sh\n").unwrap();
+    let target = resolve_run_target(
+        "greet.sh \"hello world\"",
+        script_dir.path(),
+        ScriptShell::Auto,
+    );
+    let expected_path = auto_quoted(&script_dir.path().join("greet.sh"));
+    match target {
+        RunTarget::Inline(cmd) => assert_eq!(cmd, format!("{expected_path} \"hello world\"")),
+        RunTarget::File(resolved) => panic!("expected shell arm, got direct exec: {resolved:?}"),
+    }
+}
 
 // An absolute `run:` path that exists is executed directly as a file
 // (scripts.rs:306-307, the non-relative branch), NOT joined against
@@ -1298,12 +1659,174 @@ fn execute_script_absolute_run_path_runs_as_file() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect("absolute executable run path must run directly");
     assert!(changed, "a zero-exit file script reports changed=true");
     assert!(
         label.contains(true_bin),
         "label should reference the absolute run path: {label}"
+    );
+}
+
+// End-to-end: a relative `run:` carrying trailing arguments resolves its
+// FIRST token against script_dir, substitutes the quoted absolute path back
+// into the command string, and hands the whole thing to the shell — the
+// shell, not this function, splits "world" into $1. Before `resolve_run_target`
+// existed, the whole string (space and all) was tested for existence as one
+// path and never matched, so the leading token was never resolved against
+// script_dir at all.
+#[cfg(unix)]
+#[test]
+fn execute_script_relative_run_path_with_args_resolves_against_script_dir() {
+    let printer = crate::test_helpers::test_printer();
+    let work = tempfile::tempdir().unwrap();
+    let script_dir = tempfile::tempdir().unwrap();
+    let script_path = script_dir.path().join("greet.sh");
+    std::fs::write(&script_path, "#!/bin/sh\necho \"hello $1\"\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let entry = ScriptEntry::Simple("greet.sh world".into());
+
+    let (_label, changed, captured) = execute_script(
+        &entry,
+        script_dir.path(),
+        work.path(),
+        &[],
+        std::time::Duration::from_secs(5),
+        &printer,
+        None,
+        None,
+        ScriptReport::default(),
+    )
+    .expect("relative run path with trailing args must resolve against script_dir and run");
+    assert!(changed, "a zero-exit file script reports changed=true");
+    let out = captured.unwrap_or_default();
+    assert!(
+        out.contains("hello world"),
+        "trailing arg must reach the script's argv: {out:?}"
+    );
+}
+
+// C1 regression pin (end-to-end): `&&` after a resolved leading token must
+// still chain to a second command — the bug this fix exists for. Before the
+// `RunTarget` split, the whole `run:` string (space and all) was tested for
+// existence as one path, so a trailing `&& …` became literal argv of a
+// script that never received it as shell syntax.
+#[cfg(unix)]
+#[test]
+fn execute_script_metacharacters_after_resolved_script_still_run() {
+    let printer = crate::test_helpers::test_printer();
+    let work = tempfile::tempdir().unwrap();
+    let script_dir = tempfile::tempdir().unwrap();
+    let script_path = script_dir.path().join("first.sh");
+    std::fs::write(&script_path, "#!/bin/sh\necho first\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let entry = ScriptEntry::Simple("first.sh && echo second".into());
+
+    let (_label, changed, captured) = execute_script(
+        &entry,
+        script_dir.path(),
+        work.path(),
+        &[],
+        std::time::Duration::from_secs(5),
+        &printer,
+        None,
+        None,
+        ScriptReport::default(),
+    )
+    .expect("a resolved leading token followed by `&&` must still run as shell syntax");
+    assert!(changed, "a zero-exit script reports changed=true");
+    let out = captured.unwrap_or_default();
+    assert!(out.contains("first"), "first command must run: {out:?}");
+    assert!(
+        out.contains("second"),
+        "second command chained with && must also run: {out:?}"
+    );
+}
+
+// C1 regression pin (end-to-end): a quoted trailing argument must reach the
+// script as ONE argv entry, not be split on the embedded space. Before this
+// fix the whole string never resolved as a file, so it ran inline via the
+// shell already — this pins that the resolved-leading-token substitution
+// does not disturb quoting later in the string.
+#[cfg(unix)]
+#[test]
+fn execute_script_quoted_argument_reaches_script_unsplit() {
+    let printer = crate::test_helpers::test_printer();
+    let work = tempfile::tempdir().unwrap();
+    let script_dir = tempfile::tempdir().unwrap();
+    let script_path = script_dir.path().join("greet.sh");
+    std::fs::write(&script_path, "#!/bin/sh\necho \"[$1][$2]\"\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let entry = ScriptEntry::Simple("greet.sh \"hello world\"".into());
+
+    let (_label, changed, captured) = execute_script(
+        &entry,
+        script_dir.path(),
+        work.path(),
+        &[],
+        std::time::Duration::from_secs(5),
+        &printer,
+        None,
+        None,
+        ScriptReport::default(),
+    )
+    .expect("a quoted trailing argument must run");
+    assert!(changed, "a zero-exit script reports changed=true");
+    let out = captured.unwrap_or_default();
+    assert!(
+        out.contains("[hello world][]"),
+        "the quoted argument must arrive as a single $1, leaving $2 empty: {out:?}"
+    );
+}
+
+// C1 regression pin (end-to-end): a multi-line `run: |` body — a resolved
+// leading token on the first line, an ordinary shell statement on the
+// second — must run BOTH lines. Before this fix the whole string was
+// tested for existence as one path (never matching, because of the
+// embedded newline), so it fell into the same args-ification bug as the
+// single-line case: only the first line ever ran.
+#[cfg(unix)]
+#[test]
+fn execute_script_multiline_body_runs_every_line() {
+    let printer = crate::test_helpers::test_printer();
+    let work = tempfile::tempdir().unwrap();
+    let script_dir = tempfile::tempdir().unwrap();
+    let script_path = script_dir.path().join("first.sh");
+    std::fs::write(&script_path, "#!/bin/sh\necho first\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let entry = ScriptEntry::Simple("first.sh\necho second".into());
+
+    let (_label, changed, captured) = execute_script(
+        &entry,
+        script_dir.path(),
+        work.path(),
+        &[],
+        std::time::Duration::from_secs(5),
+        &printer,
+        None,
+        None,
+        ScriptReport::default(),
+    )
+    .expect("every line of a multi-line body must run");
+    assert!(changed, "a zero-exit script reports changed=true");
+    let out = captured.unwrap_or_default();
+    assert!(out.contains("first"), "first line must run: {out:?}");
+    assert!(
+        out.contains("second"),
+        "second line of the multi-line body must also run: {out:?}"
     );
 }
 
@@ -1327,13 +1850,14 @@ fn execute_script_nonzero_exit_errors_with_exit_code() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect_err("a non-zero exit must surface as Err");
 
     match err {
         CfgdError::Config(ConfigError::Invalid { message }) => {
             assert!(
-                message.contains("failed (exit 7)"),
+                message.contains("failed (exit code 7)"),
                 "message should name the real exit code: {message}"
             );
             assert!(
@@ -1384,6 +1908,7 @@ fn execute_script_spawn_enoent_maps_to_interpreter_hint() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect_err("a missing interpreter must surface as Err, not hang");
 
@@ -1409,7 +1934,7 @@ fn execute_script_spawn_enoent_maps_to_interpreter_hint() {
 #[test]
 fn pwsh_inline_command_argv_shape() {
     let tmp = tempfile::tempdir().unwrap();
-    let cmd = build_inline_command(ScriptShell::Pwsh, "Get-Date", tmp.path(), None);
+    let cmd = build_inline_command(ScriptShell::Pwsh, "Get-Date", tmp.path(), None, true);
     assert_eq!(
         cmd.get_program().to_string_lossy(),
         "pwsh",
@@ -1567,6 +2092,7 @@ fn multi_line_inline_script_never_reaches_status_subject_with_newline() {
         &printer,
         None,
         None,
+        ScriptReport::default(),
     )
     .expect("creates guard must skip cleanly, not error");
 
@@ -1584,5 +2110,421 @@ fn multi_line_inline_script_never_reaches_status_subject_with_newline() {
     assert!(
         !rendered.contains("echo two") && !rendered.contains("echo three"),
         "only the first line of a multi-line inline script may reach a status subject: {rendered:?}"
+    );
+}
+
+// --- one status line per `execute_script`, whatever the exit ---
+
+use crate::test_helpers::settled_status_lines as settled_lines;
+
+fn script(run: &str) -> ScriptEntry {
+    ScriptEntry::Full {
+        run: run.into(),
+        timeout: None,
+        idle_timeout: None,
+        continue_on_error: None,
+        shell: ScriptShell::Auto,
+        only_if: None,
+        unless: None,
+        creates: None,
+        interactive: false,
+        workdir: None,
+    }
+}
+
+fn with_guard(mut entry: ScriptEntry, f: impl FnOnce(&mut ScriptEntry)) -> ScriptEntry {
+    f(&mut entry);
+    entry
+}
+
+/// Write a file the OS will accept as executable but refuse to load, and return
+/// its path. The pre-window spawn seam: `Command::spawn` fails AFTER the file
+/// branch is chosen and BEFORE `output_window_at` opens anything, with an error
+/// that is not `NotFound`. Unix spells it as a shebang naming an absent
+/// interpreter, Windows as `.exe` bytes that are not a PE image.
+#[cfg(unix)]
+fn write_unspawnable(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("bad-shebang.sh");
+    std::fs::write(&path, "#!/nonexistent/interp\ntrue\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(windows)]
+fn write_unspawnable(dir: &std::path::Path) -> std::path::PathBuf {
+    // `is_executable` answers true on the extension alone, so no mode bit is
+    // needed and the file branch is still the one taken.
+    let path = dir.join("not-an-image.exe");
+    std::fs::write(&path, "this is not a PE image\n").unwrap();
+    path
+}
+
+/// The exit table's shell bodies, spelled for the shell `ScriptShell::Auto`
+/// resolves to: `sh -c` on Unix, `cmd.exe /C` on Windows.
+#[cfg(unix)]
+mod body {
+    pub const OK: &str = "true";
+    pub const FAIL: &str = "exit 1";
+    pub const FAIL_3: &str = "exit 3";
+    /// Outlives the 50ms timeout the guard-timeout row drives.
+    pub const SLOW: &str = "sleep 5";
+}
+
+#[cfg(windows)]
+mod body {
+    pub const OK: &str = "exit 0";
+    pub const FAIL: &str = "exit 1";
+    pub const FAIL_3: &str = "exit 3";
+    /// `ping -n` rather than `timeout /t`: `timeout` reads the console input
+    /// handle and fails outright when stdin is redirected, which it is here.
+    pub const SLOW: &str = "ping -n 6 127.0.0.1";
+}
+
+/// Run one entry through the shipped wrapper and return the settled lines it
+/// emitted, with `stdin_is_tty` supplied so the interactive arm is reachable.
+fn drive(entry: &ScriptEntry, stdin_is_tty: bool, timeout_ms: u64) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    let _ = super::execute_script_with_tty(
+        stdin_is_tty,
+        entry,
+        dir.path(),
+        dir.path(),
+        &[],
+        std::time::Duration::from_millis(timeout_ms),
+        &printer,
+        None,
+        None,
+        ScriptReport::default(),
+    );
+    drop(printer);
+    settled_lines(&crate::output::strip_ansi(&cap.human()))
+}
+
+#[test]
+fn every_script_exit_emits_one_status() {
+    let spawn_dir = tempfile::tempdir().unwrap();
+    let existing = tempfile::tempdir().unwrap();
+    let creates_path = existing.path().join("already-there");
+    std::fs::write(&creates_path, "x").unwrap();
+    // Absolute, because `drive` runs every case from a tempdir of its own and a
+    // relative name that resolves to nothing lands in the inline-command
+    // branch instead — a case that passes for the wrong reason.
+    let unspawnable = script(&write_unspawnable(spawn_dir.path()).display().to_string());
+
+    let cases: Vec<(&str, ScriptEntry, bool, u64, char)> = vec![
+        (
+            "creates path exists",
+            with_guard(script(body::OK), |e| {
+                if let ScriptEntry::Full { creates, .. } = e {
+                    *creates = Some(creates_path.display().to_string());
+                }
+            }),
+            false,
+            5_000,
+            '\u{2014}',
+        ),
+        (
+            "onlyIf fails",
+            with_guard(script(body::OK), |e| {
+                if let ScriptEntry::Full { only_if, .. } = e {
+                    *only_if = Some(body::FAIL.to_string());
+                }
+            }),
+            false,
+            5_000,
+            '\u{2014}',
+        ),
+        (
+            "unless holds",
+            with_guard(script(body::OK), |e| {
+                if let ScriptEntry::Full { unless, .. } = e {
+                    *unless = Some(body::OK.to_string());
+                }
+            }),
+            false,
+            5_000,
+            '\u{2014}',
+        ),
+        (
+            "interactive without a tty",
+            with_guard(script(body::OK), |e| {
+                if let ScriptEntry::Full { interactive, .. } = e {
+                    *interactive = true;
+                }
+            }),
+            false,
+            5_000,
+            '\u{26A0}',
+        ),
+        (
+            "interactive success",
+            with_guard(script(body::OK), |e| {
+                if let ScriptEntry::Full { interactive, .. } = e {
+                    *interactive = true;
+                }
+            }),
+            true,
+            5_000,
+            '\u{2713}',
+        ),
+        (
+            "interactive failure",
+            with_guard(script(body::FAIL_3), |e| {
+                if let ScriptEntry::Full { interactive, .. } = e {
+                    *interactive = true;
+                }
+            }),
+            true,
+            5_000,
+            '\u{2717}',
+        ),
+        (
+            "windowed success",
+            script(body::OK),
+            false,
+            5_000,
+            '\u{2713}',
+        ),
+        (
+            "windowed failure",
+            script(body::FAIL),
+            false,
+            5_000,
+            '\u{2717}',
+        ),
+        ("unspawnable image", unspawnable, false, 5_000, '\u{2717}'),
+        (
+            // The guard body outlives the timeout, so `run_guard_command`
+            // returns a real error before any window is opened. No absent
+            // binary is needed and nothing spawned can hang the suite.
+            "guard command times out",
+            with_guard(script(body::OK), |e| {
+                if let ScriptEntry::Full { only_if, .. } = e {
+                    *only_if = Some(body::SLOW.to_string());
+                }
+            }),
+            false,
+            50,
+            '\u{2717}',
+        ),
+    ];
+
+    for (label, entry, tty, timeout_ms, glyph) in cases {
+        let lines = drive(&entry, tty, timeout_ms);
+        assert_eq!(
+            lines.len(),
+            1,
+            "{label}: expected one status, got {lines:?}"
+        );
+        assert!(
+            lines[0].starts_with(glyph),
+            "{label}: expected role glyph {glyph}, got {}",
+            lines[0]
+        );
+    }
+
+    // The interactive-success row asserts more than its glyph: a silent `Ok`
+    // rendered as a `Fail` is exactly what the outcome-branching tail exists
+    // to prevent, so it must carry a duration and no ` — ` detail.
+    let interactive_ok = drive(
+        &with_guard(script(body::OK), |e| {
+            if let ScriptEntry::Full { interactive, .. } = e {
+                *interactive = true;
+            }
+        }),
+        true,
+        5_000,
+    );
+    assert!(
+        !interactive_ok[0].contains(" \u{2014} "),
+        "an attended success carries no error detail: {}",
+        interactive_ok[0]
+    );
+    assert!(
+        interactive_ok[0].ends_with("s)"),
+        "an attended success carries its elapsed duration: {}",
+        interactive_ok[0]
+    );
+}
+
+#[test]
+fn unspawnable_script_emits_one_status_without_opening_a_window() {
+    // `resolved.exists()` and the exec check both pass, so the file branch is
+    // taken and the spawn fails on the IMAGE — above `output_window_at`, which
+    // is the ordering this test pins.
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_unspawnable(dir.path());
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("the helper names its own file");
+
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    let result = execute_script(
+        &script(name),
+        dir.path(),
+        dir.path(),
+        &[],
+        std::time::Duration::from_secs(5),
+        &printer,
+        None,
+        None,
+        ScriptReport::default(),
+    );
+    drop(printer);
+    let out = crate::output::strip_ansi(&cap.human());
+
+    assert!(result.is_err(), "an unloadable image must not succeed");
+    let lines = settled_lines(&out);
+    assert_eq!(lines.len(), 1, "exactly one status line: {out}");
+    assert!(lines[0].starts_with('\u{2717}'), "got: {}", lines[0]);
+    assert!(
+        lines[0].contains(" \u{2014} "),
+        "the collapsed spawn error is the detail: {}",
+        lines[0]
+    );
+    assert!(
+        !out.contains('\u{25D0}'),
+        "no window may open before the spawn fails: {out}"
+    );
+    assert!(
+        !out.contains('\u{2299}'),
+        "a dropped window's Info line is the two-line regression: {out}"
+    );
+}
+
+#[test]
+fn script_failure_role_follows_non_fatal() {
+    let mut rendered = Vec::new();
+    for non_fatal in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (printer, cap) = crate::output::Printer::for_test_doc();
+        let _ = execute_script(
+            &script(body::FAIL),
+            dir.path(),
+            dir.path(),
+            &[],
+            std::time::Duration::from_secs(5),
+            &printer,
+            None,
+            None,
+            ScriptReport {
+                subject: ScriptSubject::Bare,
+                non_fatal,
+                ..ScriptReport::default()
+            },
+        );
+        drop(printer);
+        let mut lines = settled_lines(&crate::output::strip_ansi(&cap.human()));
+        assert_eq!(lines.len(), 1, "one line per invocation: {lines:?}");
+        rendered.push(lines.remove(0));
+    }
+
+    assert!(rendered[0].starts_with('\u{2717}'), "got: {}", rendered[0]);
+    assert!(rendered[1].starts_with('\u{26A0}'), "got: {}", rendered[1]);
+    // Asserted before the placeholdering below, which would otherwise let a
+    // renderer that stopped emitting a duration pass unnoticed.
+    for line in &rendered {
+        assert!(
+            line.ends_with("s)"),
+            "each failure carries a duration: {line}"
+        );
+    }
+    assert_eq!(
+        without_duration(rendered[0].trim_start_matches('\u{2717}')),
+        without_duration(rendered[1].trim_start_matches('\u{26A0}')),
+        "only the role differs between a fatal and a non-fatal failure"
+    );
+}
+
+/// A status line with its wall-clock `(0.0s)` suffix replaced by a placeholder.
+///
+/// Two separately-spawned processes settle on either side of a tenth-of-a-second
+/// boundary often enough that comparing their rendered lines verbatim asserts on
+/// the host's scheduler rather than on the composition under test.
+fn without_duration(line: &str) -> String {
+    let Some(open) = line.rfind(" (") else {
+        return line.to_string();
+    };
+    let inner = &line[open + 2..];
+    let is_duration = inner.ends_with("s)")
+        && inner[..inner.len() - 2]
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.');
+    if is_duration {
+        format!("{} (<duration>)", &line[..open])
+    } else {
+        line.to_string()
+    }
+}
+
+#[test]
+fn script_status_fail_after_window_emits_one_fail() {
+    // The post-window `?` — `child.try_wait()`, a `waitpid` failure no test can
+    // provoke portably — driven on the type that makes a second line
+    // impossible.
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    {
+        let mut st = ScriptStatus::new(
+            &printer,
+            "exit 1",
+            ScriptReport {
+                subject: ScriptSubject::Hook("postApply"),
+                non_fatal: false,
+                ..ScriptReport::default()
+            },
+        );
+        st.open_window();
+        st.finish_fail("waitpid failed", None);
+    }
+    drop(printer);
+    let out = crate::output::strip_ansi(&cap.human());
+    let lines = settled_lines(&out);
+
+    assert_eq!(lines.len(), 1, "exactly one settled line: {out}");
+    assert!(lines[0].starts_with('\u{2717}'), "got: {}", lines[0]);
+    assert!(
+        lines[0].contains("postApply: exit 1"),
+        "the marked subject, never the spinner's label: {}",
+        lines[0]
+    );
+    assert!(
+        !out.contains('\u{2299}'),
+        "the window was finished, not dropped: {out}"
+    );
+}
+
+#[test]
+fn script_status_status_after_open_window_emits_one_line() {
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    {
+        let mut st = ScriptStatus::new(
+            &printer,
+            "exit 1",
+            ScriptReport {
+                subject: ScriptSubject::Hook("postApply"),
+                non_fatal: false,
+                ..ScriptReport::default()
+            },
+        );
+        st.open_window();
+        st.status(crate::output::Role::Skipped, Some("creates path exists"));
+    }
+    drop(printer);
+    let out = crate::output::strip_ansi(&cap.human());
+    let lines = settled_lines(&out);
+
+    assert_eq!(lines.len(), 1, "exactly one settled line: {out}");
+    assert!(lines[0].starts_with('\u{2014}'), "got: {}", lines[0]);
+    assert!(
+        lines[0].contains("postApply: exit 1"),
+        "the marked subject: {}",
+        lines[0]
+    );
+    assert!(
+        !out.contains('\u{2299}'),
+        "no Status(Info) from the window's Drop: {out}"
     );
 }

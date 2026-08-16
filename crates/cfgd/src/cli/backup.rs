@@ -3,7 +3,8 @@
 
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::backup::{BackupUnit, SnapshotInfo, run_backup};
+use cfgd_core::backup::{BackupUnit, SnapshotInfo};
+use cfgd_core::format_bytes;
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 use cfgd_core::state::{BackupRunRecord, BackupRunStatus};
 
@@ -46,7 +47,7 @@ fn find_backup_spec<'a>(
 /// the run-history store, and the state dir a `BackupUnit` anchors to.
 fn unit_context(cli: &Cli) -> anyhow::Result<(PathBuf, cfgd_core::state::StateStore, PathBuf)> {
     let config_dir = config_dir(cli);
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())?;
     Ok((config_dir, state, state_dir))
 }
@@ -157,7 +158,7 @@ pub fn cmd_backup_list(
         return Ok(());
     }
 
-    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli)?;
+    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
     // Cache-only composition (no network refresh) and Report constraint mode:
     // listing backups is a read surface, the same class as
     // `status`/`diff`/`compliance`. `backup run` is not — it composes in
@@ -196,7 +197,7 @@ pub fn cmd_backup_list(
     // "never" with a warning keeps the config half of the command useful when
     // `state.db` is unreadable, matching how `resolve_backup_tasks` treats the
     // same failure.
-    let state = match open_state_store(cli.state_dir.as_deref()) {
+    let state = match open_state_store(cli.state_dir.as_deref(), cli.scope()) {
         Ok(state) => Some(state),
         Err(e) => {
             printer
@@ -332,7 +333,7 @@ pub fn run_backup_restore(
 ) -> anyhow::Result<Option<cfgd_core::backup::RestoreOutcome>> {
     printer.heading("Restore Backup");
 
-    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli)?;
+    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
     // Enforce, like `backup run`: a restore executes the unit's hooks and
     // overwrites live data, so a source constraint violation must abort rather
     // than be recorded and stepped over.
@@ -384,8 +385,9 @@ pub fn run_backup_restore(
         Role::Fail
     };
     let subject = format!(
-        "backup '{}' restored from {}",
-        outcome.name, outcome.snapshot
+        "{} restored from {}",
+        cfgd_core::reconciler::Owner::backup(&outcome.name).token(),
+        outcome.snapshot
     );
     // `outcome.restored_to`, not the requested target: a symlinked source is
     // followed, and the operator needs to be told where the bytes actually went.
@@ -477,32 +479,29 @@ pub fn cmd_backup_run(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyho
 
 /// What a `backup run` invocation did, as the exit-code decision needs it.
 ///
-/// A refused unit produces no [`BackupRunRecord`] — nothing ran — so the
-/// records alone cannot distinguish "everything succeeded" from "one unit was
-/// already being backed up by someone else". Both must exit nonzero.
+/// One report per requested unit, in request order. A `Vec<BackupRunRecord>`
+/// cannot answer the question: a unit refused for a held lock produces no
+/// record at all, so "every record is clean" would be vacuously true for it,
+/// and both shapes must exit nonzero.
 #[derive(Debug, Default)]
 pub struct BackupRunOutcome {
-    /// One record per unit that actually ran.
-    pub records: Vec<BackupRunRecord>,
-    /// Units skipped because another process held their per-unit lock.
-    pub busy: Vec<String>,
+    pub reports: Vec<cfgd_core::backup::BackupRunReport>,
 }
 
 impl BackupRunOutcome {
     /// True when every requested unit ran and produced an intact snapshot.
-    ///
-    /// Named apart from [`BackupRunRecord::is_clean`] because it covers the
-    /// case that has no record at all: a unit refused for a held lock never
-    /// ran, so "every record is clean" would be vacuously true for it.
     pub fn fully_clean(&self) -> bool {
-        self.busy.is_empty() && self.records.iter().all(BackupRunRecord::is_clean)
+        self.reports
+            .iter()
+            .all(cfgd_core::backup::BackupRunReport::is_clean)
     }
 }
 
-/// Core of `backup run`: resolves the target unit(s), runs each through the
-/// backup engine, and returns what happened. `name = None` runs every
-/// declared backup (scheduled or not — the schedule only gates the automatic
-/// run inside `cfgd apply`; an explicit `backup run` always runs).
+/// Core of `backup run`: resolves the target unit(s) and runs them as one run —
+/// a `Backup` header, the `Backups` pseudo-phase with a `backup:<name>` group
+/// per unit, and a rollup. `name = None` runs every declared backup (scheduled
+/// or not — the schedule only gates the automatic run inside `cfgd apply`; an
+/// explicit `backup run` always runs).
 ///
 /// A unit another process is already backing up is reported in the returned
 /// outcome, NOT as an `Err`: the summary `Doc` has been emitted by then, and an
@@ -513,9 +512,7 @@ pub fn run_backup_run(
     printer: &Printer,
     name: Option<&str>,
 ) -> anyhow::Result<BackupRunOutcome> {
-    printer.heading("Run Backups");
-
-    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli)?;
+    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
     // Cache-only composition (no network refresh), but Enforce constraint mode:
     // `backup run` executes user-declared hooks and writes snapshots, so it is a
     // mutating surface like apply/plan/daemon and must abort on a source
@@ -546,44 +543,30 @@ pub fn run_backup_run(
     }
 
     let (config_dir, state, state_dir) = unit_context(cli)?;
+    let units: Vec<BackupUnit<'_>> = targets
+        .iter()
+        .map(|spec| BackupUnit::new(spec, &config_dir, &profile_name, &state_dir))
+        .collect();
 
-    let mut outcome = BackupRunOutcome::default();
-    let mut outputs: Vec<BackupRunOutput> = Vec::with_capacity(targets.len());
-    for spec in targets {
-        let unit = BackupUnit::new(spec, &config_dir, &profile_name, &state_dir);
-        let record = match run_backup(&unit, &state, printer) {
-            Ok(record) => record,
-            // Another surface (a daemon timer fire, an apply) holds this unit's
-            // lock. The unit IS being backed up, just not by us, so the line
-            // reads `Skipped` — the same word `cfgd apply` uses for the same
-            // event and the same `"skipped"` the payload carries. Only the exit
-            // code differs between the two surfaces, because here the user
-            // named a run that did not happen. Every OTHER unit still runs: the
-            // collision is one unit's, not the command's.
-            Err(cfgd_core::errors::CfgdError::Backup(cfgd_core::errors::BackupError::Busy {
-                holder,
-                ..
-            })) => {
-                printer
-                    .status(Role::Skipped, format!("backup '{}'", spec.name))
-                    .detail(format!("already running ({holder})"));
-                outputs.push(BackupRunOutput {
-                    name: spec.name.clone(),
-                    status: "skipped".to_string(),
-                    destination_path: None,
-                    clean: false,
-                    error: Some(format!("already running ({holder})")),
-                });
-                outcome.busy.push(spec.name.clone());
-                continue;
-            }
-            Err(e) => return Err(e.into()),
-        };
-        cfgd_core::backup::report_backup_record(printer, &record);
-        outputs.push(BackupRunOutput::from(&record));
-        outcome.records.push(record);
-    }
+    let ctx = cfgd_core::reconciler::RunContext {
+        title: cfgd_core::reconciler::RunTitle::Backup,
+        config_path: Some(cli.config.as_path()),
+        profile: Some(profile_name.as_str()),
+        modules: &[],
+        trigger: None,
+    };
+    let (_status, reports) =
+        cfgd_core::reconciler::ApplyRun::backups(ctx, &units, &state).execute_backups(printer)?;
 
+    // One report per unit, in unit order — `render_backups` pushes them as it
+    // walks the same slice. A silent `zip` truncation here would drop payload
+    // entries for units that did run.
+    debug_assert_eq!(targets.len(), reports.len(), "one report per target unit");
+    let outputs: Vec<BackupRunOutput> = targets
+        .iter()
+        .zip(&reports)
+        .map(|(spec, report)| BackupRunOutput::from_report(&spec.name, report))
+        .collect();
     printer.emit(Doc::new().with_data(&outputs));
-    Ok(outcome)
+    Ok(BackupRunOutcome { reports })
 }

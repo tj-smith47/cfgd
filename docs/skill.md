@@ -111,7 +111,7 @@ Installed skills (user scope)
 
 ```console
 $ cfgd skill remove module
-Remove the module skill from 2 provider(s)? [y/N] y
+Remove the module skill from 2 providers? [y/N] y
 Removing skill module (project scope)
   claude-code: .claude/skills/cfgd-module/SKILL.md
   codex: AGENTS.md

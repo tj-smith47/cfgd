@@ -4,7 +4,7 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 use serde::Serialize;
 
-use super::source::{clone_into, is_git_source, resolve_from};
+use super::source::{clone_into, is_clonable_source, resolve_from};
 use super::*;
 
 // ─────────────────────────────────────────────────────
@@ -27,6 +27,7 @@ pub struct InitArgs<'a> {
     pub state_dir: Option<&'a Path>,
     pub runtime_dir: Option<&'a Path>,
     pub scope: cfgd_core::Scope,
+    pub on_conflict: crate::cli::OnConflict,
 }
 
 /// Structured-output payload for `cfgd init`. Drives `-o json|yaml|jsonpath|template`.
@@ -51,9 +52,15 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
         cfgd_core::exit::ExitCode::Error.exit();
     }
 
-    // 1. Determine target directory and whether --from did a fresh clone
-    let from_used = args.from.is_some();
-    let target_dir = if let Some(from) = args.from {
+    // 1. Determine target directory and whether --from did a fresh clone.
+    // The `--from` value is resolved ONCE here — an existing path stays a path,
+    // a GitHub `owner/repo` shorthand becomes a clone URL — so the clone below
+    // and the classification further down judge the same string.
+    let from = args
+        .from
+        .map(|f| cfgd_core::resolve_repo_reference(f).into_owned());
+    let from_used = from.is_some();
+    let target_dir = if let Some(from) = from.as_deref() {
         let explicit_path = args.path.map(|p| cfgd_core::expand_tilde(Path::new(p)));
         resolve_from(from, explicit_path.as_deref(), args.branch, printer)?
     } else {
@@ -71,7 +78,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // 3. Check if already initialized
     // When --from is used, resolve_from handles the "already initialized" case
     // and the clone creates cfgd.yaml — skip this check so we reach the apply step
-    if target_dir.join("cfgd.yaml").exists() && !from_used {
+    if target_dir.join(cfgd_core::config::CONFIG_FILENAME).exists() && !from_used {
         printer.status_simple(
             Role::Info,
             format!("Already initialized at {}", target_dir.posix()),
@@ -92,16 +99,24 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // into a populated directory (and the failed attempt used to take the
     // directory's contents with it), while `scaffold` would overwrite the
     // user's cfgd.yaml with a fresh template.
-    let already_initialized = target_dir.join("cfgd.yaml").exists();
-    if let Some(url) = args.from.filter(|f| is_git_source(f)) {
+    let already_initialized = target_dir.join(cfgd_core::config::CONFIG_FILENAME).exists();
+    if let Some(url) = from.as_deref().filter(|f| is_clonable_source(f)) {
         if !already_initialized && !target_dir.join(".git").exists() {
             clone_into(&target_dir, url, args.branch, printer)?;
         }
-        apply_clone_overrides(&target_dir.join("cfgd.yaml"), args.name, args.theme)?;
+        apply_clone_overrides(
+            &target_dir.join(cfgd_core::config::CONFIG_FILENAME),
+            args.name,
+            args.theme,
+        )?;
     } else if already_initialized {
         // `--from <plain path>`: the directory is the user's own config repo,
         // so --name/--theme land as overrides on it, never as a re-scaffold.
-        apply_clone_overrides(&target_dir.join("cfgd.yaml"), args.name, args.theme)?;
+        apply_clone_overrides(
+            &target_dir.join(cfgd_core::config::CONFIG_FILENAME),
+            args.name,
+            args.theme,
+        )?;
     } else {
         scaffold(&target_dir, args.name, args.theme, printer)?;
     }
@@ -140,7 +155,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // consumers before the process exits nonzero on a failed apply.
     let mut apply_status = cfgd_core::state::ApplyStatus::Success;
     if should_apply {
-        let config_path = target_dir.join("cfgd.yaml");
+        let config_path = target_dir.join(cfgd_core::config::CONFIG_FILENAME);
         let profiles_dir = target_dir.join("profiles");
 
         // Module-only apply: no profile needed
@@ -157,12 +172,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 }
             }
 
-            printer.heading("Applying Modules");
-
-            let cfg = config::load_config(&config_path)?;
+            let mut cfg = config::load_config(&config_path)?;
+            drain_config_deprecations(printer, &mut cfg);
             let mut registry = super::build_registry_with_config(Some(&cfg));
             registry.set_system_config_dir(&target_dir);
-            let store = super::open_state_store(None)?;
+            let store = super::open_state_store(args.state_dir, args.scope)?;
 
             // Build a minimal resolved profile for the reconciler
             let resolved = config::ResolvedProfile {
@@ -183,7 +197,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             )?;
 
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
-            let plan = reconciler.plan(
+            let mut plan = reconciler.plan(
                 &resolved,
                 Vec::new(),
                 Vec::new(),
@@ -192,7 +206,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             )?;
 
             apply_status = apply_plan(
-                &plan,
+                &mut plan,
                 &reconciler,
                 &resolved,
                 &resolved_modules,
@@ -202,6 +216,10 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     yes: args.yes,
                     state_dir: args.state_dir,
                     scope: args.scope,
+                    profile: None,
+                    state: &store,
+                    on_conflict: args.on_conflict,
+                    default_strategy: registry.default_file_strategy,
                 },
                 printer,
             )?;
@@ -216,13 +234,15 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 }
                 // Set as active profile in cfgd.yaml
                 let mut cfg = config::load_config(&config_path)?;
+                drain_config_deprecations(printer, &mut cfg);
                 cfg.spec.profile = Some(name.to_string());
                 crate::cli::helpers::rewrite_user_yaml(&config_path, &cfg)?;
                 printer.status_simple(Role::Ok, format!("Set active profile: {}", name));
                 name.to_string()
             } else {
                 // No --apply-profile: use whatever's in cfgd.yaml, or pick interactively
-                let cfg = config::load_config(&config_path)?;
+                let mut cfg = config::load_config(&config_path)?;
+                drain_config_deprecations(printer, &mut cfg);
                 if let Some(ref p) = cfg.spec.profile {
                     p.clone()
                 } else {
@@ -230,13 +250,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 }
             };
 
-            printer.heading("Applying Configuration");
-
             let cfg = config::load_config(&config_path)?;
             let resolved = config::resolve_profile(&profile_name, &profiles_dir)?;
             let mut registry = super::build_registry_with_config(Some(&cfg));
             registry.set_system_config_dir(&target_dir);
-            let store = super::open_state_store(None)?;
+            let store = super::open_state_store(args.state_dir, args.scope)?;
 
             // Resolve modules (profile modules + any --apply-module additions)
             let mut module_names = resolved.merged.modules.clone();
@@ -281,10 +299,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             // fresh machine only ever installs, never uninstalls. Profile-scoped:
             // module packages are added separately by `reconciler.plan` as
             // `Action::Module`, so this planner stays profile-only.
-            let pkg_cx = cfgd_core::providers::PackageContext {
-                printer,
-                state: &store,
-            };
+            let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
             let pkg_actions = super::packages::plan_packages(
                 &resolved.merged,
                 &[],
@@ -299,7 +314,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             registry.file_manager = Some(Box::new(fm));
 
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
-            let plan = reconciler.plan(
+            let mut plan = reconciler.plan(
                 &resolved,
                 file_actions,
                 pkg_actions,
@@ -308,7 +323,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             )?;
 
             apply_status = apply_plan(
-                &plan,
+                &mut plan,
                 &reconciler,
                 &resolved,
                 &resolved_modules,
@@ -318,6 +333,10 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     yes: args.yes,
                     state_dir: args.state_dir,
                     scope: args.scope,
+                    profile: Some(&profile_name),
+                    state: &store,
+                    on_conflict: args.on_conflict,
+                    default_strategy: registry.default_file_strategy,
                 },
                 printer,
             )?;
@@ -328,8 +347,9 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     if args.install_daemon {
         #[cfg(any(unix, windows))]
         {
-            let config_path = target_dir.join("cfgd.yaml");
-            let cfg = config::load_config(&config_path)?;
+            let config_path = target_dir.join(cfgd_core::config::CONFIG_FILENAME);
+            let mut cfg = config::load_config(&config_path)?;
+            drain_config_deprecations(printer, &mut cfg);
             let profile = cfg.spec.profile.as_deref();
             // The flags this `cfgd init` ran under are baked into the unit, so
             // `cfgd --state-dir X init --install-daemon` installs a daemon that
@@ -478,13 +498,25 @@ pub(super) fn is_module_only_apply(apply_profile: Option<&str>, apply_modules: &
 pub(super) struct ApplyPlanOpts<'a> {
     pub dry_run: bool,
     pub yes: bool,
-    /// `--state-dir` override for the apply mutex (see `helpers::apply_lock_dir`).
+    /// `--state-dir` override for the apply mutex (see `helpers::run_state_dir`).
     pub state_dir: Option<&'a Path>,
     /// Installation scope for the apply mutex (`--scope system` vs per-user).
     pub scope: cfgd_core::Scope,
+    /// The profile this apply reconciles, for the run header's `Profile` row.
+    /// `None` on the module-only path, which resolves no profile at all.
+    pub profile: Option<&'a str>,
+    /// The state store the conflict pass asks whether a target is already
+    /// cfgd-managed.
+    pub state: &'a cfgd_core::state::StateStore,
+    /// What to do with a target that already holds a file cfgd never wrote.
+    pub on_conflict: crate::cli::OnConflict,
+    /// The config's global `fileStrategy`, which decides what a module file
+    /// declaring no strategy of its own will actually write.
+    pub default_strategy: cfgd_core::config::FileStrategy,
 }
 
-/// Show plan, prompt for confirmation, and apply.
+/// Run the scaffolded configuration through the one run skeleton: header,
+/// preview + confirmation, execution tree, rollup.
 ///
 /// Returns the resulting [`ApplyStatus`] so the caller can map a partial or
 /// total failure to a nonzero process exit, the same way `cfgd apply` does.
@@ -492,7 +524,7 @@ pub(super) struct ApplyPlanOpts<'a> {
 /// confirmation) report [`ApplyStatus::Success`]: nothing failed because
 /// nothing ran.
 pub(super) fn apply_plan(
-    plan: &cfgd_core::reconciler::Plan,
+    plan: &mut cfgd_core::reconciler::Plan,
     reconciler: &cfgd_core::reconciler::Reconciler<'_>,
     resolved: &config::ResolvedProfile,
     modules: &[cfgd_core::modules::ResolvedModule],
@@ -500,55 +532,101 @@ pub(super) fn apply_plan(
     opts: ApplyPlanOpts<'_>,
     printer: &Printer,
 ) -> anyhow::Result<cfgd_core::state::ApplyStatus> {
+    // A first apply is exactly where a machine is fullest of files cfgd never
+    // wrote, so the conflict pass runs here on the same terms `cfgd apply`
+    // gives it — before the plan is borrowed by the run, and never for a
+    // preview, which writes nothing to conflict with.
+    if !opts.dry_run {
+        crate::cli::plan_ops::handle_unmanaged_file_targets(
+            plan,
+            config_dir,
+            opts.state,
+            printer,
+            opts.yes,
+            opts.on_conflict,
+            opts.default_strategy,
+        )?;
+    }
+    let plan = &*plan;
+
+    // The names the run acts on, not the names the flags asked for: a module
+    // that failed to resolve is absent from the plan, so naming it in the
+    // header would describe work no phase below can show.
+    let module_names: Vec<String> = modules.iter().map(|m| m.name.clone()).collect();
+    let config_path = config_dir.join(cfgd_core::config::CONFIG_FILENAME);
+    let title = if opts.dry_run {
+        cfgd_core::reconciler::RunTitle::Plan
+    } else {
+        cfgd_core::reconciler::RunTitle::Apply
+    };
+    let ctx = cfgd_core::reconciler::RunContext {
+        title,
+        config_path: Some(config_path.as_path()),
+        profile: opts.profile,
+        modules: &module_names,
+        trigger: None,
+    };
+    let run = cfgd_core::reconciler::ApplyRun::new(ctx, plan);
+
     let total = plan.total_actions();
     if total == 0 {
-        printer.status_simple(Role::Ok, "Nothing to do — system is already configured");
+        run.header(printer);
+        // `init` scaffolds no scoping flag, so the verdict takes the
+        // filter-less arm of the one helper that owns both spellings.
+        crate::cli::plan_ops::report_plan_verdict(printer, total, None);
         return Ok(cfgd_core::state::ApplyStatus::Success);
     }
-
-    super::display_plan_table(plan, printer, None);
-    printer.status_simple(Role::Info, format!("{} action(s) planned", total));
 
     if opts.dry_run {
+        let run = run.preview_only();
+        run.header(printer);
+        run.preview(printer);
+        crate::cli::plan_ops::report_plan_verdict(printer, total, None);
         return Ok(cfgd_core::state::ApplyStatus::Success);
     }
 
-    if !opts.yes {
-        let confirmed = printer
-            .prompt_confirm("Apply these changes?")
-            .unwrap_or(false);
-        if !confirmed {
-            printer.status_simple(Role::Info, "Skipped — run 'cfgd apply' to apply later");
-            return Ok(cfgd_core::state::ApplyStatus::Success);
-        }
-    }
-
-    // see helpers::apply_lock_dir — honor --state-dir so init --apply
-    // mutually-excludes against `cfgd apply` and the daemon.
-    let _apply_lock = cfgd_core::acquire_apply_lock(&apply_lock_dir(opts.state_dir, opts.scope)?)?;
-
+    let abort = cfgd_core::AbortFlag::new();
     // The resolved modules have to survive planning and reach the apply: it is
     // what records module state, and what lets the post-phase env regeneration
     // see the PATH directories of a manager this very run bootstrapped. Handing
     // it an empty slice made `cfgd init --apply-module` leave both undone.
-    let result = reconciler.apply(
-        plan,
+    //
+    // see helpers::run_state_dir — honor --state-dir so init --apply
+    // mutually-excludes against `cfgd apply` and the daemon.
+    let mut exec = crate::cli::apply::ReconcilerExecutor::unscoped(
+        reconciler,
         resolved,
         config_dir,
-        printer,
-        None,
         modules,
-        cfgd_core::reconciler::ReconcileContext::Apply,
-        false,
-        None,
-        &cfgd_core::AbortFlag::new(),
-    )?;
-    let status = super::print_apply_result(&result, printer, None);
-    // The one-command bootstrap is exactly where a stale shell bites hardest:
-    // this apply may have installed the first package manager on the box, and
-    // the invoking shell predates the env file naming its PATH entries.
-    crate::cli::plan_ops::print_shell_env_reminder(&result, printer);
-    Ok(status)
+        &abort,
+        run_state_dir(opts.state_dir, opts.scope)?,
+    );
+    let confirm = if opts.yes {
+        cfgd_core::reconciler::Confirm::Skip
+    } else {
+        cfgd_core::reconciler::Confirm::Ask("Apply these changes?")
+    };
+    match run.execute(printer, confirm, &mut exec)? {
+        cfgd_core::reconciler::RunDisposition::Applied { result, .. } => {
+            // The one-command bootstrap is exactly where a stale shell bites
+            // hardest: this apply may have installed the first package manager
+            // on the box, and the invoking shell predates the env file naming
+            // its PATH entries.
+            crate::cli::plan_ops::print_shell_env_reminder(&result, printer);
+            Ok(result.status)
+        }
+        cfgd_core::reconciler::RunDisposition::Declined => {
+            printer.status_simple(Role::Info, "Skipped — run 'cfgd apply' to apply later");
+            Ok(cfgd_core::state::ApplyStatus::Success)
+        }
+        // Unreachable for a run carrying a plan with work and no
+        // `preview_only`, and none of them ran an action.
+        cfgd_core::reconciler::RunDisposition::NothingToDo
+        | cfgd_core::reconciler::RunDisposition::Previewed
+        | cfgd_core::reconciler::RunDisposition::BackupsApplied { .. } => {
+            Ok(cfgd_core::state::ApplyStatus::Success)
+        }
+    }
 }
 
 /// Interactively pick a profile from the profiles directory.
@@ -684,7 +762,7 @@ spec:
     );
     crate::cli::helpers::write_scaffold(
         cfgd_core::config::SchemaDocKind::Config,
-        &dir.join("cfgd.yaml"),
+        &dir.join(cfgd_core::config::CONFIG_FILENAME),
         &content,
     )?;
     printer.status_simple(Role::Ok, "Created cfgd.yaml");

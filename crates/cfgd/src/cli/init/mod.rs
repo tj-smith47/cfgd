@@ -19,10 +19,12 @@ pub(super) use source::resolve_from;
 
 // --- Cross-submodule helpers (private to cli::init, visible to tests) ---
 
+#[cfg(all(test, unix))]
+use cmd_init::check_prerequisites;
 #[cfg(test)]
 use cmd_init::{
-    ApplyPlanOpts, apply_plan, check_prerequisites, ensure_dir_writable, is_module_only_apply,
-    pick_profile, scaffold, should_run_apply,
+    ApplyPlanOpts, apply_plan, ensure_dir_writable, is_module_only_apply, pick_profile, scaffold,
+    should_run_apply,
 };
 #[cfg(test)]
 use enroll::{
@@ -30,4 +32,4 @@ use enroll::{
     sign_with_gpg, sign_with_ssh,
 };
 #[cfg(test)]
-use source::{clone_into, is_git_source};
+use source::{clone_into, is_clonable_source};

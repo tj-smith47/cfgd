@@ -2,13 +2,22 @@
   "context": "apply",
   "phases": [
     {
-      "actions": [
+      "groups": [
         {
-          "description": "create /etc/hosts",
-          "targets": [
-            "/etc/hosts"
+          "actions": [
+            {
+              "description": "create /etc/hosts",
+              "targets": [
+                "/etc/hosts"
+              ],
+              "type": "create"
+            }
           ],
-          "type": "file.create"
+          "owner": {
+            "kind": "profile",
+            "name": "tiny"
+          },
+          "token": "profile:tiny"
         }
       ],
       "phase": "Files"

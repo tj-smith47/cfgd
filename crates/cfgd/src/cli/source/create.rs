@@ -1,16 +1,17 @@
+use std::path::Path;
+
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_source_create(
-    cli: &Cli,
     printer: &Printer,
+    dir: &Path,
     name: Option<&str>,
     description: Option<&str>,
     version: Option<&str>,
 ) -> anyhow::Result<()> {
-    let config_dir = config_dir(cli);
-    let source_path = config_dir.join("cfgd-source.yaml");
+    let source_path = dir.join("cfgd-source.yaml");
     if source_path.exists() {
         return Err(crate::cli::cli_error(
             "cfgd-source.yaml",
@@ -30,7 +31,7 @@ pub fn cmd_source_create(
     let source_name = match name {
         Some(n) => n.to_string(),
         None => {
-            let dir_name = config_dir
+            let dir_name = dir
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("my-config");
@@ -58,8 +59,8 @@ pub fn cmd_source_create(
         None => "0.1.0".to_string(),
     };
 
-    let profile_names = scan_profile_names(&config_dir.join("profiles"), printer)?;
-    let module_names = scan_module_names(&config_dir.join("modules"), printer)?;
+    let profile_names = scan_profile_names(&dir.join("profiles"), printer)?;
+    let module_names = scan_module_names(&dir.join("modules"), printer)?;
 
     // Build profiles YAML block
     let profiles_yaml = if profile_names.is_empty() {
@@ -124,8 +125,8 @@ pub fn cmd_source_create(
         doc = doc.status(
             Role::Info,
             format!(
-                "Included {} profile(s): {}",
-                profile_names.len(),
+                "Included {}: {}",
+                cfgd_core::pluralize(profile_names.len(), "profile"),
                 profile_names.join(", ")
             ),
         );
@@ -134,8 +135,8 @@ pub fn cmd_source_create(
         doc = doc.status(
             Role::Info,
             format!(
-                "Included {} module(s): {}",
-                module_names.len(),
+                "Included {}: {}",
+                cfgd_core::pluralize(module_names.len(), "module"),
                 module_names.join(", ")
             ),
         );
@@ -144,7 +145,7 @@ pub fn cmd_source_create(
         .hint("Edit the file to configure policy tiers and platform-profiles")
         .with_data(serde_json::json!({
             "name": source_name,
-            "path": source_path.display().to_string(),
+            "path": cfgd_core::to_posix_string(&source_path),
             "version": source_version,
             "profiles": profile_names,
             "modules": module_names,

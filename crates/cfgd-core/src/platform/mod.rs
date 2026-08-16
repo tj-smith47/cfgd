@@ -215,7 +215,7 @@ fn read_command_output(cmd: &str, args: &[&str]) -> Result<String, std::io::Erro
             "{} failed: {}",
             cmd,
             if stderr.is_empty() {
-                format!("exit code {}", output.status.code().unwrap_or(-1))
+                crate::exit_status_reason(&output.status)
             } else {
                 stderr
             }

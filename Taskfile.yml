@@ -532,6 +532,23 @@ tasks:
     cmds:
       - cargo clean
 
+  clean:bloat:
+    desc: One-shot reclaim of session build-cache bloat (incremental cache, cross-target dirs, stale scratch target dirs). Safe to run between work; do NOT run while a build is live in a scratch dir.
+    cmds:
+      - df -h / | tail -1
+      # Incremental cache regrows unboundedly across test cycles; deleting costs one warm rebuild.
+      - rm -rf target/debug/incremental
+      # Cross-compile targets are check-only artifacts, rebuilt on demand.
+      - find target -maxdepth 1 -type d -name 'x86_64-*' -exec rm -rf {} +
+      - find target -maxdepth 1 -type d -name 'aarch64-*' -exec rm -rf {} +
+      # Any dir under the debug scratch root holding a CACHEDIR.TAG is a redirected
+      # cargo target dir — always regenerable. Logs/reports/sandboxes are untouched.
+      - |
+        for tag in $(find ~/.cache/cfgd-debug -maxdepth 3 -name CACHEDIR.TAG 2>/dev/null); do
+          rm -rf "$(dirname "$tag")"
+        done
+      - df -h / | tail -1
+
   # --- Docker ---
 
   docker:
@@ -618,9 +635,19 @@ tasks:
     desc: Run the VHS tape, producing demo/.out/raw.mp4.
     preconditions:
       # LazyVim's tree, tabline and statusline are Nerd Font glyphs; without the
-      # font VHS still exits 0 and records a take full of tofu boxes.
-      - sh: fc-list | grep -qi 'JetBrainsMono Nerd Font'
-        msg: "JetBrainsMono Nerd Font is not installed — the take would record tofu boxes instead of LazyVim's glyphs."
+      # font VHS still exits 0 and records a take full of tofu boxes. The font
+      # is read from the tape itself so the gate cannot drift from what VHS
+      # will actually request. Both checks run the SAME extraction — a looser
+      # declaration grep here once accepted a line the extraction below could
+      # not parse, leaving `grep -qF ""` to match anything — and the membership
+      # check re-guards non-empty so it cannot pass vacuously on its own.
+      - sh: >-
+          [ -n "$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/init.tape | head -1)" ]
+        msg: "demo/init.tape declares no parseable `Set FontFamily \"…\"` line — the gate cannot know which font VHS will render."
+      - sh: >-
+          font="$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/init.tape | head -1)";
+          [ -n "$font" ] && fc-list : family | grep -qF "$font"
+        msg: "The font demo/init.tape asks for is not installed — the take would record tofu boxes instead of LazyVim's glyphs. Check `Set FontFamily` in the tape against `fc-list : family`."
     cmds:
       - bash demo/scripts/chromium-no-sandbox.sh
       - bash demo/scripts/record.sh

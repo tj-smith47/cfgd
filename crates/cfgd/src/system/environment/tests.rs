@@ -781,7 +781,8 @@ fn environment_apply_empty_desired_is_noop() {
     let ec = EnvironmentConfigurator;
     let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
     // Should return Ok(()) without writing anything
-    ec.apply(&yaml, &printer).unwrap();
+    ec.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+        .unwrap();
 }
 
 #[test]
@@ -789,7 +790,8 @@ fn environment_apply_non_mapping_is_noop() {
     let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
     let ec = EnvironmentConfigurator;
     let yaml = serde_yaml::Value::String("not a mapping".into());
-    ec.apply(&yaml, &printer).unwrap();
+    ec.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+        .unwrap();
 }
 
 #[test]
@@ -1038,7 +1040,10 @@ fn macos_launchctl_setenv_warns_through_printer_when_launchctl_unavailable() {
     let mut managed = BTreeMap::new();
     managed.insert("TEST_VAR".to_string(), "test_value".to_string());
 
-    EnvironmentConfigurator::macos_launchctl_setenv(&managed, &printer);
+    EnvironmentConfigurator::macos_launchctl_setenv(
+        &managed,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    );
 
     let captured = buf.lock().unwrap().clone();
     assert!(
@@ -1053,7 +1058,10 @@ fn macos_launchctl_setenv_no_output_when_empty_managed() {
     use cfgd_core::output::Verbosity;
     let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
 
-    EnvironmentConfigurator::macos_launchctl_setenv(&BTreeMap::new(), &printer);
+    EnvironmentConfigurator::macos_launchctl_setenv(
+        &BTreeMap::new(),
+        &cfgd_core::providers::SystemContext::new(&printer),
+    );
 
     let captured = buf.lock().unwrap().clone();
     assert!(
@@ -1069,7 +1077,11 @@ fn windows_set_var_warns_through_printer_when_setx_unavailable() {
     use cfgd_core::output::Verbosity;
     let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
 
-    EnvironmentConfigurator::windows_set_var("MY_VAR", "my_value", &printer);
+    EnvironmentConfigurator::windows_set_var(
+        "MY_VAR",
+        "my_value",
+        &cfgd_core::providers::SystemContext::new(&printer),
+    );
 
     let captured = buf.lock().unwrap().clone();
     assert!(
@@ -1091,13 +1103,31 @@ TEST_ENV_VAR: "test_value"
     )
     .unwrap();
 
-    let result = ec.apply(&yaml, &printer);
+    let result = ec.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
     result.expect("apply should succeed on Linux even when /etc paths require root");
 
     let captured = buf.lock().unwrap().clone();
+    assert_managing_count(&captured, 1);
+}
+
+/// Assert the managed-variable narration for exactly `count` variables,
+/// singular or plural as `count` requires.
+///
+/// Matched against the WHOLE line rather than with `contains`: the singular
+/// spelling is a prefix of the plural one, so a substring check for
+/// `"Managing 1 environment variable"` is satisfied by the buggy
+/// `"…variables"` too and pins nothing.
+fn assert_managing_count(captured: &str, count: usize) {
+    let plural = if count == 1 { "" } else { "s" };
+    let expected = format!("Managing {count} environment variable{plural}");
+    let plain = cfgd_core::output::strip_ansi(captured);
+    let found = plain
+        .lines()
+        .find(|line| line.contains("environment variable"))
+        .unwrap_or_else(|| panic!("no managed-variable count line, got: {plain}"));
     assert!(
-        captured.contains("Managing 1 environment variable(s)"),
-        "expected managing message, got: {captured}"
+        found.trim_start().ends_with(&expected),
+        "expected the count line to end {expected:?}, got: {found:?}"
     );
 }
 
@@ -1131,14 +1161,27 @@ fn apply_linux_writes_etc_environment_and_profile_d_with_tempdir() {
 
     let yaml: serde_yaml::Value = serde_yaml::from_str(r#"FOO: "bar""#).unwrap();
     let ec = EnvironmentConfigurator;
-    let result = ec.apply(&yaml, &printer);
+    let result = ec.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
     result.expect("apply should succeed on Linux for a single managed var");
 
     let captured = buf.lock().unwrap().clone();
-    assert!(
-        captured.contains("Managing 1 environment variable(s)"),
-        "got: {captured}"
-    );
+    assert_managing_count(&captured, 1);
+}
+
+#[test]
+fn apply_pluralizes_the_managed_variable_count() {
+    use cfgd_core::output::Verbosity;
+    let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
+    let ec = EnvironmentConfigurator;
+
+    let yaml: serde_yaml::Value =
+        serde_yaml::from_str("FIRST: \"a\"\nSECOND: \"b\"\nTHIRD: \"c\"\n").unwrap();
+
+    let result = ec.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
+    result.expect("apply should succeed for several managed vars");
+
+    let captured = buf.lock().unwrap().clone();
+    assert_managing_count(&captured, 3);
 }
 
 #[test]
@@ -1231,7 +1274,10 @@ fn macos_launchctl_setenv_ok_success_path_with_fake_binary() {
     let mut managed = BTreeMap::new();
     managed.insert("FOO".to_string(), "bar".to_string());
 
-    EnvironmentConfigurator::macos_launchctl_setenv(&managed, &printer);
+    EnvironmentConfigurator::macos_launchctl_setenv(
+        &managed,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    );
 
     let captured = buf.lock().unwrap().clone();
     assert!(
@@ -1257,7 +1303,10 @@ fn macos_launchctl_setenv_ok_failure_path_with_fake_binary() {
     let mut managed = BTreeMap::new();
     managed.insert("BAR".to_string(), "baz".to_string());
 
-    EnvironmentConfigurator::macos_launchctl_setenv(&managed, &printer);
+    EnvironmentConfigurator::macos_launchctl_setenv(
+        &managed,
+        &cfgd_core::providers::SystemContext::new(&printer),
+    );
 
     let captured = buf.lock().unwrap().clone();
     assert!(
@@ -1277,7 +1326,11 @@ fn windows_set_var_ok_success_path_with_fake_binary() {
 
     let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
 
-    EnvironmentConfigurator::windows_set_var("MY_KEY", "my_val", &printer);
+    EnvironmentConfigurator::windows_set_var(
+        "MY_KEY",
+        "my_val",
+        &cfgd_core::providers::SystemContext::new(&printer),
+    );
 
     let captured = buf.lock().unwrap().clone();
     assert!(
@@ -1297,7 +1350,11 @@ fn windows_set_var_ok_failure_path_with_fake_binary() {
 
     let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
 
-    EnvironmentConfigurator::windows_set_var("BAD_VAR", "val", &printer);
+    EnvironmentConfigurator::windows_set_var(
+        "BAD_VAR",
+        "val",
+        &cfgd_core::providers::SystemContext::new(&printer),
+    );
 
     let captured = buf.lock().unwrap().clone();
     assert!(

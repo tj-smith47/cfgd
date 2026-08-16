@@ -5,17 +5,19 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
-use cfgd_core::providers::{PackageContext, PackageManager};
+use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager};
 
 #[cfg(target_os = "linux")]
-use super::shared::linux_system_manager_available;
+use super::shared::detect_system_method;
 use super::shared::{
-    bootstrap_via_system_manager, parse_version_field, resolve_tool_with_fallbacks, run_pkg_cmd,
-    run_pkg_cmd_live, tool_cmd_with_resolver,
+    MediatedArms, bootstrap_via_system_manager, parse_version_field, resolve_tool_with_fallbacks,
+    run_pkg_cmd, run_pkg_cmd_live, system_manager_arms, tool_cmd_with_resolver,
 };
 
 pub struct FlatpakManager;
+
+/// What a mediator installs to deliver flatpak. Linux-only, so no brew arm.
+const FLATPAK_MEDIATED: MediatedArms = system_manager_arms(None, &["flatpak"]);
 
 pub(super) fn find_flatpak() -> Option<PathBuf> {
     resolve_tool_with_fallbacks("flatpak", &[])
@@ -38,20 +40,27 @@ impl PackageManager for FlatpakManager {
         flatpak_available()
     }
 
-    fn can_bootstrap(&self) -> bool {
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
         // flatpak is a Linux-only package manager; bootstrappable via apt/dnf/zypper.
+        // The client lands on the system PATH, so the plan creates no directory.
         #[cfg(target_os = "linux")]
         {
-            linux_system_manager_available()
+            // `None` rather than a hopeful name when no system manager can run
+            // it: the method a plan carries is binding at execution.
+            detect_system_method().map(BootstrapPlan::new)
         }
         #[cfg(not(target_os = "linux"))]
         {
-            false
+            None
         }
     }
 
-    fn bootstrap(&self, printer: &Printer) -> Result<()> {
-        bootstrap_via_system_manager(printer, "flatpak", "flatpak")
+    fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
+        bootstrap_via_system_manager(cx, FLATPAK_MEDIATED.system[0], "flatpak")
+    }
+
+    fn mediated_packages(&self, via: &str) -> Option<Vec<String>> {
+        FLATPAK_MEDIATED.packages_for(via)
     }
 
     fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
@@ -69,7 +78,7 @@ impl PackageManager for FlatpakManager {
         for pkg in packages {
             let label = format!("flatpak install -y {}", pkg);
             run_pkg_cmd_live(
-                cx.printer,
+                cx,
                 "flatpak",
                 flatpak_cmd().args(["install", "-y", pkg]),
                 &label,
@@ -83,7 +92,7 @@ impl PackageManager for FlatpakManager {
         for pkg in packages {
             let label = format!("flatpak uninstall -y {}", pkg);
             run_pkg_cmd_live(
-                cx.printer,
+                cx,
                 "flatpak",
                 flatpak_cmd().args(["uninstall", "-y", pkg]),
                 &label,
@@ -93,12 +102,18 @@ impl PackageManager for FlatpakManager {
         Ok(())
     }
 
-    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, cx: &PackageContext<'_>) -> Result<()> {
+        // `--appstream` refreshes the remotes' metadata. Without it the same
+        // command upgrades every installed app, which no plan asked for.
         run_pkg_cmd_live(
-            cx.printer,
+            cx,
             "flatpak",
-            flatpak_cmd().args(["update", "-y"]),
-            "flatpak update -y",
+            flatpak_cmd().args(["update", "--appstream", "-y"]),
+            "flatpak update --appstream -y",
             "update",
         )?;
         Ok(())
@@ -134,11 +149,8 @@ pub(super) fn parse_flatpak_app_list(stdout: &str) -> HashSet<String> {
 
 #[cfg(test)]
 mod tests {
-    use cfgd_core::command_available;
     use cfgd_core::providers::PackageManager;
 
-    #[cfg(target_os = "linux")]
-    use super::super::shared::linux_system_manager_available;
     use super::*;
 
     #[test]
@@ -148,35 +160,84 @@ mod tests {
     }
 
     #[test]
-    fn flatpak_manager_can_bootstrap_checks_system_managers() {
-        let mgr = FlatpakManager;
+    fn flatpak_bootstrap_plan_installs_flatpak_from_a_system_manager() {
+        // Both the plan detection and the `runnable` probes below assert
+        // successful PATH resolutions, so hold the read guard across them —
+        // a sibling test empties PATH under the write guard.
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
+        let plan = FlatpakManager.bootstrap_plan();
         #[cfg(target_os = "linux")]
-        assert_eq!(mgr.can_bootstrap(), linux_system_manager_available());
+        {
+            // Ground truth spelled out here rather than read back from the
+            // detector: a plan's method is BINDING at execution, so the one
+            // thing worth asserting is that this host can actually spawn the
+            // manager the plan names — and that a runnable one is never
+            // dropped. Probed through the same seams `sudo_cmd_with_seam`
+            // spawns from, so a concurrently-installed shim cannot make the
+            // two answers disagree.
+            let runnable = |tool: &str| {
+                cfgd_core::command_available_with_seam(
+                    &format!("CFGD_{}_BIN", tool.to_uppercase().replace('-', "_")),
+                    tool,
+                )
+            };
+            let arm_of = |method: &str| match method {
+                "apt" => Some("apt-get"),
+                "dnf" => Some("dnf"),
+                "zypper" => Some("zypper"),
+                _ => None,
+            };
+            match plan {
+                Some(plan) => {
+                    // `bootstrap` runs `<system manager> install flatpak`, which
+                    // puts the client on the system PATH.
+                    let tool = arm_of(&plan.method)
+                        .unwrap_or_else(|| panic!("unknown method {}", plan.method));
+                    assert!(
+                        runnable(tool),
+                        "a plan may only name a manager this host can run, got {}",
+                        plan.method
+                    );
+                    assert!(plan.requires.is_empty());
+                    assert!(plan.creates_path_dirs.is_empty());
+                }
+                None => assert!(
+                    !["apt-get", "dnf", "zypper"].into_iter().any(runnable),
+                    "a runnable system manager must not be answered with no plan"
+                ),
+            }
+        }
         #[cfg(not(target_os = "linux"))]
-        assert!(!mgr.can_bootstrap());
+        assert!(plan.is_none());
     }
 
     #[test]
     #[serial_test::serial]
-    fn flatpak_manager_is_available_checks_flatpak() {
-        // Snapshot + clear the seam env var so this assertion mirrors the
-        // PATH-only contract. Without this, parallel ToolShim tests setting
-        // CFGD_FLATPAK_BIN would race with this assertion.
-        let prev = std::env::var_os("CFGD_FLATPAK_BIN");
-        // SAFETY: serial.
-        unsafe {
-            std::env::remove_var("CFGD_FLATPAK_BIN");
-        }
+    fn flatpak_manager_is_available_exactly_when_a_flatpak_binary_resolves() {
+        // The seam env var is cleared for the whole test: with it set, this
+        // asserts about whichever ToolShim ran last rather than about the
+        // PATH probe.
+        let _seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_FLATPAK_BIN");
+        let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
         let mgr = FlatpakManager;
-        let available = mgr.is_available();
-        let expected = command_available("flatpak");
-        // SAFETY: serial.
-        unsafe {
-            if let Some(v) = prev {
-                std::env::set_var("CFGD_FLATPAK_BIN", v);
-            }
+
+        {
+            let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+            assert!(
+                !mgr.is_available(),
+                "a host resolving no binaries has no flatpak"
+            );
         }
-        assert_eq!(available, expected);
+
+        #[cfg(unix)]
+        {
+            let _probe = cfgd_core::test_helpers::ProbePath::containing(&["flatpak"]);
+            assert!(
+                mgr.is_available(),
+                "the binary this manager probes for is named `flatpak`"
+            );
+        }
     }
 
     // --- parse_flatpak_app_list ---
@@ -255,14 +316,22 @@ mod tests {
 
         #[test]
         #[serial]
-        fn flatpak_update_runs_update_y() {
+        fn flatpak_refresh_updates_appstream_without_upgrading_apps() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
-            FlatpakManager.update(&cx).expect("Ok");
+            assert!(
+                FlatpakManager.has_index(),
+                "remote appstream data is an index"
+            );
+            FlatpakManager.refresh_index(&cx).expect("Ok");
             assert_eq!(s.invocation_count(), 1);
-            assert!(s.argv_log().contains("update -y"), "argv: {}", s.argv_log());
+            let argv = s.argv_log();
+            assert!(
+                argv.contains("update --appstream -y"),
+                "a bare `flatpak update -y` upgrades every installed app: {argv}"
+            );
         }
 
         #[test]

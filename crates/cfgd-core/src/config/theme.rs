@@ -67,12 +67,18 @@ impl<'de> serde::Deserialize<'de> for ThemeConfig {
 
 // no deny_unknown_fields — legacy theme keys (`subheader`, `iconSuccess`, etc.)
 // are deliberately ignored at the typed-deserialize layer so old configs keep
-// parsing; `parse::warn_on_legacy_theme_keys` surfaces them as `tracing::warn!`
-// so users see their override did nothing and can migrate cleanly.
+// parsing; `parse::warn_on_legacy_theme_keys` collects them into
+// `CfgdConfig.deprecations`, drained through `printer.deprecation()` at the
+// command boundary, so users see their override did nothing and can migrate
+// cleanly.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThemeOverrides {
-    // Style overrides (12) — hex colors applied on top of the active preset.
+    // Style overrides (13) — hex colors applied on top of the active preset.
+    /// Fills `Theme::primary`, the style an action subject at the deepest level
+    /// of the run tree is painted with. Presets that carry no palette
+    /// foreground of their own leave it unset.
+    pub primary: Option<String>,
     pub header: Option<String>,
     pub success: Option<String>,
     pub warning: Option<String>,
@@ -99,7 +105,8 @@ pub struct ThemeOverrides {
 
 impl ThemeOverrides {
     pub fn is_empty(&self) -> bool {
-        self.header.is_none()
+        self.primary.is_none()
+            && self.header.is_none()
             && self.success.is_none()
             && self.warning.is_none()
             && self.error.is_none()

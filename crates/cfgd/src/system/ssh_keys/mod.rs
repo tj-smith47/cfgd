@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::{CfgdError, Result};
-use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::output::Role;
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 // ---------------------------------------------------------------------------
 // Config types
@@ -131,13 +131,13 @@ impl SshKeysConfigurator {
     }
 
     /// Ensure the SSH directory (parent of `path`) exists with mode 700.
-    fn ensure_ssh_dir(path: &Path, printer: &Printer) -> Result<()> {
+    fn ensure_ssh_dir(path: &Path, cx: &SystemContext<'_>) -> Result<()> {
         let dir = match path.parent() {
             Some(d) => d,
             None => return Ok(()),
         };
         if !dir.exists() {
-            printer.status_simple(
+            cx.report(
                 Role::Info,
                 format!("Creating SSH directory: {}", dir.posix()),
             );
@@ -148,8 +148,8 @@ impl SshKeysConfigurator {
     }
 
     /// Generate an SSH key pair using `ssh-keygen`.
-    fn generate_key(spec: &SshKeySpec, path: &Path, printer: &Printer) -> Result<()> {
-        printer.status_simple(
+    fn generate_key(spec: &SshKeySpec, path: &Path, cx: &SystemContext<'_>) -> Result<()> {
+        cx.report(
             Role::Info,
             format!(
                 "Generating {} SSH key '{}' at {}",
@@ -195,9 +195,9 @@ impl SshKeysConfigurator {
     }
 
     /// Apply correct permissions to a private key file.
-    fn apply_permissions(spec: &SshKeySpec, path: &Path, printer: &Printer) -> Result<()> {
+    fn apply_permissions(spec: &SshKeySpec, path: &Path, cx: &SystemContext<'_>) -> Result<()> {
         let mode = spec.permissions_mode()?;
-        printer.status_simple(
+        cx.report(
             Role::Info,
             format!(
                 "Setting permissions {} on {}",
@@ -230,7 +230,10 @@ impl SystemConfigurator for SshKeysConfigurator {
 
         for spec in &specs {
             let path = spec.resolved_path();
-            let key_id = format!("sshKeys.{}", spec.name);
+            // The reconciler composes `system:<configurator>.<key>` around this
+            // key, so naming the configurator here would double it into the
+            // persisted resource id and every rendered line.
+            let key_id = spec.name.as_str();
 
             if !path.exists() {
                 drifts.push(SystemDrift {
@@ -268,7 +271,7 @@ impl SystemConfigurator for SshKeysConfigurator {
         Ok(drifts)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let specs = Self::parse_desired(desired)?;
 
         for spec in &specs {
@@ -276,7 +279,7 @@ impl SystemConfigurator for SshKeysConfigurator {
 
             // Warn about unsupported passphrase field
             if spec.passphrase.is_some() {
-                printer.status_simple(
+                cx.report(
                     Role::Warn,
                     format!(
                         "SSH key '{}': passphrase field is not yet supported; key will be generated without passphrase",
@@ -286,13 +289,13 @@ impl SystemConfigurator for SshKeysConfigurator {
             }
 
             // Ensure parent directory exists with mode 700
-            Self::ensure_ssh_dir(&path, printer)?;
+            Self::ensure_ssh_dir(&path, cx)?;
 
             if !path.exists() {
                 // Generate new key
-                Self::generate_key(spec, &path, printer)?;
+                Self::generate_key(spec, &path, cx)?;
                 // ssh-keygen already sets 600 on the private key, but enforce our config
-                Self::apply_permissions(spec, &path, printer)?;
+                Self::apply_permissions(spec, &path, cx)?;
             } else {
                 // Key exists — only fix permissions if wrong
                 let needs_perms_fix = Self::current_perms_str(&path)
@@ -300,7 +303,7 @@ impl SystemConfigurator for SshKeysConfigurator {
                     .unwrap_or(false);
 
                 if needs_perms_fix {
-                    Self::apply_permissions(spec, &path, printer)?;
+                    Self::apply_permissions(spec, &path, cx)?;
                 }
 
                 // Type mismatch is drift but we do NOT regenerate an existing key
@@ -308,7 +311,7 @@ impl SystemConfigurator for SshKeysConfigurator {
                 if let Some(actual_type) = Self::detect_key_type(&path)
                     && actual_type != spec.key_type
                 {
-                    printer.status_simple(
+                    cx.report(
                         Role::Warn,
                         format!(
                             "SSH key '{}' at {} is type '{}' but '{}' is desired; \

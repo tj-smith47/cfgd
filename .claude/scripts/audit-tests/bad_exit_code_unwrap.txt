@@ -1,0 +1,7 @@
+# EXPECTED: caught by the child-exit-wording rule.
+# A signal-killed child has no exit code, so this renders `exit code -1` — a
+# number no process ever returned. `cfgd_core::exit_status_reason` names the
+# signal instead.
+fn _example(output: &std::process::Output) -> String {
+    format!("git failed (exit {})", output.status.code().unwrap_or(-1))
+}

@@ -6,9 +6,10 @@
 //!
 //! Cases:
 //!   - `apply/happy.{txt,json}` — all phases succeed. Snapshot captures
-//!     real `cmd_apply` output (streaming preview + per-phase results +
-//!     buffered ApplyOutput) against a tempdir-backed profile; the JSON
-//!     case exercises `build_apply_doc` directly.
+//!     real `cmd_apply` output (run header + per-phase results + buffered
+//!     ApplyOutput) against a tempdir-backed profile; `--yes` carries no
+//!     preview, so the header's `Actions` row is where the count lands. The
+//!     JSON case exercises `build_apply_doc` directly.
 //!   - `apply/dry_run.txt`      — `--dry-run` path through real
 //!     `cmd_apply` (so `display_plan_preview` drift is caught).
 //!   - `apply/nothing_to_do.txt`— plan is empty.
@@ -22,23 +23,27 @@
 
 mod common;
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use cfgd::cli::apply::{build_apply_doc, cmd_apply, run_apply};
 use cfgd::cli::output_types::ApplyOutput;
+use cfgd::cli::plan::cmd_plan;
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, Role};
 use pretty_assertions::assert_eq;
 
+#[cfg(unix)]
+use common::profile_with_packages_setup;
 use common::{
-    apply_args, apply_args_dry_run, cli_for, profile_with_one_failure_setup, tiny_profile_setup,
+    apply_args, apply_args_dry_run, cli_for, plan_args, profile_with_one_failure_setup,
+    tiny_profile_setup,
 };
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
 fn happy_output() -> ApplyOutput {
-    let mut source_commits = HashMap::new();
+    let mut source_commits = BTreeMap::new();
     source_commits.insert("team-config".to_string(), "abc1234".to_string());
     ApplyOutput {
         status: "success".to_string(),
@@ -65,47 +70,10 @@ fn normalize_tempdir_paths(raw: &str, config_dir: &Path, extra_paths: &[(&Path, 
 }
 
 /// Replace ` (N.Ns)` duration suffixes (rendered by StatusBuilder.duration())
-/// with a stable placeholder so the apply-summary golden is host-stable.
+/// with a stable placeholder so the apply-summary golden is host-stable, and
+/// fold any surviving `\` so a Windows capture matches the same golden.
 fn normalize_duration(raw: &str) -> String {
-    let chars: Vec<char> = raw.chars().collect();
-    let mut out = String::with_capacity(raw.len());
-    let mut i = 0;
-    while i < chars.len() {
-        if let Some(len) = duration_span(&chars[i..]) {
-            out.push_str(" (XXs)");
-            i += len;
-        } else {
-            out.push(chars[i]);
-            i += 1;
-        }
-    }
-    out.replace('\\', "/")
-}
-
-/// Detect a ` (N.Ns)` or ` (NN.Ns)` (etc.) suffix and return its length in chars.
-/// Renderer formats `{:.1}s` so there is always exactly one fractional digit.
-fn duration_span(window: &[char]) -> Option<usize> {
-    if window.len() < 7 || window[0] != ' ' || window[1] != '(' {
-        return None;
-    }
-    let mut i = 2;
-    let int_start = i;
-    while i < window.len() && window[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i == int_start {
-        return None;
-    }
-    if i + 3 >= window.len() {
-        return None;
-    }
-    if window[i] != '.' || !window[i + 1].is_ascii_digit() {
-        return None;
-    }
-    if window[i + 2] != 's' || window[i + 3] != ')' {
-        return None;
-    }
-    Some(i + 4)
+    cfgd_core::normalize_snapshot_durations(raw).replace('\\', "/")
 }
 
 #[test]
@@ -161,6 +129,60 @@ fn apply_dry_run_human() {
         normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
     let stripped = strip_ansi(&normalized);
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "apply/dry_run.txt", &stripped);
+}
+
+/// `cfgd plan` and `cfgd apply --dry-run` are one surface with two spellings:
+/// the only difference either is allowed to have is the title row. Comparing
+/// the two goldens would only prove they were regenerated together, so both are
+/// re-driven here against identical setups and diffed live.
+#[test]
+fn plan_and_dry_run_agree_below_the_title_row() {
+    fn body(rendered: &str) -> String {
+        rendered
+            .split_once('\n')
+            .map(|(_, rest)| rest.to_string())
+            .unwrap_or_default()
+    }
+
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_plan(
+        &cli_for(config_dir.path(), state_dir.path()),
+        &printer,
+        &plan_args(),
+    )
+    .unwrap();
+    drop(printer);
+    let planned = strip_ansi(&normalize_tempdir_paths(
+        &cap.human(),
+        config_dir.path(),
+        &[(&target, "<TARGET>")],
+    ));
+
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_apply(
+        &cli_for(config_dir.path(), state_dir.path()),
+        &printer,
+        &apply_args_dry_run(),
+    )
+    .unwrap();
+    drop(printer);
+    let dry_run = strip_ansi(&normalize_tempdir_paths(
+        &cap.human(),
+        config_dir.path(),
+        &[(&target, "<TARGET>")],
+    ));
+
+    assert!(
+        planned.starts_with("Plan\n") && dry_run.starts_with("Plan\n"),
+        "both surfaces title themselves Plan:\n{planned}\n---\n{dry_run}"
+    );
+    assert_eq!(
+        body(&planned),
+        body(&dry_run),
+        "cfgd plan and cfgd apply --dry-run must render identically below the title row"
+    );
 }
 
 #[test]
@@ -224,6 +246,41 @@ fn apply_with_failures_human() {
     );
 }
 
+/// The phase tree at the CLI boundary: a `Prerequisites` phase whose one lane
+/// group is labelled above its nodes, a `Packages` phase whose install renders
+/// under the profile's own label, and a serial `Files` phase below both. The
+/// golden pins structure, order and labels — a capture sink never wraps, so
+/// the per-line alignment budget stays a renderer unit test.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn apply_phase_tree_human() {
+    // Every brew invocation — availability probe, index refresh, install —
+    // lands on a shim that exits 0 and says nothing, so the plan and the
+    // transcript are the same on a host with brew and a host without.
+    let _brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+    let (config_dir, state_dir, target) = profile_with_packages_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    let outcome = run_apply(&cli, &printer, &apply_args()).unwrap();
+    drop(printer);
+
+    assert_eq!(
+        outcome.status,
+        cfgd_core::state::ApplyStatus::Success,
+        "every action in the fixture succeeds: {}",
+        cap.human()
+    );
+    assert!(target.exists(), "the file action must write its target");
+
+    let normalized =
+        normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
+    let stripped = normalize_duration(&strip_ansi(&normalized));
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "apply/phase_tree.txt", &stripped);
+}
+
 #[test]
 fn apply_bridge_one_blank_line() {
     // Bridge invariant: when the streaming SectionGuard drops, the
@@ -238,7 +295,7 @@ fn apply_bridge_one_blank_line() {
         let work = printer.section("Files");
         work.status(Role::Ok, "Wrote /etc/hosts");
     }
-    printer.status_simple(Role::Ok, "Apply complete — 1 action(s) succeeded");
+    printer.status_simple(Role::Ok, "Apply complete — 1 action succeeded");
 
     // Buffered Doc carrying both a human section and the ApplyOutput payload.
     // Combining both surfaces is what the bridge invariant guards.

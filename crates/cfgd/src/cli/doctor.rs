@@ -67,17 +67,20 @@ fn collect_doctor_output(
 ) -> anyhow::Result<(DoctorOutput, DoctorExtras)> {
     let (config_check, loaded_cfg) = if cli.config.exists() {
         match config::load_config(&cli.config) {
-            Ok(cfg) => (
-                DoctorConfigCheck {
-                    valid: true,
-                    path: cli.config.display().to_string(),
-                    name: Some(cfg.metadata.name.clone()),
-                    profile: cfg.spec.profile.clone(),
-                    error: None,
-                    state: DoctorConfigState::Valid,
-                },
-                Some(cfg),
-            ),
+            Ok(mut cfg) => {
+                drain_config_deprecations(printer, &mut cfg);
+                (
+                    DoctorConfigCheck {
+                        valid: true,
+                        path: cli.config.display().to_string(),
+                        name: Some(cfg.metadata.name.clone()),
+                        profile: cfg.spec.profile.clone(),
+                        error: None,
+                        state: DoctorConfigState::Valid,
+                    },
+                    Some(cfg),
+                )
+            }
             Err(e) => (
                 DoctorConfigCheck {
                     valid: false,
@@ -198,6 +201,15 @@ fn collect_doctor_output(
             if !custom.packages.is_empty() {
                 declared.push(custom.name.clone());
             }
+            if custom.name.contains('.') {
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "custom manager '{}' contains '.' in its name: source-delivered packages under it cannot carry decisions (the decision path grammar splits on '.') and are withheld from every run — rename it to be asked about them",
+                        custom.name
+                    ),
+                );
+            }
         }
         declared
     } else {
@@ -217,12 +229,13 @@ fn collect_doctor_output(
             if !seen.insert(name.to_string()) {
                 continue;
             }
-            let can_bootstrap = mgr.can_bootstrap();
-            let bootstrap_method = if can_bootstrap {
-                Some(packages::bootstrap_method(mgr.as_ref()).to_string())
-            } else {
-                None
-            };
+            // The one site that needs the plan itself rather than the question
+            // `PackageManagerExt::can_bootstrap` answers — it reports the method
+            // beside the flag, so asking the manager twice would re-derive a plan
+            // already in hand.
+            let plan = mgr.bootstrap_plan();
+            let can_bootstrap = plan.is_some();
+            let bootstrap_method = plan.map(|p| p.method);
             manager_checks.push(DoctorManagerCheck {
                 name: name.to_string(),
                 available: mgr.is_available(),
@@ -255,10 +268,10 @@ fn collect_doctor_output(
     let modules_registry = build_registry();
     let mgr_map = managers_map(&modules_registry);
     let platform = Platform::detect();
-    let doctor_state = open_state_store(cli.state_dir.as_deref()).ok();
+    let doctor_state = open_state_store(cli.state_dir.as_deref(), cli.scope()).ok();
     let doctor_cx = doctor_state
         .as_ref()
-        .map(|state| cfgd_core::providers::PackageContext { printer, state });
+        .map(|state| cfgd_core::providers::PackageContext::new(printer, state));
 
     let module_checks: Vec<DoctorModuleCheck> = module_list
         .iter()
@@ -337,7 +350,10 @@ fn collect_doctor_output(
         })
         .collect();
 
-    let state_store = match StateStore::open_default() {
+    // Probe the store THIS run's `--state-dir`/`--scope` would open, not the
+    // per-user default — a `--scope system` doctor reporting the user store
+    // accessible would be diagnosing a store the run never uses.
+    let state_store = match super::open_state_store(cli.state_dir.as_deref(), cli.scope()) {
         Ok(_) => DoctorStateStore {
             accessible: true,
             message: None,

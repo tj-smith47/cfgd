@@ -67,53 +67,57 @@ fn parse_brew_versions_whitespace_only() {
 }
 
 #[test]
-fn brew_manager_name_and_bootstrap() {
+fn brew_manager_name_and_bootstrap_plan() {
     let mgr = BrewManager;
     assert_eq!(mgr.name(), "brew");
-    assert!(mgr.can_bootstrap());
+    let plan = mgr
+        .bootstrap_plan()
+        .expect("brew always plans to provision itself");
+    // What `bootstrap` runs: Homebrew's install.sh, fetched with curl, landing
+    // in the same prefix `path_dirs` reports.
+    assert_eq!(plan.method, "homebrew installer");
+    assert_eq!(plan.requires, ["curl"]);
+    assert_eq!(
+        plan.creates_path_dirs,
+        super::super::shared::brew_path_dirs()
+    );
 }
 
 #[test]
 fn brew_tap_manager_name_and_bootstrap() {
     let mgr = BrewTapManager;
     assert_eq!(mgr.name(), "brew-tap");
-    assert!(!mgr.can_bootstrap());
+    assert!(mgr.bootstrap_plan().is_none());
     // bootstrap is a no-op
     let printer = cfgd_core::test_helpers::test_printer();
-    mgr.bootstrap(&printer).unwrap();
+    mgr.bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&printer))
+        .unwrap();
 }
 
 #[test]
 fn brew_cask_manager_name_and_bootstrap() {
     let mgr = BrewCaskManager;
     assert_eq!(mgr.name(), "brew-cask");
-    assert!(!mgr.can_bootstrap());
+    assert!(mgr.bootstrap_plan().is_none());
     let printer = cfgd_core::test_helpers::test_printer();
-    mgr.bootstrap(&printer).unwrap();
+    mgr.bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&printer))
+        .unwrap();
 }
 
 #[test]
-fn brew_tap_manager_update_is_noop() {
-    let mgr = BrewTapManager;
-    let printer = cfgd_core::test_helpers::test_printer();
-    let state = cfgd_core::test_helpers::test_state();
-    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    mgr.update(&cx).unwrap();
+fn only_the_formula_manager_owns_the_brew_family_index() {
+    // One `brew update` per run: a profile naming brew, brew-cask and brew-tap
+    // is three registered managers over one binary and one index, and a
+    // refresh node for each would refresh the same data three times.
+    assert!(BrewManager.has_index());
+    assert!(!BrewCaskManager.has_index());
+    assert!(!BrewTapManager.has_index());
 }
 
 #[test]
 fn brew_tap_manager_available_version_is_none() {
     let mgr = BrewTapManager;
     assert!(mgr.available_version("any").unwrap().is_none());
-}
-
-#[test]
-fn brew_cask_manager_update_is_noop() {
-    let mgr = BrewCaskManager;
-    let printer = cfgd_core::test_helpers::test_printer();
-    let state = cfgd_core::test_helpers::test_state();
-    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    mgr.update(&cx).unwrap();
 }
 
 #[test]
@@ -237,16 +241,6 @@ fn brew_cask_manager_is_available_checks_brew() {
     let mgr = BrewCaskManager;
     let available = mgr.is_available();
     assert_eq!(available, brew_available());
-}
-
-#[test]
-fn brew_cask_update_returns_ok() {
-    let mgr = BrewCaskManager;
-    let printer = cfgd_core::test_helpers::test_printer();
-    let state = cfgd_core::test_helpers::test_state();
-    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    // brew-cask update is a no-op, should always succeed
-    mgr.update(&cx).unwrap();
 }
 
 #[test]
@@ -545,7 +539,7 @@ mod brew_shim {
         let p = test_printer();
         let st = test_state();
         let cx = test_package_context(&p, &st);
-        BrewManager.update(&cx).expect("update Ok");
+        BrewManager.refresh_index(&cx).expect("refresh Ok");
         assert!(shim.argv_log().contains("update"));
     }
 
@@ -651,12 +645,12 @@ mod brew_shim {
 
     #[test]
     #[serial]
-    fn brew_tap_update_is_noop_no_command_spawned() {
+    fn brew_tap_refresh_spawns_no_command() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
         let st = test_state();
         let cx = test_package_context(&p, &st);
-        BrewTapManager.update(&cx).expect("Ok");
+        BrewTapManager.refresh_index(&cx).expect("Ok");
         assert_eq!(
             shim.invocation_count(),
             0,
@@ -910,7 +904,7 @@ mod brew_shim {
         let (_tmp, _guard) = cfgd_core::test_helpers::install_named_path_shim("bash", 0, "", "");
         let p = test_printer();
         BrewManager
-            .bootstrap(&p)
+            .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
             .expect("non-root bootstrap Ok with passing bash shim");
     }
 
@@ -924,7 +918,7 @@ mod brew_shim {
             cfgd_core::test_helpers::install_named_path_shim("bash", 1, "", "boom");
         let p = test_printer();
         let err = BrewManager
-            .bootstrap(&p)
+            .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
             .expect_err("a non-zero bash install script must surface as BootstrapFailed");
         let msg = err.to_string();
         assert!(
@@ -980,7 +974,9 @@ mod brew_shim {
         ]);
         let p = test_printer();
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
-            BrewManager.bootstrap(&p).expect("bootstrap ok with shim");
+            BrewManager
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
+                .expect("bootstrap ok with shim");
         }
     }
 
@@ -995,7 +991,7 @@ mod brew_shim {
         let p = test_printer();
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             let err = BrewManager
-                .bootstrap(&p)
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
                 .expect_err("useradd exit 1 → BootstrapFailed");
             assert!(
                 err.to_string().contains("brew"),
@@ -1016,7 +1012,7 @@ mod brew_shim {
         let p = test_printer();
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             let err = BrewManager
-                .bootstrap(&p)
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
                 .expect_err("sudo exit 1 → BootstrapFailed");
             assert!(
                 err.to_string().contains("brew"),
@@ -1090,7 +1086,9 @@ mod bridge {
     #[test]
     #[serial]
     fn snapshot_brew_install_with_warnings() {
-        // Shim emits brew-style caveats so extract_caveats + print_caveats fire.
+        // Shim emits brew-style caveats so extract_caveats fires. They travel
+        // back through the context's NoteSink instead of printing here — the
+        // reconciler renders them attached to the action's own status line.
         // Caveat body must be a single line — renderer forbids embedded newlines.
         let caveat_stdout = "==> Installing git\n\
             ==> Caveats\n\
@@ -1101,10 +1099,23 @@ mod bridge {
 
         let (printer, cap) = Printer::for_test_doc();
         let state = cfgd_core::test_helpers::test_state();
-        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+        let notes = cfgd_core::providers::NoteSink::default();
+        let cx = cfgd_core::providers::PackageContext::with_notes(&printer, &state, &notes);
         BrewManager
             .install(&["git".to_string()], &cx)
             .expect("install ok with caveats");
+
+        let collected = notes.take();
+        assert_eq!(
+            collected.len(),
+            1,
+            "the caveat must reach the sink, not the terminal: {collected:?}"
+        );
+        assert_eq!(collected[0].tag.as_deref(), Some("brew"));
+        assert_eq!(
+            collected[0].message,
+            "Run xcode-select --install to complete setup."
+        );
 
         let summary = BrewInstallSummary {
             packages_installed: 1,

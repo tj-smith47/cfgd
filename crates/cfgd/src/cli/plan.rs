@@ -1,7 +1,5 @@
 use super::*;
 
-use cfgd_core::PathDisplayExt;
-
 pub fn cmd_plan(
     cli: &Cli,
     printer: &cfgd_core::output::Printer,
@@ -35,49 +33,19 @@ pub fn cmd_plan(
         init::resolve_from(from, target, "master", printer)?;
     }
 
-    printer.heading("Plan");
-
     let config_dir = config_dir(cli);
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let module_filter = args.module.as_deref();
 
-    // Load config and profile — same pattern as cmd_apply
-    let (cfg, resolved) = if let Some(mod_name) = module_filter {
-        match load_config_and_profile(cli) {
-            Ok((cfg, profile_name, resolved)) => {
-                printer.kv_block([
-                    ("Config".to_string(), cli.config.display_posix()),
-                    ("Profile".to_string(), profile_name),
-                ]);
-                (cfg, resolved)
-            }
-            Err(e) => {
-                tracing::debug!("profile load failed, using module-only mode: {}", e);
-                let cfg =
-                    config::load_config(&cli.config).unwrap_or_else(|_| config::minimal_config());
-                let resolved =
-                    empty_resolved_profile(mod_name, &active_profile_name(cli, Some(&cfg)));
-                printer.kv_block([
-                    ("Config".to_string(), cli.config.display_posix()),
-                    ("Profile".to_string(), "(module-only)".to_string()),
-                ]);
-                (cfg, resolved)
-            }
-        }
-    } else {
-        let (cfg, profile_name, resolved) = load_config_and_profile(cli)?;
-        printer.kv_block([
-            ("Config".to_string(), cli.config.display_posix()),
-            ("Profile".to_string(), profile_name),
-        ]);
-        (cfg, resolved)
-    };
+    // Load config and profile — same pattern as cmd_apply. The header these
+    // rows belong to is rendered once the plan is final, so the profile label
+    // is carried down rather than printed here. A module-only run resolved no
+    // profile, so it carries none and the header omits the row.
+    let (cfg, resolved, profile_label, config_parsed) =
+        load_config_and_profile_module_scoped(cli, printer, module_filter)?;
 
     let mut registry = build_registry_with_config(Some(&cfg));
     registry.set_system_config_dir(&config_dir);
-
-    // `ApplyPhase` (clap ValueEnum) is already validated at parse time.
-    let phase_filter: Option<PhaseName> = args.phase.map(apply_phase_to_phase_name);
 
     // Compose with sources (network refresh) and resolve modules through the one
     // shared desired-state resolver — same path apply takes.
@@ -102,6 +70,14 @@ pub fn cmd_plan(
         &effective_resolved.merged.packages.custom,
     ));
 
+    // `PhaseArg`'s base phase is clap-validated; a selector combined with
+    // `--phase modules` is the one combination `resolve_phase_filter` still
+    // has to reject at runtime (see its doc comment). Resolved only now that
+    // `registry` carries every custom manager too, so a selector naming one
+    // validates against the same vocabulary the plan itself will match.
+    let phase_filter: Option<PhaseFilter> =
+        resolve_phase_filter(args.phase.clone(), &registry, printer)?;
+
     let module_only = module_filter.is_some();
 
     // `--module <name>` that resolved to nothing (typo / not found) — captured
@@ -111,8 +87,13 @@ pub fn cmd_plan(
         .map(str::to_string);
 
     // Plan-only mode: no secret providers needed
-    let (pkg_actions, file_actions, dry_run_fm) = if module_only {
-        (Vec::new(), Vec::new(), None)
+    let (pkg_actions, file_actions, dry_run_fm, actual_packages) = if module_only {
+        (
+            Vec::new(),
+            Vec::new(),
+            None,
+            cfgd_core::reconciler::ActualPackages::default(),
+        )
     } else {
         let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
             .package_managers
@@ -134,11 +115,8 @@ pub fn cmd_plan(
         // Profile-scoped: module packages are added separately by
         // `reconciler.plan` as `Action::Module`, so this planner must stay
         // profile-only to avoid double-handling them.
-        let pkg_cx = cfgd_core::providers::PackageContext {
-            printer,
-            state: &state,
-        };
-        let pkg = packages::plan_packages(
+        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
+        let (pkg, actual) = packages::plan_packages_observed(
             &effective_resolved.merged,
             &[],
             &all_managers,
@@ -153,8 +131,10 @@ pub fn cmd_plan(
         }
 
         let fa = fm.plan(&effective_resolved.merged)?;
-        (pkg, fa, Some(fm))
+        (pkg, fa, Some(fm), actual)
     };
+
+    let module_names: Vec<String> = resolved_modules.iter().map(|m| m.name.clone()).collect();
 
     let reconciler = Reconciler::new(&registry, &state);
     let mut plan = reconciler.plan(
@@ -165,6 +145,27 @@ pub fn cmd_plan(
         reconcile_context,
     )?;
 
+    // A resource awaiting (or declined by) a source decision is not this run's
+    // to plan. Pruned before the scope snapshot below, so the preview, the
+    // counts and the payload all describe the set an apply would execute —
+    // `apply` prunes with the same set, through the same gate. A preview writes
+    // nothing, so an item classified but not yet recorded is withheld and
+    // listed without a row being minted for it; the row lands when `cfgd
+    // decide` answers it, or once an apply/tick proceeds.
+    let (withheld, _review) = plan_ops::withheld_for_run(
+        &state,
+        &cfg,
+        &effective_resolved,
+        &config_dir,
+        config_parsed,
+        plan_ops::DecisionWrites::ReadOnly,
+        &actual_packages,
+    )?;
+    reconciler::withhold_from_plan(
+        &mut plan,
+        &reconciler::DecisionExclusions::from_withheld(&withheld),
+    );
+
     // Snapshot scope before --skip/--only prune the plan, so a zero-action
     // preview distinguishes "in sync" from "a filter excluded pending work".
     let filter_active = phase_filter.is_some()
@@ -174,7 +175,14 @@ pub fn cmd_plan(
     let scope = ScopeReport::capture(&plan, filter_active, module_miss);
 
     // Apply --skip / --only filters
-    filter_plan(&mut plan, &args.skip, &args.only);
+    filter_plan(
+        &mut plan,
+        &args.skip,
+        &args.only,
+        phase_filter.as_ref(),
+        printer,
+        &registry,
+    );
 
     // Strip script phases when --skip-scripts is set
     if args.skip_scripts {
@@ -187,16 +195,36 @@ pub fn cmd_plan(
         .map(|b| b.name.clone())
         .collect();
 
+    let run = reconciler::ApplyRun::new(
+        reconciler::RunContext {
+            title: reconciler::RunTitle::Plan,
+            config_path: Some(&cli.config),
+            profile: profile_label.as_deref(),
+            modules: &module_names,
+            trigger: None,
+        },
+        &plan,
+    )
+    .with_filter(phase_filter.as_ref())
+    .with_withheld(&withheld)
+    .decisions_answerable(reconciler::owns_decision_store(
+        &cli.config,
+        cli.state_dir.is_some(),
+        cli.scope(),
+    ))
+    .preview_only();
+
     display_plan_preview(
+        &run,
         &plan,
         printer,
-        &state,
         &PlanPreviewArgs {
             context: &args.context,
             phase_filter: phase_filter.as_ref(),
             dry_run_fm: dry_run_fm.as_ref(),
             scope: &scope,
             pending_backups: &pending_backups,
+            withheld: &withheld,
         },
     );
 

@@ -11,7 +11,7 @@ pub(crate) fn record_file_drift_to(store: &StateStore, path: &Path) -> bool {
         &crate::to_posix_string(path),
         None,
         Some("modified"),
-        "local",
+        LOCAL_LAYER,
     ) {
         Ok(_) => true,
         Err(e) => {

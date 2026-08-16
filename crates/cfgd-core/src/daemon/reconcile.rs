@@ -1,6 +1,6 @@
 use super::*;
 use crate::PathDisplayExt;
-use crate::to_posix_string;
+use crate::reconciler::{DecisionExclusions, action_resource_info, withhold_from_plan};
 
 // --- File Watcher ---
 
@@ -110,6 +110,11 @@ pub(crate) struct ReconcileCtx<'a> {
     pub notify_on_drift: bool,
     pub hooks: &'a dyn DaemonHooks,
     pub state_dir_override: Option<&'a Path>,
+    /// Whether the operator explicitly passed `--state-dir` — distinct from
+    /// `state_dir_override`, which the production loop always materializes
+    /// from the scope default. Store ownership is judged on this bit, exactly
+    /// as the CLI judges `cli.state_dir.is_some()`.
+    pub explicit_state_dir: bool,
     pub printer: &'a crate::output::Printer,
     /// When set, restrict reconcile to actions targeting this module name.
     /// Used by per-module reconcile ticks fired from `ReconcilePatch` entries;
@@ -133,6 +138,41 @@ pub(crate) struct ReconcileCtx<'a> {
     pub abort: &'a crate::AbortFlag,
 }
 
+/// The daemon's binding of the run skeleton to `Reconciler::apply`.
+///
+/// A tick never prompts and never scopes itself with `--phase`/`--skip`, so the
+/// executor carries only what `apply` cannot derive from the plan: the profile
+/// being reconciled, the directory its scripts run in, the modules whose state
+/// it records, and the shutdown flag a `SIGTERM` raises mid-apply.
+struct TickExecutor<'a> {
+    reconciler: &'a crate::reconciler::Reconciler<'a>,
+    resolved: &'a crate::config::ResolvedProfile,
+    config_dir: &'a Path,
+    modules: &'a [crate::modules::ResolvedModule],
+    abort: &'a crate::AbortFlag,
+}
+
+impl crate::reconciler::RunExecutor for TickExecutor<'_> {
+    fn apply(
+        &mut self,
+        plan: &crate::reconciler::Plan,
+        printer: &crate::output::Printer,
+    ) -> crate::errors::Result<crate::reconciler::ApplyResult> {
+        self.reconciler.apply(
+            plan,
+            self.resolved,
+            self.config_dir,
+            printer,
+            None,
+            self.modules,
+            crate::reconciler::ReconcileContext::Reconcile,
+            false,
+            None,
+            self.abort,
+        )
+    }
+}
+
 pub(crate) fn handle_reconcile(
     config_path: &Path,
     profile_override: Option<&str>,
@@ -144,6 +184,7 @@ pub(crate) fn handle_reconcile(
         notify_on_drift,
         hooks,
         state_dir_override,
+        explicit_state_dir,
         printer,
         module_filter,
         auto_apply_override,
@@ -263,7 +304,11 @@ pub(crate) fn handle_reconcile(
                 return;
             }
         },
-        None => match StateStore::open_default() {
+        // Reachable only when startup's scope-default materialization failed
+        // (`run_daemon_with` fills `state_dir_override` on every healthy
+        // tick); re-derive from the SAME scope rather than the user default,
+        // or a system-scope daemon would fall back to the per-user store.
+        None => match StateStore::open_default_for(scope) {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!(error = %e, "reconcile: state store error");
@@ -273,65 +318,31 @@ pub(crate) fn handle_reconcile(
     };
 
     // Process auto-apply decisions for source items
-    let auto_apply = auto_apply_override.unwrap_or_else(|| {
-        cfg.spec
-            .daemon
-            .as_ref()
-            .and_then(|d| d.reconcile.as_ref())
-            .map(|r| r.auto_apply)
-            .unwrap_or(false)
-    });
+    let auto_apply =
+        auto_apply_override.unwrap_or_else(|| crate::reconciler::configured_auto_apply(&cfg));
 
-    // Source-decision processing is profile-wide; skip it when we're scoped to
-    // a single module so a per-module tick doesn't accidentally
-    // accept/reject items from sources unrelated to the patched module.
-    let pending_exclusions =
-        if module_filter.is_none() && auto_apply && !cfg.spec.sources.is_empty() {
-            let default_policy = AutoApplyPolicyConfig::default();
-            let policy = cfg
-                .spec
-                .daemon
-                .as_ref()
-                .and_then(|d| d.reconcile.as_ref())
-                .and_then(|r| r.policy.as_ref())
-                .unwrap_or(&default_policy);
-
-            let mut all_excluded = HashSet::new();
-            for source_spec in &cfg.spec.sources {
-                let excluded = process_source_decisions(
-                    &store,
-                    &source_spec.name,
-                    &local_resolved.merged,
-                    policy,
-                    notifier,
-                );
-                all_excluded.extend(excluded);
-            }
-
-            // Auto-resolve pending decisions for removed sources
-            let source_names: HashSet<&str> =
-                cfg.spec.sources.iter().map(|s| s.name.as_str()).collect();
-            if let Ok(all_pending) = store.pending_decisions() {
-                for decision in &all_pending {
-                    if !source_names.contains(decision.source.as_str())
-                        && let Err(e) =
-                            store.resolve_decisions_for_source(&decision.source, "rejected")
-                    {
-                        tracing::warn!(
-                            source = %decision.source,
-                            error = %e,
-                            "failed to auto-reject decisions for removed source"
-                        );
-                    }
-                }
-            }
-
-            all_excluded
-        } else {
-            HashSet::new()
-        };
-
-    let reconciler = crate::reconciler::Reconciler::new(&registry, &store);
+    // Discard the decisions of a source the subscriber has dropped: source
+    // gone, items gone. Outside every OTHER gate below, because the rows a
+    // removed source leaves are exactly the rows nobody can answer —
+    // `cfgd decide` acts against a source that no longer exists — and dropping
+    // the LAST source, or turning auto-apply off, must not be what strands
+    // them. The one gate it does take is store ownership, shared with
+    // `cfgd apply`: a daemon started on a FOREIGN config against the DEFAULT
+    // store would otherwise delete another config's rows. Ownership is judged
+    // on the resolved config path itself, so an installed service unit baking
+    // `--config <default path>` still sweeps its own machine's rows.
+    // Ownership is judged on the OPERATOR's `--state-dir`, never on the
+    // materialized `state_dir_override` — the production loop always fills
+    // that in from the scope default, so `.is_some()` on it would make every
+    // deployed daemon an owner of whatever store the default resolved and a
+    // `cfgd daemon --config /foreign.yaml` would sweep and mint the default
+    // store's rows.
+    let owns_the_store =
+        crate::reconciler::owns_decision_store(config_path, explicit_state_dir, scope);
+    let subscribed: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
+    if owns_the_store && let Err(e) = store.discard_decisions_not_in(&subscribed) {
+        tracing::warn!(error = %e, "failed to discard decisions of removed sources");
+    }
 
     let available_managers = registry.available_package_managers();
     // The daemon is a full, unscoped reconcile, so it prunes: feed the real
@@ -342,22 +353,99 @@ pub(crate) fn handle_reconcile(
         .into_iter()
         .map(|(mgr, pkg)| format!("{mgr}/{pkg}"))
         .collect();
-    let pkg_cx = crate::providers::PackageContext {
-        printer,
-        state: &store,
-    };
-    let pkg_actions = match hooks.plan_packages(
+    let pkg_cx = crate::providers::PackageContext::new(printer, &store);
+    // Planned BEFORE the policy review because the classification consumes the
+    // planner's own installed-state observation — one enumeration, threaded,
+    // never a second shell-out. A planning failure therefore skips the tick
+    // before anything is minted: a review taken without the observation would
+    // ask about items the machine may already run.
+    let (pkg_actions, actual_packages) = match hooks.plan_packages_observed(
         &resolved.merged,
         &available_managers,
         &cfgd_installed,
         &pkg_cx,
     ) {
-        Ok(a) => a,
+        Ok(out) => out,
         Err(e) => {
             tracing::error!(error = %e, "reconcile: package planning failed");
             return;
         }
     };
+
+    // The policy review is profile-wide; skip it when we're scoped to a single
+    // module so a per-module tick doesn't accidentally accept/reject items from
+    // sources unrelated to the patched module. The classification itself is the
+    // shared one `cfgd plan` and `cfgd apply` read, so a `Reject`-tier item the
+    // daemon declines cannot be installed by a manual apply; only the WRITES
+    // below (the rows, the hashes) belong to the daemon.
+    let review = if module_filter.is_none() {
+        match crate::reconciler::review_source_policies(
+            &store,
+            &cfg,
+            &resolved,
+            auto_apply,
+            &actual_packages,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(error = %e, "reconcile: cannot review source auto-apply policy");
+                notifier.notify(
+                    "cfgd: reconcile skipped — source decisions unreadable",
+                    &format!(
+                        "cfgd could not read the source decision state ({e}), so this reconcile was skipped rather than applying items that may be awaiting your review. Run `cfgd status` to inspect."
+                    ),
+                );
+                return;
+            }
+        }
+    } else {
+        crate::reconciler::SourcePolicyReview::default()
+    };
+    // The WRITE half takes the same gate as the sweep, mirroring `cfgd
+    // apply`: a foreign config does not record rows and hashes into someone
+    // else's store. The items are withheld from this tick either way — the
+    // unrecorded mints ride `with_unrecorded` below.
+    if owns_the_store {
+        mint_reviewed_decisions(&store, &review, notifier);
+    }
+
+    // The rows are read whatever the mode: minting a decision is an auto-apply
+    // behaviour, but honouring one that already exists is not. A tick that read
+    // them only under auto-apply would report drift for a resource `cfgd plan`
+    // hides, on the same machine and the same rows.
+    let decision_scope = crate::reconciler::DecisionScope::new(
+        subscribed,
+        &crate::reconciler::local_profile(&resolved),
+    );
+    // `with_unrecorded` closes the write-failure window: a mint the store
+    // rejected has no row for `read` to return, and the unattended tick is the
+    // one path that would install it with nobody watching. For every row that
+    // DID record, it is a no-op — `read` already returned it.
+    let withheld = match crate::reconciler::WithheldDecisions::read(&store, &decision_scope) {
+        Ok(w) => w
+            .with_policy_declined(review.declined)
+            .with_unrecorded(&review.to_mint, &decision_scope)
+            .with_undecidable(review.undecidable)
+            .with_auto_accepted(&review.auto_accepted),
+        Err(e) => {
+            tracing::error!(error = %e, "reconcile: cannot read source decisions");
+            notifier.notify(
+                "cfgd: reconcile skipped — source decisions unreadable",
+                &format!(
+                    "cfgd could not read the source decision state ({e}), so this reconcile was skipped rather than applying items that may be awaiting your review. Run `cfgd status` to inspect."
+                ),
+            );
+            return;
+        }
+    };
+    let pending_exclusions =
+        DecisionExclusions::from_withheld_with(&withheld, |p| hooks.expand_tilde(p));
+
+    // The env arm withholds the surface as a unit, and apply rebuilds that
+    // surface after the phases run from the declared set rather than from the
+    // plan — so the pruning below is only half the guarantee without this.
+    let reconciler = crate::reconciler::Reconciler::new(&registry, &store)
+        .withholding_env_surface(pending_exclusions.withholds_env_surface());
 
     let file_actions = match hooks.plan_files(&config_dir, &resolved) {
         Ok(a) => a,
@@ -396,34 +484,16 @@ pub(crate) fn handle_reconcile(
     // just that one module's packages/files/scripts and avoids reaching into
     // unrelated profile state.
     if let Some(name) = module_filter {
-        for phase in &mut plan.phases {
-            phase.actions.retain(|a| match a {
-                crate::reconciler::Action::Module(ma) => ma.module_name == name,
-                _ => false,
-            });
-        }
-        // Every non-module phase, and every module phase for a different
-        // module, is emptied by the retain above — drop them so drift
-        // recording and `reconciler.apply` below only ever see the filtered
-        // module's own work.
-        plan.phases.retain(|p| !p.actions.is_empty());
+        narrow_to_module(&mut plan, name);
     }
 
-    // Filter out pending decision items from the plan when auto-applying
-    let effective_total = if pending_exclusions.is_empty() {
-        plan.total_actions()
-    } else {
-        let mut count = 0usize;
-        for phase in &plan.phases {
-            for action in &phase.actions {
-                let (_rtype, rid) = action_resource_info(action);
-                if !pending_exclusions.contains(&rid) {
-                    count += 1;
-                }
-            }
-        }
-        count
-    };
+    // A resource whose source change is still awaiting a decision is not the
+    // daemon's to touch. Prune it out of the plan itself rather than only
+    // discounting it: the tick's action count, the drift rows it records and
+    // the actions an auto-apply executes then describe one set, and the header
+    // cannot name a number the run disagrees with.
+    withhold_from_plan(&mut plan, &pending_exclusions);
+    let effective_total = plan.total_actions();
 
     let timestamp = crate::utc_now_iso8601();
 
@@ -466,15 +536,15 @@ pub(crate) fn handle_reconcile(
         // diverging resource (UPSERT — no duplicate rows across ticks)...
         let mut current_drift: Vec<(String, String)> = Vec::new();
         for phase in &plan.phases {
-            for action in &phase.actions {
+            for action in phase.actions() {
                 let (rtype, rid) = action_resource_info(action);
-                // Skip pending decision items when recording drift
-                if pending_exclusions.contains(&rid) {
-                    continue;
-                }
-                if let Err(e) =
-                    store.record_drift(&rtype, &rid, None, Some("drift detected"), "local")
-                {
+                if let Err(e) = store.record_drift(
+                    &rtype,
+                    &rid,
+                    None,
+                    Some("drift detected"),
+                    config::LOCAL_LAYER,
+                ) {
                     tracing::warn!(error = %e, "failed to record drift");
                 }
                 current_drift.push((rtype, rid));
@@ -486,88 +556,142 @@ pub(crate) fn handle_reconcile(
             tracing::warn!(error = %e, "failed to resolve healed drift rows");
         }
 
-        // Execute onDrift scripts from resolved profile. Profile-level scripts
-        // are skipped for per-module ticks — those fire only when a default
-        // (whole-profile) reconcile detects drift.
-        if module_filter.is_none() && !resolved.merged.scripts.on_drift.is_empty() {
-            let scripts = &resolved.merged.scripts;
-            tracing::info!(count = scripts.on_drift.len(), "running onDrift script(s)");
-            let script_env =
-                crate::reconciler::build_script_env(&crate::reconciler::ScriptEnvContext {
-                    config_dir: &config_dir,
-                    profile_name,
-                    context: crate::reconciler::ReconcileContext::Reconcile,
-                    phase: &crate::reconciler::ScriptPhase::OnDrift,
-                    module_name: None,
-                    module_dir: None,
-                    path_dirs: &crate::reconciler::all_recorded_path_dirs(&store),
-                });
-            let default_timeout = crate::PROFILE_SCRIPT_TIMEOUT;
-            let working = crate::reconciler::script_default_workdir(&config_dir);
-            for entry in &scripts.on_drift {
-                match crate::reconciler::execute_script(
-                    entry,
-                    &config_dir,
-                    &working,
-                    &script_env,
-                    default_timeout,
-                    printer,
-                    None,
-                    None,
-                ) {
-                    Ok((desc, _, _)) => {
-                        tracing::info!(script = %desc, "onDrift script completed");
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "onDrift script failed");
+        // The onDrift hooks of the profile and of every drifted module, as one
+        // `Drift Hooks` tree above the reconcile header.
+        //
+        // Profile-level scripts are skipped for per-module ticks — those fire
+        // only when a default (whole-profile) reconcile detects drift. Module
+        // scripts fire on per-module ticks too: the plan is already pruned to
+        // the filtered module above, so `module_has_drift` scopes correctly in
+        // both cases.
+        let profile_hooks: &[crate::config::ScriptEntry] = if module_filter.is_none() {
+            &resolved.merged.scripts.on_drift
+        } else {
+            &[]
+        };
+        let drifted_modules: Vec<&crate::modules::ResolvedModule> = resolved_modules_ref
+            .iter()
+            .filter(|module| {
+                !module.on_drift_scripts.is_empty() && module_has_drift(&plan, &module.name)
+            })
+            .collect();
+        // The column is derived from config before the first script runs: the
+        // pseudo-phase streams, so there is no close to buffer against, and
+        // `execute_script` composes exactly this subject.
+        let hook_labels: Vec<String> = profile_hooks
+            .iter()
+            .chain(
+                drifted_modules
+                    .iter()
+                    .flat_map(|module| module.on_drift_scripts.iter()),
+            )
+            .map(|entry| {
+                crate::reconciler::hook_script_subject(
+                    crate::reconciler::ScriptPhase::OnDrift.display_name(),
+                    entry.run_str(),
+                )
+                .to_string()
+            })
+            .collect();
+
+        if !hook_labels.is_empty() {
+            let hook_width =
+                crate::reconciler::align_width_of(hook_labels.iter().map(String::as_str));
+            // Opened before the loops, not assembled after them: each script
+            // emits its own status as it finishes, and it has to land under its
+            // owner group at that moment.
+            let hooks_phase =
+                crate::reconciler::pseudo_phase(printer, crate::reconciler::HOOKS_PHASE_LABEL);
+            let drift_script_path_dirs = crate::reconciler::all_recorded_path_dirs(&store);
+
+            if !profile_hooks.is_empty() {
+                tracing::info!(count = profile_hooks.len(), "running onDrift scripts");
+                let owner = crate::reconciler::Owner::profile(profile_name);
+                let _group = hooks_phase.owner(&owner, hook_width);
+                let script_env =
+                    crate::reconciler::build_script_env(&crate::reconciler::ScriptEnvContext {
+                        config_dir: &config_dir,
+                        profile_name,
+                        context: crate::reconciler::ReconcileContext::Reconcile,
+                        phase: &crate::reconciler::ScriptPhase::OnDrift,
+                        module_name: None,
+                        module_dir: None,
+                        path_dirs: &drift_script_path_dirs,
+                    });
+                let working = crate::reconciler::script_default_workdir(&config_dir);
+                for entry in profile_hooks {
+                    match crate::reconciler::execute_script(
+                        entry,
+                        &config_dir,
+                        &working,
+                        &script_env,
+                        crate::PROFILE_SCRIPT_TIMEOUT,
+                        printer,
+                        None,
+                        None,
+                        crate::reconciler::ScriptReport {
+                            subject: crate::reconciler::ScriptSubject::Hook(
+                                crate::reconciler::ScriptPhase::OnDrift.display_name(),
+                            ),
+                            non_fatal: true,
+                            ..Default::default()
+                        },
+                    ) {
+                        Ok((desc, _, _)) => {
+                            tracing::info!(script = %desc, "onDrift script completed");
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "onDrift script failed");
+                        }
                     }
                 }
             }
-        }
 
-        // Execute module-level onDrift scripts for each module that drifted.
-        // Unlike profile onDrift, this fires on per-module ticks too: the plan is
-        // already pruned to the filtered module above, so iterating it scopes
-        // correctly in both the whole-profile and per-module cases.
-        let drift_script_path_dirs = crate::reconciler::all_recorded_path_dirs(&store);
-        for module in &resolved_modules_ref {
-            if module.on_drift_scripts.is_empty() || !module_has_drift(&plan, &module.name) {
-                continue;
-            }
-            tracing::info!(
-                module = %module.name,
-                count = module.on_drift_scripts.len(),
-                "running module onDrift script(s)"
-            );
-            let script_env = crate::reconciler::build_module_script_env(
-                &crate::reconciler::ScriptEnvContext {
-                    config_dir: &config_dir,
-                    profile_name,
-                    context: crate::reconciler::ReconcileContext::Reconcile,
-                    phase: &crate::reconciler::ScriptPhase::OnDrift,
-                    module_name: Some(&module.name),
-                    module_dir: Some(&module.dir),
-                    path_dirs: &drift_script_path_dirs,
-                },
-                &module.env,
-            );
-            let working = crate::reconciler::script_default_workdir(&config_dir);
-            for entry in &module.on_drift_scripts {
-                match crate::reconciler::execute_script(
-                    entry,
-                    &module.dir,
-                    &working,
-                    &script_env,
-                    crate::reconciler::MODULE_SCRIPT_TIMEOUT,
-                    printer,
-                    None,
-                    None,
-                ) {
-                    Ok((desc, _, _)) => {
-                        tracing::info!(module = %module.name, script = %desc, "module onDrift script completed");
-                    }
-                    Err(e) => {
-                        tracing::error!(module = %module.name, error = %e, "module onDrift script failed");
+            for module in &drifted_modules {
+                tracing::info!(
+                    module = %module.name,
+                    count = module.on_drift_scripts.len(),
+                    "running module onDrift scripts"
+                );
+                let owner = crate::reconciler::Owner::module(&module.name);
+                let _group = hooks_phase.owner(&owner, hook_width);
+                let script_env = crate::reconciler::build_module_script_env(
+                    &crate::reconciler::ScriptEnvContext {
+                        config_dir: &config_dir,
+                        profile_name,
+                        context: crate::reconciler::ReconcileContext::Reconcile,
+                        phase: &crate::reconciler::ScriptPhase::OnDrift,
+                        module_name: Some(&module.name),
+                        module_dir: Some(&module.dir),
+                        path_dirs: &drift_script_path_dirs,
+                    },
+                    &module.env,
+                );
+                let working = crate::reconciler::script_default_workdir(&config_dir);
+                for entry in &module.on_drift_scripts {
+                    match crate::reconciler::execute_script(
+                        entry,
+                        &module.dir,
+                        &working,
+                        &script_env,
+                        crate::reconciler::MODULE_SCRIPT_TIMEOUT,
+                        printer,
+                        None,
+                        None,
+                        crate::reconciler::ScriptReport {
+                            subject: crate::reconciler::ScriptSubject::Hook(
+                                crate::reconciler::ScriptPhase::OnDrift.display_name(),
+                            ),
+                            non_fatal: true,
+                            ..Default::default()
+                        },
+                    ) {
+                        Ok((desc, _, _)) => {
+                            tracing::info!(module = %module.name, script = %desc, "module onDrift script completed");
+                        }
+                        Err(e) => {
+                            tracing::error!(module = %module.name, error = %e, "module onDrift script failed");
+                        }
                     }
                 }
             }
@@ -597,25 +721,51 @@ pub(crate) fn handle_reconcile(
                 .unwrap_or_default()
         });
 
+        // The rows every arm below prints above its own body: a tick reports
+        // the same run skeleton `cfgd apply` does, so the two surfaces cannot
+        // describe one machine differently. Built once, before the policy
+        // branch, because an applying tick and a notify-only tick differ in
+        // what they do — never in what they are reconciling.
+        let trigger = format!("drift ({effective_total} resources)");
+        let module_names: Vec<String> = resolved_modules_ref
+            .iter()
+            .map(|module| module.name.clone())
+            .collect();
+        let run_ctx = || crate::reconciler::RunContext {
+            title: crate::reconciler::RunTitle::Reconcile,
+            config_path: Some(config_path),
+            profile: Some(profile_name),
+            modules: &module_names,
+            trigger: Some(&trigger),
+        };
+
         match drift_policy {
             config::DriftPolicy::Auto => {
                 tracing::info!(
                     actions = effective_total,
                     "drift policy is Auto — applying actions"
                 );
-                match reconciler.apply(
-                    &plan,
-                    &resolved,
-                    &config_dir,
-                    printer,
-                    None,
-                    &resolved_modules_ref,
-                    crate::reconciler::ReconcileContext::Reconcile,
-                    false,
-                    None,
+                let run = crate::reconciler::ApplyRun::new(run_ctx(), &plan);
+                let mut exec = TickExecutor {
+                    reconciler: &reconciler,
+                    resolved: &resolved,
+                    config_dir: &config_dir,
+                    modules: &resolved_modules_ref,
                     abort,
-                ) {
-                    Ok(result) => {
+                };
+                match run
+                    .execute(printer, crate::reconciler::Confirm::Skip, &mut exec)
+                    .map(|disposition| match disposition {
+                        crate::reconciler::RunDisposition::Applied { result, .. } => Some(result),
+                        // A run carrying a plan, executing (not `preview_only`)
+                        // and never prompting has no other disposition.
+                        crate::reconciler::RunDisposition::NothingToDo
+                        | crate::reconciler::RunDisposition::Previewed
+                        | crate::reconciler::RunDisposition::Declined
+                        | crate::reconciler::RunDisposition::BackupsApplied { .. } => None,
+                    }) {
+                    Ok(None) => {}
+                    Ok(Some(result)) => {
                         let succeeded = result.succeeded();
                         let failed = result.failed();
                         tracing::info!(
@@ -673,14 +823,18 @@ pub(crate) fn handle_reconcile(
                             notifier.notify(
                                 "cfgd: auto-apply partial failure",
                                 &format!(
-                                    "{} action(s) succeeded, {} failed. Run `cfgd status` for details.",
-                                    succeeded, failed
+                                    "{} succeeded, {} failed. Run `cfgd status` for details.",
+                                    crate::pluralize(succeeded, "action"),
+                                    failed
                                 ),
                             );
                         } else if notify_on_drift {
                             notifier.notify(
                                 "cfgd: auto-apply succeeded",
-                                &format!("{} action(s) applied successfully.", succeeded),
+                                &format!(
+                                    "{} applied successfully.",
+                                    crate::pluralize(succeeded, "action")
+                                ),
                             );
                         }
 
@@ -712,12 +866,25 @@ pub(crate) fn handle_reconcile(
             }
             config::DriftPolicy::NotifyOnly | config::DriftPolicy::Prompt => {
                 tracing::info!("drift policy is NotifyOnly — recording drift, not applying");
+                // A tick that detected drift and chose not to act still has to
+                // show WHAT drifted, so it renders the preview tree — never an
+                // execution tree — and closes on a verdict instead of a rollup.
+                let run = crate::reconciler::ApplyRun::new(run_ctx(), &plan).preview_only();
+                run.header(printer);
+                run.preview(printer);
+                printer.status_simple(
+                    crate::output::Role::Warn,
+                    format!(
+                        "Drift detected — {}; policy is notify-only, nothing applied",
+                        crate::pluralize(effective_total, "action")
+                    ),
+                );
                 if notify_on_drift {
                     notifier.notify(
                         "cfgd: drift detected",
                         &format!(
-                            "{} resource(s) have drifted from desired state. Run `cfgd apply` to reconcile.",
-                            effective_total
+                            "{} drifted from desired state. Run `cfgd apply` to reconcile.",
+                            crate::pluralize(effective_total, "resource")
                         ),
                     );
                 }
@@ -762,14 +929,45 @@ pub(crate) fn handle_reconcile(
     }
 }
 
+/// Narrow a planned tick down to one module's own work.
+///
+/// Keeps that module's groups, and the manager nodes whose consumers are among
+/// the actions that survived — nothing else. A module's packages install
+/// through managers no module group contains, so dropping `cfgd:managers`
+/// wholesale would install them against an index this tick never refreshed:
+/// the only refresh cfgd runs outside the phase covers a manager it bootstraps
+/// mid-run, which a manager already present never reaches. Narrowing by
+/// consumer rather than keeping the group whole is the same rule the planner
+/// mints by, so a tick for a module with no packages still plans nothing.
+pub(super) fn narrow_to_module(plan: &mut crate::reconciler::Plan, module: &str) {
+    for phase in &mut plan.phases {
+        phase.retain_groups(|owner| {
+            (owner.kind == crate::reconciler::OwnerKind::Module && owner.name == module)
+                || owner.is_managers()
+        });
+    }
+    // Every group owned by anything else, and every module group for a
+    // different module, is dropped by the retain above — drop the emptied
+    // phases too so drift recording and `reconciler.apply` only ever see the
+    // filtered module's own work.
+    plan.phases.retain(|p| !p.is_empty());
+    crate::reconciler::prune_to_surviving_consumers(plan);
+}
+
 /// Whether `plan` contains a non-Skip `Action::Module` targeting `module_name`.
 ///
 /// Mirrors the profile-level "fire on detected drift" rule scoped to one
 /// module's own actions: a `Skip` module action records no change, so it does
 /// not count as drift.
+///
+/// The caller passes the plan the tick will act on, which the reconcile loop
+/// has already pruned of every resource awaiting a source decision. A module
+/// whose only drifting resource is excluded therefore reports no drift and
+/// fires no `onDrift` hook — deliberate: the hook exists to react to work the
+/// daemon is about to do, and an undecided resource is work it will not do.
 pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str) -> bool {
     use crate::reconciler::{Action, ModuleActionKind};
-    plan.phases.iter().flat_map(|p| &p.actions).any(|a| {
+    plan.phases.iter().flat_map(|p| p.actions()).any(|a| {
         matches!(
             a,
             Action::Module(ma)
@@ -779,284 +977,37 @@ pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str
     })
 }
 
-pub(crate) fn action_resource_info(action: &crate::reconciler::Action) -> (String, String) {
-    use crate::providers::{FileAction, PackageAction, SecretAction};
-    use crate::reconciler::Action;
-
-    match action {
-        Action::File(fa) => match fa {
-            FileAction::Create { target, .. } => ("file".to_string(), to_posix_string(target)),
-            FileAction::Update { target, .. } => ("file".to_string(), to_posix_string(target)),
-            FileAction::Delete { target, .. } => ("file".to_string(), to_posix_string(target)),
-            FileAction::SetPermissions { target, .. } => {
-                ("file".to_string(), to_posix_string(target))
-            }
-            FileAction::Skip { target, .. } => ("file".to_string(), to_posix_string(target)),
-        },
-        Action::Package(pa) => match pa {
-            PackageAction::Bootstrap { manager, .. } => {
-                ("package".to_string(), format!("{}:bootstrap", manager))
-            }
-            PackageAction::Install {
-                manager, packages, ..
-            } => (
-                "package".to_string(),
-                format!("{}:{}", manager, packages.join(",")),
-            ),
-            PackageAction::Uninstall {
-                manager, packages, ..
-            } => (
-                "package".to_string(),
-                format!("{}:{}", manager, packages.join(",")),
-            ),
-            PackageAction::Skip { manager, .. } => ("package".to_string(), manager.clone()),
-        },
-        Action::Secret(sa) => match sa {
-            SecretAction::Decrypt { target, .. } => ("secret".to_string(), to_posix_string(target)),
-            SecretAction::Resolve { reference, .. } => ("secret".to_string(), reference.clone()),
-            SecretAction::ResolveEnv { envs, .. } => {
-                ("secret".to_string(), format!("env:[{}]", envs.join(",")))
-            }
-            SecretAction::Skip { source, .. } => ("secret".to_string(), source.clone()),
-        },
-        Action::System(sa) => {
-            use crate::reconciler::SystemAction;
-            match sa {
-                SystemAction::SetValue {
-                    configurator, key, ..
-                } => ("system".to_string(), format!("{}:{}", configurator, key)),
-                SystemAction::Skip { configurator, .. } => {
-                    ("system".to_string(), configurator.clone())
-                }
-            }
-        }
-        Action::Script(sa) => {
-            use crate::reconciler::ScriptAction;
-            match sa {
-                // Resource-id / state-matching key, NOT a display string:
-                // stored as `resource_id` in `drift_events` and matched by
-                // exact string on every tick (`UPDATE ... WHERE
-                // resource_id = ?`). Condensing `run_str()` here would
-                // reshape the id and re-open every already-recorded drift row
-                // for a module with a multi-line inline script. Display-side
-                // condensing for "script" rows happens where a status
-                // subject or table cell is actually built (`cli/status.rs`).
-                ScriptAction::Run { entry, .. } => {
-                    ("script".to_string(), entry.run_str().to_string())
-                }
-            }
-        }
-        Action::Module(ma) => ("module".to_string(), ma.module_name.clone()),
-        Action::Env(ea) => {
-            use crate::reconciler::EnvAction;
-            match ea {
-                EnvAction::WriteEnvFile { path, .. } => ("env".to_string(), to_posix_string(path)),
-                EnvAction::InjectSourceLine { rc_path, .. } => {
-                    ("env-rc".to_string(), to_posix_string(rc_path))
-                }
-                EnvAction::RefreshLiveSession { .. } => {
-                    ("env-session".to_string(), "live-session".to_string())
-                }
-            }
-        }
-    }
-}
-
 // --- Auto-apply decision handling ---
 
-/// Extract resource identifiers from a merged profile for change detection.
-/// Returns a set of dot-notation resource paths (e.g. "packages.brew.ripgrep").
-pub(crate) fn extract_source_resources(merged: &MergedProfile) -> HashSet<String> {
-    let mut resources = HashSet::new();
-
-    let pkgs = &merged.packages;
-    if let Some(ref brew) = pkgs.brew {
-        for f in &brew.formulae {
-            resources.insert(format!("packages.brew.{}", f));
-        }
-        for c in &brew.casks {
-            resources.insert(format!("packages.brew.{}", c));
-        }
-    }
-    if let Some(ref apt) = pkgs.apt {
-        for p in &apt.packages {
-            resources.insert(format!("packages.apt.{}", p));
-        }
-    }
-    if let Some(ref cargo) = pkgs.cargo {
-        for p in &cargo.packages {
-            resources.insert(format!("packages.cargo.{}", p));
-        }
-    }
-    for p in &pkgs.pipx {
-        resources.insert(format!("packages.pipx.{}", p));
-    }
-    for p in &pkgs.dnf {
-        resources.insert(format!("packages.dnf.{}", p));
-    }
-    if let Some(ref npm) = pkgs.npm {
-        for p in &npm.global {
-            resources.insert(format!("packages.npm.{}", p));
-        }
-    }
-
-    for file in &merged.files.managed {
-        resources.insert(format!("files.{}", to_posix_string(&file.target)));
-    }
-
-    for ev in &merged.env {
-        resources.insert(format!("env.{}", ev.name));
-    }
-
-    for k in merged.system.keys() {
-        resources.insert(format!("system.{}", k));
-    }
-
-    resources
-}
-
-/// Compute a hash of the resource set for change detection.
-pub(crate) fn hash_resources(resources: &HashSet<String>) -> String {
-    let mut sorted: Vec<&String> = resources.iter().collect();
-    sorted.sort();
-    let combined: String = sorted.iter().map(|r| format!("{}\n", r)).collect();
-    crate::sha256_hex(combined.as_bytes())
-}
-
-/// Process auto-apply decisions for source items. Returns the set of resource paths
-/// that should be excluded from the plan (pending decisions).
-pub(crate) fn process_source_decisions(
+/// Record the rows a [`SourcePolicyReview`] asked for, and notify once per
+/// source.
+///
+/// The daemon's wrapper over the shared [`crate::reconciler::mint_decisions`]:
+/// `cfgd apply` mints the same rows so an item is never installed before it is
+/// asked about, but only the reconcile loop is unattended enough to need
+/// telling the operator out of band.
+pub(crate) fn mint_reviewed_decisions(
     store: &StateStore,
-    source_name: &str,
-    merged: &MergedProfile,
-    policy: &AutoApplyPolicyConfig,
+    review: &crate::reconciler::SourcePolicyReview,
     notifier: &Notifier,
-) -> HashSet<String> {
-    let current_resources = extract_source_resources(merged);
-    let current_hash = hash_resources(&current_resources);
-
-    // Check if the source config has changed since last merge
-    let previous_hash = store
-        .source_config_hash(source_name)
-        .ok()
-        .flatten()
-        .map(|h| h.config_hash);
-
-    if previous_hash.as_deref() == Some(&current_hash) {
-        // No change — check for existing pending decisions to exclude
-        return pending_resource_paths(store);
-    }
-
-    // Config changed — detect new items
-    let previous_resources: HashSet<String> = if previous_hash.is_some() {
-        // We don't store the old resource set, only the hash. So we use the
-        // pending decisions + managed resources as a proxy for "known items".
-        let mut known = HashSet::new();
-        if let Ok(managed) = store.managed_resources_by_source(source_name) {
-            for r in &managed {
-                known.insert(format!("{}.{}", r.resource_type, r.resource_id));
-            }
-        }
-        // Also include previously pending (resolved) decisions
-        if let Ok(decisions) = store.pending_decisions_for_source(source_name) {
-            for d in &decisions {
-                known.insert(d.resource.clone());
-            }
-        }
-        known
-    } else {
-        // First time seeing this source — all items are "new"
-        HashSet::new()
-    };
-
-    let new_items: Vec<&String> = current_resources
-        .iter()
-        .filter(|r| !previous_resources.contains(*r))
-        .collect();
-
-    let mut new_pending_count = 0u32;
-
-    for resource in &new_items {
-        // Determine the tier: check if it's in recommended, optional, or locked
-        // For simplicity, infer tier from the policy action mapping:
-        // - Items that already exist in config are "update" (locked-conflict)
-        // - New items default to "recommended" tier
-        let tier = infer_item_tier(resource);
-        let policy_action = match tier {
-            "recommended" => &policy.new_recommended,
-            "optional" => &policy.new_optional,
-            "locked" => &policy.locked_conflict,
-            _ => &policy.new_recommended,
-        };
-
-        match policy_action {
-            PolicyAction::Accept => {
-                // Include in plan normally — no action needed
-            }
-            PolicyAction::Reject | PolicyAction::Ignore => {
-                // Skip silently — no record, no notification
-            }
-            PolicyAction::Notify => {
-                let summary = format!("{} {} (from {})", tier, resource, source_name);
-                if let Err(e) =
-                    store.upsert_pending_decision(source_name, resource, tier, "install", &summary)
-                {
-                    tracing::warn!(error = %e, "failed to record pending decision");
-                } else {
-                    new_pending_count += 1;
-                }
-            }
-        }
-    }
-
-    // Notify about new pending decisions (once per batch, not per item)
-    if new_pending_count > 0 {
+) {
+    // One notification per source rather than per item.
+    for (source_name, count) in crate::reconciler::mint_decisions(store, review) {
         notifier.notify(
             "cfgd: pending decisions",
             &format!(
                 "Source \"{}\" has {} new {} item{} pending your review.\n\
                  Run `cfgd status` to see details, `cfgd decide accept --source {}` to accept all.",
                 source_name,
-                new_pending_count,
-                if new_pending_count == 1 {
+                count,
+                if count == 1 {
                     "recommended"
                 } else {
                     "recommended/optional"
                 },
-                if new_pending_count == 1 { "" } else { "s" },
+                if count == 1 { "" } else { "s" },
                 source_name,
             ),
         );
-    }
-
-    // Update the stored hash
-    if let Err(e) = store.set_source_config_hash(source_name, &current_hash) {
-        tracing::warn!(error = %e, "failed to store source config hash");
-    }
-
-    // Return resources that are pending and should be excluded from the plan
-    pending_resource_paths(store)
-}
-
-/// Get all pending (unresolved) decision resource paths as a set.
-pub(crate) fn pending_resource_paths(store: &StateStore) -> HashSet<String> {
-    store
-        .pending_decisions()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|d| d.resource)
-        .collect()
-}
-
-/// Infer the policy tier for a resource based on naming conventions.
-/// In a full implementation this would check the source manifest's policy tiers.
-/// For daemon auto-apply, we use a heuristic: resources from sources are
-/// "recommended" by default.
-pub(crate) fn infer_item_tier(resource: &str) -> &'static str {
-    // Files with "security" or "policy" in the path tend to be locked/required
-    if resource.contains("security") || resource.contains("policy") || resource.contains("locked") {
-        "locked"
-    } else {
-        "recommended"
     }
 }

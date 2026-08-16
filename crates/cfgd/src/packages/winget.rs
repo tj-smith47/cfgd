@@ -4,8 +4,7 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
-use cfgd_core::providers::{PackageContext, PackageInfo, PackageManager};
+use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageInfo, PackageManager};
 
 use super::shared::{canonical_ci_pkg_name, parse_version_field, run_pkg_cmd, run_pkg_cmd_live};
 
@@ -75,11 +74,12 @@ impl PackageManager for WingetManager {
         cfgd_core::command_available("winget")
     }
 
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        // winget ships with Windows; nothing cfgd runs can provision it.
+        None
     }
 
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Err(PackageError::BootstrapFailed {
             manager: "winget".into(),
             message: "winget ships with Windows; install App Installer from the Microsoft Store"
@@ -104,6 +104,13 @@ impl PackageManager for WingetManager {
         canonical_ci_pkg_name(entry)
     }
 
+    /// The versioned listing keeps the REGISTERED Id case for display; fold a
+    /// listed name to the same lowercase identity form the matching surfaces
+    /// use.
+    fn listed_identity(&self, listed_name: &str) -> String {
+        canonical_ci_pkg_name(listed_name)
+    }
+
     /// Display surface (scan/status): keep the REGISTERED Id case and the real
     /// version, rather than the lowercase identity form used for matching.
     fn installed_packages_with_versions(
@@ -123,7 +130,7 @@ impl PackageManager for WingetManager {
     fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
         for pkg in packages {
             run_pkg_cmd_live(
-                cx.printer,
+                cx,
                 "winget",
                 Command::new("winget").args([
                     "install",
@@ -142,29 +149,13 @@ impl PackageManager for WingetManager {
     fn uninstall(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
         for pkg in packages {
             run_pkg_cmd_live(
-                cx.printer,
+                cx,
                 "winget",
                 Command::new("winget").args(["uninstall", "--id", pkg]),
                 &format!("Uninstalling {}", pkg),
                 "uninstall",
             )?;
         }
-        Ok(())
-    }
-
-    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
-        run_pkg_cmd_live(
-            cx.printer,
-            "winget",
-            Command::new("winget").args([
-                "upgrade",
-                "--all",
-                "--accept-package-agreements",
-                "--accept-source-agreements",
-            ]),
-            "Upgrading all winget packages",
-            "install",
-        )?;
         Ok(())
     }
 
@@ -276,14 +267,16 @@ Git        Git.Git     2.43.0\n\
     fn winget_manager_name_and_traits() {
         let mgr = WingetManager;
         assert_eq!(mgr.name(), "winget");
-        assert!(!mgr.can_bootstrap());
+        // Nothing cfgd runs can provision winget, so it plans nothing — and
+        // `bootstrap` says so with the App Installer guidance below.
+        assert!(mgr.bootstrap_plan().is_none());
     }
 
     #[test]
     fn winget_manager_bootstrap_returns_error() {
         let mgr = WingetManager;
         let printer = cfgd_core::test_helpers::test_printer();
-        let result = mgr.bootstrap(&printer);
+        let result = mgr.bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&printer));
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("Microsoft Store"));
@@ -405,7 +398,7 @@ SomeApp               Some.App                  1.0.0\n";
     fn winget_bootstrap_error_contains_microsoft_store_message() {
         let mgr = WingetManager;
         let printer = cfgd_core::test_helpers::test_printer();
-        let result = mgr.bootstrap(&printer);
+        let result = mgr.bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&printer));
         let err = result.unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -486,12 +479,27 @@ SomeApp               Some.App                  1.0.0\n";
 
         #[test]
         #[serial]
-        fn update_runs_upgrade_all() {
-            let (_bin, _path) = install_winget_shim(0, "", "");
+        fn winget_declares_no_index_and_refreshing_upgrades_nothing() {
+            let (_bin, _path, log) =
+                cfgd_core::test_helpers::install_named_path_shim_logged("winget", 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
-            WingetManager.update(&cx).expect("update Ok");
+            assert!(
+                !WingetManager.has_index(),
+                "`winget upgrade --all` upgrades every package the user never declared"
+            );
+            WingetManager.refresh_index(&cx).expect("refresh Ok");
+            // The load-bearing half: `has_index() == false` is only honest if
+            // the refresh runs nothing. An `Ok(())` says nothing about that —
+            // a refresh that shelled out to `winget upgrade --all` would also
+            // return Ok, while upgrading every package on the machine.
+            assert_eq!(
+                log.invocation_count(),
+                0,
+                "a manager with no index must not invoke winget at all, ran: {}",
+                log.argv_log()
+            );
         }
 
         #[test]

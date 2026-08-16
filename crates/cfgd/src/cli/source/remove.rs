@@ -1,5 +1,7 @@
 use super::*;
+use cfgd_core::config::LOCAL_LAYER;
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
+use cfgd_core::reconciler::Owner;
 
 pub fn cmd_source_remove(
     cli: &Cli,
@@ -18,10 +20,13 @@ pub fn cmd_source_remove(
         ));
     }
 
-    printer.heading(format!("Remove Source: {}", name));
+    // The heading names the subject with the canonical owner token, so every
+    // line below it says only what happened.
+    printer.heading(format!("Remove {}", Owner::source(name).token()));
 
     let config_path = cli.config.clone();
-    let cfg = config::load_config(&config_path)?;
+    let mut cfg = config::load_config(&config_path)?;
+    drain_config_deprecations(printer, &mut cfg);
 
     if !cfg.spec.sources.iter().any(|s| s.name == name) {
         if ignore_not_found {
@@ -41,7 +46,7 @@ pub fn cmd_source_remove(
         ));
     }
 
-    let state = open_state_store(cli.state_dir.as_deref())?;
+    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     let resources = state.managed_resources_by_source(name)?;
 
     let mut disposition = "removed";
@@ -51,8 +56,8 @@ pub fn cmd_source_remove(
         // Interactive: Keep / Remove / Cancel
         {
             let res_sec = printer.section(format!(
-                "This source manages {} resource(s)",
-                resources.len()
+                "This source manages {}",
+                cfgd_core::pluralize(resources.len(), "resource")
             ));
             let mut t = Table::new(["Type", "Resource"]);
             for r in &resources {
@@ -87,7 +92,7 @@ pub fn cmd_source_remove(
                 state.upsert_managed_resource(
                     &r.resource_type,
                     &r.resource_id,
-                    "local",
+                    LOCAL_LAYER,
                     r.last_hash.as_deref(),
                     r.last_applied,
                 )?;
@@ -102,7 +107,7 @@ pub fn cmd_source_remove(
             state.upsert_managed_resource(
                 &r.resource_type,
                 &r.resource_id,
-                "local",
+                LOCAL_LAYER,
                 r.last_hash.as_deref(),
                 r.last_applied,
             )?;
@@ -131,6 +136,10 @@ pub fn cmd_source_remove(
     // Remove from state
     state.remove_config_source(name)?;
     state.remove_source_config_hash(name)?;
+    // Decisions go with the source that raised them, resolved ones included: a
+    // pending or rejected row withholds its resource path from every plan and
+    // apply, and there is no longer a source to `cfgd decide` against.
+    state.discard_decisions_for_source(name)?;
 
     // Remove the entry from sources.lock (best-effort — a missing entry is fine).
     let cfg_dir = config_dir(cli);
@@ -153,8 +162,7 @@ pub fn cmd_source_remove(
         printer.status_simple(
             Role::Warn,
             format!(
-                "Could not remove cached data for '{}': {}",
-                name,
+                "Could not remove cached data: {}",
                 cfgd_core::output::collapse_to_subject_line(&e)
             ),
         );
@@ -162,7 +170,7 @@ pub fn cmd_source_remove(
 
     printer.emit(
         Doc::new()
-            .status(Role::Ok, format!("Source '{}' removed", name))
+            .status(Role::Ok, "removed")
             .with_data(serde_json::json!({
                 "name": name,
                 "managedResources": managed_count,
@@ -194,6 +202,7 @@ mod tests {
             verbose: 0,
             quiet: true,
             no_color: true,
+            color: crate::cli::ColorWhen::Auto,
             output: crate::cli::OutputFormatArg(OutputFormat::Table),
             list_envelope: false,
             jsonpath: None,
@@ -291,12 +300,47 @@ mod tests {
     }
 
     #[test]
+    fn removing_a_source_leaves_none_of_its_decisions_withholding_a_resource() {
+        // A decision withholds its resource from every plan and apply, so a row
+        // outliving its source is an invisible block on that path — the operator
+        // has no source left to `cfgd decide` against, and a resource they keep
+        // (or later declare themselves) would silently never be applied.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_with_seeded_config(dir.path());
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
+        state
+            .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "v1")
+            .expect("seed pending decision");
+        state
+            .upsert_pending_decision("acme", "files.~/.gitconfig", "recommended", "install", "v1")
+            .expect("seed second decision");
+        state
+            .resolve_decision("files.~/.gitconfig", "rejected")
+            .expect("reject the second decision");
+        drop(state);
+
+        let (printer, _cap) = Printer::for_test_doc();
+        cmd_source_remove(&cli, &printer, "acme", true, false, false)
+            .expect("removing a source must succeed");
+        drop(printer);
+
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("reopen state");
+        assert!(
+            state
+                .withheld_decisions()
+                .expect("read withholding decisions")
+                .is_empty(),
+            "no decision of a removed source may keep withholding its resource"
+        );
+    }
+
+    #[test]
     fn remove_with_keep_all_transfers_resources_to_local() {
         let dir = tempfile::tempdir().expect("tempdir");
         let cli = cli_with_seeded_config(dir.path());
 
         // Seed state: one managed resource owned by source "acme".
-        let state = open_state_store(cli.state_dir.as_deref()).expect("open state");
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
             .upsert_config_source(
                 "acme",
@@ -328,7 +372,7 @@ mod tests {
         );
 
         // The resource must now be re-owned by "local", not "acme".
-        let state = open_state_store(cli.state_dir.as_deref()).expect("reopen state");
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("reopen state");
         let res = state.managed_resources().expect("list resources");
         let foo = res
             .iter()
@@ -352,7 +396,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let cli = cli_with_seeded_config(dir.path());
 
-        let state = open_state_store(cli.state_dir.as_deref()).expect("open state");
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
             .upsert_config_source(
                 "acme",
@@ -381,7 +425,7 @@ mod tests {
         assert_eq!(doc["managedResources"], 1);
 
         // The config_source row is removed.
-        let state = open_state_store(cli.state_dir.as_deref()).expect("reopen state");
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("reopen state");
         assert!(
             state
                 .config_sources()
@@ -416,7 +460,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let cli = cli_with_seeded_config(dir.path());
 
-        let state = open_state_store(cli.state_dir.as_deref()).expect("open state");
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
             .upsert_config_source(
                 "acme",
@@ -456,7 +500,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let cli = cli_with_seeded_config(dir.path());
 
-        let state = open_state_store(cli.state_dir.as_deref()).expect("open state");
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
             .upsert_config_source(
                 "acme",
@@ -488,7 +532,7 @@ mod tests {
             "keep still removes the source from config (resources transferred, not the subscription)"
         );
 
-        let state = open_state_store(cli.state_dir.as_deref()).expect("reopen state");
+        let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("reopen state");
         let res = state.managed_resources().expect("list");
         let r = res
             .iter()

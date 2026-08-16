@@ -2,17 +2,69 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::PathDisplayExt;
-use crate::config::{MergedProfile, ResolvedProfile, ScriptSpec};
+use crate::config::{LOCAL_LAYER, MergedProfile, ResolvedProfile, ScriptSpec};
 use crate::errors::Result;
 use crate::expand_tilde;
 use crate::modules::ResolvedModule;
-use crate::providers::{FileAction, PackageAction, SecretAction};
+use crate::providers::{FileAction, PackageAction, PackageManagerExt, SecretAction};
 
 use super::restore::content_hash_if_exists;
 use super::types::{
-    Action, ModuleAction, ModuleActionKind, ModuleScope, ModuleSection, Phase, PhaseName, Plan,
-    ReconcileContext, ScriptAction, ScriptPhase, SystemAction,
+    Action, ModuleAction, ModuleActionKind, Owner, Phase, PhaseName, Plan, ReconcileContext,
+    ScriptAction, ScriptPhase, SystemAction,
 };
+
+/// The phase a module action belongs to.
+///
+/// Total: every variant returns a phase and nothing panics. `Skip` is the one
+/// kind whose phase the *emit site* decides — `plan_modules` emits a
+/// platform-gated skip and a file-encryption skip from different places and
+/// only `plan_modules` can tell them apart — and its arm here answers with the
+/// meta phase, the answer that is correct for the only `Skip` a caller could
+/// route through this function by mistake.
+fn phase_for_module_kind(kind: &ModuleActionKind) -> PhaseName {
+    match kind {
+        ModuleActionKind::RunScript { phase, .. } => match phase {
+            ScriptPhase::PreApply | ScriptPhase::PreReconcile | ScriptPhase::PreBackup => {
+                PhaseName::PreScripts
+            }
+            ScriptPhase::PostApply
+            | ScriptPhase::PostReconcile
+            | ScriptPhase::OnDrift
+            | ScriptPhase::OnChange
+            | ScriptPhase::PostBackup => PhaseName::PostScripts,
+            // A `patch.script` filter runs inline through `PatchBinding`, never
+            // as a planned lifecycle action — but the match must stay total.
+            ScriptPhase::Patch => PhaseName::Files,
+        },
+        ModuleActionKind::InstallPackages { .. } => PhaseName::Packages,
+        ModuleActionKind::DeployFiles { .. } => PhaseName::Files,
+        ModuleActionKind::Skip { .. } => PhaseName::Modules,
+    }
+}
+
+/// Build a module action tagged with the phase its kind routes to.
+fn routed(module: &ResolvedModule, kind: ModuleActionKind) -> (PhaseName, Action) {
+    routed_to(module, phase_for_module_kind(&kind), kind)
+}
+
+/// Build a module action tagged with an explicitly named phase — the emit-site
+/// form, for the two `Skip` shapes whose phase only the emit site can tell
+/// apart.
+fn routed_to(
+    module: &ResolvedModule,
+    phase: PhaseName,
+    kind: ModuleActionKind,
+) -> (PhaseName, Action) {
+    (
+        phase,
+        Action::Module(ModuleAction::with_origin(
+            module.name.clone(),
+            kind,
+            module.origin.clone(),
+        )),
+    )
+}
 
 impl<'a> super::Reconciler<'a> {
     /// Generate a reconciliation plan.
@@ -27,22 +79,54 @@ impl<'a> super::Reconciler<'a> {
         // Conflict detection: check for multiple sources targeting the same path
         Self::detect_file_conflicts(&file_actions, &module_actions)?;
 
-        let mut phases = Vec::new();
+        // The profile is the document the user edited, so every action derived
+        // from the merged profile is owned by its leaf profile name.
+        let profile = Owner::profile(resolved.profile_name());
 
-        // PreScripts: pre-apply or pre-reconcile hooks.
         let (pre_script_actions, post_script_actions) =
             self.plan_scripts(&resolved.merged.scripts, context);
-        phases.push(Phase {
-            name: PhaseName::PreScripts,
-            actions: pre_script_actions,
-            scope: None,
-        });
 
-        // Env: write ~/.cfgd.env and inject shell rc source line.
-        // Runs early so that env vars (including PATH for bootstrapped managers)
-        // are available to all subsequent phases.
-        let path_dirs =
-            super::env::recorded_manager_path_dirs(self.state, &resolved.merged, &module_actions);
+        // Module work is attributed to the phase whose KIND it is, so a
+        // module's packages sit beside the profile's in `Packages` rather than
+        // in a bucket of their own. Packages are grouped with system/native
+        // managers first, then bootstrappable managers, so build deps are
+        // installed before packages that need them.
+        let mut module_routed = self.plan_modules(&module_actions, context);
+
+        // Cross-scope package dedup: a (manager, resolved_name) declared in both a
+        // module and the profile (or in two modules) installs once. Module installs
+        // win because module-owned package work is dispatched first (Rule P's
+        // tier 0) and a module's postApply may need the package present; among
+        // modules the earlier one wins (module-order walk).
+        let claimed = Self::dedup_module_packages(&mut module_routed);
+
+        // Profile-level packages are applied after module packages so module
+        // deps are available — an execution-order property held by
+        // `Phase::dispatch_order`, not by the phase list. Profile entries
+        // already claimed by a module install are dropped here so the package
+        // installs only once.
+        let profile_packages = Self::filter_profile_packages(pkg_actions, &claimed);
+
+        // Prerequisites: the managers that create binaries, then the env file
+        // that publishes where they live, then the live-session broadcast. It
+        // is planned from the package work that SURVIVED dedup and filtering,
+        // because a manager whose every install was claimed elsewhere has no
+        // consumer left in this run and must not mint a node — a converged
+        // host plans nothing, which is what keeps a daemon tick from running
+        // `apt update` on every interval.
+        let manager_actions =
+            super::managers::plan_managers(self.registry, &profile_packages, &module_routed);
+
+        // The env file publishes where a manager's binaries live, so it has to
+        // know about a manager this very run is about to provision, not only
+        // the ones past runs already recorded — otherwise a script sourcing
+        // the freshly-written env file right after `cfgd apply` still can't
+        // find a binary the same run just installed.
+        let path_dirs = super::managers::fold_provision_path_dirs(
+            self.registry,
+            &manager_actions,
+            super::env::recorded_manager_path_dirs(self.state, &resolved.merged, &module_actions),
+        );
         let (env_actions, warnings) = self.plan_env(
             &resolved.merged.env,
             &resolved.merged.aliases,
@@ -53,74 +137,51 @@ impl<'a> super::Reconciler<'a> {
             &path_dirs,
             &super::env::recorded_managed_env_files(self.state),
         );
-        phases.push(Phase {
-            name: PhaseName::Env,
-            actions: env_actions,
-            scope: None,
-        });
 
-        // Modules: module packages, files, and post-apply scripts.
-        // Packages are grouped with system/native managers first, then
-        // bootstrappable managers, so build deps are installed before
-        // packages that need them.
-        let mut module_phase_actions = self.plan_modules(&module_actions, context);
-
-        // Cross-scope package dedup: a (manager, resolved_name) declared in both a
-        // module and the profile (or in two modules) installs once. Module installs
-        // win because this phase runs first and a module's postApply may need the
-        // package present; among modules the earlier one wins (module-order walk).
-        let claimed = Self::dedup_module_packages(&mut module_phase_actions);
-
-        // Split the flat module-phase actions into one Phase per consecutive
-        // (module, section) run, so a single-module apply renders
-        // "nvim / Packages", "nvim / Files", "nvim / Post-Scripts" instead of
-        // one "Modules" heading. Splitting on consecutive runs (not
-        // grouping/sorting) preserves plan_modules's own ordering.
-        phases.extend(Self::split_module_phases(module_phase_actions));
-
-        // Packages: profile-level packages, installed after modules
-        // so module deps are available. Profile entries already claimed by a
-        // module install are dropped here so the package installs only once.
-        let package_actions = Self::filter_profile_packages(pkg_actions, &claimed)
+        let package_actions = profile_packages
             .into_iter()
             .map(Action::Package)
-            .collect();
-        phases.push(Phase {
-            name: PhaseName::Packages,
-            actions: package_actions,
-            scope: None,
-        });
+            .collect::<Vec<_>>();
 
-        // System: runs after packages so required binaries exist.
         let system_actions = self.plan_system(&resolved.merged, &module_actions)?;
-        phases.push(Phase {
-            name: PhaseName::System,
-            actions: system_actions,
-            scope: None,
-        });
-
-        // Files.
-        let fa = file_actions.into_iter().map(Action::File).collect();
-        phases.push(Phase {
-            name: PhaseName::Files,
-            actions: fa,
-            scope: None,
-        });
-
-        // Secrets.
         let secret_actions = self.plan_secrets(&resolved.merged);
-        phases.push(Phase {
-            name: PhaseName::Secrets,
-            actions: secret_actions,
-            scope: None,
-        });
 
-        // PostScripts: post-apply or post-reconcile hooks.
-        phases.push(Phase {
-            name: PhaseName::PostScripts,
-            actions: post_script_actions,
-            scope: None,
-        });
+        let mut buckets: Vec<(PhaseName, Vec<Action>)> = vec![
+            // `Modules` holds only platform-gated skips — the meta phase — and
+            // is first so a "not for this host" answer precedes every step.
+            (PhaseName::Modules, Vec::new()),
+            (PhaseName::PreScripts, pre_script_actions),
+            // One phase, three cfgd-owned groups in producer-before-consumer
+            // order: `cfgd:managers` creates the binaries, `cfgd:env` publishes
+            // where they live, `cfgd:session` broadcasts. `Owner::sort_key`
+            // orders the groups; the concatenation order here is irrelevant.
+            (
+                PhaseName::Prerequisites,
+                manager_actions.into_iter().chain(env_actions).collect(),
+            ),
+            (PhaseName::Packages, package_actions),
+            // `Files` precedes `System` so a file is materialised before
+            // anything that consumes it: a unit file deployed through `files:`
+            // has to exist before `systemctl enable` names it.
+            (
+                PhaseName::Files,
+                file_actions.into_iter().map(Action::File).collect(),
+            ),
+            (PhaseName::System, system_actions),
+            (PhaseName::Secrets, secret_actions),
+            (PhaseName::PostScripts, post_script_actions),
+        ];
+
+        for (phase_name, action) in module_routed {
+            if let Some((_, bucket)) = buckets.iter_mut().find(|(n, _)| *n == phase_name) {
+                bucket.push(action);
+            }
+        }
+
+        let mut phases: Vec<Phase> = buckets
+            .into_iter()
+            .map(|(name, actions)| Phase::from_actions(name, &profile, actions))
+            .collect();
 
         // A phase with no actions is not a step the run will take — it is an
         // artifact of every phase being constructed unconditionally. Applying a
@@ -128,7 +189,7 @@ impl<'a> super::Reconciler<'a> {
         // profile, so files/packages/system materialized as empty phases that
         // rendered "(nothing to do)" beside phases doing real work. Drop them
         // here, at the source, so display, `-o json`, and apply all agree.
-        phases.retain(|p| !p.actions.is_empty());
+        phases.retain(|p| !p.is_empty());
 
         Ok(Plan { phases, warnings })
     }
@@ -203,12 +264,16 @@ impl<'a> super::Reconciler<'a> {
             if let Some(desired) = system.get(configurator.name()) {
                 let drifts = configurator.diff(desired)?;
                 for drift in drifts {
+                    crate::reconciler::debug_assert_system_key_undoubled(
+                        configurator.name(),
+                        &drift.key,
+                    );
                     actions.push(Action::System(SystemAction::SetValue {
                         configurator: configurator.name().to_string(),
                         key: drift.key,
                         desired: drift.expected,
                         current: drift.actual,
-                        origin: "local".to_string(),
+                        origin: LOCAL_LAYER.to_string(),
                     }));
                 }
             }
@@ -236,7 +301,7 @@ impl<'a> super::Reconciler<'a> {
             actions.push(Action::System(SystemAction::Skip {
                 configurator: key.clone(),
                 reason,
-                origin: "local".to_string(),
+                origin: LOCAL_LAYER.to_string(),
                 unknown: !registered,
             }));
         }
@@ -274,7 +339,7 @@ impl<'a> super::Reconciler<'a> {
                             provider: provider_name.to_string(),
                             reference: reference.to_string(),
                             target: crate::expand_tilde(target),
-                            origin: "local".to_string(),
+                            origin: LOCAL_LAYER.to_string(),
                         }));
                     }
 
@@ -284,7 +349,7 @@ impl<'a> super::Reconciler<'a> {
                             provider: provider_name.to_string(),
                             reference: reference.to_string(),
                             envs: secret.envs.clone().unwrap_or_default(),
-                            origin: "local".to_string(),
+                            origin: LOCAL_LAYER.to_string(),
                         }));
                     }
 
@@ -293,14 +358,14 @@ impl<'a> super::Reconciler<'a> {
                         actions.push(Action::Secret(SecretAction::Skip {
                             source: secret.source.clone(),
                             reason: "no target or envs specified".to_string(),
-                            origin: "local".to_string(),
+                            origin: LOCAL_LAYER.to_string(),
                         }));
                     }
                 } else {
                     actions.push(Action::Secret(SecretAction::Skip {
                         source: secret.source.clone(),
                         reason: format!("provider '{}' not available", provider_name),
-                        origin: "local".to_string(),
+                        origin: LOCAL_LAYER.to_string(),
                     }));
                 }
             } else if secret.target.is_some() && has_backend {
@@ -320,14 +385,14 @@ impl<'a> super::Reconciler<'a> {
                         .map(crate::expand_tilde)
                         .unwrap_or_default(),
                     backend: backend_name,
-                    origin: "local".to_string(),
+                    origin: LOCAL_LAYER.to_string(),
                 }));
 
                 if has_envs {
                     actions.push(Action::Secret(SecretAction::Skip {
                         source: secret.source.clone(),
                         reason: "env injection requires a secret provider reference; SOPS file targets cannot inject env vars".to_string(),
-                        origin: "local".to_string(),
+                        origin: LOCAL_LAYER.to_string(),
                     }));
                 }
             } else if secret.target.is_none() && has_envs && !has_backend {
@@ -336,13 +401,13 @@ impl<'a> super::Reconciler<'a> {
                 actions.push(Action::Secret(SecretAction::Skip {
                     source: secret.source.clone(),
                     reason: "env injection requires a secret provider reference (e.g. 1password://, vault://)".to_string(),
-                    origin: "local".to_string(),
+                    origin: LOCAL_LAYER.to_string(),
                 }));
             } else if !has_backend {
                 actions.push(Action::Secret(SecretAction::Skip {
                     source: secret.source.clone(),
                     reason: "no secret backend available".to_string(),
-                    origin: "local".to_string(),
+                    origin: LOCAL_LAYER.to_string(),
                 }));
             }
         }
@@ -376,7 +441,7 @@ impl<'a> super::Reconciler<'a> {
                 Action::Script(ScriptAction::Run {
                     entry: entry.clone(),
                     phase: pre_phase.clone(),
-                    origin: "local".to_string(),
+                    origin: LOCAL_LAYER.to_string(),
                 })
             })
             .collect();
@@ -387,7 +452,7 @@ impl<'a> super::Reconciler<'a> {
                 Action::Script(ScriptAction::Run {
                     entry: entry.clone(),
                     phase: post_phase.clone(),
-                    origin: "local".to_string(),
+                    origin: LOCAL_LAYER.to_string(),
                 })
             })
             .collect();
@@ -399,21 +464,23 @@ impl<'a> super::Reconciler<'a> {
         &self,
         modules: &[ResolvedModule],
         context: ReconcileContext,
-    ) -> Vec<Action> {
+    ) -> Vec<(PhaseName, Action)> {
         let mut actions = Vec::new();
 
         for module in modules {
             // Platform-gated module: surface a single visible Skip and emit no
             // other actions. A Skip action reports changed=false and does not
-            // fire onChange, so no apply-side handling is needed.
+            // fire onChange, so no apply-side handling is needed. It is the
+            // whole module that is gated off this host, so it names the meta
+            // phase rather than the phase of any work it would have done.
             if let Some(reason) = &module.platform_skip_reason {
-                actions.push(Action::Module(ModuleAction::with_origin(
-                    module.name.clone(),
+                actions.push(routed_to(
+                    module,
+                    PhaseName::Modules,
                     ModuleActionKind::Skip {
                         reason: reason.clone(),
                     },
-                    module.origin.clone(),
-                )));
+                ));
                 continue;
             }
 
@@ -435,14 +502,13 @@ impl<'a> super::Reconciler<'a> {
 
             // Pre-scripts for this module
             for script in pre_scripts {
-                actions.push(Action::Module(ModuleAction::with_origin(
-                    module.name.clone(),
+                actions.push(routed(
+                    module,
                     ModuleActionKind::RunScript {
                         script: script.clone(),
                         phase: pre_phase.clone(),
                     },
-                    module.origin.clone(),
-                )));
+                ));
             }
 
             // Packages: group by manager for efficient batch install
@@ -458,29 +524,42 @@ impl<'a> super::Reconciler<'a> {
             // Sort managers: system/native managers first (apt, dnf, pacman, etc.),
             // then bootstrappable managers (brew, snap). This ensures build dependencies
             // are installed before packages that might need them.
+            // The sort is the offer order, not the guarantee: what actually keeps
+            // a bootstrappable manager's action from overlapping an available
+            // one's is the dispatcher's serial gate around any action whose
+            // manager is not currently available.
             let mut manager_order: Vec<&String> = by_manager.keys().collect();
+            // `(class, name)`, not `class` alone: `sort_by_key` is stable, so a
+            // key that ties on `class` falls back to `HashMap::keys()`'s
+            // arbitrary, per-process order. Two managers in the same class
+            // (`cargo` and `npm`, both `0`) would then emit their
+            // `InstallPackages` actions in a different relative order on every
+            // run — the plan tree's bullet order, the `-o json` payload order,
+            // the journal `action_index`, and the phase's execution offer
+            // order all read from this `Vec`.
             manager_order.sort_by_key(|mgr| {
-                match self
+                let class = match self
                     .registry
                     .package_managers
                     .iter()
                     .find(|m| m.name() == mgr.as_str())
                 {
-                    Some(m) if m.is_available() => 0,  // available (native) first
-                    Some(m) if m.can_bootstrap() => 1, // bootstrappable second
-                    _ => 2,                            // unknown last
-                }
+                    Some(m) if m.is_available() => 0, // available (native) first
+                    // Bootstrappable second — a manager with a plan to provision it.
+                    Some(m) if m.can_bootstrap() => 1,
+                    _ => 2, // unknown last
+                };
+                (class, mgr.as_str())
             });
 
             for mgr_name in manager_order {
                 let resolved = &by_manager[mgr_name];
-                actions.push(Action::Module(ModuleAction::with_origin(
-                    module.name.clone(),
+                actions.push(routed(
+                    module,
                     ModuleActionKind::InstallPackages {
                         resolved: resolved.clone(),
                     },
-                    module.origin.clone(),
-                )));
+                ));
             }
 
             // Files — validate encryption requirements before deploying
@@ -496,8 +575,11 @@ impl<'a> super::Reconciler<'a> {
                                     | crate::config::FileStrategy::Hardlink
                             )
                         {
-                            actions.push(Action::Module(ModuleAction::with_origin(
-                                module.name.clone(),
+                            // This module's FILE work cannot proceed — the skip
+                            // stays attached to the phase that work belongs to.
+                            actions.push(routed_to(
+                                module,
+                                PhaseName::Files,
                                 ModuleActionKind::Skip {
                                     reason: format!(
                                         "encryption mode Always incompatible with {:?} for {}",
@@ -505,8 +587,7 @@ impl<'a> super::Reconciler<'a> {
                                         file.source.posix()
                                     ),
                                 },
-                                module.origin.clone(),
-                            )));
+                            ));
                             encryption_ok = false;
                             break;
                         }
@@ -514,8 +595,9 @@ impl<'a> super::Reconciler<'a> {
                             match crate::is_file_encrypted(&file.source, &enc.backend) {
                                 Ok(true) => {}
                                 Ok(false) => {
-                                    actions.push(Action::Module(ModuleAction::with_origin(
-                                        module.name.clone(),
+                                    actions.push(routed_to(
+                                        module,
+                                        PhaseName::Files,
                                         ModuleActionKind::Skip {
                                             reason: format!(
                                                 "file {} requires encryption (backend: {}) but is not encrypted",
@@ -523,14 +605,14 @@ impl<'a> super::Reconciler<'a> {
                                                 enc.backend
                                             ),
                                         },
-                                        module.origin.clone(),
-                                    )));
+                                    ));
                                     encryption_ok = false;
                                     break;
                                 }
                                 Err(e) => {
-                                    actions.push(Action::Module(ModuleAction::with_origin(
-                                        module.name.clone(),
+                                    actions.push(routed_to(
+                                        module,
+                                        PhaseName::Files,
                                         ModuleActionKind::Skip {
                                             reason: format!(
                                                 "encryption check failed for {}: {}",
@@ -538,8 +620,7 @@ impl<'a> super::Reconciler<'a> {
                                                 e
                                             ),
                                         },
-                                        module.origin.clone(),
-                                    )));
+                                    ));
                                     encryption_ok = false;
                                     break;
                                 }
@@ -548,112 +629,42 @@ impl<'a> super::Reconciler<'a> {
                     }
                 }
                 if encryption_ok {
-                    actions.push(Action::Module(ModuleAction::with_origin(
-                        module.name.clone(),
+                    actions.push(routed(
+                        module,
                         ModuleActionKind::DeployFiles {
                             files: module.files.clone(),
                         },
-                        module.origin.clone(),
-                    )));
+                    ));
                 }
             }
 
             // Post-scripts for this module
             for script in post_scripts {
-                actions.push(Action::Module(ModuleAction::with_origin(
-                    module.name.clone(),
+                actions.push(routed(
+                    module,
                     ModuleActionKind::RunScript {
                         script: script.clone(),
                         phase: post_phase.clone(),
                     },
-                    module.origin.clone(),
-                )));
+                ));
             }
         }
 
         actions
     }
 
-    /// Split a flat vec of module-phase actions into one `Phase` per
-    /// consecutive `(module, section)` run. Consecutive-run splitting (rather
-    /// than grouping/sorting by key) is what preserves `plan_modules`'s own
-    /// ordering: module order, and within a module, pre-scripts / packages /
-    /// files / post-scripts.
-    pub(super) fn split_module_phases(actions: Vec<Action>) -> Vec<Phase> {
-        let mut phases: Vec<Phase> = Vec::new();
-
-        for action in actions {
-            let scope = Self::module_action_scope(&action);
-            let is_new_run = match phases.last() {
-                Some(phase) => phase.scope != scope,
-                None => true,
-            };
-            if is_new_run {
-                phases.push(Phase {
-                    name: PhaseName::Modules,
-                    actions: Vec::new(),
-                    scope,
-                });
-            }
-            if let Some(phase) = phases.last_mut() {
-                phase.actions.push(action);
-            }
-        }
-
-        phases
-    }
-
-    /// The `(module, section)` scope a module-phase action belongs to.
-    /// `None` for anything that is not `Action::Module` — never produced by
-    /// `plan_modules`, but the pattern must stay total.
-    fn module_action_scope(action: &Action) -> Option<ModuleScope> {
-        match action {
-            Action::Module(ModuleAction {
-                module_name, kind, ..
-            }) => Some(ModuleScope {
-                module: module_name.clone(),
-                section: Self::module_section_for_kind(kind),
-            }),
-            _ => None,
-        }
-    }
-
-    /// Map every `ModuleActionKind` variant to the section it renders under.
-    fn module_section_for_kind(kind: &ModuleActionKind) -> ModuleSection {
-        match kind {
-            ModuleActionKind::RunScript { phase, .. } => match phase {
-                ScriptPhase::PreApply | ScriptPhase::PreReconcile | ScriptPhase::PreBackup => {
-                    ModuleSection::PreScripts
-                }
-                ScriptPhase::PostApply
-                | ScriptPhase::PostReconcile
-                | ScriptPhase::OnDrift
-                | ScriptPhase::OnChange
-                | ScriptPhase::PostBackup => ModuleSection::PostScripts,
-                // `Patch` never reaches a module-plan `RunScript` action — a
-                // `patch.script` filter runs inline through `PatchBinding`,
-                // never as a planned lifecycle-script action — but the match
-                // must stay total over `ScriptPhase`.
-                ScriptPhase::Patch => ModuleSection::Files,
-            },
-            ModuleActionKind::InstallPackages { .. } => ModuleSection::Packages,
-            ModuleActionKind::DeployFiles { .. } => ModuleSection::Files,
-            ModuleActionKind::Skip { .. } => ModuleSection::Skipped,
-        }
-    }
-
     /// Dedupe module `InstallPackages` actions in place, keeping the first-seen
-    /// `(manager, resolved_name)` across the whole module phase, and return the
+    /// `(manager, resolved_name)` across every module action, and return the
     /// [`crate::config::PackageClaim`] recording the keys that were kept.
     ///
     /// Emptied `InstallPackages` actions are dropped so no empty install is
     /// emitted. The claiming rules (earlier-module-wins, `script` exemption) live
     /// in [`crate::config::PackageClaim::claim_module`].
     pub(super) fn dedup_module_packages(
-        module_phase: &mut Vec<Action>,
+        module_actions: &mut Vec<(PhaseName, Action)>,
     ) -> crate::config::PackageClaim {
         let mut claim = crate::config::PackageClaim::new();
-        module_phase.retain_mut(|action| {
+        module_actions.retain_mut(|(_, action)| {
             let Action::Module(ModuleAction {
                 kind: ModuleActionKind::InstallPackages { resolved },
                 ..
@@ -670,9 +681,10 @@ impl<'a> super::Reconciler<'a> {
     /// Drop profile `Install` entries whose `(manager, name)` was already claimed
     /// by a module install, dropping the whole `Install` when it empties.
     ///
-    /// Module installs win over profile duplicates: the Modules phase runs before
-    /// the Packages phase, and a module's own postApply scripts may depend on the
-    /// package being present, so the module's install must be the one that runs.
+    /// Module installs win over profile duplicates: module-owned package work is
+    /// dispatched ahead of profile-owned (Rule P's tier 0), and a module's own
+    /// postApply scripts may depend on the package being present, so the
+    /// module's install must be the one that runs.
     /// All non-`Install` variants pass through untouched.
     pub(super) fn filter_profile_packages(
         pkg_actions: Vec<PackageAction>,

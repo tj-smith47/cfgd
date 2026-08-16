@@ -165,8 +165,50 @@ a command the same way. A module's own `spec.env` PATH is layered on top of that
 value, so `PATH: $HOME/.local/bin:$PATH` keeps the bootstrapped entries rather than
 dropping them.
 
-Only a manager **cfgd itself bootstrapped** contributes here. A Homebrew the user
+Only a directory **cfgd itself created** contributes here: a manager it bootstrapped, or a
+prefix it had to create during an install (npm's `$HOME/.npm-global`). A Homebrew the user
 installed is already on their PATH and is recorded nowhere.
+
+## Interactive Scripts
+
+Set `interactive: true` on a script entry that needs to prompt the user — for
+example, pausing until a manual step is done. The script runs **attached to
+the terminal** (inherited stdin/stdout/stderr, no spinner, no output capture)
+and is **not** subject to the idle timeout, because an interactive step is
+attended by definition.
+
+```yaml
+scripts:
+  postApply:
+    - run: |
+        echo "Install Azure VPN from Self Service, then press Enter"
+        read
+      interactive: true
+```
+
+An interactive script requires a TTY. When stdin is **not** a terminal — CI,
+piped input, or any run by `cfgd daemon` (the daemon never has a TTY) — the
+script is **skipped with a warning** rather than hanging on instant EOF, and
+reports `changed=false`. Interactive steps therefore run only during an
+attended `cfgd apply`, never under unattended reconcile.
+
+**Process group.** The child shares cfgd's own process group instead of
+getting a new detached one, so the terminal's foreground group still
+includes it: a Ctrl-C typed at the terminal reaches the script directly, and
+a raw-mode TUI or a `sudo` password prompt behaves normally. Every
+non-interactive script still gets its own detached process group
+(`process_group(0)`) — `interactive: true` is the one opt-out, because
+sharing a group is only safe when a human is attending the terminal and
+expects Ctrl-C to reach the step they're watching.
+
+**Timeout.** By default an interactive script has **no timeout at all** —
+force-killing a step that's mid-raw-mode or waiting on a password prompt
+would be worse than an unbounded wait, and there's no safe generic
+idle-timeout heuristic for an interactive program. Set `timeout:` on the
+entry when a step does need a ceiling; once it elapses cfgd terminates the
+script (SIGTERM, then SIGKILL after a grace period), by direct-PID kill
+rather than a process-group kill, since the child shares cfgd's group and is
+no longer a group leader of its own.
 
 ## File Scripts vs Inline
 
@@ -184,3 +226,54 @@ For file scripts that need aliases, source the env file explicitly:
 source ~/.cfgd.env
 vim --headless "+Lazy! sync" +qa
 ```
+
+### How `run:` picks File vs Inline
+
+cfgd tests `run:` against the filesystem to decide which column above applies —
+there is no separate `file:` field:
+
+1. The **whole string** is tried first. If it names a file (relative to the
+   script's own directory — see below — or absolute), that file runs
+   directly: no shell, args splitting, or interpretation — the shebang alone
+   selects the interpreter.
+
+   ```yaml
+   scripts:
+     postApply:
+       - run: scripts/deploy.sh   # exact match → direct exec, no shell
+   ```
+
+2. Otherwise, if the string contains whitespace, only the **leading token**
+   (everything up to the first space) is tried the same way. A match there is
+   still the Inline column — the shell runs it — but the leading token is
+   resolved to its absolute path and substituted back in before the shell
+   sees it, so the resolution doesn't depend on the shell's own `cwd`. Every
+   byte after the leading token is untouched and reaches the shell verbatim:
+   metacharacters, quoting, and `&&` chains all behave exactly as if you'd
+   typed the resolved path yourself.
+
+   ```yaml
+   scripts:
+     postApply:
+       - run: scripts/deploy.sh --env prod && echo done
+       # → '/abs/path/to/scripts/deploy.sh' --env prod && echo done
+   ```
+
+3. A leading token that doesn't resolve to a real file (an ordinary command
+   name, or a reference like `$CFGD_CONFIG_DIR/deploy.sh` that only becomes a
+   real path once the shell expands it) is left completely untouched — cfgd
+   never guesses, it only substitutes a resolution it can prove.
+
+File resolution in both steps is always relative to a fixed directory, resolved
+the same way regardless of how `--config` was spelled on the command line (a
+relative `--config ./cfgd.yaml` resolves identically to an absolute one) —
+never relative to the process's invocation directory or to `$HOME`, which is
+the script's own default [working directory](#working-directory). Which
+directory depends on where the script lives:
+
+- **Profile-level hooks** (`spec.scripts.*` in `cfgd.yaml`) resolve relative to
+  the **config directory** — the same directory `$CFGD_CONFIG_DIR` names.
+- **Module hooks** (a module's own `scripts.*`, or its `run:` installer step)
+  resolve relative to that **module's own directory** — the same directory
+  `$CFGD_MODULE_DIR` names — not the config directory, even though the module
+  itself lives under a profile.

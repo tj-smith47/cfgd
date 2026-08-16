@@ -132,15 +132,15 @@ pub fn cmd_profile_update(
                 }
             }
             // Clean module state and deployed files from DB
-            if let Ok(state) = open_state_store(cli.state_dir.as_deref()) {
+            if let Ok(state) = open_state_store(cli.state_dir.as_deref(), cli.scope()) {
                 // Query file manifest for deployed files
                 if let Ok(manifest) = state.module_deployed_files(m) {
                     if !manifest.is_empty() {
                         {
                             let deployed_sec = printer.section(format!(
-                                "Module '{}' deployed {} file(s)",
+                                "Module '{}' deployed {}",
                                 m,
-                                manifest.len()
+                                cfgd_core::pluralize(manifest.len(), "file")
                             ));
                             for f in &manifest {
                                 deployed_sec.bullet(f.file_path.clone());
@@ -460,7 +460,11 @@ pub fn cmd_profile_update(
         Doc::new()
             .status(
                 Role::Ok,
-                format!("Updated profile '{}' ({} change(s))", name, changes),
+                format!(
+                    "Updated profile '{}' ({})",
+                    name,
+                    cfgd_core::pluralize(changes as usize, "change")
+                ),
             )
             .with_data(serde_json::json!({
                 "name": name,

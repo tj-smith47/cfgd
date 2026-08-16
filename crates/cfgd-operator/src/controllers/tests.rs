@@ -1243,7 +1243,7 @@ fn build_drift_alert_conditions_critical_severity() {
     assert_eq!(conditions[1].condition_type, "Resolved");
     assert_eq!(conditions[1].status, "False");
     assert!(conditions[1].message.contains("dev-1"));
-    assert!(conditions[1].message.contains("5 detail(s)"));
+    assert!(conditions[1].message.contains("5 details"));
     // Critical is escalated
     assert_eq!(conditions[2].condition_type, "Escalated");
     assert_eq!(conditions[2].status, "True");
@@ -1463,7 +1463,7 @@ fn build_drift_alert_conditions_medium_not_escalated() {
     assert_eq!(conditions[1].condition_type, "Resolved");
     assert_eq!(conditions[1].status, "False");
     assert!(conditions[1].message.contains("dev-2"));
-    assert!(conditions[1].message.contains("2 detail(s)"));
+    assert!(conditions[1].message.contains("2 details"));
     // Medium is NOT escalated
     assert_eq!(conditions[2].condition_type, "Escalated");
     assert_eq!(conditions[2].status, "False");
@@ -2614,7 +2614,7 @@ fn build_drift_alert_conditions_active_message_includes_details_count() {
         .find(|c| c.condition_type == "Resolved")
         .unwrap();
     assert!(
-        resolved.message.contains("42 detail(s)"),
+        resolved.message.contains("42 details"),
         "message should include detail count: {}",
         resolved.message
     );

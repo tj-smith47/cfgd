@@ -4,15 +4,27 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::Printer;
-use cfgd_core::providers::{PackageContext, PackageInfo, PackageManager};
+use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageInfo, PackageManager};
 
 use super::shared::{
-    canonical_ci_pkg_name, parse_version_field, resolve_tool_with_fallbacks, run_pkg_cmd_live,
-    run_pkg_query, tool_cmd_with_resolver,
+    canonical_ci_pkg_name, home_relative_dir, parse_version_field, resolve_tool_with_fallbacks,
+    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
 };
 
 pub struct ScoopManager;
+
+/// Where the Scoop installer puts its shims — `SCOOP` when the user pins a root,
+/// otherwise the installer's default under the home directory. Windows-only,
+/// because the bootstrap is a PowerShell script that runs nowhere else.
+fn scoop_shims_dir() -> Option<std::path::PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    match std::env::var_os("SCOOP") {
+        Some(root) => Some(std::path::PathBuf::from(root).join("shims")),
+        None => home_relative_dir("~/scoop/shims"),
+    }
+}
 
 /// Build a `Command` for scoop, resolved shim-aware. scoop ships on Windows only as
 /// `scoop.ps1`/`scoop.cmd` (never `scoop.exe`), so a bare `Command::new("scoop")`
@@ -82,13 +94,20 @@ impl PackageManager for ScoopManager {
         cfgd_core::command_available("scoop")
     }
 
-    fn can_bootstrap(&self) -> bool {
-        true
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        Some(BootstrapPlan::new("system").creating(scoop_shims_dir()))
     }
 
-    fn bootstrap(&self, printer: &Printer) -> Result<()> {
+    fn path_dirs(&self, _cx: &PackageContext<'_>) -> Vec<String> {
+        scoop_shims_dir()
+            .into_iter()
+            .map(cfgd_core::to_posix_string)
+            .collect()
+    }
+
+    fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
         run_pkg_cmd_live(
-            printer,
+            cx,
             "scoop",
             Command::new("powershell").args([
                 "-NoProfile",
@@ -120,6 +139,13 @@ impl PackageManager for ScoopManager {
         canonical_ci_pkg_name(entry)
     }
 
+    /// The versioned listing keeps the REGISTERED app-name case for display;
+    /// fold a listed name to the same lowercase identity form the matching
+    /// surfaces use.
+    fn listed_identity(&self, listed_name: &str) -> String {
+        canonical_ci_pkg_name(listed_name)
+    }
+
     /// Display surface (scan/status): keep the REGISTERED app-name case and the real
     /// version, rather than the lowercase identity form used for matching.
     fn installed_packages_with_versions(
@@ -135,7 +161,7 @@ impl PackageManager for ScoopManager {
     fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
         for pkg in packages {
             run_pkg_cmd_live(
-                cx.printer,
+                cx,
                 "scoop",
                 scoop_cmd().args(["install", pkg]),
                 &format!("Installing {}", pkg),
@@ -148,7 +174,7 @@ impl PackageManager for ScoopManager {
     fn uninstall(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
         for pkg in packages {
             run_pkg_cmd_live(
-                cx.printer,
+                cx,
                 "scoop",
                 scoop_cmd().args(["uninstall", pkg]),
                 &format!("Uninstalling {}", pkg),
@@ -158,13 +184,19 @@ impl PackageManager for ScoopManager {
         Ok(())
     }
 
-    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        true
+    }
+
+    fn refresh_index(&self, cx: &PackageContext<'_>) -> Result<()> {
+        // `scoop update` alone refreshes the bucket manifests. The `*` form is
+        // an upgrade of every installed app, which no plan asked for.
         run_pkg_cmd_live(
-            cx.printer,
+            cx,
             "scoop",
-            scoop_cmd().args(["update", "*"]),
-            "Upgrading all scoop packages",
-            "install",
+            scoop_cmd().arg("update"),
+            "scoop update",
+            "update",
         )?;
         Ok(())
     }
@@ -271,7 +303,7 @@ mod tests {
     fn scoop_manager_name_and_traits() {
         let mgr = ScoopManager;
         assert_eq!(mgr.name(), "scoop");
-        assert!(mgr.can_bootstrap());
+        assert!(mgr.bootstrap_plan().is_some());
     }
 
     #[test]
@@ -286,9 +318,36 @@ mod tests {
     }
 
     #[test]
-    fn scoop_manager_can_bootstrap_true() {
-        let mgr = ScoopManager;
-        assert!(mgr.can_bootstrap());
+    fn scoop_bootstrap_plan_declares_the_shims_dir_on_windows() {
+        let home = tempfile::tempdir().unwrap();
+        let plan = cfgd_core::with_test_home(home.path(), || ScoopManager.bootstrap_plan())
+            .expect("always planned");
+        assert_eq!(plan.method, "system");
+        assert!(plan.requires.is_empty());
+        // `bootstrap` is a PowerShell install script; the shims it creates only
+        // exist on the platform that can run it.
+        if cfg!(windows) {
+            assert!(
+                plan.creates_path_dirs.iter().all(|d| d.ends_with("/shims")),
+                "{:?}",
+                plan.creates_path_dirs
+            );
+        } else {
+            assert!(plan.creates_path_dirs.is_empty());
+        }
+    }
+
+    #[test]
+    fn scoop_path_dirs_matches_the_bootstrap_plans_declaration() {
+        let home = tempfile::tempdir().unwrap();
+        cfgd_core::with_test_home(home.path(), || {
+            let plan = ScoopManager.bootstrap_plan().expect("always planned");
+            let printer = cfgd_core::test_helpers::test_printer();
+            let state = cfgd_core::test_helpers::test_state();
+            let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+            let mgr: Box<dyn PackageManager> = Box::new(ScoopManager);
+            assert_eq!(mgr.path_dirs(&cx), plan.creates_path_dirs);
+        });
     }
 
     // ---------------------------------------------------------------------------
@@ -325,7 +384,39 @@ mod tests {
             // requiring real Windows infrastructure.
             let (_bin, _path) = install_named_path_shim("powershell", 0, "", "");
             let p = test_printer();
-            ScoopManager.bootstrap(&p).expect("bootstrap Ok via shim");
+            ScoopManager
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
+                .expect("bootstrap Ok via shim");
+        }
+
+        /// The scoop installer warns on stderr about what the user must do next
+        /// (a PATH entry that only a new shell sees). Those notes belong to the
+        /// caller's sink, which renders them under the action's status line —
+        /// the reason `bootstrap` takes the whole context, not a bare printer.
+        #[test]
+        #[serial]
+        fn scoop_bootstrap_caveats_reach_the_callers_sink() {
+            let (_bin, _path) = install_named_path_shim(
+                "powershell",
+                0,
+                "",
+                "WARNING: scoop shims are on PATH only in a new shell",
+            );
+            let p = test_printer();
+            let notes = cfgd_core::providers::NoteSink::default();
+            ScoopManager
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context_with_notes(
+                    &p, &notes,
+                ))
+                .expect("bootstrap Ok via shim");
+            let drained = notes.take();
+            assert_eq!(drained.len(), 1, "expected one caveat, got {drained:?}");
+            assert_eq!(drained[0].tag.as_deref(), Some("scoop"));
+            assert!(
+                drained[0].message.contains("new shell"),
+                "got: {}",
+                drained[0].message
+            );
         }
 
         #[test]
@@ -335,7 +426,7 @@ mod tests {
                 install_named_path_shim("powershell", 1, "", "scoop install failed");
             let p = test_printer();
             let err = ScoopManager
-                .bootstrap(&p)
+                .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))
                 .expect_err("non-zero powershell must error");
             let _ = err.to_string();
         }
@@ -398,12 +489,23 @@ mod tests {
 
         #[test]
         #[serial]
-        fn scoop_update_runs_update_star() {
-            let (_bin, _path) = install_scoop_shim(0, "", "");
+        fn scoop_refresh_updates_buckets_without_upgrading_apps() {
+            let (_bin, _path, log) =
+                cfgd_core::test_helpers::install_named_path_shim_logged("scoop", 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
-            ScoopManager.update(&cx).expect("update Ok");
+            assert!(ScoopManager.has_index(), "scoop buckets are a local index");
+            ScoopManager.refresh_index(&cx).expect("refresh Ok");
+            // The load-bearing half, and the whole reason this test is named
+            // "without upgrading apps": `scoop update` refreshes the bucket
+            // manifests, `scoop update *` upgrades every installed app. Both
+            // exit 0, so only the argv separates them.
+            assert_eq!(
+                log.argv_log().trim(),
+                "update",
+                "a bucket refresh is `scoop update` with no target"
+            );
         }
 
         #[test]

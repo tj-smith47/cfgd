@@ -1,6 +1,6 @@
 use super::*;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[test]
 fn snapshot_serializes_to_json() {
@@ -249,7 +249,7 @@ fn collect_system_checks_maps_drifts() {
             }],
         )));
 
-    let mut system = HashMap::new();
+    let mut system = BTreeMap::new();
     system.insert(
         "shell".to_owned(),
         serde_yaml::Value::String("/bin/zsh".into()),
@@ -277,7 +277,7 @@ fn collect_system_checks_compliant_when_no_drift() {
         .system_configurators
         .push(Box::new(MockSystemConfigurator::new("shell")));
 
-    let mut system = HashMap::new();
+    let mut system = BTreeMap::new();
     system.insert(
         "shell".to_owned(),
         serde_yaml::Value::String("/bin/zsh".into()),
@@ -374,10 +374,7 @@ fn watch_package_manager_not_available() {
     let registry = ProviderRegistry::new();
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_watched_package_manager_checks("nonexistent-pm", &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].category, "watchPackage");
@@ -402,10 +399,7 @@ fn watch_package_manager_returns_installed() {
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_watched_package_manager_checks("mock", &registry, &cx).unwrap();
     assert_eq!(checks.len(), 2);
     assert!(checks.iter().all(|c| c.category == "watchPackage"));
@@ -512,10 +506,7 @@ fn collect_package_checks_installed_package_compliant() {
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_package_checks(&profile, &[], &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Compliant);
@@ -545,10 +536,7 @@ fn collect_package_checks_routes_through_package_identity_for_case_insensitive_m
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_package_checks(&profile, &[], &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(
@@ -573,10 +561,7 @@ fn collect_package_checks_missing_package_violation() {
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_package_checks(&profile, &[], &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Violation);
@@ -602,10 +587,7 @@ fn collect_package_checks_empty_desired_skips_manager() {
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_package_checks(&profile, &[], &registry, &cx).unwrap();
     assert!(checks.is_empty(), "no desired packages = no checks");
 }
@@ -627,10 +609,7 @@ fn collect_package_checks_manager_query_error_emits_warning_and_skips_packages()
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_package_checks(&profile, &[], &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1, "single Warning per unqueryable manager");
     assert_eq!(checks[0].category, "package");
@@ -664,10 +643,7 @@ fn watch_package_manager_query_error_emits_warning() {
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_watched_package_manager_checks("snap", &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].category, "watchPackage");
@@ -703,10 +679,7 @@ fn collect_package_checks_multiple_managers() {
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_package_checks(&profile, &[], &registry, &cx).unwrap();
     assert_eq!(checks.len(), 2);
     let pipx_check = checks
@@ -765,7 +738,7 @@ impl crate::providers::SystemConfigurator for InlineSystemMock {
     fn apply(
         &self,
         _desired: &serde_yaml::Value,
-        _printer: &crate::output::Printer,
+        _cx: &crate::providers::SystemContext<'_>,
     ) -> crate::errors::Result<()> {
         Ok(())
     }
@@ -1081,7 +1054,7 @@ fn empty_module(name: &str) -> ResolvedModule {
         files: Vec::new(),
         env: Vec::new(),
         aliases: Vec::new(),
-        system: HashMap::new(),
+        system: BTreeMap::new(),
         pre_apply_scripts: Vec::new(),
         post_apply_scripts: Vec::new(),
         pre_reconcile_scripts: Vec::new(),
@@ -1401,10 +1374,7 @@ fn collect_package_checks_includes_module_only_package() {
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_package_checks(&profile, &[m], &registry, &cx).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].name.as_deref(), Some("ripgrep"));
@@ -1435,10 +1405,7 @@ fn collect_package_checks_skips_unavailable_manager() {
     let registry = ProviderRegistry::new();
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
-    let cx = crate::providers::PackageContext {
-        printer: &printer,
-        state: &state,
-    };
+    let cx = crate::providers::PackageContext::new(&printer, &state);
     let checks = collect_package_checks(&profile, &[m], &registry, &cx).unwrap();
     assert!(
         checks.is_empty(),
@@ -1594,4 +1561,49 @@ fn collect_snapshot_includes_module_resources_and_content_check() {
     assert_eq!(snapshot.summary.compliant, 1);
     assert_eq!(snapshot.summary.warning, 0);
     assert_eq!(snapshot.summary.violation, 2);
+}
+
+#[test]
+fn a_fixed_snapshot_hashes_to_a_pinned_digest() {
+    // The canonical form `snapshot_json_content_hash` normalizes to depends on
+    // `serde_json::Map` being a BTreeMap, which holds only while nothing in the
+    // dependency graph enables `serde_json/preserve_order`. Feature unification
+    // is global, so a dep bump three crates away could flip it and silently
+    // change what every stored `content_hash` means. Pinning one digest turns
+    // that into a failing test instead of one spurious "changed" snapshot.
+    let snapshot = ComplianceSnapshot {
+        timestamp: "2026-03-25T00:00:00Z".into(),
+        machine: MachineInfo {
+            hostname: "test-host".into(),
+            os: "linux".into(),
+            arch: "x86_64".into(),
+        },
+        profile: "default".into(),
+        sources: vec!["local".into()],
+        checks: vec![ComplianceCheck {
+            category: "system".into(),
+            key: Some("sysctl.vm.swappiness".into()),
+            status: ComplianceStatus::Violation,
+            detail: Some("want 10, have 60".into()),
+            ..Default::default()
+        }],
+        summary: ComplianceSummary {
+            compliant: 0,
+            warning: 0,
+            violation: 1,
+        },
+    };
+
+    let (_, hash) = snapshot_content_hash(&snapshot).unwrap();
+    assert_eq!(
+        hash, "2a1c0cef36205ca80c5ea9b03601d9f79a8a4aec020e3d554d5f741a9ea90094",
+        "the canonical form moved — check whether a dependency enabled \
+         serde_json/preserve_order, or whether a serialized field was added to \
+         ComplianceSnapshot/ComplianceCheck (stored hashes change meaning either way)"
+    );
+
+    // The timestamp is excluded, so restamping the same content cannot move it.
+    let mut later = snapshot.clone();
+    later.timestamp = "2099-12-31T23:59:59Z".into();
+    assert_eq!(snapshot_content_hash(&later).unwrap().1, hash);
 }

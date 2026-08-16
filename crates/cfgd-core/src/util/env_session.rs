@@ -15,17 +15,58 @@ use std::collections::BTreeMap;
 use std::process::Command;
 use std::time::Duration;
 
-use crate::output::{Printer, Role};
+use crate::SYSTEMCTL_BIN_ENV;
 
 /// Live-refresh shell-outs are local and fast; bound them anyway so a wedged
 /// session bus (`systemctl --user` with no user D-Bus) can't hang an apply.
 const ENV_REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// What one live-session setter did.
+///
+/// The setters REPORT nothing themselves. Where a diagnostic belongs — attached
+/// under an open action line, or settled on its own — is a question only the
+/// caller can answer, and `util/` is the leaf every other module imports: a leaf
+/// that reaches up into `providers` for a sink would invert that direction to
+/// answer a question that is not its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionSet {
+    /// The session manager accepted the value.
+    Applied,
+    /// There is no session manager to talk to; nothing was attempted, and
+    /// nothing is worth telling the user.
+    Unavailable,
+    /// The setter ran and failed. The string is its one-line diagnostic, already
+    /// collapsed, ready for the caller to report.
+    Failed(String),
+}
+
+impl SessionSet {
+    /// The diagnostic the caller should narrate, if there is one.
+    pub fn failure(self) -> Option<String> {
+        match self {
+            SessionSet::Failed(message) => Some(message),
+            _ => None,
+        }
+    }
+}
+
+/// What a whole [`refresh_session_env`] pass did, so its caller narrates the
+/// failures under whichever action line is open.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct SessionRefresh {
+    /// Variables whose live value actually changed.
+    pub changed: usize,
+    /// One already-collapsed diagnostic per setter that failed.
+    pub failures: Vec<String>,
+}
+
 /// Test seams for the session managers. Unlike every other target cfgd writes,
 /// these commands address a running session manager and the Windows registry —
 /// neither is a path, so no test home, temp dir or `XDG_*` override can contain
 /// them. Redirecting the binary is the only sandbox available.
-const SYSTEMCTL_BIN_ENV: &str = "CFGD_SYSTEMCTL_BIN";
+///
+/// `systemctl`'s seam is named in `util/process.rs` rather than here, because
+/// the system configurators spawn it too and one spelling has to cover both.
 const LAUNCHCTL_BIN_ENV: &str = "CFGD_LAUNCHCTL_BIN";
 const SETX_BIN_ENV: &str = "CFGD_SETX_BIN";
 const REG_BIN_ENV: &str = "CFGD_REG_BIN";
@@ -37,8 +78,7 @@ enum ErrStream {
 }
 
 /// macOS: set a variable in the current launchd session (`launchctl setenv`).
-/// Warns through the printer on failure; returns whether it succeeded.
-pub fn launchctl_setenv(key: &str, value: &str, printer: &Printer) -> bool {
+pub fn launchctl_setenv(key: &str, value: &str) -> SessionSet {
     let mut cmd = crate::tool_cmd(LAUNCHCTL_BIN_ENV, "launchctl");
     cmd.args(["setenv", key, value]);
     run_setter(
@@ -46,38 +86,30 @@ pub fn launchctl_setenv(key: &str, value: &str, printer: &Printer) -> bool {
         LAUNCHCTL_BIN_ENV,
         &format!("launchctl setenv {key}"),
         ErrStream::Stderr,
-        printer,
     )
 }
 
 /// Windows: persist a user variable to `HKCU\Environment` (`setx`). `setx`
 /// reports failures on stdout, not stderr.
-pub fn windows_setx(key: &str, value: &str, printer: &Printer) -> bool {
+pub fn windows_setx(key: &str, value: &str) -> SessionSet {
     let mut cmd = crate::tool_cmd(SETX_BIN_ENV, "setx");
     cmd.args([key, value]);
-    run_setter(
-        cmd,
-        SETX_BIN_ENV,
-        &format!("setx {key}"),
-        ErrStream::Stdout,
-        printer,
-    )
+    run_setter(cmd, SETX_BIN_ENV, &format!("setx {key}"), ErrStream::Stdout)
 }
 
 /// Linux/BSD: register a variable with the systemd user manager so units it
 /// later spawns inherit it. Best-effort — absent `systemctl` is a no-op.
-fn systemctl_user_setenv(key: &str, value: &str, printer: &Printer) -> bool {
-    if !crate::command_available_with_seam(SYSTEMCTL_BIN_ENV, "systemctl") {
-        return false;
+fn systemctl_user_setenv(key: &str, value: &str) -> SessionSet {
+    if !crate::systemctl_available() {
+        return SessionSet::Unavailable;
     }
-    let mut cmd = crate::tool_cmd(SYSTEMCTL_BIN_ENV, "systemctl");
+    let mut cmd = crate::systemctl_cmd();
     cmd.args(["--user", "set-environment", &format!("{key}={value}")]);
     run_setter(
         cmd,
         SYSTEMCTL_BIN_ENV,
         &format!("systemctl --user set-environment {key}"),
         ErrStream::Stderr,
-        printer,
     )
 }
 
@@ -103,75 +135,61 @@ fn refuse_unseamed_session_write(seam: &str) {
 #[cfg(not(test))]
 fn refuse_unseamed_session_write(_seam: &str) {}
 
-fn run_setter(
-    mut cmd: Command,
-    seam: &str,
-    label: &str,
-    err_stream: ErrStream,
-    printer: &Printer,
-) -> bool {
+fn run_setter(mut cmd: Command, seam: &str, label: &str, err_stream: ErrStream) -> SessionSet {
     refuse_unseamed_session_write(seam);
     match crate::command_output_with_timeout(&mut cmd, ENV_REFRESH_TIMEOUT) {
-        Ok(output) if output.status.success() => true,
+        Ok(output) if output.status.success() => SessionSet::Applied,
         Ok(output) => {
             let detail = match err_stream {
                 ErrStream::Stdout => crate::stdout_lossy_trimmed(&output),
                 ErrStream::Stderr => crate::stderr_lossy_trimmed(&output),
             };
-            printer.status_simple(
-                Role::Warn,
-                format!(
-                    "{label} failed: {}",
-                    crate::output::collapse_to_subject_line(&detail)
-                ),
-            );
-            false
+            SessionSet::Failed(format!(
+                "{label} failed: {}",
+                crate::output::collapse_to_subject_line(&detail)
+            ))
         }
-        Err(e) => {
-            printer.status_simple(
-                Role::Warn,
-                format!(
-                    "{label} failed: {}",
-                    crate::output::collapse_to_subject_line(&e)
-                ),
-            );
-            false
-        }
+        Err(e) => SessionSet::Failed(format!(
+            "{label} failed: {}",
+            crate::output::collapse_to_subject_line(&e)
+        )),
     }
 }
 
 /// Refresh the current user's live session so newly-spawned processes see
 /// `vars` without a re-login. Best-effort and idempotent: a variable already
-/// set to the same value is skipped. Returns the count of variables actually
-/// changed.
+/// set to the same value is skipped.
 ///
 /// Dispatches to the platform mechanism: macOS `launchctl setenv`, Linux
 /// `systemctl --user set-environment`, Windows `setx`. The durable
-/// file/registry targets written elsewhere are authoritative; a failure here
-/// is surfaced as a warning and never aborts an apply.
-pub fn refresh_session_env(vars: &[(String, String)], printer: &Printer) -> usize {
+/// file/registry targets written elsewhere are authoritative, so a failure here
+/// never aborts an apply — it comes back in [`SessionRefresh::failures`] for the
+/// caller to narrate wherever its own output belongs.
+pub fn refresh_session_env(vars: &[(String, String)]) -> SessionRefresh {
+    let mut refresh = SessionRefresh::default();
     if vars.is_empty() {
-        return 0;
+        return refresh;
     }
     let bulk = bulk_session_env();
-    let mut changed = 0;
     for (key, value) in vars {
         let current = bulk.get(key).cloned().or_else(|| read_session_var(key));
         if current.as_deref() == Some(value.as_str()) {
             continue;
         }
-        let ok = if cfg!(windows) {
-            windows_setx(key, value, printer)
+        let outcome = if cfg!(windows) {
+            windows_setx(key, value)
         } else if cfg!(target_os = "macos") {
-            launchctl_setenv(key, value, printer)
+            launchctl_setenv(key, value)
         } else {
-            systemctl_user_setenv(key, value, printer)
+            systemctl_user_setenv(key, value)
         };
-        if ok {
-            changed += 1;
+        match outcome {
+            SessionSet::Applied => refresh.changed += 1,
+            SessionSet::Unavailable => {}
+            SessionSet::Failed(message) => refresh.failures.push(message),
         }
     }
-    changed
+    refresh
 }
 
 /// Cheap whole-environment read where one call suffices (Linux `systemctl
@@ -179,10 +197,10 @@ pub fn refresh_session_env(vars: &[(String, String)], printer: &Printer) -> usiz
 /// per-variable [`read_session_var`].
 fn bulk_session_env() -> BTreeMap<String, String> {
     if cfg!(all(unix, not(target_os = "macos"))) {
-        if !crate::command_available_with_seam(SYSTEMCTL_BIN_ENV, "systemctl") {
+        if !crate::systemctl_available() {
             return BTreeMap::new();
         }
-        let mut cmd = crate::tool_cmd(SYSTEMCTL_BIN_ENV, "systemctl");
+        let mut cmd = crate::systemctl_cmd();
         cmd.args(["--user", "show-environment"]);
         match crate::command_output_with_timeout(&mut cmd, ENV_REFRESH_TIMEOUT) {
             Ok(o) if o.status.success() => parse_kv_lines(&String::from_utf8_lossy(&o.stdout)),
@@ -267,8 +285,7 @@ mod tests {
 
     #[test]
     fn refresh_session_env_empty_is_noop() {
-        let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        assert_eq!(refresh_session_env(&[], &printer), 0);
+        assert_eq!(refresh_session_env(&[]), SessionRefresh::default());
     }
 
     /// A `/bin/sh` stand-in for a session manager: appends its argv to `log` and
@@ -295,8 +312,7 @@ mod tests {
         let shim = session_shim(tmp.path(), "launchctl", &log, 0);
         let _seam = crate::test_helpers::EnvVarGuard::set(LAUNCHCTL_BIN_ENV, &shim);
 
-        let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        assert!(launchctl_setenv("EDITOR", "nvim", &printer));
+        assert_eq!(launchctl_setenv("EDITOR", "nvim"), SessionSet::Applied);
         assert_eq!(
             std::fs::read_to_string(&log).unwrap().trim(),
             "setenv EDITOR nvim"
@@ -306,19 +322,18 @@ mod tests {
     #[cfg(unix)]
     #[test]
     #[serial_test::serial]
-    fn windows_setx_failure_warns_and_reports_unchanged() {
+    fn windows_setx_failure_returns_the_tools_own_diagnostic() {
         let tmp = tempfile::tempdir().unwrap();
         let log = tmp.path().join("argv.log");
         let shim = session_shim(tmp.path(), "setx", &log, 1);
         let _seam = crate::test_helpers::EnvVarGuard::set(SETX_BIN_ENV, &shim);
 
-        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        assert!(!windows_setx("EDITOR", "nvim", &printer));
-        printer.flush();
-        let out = crate::output::strip_ansi(&buf.lock().unwrap());
+        let failure = windows_setx("EDITOR", "nvim")
+            .failure()
+            .expect("a non-zero setx must come back as a failure the caller can narrate");
         assert!(
-            out.contains("setx EDITOR failed") && out.contains("shim said no"),
-            "a failing setter must quote the tool's own stdout: {out}"
+            failure.contains("setx EDITOR failed") && failure.contains("shim said no"),
+            "a failing setter must quote the tool's own stdout: {failure}"
         );
     }
 
@@ -328,7 +343,6 @@ mod tests {
     #[should_panic(expected = "CFGD_LAUNCHCTL_BIN")]
     fn an_unseamed_session_write_is_refused_under_test() {
         let _unset = crate::test_helpers::EnvVarGuard::unset(LAUNCHCTL_BIN_ENV);
-        let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        launchctl_setenv("EDITOR", "nvim", &printer);
+        launchctl_setenv("EDITOR", "nvim");
     }
 }

@@ -1,1 +1,1 @@
-✓ Rejected 'packages.brew.ripgrep' from 'team-config'
+✓ Rejected 'packages.brew.ripgrep' from source:team-config

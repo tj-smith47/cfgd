@@ -1,9 +1,9 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::Role;
 
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 use super::read_command_output;
 
@@ -55,7 +55,7 @@ impl SystemConfigurator for GsettingsConfigurator {
         diff_nested_mapping(desired, read_gsettings_value)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let mapping = match desired.as_mapping() {
             Some(m) => m,
             None => return Ok(()),
@@ -79,7 +79,7 @@ impl SystemConfigurator for GsettingsConfigurator {
 
                 let gsettings_val = yaml_value_to_string(desired_value);
 
-                printer.status_simple(
+                cx.report(
                     Role::Info,
                     format!("gsettings set {} {} {}", schema, key_str, gsettings_val),
                 );
@@ -90,7 +90,7 @@ impl SystemConfigurator for GsettingsConfigurator {
                     .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                 if !output.status.success() {
-                    printer.status_simple(
+                    cx.report(
                         Role::Warn,
                         format!(
                             "gsettings set failed for {}.{}: {}",
@@ -122,11 +122,28 @@ mod tests {
     }
 
     #[test]
-    fn gsettings_availability_depends_on_command() {
+    #[serial_test::serial]
+    fn gsettings_is_available_exactly_when_a_gsettings_binary_resolves() {
+        let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
         let gc = GsettingsConfigurator;
-        // is_available should match whether gsettings is on PATH
-        let expected = cfgd_core::command_available("gsettings");
-        assert_eq!(gc.is_available(), expected);
+
+        {
+            let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+            assert!(
+                !gc.is_available(),
+                "a host resolving no binaries is not a gsettings host"
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            let _probe = cfgd_core::test_helpers::ProbePath::containing(&["gsettings"]);
+            assert!(
+                gc.is_available(),
+                "the binary this configurator probes for is named `gsettings`"
+            );
+        }
     }
 
     #[test]
@@ -168,7 +185,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let gc = GsettingsConfigurator;
         let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        gc.apply(&yaml, &printer).unwrap();
+        gc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -176,7 +194,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let gc = GsettingsConfigurator;
         let yaml = serde_yaml::Value::String("not a mapping".into());
-        gc.apply(&yaml, &printer).unwrap();
+        gc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -189,7 +208,8 @@ mod tests {
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        gc.apply(&yaml, &printer).unwrap();
+        gc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -202,7 +222,8 @@ mod tests {
             serde_yaml::Value::String("not a mapping".into()),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        gc.apply(&yaml, &printer).unwrap();
+        gc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -220,7 +241,8 @@ mod tests {
             serde_yaml::Value::Mapping(inner),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        gc.apply(&yaml, &printer).unwrap();
+        gc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -236,12 +258,17 @@ mod tests {
         assert_eq!(gc.name(), "gsettings");
     }
 
+    #[cfg(unix)]
     #[test]
+    #[serial_test::serial]
     fn gsettings_apply_iterates_schemas_and_keys_through_command_path() {
-        // Drives the apply loop body (lines 76, 80-102): yaml_value_to_string,
-        // status_simple invocation, Command::output (gsettings absent on CI →
-        // Io error path, OR success on a host with gsettings → printer.warn).
-        // Both branches return Ok(()) from apply; we just need the body to run.
+        // Drives the apply loop body: yaml_value_to_string, the report, and one
+        // `gsettings set` per key. A shimmed gsettings makes the run identical
+        // on every host, so the argv — which schema, which key, which value,
+        // and in what order — is what the test asserts. Discarding the Result
+        // instead left it asserting only that apply did not panic.
+        let (_bin, _path, log) =
+            cfgd_core::test_helpers::install_named_path_shim_logged("gsettings", 0, "", "");
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let gc = GsettingsConfigurator;
         let mut inner = serde_yaml::Mapping::new();
@@ -259,14 +286,25 @@ mod tests {
             serde_yaml::Value::Mapping(inner),
         );
         let yaml = serde_yaml::Value::Mapping(outer);
-        // We don't assert on stdout — the body runs through Command::output
-        // either way; the missing-binary case currently returns an Io error
-        // because Command::output → CfgdError::Io. So tolerate either Ok or
-        // Err (the body coverage is unchanged either way).
-        let _ = gc.apply(&yaml, &printer);
+        gc.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .expect("every shimmed `gsettings set` succeeds");
+        assert_eq!(
+            log.argv_log().lines().collect::<Vec<_>>(),
+            vec![
+                "set org.gnome.desktop.interface.test-only color-scheme prefer-dark",
+                "set org.gnome.desktop.interface.test-only font-name Cantarell 11",
+            ],
+            "one `gsettings set` per key, in declaration order, schema first"
+        );
     }
 
+    // Serial because it SPAWNS `gsettings`: the shimmed apply test above
+    // prepends its shim to the process-global PATH, so a `gsettings get` run
+    // concurrently resolves to that shim and appends a line to the argv log the
+    // other test is asserting on — observed as a stray
+    // `get org.gnome.cfgd-test-schema color-scheme` failing the apply test.
     #[test]
+    #[serial_test::serial]
     fn gsettings_diff_via_nested_mapping_helper_returns_drift_entries() {
         let gc = GsettingsConfigurator;
         let mut inner = serde_yaml::Mapping::new();

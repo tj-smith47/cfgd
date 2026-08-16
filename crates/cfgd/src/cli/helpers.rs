@@ -2,23 +2,6 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Printer, Role};
 
-/// Render a byte count for a human, at the largest scale that keeps it under
-/// four digits.
-///
-/// The single byte-size renderer for the whole CLI: `cfgd upgrade` sizes a
-/// release asset and `cfgd backup list --snapshots` sizes a snapshot, and two
-/// commands of one binary reporting `1.5 MB` and `1.5 MiB` for the same number
-/// is exactly the consumer-facing drift the output conventions exist to stop.
-pub(in crate::cli) fn format_bytes(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    } else if bytes >= 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{bytes} B")
-    }
-}
-
 /// Write a freshly scaffolded manifest: prepend the editor schema modeline and
 /// write atomically.
 ///
@@ -76,10 +59,25 @@ pub(in crate::cli) fn rewrite_user_yaml_with_original<T: serde::Serialize>(
     Ok(())
 }
 
+/// Surface every deprecation message `warn_on_legacy_theme_keys` collected
+/// while parsing `cfg` (legacy `theme.overrides.*` keys today; any future
+/// `parse_config`-time deprecation lands here too) — this is the one drain
+/// point every command boundary that reads the user's real `cfgd.yaml` and
+/// owns a `Printer` calls right after a successful load. A thin CLI-scoped
+/// alias over `CfgdConfig::drain_deprecations`, kept so every existing
+/// command-boundary call site can go on spelling this name; the daemon's own
+/// startup / SIGHUP-reload sites call the core method directly, since they
+/// parse config in cfgd-core and cannot reach a binary-crate helper.
+pub(in crate::cli) fn drain_config_deprecations(printer: &Printer, cfg: &mut CfgdConfig) {
+    cfg.drain_deprecations(printer);
+}
+
 pub(in crate::cli) fn load_config_and_profile(
     cli: &Cli,
+    printer: &Printer,
 ) -> anyhow::Result<(CfgdConfig, String, ResolvedProfile)> {
-    let cfg = config::load_config(&cli.config)?;
+    let mut cfg = config::load_config(&cli.config)?;
+    drain_config_deprecations(printer, &mut cfg);
     let profile_name = match cli.profile.as_deref() {
         Some(p) => p.to_string(),
         None => cfg.active_profile()?.to_string(),
@@ -89,6 +87,60 @@ pub(in crate::cli) fn load_config_and_profile(
         Err(e) => return Err(decorate_profile_not_found(cli, &cfg, &profile_name, e)),
     };
     Ok((cfg, profile_name, resolved))
+}
+
+/// Load config and resolve a profile, with the `--module` degrade shared by
+/// `cmd_apply` and `cmd_plan`: when `module_filter` names a single module
+/// and no profile resolves (unset, or named but not found), fall back to
+/// module-only mode instead of erroring, since a module-only run needs no
+/// profile at all.
+///
+/// Loads (and drains) `cli.config` EXACTLY ONCE regardless of which branch
+/// is taken. The two call sites this replaces each called
+/// `load_config_and_profile` (load + drain #1), and on its `Err` re-parsed
+/// the same file a second time to build the module-only fallback (load +
+/// drain #2) — the same legacy-key deprecation notice landing on the
+/// user's terminal twice for one `apply --module x` / `plan --module x`
+/// invocation.
+pub(in crate::cli) fn load_config_and_profile_module_scoped(
+    cli: &Cli,
+    printer: &Printer,
+    module_filter: Option<&str>,
+) -> anyhow::Result<(CfgdConfig, ResolvedProfile, Option<String>, bool)> {
+    let Some(mod_name) = module_filter else {
+        let (cfg, profile_name, resolved) = load_config_and_profile(cli, printer)?;
+        return Ok((cfg, resolved, Some(profile_name), true));
+    };
+
+    // `minimal_config()` subscribes to nothing, and that fabricated empty
+    // list must never reach the decision sweep: it would read as "no
+    // source is subscribed any more" and delete every decision row on the
+    // machine, turning "awaiting your answer" into "applies silently" with
+    // nothing to recover from.
+    let (cfg, config_parsed) = match config::load_config(&cli.config) {
+        Ok(mut cfg) => {
+            drain_config_deprecations(printer, &mut cfg);
+            (cfg, true)
+        }
+        Err(_) => (config::minimal_config(), false),
+    };
+
+    let profile_name = cli
+        .profile
+        .as_deref()
+        .map(str::to_string)
+        .or_else(|| cfg.active_profile().ok().map(str::to_string));
+    let resolved = profile_name
+        .as_deref()
+        .and_then(|name| config::resolve_profile(name, &profiles_dir(cli)).ok());
+
+    match resolved {
+        Some(resolved) => Ok((cfg, resolved, profile_name, config_parsed)),
+        None => {
+            let resolved = empty_resolved_profile(mod_name, &active_profile_name(cli, Some(&cfg)));
+            Ok((cfg, resolved, None, config_parsed))
+        }
+    }
 }
 
 /// Turn a bare `ProfileNotFound` into an actionable error when the requested
@@ -136,7 +188,8 @@ fn decorate_profile_not_found(
     // local active profile.
     let hints = vec![
         cfgd_core::output::collapse_to_subject_line(format!(
-            "Profile '{profile_name}' is delivered by source(s): {providers_list}. The active/selected profile must be a LOCAL profile; wrap the source profile in one."
+            "Profile '{profile_name}' is delivered by {}: {providers_list}. The active/selected profile must be a LOCAL profile; wrap the source profile in one.",
+            cfgd_core::plural_noun(providers.len(), "source")
         )),
         cfgd_core::output::collapse_to_subject_line(format!(
             "Set the source's subscription.profile in {}:",
@@ -261,7 +314,7 @@ pub(in crate::cli) fn empty_resolved_profile(
 ) -> ResolvedProfile {
     ResolvedProfile {
         layers: vec![cfgd_core::config::ProfileLayer {
-            source: "local".to_string(),
+            source: cfgd_core::config::LOCAL_LAYER.to_string(),
             profile_name: profile_name.to_string(),
             priority: 0,
             policy: cfgd_core::config::LayerPolicy::Local,
@@ -272,6 +325,24 @@ pub(in crate::cli) fn empty_resolved_profile(
             ..Default::default()
         },
     }
+}
+
+/// Suffix of the sidecar copy cfgd leaves beside a target it adopted.
+pub(in crate::cli) const CFGD_BACKUP_SUFFIX: &str = ".cfgd-backup";
+
+/// The sidecar path for `target`, suffixed with `extra` (empty for the primary
+/// `<target>.cfgd-backup`).
+///
+/// The ONE derivation of that name: the adoption path writes it, module removal
+/// and profile update offer to restore it, and a byte of disagreement between
+/// them orphans a user's only copy of their original file. Built by appending
+/// to the target's `OsStr` rather than to a rendered `Display`, so a filename
+/// no `str` can round-trip still names the file beside it.
+pub(in crate::cli) fn cfgd_backup_path(target: &Path, extra: &str) -> PathBuf {
+    let mut name = target.as_os_str().to_os_string();
+    name.push(CFGD_BACKUP_SUFFIX);
+    name.push(extra);
+    PathBuf::from(name)
 }
 
 /// Collect known package manager names from the registry.
@@ -652,15 +723,20 @@ pub(in crate::cli) fn module_cache_dir_for(
     Ok(cfgd_core::resolve_cache_dir(cache_over, scope)?.join("modules"))
 }
 
-/// Directory holding the apply mutex (`apply.lock`).
+/// The ONE state directory a run uses — `state.db`, the apply mutex
+/// (`apply.lock`), and everything else state-rooted resolve HERE.
 ///
 /// The apply mutex serializes the only operation that mutates live system
 /// state, so it co-locates with the `state.db` it guards — the same dir the
 /// daemon reconcile loop locks — and every acquirer must resolve it identically
 /// (`--state-dir` flag > `CFGD_STATE_DIR` env > `XDG_STATE_HOME` > platform
-/// default) regardless of how the process was launched, or the lock fails to
-/// mutually-exclude and concurrent applies corrupt state.
-pub(in crate::cli) fn apply_lock_dir(
+/// default, per the run's `--scope`) regardless of how the process was
+/// launched, or the lock fails to mutually-exclude and concurrent applies
+/// corrupt state. `open_state_store` resolves through the same call for the
+/// same reason: a `--scope system` run that locked the system dir while
+/// opening the user store would judge ownership against one store and sweep
+/// another.
+pub(crate) fn run_state_dir(
     state_over: Option<&Path>,
     scope: cfgd_core::Scope,
 ) -> anyhow::Result<PathBuf> {
@@ -716,7 +792,8 @@ pub(in crate::cli) fn resolve_profile_name(
     if !config_path.exists() {
         return Err(no_config_error(printer, config_path));
     }
-    let cfg = config::load_config(config_path)?;
+    let mut cfg = config::load_config(config_path)?;
+    drain_config_deprecations(printer, &mut cfg);
     if let Some(ref profile_override) = cli.profile {
         Ok(profile_override.clone())
     } else {
@@ -905,7 +982,7 @@ fn display_and_persist_conflicts(
     }
     drop(guard);
 
-    if let Ok(state) = open_state_store(cli.state_dir.as_deref()) {
+    if let Ok(state) = open_state_store(cli.state_dir.as_deref(), cli.scope()) {
         for conflict in &result.conflicts {
             if let Err(e) = state.record_source_conflict(
                 &conflict.winning_source,

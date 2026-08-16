@@ -401,6 +401,120 @@ pub fn powershell_double_quoted(value: &str) -> String {
     format!("\"{}\"", escape_powershell_double_quoted(value))
 }
 
+/// A value as a complete `cmd.exe`/batch double-quoted word — quotes
+/// included.
+///
+/// `cmd.exe` expands `%NAME%` **inside** double quotes — unlike every
+/// POSIX-family shell quoted here, where escaping `` ` `` and `$` is enough
+/// to stop all expansion — and `%` is a legal NTFS filename character, so a
+/// resolved path such as `deploy%PATH%.cmd` would splice the caller's own
+/// `PATH` into the value if left unescaped. Doubling every `%` to `%%` is the
+/// batch-parser escape for a literal percent. Whether `cmd.exe /C <string>`
+/// (the shape this crate always uses) collapses `%%` the way a `.cmd` file
+/// body does is NOT settled here — the two parsers are documented
+/// inconsistently and no host running this code can execute `cmd.exe`. A
+/// resolved path containing a literal `%` therefore has one of two failure
+/// modes on Windows and neither is worse than the unescaped form, which
+/// splices in the variable's value unconditionally. `"` is not escaped: NTFS
+/// forbids the character in a filename, so a real resolved path can never
+/// carry one.
+pub fn cmd_double_quoted(value: &str) -> String {
+    format!("\"{}\"", value.replace('%', "%%"))
+}
+
+/// The manager family a package manager name belongs to: everything before the
+/// first `-`.
+///
+/// `brew`, `brew-tap` and `brew-cask` are three registered managers over ONE
+/// binary and one prefix. A sub-manager has no bootstrap of its own, answers
+/// `is_available()` with its parent's, and is stranded by its parent's removal
+/// — so the family, not the name, is the unit that three separate surfaces
+/// have to agree on: the planner pairing a sub-manager's install with its
+/// parent's bootstrap, the CLI's stranded-install warning, and the concurrent
+/// `Packages` dispatch, whose lane must be the binary rather than the name or
+/// three `brew` processes run at once.
+#[must_use]
+pub fn manager_family(manager: &str) -> &str {
+    manager.split('-').next().unwrap_or(manager)
+}
+
+/// Render a byte count for a human, at the largest scale that keeps it under
+/// four digits.
+///
+/// The single byte-size renderer for the whole workspace: `cfgd upgrade` sizes
+/// a release asset, `cfgd backup list --snapshots` sizes a snapshot, and a
+/// backup group's snapshot line sizes the artifact it just wrote. Two surfaces
+/// of one binary reporting `1.5 MB` and `1.5 MiB` for the same number is
+/// exactly the consumer-facing drift the output conventions exist to stop.
+pub fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// A count and its noun, agreeing: `1 action`, `22 actions`, `0 actions`.
+///
+/// The ONE plural rendering in the workspace, because the alternative shipped
+/// for a year: `22 actions succeeded` is a program telling the reader it did
+/// not bother to look at a number it is printing IN THE SAME SENTENCE. Every
+/// count-carrying line — the apply/backup rollups, the daemon's notifications,
+/// the plan's totals — reads from here.
+///
+/// English-regular nouns only (`action`, `check`, `file`, `resource`). A noun
+/// whose plural is not `+s` has no business being formatted by a rule this
+/// small; spell that one out at its call site.
+pub fn pluralize(count: usize, noun: &str) -> String {
+    format!("{count} {}", plural_noun(count, noun))
+}
+
+/// The noun alone, in the number `count` calls for — for a sentence that names
+/// the things rather than counting them (`referenced by profiles: work, home`).
+pub fn plural_noun(count: usize, noun: &str) -> String {
+    if count == 1 {
+        noun.to_string()
+    } else {
+        format!("{noun}s")
+    }
+}
+
+/// A regular verb in the form `count` calls for: `1 resource matches`,
+/// `2 resources match`.
+///
+/// The counterpart to [`plural_noun`] and the other half of making a counted
+/// sentence read: a line that pluralizes its noun and leaves the verb behind
+/// says `1 non-file action require manual review`, which is worse than the
+/// `(s)` it replaced. Regular verbs only — `be` and `have` are not spelled by
+/// any rule this small.
+pub fn agreeing_verb(count: usize, verb: &str) -> String {
+    if count != 1 {
+        return verb.to_string();
+    }
+    // The third-person singular of a regular verb: `-es` after a sibilant or a
+    // bare `o` (`match` → `matches`, `go` → `goes`), `-ies` for a consonant
+    // followed by `y` (`apply` → `applies`), `-s` otherwise. A bare `+ "s"`
+    // renders `matchs`.
+    let sibilant = ["s", "x", "z", "ch", "sh"]
+        .iter()
+        .any(|end| verb.ends_with(end))
+        || (verb.ends_with('o') && !verb.ends_with("oo"));
+    if sibilant {
+        format!("{verb}es")
+    } else if verb.ends_with('y')
+        && verb
+            .chars()
+            .nth_back(1)
+            .is_some_and(|c| !matches!(c, 'a' | 'e' | 'i' | 'o' | 'u'))
+    {
+        format!("{}ies", &verb[..verb.len() - 1])
+    } else {
+        format!("{verb}s")
+    }
+}
+
 /// Escape a string for safe inclusion in XML/plist content (single pass).
 pub fn xml_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + s.len() / 8);
@@ -420,6 +534,83 @@ pub fn xml_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_count_agrees_with_its_noun_in_both_numbers() {
+        assert_eq!(pluralize(1, "action"), "1 action");
+        assert_eq!(pluralize(0, "action"), "0 actions");
+        assert_eq!(pluralize(22, "action"), "22 actions");
+        assert_eq!(plural_noun(1, "profile"), "profile");
+        assert_eq!(plural_noun(2, "profile"), "profiles");
+    }
+
+    #[test]
+    fn a_singular_verb_takes_the_ending_its_stem_calls_for() {
+        // The bug this exists to prevent is a bare `+ "s"`, which renders
+        // `1 resource matchs desired state`.
+        assert_eq!(agreeing_verb(1, "match"), "matches");
+        assert_eq!(agreeing_verb(1, "require"), "requires");
+        assert_eq!(agreeing_verb(1, "name"), "names");
+        assert_eq!(agreeing_verb(1, "apply"), "applies");
+        assert_eq!(agreeing_verb(1, "go"), "goes");
+        assert_eq!(agreeing_verb(1, "pass"), "passes");
+        assert_eq!(agreeing_verb(1, "fix"), "fixes");
+        assert_eq!(agreeing_verb(1, "push"), "pushes");
+        assert_eq!(agreeing_verb(1, "stay"), "stays");
+    }
+
+    #[test]
+    fn a_plural_verb_is_the_stem_itself() {
+        for count in [0, 2, 22] {
+            assert_eq!(agreeing_verb(count, "match"), "match");
+            assert_eq!(agreeing_verb(count, "apply"), "apply");
+        }
+    }
+
+    #[test]
+    fn format_bytes_zero() {
+        assert_eq!(format_bytes(0), "0 B");
+    }
+
+    #[test]
+    fn format_bytes_small_value() {
+        assert_eq!(format_bytes(512), "512 B");
+    }
+
+    #[test]
+    fn format_bytes_just_below_kb_boundary() {
+        assert_eq!(format_bytes(1023), "1023 B");
+    }
+
+    #[test]
+    fn format_bytes_exact_kb_boundary() {
+        assert_eq!(format_bytes(1024), "1.0 KB");
+    }
+
+    #[test]
+    fn format_bytes_fractional_kb() {
+        assert_eq!(format_bytes(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn format_bytes_just_below_mb_boundary() {
+        assert_eq!(format_bytes(1048575), "1024.0 KB");
+    }
+
+    #[test]
+    fn format_bytes_exact_mb_boundary() {
+        assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
+    }
+
+    #[test]
+    fn format_bytes_large_mb_value() {
+        assert_eq!(format_bytes(52_428_800), "50.0 MB");
+    }
+
+    #[test]
+    fn format_bytes_fractional_mb() {
+        assert_eq!(format_bytes(1_572_864), "1.5 MB");
+    }
 
     #[test]
     fn expand_env_vars_basic_and_braced() {
@@ -467,6 +658,7 @@ mod tests {
         ("arith", "$((1+1))"),
         ("brace_default", "${x:-$(id)}"),
         ("prompt_op", "${x@P}"),
+        ("percent_var", "%PATH%"),
         ("combo", "x$(id)`id`\"'\\"),
     ];
 
@@ -617,6 +809,32 @@ mod tests {
             assert!(
                 !ends_with_odd_run(inner, '`'),
                 "{label}: closing quote escaped by a trailing backtick run in {quoted}"
+            );
+        }
+    }
+
+    #[test]
+    fn cmd_double_quoted_doubles_percent_to_neutralize_expansion() {
+        assert_eq!(
+            cmd_double_quoted("deploy%PATH%.cmd"),
+            "\"deploy%%PATH%%.cmd\""
+        );
+        assert_eq!(cmd_double_quoted("%USERPROFILE%"), "\"%%USERPROFILE%%\"");
+        assert_eq!(cmd_double_quoted("plain"), "\"plain\"");
+    }
+
+    #[test]
+    fn cmd_double_quoted_is_wrapped_and_carries_no_lone_percent() {
+        for (label, value) in HOSTILE {
+            let quoted = cmd_double_quoted(value);
+            assert!(
+                quoted.starts_with('"') && quoted.ends_with('"'),
+                "{label}: not wrapped: {quoted}"
+            );
+            let inner = &quoted[1..quoted.len() - 1];
+            assert!(
+                inner.matches('%').count().is_multiple_of(2),
+                "{label}: odd number of percents in {quoted}"
             );
         }
     }

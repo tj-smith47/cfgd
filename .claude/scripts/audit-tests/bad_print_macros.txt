@@ -1,0 +1,9 @@
+# EXPECTED: caught by the output-centralization rule (all four write macros).
+# `print!` and `eprint!` are the two the gate was blind to while it anchored on
+# `println!\(` — each is one character from its `ln` sibling.
+fn _example() {
+    print!("no newline, still stdout");
+    eprint!("no newline, still stderr");
+    println!("the shape the gate always caught");
+    eprintln!("and its stderr twin");
+}

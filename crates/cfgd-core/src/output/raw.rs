@@ -18,6 +18,7 @@ impl Renderer {
     /// Always at depth 0 (raw renderer).
     pub fn render_diff(&self, w: &dyn Writer, old: &str, new: &str) {
         let diff = TextDiff::from_lines(old, new);
+        let mut lines = Vec::new();
         for change in diff.iter_all_changes() {
             let (sign, style) = match change.tag() {
                 ChangeTag::Insert => ("+", &self.theme.diff_add),
@@ -26,9 +27,11 @@ impl Renderer {
             };
             let body = format!("{sign}{change}");
             let body = body.trim_end_matches('\n');
-            let styled = style.apply_to(body).to_string();
-            w.write_line(&styled);
+            lines.push(style.apply_to(body).to_string());
         }
+        // One block per render, so a diff is never split across two of
+        // indicatif's clear/redraw cycles.
+        self.emit_raw_block(w, &lines);
     }
 
     /// Render syntax-highlighted code. Caller passes the `lang` hint (e.g.,
@@ -42,6 +45,16 @@ impl Renderer {
         syntax_set: &SyntaxSet,
         theme_set: &syntect::highlighting::ThemeSet,
     ) {
+        // syntect emits truecolor escapes of its own, from its own theme —
+        // nothing about this path passes through `Theme`, so a colour decision
+        // enforced only at style lookup does not reach it, and `cfgd diff
+        // --no-color` / `NO_COLOR=1` still wrote escapes into the reader's
+        // pipe. Same fallback as the missing-theme arm below.
+        if !self.theme.colors() {
+            let plain: Vec<String> = code.lines().map(str::to_string).collect();
+            self.emit_raw_block(w, &plain);
+            return;
+        }
         let syntax = syntax_set
             .find_syntax_by_token(lang)
             .or_else(|| syntax_set.find_syntax_by_extension(lang))
@@ -52,18 +65,20 @@ impl Renderer {
             .or_else(|| theme_set.themes.values().next())
         else {
             // No syntect themes available; emit unstyled lines.
-            for line in code.lines() {
-                w.write_line(line);
-            }
+            let plain: Vec<String> = code.lines().map(str::to_string).collect();
+            self.emit_raw_block(w, &plain);
             return;
         };
         let mut h = HighlightLines::new(syntax, theme);
+        let mut lines = Vec::new();
         for line in code.lines() {
             let ranges: Vec<(SynStyle, &str)> =
                 h.highlight_line(line, syntax_set).unwrap_or_default();
-            let escaped = as_24_bit_terminal_escaped(&ranges, false);
-            w.write_line(&escaped);
+            lines.push(as_24_bit_terminal_escaped(&ranges, false));
         }
+        // Built outside the guard: highlighting is expensive and touches no
+        // render state, so the lock is taken only around the emission.
+        self.emit_raw_block(w, &lines);
     }
 }
 
@@ -148,6 +163,40 @@ mod tests {
         );
     }
 
+    /// syntect carries its own theme and emits truecolor escapes without ever
+    /// consulting `Theme`, so `cfgd diff --no-color` wrote escapes into the
+    /// reader's pipe while every other line on the same screen was unstyled.
+    #[test]
+    fn syntax_highlight_spends_no_colour_when_the_printer_has_none() {
+        let ss = SyntaxSet::load_defaults_newlines();
+        let ts = syntect::highlighting::ThemeSet::load_defaults();
+
+        let render = |colors: bool| {
+            let buf = Arc::new(Mutex::new(String::new()));
+            let sink = StringSink(buf.clone());
+            let r = Renderer::new(Theme::default().with_colors(colors), Verbosity::Normal);
+            r.render_syntax_highlight(&sink, "let x = 1;\nlet y = 2;\n", "rs", &ss, &ts);
+            buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        };
+
+        let off = render(false);
+        assert!(
+            !off.contains('\u{1b}'),
+            "a colourless printer highlighted with escapes: {off:?}"
+        );
+        assert!(
+            off.contains("let x"),
+            "the code itself was dropped: {off:?}"
+        );
+
+        let on = render(true);
+        assert!(
+            on.contains('\u{1b}'),
+            "a colour printer emitted no escapes, so the assertion above \
+             proves nothing: {on:?}"
+        );
+    }
+
     #[test]
     fn data_line_writes_to_stdout_raw() {
         use super::super::Verbosity;
@@ -155,8 +204,11 @@ mod tests {
 
         let stdout_buf = Arc::new(Mutex::new(String::new()));
         let stderr_buf = Arc::new(Mutex::new(String::new()));
-        let mut p = Printer::new(Verbosity::Normal);
-        // Swap in capture sinks.
+        // `for_test_at` pins live_region/interactive_stdin/colors rather than
+        // probing the real terminal `Printer::new` would; the two sinks it
+        // hands back share one buffer, so this test — which asserts stdout and
+        // stderr stay separate — swaps in its own pair after construction.
+        let (mut p, _shared_buf) = Printer::for_test_at(Verbosity::Normal);
         p.sink_stdout = Arc::new(StringSink(stdout_buf.clone()));
         p.sink_stderr = Arc::new(StringSink(stderr_buf.clone()));
 

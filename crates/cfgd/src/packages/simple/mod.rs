@@ -10,15 +10,16 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
-use cfgd_core::providers::{PackageContext, PackageManager};
+use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager};
 use cfgd_core::{command_available, command_available_with_seam, tool_cmd};
 
 use super::parsers::{
     parse_apk_lines, parse_dnf_lines, parse_pkg_lines, parse_simple_lines, parse_yum_lines,
     parse_zypper_lines,
 };
-use super::shared::{run_pkg_cmd, run_pkg_cmd_live, strip_sudo_for_exec, strip_version_suffix};
+use super::shared::{
+    pkg_run, run_pkg_cmd, run_pkg_cmd_live, strip_sudo_for_exec, strip_version_suffix,
+};
 use super::versions::{
     APK_BIN_ENV, APT_CACHE_BIN_ENV, DNF_BIN_ENV, DPKG_QUERY_BIN_ENV, PACMAN_BIN_ENV, PKG_BIN_ENV,
     RPM_BIN_ENV, YUM_BIN_ENV, ZYPPER_BIN_ENV, apt_aliases, dnf_aliases, list_apt_with_versions,
@@ -121,11 +122,13 @@ impl PackageManager for SimpleManager {
         }
     }
 
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+        // A native system manager ships with its distribution: there is no host
+        // where cfgd could install `apt` or `pacman` from something else.
+        None
     }
 
-    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())
     }
 
@@ -144,7 +147,7 @@ impl PackageManager for SimpleManager {
         let label = self.display_cmd(self.install_cmd, packages);
         let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
         run_pkg_cmd_live(
-            cx.printer,
+            cx,
             self.mgr_name,
             cmd_with_seam(prog).args(args).args(packages),
             &label,
@@ -161,7 +164,7 @@ impl PackageManager for SimpleManager {
         let label = self.display_cmd(self.uninstall_cmd, packages);
         let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
         run_pkg_cmd_live(
-            cx.printer,
+            cx,
             self.mgr_name,
             cmd_with_seam(prog).args(args).args(packages),
             &label,
@@ -170,7 +173,11 @@ impl PackageManager for SimpleManager {
         Ok(())
     }
 
-    fn update(&self, cx: &PackageContext<'_>) -> Result<()> {
+    fn has_index(&self) -> bool {
+        self.update_cmd.is_some()
+    }
+
+    fn refresh_index(&self, cx: &PackageContext<'_>) -> Result<()> {
         let Some(update_parts) = self.update_cmd else {
             return Ok(());
         };
@@ -179,16 +186,15 @@ impl PackageManager for SimpleManager {
         let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
         if self.ignore_update_exit {
             // dnf/yum check-update returns 100 when updates are available
-            let _ = cx
-                .printer
-                .run(cmd_with_seam(prog).args(args), &label)
-                .map_err(|e| PackageError::CommandFailed {
+            let _ = pkg_run(cx, cmd_with_seam(prog).args(args), &label).map_err(|e| {
+                PackageError::CommandFailed {
                     manager: self.mgr_name.into(),
                     source: e,
-                })?;
+                }
+            })?;
         } else {
             run_pkg_cmd_live(
-                cx.printer,
+                cx,
                 self.mgr_name,
                 cmd_with_seam(prog).args(args),
                 &label,

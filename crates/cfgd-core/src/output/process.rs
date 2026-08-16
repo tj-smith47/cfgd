@@ -77,14 +77,44 @@ fn spawn_readers(child: &mut std::process::Child) -> mpsc::Receiver<Captured> {
     rx
 }
 
-/// Run `cmd` with live output displayed through an [`OutputWindow`], capturing
-/// stdout and stderr for the returned `CommandOutput`.
-pub(crate) fn run_command(
-    printer: &Printer,
-    depth: usize,
+/// Who emits the one status line for the work a [`run_command`] call is part of.
+///
+/// A command run on its own behalf settles its own line; a command run *inside*
+/// an action whose line the reconciler emits must not, or the action renders
+/// twice. The window's live tail is unaffected either way — only the collapse
+/// differs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StatusOwner {
+    Window,
+    Caller,
+}
+
+/// What one [`spawn_and_pump`] run yields: the display sink, the exit status,
+/// the stdout and stderr captures, and the elapsed clock.
+type Pumped<S> = (
+    S,
+    std::process::ExitStatus,
+    Vec<String>,
+    Vec<String>,
+    Duration,
+);
+
+/// Spawn `cmd` with both pipes captured and feed every line to `on_line` as it
+/// arrives, returning the display sink, the exit status, the two captures and
+/// the elapsed clock.
+///
+/// The ONE spawn-and-pump in this module, so a live window and a concurrent
+/// lane cannot disagree about stdio configuration, about the `PATH` guard's
+/// span, or about which stream a captured line came from.
+///
+/// `sink` is a thunk rather than a value because it is only built once the
+/// spawn SUCCEEDED: an `OutputWindow` created ahead of a failing spawn would
+/// be abandoned, and an abandoned window leaves a status line behind.
+fn spawn_and_pump<S>(
     cmd: &mut std::process::Command,
-    label: &str,
-) -> std::io::Result<CommandOutput> {
+    sink: impl FnOnce() -> S,
+    mut on_line: impl FnMut(&mut S, &str),
+) -> std::io::Result<Pumped<S>> {
     // Held for the whole run, not just the spawn: the child resolves its
     // program through `PATH` and reads its inherited working directory after
     // exec, so both must stay stable until it exits. Re-entrant, so a caller
@@ -100,8 +130,8 @@ pub(crate) fn run_command(
         .stderr(std::process::Stdio::piped())
         .spawn()?;
 
+    let mut sink = sink();
     let rx = spawn_readers(&mut child);
-    let mut window = printer.output_window_at(depth, label);
     let mut all_stdout = Vec::new();
     let mut all_stderr = Vec::new();
     // Blocking recv: the spinner's steady tick redraws independently of message
@@ -110,32 +140,72 @@ pub(crate) fn run_command(
     for line in rx {
         match line {
             Captured::Stdout(s) => {
-                window.push_line(&s);
+                on_line(&mut sink, &s);
                 all_stdout.push(s);
             }
             Captured::Stderr(s) => {
-                window.push_line(&s);
+                on_line(&mut sink, &s);
                 all_stderr.push(s);
             }
         }
     }
 
     let status = child.wait()?;
-    let duration = start.elapsed();
+    Ok((sink, status, all_stdout, all_stderr, start.elapsed()))
+}
+
+/// Run `cmd` inside a concurrent lane: the lane owns the rendering (a bounded
+/// window on a TTY, a capture off one) and the coordinator owns the status
+/// line, so nothing is settled here.
+pub(crate) fn run_command_in_lane(
+    cmd: &mut std::process::Command,
+    lane: &(impl super::lane::LaneOutput + ?Sized),
+) -> std::io::Result<CommandOutput> {
+    let ((), status, all_stdout, all_stderr, duration) =
+        spawn_and_pump(cmd, || (), |(), line| lane.push_line(line))?;
+    Ok(make_output(status, all_stdout, all_stderr, duration))
+}
+
+/// Run `cmd` with live output displayed through an [`OutputWindow`], capturing
+/// stdout and stderr for the returned `CommandOutput`.
+pub(crate) fn run_command(
+    printer: &Printer,
+    depth: usize,
+    cmd: &mut std::process::Command,
+    label: &str,
+    settle: StatusOwner,
+) -> std::io::Result<CommandOutput> {
+    let (window, status, all_stdout, all_stderr, duration) = spawn_and_pump(
+        cmd,
+        || printer.output_window_at(depth, label),
+        |window, line| window.push_line(line),
+    )?;
     if status.success() {
-        drop(window.finish_ok(label).duration(duration));
+        match settle {
+            StatusOwner::Window => drop(window.finish_ok(label).duration(duration)),
+            StatusOwner::Caller => window.finish_silent(),
+        }
     } else {
         let needs_replay = window.tail_needs_replay();
-        drop(
-            window
-                .finish_fail(label)
-                .detail(failure_detail(&status))
-                .duration(duration),
-        );
-        // Streaming already left every line in the scrollback; replaying them
-        // here would print the whole of stderr a second time.
-        if needs_replay {
-            OutputWindow::dump_below(printer, depth, &all_stderr);
+        match settle {
+            StatusOwner::Window => {
+                drop(
+                    window
+                        .finish_fail(label)
+                        .detail(failure_detail(&status))
+                        .duration(duration),
+                );
+                // Streaming already left every line in the scrollback; replaying
+                // them here would print the whole of stderr a second time.
+                if needs_replay {
+                    OutputWindow::dump_below(printer, depth, &all_stderr);
+                }
+            }
+            // No replay: the caller's failure line has not been written yet, so
+            // a dump here would land the body ABOVE the status it belongs to.
+            // The tail travels back in the returned `CommandOutput` and reaches
+            // the user as that line's detail.
+            StatusOwner::Caller => window.finish_silent(),
         }
     }
     Ok(make_output(status, all_stdout, all_stderr, duration))
@@ -163,7 +233,6 @@ mod tests {
     use std::time::Duration;
 
     use super::super::Verbosity;
-    use super::super::renderer::StringSink;
     use super::*;
 
     /// Run `f` in a thread with a deadline; panic if it doesn't return in time.
@@ -176,12 +245,13 @@ mod tests {
         rx.recv_timeout(d).expect("test exceeded deadline")
     }
 
-    /// A Printer whose stderr sink is a capture buffer.
+    /// A Printer whose stderr sink is a capture buffer, with live_region,
+    /// interactive_stdin, and colour all pinned off rather than inherited from
+    /// however the suite was invoked — real `sh` children run under these
+    /// tests, already guarded by `with_deadline` against a hang; an inherited
+    /// stdin-tty would add a second, worse one (an unanswered prompt).
     fn capturing_printer(verbosity: Verbosity) -> (Printer, Arc<Mutex<String>>) {
-        let buf = Arc::new(Mutex::new(String::new()));
-        let mut p = Printer::new(verbosity);
-        p.sink_stderr = Arc::new(StringSink(buf.clone()));
-        (p, buf)
+        Printer::for_test_at(verbosity)
     }
 
     fn sh(script: &str) -> std::process::Command {
@@ -218,7 +288,14 @@ mod tests {
     fn captures_stdout_and_surfaces_the_label() {
         with_deadline(Duration::from_secs(10), || {
             let (p, buf) = capturing_printer(Verbosity::Normal);
-            let out = run_command(&p, 0, &mut sh("printf 'hello\nworld\n'"), "say hi").unwrap();
+            let out = run_command(
+                &p,
+                0,
+                &mut sh("printf 'hello\nworld\n'"),
+                "say hi",
+                StatusOwner::Window,
+            )
+            .unwrap();
             assert!(out.status.success());
             assert_eq!(out.stdout, "hello\nworld");
             let captured = crate::output::strip_ansi(&buf.lock().unwrap());
@@ -236,6 +313,7 @@ mod tests {
                 0,
                 &mut sh("printf 'out\n'; printf 'err\n' 1>&2"),
                 "split",
+                StatusOwner::Window,
             )
             .unwrap();
             assert!(out.status.success());
@@ -249,8 +327,14 @@ mod tests {
     fn failure_emits_fail_status_and_propagates_exit_code() {
         with_deadline(Duration::from_secs(10), || {
             let (p, buf) = capturing_printer(Verbosity::Normal);
-            let out =
-                run_command(&p, 0, &mut sh("printf 'partial\n'; exit 7"), "fail-job").unwrap();
+            let out = run_command(
+                &p,
+                0,
+                &mut sh("printf 'partial\n'; exit 7"),
+                "fail-job",
+                StatusOwner::Window,
+            )
+            .unwrap();
 
             assert!(!out.status.success());
             assert_eq!(out.status.code(), Some(7));
@@ -276,6 +360,7 @@ mod tests {
                 0,
                 &mut sh("printf 'boom-1\n' 1>&2; printf 'boom-2\n' 1>&2; exit 9"),
                 "spin-fail",
+                StatusOwner::Window,
             )
             .unwrap();
 
@@ -304,6 +389,7 @@ mod tests {
                 0,
                 &mut sh("printf 'MARKER-LINE\n' 1>&2; exit 3"),
                 "dup-check",
+                StatusOwner::Window,
             )
             .unwrap();
 
@@ -324,7 +410,14 @@ mod tests {
     fn failure_detail_carries_the_exit_code() {
         with_deadline(Duration::from_secs(10), || {
             let (p, buf) = capturing_printer(Verbosity::Normal);
-            let out = run_command(&p, 0, &mut sh("exit 42"), "exit-code-job").unwrap();
+            let out = run_command(
+                &p,
+                0,
+                &mut sh("exit 42"),
+                "exit-code-job",
+                StatusOwner::Window,
+            )
+            .unwrap();
 
             assert!(!out.status.success());
             assert_eq!(out.status.code(), Some(42));
@@ -342,7 +435,14 @@ mod tests {
     fn quiet_suppresses_display_but_still_captures() {
         with_deadline(Duration::from_secs(10), || {
             let (p, buf) = capturing_printer(Verbosity::Quiet);
-            let out = run_command(&p, 0, &mut sh("printf 'q1\nq2\n'"), "quiet-job").unwrap();
+            let out = run_command(
+                &p,
+                0,
+                &mut sh("printf 'q1\nq2\n'"),
+                "quiet-job",
+                StatusOwner::Window,
+            )
+            .unwrap();
 
             assert!(out.status.success());
             // Capture is independent of verbosity — the caller still sees both lines.
@@ -372,6 +472,7 @@ mod tests {
                 0,
                 &mut sh("for i in $(seq 1 12); do printf 'line-%02d\n' $i; done"),
                 "many-lines",
+                StatusOwner::Window,
             )
             .unwrap();
 
@@ -394,6 +495,7 @@ mod tests {
                 0,
                 &mut sh(&format!("printf '%s\n' {payload}")),
                 "long-line",
+                StatusOwner::Window,
             )
             .unwrap();
 
@@ -414,6 +516,7 @@ mod tests {
                 0,
                 &mut sh(r"printf 'tool: \033[31mred\033[0m text\n'"),
                 "ansi-job",
+                StatusOwner::Window,
             )
             .unwrap();
             assert!(out.status.success());

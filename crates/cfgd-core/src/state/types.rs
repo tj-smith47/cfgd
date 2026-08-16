@@ -346,7 +346,14 @@ impl BackupRunRecord {
 pub struct JournalEntry {
     pub id: i64,
     pub apply_id: i64,
+    /// Where the action sits in the run's plan — the position in the flattened
+    /// group order, over the actions that survive `--phase`. Not a dispatch
+    /// counter: package work dispatches in Rule P's tiers, not in plan order.
     pub action_index: i64,
+    /// When the action actually finished: a monotonic counter assigned on the
+    /// coordinator thread at collection. `None` for a row whose run was killed
+    /// between its begin and its collection.
+    pub completion_index: Option<i64>,
     pub phase: String,
     pub action_type: String,
     pub resource_id: String,
@@ -357,6 +364,29 @@ pub struct JournalEntry {
     pub started_at: String,
     pub completed_at: Option<String>,
     pub script_output: Option<String>,
+}
+
+impl JournalEntry {
+    /// Whether this entry's writes are covered by the file-backup restore
+    /// path, so rollback must not report it as an unrecoverable action.
+    /// Module file deploys journal as `action_type = "module"` with a
+    /// `<name>:files:<n>` resource id — their writes go through
+    /// `store_file_backup` like plain file actions, only the id shape differs.
+    /// Env rows are file work too: `env:write:*` / `env:inject:*` journal with
+    /// the target path as the id and are captured via `action_target_path` —
+    /// except the live-session refresh (`env:session:refresh`, id `"refresh"`),
+    /// whose session-manager state has no backup to restore.
+    ///
+    /// Classification is by resource identity alone, never by the phase the row
+    /// was written under: a module's encryption/strategy skip journals in the
+    /// `files` phase without writing anything, so a phase term would report it
+    /// as restorable file work.
+    pub fn is_file_work(&self) -> bool {
+        self.action_type == "file"
+            || self.resource_id.starts_with("file:")
+            || (self.action_type == "module" && self.resource_id.split(':').nth(1) == Some("files"))
+            || (self.action_type == "env" && self.resource_id != "refresh")
+    }
 }
 
 /// A compliance snapshot summary row from the state store.

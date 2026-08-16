@@ -1,4 +1,5 @@
 {
+  "classificationDegraded": false,
   "decisions": [
     {
       "action": "install",

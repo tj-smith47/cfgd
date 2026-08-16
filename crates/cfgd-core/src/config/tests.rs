@@ -1788,6 +1788,45 @@ spec:
 }
 
 #[test]
+fn parsed_system_settings_keep_key_order_across_parses() {
+    let yaml = r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: ordered
+spec:
+  system:
+    sysctl:
+      vm.swappiness: 10
+    launchd:
+      label: com.example.agent
+    gsettings:
+      org.gnome.desktop.interface: {}
+    apparmor:
+      profiles: []
+    kubelet:
+      maxPods: 110
+"#;
+    let first: ProfileDocument = serde_yaml::from_str(yaml).unwrap();
+    let second: ProfileDocument = serde_yaml::from_str(yaml).unwrap();
+
+    let keys: Vec<&str> = first.spec.system.keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        vec!["apparmor", "gsettings", "kubelet", "launchd", "sysctl"],
+        "declaration order must not survive into iteration order"
+    );
+
+    // The checkin payload serializes this map and the compliance snapshot hashes
+    // an artifact built by walking it; two parses in one process that disagree
+    // report a machine that changed when nothing did.
+    assert_eq!(
+        serde_yaml::to_string(&first.spec.system).unwrap(),
+        serde_yaml::to_string(&second.spec.system).unwrap(),
+    );
+}
+
+#[test]
 fn module_system_merges_into_profile_system() {
     // Simulate what plan_system does: deep-merge module system over profile system.
     let profile_yaml = r#"
@@ -1800,10 +1839,8 @@ git:
   user.name: New Name
   user.email: new@example.com
 "#;
-    let mut profile_system: HashMap<String, serde_yaml::Value> =
-        serde_yaml::from_str(profile_yaml).unwrap();
-    let module_system: HashMap<String, serde_yaml::Value> =
-        serde_yaml::from_str(module_yaml).unwrap();
+    let mut profile_system: SystemSettings = serde_yaml::from_str(profile_yaml).unwrap();
+    let module_system: SystemSettings = serde_yaml::from_str(module_yaml).unwrap();
 
     // Apply module system on top of profile system (same logic as plan_system)
     for (key, value) in &module_system {
@@ -1835,16 +1872,16 @@ git:
 
 #[test]
 fn module_system_overrides_profile_on_conflict() {
-    let mut profile_system: HashMap<String, serde_yaml::Value> = {
-        let mut m = HashMap::new();
+    let mut profile_system: SystemSettings = {
+        let mut m = SystemSettings::new();
         m.insert(
             "git".to_string(),
             serde_yaml::from_str("user.name: Profile Name").unwrap(),
         );
         m
     };
-    let module_system: HashMap<String, serde_yaml::Value> = {
-        let mut m = HashMap::new();
+    let module_system: SystemSettings = {
+        let mut m = SystemSettings::new();
         m.insert(
             "git".to_string(),
             serde_yaml::from_str("user.name: Module Name").unwrap(),
@@ -2120,8 +2157,6 @@ command: "ls -la"
 // --- Legacy theme-override key warnings ---
 
 #[test]
-#[serial_test::serial]
-#[tracing_test::traced_test]
 fn legacy_theme_subheader_emits_warning() {
     let yaml = r##"
 spec:
@@ -2130,16 +2165,16 @@ spec:
     overrides:
       subheader: "#ff79c6"
 "##;
-    super::parse::warn_on_legacy_theme_keys(yaml);
+    let messages = super::parse::warn_on_legacy_theme_keys(yaml);
     assert!(
-        logs_contain("theme.overrides.subheader is no longer supported"),
-        "expected legacy-key warning to fire"
+        messages
+            .iter()
+            .any(|m| m.contains("theme.overrides.subheader is no longer supported")),
+        "expected legacy-key warning to fire, got: {messages:?}"
     );
 }
 
 #[test]
-#[serial_test::serial]
-#[tracing_test::traced_test]
 fn legacy_icon_success_emits_rename_warning() {
     let yaml = r##"
 spec:
@@ -2148,16 +2183,36 @@ spec:
     overrides:
       iconSuccess: "++"
 "##;
-    super::parse::warn_on_legacy_theme_keys(yaml);
+    let messages = super::parse::warn_on_legacy_theme_keys(yaml);
     assert!(
-        logs_contain("iconSuccess is renamed to iconOk"),
-        "expected rename warning to fire"
+        messages
+            .iter()
+            .any(|m| m.contains("iconSuccess is renamed to iconOk")),
+        "expected rename warning to fire, got: {messages:?}"
     );
 }
 
 #[test]
-#[serial_test::serial]
-#[tracing_test::traced_test]
+fn a_live_icon_info_override_is_never_called_unsupported() {
+    // `iconInfo` sat in REMOVED_THEME_KEYS while the field it names was live,
+    // so declaring it produced both a working override and a notice saying the
+    // override would be ignored. The structural guard below pins the lists; this
+    // pins the symptom the user actually met.
+    let yaml = r##"
+spec:
+  theme:
+    name: dracula
+    overrides:
+      iconInfo: "i"
+"##;
+    let messages = super::parse::warn_on_legacy_theme_keys(yaml);
+    assert!(
+        messages.is_empty(),
+        "iconInfo is a live ThemeOverrides field; it must draw no deprecation, got: {messages:?}"
+    );
+}
+
+#[test]
 fn modern_overrides_emit_no_warning() {
     let yaml = r##"
 spec:
@@ -2167,9 +2222,52 @@ spec:
       iconOk: "✔"
       running: "#00ff00"
 "##;
-    super::parse::warn_on_legacy_theme_keys(yaml);
-    assert!(!logs_contain("no longer supported"));
-    assert!(!logs_contain("renamed to"));
+    let messages = super::parse::warn_on_legacy_theme_keys(yaml);
+    assert!(
+        messages.is_empty(),
+        "expected no deprecations, got: {messages:?}"
+    );
+}
+
+/// `REMOVED_THEME_KEYS` and `RENAMED_THEME_KEYS` are hand-maintained strings
+/// describing `ThemeOverrides`, not values read off the struct — nothing stops
+/// them drifting the moment a field they name is re-added, renamed again, or
+/// dropped. This derives the struct's live field set from its own `schemars`
+/// schema (never restating the fields by hand) and cross-checks both lists
+/// against it, so a rename or a field coming back under an old name fails here
+/// instead of silently mis-warning users forever.
+#[test]
+fn legacy_theme_key_lists_stay_consistent_with_theme_overrides_schema() {
+    let schema = serde_json::to_value(schemars::schema_for!(super::ThemeOverrides))
+        .expect("ThemeOverrides schema serializes to a Value");
+    let live_fields: std::collections::BTreeSet<&str> = schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .expect("ThemeOverrides schema carries a properties object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+
+    for old in super::parse::REMOVED_THEME_KEYS {
+        assert!(
+            !live_fields.contains(old),
+            "REMOVED_THEME_KEYS names '{old}', but ThemeOverrides has a live field \
+             called '{old}' — the field came back and the deprecation notice is now a \
+             false alarm; drop it from REMOVED_THEME_KEYS"
+        );
+    }
+    for (old, new) in super::parse::RENAMED_THEME_KEYS {
+        assert!(
+            !live_fields.contains(old),
+            "RENAMED_THEME_KEYS names '{old}' as a legacy spelling, but ThemeOverrides \
+             has a live field called '{old}' — the field came back under its old name"
+        );
+        assert!(
+            live_fields.contains(new),
+            "RENAMED_THEME_KEYS points '{old}' at '{new}', but ThemeOverrides has no \
+             live field called '{new}' — the rename target itself has since moved"
+        );
+    }
 }
 
 /// Resolve the primary package list a bare-list form should populate, for a

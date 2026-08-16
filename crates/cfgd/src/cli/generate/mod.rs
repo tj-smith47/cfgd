@@ -18,16 +18,20 @@ pub struct GenerateArgs {
     #[command(subcommand)]
     pub target: Option<GenerateTarget>,
 
+    // Backend selection and the confirmation gate govern every generate target,
+    // not just the bare form, so they are global: `cfgd generate profile laptop
+    // --model <m>` is how the flag reads, and a non-global arg declared beside
+    // the subcommand only parses BEFORE it.
     /// Override AI model
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub model: Option<String>,
 
     /// Override AI provider
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub provider: Option<String>,
 
     /// Skip confirmation prompts
-    #[arg(long, short, env = "CFGD_YES")]
+    #[arg(long, short, global = true, env = "CFGD_YES")]
     pub yes: bool,
 
     /// Only scan dotfiles and shell config; print findings without AI generation
@@ -65,7 +69,10 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
 
     // 1. Load config, resolve AiConfig
     let ai_config = match config::load_config(&cli.config) {
-        Ok(cfg) => cfg.spec.ai.clone().unwrap_or_default(),
+        Ok(mut cfg) => {
+            crate::cli::helpers::drain_config_deprecations(printer, &mut cfg);
+            cfg.spec.ai.clone().unwrap_or_default()
+        }
         Err(cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::NotFound {
             ..
         })) => AiConfig::default(),
@@ -174,11 +181,8 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
     let managers: Vec<Box<dyn cfgd_core::providers::PackageManager>> =
         packages::all_package_managers();
     let home = dirs_from_env();
-    let gen_state = open_state_store(cli.state_dir.as_deref())?;
-    let pkg_cx = cfgd_core::providers::PackageContext {
-        printer,
-        state: &gen_state,
-    };
+    let gen_state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &gen_state);
 
     // 9. Conversation loop
     const MAX_TURNS: usize = 100;
@@ -327,7 +331,13 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
     let (input_tokens, output_tokens) = conversation.total_tokens();
     printer.emit(
         Doc::new()
-            .status(Role::Ok, format!("Generated {} file(s)", generated_count))
+            .status(
+                Role::Ok,
+                format!(
+                    "Generated {}",
+                    cfgd_core::pluralize(generated_count, "file")
+                ),
+            )
             .kv(
                 "Tokens",
                 format!("{} in, {} out", input_tokens, output_tokens),

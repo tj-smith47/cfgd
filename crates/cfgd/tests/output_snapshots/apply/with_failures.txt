@@ -1,12 +1,14 @@
 Apply
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  tiny
+  Phases   Files
+  Actions  2 planned
 
-Plan preview
-  Files
-    - create <TARGET_OK>
-    - create <TARGET_FAIL>
+Phase: Files
+  profile:tiny
+    ✓ create <TARGET_OK>
+    ✗ create <TARGET_FAIL> — file error: io error on <CONFIG_DIR>/blocker: <os error>
 
-✗ [2/2] Failed: file:create:<TARGET_FAIL> — file error: io error on <CONFIG_DIR>/blocker: <os error>
-✓ 1 action(s) succeeded
-1 action(s) failed (XXs)
+⚠ Apply partial — 1 of 2 applied
+✓ 1 action succeeded
+1 action failed (XXs)

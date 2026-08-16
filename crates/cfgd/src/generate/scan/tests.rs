@@ -365,7 +365,6 @@ fn test_scan_shell_config_unknown_shell_returns_empty() {
 
 use std::collections::HashSet;
 
-use cfgd_core::output::Printer;
 use cfgd_core::providers::PackageInfo;
 
 struct TestPackageManager {
@@ -381,10 +380,13 @@ impl PackageManager for TestPackageManager {
     fn is_available(&self) -> bool {
         self.available
     }
-    fn can_bootstrap(&self) -> bool {
-        false
+    fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+        None
     }
-    fn bootstrap(&self, _printer: &Printer) -> cfgd_core::errors::Result<()> {
+    fn bootstrap(
+        &self,
+        _cx: &cfgd_core::providers::PackageContext<'_>,
+    ) -> cfgd_core::errors::Result<()> {
         Ok(())
     }
     fn installed_packages(
@@ -403,12 +405,6 @@ impl PackageManager for TestPackageManager {
     fn uninstall(
         &self,
         _packages: &[String],
-        _cx: &cfgd_core::providers::PackageContext<'_>,
-    ) -> cfgd_core::errors::Result<()> {
-        Ok(())
-    }
-    fn update(
-        &self,
         _cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> cfgd_core::errors::Result<()> {
         Ok(())
@@ -1151,10 +1147,13 @@ fn test_scan_installed_packages_error_manager_does_not_abort() {
         fn is_available(&self) -> bool {
             true
         }
-        fn can_bootstrap(&self) -> bool {
-            false
+        fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
+            None
         }
-        fn bootstrap(&self, _p: &cfgd_core::output::Printer) -> cfgd_core::errors::Result<()> {
+        fn bootstrap(
+            &self,
+            _cx: &cfgd_core::providers::PackageContext<'_>,
+        ) -> cfgd_core::errors::Result<()> {
             Ok(())
         }
         fn installed_packages(
@@ -1173,12 +1172,6 @@ fn test_scan_installed_packages_error_manager_does_not_abort() {
         fn uninstall(
             &self,
             _pkgs: &[String],
-            _cx: &cfgd_core::providers::PackageContext<'_>,
-        ) -> cfgd_core::errors::Result<()> {
-            Ok(())
-        }
-        fn update(
-            &self,
             _cx: &cfgd_core::providers::PackageContext<'_>,
         ) -> cfgd_core::errors::Result<()> {
             Ok(())

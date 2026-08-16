@@ -1,10 +1,18 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::time::Duration;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::Role;
 
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
+
+/// `is-enabled`, `daemon-reload` and `enable`/`disable` are local calls into an
+/// already-running manager and answer in milliseconds. The one thing that makes
+/// any of them slow is a `systemctl` binary with no manager behind it — a
+/// container, WSL, a chroot — where the D-Bus connect alone burns around 90
+/// seconds per unit before failing. Bounding them well under that is the
+/// difference between `cfgd diff` reporting a unit and appearing to hang on it.
+const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// SystemdUnitConfigurator — manages systemd unit files and enablement.
 #[derive(Default)]
@@ -32,7 +40,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
     }
 
     fn is_available(&self) -> bool {
-        cfgd_core::command_available("systemctl")
+        cfgd_core::systemctl_available()
     }
 
     fn set_config_dir(&mut self, config_dir: &Path) {
@@ -62,9 +70,9 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
 
-            let is_enabled = Command::new("systemctl")
-                .args(["is-enabled", name])
-                .output()
+            let mut cmd = cfgd_core::systemctl_cmd();
+            cmd.args(["is-enabled", name]);
+            let is_enabled = cfgd_core::command_output_with_timeout(&mut cmd, SYSTEMCTL_TIMEOUT)
                 .ok()
                 .map(|o| cfgd_core::stdout_lossy_trimmed(&o) == "enabled")
                 .unwrap_or(false);
@@ -103,7 +111,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
         Ok(drifts)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let units = match desired.as_sequence() {
             Some(s) => s,
             None => return Ok(()),
@@ -125,7 +133,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                 let source = self.resolve_unit_file(unit_file);
                 let dest = format!("/etc/systemd/system/{}", name);
                 let dest_path = Path::new(&dest);
-                printer.status_simple(
+                cx.report(
                     Role::Info,
                     format!("Installing unit file: {} → {}", source.display(), dest),
                 );
@@ -133,7 +141,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                 match std::fs::read(&source) {
                     Ok(content) => {
                         if let Err(e) = cfgd_core::atomic_write(dest_path, &content) {
-                            printer.status_simple(
+                            cx.report(
                                 Role::Warn,
                                 format!(
                                     "Failed to install unit file: {}",
@@ -143,7 +151,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                         } else if let Err(e) = cfgd_core::set_file_permissions(dest_path, 0o644) {
                             // systemd unit files are world-readable by convention; the
                             // atomic_write tempfile lands 0600, so widen it explicitly.
-                            printer.status_simple(
+                            cx.report(
                                 Role::Warn,
                                 format!(
                                     "Failed to set unit file mode: {}",
@@ -153,7 +161,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                         }
                     }
                     Err(e) => {
-                        printer.status_simple(
+                        cx.report(
                             Role::Warn,
                             format!(
                                 "Failed to read unit file: {}",
@@ -164,22 +172,28 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                 }
 
                 // Reload systemd
-                if let Err(e) = Command::new("systemctl").arg("daemon-reload").output() {
+                let mut reload = cfgd_core::systemctl_cmd();
+                reload.arg("daemon-reload");
+                if let Err(e) =
+                    cfgd_core::command_output_with_timeout(&mut reload, SYSTEMCTL_TIMEOUT)
+                {
+                    // tracing-ok: daemon-reload is advisory; the enable/disable
+                    // result below is what the user is told about
                     tracing::warn!("systemctl daemon-reload failed: {e}");
                 }
             }
 
             // Enable/disable
             let action = if desired_enabled { "enable" } else { "disable" };
-            printer.status_simple(Role::Info, format!("systemctl {} {}", action, name));
+            cx.report(Role::Info, format!("systemctl {} {}", action, name));
 
-            let output = Command::new("systemctl")
-                .args([action, name])
-                .output()
+            let mut cmd = cfgd_core::systemctl_cmd();
+            cmd.args([action, name]);
+            let output = cfgd_core::command_output_with_timeout(&mut cmd, SYSTEMCTL_TIMEOUT)
                 .map_err(cfgd_core::errors::CfgdError::Io)?;
 
             if !output.status.success() {
-                printer.status_simple(
+                cx.report(
                     Role::Warn,
                     format!(
                         "systemctl {} {} failed: {}",
@@ -249,8 +263,20 @@ mod tests {
         assert!(state.as_sequence().unwrap().is_empty());
     }
 
+    /// Point every `systemctl` call at a shim reporting `state` for
+    /// `is-enabled`. Without it a diff test asserts about the host's own
+    /// systemd — and on a host with the binary but no running manager, each
+    /// call burns the D-Bus connect timeout before answering.
+    #[cfg(unix)]
+    fn systemctl_shim(state: &str) -> cfgd_core::test_helpers::ToolShim {
+        cfgd_core::test_helpers::ToolShim::install(cfgd_core::SYSTEMCTL_BIN_ENV, 0, state, "")
+    }
+
+    #[cfg(unix)]
     #[test]
+    #[serial_test::serial]
     fn systemd_diff_detects_missing_unit_file() {
+        let _shim = systemctl_shim("enabled\n");
         let su = SystemdUnitConfigurator::default();
         let yaml: serde_yaml::Value = serde_yaml::from_str(
             r#"
@@ -262,19 +288,20 @@ mod tests {
         .unwrap();
 
         let drifts = su.diff(&yaml).unwrap();
-        // Should have a drift for the unit file being missing
-        // (the enabled check may or may not show depending on systemctl availability)
-        let unit_file_drifts: Vec<_> = drifts
-            .iter()
-            .filter(|d| d.key.contains("unit-file"))
-            .collect();
-        assert_eq!(unit_file_drifts.len(), 1);
-        assert_eq!(unit_file_drifts[0].expected, "present");
-        assert_eq!(unit_file_drifts[0].actual, "missing");
+        // The unit is desired enabled and the shim reports it enabled, so the
+        // unit-file drift is the ONLY one — an enabled drift here would mean
+        // the is-enabled reading was discarded.
+        assert_eq!(drifts.len(), 1, "unexpected drifts: {drifts:?}");
+        assert_eq!(drifts[0].key, "cfgd-test-nonexistent.service.unit-file");
+        assert_eq!(drifts[0].expected, "present");
+        assert_eq!(drifts[0].actual, "missing");
     }
 
+    #[cfg(unix)]
     #[test]
+    #[serial_test::serial]
     fn systemd_diff_with_unit_file_path_reports_missing_dest() {
+        let _shim = systemctl_shim("enabled\n");
         let su = SystemdUnitConfigurator::default();
         let dir = tempfile::tempdir().unwrap();
 
@@ -300,27 +327,52 @@ mod tests {
         assert_eq!(unit_file_drifts[0].actual, "missing");
     }
 
+    #[cfg(unix)]
     #[test]
+    #[serial_test::serial]
     fn systemd_diff_default_enabled_is_true() {
-        let su = SystemdUnitConfigurator::default();
-        // When "enabled" is omitted, it defaults to true
+        // When "enabled" is omitted it defaults to true, so a unit systemd
+        // reports disabled is drift and one it reports enabled is not.
         let yaml: serde_yaml::Value = serde_yaml::from_str(
             r#"
 - name: cfgd-test-default-enabled.service
 "#,
         )
         .unwrap();
+        let su = SystemdUnitConfigurator::default();
 
-        let drifts = su.diff(&yaml).unwrap();
-        // If systemctl is available and the service doesn't exist, we get an "enabled" drift
-        // If systemctl is not available, is_enabled returns false -> drift with expected=true
-        let enabled_drifts: Vec<_> = drifts
-            .iter()
-            .filter(|d| d.key.contains("enabled"))
-            .collect();
-        if !enabled_drifts.is_empty() {
-            assert_eq!(enabled_drifts[0].expected, "true");
+        {
+            let _shim = systemctl_shim("disabled\n");
+            let drifts = su.diff(&yaml).unwrap();
+            assert_eq!(drifts.len(), 1, "unexpected drifts: {drifts:?}");
+            assert_eq!(drifts[0].key, "cfgd-test-default-enabled.service.enabled");
+            assert_eq!(
+                drifts[0].expected, "true",
+                "an omitted `enabled` means true"
+            );
+            assert_eq!(drifts[0].actual, "false");
         }
+
+        let _shim = systemctl_shim("enabled\n");
+        assert!(
+            su.diff(&yaml).unwrap().is_empty(),
+            "a unit already enabled has not drifted from the default"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn systemd_diff_reads_enablement_with_is_enabled() {
+        let shim = systemctl_shim("enabled\n");
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str("- name: cfgd-test-argv.service\n  enabled: true\n").unwrap();
+        SystemdUnitConfigurator::default().diff(&yaml).unwrap();
+        assert_eq!(
+            shim.argv_log().trim(),
+            "is-enabled cfgd-test-argv.service",
+            "a diff must not mutate the manager — `is-enabled` is the whole call"
+        );
     }
 
     #[test]
@@ -328,7 +380,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let su = SystemdUnitConfigurator::default();
         let yaml = serde_yaml::Value::Sequence(Vec::new());
-        su.apply(&yaml, &printer).unwrap();
+        su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -336,7 +389,8 @@ mod tests {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let su = SystemdUnitConfigurator::default();
         let yaml = serde_yaml::Value::String("not a sequence".into());
-        su.apply(&yaml, &printer).unwrap();
+        su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[test]
@@ -349,14 +403,18 @@ mod tests {
             serde_yaml::Value::Bool(true),
         );
         let yaml = serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(unit)]);
-        su.apply(&yaml, &printer).unwrap();
+        su.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
+            .unwrap();
     }
 
     #[cfg(target_os = "linux")]
     mod bridge {
         use super::*;
-        use cfgd_core::output::test_capture::{assert_snapshot_at, strip_ansi};
-        use cfgd_core::output::{Doc, Printer, Role};
+        use crate::system::tests_snapshot_bridge::{
+            BridgeApply, assert_single_seam, capture_attached_apply,
+        };
+        use cfgd_core::output::Role;
+        use cfgd_core::output::test_capture::assert_snapshot_at;
 
         fn snapshot_dir() -> std::path::PathBuf {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system/snapshots")
@@ -370,33 +428,17 @@ mod tests {
             cfgd_core::normalize_for_snapshot(raw, &[(tmpdir, "<TMPDIR>")])
         }
 
-        /// Normalize the variable part of systemctl failure messages so goldens
-        /// are stable across D-Bus availability states. Lines matching
-        /// `"systemctl <action> <name> failed: <msg>"` have the suffix after
-        /// "failed: " replaced with "<SYSTEMCTL_ERROR>".
-        fn normalize_systemctl_errors(s: &str) -> String {
-            s.lines()
-                .map(|line| {
-                    if line.contains("systemctl ") && line.contains(" failed: ") {
-                        let needle = " failed: ";
-                        if let Some(pos) = line.find(needle) {
-                            return format!("{}{}<SYSTEMCTL_ERROR>", &line[..pos], needle);
-                        }
-                    }
-                    line.to_string()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-                + if s.ends_with('\n') { "\n" } else { "" }
-        }
-
         #[derive(serde::Serialize)]
         struct UnitApplySummary {
             units_processed: usize,
         }
 
         #[test]
+        #[serial_test::serial]
         fn snapshot_systemd_unit_clean() {
+            // Shimmed, so the golden is what cfgd renders around a systemctl
+            // that answered — not what the CI host's own D-Bus happened to say.
+            let _shim = super::systemctl_shim("");
             let yaml: serde_yaml::Value = serde_yaml::from_str(
                 r#"
 - name: cfgd-snap-test.service
@@ -405,34 +447,31 @@ mod tests {
             )
             .unwrap();
 
-            let (printer, cap) = Printer::for_test_doc();
             let su = SystemdUnitConfigurator::default();
-            su.apply(&yaml, &printer).unwrap();
-
             let summary = UnitApplySummary { units_processed: 1 };
-            let doc = Doc::new()
-                .status(Role::Ok, "systemd units applied")
-                .with_data(&summary);
-            printer.emit(doc);
-            drop(printer);
-
-            let raw = strip_ansi(&cap.human());
-            let captured = normalize_systemctl_errors(&raw);
-
-            assert!(
-                captured.contains("\n\n"),
-                "systemd_unit_clean missing blank line at seam:\n{captured}"
-            );
-            assert!(
-                !captured.contains("\n\n\n"),
-                "systemd_unit_clean has duplicate blank line:\n{captured}"
+            let captured = capture_attached_apply(
+                &BridgeApply {
+                    configurator: &su,
+                    desired: &yaml,
+                    key: "cfgd-snap-test.service.enabled",
+                    current: "true",
+                    target: "false",
+                    summary_role: Role::Ok,
+                    summary: "systemd units applied",
+                },
+                &summary,
             );
 
+            assert_single_seam("systemd_unit_clean", &captured);
             assert_snapshot("systemd_unit_clean.txt", &captured);
         }
 
         #[test]
+        #[serial_test::serial]
         fn snapshot_systemd_unit_with_warnings() {
+            // The failing half is the unreadable source file; systemctl itself
+            // answers, so the golden holds whatever the host runs.
+            let _shim = super::systemctl_shim("");
             let tmp = tempfile::tempdir().unwrap();
             let nonexistent_unit_file = tmp.path().join("test.service");
 
@@ -442,30 +481,23 @@ mod tests {
             );
             let yaml: serde_yaml::Value = serde_yaml::from_str(&yaml_str).unwrap();
 
-            let (printer, cap) = Printer::for_test_doc();
             let su = SystemdUnitConfigurator::default();
-            su.apply(&yaml, &printer).unwrap();
-
             let summary = UnitApplySummary { units_processed: 1 };
-            let doc = Doc::new()
-                .status(Role::Warn, "systemd units applied with warnings")
-                .with_data(&summary);
-            printer.emit(doc);
-            drop(printer);
-
-            let raw = strip_ansi(&cap.human());
-            let path_normalized = normalize_paths(&raw, tmp.path());
-            let captured = normalize_systemctl_errors(&path_normalized);
-
-            assert!(
-                captured.contains("\n\n"),
-                "systemd_unit_with_warnings missing blank line at seam:\n{captured}"
+            let raw = capture_attached_apply(
+                &BridgeApply {
+                    configurator: &su,
+                    desired: &yaml,
+                    key: "cfgd-snap-warn.service.unit-file",
+                    current: "missing",
+                    target: "present",
+                    summary_role: Role::Warn,
+                    summary: "systemd units applied with warnings",
+                },
+                &summary,
             );
-            assert!(
-                !captured.contains("\n\n\n"),
-                "systemd_unit_with_warnings has duplicate blank line:\n{captured}"
-            );
+            let captured = normalize_paths(&raw, tmp.path());
 
+            assert_single_seam("systemd_unit_with_warnings", &captured);
             assert_snapshot("systemd_unit_with_warnings.txt", &captured);
         }
     }

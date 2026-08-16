@@ -2,9 +2,9 @@ use std::process::Command;
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::Result;
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::Role;
 
-use cfgd_core::providers::{SystemConfigurator, SystemDrift};
+use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -305,9 +305,11 @@ impl EnvironmentConfigurator {
 
     /// Set env vars in the current launchd session immediately, via the shared
     /// live-session layer (also used by the user-scope `spec.env` path).
-    fn macos_launchctl_setenv(managed: &BTreeMap<String, String>, printer: &Printer) {
+    fn macos_launchctl_setenv(managed: &BTreeMap<String, String>, cx: &SystemContext<'_>) {
         for (key, value) in managed {
-            cfgd_core::launchctl_setenv(key, value, printer);
+            if let Some(failure) = cfgd_core::launchctl_setenv(key, value).failure() {
+                cx.report(Role::Warn, failure);
+            }
         }
     }
 
@@ -344,8 +346,10 @@ impl EnvironmentConfigurator {
 
     /// Set a user environment variable via `setx` (persists to registry), via
     /// the shared live-session layer.
-    fn windows_set_var(name: &str, value: &str, printer: &Printer) {
-        cfgd_core::windows_setx(name, value, printer);
+    fn windows_set_var(name: &str, value: &str, cx: &SystemContext<'_>) {
+        if let Some(failure) = cfgd_core::windows_setx(name, value).failure() {
+            cx.report(Role::Warn, failure);
+        }
     }
 }
 
@@ -410,25 +414,26 @@ impl SystemConfigurator for EnvironmentConfigurator {
         Ok(drifts)
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
         let managed = Self::desired_vars(desired);
         if managed.is_empty() {
             return Ok(());
         }
 
-        printer.status_simple(
+        let plural = if managed.len() == 1 { "" } else { "s" };
+        cx.report(
             Role::Info,
-            format!("Managing {} environment variable(s)", managed.len()),
+            format!("Managing {} environment variable{plural}", managed.len()),
         );
 
         if cfg!(windows) {
             for (key, value) in &managed {
-                Self::windows_set_var(key, value, printer);
+                Self::windows_set_var(key, value, cx);
             }
-            printer.status_simple(
+            cx.report(
                 Role::Ok,
                 format!(
-                    "Set {} user environment variable(s) via setx",
+                    "Set {} user environment variable{plural} via setx",
                     managed.len()
                 ),
             );
@@ -436,15 +441,14 @@ impl SystemConfigurator for EnvironmentConfigurator {
             // macOS: ~/.config/cfgd/env.sh for shells
             match Self::macos_write_env_sh(&managed) {
                 Ok(()) => {
-                    printer.status_simple(
+                    cx.report(
                         Role::Ok,
                         format!("Updated {}", Self::macos_env_sh_path().posix()),
                     );
-                    printer
-                        .status_simple(Role::Info, "Add to your shell rc: . ~/.config/cfgd/env.sh");
+                    cx.report(Role::Info, "Add to your shell rc: . ~/.config/cfgd/env.sh");
                 }
                 Err(e) => {
-                    printer.status_simple(
+                    cx.report(
                         Role::Warn,
                         format!(
                             "Failed to write env.sh: {}",
@@ -457,13 +461,13 @@ impl SystemConfigurator for EnvironmentConfigurator {
             // macOS: launchd plist for GUI apps
             match Self::macos_write_launchd_plist(&managed) {
                 Ok(()) => {
-                    printer.status_simple(
+                    cx.report(
                         Role::Ok,
                         format!("Updated {}", Self::macos_plist_path().posix()),
                     );
                 }
                 Err(e) => {
-                    printer.status_simple(
+                    cx.report(
                         Role::Warn,
                         format!(
                             "Failed to write launchd plist: {}",
@@ -474,15 +478,15 @@ impl SystemConfigurator for EnvironmentConfigurator {
             }
 
             // macOS: set vars in current session immediately
-            Self::macos_launchctl_setenv(&managed, printer);
+            Self::macos_launchctl_setenv(&managed, cx);
         } else {
             // Linux: /etc/environment
             match Self::linux_write_etc_environment(&managed) {
                 Ok(()) => {
-                    printer.status_simple(Role::Ok, format!("Updated {}", LINUX_ETC_ENVIRONMENT));
+                    cx.report(Role::Ok, format!("Updated {}", LINUX_ETC_ENVIRONMENT));
                 }
                 Err(e) => {
-                    printer.status_simple(
+                    cx.report(
                         Role::Warn,
                         format!(
                             "Failed to update {} (may need root): {}",
@@ -495,10 +499,10 @@ impl SystemConfigurator for EnvironmentConfigurator {
             // Linux: /etc/profile.d/cfgd-env.sh
             match Self::linux_write_profile_d(&managed) {
                 Ok(()) => {
-                    printer.status_simple(Role::Ok, format!("Updated {}", LINUX_PROFILE_D));
+                    cx.report(Role::Ok, format!("Updated {}", LINUX_PROFILE_D));
                 }
                 Err(e) => {
-                    printer.status_simple(
+                    cx.report(
                         Role::Warn,
                         format!(
                             "Failed to update {} (may need root): {}",

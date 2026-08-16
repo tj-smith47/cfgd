@@ -3,7 +3,7 @@ Apply
 Files
   ✓ Wrote /etc/hosts
 
-✓ Apply complete — 1 action(s) succeeded
+✓ Apply complete — 1 action succeeded
 
 Source Commits
   - team-config @ abc1234

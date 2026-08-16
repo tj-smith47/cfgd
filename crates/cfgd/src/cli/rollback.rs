@@ -7,8 +7,9 @@ pub fn cmd_rollback(
     apply_id: i64,
     yes: bool,
     state_dir: Option<&Path>,
+    scope: cfgd_core::Scope,
 ) -> anyhow::Result<()> {
-    let state = open_state_store(state_dir)?;
+    let state = open_state_store(state_dir, scope)?;
 
     if state.get_apply(apply_id)?.is_none() {
         anyhow::bail!("no apply found with ID {}", apply_id);
@@ -28,9 +29,7 @@ pub fn cmd_rollback(
     let file_count = file_paths.len();
     let non_file_actions: Vec<String> = after_entries
         .iter()
-        .filter(|e| {
-            !(e.phase == "files" || e.action_type == "file" || e.resource_id.starts_with("file:"))
-        })
+        .filter(|e| !e.is_file_work())
         .map(|e| e.resource_id.clone())
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
@@ -88,38 +87,55 @@ pub fn cmd_rollback(
 
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
+    // A rollback restores a file set, so it reports under the phase name file
+    // work carries everywhere else in cfgd.
     let result = {
-        let rb_sec = printer.section("Restoring");
+        let rb_sec =
+            printer.section_phase(&cfgd_core::reconciler::PhaseName::Files.section_label());
+        // `restore_file_from_backup` warns through a bare `&Printer`; without
+        // inheritance its warnings would land at column 0, outside the phase
+        // whose files they are about.
+        let _inherit = printer.depth_inheritance();
         let r = reconciler.rollback_apply(apply_id, printer)?;
         let processed = r.files_restored + r.files_removed;
         let (role, msg) = if processed == 0 {
             (Role::Info, "No files affected".to_string())
         } else {
-            (Role::Ok, format!("{} file(s) processed", processed))
+            (
+                Role::Ok,
+                format!("{} processed", cfgd_core::pluralize(processed, "file")),
+            )
         };
         rb_sec.status_simple(role, msg);
+        if r.files_restored > 0 {
+            rb_sec.status_simple(
+                Role::Ok,
+                format!(
+                    "{} restored from backup",
+                    cfgd_core::pluralize(r.files_restored, "file")
+                ),
+            );
+        }
+        if r.files_removed > 0 {
+            rb_sec.status_simple(
+                Role::Ok,
+                format!(
+                    "{} newly created {} removed",
+                    r.files_removed,
+                    cfgd_core::plural_noun(r.files_removed, "file")
+                ),
+            );
+        }
         r
     };
-
-    if result.files_restored > 0 {
-        printer.status_simple(
-            Role::Ok,
-            format!("{} file(s) restored from backup", result.files_restored),
-        );
-    }
-    if result.files_removed > 0 {
-        printer.status_simple(
-            Role::Ok,
-            format!("{} newly created file(s) removed", result.files_removed),
-        );
-    }
 
     if !result.non_file_actions.is_empty() {
         printer.status_simple(
             Role::Warn,
             format!(
-                "{} non-file action(s) require manual review",
-                result.non_file_actions.len()
+                "{} {} manual review",
+                cfgd_core::pluralize(result.non_file_actions.len(), "non-file action"),
+                cfgd_core::agreeing_verb(result.non_file_actions.len(), "require")
             ),
         );
         let nf_sec = printer.section("Actions");

@@ -214,6 +214,39 @@ Connect to a team's config source — cfgd fetches the manifest, shows available
 cfgd source add git@github.com:acme-corp/dev-config.git
 ```
 
+### Naming a Source
+
+`cfgd source add` (and `cfgd source replace`) takes any git URL or the GitHub shorthand
+`owner/repo`. Both are equally supported — the shorthand is a convenience for GitHub,
+never a requirement, and every other value reaches git exactly as you wrote it:
+
+```sh
+# GitHub shorthand — expands to https://github.com/acme-corp/dev-config.git
+cfgd source add acme-corp/dev-config
+
+# Any git URL, on any host
+cfgd source add https://github.com/acme-corp/dev-config.git
+cfgd source add https://gitlab.example.com/acme-corp/dev-config.git
+cfgd source add git@git.example.com:acme-corp/dev-config.git
+cfgd source add ssh://git@codeberg.org/acme-corp/dev-config.git
+```
+
+Only a bare `owner/repo` is expanded, and an existing local path wins over the shorthand:
+run inside a directory that holds `acme-corp/dev-config` and that is what the value means
+(it is then refused as an origin — see below — rather than quietly subscribing you to a
+stranger's GitHub repository of the same name). A value whose first segment carries a dot
+(`gitlab.example.com/acme-corp/dev-config`) is a URL for that host, not a GitHub owner, so
+it is passed through untouched; a dotless host (`gitserver/dev-config`) is indistinguishable
+from an owner by the value alone, so name it with a scheme (`http://gitserver/dev-config`).
+The source name cfgd infers is the same either way (`dev-config`), so a shorthand and its
+full URL always name one subscription.
+
+A source origin must be a **remote**. Local paths — absolute, relative and `file://` alike
+— are refused: a source delivers files, packages and scripts to this machine, so its origin
+has to be something a subscriber can fetch, pin and verify, not a directory anything on the
+host can rewrite. See [testing a source locally](#testing-a-source-locally) for the
+development workflow.
+
 Manage existing subscriptions:
 
 ```sh
@@ -239,7 +272,9 @@ cfgd source priority acme-corp 800
 Switch teams or replace a source entirely:
 
 ```sh
+cfgd source replace acme-corp newco/dev-config                   # GitHub shorthand
 cfgd source replace acme-corp git@github.com:newco/dev-config.git
+cfgd source replace acme-corp https://gitlab.example.com/newco/dev-config.git
 ```
 
 Publish your own source:
@@ -263,9 +298,9 @@ daemon:
       lockedConflict: Notify    # Notify | Accept
 ```
 
-- `Notify`: record a pending decision, send notification, don't apply
+- `Notify`: record a pending decision, send notification, don't apply. Whichever run classifies the item first records it — the daemon's tick, or a `cfgd apply` that reaches the new item before the daemon does — so the item is withheld from the very first plan that sees it and is answerable with `cfgd decide` straight away. `cfgd apply` records only once you let the run proceed (`--yes`, or answering the prompt): declining the confirmation declines its writes too, so the daemon's later notification for the item is preserved. An apply with nothing else to do still proceeds (there is no diff to confirm) and still records the items its header named — a converged machine mints them like any other run. `cfgd plan` writes nothing, so it lists the item as pending without recording it and leaves the row to the apply that follows; `cfgd decide` can answer an item nothing has recorded yet — it records and resolves in one step, recording only the items you named and stamping no source hash, so the daemon's notification for the source's other new items is preserved. The desktop notification is the daemon's; an apply shows you the same item on screen instead.
 - `Accept`: automatically apply without prompting
-- `Reject`/`Ignore`: skip silently
+- `Reject`/`Ignore`: skip silently — the item is withheld from the plan and no decision row is recorded, because a rejecting policy is a standing answer rather than a question for you. `cfgd plan` and `cfgd apply` withhold it exactly as the daemon does, so a manual apply cannot install what the policy declines. Re-run with `Notify` if you want to be asked: an item a rejecting policy declined has no row, and cfgd asks about anything it has never asked about, so the switch takes effect on the next run without waiting for the source to change.
 
 Resolve pending decisions with `cfgd decide`:
 
@@ -285,16 +320,48 @@ Pending decisions have three states:
 | State | Meaning |
 |---|---|
 | **Pending** | New item detected, awaiting user action |
-| **Accepted** | User approved; item included in next reconcile |
+| **Accepted** | User approved; item included in next reconcile. A row resolved because the package was already installed carries resolution `auto-accepted` instead of `accepted`, so you can tell installed-state answers from your own |
 | **Rejected** | User declined; item excluded from reconciliation |
 
-Notifications fire once per new pending decision, not on every reconcile cycle. If you don't act on a decision, you won't be reminded again until the source publishes another update that changes that item.
+Only **Accepted** puts the item on your machine. `cfgd plan`, `cfgd apply` and the daemon all read the same decisions and withhold the resource identically — a Pending or Rejected item is absent from the plan preview, from the action counts, and from the `-o json` payload, and neither `cfgd apply --yes` nor a `cfgd apply` you confirm at the prompt will install it. Both states are named on the surface you read: **Pending Decisions** lists the items awaiting you and **Declined Decisions** the ones you already answered (`-o json` carries them as `pendingDecisions` and `rejectedDecisions`), so an item missing from the plan is always explained by a decision you can see:
+
+```sh
+$ cfgd plan
+Plan
+  Config   /home/you/.config/cfgd/cfgd.yaml
+  Profile  default
+  Phases   Prerequisites, Packages
+
+Pending Decisions (not included in this plan)
+  ⊙ recommended packages.brew.k9s — install by acme-corp (run `cfgd decide accept/reject`)
+
+Phase: Prerequisites
+  cfgd:managers
+    - refresh brew index
+
+Phase: Packages
+  profile:default
+    - brew install ripgrep
+
+⊙ 2 actions planned
+
+$ cfgd decide accept packages.brew.k9s
+$ cfgd plan            # k9s now plans alongside ripgrep
+⊙ 3 actions planned
+```
+
+`cfgd decide` is the only way to move an item out of Pending; neither `plan` nor `apply` resolves a decision for you.
+
+Notifications fire once per new pending decision, not on every reconcile cycle (an item first recorded by `cfgd apply` is shown to you on screen and does not notify again). If you don't act on a decision, you won't be reminded again until the source publishes another update that changes that item.
 
 ### Edge Cases
 
-- **Source removed while decisions pending** — pending decisions for that source are automatically rejected (source gone = items gone).
-- **User manually installs a pending package** — on the next reconcile, cfgd detects the package is already present and auto-accepts the decision (desired state already matches actual state).
-- **Policies only apply when `autoApply` is enabled** — when `autoApply: false`, `cfgd plan` shows everything and you decide interactively. Policies are for unattended daemon reconciles.
+- **Source removed while decisions pending** — every decision belonging to that source is discarded, resolved ones included (source gone = items gone). They are dropped rather than rejected because a rejection keeps excluding the resource path it names, and a source you no longer subscribe to must not go on withholding a file or package you later declare yourself. A row that outlives the sweep is inert anyway: only a source listed in `spec.sources` can withhold anything, so a decision left behind by an older cfgd cannot block a path you have no source left to `cfgd decide` against. Re-subscribing asks again. The sweep belongs to the run whose store it is: `cfgd apply` and the daemon both skip it when you pointed them at a FOREIGN config — a `--config`, `--config-dir`, or `CFGD_CONFIG` resolving somewhere other than the default config location *for the run's scope* — while leaving the state directory at its default, because that config's subscription list describes a different machine picture and the rows it would delete are another config's. Ownership follows the resolved path, not the spelling: naming the default config file explicitly (as every installed service unit does — the generated systemd unit, launchd plist, and Windows binPath all bake `--config <default path>`) is still the machine's own config, and it sweeps. The scope qualifier matters: a user-scope run opens the per-user store, so the *system* default (`/etc/cfgd/cfgd.yaml`) is foreign to it, and vice versa. Pass `--state-dir` alongside and any config sweeps the store it names. Nothing is withheld differently either way — an unswept row whose source you do not subscribe to is inert.
+- **A decision names something you declare yourself** — a decision covers the *source's* offer of a resource, never your own declaration of it. If you declare `~/.zshrc` in your profile and a source offers a `~/.zshrc` too, declining the source's item leaves yours applying exactly as before. The two need not be spelled alike: `~/.zshrc` and `/home/you/.zshrc` are the same declaration, and a package you declare through a manifest file (`brew.file: Brewfile`, `cargo.file: Cargo.toml`) is as much yours as one you list inline.
+- **A source delivers packages under a custom manager whose name contains `.`** — decision paths are dot-notation (`packages.<manager>.<package>`), so a manager named `pip3.11` cannot round-trip into one and no decision row can ever be recorded for its items. cfgd fails closed rather than installing undecided: the source's packages under that manager are withheld from every run (plan, apply, and the daemon alike), and the run carries a warning naming the manager and the limitation — in the human header and in the `-o json` payload's `warnings`. The dashboards carry the same warning so the absence is explainable without running a plan: `cfgd status` and the bare `cfgd decide` listing both render it and carry it in their `-o json` payloads' `warnings`. Your own declarations under the same manager are yours and still apply. Rename the manager (e.g. `pip311`) to be asked about its items normally.
+- **User manually installs a pending package** — the next run that plans packages (plan, apply, or the daemon's tick) finds it in the very enumeration the planner diffs against and auto-accepts the decision, **but only when the installed state satisfies the source's version spec**. An item with no version spec is trivially satisfied by any installed version — the common case. A spec announces itself with a range operator or a `v`-prefixed version (`tool@^14`, `tool@>=2.1`, `tool@v1.2.3`); a bare `v`-pin keeps semver **caret semantics** (`tool@v1.2.3` means `^1.2.3`, matching cargo/npm convention, so installed `1.4.0` satisfies it), and anything else after an `@` is part of the package's *name* (brew's `python@3.12` is a formula, never a `3.12` pin). Satisfaction is judged against the version the manager's own listing reports (brew, cargo, npm, pipx, apt, dnf, chocolatey, scoop and winget all report one): `tool@^14` delivered with `14.2` installed auto-accepts, and the plan still converges the pin — accepting is consent to apply, not a skip. A version mismatch (`13.0` installed) stays Pending, with the conflict annotated on the row itself (`installed 13.0, source wants ^14`) so `cfgd status` and `cfgd decide` show why the installed copy did not answer the question; a manager whose listing reports no version stays Pending the same way (`installed (version unknown), source wants ^14`). Auto-accept is fail-closed and packages-only: if the manager is unavailable or its enumeration fails, the item stays Pending rather than accepting on a guess, and a `files.`/`env.`/`system.` item never auto-accepts — an existing file matching source content is not consent. On a writing path (apply, the daemon under its ownership gate) the row is recorded as resolved with resolution `auto-accepted`, distinguishable from an `accepted` you answered by hand; `cfgd plan` previews the item as included without recording anything, and the offline dashboards (`status`, bare `decide`) enumerate no package state, so they keep listing the item until a planning run releases it. An item you explicitly rejected is never auto-accepted — your standing answer outranks installed state (though a rejection expires with the delivered set it answered: when the source changes, the fresh question is judged like any other, installed state included).
+- **Policies only apply when `autoApply` is enabled** — they decide what a *new* item is worth. With `autoApply: false` no policy runs and no decision row is ever created, so every source item simply applies. With it on, the policy governs every path equally: `cfgd plan` and `cfgd apply` read the same tiers the daemon does, because a standing `Reject` that only the unattended loop honoured would make a manual apply the way around it. Rows already in the store are honoured whatever the mode — turning `autoApply` off does not release an item you left pending. "Equally" covers the `Notify` tier too, which is the default: an item nobody has been asked about yet is withheld by `cfgd plan` and `cfgd apply` exactly as one with a pending row is, so the window between a source delivering an item and the daemon's next tick is not a window a manual apply installs it in.
+- **A config cfgd cannot read decides nothing** — `cfgd apply --module <name>` still runs when `cfgd.yaml` will not parse, but a config it could not read says nothing about which sources you subscribe to. Decisions are neither discarded nor released on that run: every row keeps withholding until a run can read the real subscription list.
 - **Rejection doesn't persist across source versions** — if you reject an item and the source later updates it (new version, changed description), a fresh pending decision is created. This prevents stale rejections from silently blocking items the team considers important.
 
 ## Source Constraints
@@ -513,7 +580,7 @@ sources:
 `cfgd source show acme-corp` surfaces the lockfile data in the State section:
 
 ```
-Source: acme-corp
+source:acme-corp
   URL            git@github.com:acme-corp/dev-config.git
   Branch         master
   Priority       500
@@ -602,6 +669,8 @@ cfgd source remove acme-corp --remove-all   # uninstall/delete everything from t
 
 Resources you keep become part of your local config (priority 1000) with no source policy enforcement. They behave exactly like resources you added yourself.
 
+Removal also discards every decision the source raised, answered or not — otherwise a leftover pending or rejected row would go on withholding that resource path from `plan` and `apply` with no source left to `cfgd decide` against.
+
 ## Publishing a ConfigSource
 
 To publish a config source for your team:
@@ -658,21 +727,36 @@ my-team-config/
         └── module.yaml
 ```
 
-4. Test locally before publishing:
-
-```sh
-# In another directory, subscribe to the local path
-cfgd source add /path/to/my-team-config
-cfgd plan    # verify the composed result
-```
+4. Test locally before publishing — see [testing a source locally](#testing-a-source-locally).
 
 5. Push to a git remote. Team members subscribe with:
 
 ```sh
+cfgd source add my-team/dev-config                       # GitHub shorthand
 cfgd source add git@github.com:my-team/dev-config.git
+cfgd source add https://gitlab.example.com/my-team/dev-config.git
 ```
 
 Cut a git **tag** (e.g. `v2.1.0`) when releasing a new version of the source. Subscribers with semver-range `pinVersion` values resolve against your tags and will only check out tags within their pinned range. (`metadata.version` in `cfgd-source.yaml` is informational; pinning is enforced against signed git refs, not that field.)
+
+### Testing a source locally
+
+A source origin must be a remote, so a path on your own machine is refused by default.
+The safest way to rehearse a source is to push it to a scratch branch or a private
+repository and subscribe to that — the composition you test is then the one subscribers
+will get, fetched the same way.
+
+When you need to iterate without pushing, `CFGD_ALLOW_LOCAL_SOURCES=1` lifts the
+local-origin guard for the invocation. It is a development switch, not a supported
+deployment shape: a local origin cannot be pinned to a tag, verified by signature, or
+fetched by anyone else, and every constraint a source's manifest declares is only as
+trustworthy as the directory it is read from.
+
+```sh
+# In another directory, subscribe to the working tree, then compose it
+CFGD_ALLOW_LOCAL_SOURCES=1 cfgd source add /path/to/my-team-config
+CFGD_ALLOW_LOCAL_SOURCES=1 cfgd plan    # verify the composed result
+```
 
 ## Security Model
 
@@ -686,5 +770,6 @@ Cut a git **tag** (e.g. `v2.1.0`) when releasing a new version of the source. Su
 | Version pinning bypass | `pinVersion` resolved against git tags/refs, not the source's self-reported `metadata.version` — a source cannot edit its manifest to escape the pin, and a tag outside `~2` is never checked out |
 | Privilege escalation | Sources cannot set `shell:` or install launchAgents/systemdUnits without `allowSystemChanges: true` |
 | Recursive trust | A ConfigSource cannot itself subscribe to other ConfigSources |
+| Cache substitution | Every sync compares the cached clone's recorded `origin` against the declared URL and discards and re-clones on mismatch, so a stale or planted clone never serves under this source's name. Offline reads warn and skip a mismatched cache |
 
 Every new capability requested by a source update requires interactive confirmation. The daemon never auto-applies permission-expanding changes.

@@ -406,7 +406,7 @@ mod tests {
         assert!(plist.contains("<string>--profile</string>"));
         assert!(plist.contains("<string>ws</string>"));
 
-        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        let printer = Printer::for_test().0;
         uninstall_launchd_service(&printer, crate::Scope::User).expect("uninstall");
         assert!(!plist_path.exists());
 

@@ -43,7 +43,8 @@ pub fn cmd_alias_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let cfg = config::load_config(&config_path)?;
+    let mut cfg = config::load_config(&config_path)?;
+    drain_config_deprecations(printer, &mut cfg);
 
     let mut entries: Vec<AliasListEntry> = cfg
         .spec
@@ -76,6 +77,7 @@ mod tests {
             verbose: 0,
             quiet: true,
             no_color: true,
+            color: crate::cli::ColorWhen::Auto,
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
             jsonpath: None,

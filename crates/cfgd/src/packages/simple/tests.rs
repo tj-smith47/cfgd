@@ -1,4 +1,3 @@
-use cfgd_core::command_available;
 use cfgd_core::providers::PackageManager;
 
 use super::*;
@@ -29,7 +28,7 @@ fn simple_manager_display_cmd_empty_packages() {
 fn apt_manager_has_correct_fields() {
     let mgr = apt_manager();
     assert_eq!(mgr.name(), "apt");
-    assert!(!mgr.can_bootstrap());
+    assert!(mgr.bootstrap_plan().is_none());
     // list_cmd should use dpkg-query
     assert_eq!(mgr.list_cmd[0], "dpkg-query");
     // install_cmd should include sudo and -y
@@ -52,7 +51,7 @@ fn apt_manager_has_correct_fields() {
 fn dnf_manager_has_correct_fields() {
     let mgr = dnf_manager();
     assert_eq!(mgr.name(), "dnf");
-    assert!(!mgr.can_bootstrap());
+    assert!(mgr.bootstrap_plan().is_none());
     assert!(mgr.install_cmd.contains(&"sudo"));
     assert!(mgr.install_cmd.contains(&"-y"));
     // dnf ignores update exit (check-update returns 100 for available updates)
@@ -65,7 +64,7 @@ fn dnf_manager_has_correct_fields() {
 fn yum_manager_has_correct_fields() {
     let mgr = yum_manager();
     assert_eq!(mgr.name(), "yum");
-    assert!(!mgr.can_bootstrap());
+    assert!(mgr.bootstrap_plan().is_none());
     assert!(mgr.install_cmd.contains(&"sudo"));
     // yum also ignores update exit
     assert!(mgr.ignore_update_exit);
@@ -156,7 +155,7 @@ fn simple_manager_name_matches() {
 }
 
 #[test]
-fn simple_manager_none_can_bootstrap() {
+fn simple_manager_none_plans_a_bootstrap() {
     let managers: Vec<SimpleManager> = vec![
         apt_manager(),
         dnf_manager(),
@@ -167,7 +166,7 @@ fn simple_manager_none_can_bootstrap() {
     ];
     for mgr in &managers {
         assert!(
-            !mgr.can_bootstrap(),
+            mgr.bootstrap_plan().is_none(),
             "{} should not be bootstrappable",
             mgr.name()
         );
@@ -300,35 +299,63 @@ fn pkg_manager_install_uses_dash_y() {
     assert_eq!(mgr.uninstall_cmd, &["pkg", "remove", "-y"]);
 }
 
+#[cfg(unix)]
 #[test]
-fn yum_manager_is_available_uses_custom_fn() {
-    // yum_manager has is_available_fn that checks !dnf && yum
-    // This exercises the is_available_fn dispatch path (line 861-863)
+#[serial_test::serial]
+fn yum_manager_yields_to_dnf_wherever_both_resolve() {
+    // yum's custom is_available_fn is `!dnf && yum`. Asserted against a probe
+    // PATH rather than the host's: on a host carrying neither binary — every
+    // CI runner cfgd builds on — a test that reads the host proves only that
+    // false is false, and the yields-to-dnf rule it exists for never runs.
+    let _dnf_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_DNF_BIN");
+    let _yum_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_YUM_BIN");
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let yum = yum_manager();
-    // On most CI systems, neither yum nor dnf is available, so this returns false.
-    // The key is that it exercises the is_available_fn dispatch path.
-    let available = yum.is_available();
-    // If dnf is available, yum should NOT be available (they're mutually exclusive)
-    if command_available("dnf") {
+
+    {
+        let _probe = cfgd_core::test_helpers::ProbePath::containing(&["yum"]);
+        assert!(yum.is_available(), "yum alone on PATH is yum's host");
+    }
+    {
+        let _probe = cfgd_core::test_helpers::ProbePath::containing(&["yum", "dnf"]);
         assert!(
-            !available,
-            "yum should not be available when dnf is present"
+            !yum.is_available(),
+            "dnf supersedes yum — a host with both is dnf's"
         );
     }
+    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+    assert!(!yum.is_available(), "no yum binary, no yum manager");
 }
 
+#[cfg(unix)]
 #[test]
-fn simple_manager_is_available_without_custom_fn() {
-    // apk_manager has is_available_fn = None, uses default command_available
+#[serial_test::serial]
+fn simple_manager_without_a_custom_fn_probes_its_own_name() {
+    // apk_manager carries `is_available_fn: None`, so availability falls
+    // through to a probe for the manager's own name.
+    let _seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_APK_BIN");
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let apk = apk_manager();
-    let _available = apk.is_available(); // exercises the None branch (line 864)
+
+    {
+        let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+        assert!(!apk.is_available());
+    }
+    let _probe = cfgd_core::test_helpers::ProbePath::containing(&["apk"]);
+    assert!(
+        apk.is_available(),
+        "the binary this manager probes for is named `apk`"
+    );
 }
 
 #[test]
 fn simple_manager_bootstrap_is_noop() {
     let apt = apt_manager();
     let printer = cfgd_core::test_helpers::test_printer();
-    apt.bootstrap(&printer).unwrap();
+    apt.bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&printer))
+        .unwrap();
 }
 
 #[test]
@@ -384,10 +411,30 @@ fn simple_manager_parse_list_fns_are_set() {
     assert!(pkg_result.contains("curl"));
 }
 
+#[cfg(unix)]
 #[test]
-fn simple_manager_query_version_fns_handle_missing_commands() {
-    // On CI without these package managers, the commands will fail gracefully
-    // This exercises the query_version function pointer dispatch in available_version()
+#[serial_test::serial]
+fn simple_manager_query_version_fns_name_their_own_manager_when_the_tool_is_missing() {
+    // With nothing on PATH every query_version fn hits the same spawn failure,
+    // so the manager each one NAMES in the error is what distinguishes them —
+    // that is the dispatch this test exists to pin. Run against the host's own
+    // PATH the outcome is whatever the host installed, which is why the
+    // original discarded the result and asserted nothing.
+    let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+    let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let _seams: Vec<_> = [
+        "CFGD_APT_CACHE_BIN",
+        "CFGD_DNF_BIN",
+        "CFGD_APK_BIN",
+        "CFGD_PACMAN_BIN",
+        "CFGD_ZYPPER_BIN",
+        "CFGD_PKG_BIN",
+    ]
+    .iter()
+    .map(|v| cfgd_core::test_helpers::EnvVarGuard::unset(v))
+    .collect();
+    let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+
     let managers: Vec<SimpleManager> = vec![
         apt_manager(),
         dnf_manager(),
@@ -397,11 +444,15 @@ fn simple_manager_query_version_fns_handle_missing_commands() {
         pkg_manager(),
     ];
     for mgr in &managers {
-        // available_version dispatches to (self.query_version)(self.mgr_name, package)
-        // The underlying functions handle command-not-found gracefully
-        let _result = mgr.available_version("nonexistent-package-12345");
-        // We don't assert on the result because it depends on system state,
-        // but this exercises the dispatch path
+        let err = mgr
+            .available_version("nonexistent-package-12345")
+            .expect_err("no binary resolves, so the query cannot succeed");
+        assert!(
+            err.to_string().contains(mgr.name()),
+            "{}'s error must name {}, got: {err}",
+            mgr.name(),
+            mgr.name()
+        );
     }
 }
 
@@ -412,9 +463,17 @@ fn simple_manager_display_cmd_concatenates_correctly() {
         &["sudo", "dnf", "install", "-y"],
         &["vim".to_string(), "git".to_string()],
     );
-    // Exercises strip_sudo_for_exec within display_cmd
+    // Exercises strip_sudo_for_exec within display_cmd: root drops the `sudo`
+    // prefix, everyone else keeps it. Both arms assert — under the one-armed
+    // shape the non-root case (which is every CI runner) checked nothing about
+    // the very prefix the test is named for.
     if cfgd_core::is_root() {
-        assert!(!label.starts_with("sudo"));
+        assert!(!label.starts_with("sudo"), "root needs no sudo: {label}");
+    } else {
+        assert!(
+            label.starts_with("sudo"),
+            "a non-root install keeps its sudo: {label}"
+        );
     }
     assert!(label.contains("dnf"));
     assert!(label.contains("vim"));
@@ -536,7 +595,7 @@ mod seam_tests {
         let printer = test_printer();
         let state = test_state();
         let cx = test_package_context(&printer, &state);
-        apt_manager().update(&cx).unwrap();
+        apt_manager().refresh_index(&cx).unwrap();
         let log = shim.argv_log();
         assert_eq!(shim.invocation_count(), 1);
         assert!(
@@ -557,7 +616,7 @@ mod seam_tests {
         let state = test_state();
         let cx = test_package_context(&printer, &state);
         dnf_manager()
-            .update(&cx)
+            .refresh_index(&cx)
             .expect("dnf update must tolerate exit 100");
         assert_eq!(shim.invocation_count(), 1);
     }

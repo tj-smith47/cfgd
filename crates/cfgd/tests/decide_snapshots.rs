@@ -52,7 +52,7 @@ fn pending_fixture() -> Vec<PendingDecision> {
 fn decide_pending_human() {
     let decisions = pending_fixture();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_decide_list_doc(&decisions));
+    printer.emit(build_decide_list_doc(&decisions, &[], None));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "decide/pending.txt");
 }
@@ -61,7 +61,7 @@ fn decide_pending_human() {
 fn decide_pending_json() {
     let decisions = pending_fixture();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_decide_list_doc(&decisions));
+    printer.emit(build_decide_list_doc(&decisions, &[], None));
     drop(printer);
 
     let actual = cap.json().expect("doc captured json");
@@ -79,7 +79,7 @@ fn decide_pending_json() {
 #[test]
 fn decide_empty_human() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_decide_list_doc(&[]));
+    printer.emit(build_decide_list_doc(&[], &[], None));
     drop(printer);
     let human = cap.human();
     assert!(
@@ -116,12 +116,18 @@ fn decide_pending_multi_source_human() {
         ),
     ];
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_decide_list_doc(&decisions));
+    printer.emit(build_decide_list_doc(&decisions, &[], None));
     drop(printer);
     let human = cap.human();
-    let app = human.find("app-config:").expect("app-config subsection");
-    let org = human.find("org-config:").expect("org-config subsection");
-    let team = human.find("team-config:").expect("team-config subsection");
+    let app = human
+        .find("source:app-config")
+        .expect("app-config subsection");
+    let org = human
+        .find("source:org-config")
+        .expect("org-config subsection");
+    let team = human
+        .find("source:team-config")
+        .expect("team-config subsection");
     assert!(
         app < org && org < team,
         "expected app-config < org-config < team-config in:\n{human}"
@@ -140,11 +146,15 @@ fn decide_pending_single_item_human() {
         "Create bashrc",
     )];
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_decide_list_doc(&decisions));
+    printer.emit(build_decide_list_doc(&decisions, &[], None));
     drop(printer);
     let human = cap.human();
     assert!(
-        human.contains("solo-source: 1 pending item"),
+        human.contains("source:solo-source"),
+        "expected the source owner token as the heading, got:\n{human}"
+    );
+    assert!(
+        human.contains("1 pending item"),
         "expected singular 'item', got:\n{human}"
     );
     assert!(

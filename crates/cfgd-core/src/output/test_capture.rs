@@ -10,17 +10,116 @@ use super::printer::{DocCapture, Printer, PromptAnswer};
 use super::renderer::{Renderer, StringSink, Writer};
 use super::{OutputFormat, Theme, Verbosity};
 
+/// The draw target behind [`Printer::for_test_with_live_bars`]: everything
+/// indicatif paints is appended to the same buffer the printer's sink writes
+/// to, in the order the two reach it.
+#[derive(Debug)]
+pub(crate) struct RecordingTerm {
+    pub(crate) drawn: Arc<Mutex<String>>,
+}
+
+impl RecordingTerm {
+    fn record(&self, s: &str) -> std::io::Result<()> {
+        self.drawn
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_str(s);
+        Ok(())
+    }
+}
+
+impl indicatif::TermLike for RecordingTerm {
+    fn width(&self) -> u16 {
+        200
+    }
+    fn height(&self) -> u16 {
+        40
+    }
+    fn move_cursor_up(&self, _n: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn move_cursor_down(&self, _n: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn move_cursor_right(&self, _n: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn move_cursor_left(&self, _n: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn write_line(&self, s: &str) -> std::io::Result<()> {
+        self.record(s)?;
+        self.record("\n")
+    }
+    fn write_str(&self, s: &str) -> std::io::Result<()> {
+        self.record(s)
+    }
+    fn clear_line(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn flush(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The emulated terminal [`Printer::for_test_live_terminal`] hands back — an
+/// `output/`-owned name for it, so a test anywhere else can read the screen
+/// without naming an indicatif type (hard rule #1: every `console` / `indicatif`
+/// type stays inside this module, and a fully-qualified path evades the audit's
+/// `use` pattern rather than satisfying the rule).
+///
+/// Opaque on purpose: it answers the one question the fixture exists to ask.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct LiveScreen(indicatif::InMemoryTerm);
+
+#[cfg(test)]
+impl LiveScreen {
+    /// What the terminal is holding, top down, trailing blank rows dropped.
+    ///
+    /// Plain text with no stripping needed: the screen model stores each cell's
+    /// CONTENT, so an escape that reached it was consumed as a cursor move or a
+    /// colour change and never lands in a row.
+    pub(crate) fn contents(&self) -> String {
+        self.0.contents()
+    }
+}
+
+/// The printer sink behind [`Printer::for_test_live_terminal`]: permanent lines
+/// land on the SAME emulated screen the bars repaint over, which is the
+/// relationship the two writers have in production, where both are stderr.
+#[cfg(test)]
+#[derive(Debug)]
+struct TermSink(indicatif::InMemoryTerm);
+
+#[cfg(test)]
+impl Writer for TermSink {
+    fn write_line(&self, text: &str) {
+        let _ = indicatif::TermLike::write_line(&self.0, text);
+    }
+
+    /// The width the SCREEN wraps at, not the renderer's fallback. In
+    /// production the sink is a `console::Term` reporting the real terminal's
+    /// columns; a sink answering `None` here would have the renderer lay out
+    /// for 100 columns while the emulated screen hard-wrapped at its own, and a
+    /// line counted once in the fixture would be two rows on the screen.
+    fn wrap_columns(&self) -> Option<usize> {
+        Some(usize::from(indicatif::TermLike::width(&self.0)))
+    }
+}
+
 fn build_test_printer(
     buf: Arc<Mutex<String>>,
     theme: Theme,
     verbosity: Verbosity,
     format: OutputFormat,
+    colors: bool,
     test_doc_capture: Option<DocCapture>,
     prompt_queue: Option<Arc<Mutex<VecDeque<PromptAnswer>>>>,
 ) -> Printer {
     let sink: Arc<dyn Writer> = Arc::new(StringSink(buf));
     Printer {
-        renderer: Arc::new(Renderer::new(theme, verbosity)),
+        renderer: Arc::new(Renderer::new(theme.with_colors(colors), verbosity)),
         output_format: format,
         sink_stderr: sink.clone(),
         sink_stdout: sink,
@@ -30,6 +129,16 @@ fn build_test_printer(
         test_doc_capture,
         prompt_queue,
         output_error: std::sync::atomic::AtomicBool::new(false),
+        // A capture buffer is not a terminal, whatever the suite was invoked
+        // from: pinning it here is what makes the non-TTY rendering reachable
+        // under `cargo test` from an interactive shell.
+        live_region: false,
+        // Same reason, for the other half of the terminal: an unqueued prompt
+        // must refuse rather than block on a keyboard nobody is at.
+        interactive_stdin: false,
+        // The third: a capture buffer is styled only when the test asked for
+        // styling, never because another thread flipped a process-global flag.
+        colors,
         list_envelope: false,
     }
 }
@@ -52,6 +161,28 @@ impl Printer {
             Theme::default(),
             verbosity,
             OutputFormat::Table,
+            false,
+            None,
+            None,
+        );
+        (p, buf)
+    }
+
+    /// The one capture constructor whose output carries ANSI colour, for the
+    /// tests whose subject IS the escapes a theme emits. Every other `for_test*`
+    /// yields an unstyled buffer no matter what the terminal or another thread
+    /// says, so a test that did not ask for colour cannot be handed it.
+    pub fn for_test_with_theme_colored(
+        theme: Theme,
+        verbosity: Verbosity,
+    ) -> (Self, Arc<Mutex<String>>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let p = build_test_printer(
+            buf.clone(),
+            theme,
+            verbosity,
+            OutputFormat::Table,
+            true,
             None,
             None,
         );
@@ -68,6 +199,7 @@ impl Printer {
             theme,
             verbosity,
             OutputFormat::Table,
+            false,
             None,
             None,
         );
@@ -81,6 +213,7 @@ impl Printer {
             Theme::default(),
             Verbosity::Quiet,
             format,
+            false,
             None,
             None,
         );
@@ -101,10 +234,116 @@ impl Printer {
             Theme::default(),
             Verbosity::Normal,
             OutputFormat::Table,
-            Some(cap.clone_internal()),
+            false,
+            Some(cap.clone()),
             None,
         );
         (p, cap)
+    }
+
+    /// A printer that HAS a live region whose bars draw nowhere, so the buffer
+    /// holds exactly what the region leaves behind: the permanent scrollback,
+    /// in the order it was committed.
+    ///
+    /// The complement of [`Printer::for_test_with_live_bars`], which records the
+    /// region's repaints INTO the same buffer on purpose — that is what lets it
+    /// catch garbling, and it is also what makes "in what order did lines land
+    /// permanently" unanswerable there, since a row repainted forty times
+    /// appears forty times. A hidden `MultiProgress` closes the renderer's
+    /// routing gate (`emit_block` skips a hidden multi), so committed lines go
+    /// straight to the sink and ephemeral rows write nothing at all.
+    pub fn for_test_live_scrollback() -> (Self, Arc<Mutex<String>>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let multi =
+            indicatif::MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden());
+        (
+            Self::live_capture(multi, Arc::new(StringSink(buf.clone()))),
+            buf,
+        )
+    }
+
+    /// Capture wired the way PRODUCTION wires a printer that has bars: the
+    /// renderer knows its `MultiProgress`, so a line emitted while a bar is
+    /// live is routed through it instead of straight to the sink.
+    ///
+    /// Both the bar draws and the routed lines land in ONE buffer, which is the
+    /// point — garbling is two writers interleaving inside a single physical
+    /// stream, and two separate captures could not show it. Every other test
+    /// constructor builds a bar-less renderer, where routing never happens and
+    /// the question cannot be asked.
+    pub fn for_test_with_live_bars() -> (Self, Arc<Mutex<String>>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let multi =
+            indicatif::MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::term_like(
+                Box::new(RecordingTerm { drawn: buf.clone() }),
+            ));
+        (
+            Self::live_capture(multi, Arc::new(StringSink(buf.clone()))),
+            buf,
+        )
+    }
+
+    /// A live-region capture drawing onto an EMULATED SCREEN, so what a test
+    /// reads is what the terminal is left holding rather than every paint that
+    /// ever reached it.
+    ///
+    /// The one surface that can see a paint the region failed to erase, and the
+    /// reason neither sibling can: `for_test_live_scrollback` points indicatif
+    /// at a hidden draw target, where a stray paint writes nothing at all, and
+    /// `for_test_with_live_bars` records every repaint into one buffer, where a
+    /// row painted forty times appears forty times — one line too many is
+    /// indistinguishable from one repaint too many. Here the cursor moves and
+    /// the line clears indicatif issues are executed against a real screen
+    /// model, so a line the region drew and never took back is still on the
+    /// screen at the end and a line it erased is not.
+    ///
+    /// The printer's own sink writes to the same terminal, because in
+    /// production the sink IS the stream the bars repaint over: a committed
+    /// line and the region's repaints have to compete for the same rows here
+    /// exactly as they do on a tty.
+    #[cfg(test)]
+    pub(crate) fn for_test_live_terminal(rows: u16, cols: u16) -> (Self, LiveScreen) {
+        let term = indicatif::InMemoryTerm::new(rows, cols);
+        let multi = indicatif::MultiProgress::with_draw_target(
+            indicatif::ProgressDrawTarget::term_like(Box::new(term.clone())),
+        );
+        (
+            Self::live_capture(multi, Arc::new(TermSink(term.clone()))),
+            LiveScreen(term),
+        )
+    }
+
+    /// The one `Printer` shape every live-region capture constructor takes,
+    /// the three differing only in where their `MultiProgress` draws. Written
+    /// once so a new field cannot be added to one of them and forgotten in the
+    /// others — they would then disagree about `colors` or `live_region` and
+    /// the tests reading them would be describing different printers.
+    fn live_capture(multi: indicatif::MultiProgress, sink: Arc<dyn Writer>) -> Self {
+        Printer {
+            // Stamped explicitly, like every theme a Printer renders through:
+            // the field below and the theme must never be able to disagree.
+            renderer: Arc::new(Renderer::with_bars(
+                Theme::default().with_colors(false),
+                Verbosity::Normal,
+                multi.clone(),
+            )),
+            output_format: OutputFormat::Table,
+            sink_stderr: sink.clone(),
+            sink_stdout: sink,
+            multi_progress: multi,
+            syntax_set: syntect::parsing::SyntaxSet::load_defaults_newlines(),
+            theme_set: syntect::highlighting::ThemeSet::load_defaults(),
+            test_doc_capture: None,
+            prompt_queue: None,
+            output_error: std::sync::atomic::AtomicBool::new(false),
+            // The whole point of these constructors: the repainting path is
+            // reachable without a real terminal, so the proof obligation it
+            // carries runs in the ordinary suite rather than only under a pty.
+            live_region: true,
+            interactive_stdin: false,
+            colors: false,
+            list_envelope: false,
+        }
     }
 
     /// Capture + canned prompt responses.
@@ -129,6 +368,7 @@ impl Printer {
             Theme::default(),
             verbosity,
             OutputFormat::Table,
+            false,
             None,
             Some(Arc::new(Mutex::new(VecDeque::from(responses)))),
         );
@@ -152,7 +392,8 @@ impl Printer {
             Theme::default(),
             Verbosity::Normal,
             format,
-            Some(cap.clone_internal()),
+            false,
+            Some(cap.clone()),
             None,
         );
         (p, cap)
@@ -174,7 +415,8 @@ impl Printer {
             Theme::default(),
             Verbosity::Normal,
             OutputFormat::Table,
-            Some(cap.clone_internal()),
+            false,
+            Some(cap.clone()),
             Some(Arc::new(Mutex::new(VecDeque::from(responses)))),
         );
         (p, cap)
@@ -182,13 +424,6 @@ impl Printer {
 }
 
 impl DocCapture {
-    pub(super) fn clone_internal(&self) -> Self {
-        Self {
-            human: self.human.clone(),
-            doc_json: self.doc_json.clone(),
-        }
-    }
-
     /// Snapshot helper: assert the captured human output matches the contents
     /// of `src/output/tests/snapshots/<name>`. Use `INSTA_UPDATE=always
     /// cargo test` to refresh.
@@ -290,5 +525,177 @@ mod tests {
     fn for_test_doc_returns_capture() {
         let (_p, cap) = Printer::for_test_doc();
         assert_eq!(cap.human(), "");
+    }
+
+    /// Every capture constructor must answer "no live region" and "no human at
+    /// stdin", and the one that exists to reach the repainting path must report
+    /// a live region — all regardless of the terminal the suite was invoked
+    /// from.
+    ///
+    /// A golden captured through a printer that inherited the ambient terminal
+    /// records a different surface depending on how the suite was started: a
+    /// spinner's start line is written when there is no live region and
+    /// repainted away when there is, so `cargo test` from a pipe and the same
+    /// command under a pty disagree about the fixture's contents. The stdin
+    /// half fails harder still — an unqueued prompt on an inherited tty blocks
+    /// forever instead of refusing.
+    #[test]
+    fn capture_constructors_pin_their_terminal() {
+        for (name, p) in [
+            ("for_test", Printer::for_test().0),
+            ("for_test_at", Printer::for_test_at(Verbosity::Normal).0),
+            (
+                "for_test_with_theme",
+                Printer::for_test_with_theme(Theme::default(), Verbosity::Normal).0,
+            ),
+            (
+                "for_test_with_format",
+                Printer::for_test_with_format(OutputFormat::Table).0,
+            ),
+            ("for_test_doc", Printer::for_test_doc().0),
+            (
+                "for_test_doc_with_format",
+                Printer::for_test_doc_with_format(OutputFormat::Wide).0,
+            ),
+            (
+                "for_test_with_prompt_responses",
+                Printer::for_test_with_prompt_responses(Vec::new()).0,
+            ),
+            (
+                "for_test_doc_with_prompt_responses",
+                Printer::for_test_doc_with_prompt_responses(Vec::new()).0,
+            ),
+        ] {
+            assert!(
+                !p.live_bars(),
+                "{name} must report no live region, whatever terminal the suite was invoked from"
+            );
+            assert!(
+                !p.can_prompt(),
+                "{name} must refuse to prompt rather than block on the suite's own terminal"
+            );
+            assert!(
+                !p.colors(),
+                "{name} must be unstyled; only for_test_with_theme_colored may carry colour"
+            );
+        }
+
+        assert!(
+            Printer::for_test_with_live_bars().0.live_bars(),
+            "for_test_with_live_bars exists to reach the repainting path and must report one"
+        );
+        assert!(
+            !Printer::for_test_with_live_bars().0.colors(),
+            "for_test_with_live_bars must be unstyled like every other capture"
+        );
+        assert!(
+            Printer::for_test_with_theme_colored(Theme::default(), Verbosity::Normal)
+                .0
+                .colors(),
+            "the one colour-ON capture constructor must actually carry colour"
+        );
+    }
+
+    /// A capture buffer is unstyled BY CONSTRUCTION, not because something
+    /// strips it afterwards.
+    ///
+    /// `console`'s colour flags are process-global and mutable, so any thread
+    /// can turn them on mid-suite. While a render read them, an unrelated test
+    /// could hand a capture back styled — and a negative assertion over that
+    /// capture (`!contains("✓ Foo")`) then passed vacuously, stopping guarding
+    /// anything without ever going red. The flags are turned ON here to
+    /// reproduce exactly that, and the buffers are read RAW: routing through
+    /// `captured_text` would strip the escapes and prove nothing about where
+    /// the decision was made.
+    #[test]
+    #[serial_test::serial]
+    fn a_flipped_colour_global_cannot_style_a_capture() {
+        use crate::output::Role;
+
+        let _globals = crate::output::printer::ColorGlobalOn::set();
+
+        // `Role::Ok` against slots that spend colour and nothing else: an
+        // attribute-carrying slot would legitimately emit SGR with colour off
+        // (NO_COLOR governs colour only), and could not tell the two apart.
+        let flat: Vec<(&str, Arc<Mutex<String>>)> = vec![
+            ("for_test_at", {
+                let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+                p.status_simple(Role::Ok, "wrote /etc/hosts");
+                p.flush();
+                buf
+            }),
+            ("for_test_with_theme", {
+                let (p, buf) =
+                    Printer::for_test_with_theme(Theme::from_preset("dracula"), Verbosity::Normal);
+                p.status_simple(Role::Ok, "wrote /etc/hosts");
+                p.flush();
+                buf
+            }),
+            ("for_test_with_prompt_responses_at", {
+                let (p, buf) =
+                    Printer::for_test_with_prompt_responses_at(Vec::new(), Verbosity::Normal);
+                p.status_simple(Role::Ok, "wrote /etc/hosts");
+                p.flush();
+                buf
+            }),
+            ("for_test_with_live_bars", {
+                let (p, buf) = Printer::for_test_with_live_bars();
+                p.status_simple(Role::Ok, "wrote /etc/hosts");
+                p.flush();
+                buf
+            }),
+        ];
+
+        let docs: Vec<(&str, DocCapture)> = vec![
+            ("for_test_doc", {
+                let (p, cap) = Printer::for_test_doc();
+                p.status_simple(Role::Ok, "wrote /etc/hosts");
+                p.flush();
+                cap
+            }),
+            ("for_test_doc_with_format", {
+                let (p, cap) = Printer::for_test_doc_with_format(OutputFormat::Wide);
+                p.status_simple(Role::Ok, "wrote /etc/hosts");
+                p.flush();
+                cap
+            }),
+            ("for_test_doc_with_prompt_responses", {
+                let (p, cap) = Printer::for_test_doc_with_prompt_responses(Vec::new());
+                p.status_simple(Role::Ok, "wrote /etc/hosts");
+                p.flush();
+                cap
+            }),
+        ];
+
+        let check = |name: &str, raw: &str| {
+            assert!(
+                raw.contains("wrote /etc/hosts"),
+                "{name} captured nothing, so the escape assertion below would pass vacuously: {raw:?}"
+            );
+            assert!(
+                !raw.contains('\u{1b}'),
+                "{name} was styled by the process-global colour flag: {raw:?}"
+            );
+        };
+
+        for (name, buf) in flat {
+            let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            check(name, &raw);
+        }
+        for (name, cap) in docs {
+            check(name, &cap.human());
+        }
+
+        // The one constructor that may be styled still is, so the assertions
+        // above are proving a decision rather than a dead render path.
+        let (p, buf) =
+            Printer::for_test_with_theme_colored(Theme::from_preset("dracula"), Verbosity::Normal);
+        p.status_simple(Role::Ok, "wrote /etc/hosts");
+        p.flush();
+        let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            raw.contains('\u{1b}'),
+            "for_test_with_theme_colored must carry colour: {raw:?}"
+        );
     }
 }
