@@ -217,7 +217,7 @@ impl SourceManager {
 
         // A cached source still gets its signature verified — a tampered cache
         // must not silently feed a read path.
-        self.verify_commit_signature(&spec.name, &source_dir, &manifest.spec.policy.constraints)?;
+        self.verify_commit_signature(spec, &source_dir, &manifest.spec.policy.constraints)?;
 
         let last_commit = Self::head_commit(&source_dir);
 
@@ -409,7 +409,7 @@ impl SourceManager {
         let manifest = self.parse_manifest(&spec.name, &source_dir)?;
 
         // Signature verification: if the source requires signed commits, verify HEAD
-        self.verify_commit_signature(&spec.name, &source_dir, &manifest.spec.policy.constraints)?;
+        self.verify_commit_signature(spec, &source_dir, &manifest.spec.policy.constraints)?;
 
         let last_commit = Self::head_commit(&source_dir);
 
@@ -441,7 +441,7 @@ impl SourceManager {
     /// routes here.
     fn load_from_existing_cache(&mut self, spec: &SourceSpec, source_dir: &Path) -> Result<()> {
         let manifest = self.parse_manifest(&spec.name, source_dir)?;
-        self.verify_commit_signature(&spec.name, source_dir, &manifest.spec.policy.constraints)?;
+        self.verify_commit_signature(spec, source_dir, &manifest.spec.policy.constraints)?;
 
         let last_commit = Self::head_commit(source_dir);
 
@@ -735,18 +735,25 @@ impl SourceManager {
     }
 
     /// Verify the HEAD commit of a source repo has a valid GPG or SSH signature.
-    /// Checks `allow_unsigned` on this SourceManager and `require_signed_commits`
-    /// on the constraints before delegating to `verify_head_signature`.
+    ///
+    /// The requirement is [`SourceSpec::requires_signed_commits`]: the
+    /// subscriber's `subscription.requireSignedCommits` ORed with the manifest's
+    /// `constraints.requireSignedCommits`. It takes the SPEC rather than a name
+    /// precisely so the subscriber's half cannot be forgotten here — the
+    /// manifest half arrives from inside the cached clone, which is the one
+    /// thing a planted cache controls. `allow_unsigned` on this SourceManager
+    /// still bypasses both.
     pub fn verify_commit_signature(
         &self,
-        name: &str,
+        spec: &SourceSpec,
         source_dir: &Path,
         constraints: &crate::config::SourceConstraints,
     ) -> Result<()> {
-        if !constraints.require_signed_commits {
+        if !spec.requires_signed_commits(constraints.require_signed_commits) {
             return Ok(());
         }
 
+        let name = spec.name.as_str();
         if self.allow_unsigned {
             tracing::info!(
                 source = %name,

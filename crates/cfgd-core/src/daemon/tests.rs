@@ -7899,6 +7899,72 @@ fn build_sync_tasks_includes_source_when_dir_exists() {
 }
 
 #[test]
+fn build_sync_tasks_honours_the_subscribers_signature_demand_over_the_manifest() {
+    // The manifest lives inside the cache, so a planted cache can answer `false`
+    // here. The subscription flag is read from the user's own config.
+    let parsed = ParsedDaemonConfig {
+        reconcile_interval: Duration::from_secs(60),
+        sync_interval: Duration::from_secs(300),
+        auto_pull: false,
+        auto_push: false,
+        on_change_reconcile: false,
+        notify_on_drift: false,
+        notify_method: NotifyMethod::Stdout,
+        webhook_url: None,
+        auto_apply: false,
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_dir = tmp.path().join("sources");
+    std::fs::create_dir_all(cache_dir.join("team-config")).unwrap();
+
+    let sources = vec![config::SourceSpec {
+        name: "team-config".to_string(),
+        origin: config::OriginSpec {
+            origin_type: config::OriginType::Git,
+            url: "https://github.com/team/config.git".to_string(),
+            branch: "main".to_string(),
+            auth: None,
+            ssh_strict_host_key_checking: Default::default(),
+        },
+        subscription: config::SubscriptionSpec {
+            require_signed_commits: true,
+            ..Default::default()
+        },
+        sync: config::SourceSyncSpec {
+            interval: "120s".to_string(),
+            auto_apply: true,
+            pin_version: None,
+            required: false,
+        },
+    }];
+
+    let tasks = build_sync_tasks(
+        tmp.path(),
+        &parsed,
+        &sources,
+        false,
+        &cache_dir,
+        |_| Some(false), // manifest says signatures are not required
+    );
+    let source_task = tasks
+        .iter()
+        .find(|t| t.source_name == "team-config")
+        .unwrap();
+    assert!(
+        source_task.require_signed_commits,
+        "subscriber demand must survive a manifest that says false"
+    );
+
+    // A missing manifest cannot clear it either.
+    let tasks = build_sync_tasks(tmp.path(), &parsed, &sources, false, &cache_dir, |_| None);
+    let source_task = tasks
+        .iter()
+        .find(|t| t.source_name == "team-config")
+        .unwrap();
+    assert!(source_task.require_signed_commits);
+}
+
+#[test]
 fn build_sync_tasks_skips_source_when_dir_missing() {
     let parsed = ParsedDaemonConfig {
         reconcile_interval: Duration::from_secs(60),

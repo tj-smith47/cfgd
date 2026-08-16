@@ -692,7 +692,8 @@
             "optIn": [],
             "overrides": null,
             "priority": 500,
-            "reject": null
+            "reject": null,
+            "requireSignedCommits": false
           }
         },
         "sync": {
@@ -791,6 +792,11 @@
         },
         "reject": {
           "default": null
+        },
+        "requireSignedCommits": {
+          "default": false,
+          "description": "Subscriber-side demand that this source's HEAD commit carry a valid GPG or SSH signature. The trust anchor for the check. `constraints.requireSignedCommits` says the same thing, but it is read from the source's manifest INSIDE the cached clone, so whoever can write the cache can also clear it. This flag is read from the subscriber's own config, which the cache cannot reach. ORed with the manifest's flag, so it only ever ADDS strictness: a manifest `true` is never weakened by a subscriber `false`. Default `false`. `spec.security.allowUnsigned` still bypasses both.",
+          "type": "boolean"
         }
       },
       "type": "object"

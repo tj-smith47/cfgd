@@ -328,7 +328,8 @@ fn verify_signature_skipped_when_not_required() {
         "default should be false"
     );
     // require_signed_commits defaults to false — should return Ok(()) without any repo
-    let result = mgr.verify_commit_signature("test", dir.path(), &constraints);
+    let spec = source_spec_named("test");
+    let result = mgr.verify_commit_signature(&spec, dir.path(), &constraints);
     assert_eq!(
         result.unwrap(),
         (),
@@ -351,7 +352,8 @@ fn verify_signature_skipped_when_allow_unsigned() {
         "require_signed_commits should be true"
     );
     // Even though require_signed_commits is true, allow_unsigned bypasses it
-    let result = mgr.verify_commit_signature("test", dir.path(), &constraints);
+    let spec = source_spec_named("test");
+    let result = mgr.verify_commit_signature(&spec, dir.path(), &constraints);
     assert_eq!(
         result.unwrap(),
         (),
@@ -376,7 +378,8 @@ fn verify_signature_fails_on_unsigned_commit() {
         ..Default::default()
     };
 
-    let result = mgr.verify_commit_signature("test-source", dir.path(), &constraints);
+    let spec = source_spec_named("test-source");
+    let result = mgr.verify_commit_signature(&spec, dir.path(), &constraints);
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
     assert!(
@@ -384,6 +387,50 @@ fn verify_signature_fails_on_unsigned_commit() {
         "expected 'not signed' in error, got: {}",
         err_msg
     );
+}
+
+#[test]
+fn verify_signature_runs_when_only_the_subscriber_demands_it() {
+    // The manifest is read from inside the cache, so an attacker who plants the
+    // cache writes `requireSignedCommits: false`. The subscription flag is read
+    // from the user's own config and still forces the check.
+    let dir = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(dir.path()).unwrap();
+    let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+    let tree_id = repo.index().unwrap().write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "unsigned commit", &tree, &[])
+        .unwrap();
+
+    let mgr = SourceManager::new(dir.path());
+    let constraints = crate::config::SourceConstraints {
+        require_signed_commits: false,
+        ..Default::default()
+    };
+    let mut spec = source_spec_named("planted");
+    spec.subscription.require_signed_commits = true;
+
+    let err = mgr
+        .verify_commit_signature(&spec, dir.path(), &constraints)
+        .expect_err("subscriber demand must force verification of an unsigned HEAD");
+    assert!(
+        err.to_string().contains("not signed"),
+        "expected 'not signed' in error, got: {err}"
+    );
+}
+
+#[test]
+fn verify_signature_still_skipped_when_neither_side_demands_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = SourceManager::new(dir.path());
+    let constraints = crate::config::SourceConstraints {
+        require_signed_commits: false,
+        ..Default::default()
+    };
+    let spec = source_spec_named("quiet");
+    assert!(!spec.subscription.require_signed_commits);
+    mgr.verify_commit_signature(&spec, dir.path(), &constraints)
+        .expect("no demand from either side leaves the repo untouched");
 }
 
 #[test]
@@ -712,6 +759,7 @@ fn subscription_config_from_spec() {
             accept_recommended: true,
             opt_in: vec!["extra".into()],
             allow_scripts: false,
+            require_signed_commits: false,
             overrides: serde_yaml::Value::Null,
             reject: serde_yaml::Value::Null,
         },
@@ -2013,7 +2061,8 @@ fn verify_signature_required_but_allow_unsigned_skips() {
 
     // Even though require_signed_commits is true, allow_unsigned bypasses it
     // This should succeed without even checking the repo
-    let result = mgr.verify_commit_signature("test", dir.path(), &constraints);
+    let spec = source_spec_named("test");
+    let result = mgr.verify_commit_signature(&spec, dir.path(), &constraints);
     assert!(result.is_ok());
 }
 
@@ -3086,6 +3135,59 @@ mod local_source_fixture {
 
     #[test]
     #[serial]
+    fn a_subscriber_demand_verifies_head_before_the_cached_manifest_is_composed() {
+        // The manifest these fixtures write carries no constraints block, so it
+        // answers `requireSignedCommits: false` — the answer a planted cache
+        // would give. The subscription flag comes from the user's own config,
+        // so the unsigned HEAD is still rejected and nothing is composed.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "anchored", None, &[]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let mut spec = build_spec(
+                "anchored",
+                &crate::test_helpers::file_url(&bare),
+                &detect_branch(&bare),
+            );
+            spec.subscription.require_signed_commits = true;
+
+            let err = mgr
+                .load_source(&spec, &test_printer())
+                .expect_err("an unsigned HEAD must fail the subscriber's demand");
+            // Pin the premise: were the shared fixture to start declaring
+            // constraints, this test would silently prove the manifest path.
+            assert!(
+                !mgr.parse_manifest("anchored", &cache_dir.join("anchored"))
+                    .expect("the clone left a parseable manifest")
+                    .spec
+                    .policy
+                    .constraints
+                    .require_signed_commits,
+                "the fixture manifest must ask for nothing, or the subscriber flag proves nothing"
+            );
+            assert!(
+                err.to_string().contains("not signed"),
+                "expected a signature failure, got: {err}"
+            );
+            assert!(
+                mgr.get("anchored").is_none(),
+                "a source that failed verification must not be composed"
+            );
+
+            // The clone left a populated cache. The read path re-verifies it
+            // against the same subscriber demand rather than trusting the
+            // manifest sitting inside it.
+            let err = mgr
+                .load_source_cached(&spec, &test_printer())
+                .expect_err("the read path re-verifies the cached checkout");
+            assert!(err.to_string().contains("not signed"), "got: {err}");
+            assert!(mgr.get("anchored").is_none());
+        });
+    }
+
+    #[test]
+    #[serial]
     fn load_source_serializes_on_a_lock_file_in_the_cache_dir() {
         // The origin check, the discard and the clone are one critical section
         // held under `<cache_dir>/cache.lock`. The lock is released with the
@@ -4014,7 +4116,8 @@ fn verify_commit_signature_returns_ok_when_constraints_disabled_even_with_no_rep
     // Repo path doesn't exist — but require_signed_commits=false means we
     // return Ok(()) without ever invoking git or git2.
     let nonexistent = tmp.path().join("does-not-exist");
-    let result = mgr.verify_commit_signature("test", &nonexistent, &constraints);
+    let spec = source_spec_named("test");
+    let result = mgr.verify_commit_signature(&spec, &nonexistent, &constraints);
     result.expect("constraint disabled → Ok regardless of repo state");
 }
 
@@ -4149,7 +4252,7 @@ mod bare_repo_load {
                 ..Default::default()
             };
             let err = mgr
-                .verify_commit_signature("signed1", &source_dir, &constraints)
+                .verify_commit_signature(&spec, &source_dir, &constraints)
                 .expect_err("unsigned commit must fail verification");
             let msg = err.to_string();
             assert!(

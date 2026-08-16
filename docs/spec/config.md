@@ -72,6 +72,7 @@ spec:
         optIn:
           - string
         allowScripts: bool
+        requireSignedCommits: bool
         overrides: {}
         reject: {}
       sync:
@@ -413,6 +414,7 @@ that publishes profiles and modules. See `docs/sources.md` for the full multi-so
 | `acceptRecommended` | bool | No | `false` | Automatically accept all items in the source's `recommended` policy tier. |
 | `optIn` | list of string | No | `[]` | Explicit list of optional item names to opt in to from this source. |
 | `allowScripts` | bool | No | `false` | Opt in to running lifecycle scripts (profile-layer and source-delivered module bodies) from this source even when the source's `constraints.noScripts` would otherwise reject them. When `false`, the source's own `noScripts` constraint governs. |
+| `requireSignedCommits` | bool | No | `false` | Demand a valid GPG or SSH signature on this source's HEAD commit. ORed with the source manifest's `spec.policy.constraints.requireSignedCommits`, so it only adds strictness: a manifest `true` is never weakened by a subscriber `false`. Set it here rather than relying on the manifest alone, because the manifest is read from inside the cached clone. `spec.security.allowUnsigned` still bypasses both. |
 | `overrides` | object | No | | Free-form YAML overrides merged on top of the source's profile after fetching. |
 | `reject` | object | No | | Free-form YAML specifying items to reject from this source's output. |
 
