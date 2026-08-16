@@ -452,9 +452,18 @@ mod tests {
         let server_state = Arc::clone(&state);
         let server = tokio::spawn(async move { run_health_server(&sock_str, server_state).await });
 
-        // Wait for the socket file to appear (bind + chmod completed).
+        // Wait for the socket to appear AND for the post-bind chmod to land:
+        // existence alone proves only the bind, and reading the mode right
+        // after can race into the bind-to-chmod window (harmless in
+        // production — the 0700 parent already blocks other users — but the
+        // assert would read the pre-chmod 0755).
+        let socket_mode = |p: &std::path::Path| {
+            std::fs::metadata(p)
+                .ok()
+                .map(|m| m.permissions().mode() & 0o777)
+        };
         let mut waited = 0;
-        while !sock.exists() && waited < 200 {
+        while socket_mode(&sock) != Some(0o600) && waited < 200 {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             waited += 1;
         }
