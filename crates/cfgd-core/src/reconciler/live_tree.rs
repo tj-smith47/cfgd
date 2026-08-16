@@ -1386,6 +1386,83 @@ mod tests {
     }
 
     #[test]
+    fn a_settled_row_padded_to_the_alignment_ceiling_keeps_its_duration_live() {
+        // The alignment ceiling (`affordable_column`) caps the phase's column
+        // by the terminal's complete-line budget, so a padded settled line
+        // lands on exactly that budget. The live repaint clamps the same
+        // composed line; read from a second, tighter formula (the wrapped-BODY
+        // width, two columns narrower), the clamp amputated the last two
+        // columns of the duration the padding had just right-aligned — live
+        // paints only, healed at commit, so no scrollback golden could see it.
+        let (printer, screen) = Printer::for_test_live_terminal(24, 50);
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let managers = Owner::cfgd("managers");
+        let head = install("apt", "ripgrep");
+        let padded = install("pipx", "pynvim");
+
+        // A column wider than 50 columns afford, so the ceiling binds and the
+        // settled line is padded out to the full line budget.
+        let mut tree = PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 60);
+        let running_head = tree.dispatched(&managers, &head);
+        let running_padded = tree.dispatched(&managers, &padded);
+        running_padded.finish();
+        tree.settled(&managers, &padded, done("pipx install pynvim"));
+
+        // The head is still running, so the settled row is on screen only as
+        // its live paint.
+        let held = screen.contents();
+        assert!(
+            held.contains("(1.5s)"),
+            "the settled row's live paint lost its duration: {held}"
+        );
+
+        running_head.finish();
+        tree.settled(&managers, &head, done("apt install ripgrep"));
+        tree.finish();
+        drop(section);
+    }
+
+    #[test]
+    fn the_elision_summary_stands_at_the_top_of_the_region() {
+        // The summary takes the region's FIRST slot (`live_row_first`) on
+        // purpose: an over-full region is truncated from the FOOT, so the top
+        // is the one line the terminal is guaranteed to show — and the summary
+        // is the accounting for rows the reader cannot see, which must never
+        // itself be one of them. Asserted on the emulated terminal because the
+        // recording buffer holds repaints in emission order, not screen order.
+        let (printer, screen) = Printer::for_test_live_terminal(24, 120);
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let managers = Owner::cfgd("managers");
+        let actions = packages(4);
+
+        let mut tree =
+            PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 30).with_budget(3);
+        let head = tree.dispatched(&managers, &actions[0]);
+        for action in &actions[1..] {
+            tree.dispatched(&managers, action).finish();
+        }
+        for (index, action) in actions.iter().enumerate().skip(1) {
+            tree.settled(&managers, action, done(&format!("apt install pkg{index}")));
+        }
+
+        let held = screen.contents();
+        let summary = held
+            .find("held for commit")
+            .unwrap_or_else(|| panic!("no elision summary on screen: {held}"));
+        for below in ["cfgd:managers", "apt install pkg0"] {
+            let at = held
+                .find(below)
+                .unwrap_or_else(|| panic!("{below:?} not on screen: {held}"));
+            assert!(summary < at, "the summary is not above {below:?}: {held}");
+        }
+
+        head.finish();
+        tree.settled(&managers, &actions[0], done("apt install pkg0"));
+        tree.finish();
+        drop(section);
+    }
+
+    #[test]
     fn a_region_that_closes_leaves_nothing_of_its_own_on_the_screen() {
         // The same claim over every OTHER way a row can end: a line the budget
         // took back, a row that stood for a blocked action, a row whose work

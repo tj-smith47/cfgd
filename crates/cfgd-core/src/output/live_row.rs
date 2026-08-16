@@ -100,9 +100,11 @@ impl<'p> LiveRow<'p> {
             None => self.renderer.compose_status(fields),
         };
         // The row is repainted in place, so its own line cannot reach a second
-        // row and is clamped; the continuation lines below it are separate rows
-        // of the same repaint and are clamped at their own indent.
-        let width = wrap::available_width(self.sink.as_ref(), self.depth);
+        // row and is clamped — at the COMPLETE-line budget the alignment
+        // ceiling padded it to, not at the narrower wrapped-body width. The
+        // continuation lines below it are separate rows of the same repaint
+        // and are clamped at their own indent.
+        let width = wrap::line_width(self.sink.as_ref(), self.depth);
         let indent = "  ".repeat(self.depth + 1);
         let mut message = wrap::clamp(&line, width);
         for tail in &tails {
@@ -110,7 +112,7 @@ impl<'p> LiveRow<'p> {
             message.push_str(&indent);
             message.push_str(&wrap::clamp(
                 tail,
-                wrap::available_width(self.sink.as_ref(), self.depth + 1),
+                wrap::line_width(self.sink.as_ref(), self.depth + 1),
             ));
         }
         self.bar.disable_steady_tick();

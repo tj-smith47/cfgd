@@ -64,7 +64,8 @@ pub(crate) fn pad_subject(subject: &str, width: usize, has_trailing: bool) -> Op
 /// stream keeps the physical lines the renderer emitted, so no amount of
 /// padding can strand anything there.
 fn wrap_budget(w: &dyn Writer, depth: usize) -> Option<usize> {
-    w.wrap_columns().map(|cols| cols.saturating_sub(depth * 2))
+    w.wrap_columns()
+        .map(|cols| super::wrap::line_budget(cols, depth))
 }
 
 impl Renderer {
