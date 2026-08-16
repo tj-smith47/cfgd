@@ -10,6 +10,14 @@ pub const APPLY_LOCK_FILENAME: &str = "apply.lock";
 /// own artifacts, and so the set of locks can be listed in one place.
 const LOCKS_SUBDIR: &str = "locks";
 
+/// Filename of the source-cache mutex inside the sources cache directory.
+///
+/// Lives beside the per-source checkouts rather than in the state dir because
+/// the cache is what it guards: a cache directory carried to another machine,
+/// or wiped, takes its lock with it. `validate_source_name` rejects this name,
+/// so no source's checkout can ever occupy the path.
+pub const SOURCES_LOCK_FILENAME: &str = "sources.lock";
+
 /// High half of the byte offset `LockFileEx` locks, i.e. the lock sits one byte
 /// past 2^63 into the file.
 ///
@@ -89,15 +97,34 @@ impl Drop for FileLockGuard {
     }
 }
 
-// Acquire an exclusive whole-file lock via `flock()`, non-blocking
-// (`LOCK_EX | LOCK_NB`): `StateError::ApplyLockHeld` when another holder has it.
+/// What a contended acquire does about the holder.
+///
+/// The machine-wide mutexes ([`acquire_apply_lock`], [`acquire_backup_lock`])
+/// [`Refuse`](LockWait::Refuse), so a scheduled fire colliding with a hand-run
+/// is skipped rather than queued behind it. The source-cache mutex
+/// [`Block`](LockWait::Block)s instead: its critical section is short, both
+/// contenders want the same end state, and refusing would turn a benign
+/// overlap between `cfgd sync` and `cfgd apply` into a failed run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LockWait {
+    /// Report [`errors::StateError::ApplyLockHeld`] immediately.
+    Refuse,
+    /// Wait for the holder to release. Bounded by the holder's own lifetime:
+    /// the OS drops both `flock` and `LockFileEx` when the process exits, so a
+    /// crashed holder cannot strand a waiter.
+    Block,
+}
+
+// Acquire an exclusive whole-file lock via `flock()` (`LOCK_EX`, plus
+// `LOCK_NB` under `LockWait::Refuse`): `StateError::ApplyLockHeld` when another
+// holder has it and the caller refuses to wait.
 //
 // The PID is written via `std::fs::write` (a fresh open/write/close) rather
 // than through the Flock fd because on macOS ARM64 writes through
 // `Flock<File>`'s `DerefMut` are silently dropped (the flock exclusion is
 // unaffected — `Flock<File>` still holds it).
 #[cfg(unix)]
-fn acquire_lock_at(lock_path: &std::path::Path) -> errors::Result<FileLockGuard> {
+fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Result<FileLockGuard> {
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -105,16 +132,19 @@ fn acquire_lock_at(lock_path: &std::path::Path) -> errors::Result<FileLockGuard>
         .write(true)
         .open(lock_path)?;
 
-    let locked = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock)
-        .map_err(|(_file, errno)| {
-            if errno == nix::errno::Errno::EWOULDBLOCK {
-                errors::CfgdError::from(errors::StateError::ApplyLockHeld {
-                    holder: holder_label(lock_path),
-                })
-            } else {
-                errors::CfgdError::from(std::io::Error::from(errno))
-            }
-        })?;
+    let arg = match wait {
+        LockWait::Refuse => nix::fcntl::FlockArg::LockExclusiveNonblock,
+        LockWait::Block => nix::fcntl::FlockArg::LockExclusive,
+    };
+    let locked = nix::fcntl::Flock::lock(file, arg).map_err(|(_file, errno)| {
+        if errno == nix::errno::Errno::EWOULDBLOCK {
+            errors::CfgdError::from(errors::StateError::ApplyLockHeld {
+                holder: holder_label(lock_path),
+            })
+        } else {
+            errors::CfgdError::from(std::io::Error::from(errno))
+        }
+    })?;
 
     std::fs::write(lock_path, pid_record().as_bytes())?;
 
@@ -124,12 +154,13 @@ fn acquire_lock_at(lock_path: &std::path::Path) -> errors::Result<FileLockGuard>
     })
 }
 
-// Acquire an exclusive whole-file lock via `LockFileEx`, non-blocking
-// (`LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY`):
-// `StateError::ApplyLockHeld` when another holder has it. The lock is released
-// when the guard drops and the handle closes.
+// Acquire an exclusive whole-file lock via `LockFileEx`
+// (`LOCKFILE_EXCLUSIVE_LOCK`, plus `LOCKFILE_FAIL_IMMEDIATELY` under
+// `LockWait::Refuse`): `StateError::ApplyLockHeld` when another holder has it
+// and the caller refuses to wait. The lock is released when the guard drops
+// and the handle closes.
 #[cfg(windows)]
-fn acquire_lock_at(lock_path: &std::path::Path) -> errors::Result<FileLockGuard> {
+fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Result<FileLockGuard> {
     use std::io::Write;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -154,21 +185,17 @@ fn acquire_lock_at(lock_path: &std::path::Path) -> errors::Result<FileLockGuard>
         },
         ..Default::default()
     };
+    let flags = match wait {
+        LockWait::Refuse => LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+        LockWait::Block => LOCKFILE_EXCLUSIVE_LOCK,
+    };
     // SAFETY: `handle` is a valid, open, owned Win32 file handle derived
     // from `file`, which outlives the call. `&mut overlapped` points to a
     // stack-local, aligned, writable OVERLAPPED struct. The lock byte
     // range (one byte at `LOCK_RANGE_OFFSET_HIGH << 32`) is fixed and valid.
-    // Non-blocking lock (LOCKFILE_FAIL_IMMEDIATELY) avoids indefinite wait.
-    let ret = unsafe {
-        LockFileEx(
-            handle,
-            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
-            0,
-            1,
-            0,
-            &mut overlapped,
-        )
-    };
+    // A `Block` acquire waits inside this call until the holder releases; the
+    // holder is another cfgd process, and the OS releases its lock on exit.
+    let ret = unsafe { LockFileEx(handle, flags, 0, 1, 0, &mut overlapped) };
     if ret == 0 {
         let err = std::io::Error::last_os_error();
         // ERROR_LOCK_VIOLATION (33) = lock held by another process
@@ -199,7 +226,41 @@ fn acquire_lock_at(lock_path: &std::path::Path) -> errors::Result<FileLockGuard>
 /// holds it. Released when the returned guard drops.
 pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<FileLockGuard> {
     std::fs::create_dir_all(state_dir)?;
-    acquire_lock_at(&state_dir.join(APPLY_LOCK_FILENAME))
+    acquire_lock_at(&state_dir.join(APPLY_LOCK_FILENAME), LockWait::Refuse)
+}
+
+/// Acquire the exclusive source-cache lock at
+/// `<cache_dir>/`[`SOURCES_LOCK_FILENAME`].
+///
+/// Held across a source's origin check, the discard of a mismatched checkout,
+/// and the clone or fetch that replaces it. That sequence is a
+/// check-then-act over a directory keyed by the source NAME alone, so two cfgd
+/// processes composing different configs that name one source can otherwise
+/// interleave: one process's fetch resolves `origin` after the other re-pointed
+/// it, or a clone lands in a tree the other is removing.
+///
+/// Separate from the apply lock on purpose. A read path (`cfgd plan`,
+/// `cfgd status`) must not be refused because an apply is running, and an apply
+/// must not be refused because a `cfgd sync` is warming the cache.
+///
+/// Blocking rather than refusing: the critical section is one clone, both
+/// contenders want the same end state, and a refusal would fail a run over an
+/// overlap that resolves itself. `on_wait` is called at most once, only when a
+/// holder is already in the section, so a caller can say so before the wait
+/// begins rather than appearing to hang.
+pub fn acquire_source_lock(
+    cache_dir: &std::path::Path,
+    on_wait: impl FnOnce(),
+) -> errors::Result<FileLockGuard> {
+    std::fs::create_dir_all(cache_dir)?;
+    let lock_path = cache_dir.join(SOURCES_LOCK_FILENAME);
+    match acquire_lock_at(&lock_path, LockWait::Refuse) {
+        Err(errors::CfgdError::State(errors::StateError::ApplyLockHeld { .. })) => {
+            on_wait();
+            acquire_lock_at(&lock_path, LockWait::Block)
+        }
+        other => other,
+    }
 }
 
 /// Acquire the exclusive lock for one `spec.backups[]` unit at
@@ -230,5 +291,5 @@ pub fn acquire_backup_lock(
     crate::config::validate_backup_name(name)?;
     let dir = state_dir.join(LOCKS_SUBDIR);
     std::fs::create_dir_all(&dir)?;
-    acquire_lock_at(&dir.join(format!("backup-{name}.lock")))
+    acquire_lock_at(&dir.join(format!("backup-{name}.lock")), LockWait::Refuse)
 }

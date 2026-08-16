@@ -3081,6 +3081,59 @@ mod local_source_fixture {
                 .expect_err("a corrupt cached manifest is a hard error, never a silent skip");
         });
     }
+
+    #[test]
+    #[serial]
+    fn load_source_serializes_on_a_lock_file_in_the_cache_dir() {
+        // The origin check, the discard and the clone are one critical section
+        // held under `<cache_dir>/sources.lock`. The lock is released with the
+        // load, so the second load of the same name takes it again: were the
+        // guard held past the first return, this test would never finish.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "locked-src", None, &[]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = build_spec(
+                "locked-src",
+                &crate::test_helpers::file_url(&bare),
+                &detect_branch(&bare),
+            );
+
+            mgr.load_source(&spec, &test_printer())
+                .expect("the first load clones under the lock");
+            let lock_path = cache_dir.join(crate::SOURCES_LOCK_FILENAME);
+            assert!(
+                lock_path.is_file(),
+                "the lock lives beside the checkouts it guards: {:?}",
+                std::fs::read_dir(&cache_dir).map(|d| d
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .collect::<Vec<_>>())
+            );
+
+            mgr.load_source(&spec, &test_printer())
+                .expect("the second load re-takes the released lock and fetches");
+            assert!(
+                mgr.get("locked-src").is_some(),
+                "both loads compose the source"
+            );
+        });
+    }
+
+    #[test]
+    fn a_source_may_not_claim_the_cache_lock_filename() {
+        // The lock is a FILE at `<cache_dir>/sources.lock` and a checkout is a
+        // DIRECTORY at `<cache_dir>/<name>`. A source claiming that name would
+        // put one where the other goes, so the name is refused up front rather
+        // than failing later as an unopenable path.
+        let err = validate_source_name(crate::SOURCES_LOCK_FILENAME)
+            .expect_err("the lock filename is not an available source name");
+        assert!(
+            err.to_string().contains("reserved"),
+            "the refusal must say why: {err}"
+        );
+        validate_source_name("sources.lock.d").expect("only the exact reserved name is refused");
+    }
 }
 
 // ---------------------------------------------------------------------------

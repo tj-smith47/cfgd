@@ -167,6 +167,7 @@ A PowerShell function-wrapper alias must carry its command as a quoted string bu
 ## Locks / reconcile
 
 - `acquire_apply_lock(state_dir)` — exclusive apply lock; `flock` on Unix, `LockFileEx` on Windows; returns `ApplyLockGuard` (RAII release)
+- `acquire_source_lock(cache_dir, on_wait)` — the source-cache mutex at `<cache_dir>/sources.lock` (`SOURCES_LOCK_FILENAME`), built on the same `acquire_lock_at` primitive as the apply and backup locks. Held by `SourceManager::load_source` across the origin check, the discard of a mismatched checkout, and the clone/fetch that replaces it, because the cache is keyed by the source NAME alone and two cfgd processes naming one source can otherwise interleave a fetch against a re-pointed `origin` or a clone against a tree being removed. The one lock that BLOCKS rather than refusing (`LockWait::Block`): the section is one clone, both contenders want the same end state, and refusing would fail a run over an overlap that resolves itself. `on_wait` fires at most once, only under contention, so the caller can say what it is waiting for instead of appearing to hang. Deliberately not the apply lock, so a read path is never refused because an apply holds it. `validate_source_name` reserves the filename, so no checkout can occupy the lock's path
 - `resolve_effective_reconcile(module, profile_chain, config)` — resolve per-module reconcile settings from patches
 - `EffectiveReconcile` — resolved (interval, auto_apply, drift_policy) with no Options
 

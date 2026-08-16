@@ -206,7 +206,7 @@ impl SourceManager {
             printer.status_simple(
                 Role::Warn,
                 format!(
-                    "Source '{}': cached checkout was cloned from a different origin — run 'cfgd sync' to re-fetch it; using local state only",
+                    "Source '{}': cached checkout was cloned from a different origin — run 'cfgd sync' to re-fetch it; skipped without verifying its signature, using local state only",
                     spec.name
                 ),
             );
@@ -279,6 +279,30 @@ impl SourceManager {
         }
 
         let source_dir = self.cache_dir.join(&spec.name);
+
+        // The cache root is a precondition of everything below, the lock file
+        // included, so it is created here with the wording a caller who cannot
+        // create it needs — before the lock's own silent `create_dir_all` would
+        // report the same failure as a bare io error.
+        std::fs::create_dir_all(&self.cache_dir).map_err(|e| SourceError::CacheError {
+            message: format!("cannot create cache dir: {e}"),
+        })?;
+
+        // Everything from here to the end of the load is a check-then-act over
+        // a directory two cfgd processes can be told to own: the origin check
+        // reads `.git/config`, the discard removes the tree, and the clone or
+        // fetch rebuilds it. Unserialized, a second process's fetch resolves
+        // `origin` after this one re-pointed it, or clones into a tree this one
+        // is still removing.
+        let _cache_lock = crate::acquire_source_lock(&self.cache_dir, || {
+            printer.status_simple(
+                Role::Info,
+                format!(
+                    "Waiting for another cfgd process to finish updating the source cache before loading '{}'",
+                    spec.name
+                ),
+            );
+        })?;
 
         // The cache is keyed by the source NAME alone, so nothing else ties an
         // existing checkout to the origin it was cloned from. Left unchecked, a
@@ -1134,6 +1158,23 @@ fn validate_source_name(name: &str) -> Result<()> {
         name: name.to_string(),
         message: format!("invalid source name: {e}"),
     })?;
+    // A source's checkout is `<cache_dir>/<name>`, and the cache lock is a file
+    // at `<cache_dir>/sources.lock`. A source claiming that name would put a
+    // directory where the lock file goes, so neither could be opened.
+    if name
+        .split(['/', '\\'])
+        .next()
+        .is_some_and(|first| first.eq_ignore_ascii_case(crate::SOURCES_LOCK_FILENAME))
+    {
+        return Err(SourceError::GitError {
+            name: name.to_string(),
+            message: format!(
+                "invalid source name: '{}' is reserved for the source-cache lock",
+                crate::SOURCES_LOCK_FILENAME
+            ),
+        }
+        .into());
+    }
     Ok(())
 }
 
