@@ -172,7 +172,6 @@ pub(super) fn parse_snap_info_version(output: &str) -> Option<String> {
 mod tests {
     use cfgd_core::providers::PackageManager;
 
-    #[cfg(target_os = "linux")]
     use super::*;
 
     #[test]
@@ -285,6 +284,10 @@ channels:
 
     #[test]
     fn snap_bootstrap_plan_installs_snapd_from_a_system_manager() {
+        // Both the plan detection and the `runnable` probes below assert
+        // successful PATH resolutions, so hold the read guard across them —
+        // a sibling test empties PATH under the write guard.
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
         let plan = SnapManager.bootstrap_plan();
         #[cfg(target_os = "linux")]
         {

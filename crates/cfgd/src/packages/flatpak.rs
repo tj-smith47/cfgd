@@ -144,7 +144,6 @@ pub(super) fn parse_flatpak_app_list(stdout: &str) -> HashSet<String> {
 mod tests {
     use cfgd_core::providers::PackageManager;
 
-    #[cfg(target_os = "linux")]
     use super::*;
 
     #[test]
@@ -155,6 +154,10 @@ mod tests {
 
     #[test]
     fn flatpak_bootstrap_plan_installs_flatpak_from_a_system_manager() {
+        // Both the plan detection and the `runnable` probes below assert
+        // successful PATH resolutions, so hold the read guard across them —
+        // a sibling test empties PATH under the write guard.
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
         let plan = FlatpakManager.bootstrap_plan();
         #[cfg(target_os = "linux")]
         {
