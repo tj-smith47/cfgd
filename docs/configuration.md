@@ -336,6 +336,28 @@ files:
 
 Files can be marked `private: true` to exclude them from git (added to `.gitignore`).
 
+> **One writer per rc file.** `spec.env` maintains its own loader line inside
+> shell rc files: `~/.bashrc` / `~/.zshrc` get
+> `[ -f ~/.cfgd.env ] && . ~/.cfgd.env` injected so declared vars and
+> bootstrapped `PATH` entries reach new shells. A `files.managed` entry whose
+> `target` is the same rc file puts a second writer on that path:
+>
+> ```yaml
+> env:
+>   - name: EDITOR
+>     value: nvim          # injects its loader line into ~/.zshrc
+> files:
+>   managed:
+>     - source: shell/.zshrc
+>       target: ~/.zshrc   # re-deploys ~/.zshrc from the repo copy
+> ```
+>
+> Each writer undoes the other across runs (the file entry deploys an rc
+> without the injected line, the env writer adds it back), so reconcile keeps
+> finding drift on a target that never converges. Keep the rc file under one
+> writer: put the loader line in the rc source you deploy, or leave the rc
+> file out of `files.managed` and let `spec.env` own it.
+
 ### Partial-file edits (`strategy: Patch`)
 
 `Patch` is the strategy for files cfgd must *share* rather than own — a
