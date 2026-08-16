@@ -3213,10 +3213,81 @@ mod local_source_fixture {
 
     #[test]
     #[serial]
-    fn a_failed_first_load_takes_back_the_cache_root_it_created() {
-        // The lock lives in the cache root, so the root is now created before
-        // anything can fail. A load that then fails must not leave an empty
-        // cache dir and a zero-byte lock where nothing existed before.
+    fn a_load_that_fails_leaves_a_concurrent_load_of_another_source_intact() {
+        // The interleaving M3 and its follow-ups are all about: two processes
+        // in one cache root, one of them failing. Both contenders are put in
+        // the SAME window before the holder releases — that is what the
+        // counting witness is for, since releasing on the first waiter's signal
+        // lets the second one arrive afterwards and the two never overlap.
+        //
+        // The failing load must take nothing with it on the way out. It once
+        // would have: a cleanup that ran after its own lock released could
+        // delete the cache root while the other load was cloning into it.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let (doomed_bare, _) = make_bare_with_tags(&tmp, "doomed", &["v1.0.0"]);
+            let good_bare = make_bare_with_manifest(&tmp, "survivor", None, &[]);
+            let cache_dir = tmp.path().join("cache");
+            let doomed = pinned_spec("doomed", &doomed_bare, "~9");
+            let good = build_spec(
+                "survivor",
+                &crate::test_helpers::file_url(&good_bare),
+                &detect_branch(&good_bare),
+            );
+
+            let gate = crate::acquire_source_lock(&cache_dir, || panic!("the gate never waits"))
+                .expect("the gate holds the cache while both loads queue");
+
+            let doomed_cache = cache_dir.clone();
+            let doomed_run = std::thread::spawn(move || {
+                let mut mgr = SourceManager::new(&doomed_cache);
+                mgr.load_source(&doomed, &test_printer())
+            });
+            let good_cache = cache_dir.clone();
+            let good_run = std::thread::spawn(move || {
+                let mut mgr = SourceManager::new(&good_cache);
+                mgr.load_source(&good, &test_printer())
+                    .expect("a healthy load must not be collateral of a failing one");
+                mgr.get("survivor").is_some()
+            });
+
+            assert!(
+                crate::await_blocking_source_acquires(2, std::time::Duration::from_secs(30)),
+                "both loads must be queued on the lock before it frees"
+            );
+            drop(gate);
+
+            let failure = doomed_run
+                .join()
+                .expect("the failing thread finishes")
+                .expect_err("a pin matching no tag fails");
+            assert!(
+                matches!(
+                    failure,
+                    crate::errors::CfgdError::Source(SourceError::PinRefNotFound { .. })
+                ),
+                "the failure is the pin, not the concurrency: {failure}"
+            );
+            assert!(
+                good_run.join().expect("the healthy thread finishes"),
+                "the healthy load composes its source"
+            );
+            assert!(
+                cache_dir.join("survivor").join(".git").is_dir(),
+                "the healthy checkout survives the failing load"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn a_failed_first_load_leaves_the_cache_root_and_its_lock_and_nothing_else() {
+        // The lock lives in the cache root, so the root exists before anything
+        // can fail. Taking it back would mean deleting a lock file this process
+        // holds, which strands a contender already blocked on it, so the empty
+        // root and its zero-byte lock stay: the deliberate residue, and NOTHING
+        // else. A half-made checkout left beside them would be served by the
+        // next load.
         with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let (bare, _) = make_bare_with_tags(&tmp, "litter", &["v1.0.0"]);
@@ -3226,21 +3297,27 @@ mod local_source_fixture {
 
             mgr.load_source(&spec, &test_printer())
                 .expect_err("a pin matching no tag fails the first-ever load");
+            let left: Vec<_> = std::fs::read_dir(&cache_dir)
+                .expect("the cache root stays")
+                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .collect();
+            assert_eq!(
+                left,
+                vec![std::ffi::OsString::from(crate::SOURCES_LOCK_FILENAME)],
+                "only the lock file may survive a failed first-ever load"
+            );
             assert!(
-                !cache_dir.exists(),
-                "a failed first load leaves nothing behind: {:?}",
-                std::fs::read_dir(&cache_dir).map(|d| d
-                    .filter_map(|e| e.ok().map(|e| e.path()))
-                    .collect::<Vec<_>>())
+                !cache_dir.join("litter").exists(),
+                "a failed load must not leave a checkout the next load would serve"
             );
         });
     }
 
     #[test]
     #[serial]
-    fn a_failed_load_keeps_a_cache_root_it_did_not_create() {
-        // The cleanup takes back only what this run made. A cache root the
-        // operator already had, and anything in it, survives a failed load.
+    fn a_failed_load_disturbs_nothing_already_in_the_cache_root() {
+        // A failed load removes nothing at all, so another source's checkout
+        // beside it is untouched.
         with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let (bare, _) = make_bare_with_tags(&tmp, "keeper", &["v1.0.0"]);

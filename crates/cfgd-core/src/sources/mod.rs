@@ -285,6 +285,13 @@ impl SourceManager {
         // owner-only; one the operator already made keeps the mode they gave
         // it, because a cache directory can be deliberately shared and
         // re-tightening it on every load would take that choice away.
+        //
+        // A load that then FAILS leaves the root and its lock file standing.
+        // Taking them back would mean deleting a lock file this process holds,
+        // which is precisely what strands a contender already blocked on it, so
+        // an empty cache root and a zero-byte `sources.lock` are the deliberate
+        // residue: the next load reuses both, and neither says anything untrue
+        // about the machine.
         let created_cache_root = !self.cache_dir.exists();
         std::fs::create_dir_all(&self.cache_dir).map_err(|e| SourceError::CacheError {
             message: format!("cannot create cache dir: {e}"),
@@ -293,24 +300,11 @@ impl SourceManager {
             let _ = crate::set_file_permissions(&self.cache_dir, 0o700);
         }
 
-        self.load_source_locked(spec, printer, created_cache_root)
+        self.load_source_locked(spec, printer)
     }
 
-    /// Take the source-cache lock, run the load under it, and hand back a cache
-    /// root this run created and then failed to populate.
-    ///
-    /// The cleanup belongs INSIDE the lock, not after it. Run once the guard
-    /// has dropped, it observes a cache root a second process has already
-    /// entered and started cloning into: that process's checkout does not exist
-    /// yet, so the root looks like nothing but this run's lock file, and the
-    /// cleanup deletes the tree out from under a holder that did everything
-    /// right.
-    fn load_source_locked(
-        &mut self,
-        spec: &SourceSpec,
-        printer: &Printer,
-        created_cache_root: bool,
-    ) -> Result<()> {
+    /// Take the source-cache lock and run the load under it.
+    fn load_source_locked(&mut self, spec: &SourceSpec, printer: &Printer) -> Result<()> {
         // Everything from here to the end of the load is a check-then-act over
         // a directory two cfgd processes can be told to own: the origin check
         // reads `.git/config`, the discard removes the tree, and the clone or
@@ -328,15 +322,7 @@ impl SourceManager {
             printer.alert(cache_wait_notice(&spec.name));
         })?;
 
-        let outcome = self.load_source_guarded(spec, printer);
-
-        // Take back exactly what this run created and nothing else: the removal
-        // is skipped unless the root is empty apart from the lock file, so a
-        // checkout is never in the blast radius.
-        if outcome.is_err() && created_cache_root {
-            discard_unpopulated_cache_root(&self.cache_dir);
-        }
-        outcome
+        self.load_source_guarded(spec, printer)
     }
 
     /// The body of [`Self::load_source`] that runs under the source-cache lock,
@@ -1219,36 +1205,6 @@ pub fn discard_cached_checkout(cache_dir: &Path, name: &str, printer: &Printer) 
         }
         .into()),
     }
-}
-
-/// Take back a cache root this run created and then failed to populate.
-///
-/// CALL ONLY WHILE HOLDING THE SOURCE-CACHE LOCK. Every check here is a
-/// check-then-act over the same directory the lock guards, so unlocked it can
-/// only report what the root looked like a moment ago.
-///
-/// Best-effort and deliberately narrow: it removes the lock file and the
-/// directory only when the directory holds nothing else, so a checkout — or a
-/// root that turned out to pre-exist after all — is never in the blast radius.
-/// `remove_dir` rather than `remove_dir_all` is the second half of that
-/// guarantee: a non-empty directory refuses.
-///
-/// Removing the lock file the caller is still holding is safe because
-/// `acquire_lock_at` re-checks, after the lock is granted, that the file it
-/// locked is the one the path names. A contender blocked on the file removed
-/// here therefore re-opens instead of proceeding on an orphan inode.
-fn discard_unpopulated_cache_root(cache_dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(cache_dir) else {
-        return;
-    };
-    for entry in entries {
-        let Ok(entry) = entry else { return };
-        if entry.file_name() != std::ffi::OsStr::new(crate::SOURCES_LOCK_FILENAME) {
-            return;
-        }
-    }
-    let _ = std::fs::remove_file(cache_dir.join(crate::SOURCES_LOCK_FILENAME));
-    let _ = std::fs::remove_dir(cache_dir);
 }
 
 /// Reject a source name that cannot serve as a cache directory of its own.
