@@ -227,6 +227,65 @@ impl<'x> PackageExec<'x> {
         result
     }
 
+    /// Provision every manager in `members` with ONE `via` install.
+    ///
+    /// The packages come from each member's own
+    /// [`PackageManager::mediated_packages`] — the same names its solo
+    /// bootstrap hands the same mediator — so the merged command installs
+    /// exactly the union of what the separate ones would have, and nothing a
+    /// member never asked for. A member that answers `None` was never
+    /// batchable and cannot be here; it fails naming itself rather than being
+    /// silently dropped from a command the line says provisions it.
+    ///
+    /// The install runs through the mediator's own `install()` rather than
+    /// through a member's bootstrap cascade because the cascade is per-manager
+    /// by construction: `via` is already the method the plan bound, so there is
+    /// nothing left for a cascade to decide.
+    fn provision_batch(&self, members: &[&str], via: &str) -> Result<()> {
+        let mediator = self
+            .registry
+            .package_managers
+            .iter()
+            .find(|pm| pm.name() == via)
+            .ok_or_else(|| crate::errors::PackageError::ManagerNotFound {
+                manager: via.to_string(),
+            })?;
+        let mut packages: Vec<String> = Vec::new();
+        for name in members {
+            let pm = self
+                .registry
+                .package_managers
+                .iter()
+                .find(|pm| pm.name() == *name)
+                .ok_or_else(|| crate::errors::PackageError::ManagerNotFound {
+                    manager: (*name).to_string(),
+                })?;
+            let mediated = pm.mediated_packages(via).ok_or_else(|| {
+                crate::errors::PackageError::BootstrapFailed {
+                    manager: (*name).to_string(),
+                    message: format!("{name} cannot be provisioned by a plain {via} install"),
+                }
+            })?;
+            for pkg in mediated {
+                if !packages.contains(&pkg) {
+                    packages.push(pkg);
+                }
+            }
+        }
+        let provision_cx = self.cx().for_provision(via);
+        self.install_recording_created(mediator.as_ref(), &packages, &provision_cx)
+            .map_err(|e| {
+                crate::errors::PackageError::BootstrapFailed {
+                    manager: members.join(", "),
+                    message: format!(
+                        "{via} install failed: {}",
+                        crate::output::collapse_to_subject_line(&e)
+                    ),
+                }
+                .into()
+            })
+    }
+
     /// The ONE registration-and-queue for both kinds of owned directory, so a
     /// bootstrap's and an install's records cannot be shaped differently.
     fn record_path_dirs(&self, manager: &str, dirs: Vec<String>, kind: PathDirRecord) {
@@ -358,25 +417,42 @@ impl<'x> PackageExec<'x> {
                     changed = false;
                 }
             }
-            ManagerAction::Provision { manager, via, .. } => {
-                let pm = lookup(manager)?;
-                // An earlier node may have provisioned it already. What the
+            ManagerAction::Provision { via, .. } => {
+                let members = action.provisioned_managers();
+                // An earlier node may have provisioned one already. What the
                 // node promises is an available manager, not a second run of
                 // an installer that is minutes of work and not idempotent for
                 // every manager.
-                if !pm.is_available() {
-                    // The method travels into the bootstrap so the cascade runs
-                    // the mediator the line named — which is also the mediator
-                    // whose lane this action holds.
-                    pm.bootstrap(&cx.for_provision(via))?;
-                }
-                self.record_bootstrap(pm.as_ref(), via);
-                if !pm.is_available() {
-                    return Err(crate::errors::PackageError::BootstrapFailed {
-                        manager: manager.clone(),
-                        message: format!("{manager} still not available after bootstrap"),
+                let mut pending = Vec::new();
+                for name in &members {
+                    if !lookup(name)?.is_available() {
+                        pending.push(*name);
                     }
-                    .into());
+                }
+                match pending.as_slice() {
+                    [] => {}
+                    // A batch of one is the solo path exactly: its own cascade,
+                    // its own fallback arm, its own error words. The merged
+                    // command below is only reached when merging is what the
+                    // line promised.
+                    [one] => {
+                        // The method travels into the bootstrap so the cascade
+                        // runs the mediator the line named — which is also the
+                        // mediator whose lane this action holds.
+                        lookup(one)?.bootstrap(&cx.for_provision(via))?;
+                    }
+                    many => self.provision_batch(many, via)?,
+                }
+                for name in &members {
+                    let pm = lookup(name)?;
+                    self.record_bootstrap(pm.as_ref(), via);
+                    if !pm.is_available() {
+                        return Err(crate::errors::PackageError::BootstrapFailed {
+                            manager: (*name).to_string(),
+                            message: format!("{name} still not available after bootstrap"),
+                        }
+                        .into());
+                    }
                 }
             }
             ManagerAction::Prerequisite {

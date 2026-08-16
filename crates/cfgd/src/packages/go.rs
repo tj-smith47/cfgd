@@ -10,11 +10,15 @@ use cfgd_core::output::Role;
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    bootstrap_brew_arm, bootstrap_via_system_manager, detect_go_bootstrap_method,
-    resolve_tool_with_fallbacks, run_pkg_cmd_live, tool_cmd_with_resolver,
+    MediatedArms, bootstrap_brew_arm, bootstrap_via_system_manager, detect_go_bootstrap_method,
+    resolve_tool_with_fallbacks, run_pkg_cmd_live, system_manager_arms, tool_cmd_with_resolver,
 };
 
 pub struct GoInstallManager;
+
+/// What a mediator installs to deliver the Go toolchain: brew calls it `go`,
+/// every system manager calls it `golang`.
+const GO_MEDIATED: MediatedArms = system_manager_arms(Some("go"), &["golang"]);
 
 fn go_fallbacks() -> Vec<PathBuf> {
     let mut fallbacks = vec![
@@ -65,11 +69,15 @@ impl PackageManager for GoInstallManager {
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         // Returns false without running brew when the plan named a system
         // manager, and errors rather than falling through when it named brew.
-        if bootstrap_brew_arm(cx, "go", "go")? {
+        if bootstrap_brew_arm(cx, "go", GO_MEDIATED.brew.unwrap_or("go"))? {
             return Ok(());
         }
 
-        bootstrap_via_system_manager(cx, "golang", "go")
+        bootstrap_via_system_manager(cx, GO_MEDIATED.system[0], "go")
+    }
+
+    fn mediated_packages(&self, via: &str) -> Option<Vec<String>> {
+        GO_MEDIATED.packages_for(via)
     }
 
     fn installed_packages(

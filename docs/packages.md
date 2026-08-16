@@ -101,11 +101,26 @@ Phase: Prerequisites
 so every prefix an install needs exists before the `Packages` phase starts.
 Those manager nodes are a graph — a provision waits for the tool it shells out
 to, and for the manager it installs through — and everything whose edges are
-satisfied provisions at the same time. Two provisions that install through the
-same system manager are the exception: `provision npm via apt` and
-`provision pipx via apt` are both `apt-get` runs, so they take apt's lane and
-run one at a time instead of racing for the dpkg lock. A node whose dependency
-failed does not run at all; its line names the failure that stopped it.
+satisfied provisions at the same time. A node whose dependency failed does not
+run at all; its line names the failure that stopped it.
+
+Managers one mediator delivers by an ordinary package install collapse onto a
+single node, and a single command:
+
+```
+Phase: Prerequisites
+  cfgd:managers
+    ✓ provision npm, pipx via apt (12.4s)
+```
+
+is one `apt-get install nodejs npm pipx`, not two `apt-get` runs queued behind
+each other for the dpkg lock. The line names every manager the command
+delivers, and `--skip` / `--only` / `--phase` still address them one at a time
+(`--skip prerequisites.npm` leaves `provision pipx via apt` behind). Only a
+plain install collapses: a manager that bootstraps through a vendor script
+(`brew` via the Homebrew installer, `npm` via `nvm`, `cargo` via `rustup`)
+keeps its own node and its own command. Provisions that stay separate but share
+a mediator still take that mediator's lane and run one at a time.
 Inside `Packages`, work runs one lane per manager family concurrently. The lane
 is per *family* rather than per name because `brew`, `brew-tap` and `brew-cask`
 drive one binary — formulae, taps and casks queue behind each other so only one

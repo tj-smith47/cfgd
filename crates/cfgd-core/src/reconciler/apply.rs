@@ -338,7 +338,7 @@ fn selector_matches(owner: &Owner, action: &Action, selector: &str) -> bool {
     if super::types::CFGD_GROUP_ORDER.contains(&selector) {
         return owner.kind == OwnerKind::Cfgd && owner.name == selector;
     }
-    matches!(action, Action::Manager(node) if node.filter_subject() == selector)
+    matches!(action, Action::Manager(node) if node.selector_names(selector))
 }
 
 /// Suffix `apply_env_action` appends to a description when the surface was

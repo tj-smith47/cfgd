@@ -189,13 +189,20 @@ pub(in crate::cli) fn manager_action_output(
             state: "present".to_string(),
             via: None,
             requires,
+            batched: Vec::new(),
             reason: None,
         },
-        reconciler::ManagerAction::Provision { manager, via, .. } => ManagerActionOutput {
+        reconciler::ManagerAction::Provision {
+            manager,
+            via,
+            batched,
+            ..
+        } => ManagerActionOutput {
             manager: manager.clone(),
             state: "provisioned".to_string(),
             via: Some(via.clone()),
             requires,
+            batched: batched.clone(),
             reason: None,
         },
         reconciler::ManagerAction::Prerequisite {
@@ -205,6 +212,7 @@ pub(in crate::cli) fn manager_action_output(
             state: "prerequisite".to_string(),
             via: Some(installer.clone()),
             requires,
+            batched: Vec::new(),
             reason: None,
         },
         reconciler::ManagerAction::Refuse { manager, reason } => ManagerActionOutput {
@@ -212,6 +220,7 @@ pub(in crate::cli) fn manager_action_output(
             state: "refused".to_string(),
             via: None,
             requires,
+            batched: Vec::new(),
             reason: Some(reason.clone()),
         },
     })
@@ -1576,9 +1585,18 @@ pub(in crate::cli) fn filter_plan(
     plan: &mut reconciler::Plan,
     skip: &[String],
     only: &[String],
+    phase_filter: Option<&reconciler::PhaseFilter>,
     printer: &Printer,
     registry: &ProviderRegistry,
 ) {
+    // Every selector the user supplied is materialised into the plan HERE, so
+    // one pass owns the whole question of what this run will do. `--phase` is
+    // resolved as a predicate downstream, which cannot split a node — and a
+    // batched provision is exactly the node a manager-name selector must
+    // split, or `--phase prerequisites.pipx` provisions npm as well.
+    if let Some(reconciler::PhaseFilter::Selector(phase, selector)) = phase_filter {
+        reconciler::restrict_provision_batches(plan, phase, selector);
+    }
     if skip.is_empty() && only.is_empty() {
         return;
     }
@@ -1646,6 +1664,49 @@ pub(in crate::cli) fn filter_plan(
                         }
                         _ => {}
                     }
+                }
+
+                // A provision node needs per-MANAGER granularity for the same
+                // reason an install needs per-package: one node can carry a
+                // batch of managers, and a pattern naming one of them must
+                // take that one out rather than the whole `apt-get install`.
+                // A solo provision runs the same path, so there is one rule
+                // for both and no shape where they can disagree.
+                if let reconciler::Action::Manager(
+                    ma @ reconciler::ManagerAction::Provision {
+                        via, depends_on, ..
+                    },
+                ) = &action
+                {
+                    let mut kept: Vec<String> = Vec::new();
+                    for member in ma.provisioned_managers() {
+                        let path = format!("{}.{}", phase_name.as_str(), member);
+                        let matched_skip = skip
+                            .iter()
+                            .find(|s| pattern_matches_action(s, owner, &path));
+                        let passes_only = only.is_empty()
+                            || only.iter().any(|o| {
+                                pattern_matches_action(o, owner, &path) || pattern_matches(&path, o)
+                            });
+                        if matched_skip.is_none() && passes_only {
+                            kept.push(member.to_string());
+                        } else {
+                            // Filtered away, a provision strands the installs
+                            // that needed the manager.
+                            removals.record(member, matched_skip.map(String::as_str));
+                        }
+                    }
+                    if let Some((first, rest)) = kept.split_first() {
+                        filtered_actions.push(reconciler::Action::Manager(
+                            reconciler::ManagerAction::Provision {
+                                manager: first.clone(),
+                                via: via.clone(),
+                                batched: rest.to_vec(),
+                                depends_on: depends_on.clone(),
+                            },
+                        ));
+                    }
+                    continue;
                 }
 
                 // Non-package actions: action-level filtering

@@ -254,20 +254,35 @@ pub(in crate::cli) fn manager_drift_phrase(action: &ManagerAction) -> Option<Man
     }
 }
 
-/// Map a drift [`ManagerAction`] (already filtered by [`manager_drift_actions`])
-/// to a `VerifyResult`. The `resource_id` uses the journal's own tail grammar
-/// for the same fact (`provision:<manager>` / `refuse:<manager>`) rather than
-/// the bare manager name, so a `package`-row consumer meets the persisted
-/// identity instead of a third grammar.
-fn manager_action_drift(action: &ManagerAction) -> Option<VerifyResult> {
-    let phrase = manager_drift_phrase(action)?;
-    Some(VerifyResult {
+/// Map a drift [`ManagerAction`] to its `VerifyResult` rows. The `resource_id`
+/// uses the journal's own tail grammar for the same fact
+/// (`provision:<manager>` / `refuse:<manager>`) rather than the bare manager
+/// name, so a `package`-row consumer meets the persisted identity instead of a
+/// third grammar.
+///
+/// A provision that batches several managers onto one install yields one row
+/// PER manager: each of them is missing from the host, and a reader asking
+/// `verify` whether pipx is installed must not be answered only about the
+/// manager whose name the batch happens to carry.
+fn manager_action_drift(action: &ManagerAction) -> Vec<VerifyResult> {
+    let Some(phrase) = manager_drift_phrase(action) else {
+        return Vec::new();
+    };
+    let row = |resource_id: String| VerifyResult {
         resource_type: "package".to_string(),
-        resource_id: action.resource_id(),
+        resource_id,
         matches: false,
         expected: "installed".to_string(),
         actual: format!("{} ({})", phrase.state, phrase.detail),
-    })
+    };
+    let provisioned = action.provisioned_managers();
+    if provisioned.is_empty() {
+        return vec![row(action.resource_id())];
+    }
+    provisioned
+        .iter()
+        .map(|m| row(ManagerAction::provision_resource_id(m)))
+        .collect()
 }
 
 /// Manager-drift half of [`live_drift_results`], usable standalone by
@@ -295,7 +310,7 @@ pub(super) fn manager_verify_results(
         &[],
     ))
     .iter()
-    .filter_map(manager_action_drift)
+    .flat_map(manager_action_drift)
     .collect())
 }
 
@@ -909,7 +924,8 @@ mod tests {
         // single theme slot, so no escape can land within either of them.
         let rendered = cap.human();
 
-        let row = manager_action_drift(&action).expect("a refusal is drift");
+        let rows = manager_action_drift(&action);
+        let row = rows.first().expect("a refusal is drift");
         assert!(
             rendered.contains(&format!("snap: {}", phrase.state))
                 && rendered.contains(&phrase.detail),

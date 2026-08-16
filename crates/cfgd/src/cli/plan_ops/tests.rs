@@ -256,6 +256,7 @@ fn action_type_str_manager_variants() {
         action_type_str(&Action::Manager(ManagerAction::Provision {
             manager: "brew".to_string(),
             via: "homebrew installer".to_string(),
+            batched: vec![],
             depends_on: vec![],
         })),
         "provision"
@@ -301,6 +302,7 @@ fn manager_action_output_provision_carries_via_and_requires() {
     let out = manager_action_output(&Action::Manager(ManagerAction::Provision {
         manager: "pipx".to_string(),
         via: "pip install pipx".to_string(),
+        batched: vec![],
         depends_on: vec!["manager:prereq:curl".to_string()],
     }))
     .expect("Provision must carry a manager payload");
@@ -566,6 +568,7 @@ fn skip_and_only_patterns_reach_a_prerequisite_by_tool_not_installer() {
     let brew_provision = Action::Manager(ManagerAction::Provision {
         manager: "brew".to_string(),
         via: "curl".to_string(),
+        batched: vec![],
         depends_on: vec![],
     });
     let provision_path = action_path(&PhaseName::Prerequisites, &brew_provision);
@@ -616,6 +619,7 @@ fn filter_plan_noop_when_empty_filters() {
         &mut plan,
         &[],
         &[],
+        None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
     );
@@ -638,6 +642,7 @@ fn filter_plan_skip_removes_matching_file_actions() {
         &mut plan,
         &["files".to_string()],
         &[],
+        None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
     );
@@ -672,6 +677,7 @@ fn filter_plan_honours_the_legacy_env_phase_pattern_and_says_it_is_on_the_way_ou
         &mut plan,
         &["env".to_string()],
         &[],
+        None,
         &printer,
         &ProviderRegistry::new(),
     );
@@ -705,6 +711,7 @@ fn filter_plan_leaves_an_owner_token_opening_with_the_legacy_word_alone() {
         &mut plan,
         &["cfgd:env".to_string()],
         &[],
+        None,
         &printer,
         &ProviderRegistry::new(),
     );
@@ -722,6 +729,102 @@ fn filter_plan_leaves_an_owner_token_opening_with_the_legacy_word_alone() {
     );
 }
 
+/// A batched provision — one apt command delivering npm and pipx — plus an
+/// install for each, so `prune_to_surviving_consumers` keeps both members.
+fn batched_provision_plan() -> cfgd_core::reconciler::Plan {
+    make_plan(vec![
+        (
+            PhaseName::Prerequisites,
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: "npm".to_string(),
+                via: "apt".to_string(),
+                batched: vec!["pipx".to_string()],
+                depends_on: vec![],
+            })],
+        ),
+        (
+            PhaseName::Packages,
+            vec![
+                pkg_install("npm", vec!["prettier"]),
+                pkg_install("pipx", vec!["ruff"]),
+            ],
+        ),
+    ])
+}
+
+fn provision_lines(plan: &cfgd_core::reconciler::Plan) -> Vec<String> {
+    plan.phases
+        .iter()
+        .flat_map(|phase| phase.actions())
+        .filter(|a| matches!(a, Action::Manager(ManagerAction::Provision { .. })))
+        .map(cfgd_core::reconciler::format_plan_item)
+        .collect()
+}
+
+#[test]
+fn skipping_one_manager_of_a_batch_leaves_the_others_provisioned() {
+    // The whole point of per-member filtering: a batch is a saved command, not
+    // a package deal. `--skip prerequisites.npm` must not take pipx with it.
+    let mut plan = batched_provision_plan();
+    let (printer, _buf) = Printer::for_test();
+    filter_plan(
+        &mut plan,
+        &["prerequisites.npm".to_string()],
+        &[],
+        None,
+        &printer,
+        &ProviderRegistry::new(),
+    );
+    assert_eq!(
+        provision_lines(&plan),
+        vec!["provision pipx via apt"],
+        "only the manager the pattern named leaves the batch"
+    );
+}
+
+#[test]
+fn a_phase_selector_naming_one_batch_member_provisions_only_that_manager() {
+    // `--phase` is resolved downstream as a predicate over whole actions, so a
+    // batch it cannot split would provision npm as well. `filter_plan` is
+    // where every selector the user supplied becomes part of the plan.
+    let mut plan = batched_provision_plan();
+    let (printer, _buf) = Printer::for_test();
+    filter_plan(
+        &mut plan,
+        &[],
+        &[],
+        Some(&cfgd_core::reconciler::PhaseFilter::Selector(
+            PhaseName::Prerequisites,
+            "pipx".to_string(),
+        )),
+        &printer,
+        &ProviderRegistry::new(),
+    );
+    assert_eq!(
+        provision_lines(&plan),
+        vec!["provision pipx via apt"],
+        "the selector narrows the batch before the predicate ever sees it"
+    );
+}
+
+#[test]
+fn a_batched_provision_names_every_manager_it_delivers_in_the_json_payload() {
+    let out = manager_action_output(&Action::Manager(ManagerAction::Provision {
+        manager: "npm".to_string(),
+        via: "apt".to_string(),
+        batched: vec!["pipx".to_string()],
+        depends_on: vec![],
+    }))
+    .expect("a manager action carries a payload");
+    assert_eq!(out.manager, "npm");
+    assert_eq!(
+        out.batched,
+        vec!["pipx".to_string()],
+        "a consumer reading `manager` alone would think one apt install \
+         delivers only npm"
+    );
+}
+
 #[test]
 fn filter_plan_warns_when_a_skipped_provision_strands_the_installs_that_needed_it() {
     let mut plan = make_plan(vec![
@@ -730,6 +833,7 @@ fn filter_plan_warns_when_a_skipped_provision_strands_the_installs_that_needed_i
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                batched: vec![],
                 depends_on: vec![],
             })],
         ),
@@ -740,6 +844,7 @@ fn filter_plan_warns_when_a_skipped_provision_strands_the_installs_that_needed_i
         &mut plan,
         &["prerequisites".to_string()],
         &[],
+        None,
         &printer,
         &ProviderRegistry::new(),
     );
@@ -771,6 +876,7 @@ fn filter_plan_skip_prerequisites_session_removes_only_the_broadcast_and_strands
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
+                    batched: vec![],
                     depends_on: vec![],
                 }),
                 env_write(),
@@ -784,6 +890,7 @@ fn filter_plan_skip_prerequisites_session_removes_only_the_broadcast_and_strands
         &mut plan,
         &["prerequisites.session".to_string()],
         &[],
+        None,
         &printer,
         &ProviderRegistry::new(),
     );
@@ -830,11 +937,13 @@ fn filter_plan_skip_prerequisites_managers_strands_every_manager_it_removes() {
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
+                    batched: vec![],
                     depends_on: vec![],
                 }),
                 Action::Manager(ManagerAction::Provision {
                     manager: "npm".to_string(),
                     via: "node installer".to_string(),
+                    batched: vec![],
                     depends_on: vec![],
                 }),
             ],
@@ -852,6 +961,7 @@ fn filter_plan_skip_prerequisites_managers_strands_every_manager_it_removes() {
         &mut plan,
         &["prerequisites.managers".to_string()],
         &[],
+        None,
         &printer,
         &ProviderRegistry::new(),
     );
@@ -887,6 +997,7 @@ fn filter_plan_skip_prerequisites_brew_leaves_other_managers_untouched() {
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
+                    batched: vec![],
                     depends_on: vec![],
                 }),
                 Action::Manager(ManagerAction::RefreshIndex {
@@ -907,6 +1018,7 @@ fn filter_plan_skip_prerequisites_brew_leaves_other_managers_untouched() {
         &mut plan,
         &["prerequisites.brew".to_string()],
         &[],
+        None,
         &printer,
         &ProviderRegistry::new(),
     );
@@ -952,6 +1064,7 @@ fn filter_plan_skip_last_package_consumer_silently_prunes_its_now_purposeless_ma
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                batched: vec![],
                 depends_on: vec![],
             })],
         ),
@@ -962,6 +1075,7 @@ fn filter_plan_skip_last_package_consumer_silently_prunes_its_now_purposeless_ma
         &mut plan,
         &["packages.brew.rg".to_string()],
         &[],
+        None,
         &printer,
         &ProviderRegistry::new(),
     );
@@ -994,6 +1108,7 @@ fn filter_plan_only_keeps_matching_actions() {
         &mut plan,
         &[],
         &["packages".to_string()],
+        None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
     );
@@ -1032,6 +1147,7 @@ fn filter_plan_only_prerequisites_managers_keeps_every_manager_node() {
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
+                    batched: vec![],
                     depends_on: vec![],
                 }),
                 Action::Manager(ManagerAction::RefreshIndex {
@@ -1051,6 +1167,7 @@ fn filter_plan_only_prerequisites_managers_keeps_every_manager_node() {
         &mut plan,
         &[],
         &["prerequisites.managers".to_string()],
+        None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
     );
@@ -1091,6 +1208,7 @@ fn filter_plan_only_cfgd_managers_keeps_every_manager_node() {
                 Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
+                    batched: vec![],
                     depends_on: vec![],
                 }),
                 Action::Manager(ManagerAction::RefreshIndex {
@@ -1110,6 +1228,7 @@ fn filter_plan_only_cfgd_managers_keeps_every_manager_node() {
         &mut plan,
         &[],
         &["cfgd:managers".to_string()],
+        None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
     );
@@ -1143,6 +1262,7 @@ fn filter_plan_skip_individual_packages() {
         &mut plan,
         &["packages.brew.rg".to_string()],
         &[],
+        None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
     );
@@ -1173,6 +1293,7 @@ fn filter_plan_only_specific_packages() {
         &mut plan,
         &[],
         &["packages.brew.rg".to_string()],
+        None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
     );
@@ -1201,6 +1322,7 @@ fn filter_plan_skip_removes_entire_manager_with_all_packages_skipped() {
         &mut plan,
         &["packages.brew".to_string()],
         &[],
+        None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
     );
@@ -1233,6 +1355,7 @@ fn filter_plan_only_specific_manager_keeps_just_that_manager() {
         &mut plan,
         &[],
         &["packages.brew".to_string()],
+        None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
     );
@@ -1258,6 +1381,7 @@ fn filter_plan_skip_uninstall_individual_packages() {
         &mut plan,
         &["packages.brew.old-tool".to_string()],
         &[],
+        None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
     );
@@ -1365,6 +1489,7 @@ fn filter_plan_drops_a_phase_left_entirely_empty() {
         &mut plan,
         &["modules.nvim".to_string()],
         &[],
+        None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
     );
@@ -1482,6 +1607,7 @@ fn build_plan_output_orders_groups_profile_first() {
             Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                batched: vec![],
                 depends_on: vec![],
             }),
             pkg_install("apt", vec!["sl"]),
@@ -1545,6 +1671,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
             Action::Manager(ManagerAction::Provision {
                 manager: "pipx".to_string(),
                 via: "pip install pipx".to_string(),
+                batched: vec![],
                 depends_on: vec!["manager:prereq:curl".to_string()],
             }),
             Action::Manager(ManagerAction::Refuse {
@@ -3175,6 +3302,7 @@ fn brew_provision_plan() -> Plan {
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                batched: vec![],
                 depends_on: vec![],
             })],
         ),
@@ -3268,6 +3396,7 @@ fn skip_owner_pattern_selects_one_module_across_every_phase() {
         &mut plan,
         &["module:nvim".to_string()],
         &[],
+        None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
     );
@@ -3294,6 +3423,7 @@ fn skip_owner_pattern_selects_the_profile() {
         &mut plan,
         &["profile:test".to_string()],
         &[],
+        None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
     );
@@ -3317,6 +3447,7 @@ fn legacy_modules_pattern_still_skips_and_says_so() {
         &mut plan,
         &["modules.nvim".to_string()],
         &[],
+        None,
         &printer,
         &ProviderRegistry::new(),
     );
@@ -3345,6 +3476,7 @@ fn only_packages_brew_does_not_match_a_module_named_brew() {
         &mut plan,
         &[],
         &["packages.brew".to_string()],
+        None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
     );
@@ -3371,6 +3503,7 @@ fn only_packages_module_brew_selects_the_module_not_the_manager() {
         &mut plan,
         &[],
         &["packages.module:brew".to_string()],
+        None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
     );
@@ -3391,6 +3524,7 @@ fn skip_cfgd_managers_warns_once_about_stranded_installs() {
         &mut plan,
         &["cfgd:managers".to_string()],
         &[],
+        None,
         &printer,
         &ProviderRegistry::new(),
     );
@@ -3431,6 +3565,7 @@ fn skip_packages_brew_leaves_the_sub_manager_it_does_not_cover_untouched() {
         &mut plan,
         &["packages.brew".to_string()],
         &[],
+        None,
         &printer,
         &ProviderRegistry::new(),
     );
@@ -3475,6 +3610,7 @@ fn stranded_warning_counts_actions_not_distinct_managers() {
             Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                batched: vec![],
                 depends_on: vec![],
             }),
             pkg_install("brew", vec!["ripgrep"]),
@@ -3486,6 +3622,7 @@ fn stranded_warning_counts_actions_not_distinct_managers() {
         &mut plan,
         &["cfgd:managers".to_string()],
         &[],
+        None,
         &printer,
         &ProviderRegistry::new(),
     );
@@ -3518,6 +3655,7 @@ fn no_stranded_warning_when_every_manager_is_available() {
         &mut plan,
         &["cfgd:managers".to_string()],
         &[],
+        None,
         &printer,
         &registry,
     );

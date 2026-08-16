@@ -135,6 +135,19 @@ pub enum ManagerAction {
     Provision {
         manager: String,
         via: String,
+        /// The other managers this node's ONE `via` command provisions
+        /// alongside `manager`, in provision order and never naming `manager`
+        /// itself.
+        ///
+        /// Non-empty only when every member is delivered by an ordinary `via`
+        /// package install (`PackageManager::mediated_packages`), so npm and
+        /// pipx both coming from apt are one line and one `apt-get install`
+        /// rather than two of each. A batched member has no node of its own,
+        /// so the planner never batches a manager some other node's edge
+        /// names — `manager` alone keeps this node's identity, and the id,
+        /// the DAG edges and the `--skip`/`--only`/`--phase` subject are
+        /// exactly what they were before it acquired company.
+        batched: Vec<String>,
         depends_on: Vec<String>,
     },
     /// A tool a manager's bootstrap cascade shells out to, missing from this
@@ -216,6 +229,18 @@ impl ManagerAction {
         node_of(&provision_id(manager))
     }
 
+    /// The persisted `resource_id` a provision of `manager` carries.
+    ///
+    /// For a caller holding one member of a BATCH rather than the node that
+    /// speaks for it: a drift row names the manager that is missing, and the
+    /// batch's own [`ManagerAction::resource_id`] names only its leader. The
+    /// string is the same one the member's solo node would have minted, so a
+    /// journal row written under a batch and a drift row read back out still
+    /// meet.
+    pub fn provision_resource_id(manager: &str) -> String {
+        provision_id(manager)
+    }
+
     /// The DAG id of the prerequisite installing `tool`.
     pub fn prereq_node(tool: &str) -> String {
         node_of(&prereq_id(tool))
@@ -268,6 +293,33 @@ impl ManagerAction {
             | ManagerAction::Refuse { manager, .. } => manager,
             ManagerAction::Prerequisite { tool, .. } => tool,
         }
+    }
+
+    /// Every manager this node provisions, in display order: `manager` first,
+    /// then its batch. Empty for every variant that provisions nothing.
+    ///
+    /// The ONE enumeration of a batch's membership — the line, the executor's
+    /// install, the `--skip`/`--only` split and the stranded-install check all
+    /// read it, so none of them can disagree about who a node speaks for.
+    pub fn provisioned_managers(&self) -> Vec<&str> {
+        match self {
+            ManagerAction::Provision {
+                manager, batched, ..
+            } => std::iter::once(manager.as_str())
+                .chain(batched.iter().map(String::as_str))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Whether a `--skip`/`--only`/`--phase` selector naming `subject` reaches
+    /// this node — its own [`ManagerAction::filter_subject`], or any manager
+    /// batched onto it.
+    pub fn selector_names(&self, subject: &str) -> bool {
+        if self.filter_subject() == subject {
+            return true;
+        }
+        matches!(self, ManagerAction::Provision { batched, .. } if batched.iter().any(|m| m == subject))
     }
 }
 

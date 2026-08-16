@@ -9,9 +9,9 @@ use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    bootstrap_via_brew_then_system, detect_brew_system_method, pip_user_scripts_dir, pkg_run,
-    planned_method_failed, planned_method_unavailable, resolve_tool_with_fallbacks, run_pkg_cmd,
-    run_pkg_cmd_live, tool_cmd_with_resolver,
+    MediatedArms, bootstrap_via_brew_then_system, brew_then_system_arms, detect_brew_system_method,
+    pip_user_scripts_dir, pkg_run, planned_method_failed, planned_method_unavailable,
+    resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, tool_cmd_with_resolver,
 };
 
 pub struct PipxManager;
@@ -20,6 +20,9 @@ pub struct PipxManager;
 /// The ONE spelling, for the same reason npm has one: the planner resolves the
 /// method against it and the cascade declines toward it.
 const PIPX_FALLBACK_METHOD: &str = "pip";
+
+/// What a mediator installs to deliver pipx — same role as npm's table.
+const PIPX_MEDIATED: MediatedArms = brew_then_system_arms("pipx", &["pipx"]);
 
 fn pipx_fallbacks() -> Vec<PathBuf> {
     let mut fallbacks: Vec<PathBuf> = std::env::var_os("HOME")
@@ -138,7 +141,13 @@ impl PackageManager for PipxManager {
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         // Returns false without probing anything when the plan named `pip` —
         // pipx's own fallback arm, which is the next thing below.
-        if bootstrap_via_brew_then_system(cx, "pipx", "pipx", &["pipx"], PIPX_FALLBACK_METHOD)? {
+        if bootstrap_via_brew_then_system(
+            cx,
+            "pipx",
+            PIPX_MEDIATED.brew.unwrap_or("pipx"),
+            PIPX_MEDIATED.system,
+            PIPX_FALLBACK_METHOD,
+        )? {
             return Ok(());
         }
 
@@ -181,6 +190,10 @@ impl PackageManager for PipxManager {
         }
 
         Ok(())
+    }
+
+    fn mediated_packages(&self, via: &str) -> Option<Vec<String>> {
+        PIPX_MEDIATED.packages_for(via)
     }
 
     fn installed_packages(

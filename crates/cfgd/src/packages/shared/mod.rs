@@ -543,6 +543,66 @@ const BREW_SYSTEM_ARMS: &[SystemArm] = &[("apt", "apt-get"), ("dnf", "dnf")];
 const SYSTEM_MANAGER_ARMS: &[SystemArm] =
     &[("apt", "apt-get"), ("dnf", "dnf"), ("zypper", "zypper")];
 
+/// One manager's mediated bootstrap: the packages a mediating manager installs
+/// to deliver it, per mediator family.
+///
+/// Declared once per manager and read twice — by its `bootstrap`, which hands
+/// these lists to the cascade helpers below, and by its
+/// [`cfgd_core::providers::PackageManager::mediated_packages`], which answers
+/// what a BATCHED provision asks the same mediator to install. Two hand-written
+/// copies of the names is how a batch would come to install something the solo
+/// bootstrap never does.
+pub(super) struct MediatedArms {
+    /// The brew formula, or `None` for a manager with no brew arm.
+    pub(super) brew: Option<&'static str>,
+    /// The package names the system arms install.
+    pub(super) system: &'static [&'static str],
+    /// Which system arms deliver it — the same table the manager's own
+    /// bootstrap cascade walks.
+    pub(super) system_arms: &'static [SystemArm],
+}
+
+impl MediatedArms {
+    /// The packages `via` installs for this manager, or `None` when `via` is
+    /// not a mediator these arms describe. Answered on `via`'s FAMILY, so
+    /// `brew-cask` reads as brew — the same collapse the provision lane makes.
+    pub(super) fn packages_for(&self, via: &str) -> Option<Vec<String>> {
+        let family = cfgd_core::manager_family(via);
+        if family == "brew" {
+            return self.brew.map(|pkg| vec![pkg.to_string()]);
+        }
+        self.system_arms
+            .iter()
+            .any(|(arm, _)| *arm == family)
+            .then(|| self.system.iter().map(|p| (*p).to_string()).collect())
+    }
+}
+
+/// The arms of a manager whose bootstrap runs [`bootstrap_via_brew_then_system`].
+pub(super) const fn brew_then_system_arms(
+    brew: &'static str,
+    system: &'static [&'static str],
+) -> MediatedArms {
+    MediatedArms {
+        brew: Some(brew),
+        system,
+        system_arms: BREW_SYSTEM_ARMS,
+    }
+}
+
+/// The arms of a manager whose bootstrap runs [`bootstrap_via_system_manager`],
+/// optionally after a brew arm of its own.
+pub(super) const fn system_manager_arms(
+    brew: Option<&'static str>,
+    system: &'static [&'static str],
+) -> MediatedArms {
+    MediatedArms {
+        brew,
+        system,
+        system_arms: SYSTEM_MANAGER_ARMS,
+    }
+}
+
 /// The first arm of `arms` this host can actually run, or `None`.
 fn detect_system_arm(arms: &[SystemArm]) -> Option<&'static str> {
     arms.iter()

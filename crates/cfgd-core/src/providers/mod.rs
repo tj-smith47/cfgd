@@ -422,6 +422,24 @@ pub trait PackageManager: Send + Sync {
     fn bootstrap_plan(&self) -> Option<BootstrapPlan>;
 
     fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()>;
+
+    /// The packages `via` installs to deliver THIS manager, when this manager's
+    /// bootstrap through `via` is an ordinary package install.
+    ///
+    /// `None` — the default — means the bootstrap via `via` is not a plain
+    /// install (a vendor script, `rustup`, `nvm`), or `via` is not one of this
+    /// manager's mediators at all. Only a `Some` answer can share one command
+    /// with another manager's provisioning, so this is what decides whether the
+    /// planner may collapse two provisions onto one node and one install.
+    ///
+    /// An implementation MUST return the same names its own `bootstrap` hands
+    /// the mediator for that arm; a batch that installed anything else would
+    /// deliver something the solo path never would.
+    fn mediated_packages(&self, via: &str) -> Option<Vec<String>> {
+        let _ = via;
+        None
+    }
+
     fn installed_packages(&self, cx: &PackageContext<'_>) -> Result<HashSet<String>>;
     fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()>;
     fn uninstall(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()>;

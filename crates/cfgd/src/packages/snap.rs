@@ -10,11 +10,15 @@ use cfgd_core::providers::{BootstrapPlan, PackageManager};
 #[cfg(target_os = "linux")]
 use super::shared::detect_system_method;
 use super::shared::{
-    bootstrap_via_system_manager, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
-    sudo_cmd_with_seam, tool_cmd_with_resolver,
+    MediatedArms, bootstrap_via_system_manager, resolve_tool_with_fallbacks, run_pkg_cmd,
+    run_pkg_cmd_live, sudo_cmd_with_seam, system_manager_arms, tool_cmd_with_resolver,
 };
 
 pub struct SnapManager;
+
+/// What a mediator installs to deliver snap. There is no brew arm: snapd is a
+/// Linux service, not a formula.
+const SNAP_MEDIATED: MediatedArms = system_manager_arms(None, &["snapd"]);
 
 pub(super) fn find_snap() -> Option<PathBuf> {
     resolve_tool_with_fallbacks("snap", &[])
@@ -54,7 +58,11 @@ impl PackageManager for SnapManager {
     }
 
     fn bootstrap(&self, cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
-        bootstrap_via_system_manager(cx, "snapd", "snap")
+        bootstrap_via_system_manager(cx, SNAP_MEDIATED.system[0], "snap")
+    }
+
+    fn mediated_packages(&self, via: &str) -> Option<Vec<String>> {
+        SNAP_MEDIATED.packages_for(via)
     }
 
     fn installed_packages(

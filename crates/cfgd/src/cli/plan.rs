@@ -175,7 +175,14 @@ pub fn cmd_plan(
     let scope = ScopeReport::capture(&plan, filter_active, module_miss);
 
     // Apply --skip / --only filters
-    filter_plan(&mut plan, &args.skip, &args.only, printer, &registry);
+    filter_plan(
+        &mut plan,
+        &args.skip,
+        &args.only,
+        phase_filter.as_ref(),
+        printer,
+        &registry,
+    );
 
     // Strip script phases when --skip-scripts is set
     if args.skip_scripts {

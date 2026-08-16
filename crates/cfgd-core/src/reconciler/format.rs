@@ -515,7 +515,16 @@ pub fn format_plan_item(action: &Action) -> String {
 fn format_manager_action_item(action: &ManagerAction) -> String {
     match action {
         ManagerAction::RefreshIndex { manager } => format!("refresh {manager} index"),
-        ManagerAction::Provision { manager, via, .. } => format!("provision {manager} via {via}"),
+        // A batch names every manager the one command delivers, in the order
+        // `provisioned_managers` holds them — the line has to account for what
+        // it installs, and `provision npm via apt` would silently also install
+        // pipx.
+        ManagerAction::Provision { via, .. } => {
+            format!(
+                "provision {} via {via}",
+                action.provisioned_managers().join(", ")
+            )
+        }
         ManagerAction::Prerequisite {
             tool,
             installer,

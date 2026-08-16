@@ -339,6 +339,7 @@ fn build_actions(
         }
     }
 
+    let mut provisions: Vec<Provisioning<'_>> = Vec::new();
     for (manager, via) in provision_order(graph) {
         let mut depends_on: Vec<String> = graph
             .needs
@@ -352,12 +353,13 @@ fn build_actions(
         {
             depends_on.push(state.node_id(preferred));
         }
-        actions.push(Action::Manager(ManagerAction::Provision {
-            manager: manager.to_string(),
-            via: via.to_string(),
+        provisions.push(Provisioning {
+            manager,
+            via,
             depends_on,
-        }));
+        });
     }
+    actions.extend(batch_provisions(registry, graph, provisions));
 
     // Last: a refusal blocks nothing and carries no edge, so it reads after the
     // work the run will actually do.
@@ -429,6 +431,7 @@ pub fn prerequisite_selectors(registry: &ProviderRegistry) -> BTreeSet<String> {
 
 pub fn prune_to_surviving_consumers(plan: &mut Plan) {
     let consumers = surviving_consumers(plan);
+    shrink_provision_batches(plan, &consumers);
     let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut keep: BTreeSet<String> = BTreeSet::new();
     for phase in &plan.phases {
@@ -438,7 +441,11 @@ pub fn prune_to_surviving_consumers(plan: &mut Plan) {
             };
             let id = node.node_id();
             let directly_consumed = !matches!(node, ManagerAction::Prerequisite { .. })
-                && consumers.contains(node.manager());
+                && node
+                    .provisioned_managers()
+                    .iter()
+                    .chain(std::iter::once(&node.manager()))
+                    .any(|m| consumers.contains(*m));
             if directly_consumed {
                 keep.insert(id.clone());
             }
@@ -463,6 +470,61 @@ pub fn prune_to_surviving_consumers(plan: &mut Plan) {
         });
     }
     plan.phases.retain(|phase| !phase.is_empty());
+}
+
+/// Drop from every batched provision the managers no surviving install needs.
+///
+/// A batch exists to save a mediator run, not to widen one: once a `--skip`
+/// has taken away everything npm was going to install, `apt-get install nodejs
+/// npm pipx` is installing a Node toolchain nothing asked for. A member is only
+/// dropped when it is safe to: a manager some other node's edge names keeps its
+/// place whatever its own consumers did, because that edge resolves against
+/// this node's id and the id is the leader's name.
+fn shrink_provision_batches(plan: &mut Plan, consumers: &BTreeSet<String>) {
+    let depended: BTreeSet<String> = plan
+        .phases
+        .iter()
+        .flat_map(|phase| phase.actions())
+        .filter_map(|action| match action {
+            Action::Manager(node) => Some(node.depends_on()),
+            _ => None,
+        })
+        .flatten()
+        .cloned()
+        .collect();
+    for phase in &mut plan.phases {
+        for (_, actions) in phase.groups_mut() {
+            for action in actions.iter_mut() {
+                let Action::Manager(node) = action else {
+                    continue;
+                };
+                if node.provisioned_managers().len() < 2 {
+                    continue;
+                }
+                let node_id = node.node_id();
+                let ManagerAction::Provision {
+                    manager, batched, ..
+                } = node
+                else {
+                    continue;
+                };
+                let leader_pinned = depended.contains(&node_id);
+                let mut kept: Vec<String> = std::iter::once(manager.clone())
+                    .chain(batched.iter().cloned())
+                    .enumerate()
+                    .filter(|(i, m)| consumers.contains(m) || (*i == 0 && leader_pinned))
+                    .map(|(_, m)| m)
+                    .collect();
+                // Nothing left to serve: leave the node whole and let the
+                // keep-set below delete it, rather than half-deleting it here.
+                if kept.is_empty() {
+                    continue;
+                }
+                *manager = kept.remove(0);
+                *batched = kept;
+            }
+        }
+    }
 }
 
 /// The managers the package work still in `plan` would run a command through,
@@ -497,6 +559,126 @@ fn note_consumer(consumers: &mut BTreeSet<String>, manager: &str) {
     }
     consumers.insert(manager.to_string());
     consumers.insert(crate::manager_family(manager).to_string());
+}
+
+/// Narrow every batched provision in `phase` to the one manager `selector`
+/// names.
+///
+/// `--phase prerequisites.pipx` asks for pipx's provisioning and nothing else,
+/// and a batch is the one node that would answer it with somebody else's
+/// install too — the filter that runs it is a predicate over whole actions, so
+/// the split has to happen in the plan before the predicate ever sees it. A
+/// selector naming a cfgd group rather than a manager selects the whole group
+/// and splits nothing.
+///
+/// The surviving node keeps the batch's UNION of edges: it is the same command
+/// with fewer packages, and a prerequisite any member waited on is a
+/// prerequisite of the mediator run itself.
+pub fn restrict_provision_batches(plan: &mut Plan, phase: &PhaseName, selector: &str) {
+    if crate::reconciler::types::CFGD_GROUP_ORDER.contains(&selector) {
+        return;
+    }
+    for target in plan.phases.iter_mut().filter(|p| p.name == *phase) {
+        for (_, actions) in target.groups_mut() {
+            for action in actions.iter_mut() {
+                let Action::Manager(ManagerAction::Provision {
+                    manager, batched, ..
+                }) = action
+                else {
+                    continue;
+                };
+                if batched.is_empty()
+                    || (manager != selector && !batched.iter().any(|m| m == selector))
+                {
+                    continue;
+                }
+                *manager = selector.to_string();
+                batched.clear();
+            }
+        }
+    }
+}
+
+/// One manager's provisioning, before the batching pass decides whether it gets
+/// a node of its own or joins a sibling's.
+struct Provisioning<'g> {
+    manager: &'g str,
+    via: &'g str,
+    depends_on: Vec<String>,
+}
+
+/// Collapse the provisions that ONE mediator command can deliver onto one node.
+///
+/// npm and pipx both coming from apt is one `apt-get install nodejs npm pipx`
+/// and one line, not two of each: the mediator is the same process, the lane is
+/// the same lane (a provision lanes on its `via`'s family), and two sequential
+/// `apt-get install` runs pay the same lock and the same index read twice over.
+///
+/// Three things bar a manager from a batch, and all three protect an identity
+/// something else already depends on:
+///
+/// - its bootstrap via this mediator is not a plain package install
+///   ([`PackageManager::mediated_packages`] answers `None` for a vendor script,
+///   `rustup`, `nvm`), so there is no command to merge into;
+/// - the mediator is not a registered manager this run could ask to install;
+/// - some other node's edge names its provision node — it keeps that node, and
+///   is only ever a batch's `manager`, never one of its `batched` members.
+///
+/// The surviving node is the first member in `provision_order`, so it lands
+/// where its own dependencies already put it, and it carries the UNION of the
+/// members' edges: one command cannot start until everything any member waits
+/// on is done.
+fn batch_provisions<'g>(
+    registry: &ProviderRegistry,
+    graph: &'g Graph,
+    provisions: Vec<Provisioning<'g>>,
+) -> Vec<Action> {
+    // A manager another provision installs through keeps its own node, because
+    // that other node's `depends_on` names it.
+    let depended_on: BTreeSet<&str> = graph.prefers.values().map(String::as_str).collect();
+
+    // Leading a batch keeps the leader's own node id, so a depended-on manager
+    // may lead. Joining one dissolves the member's node, so it may not join.
+    let can_lead = |p: &Provisioning<'_>| {
+        find_manager(registry, p.via).is_some()
+            && find_manager(registry, p.manager)
+                .and_then(|pm| pm.mediated_packages(p.via))
+                .is_some_and(|pkgs| !pkgs.is_empty())
+    };
+    let can_join = |p: &Provisioning<'_>| can_lead(p) && !depended_on.contains(p.manager);
+
+    let mut actions: Vec<Action> = Vec::with_capacity(provisions.len());
+    // Where in `actions` the open batch for a given `via` lives, so a later
+    // member merges into it instead of opening a second one.
+    let mut open: BTreeMap<&str, usize> = BTreeMap::new();
+    for provisioning in provisions {
+        if can_join(&provisioning)
+            && let Some(&at) = open.get(provisioning.via)
+            && let Some(Action::Manager(ManagerAction::Provision {
+                batched,
+                depends_on,
+                ..
+            })) = actions.get_mut(at)
+        {
+            batched.push(provisioning.manager.to_string());
+            for edge in provisioning.depends_on {
+                if !depends_on.contains(&edge) {
+                    depends_on.push(edge);
+                }
+            }
+            continue;
+        }
+        if can_lead(&provisioning) {
+            open.insert(provisioning.via, actions.len());
+        }
+        actions.push(Action::Manager(ManagerAction::Provision {
+            manager: provisioning.manager.to_string(),
+            via: provisioning.via.to_string(),
+            batched: Vec::new(),
+            depends_on: provisioning.depends_on,
+        }));
+    }
+    actions
 }
 
 /// The provisions in dependency order, each with the method it runs — read from
@@ -577,18 +759,24 @@ pub(super) fn fold_provision_path_dirs<'a>(
 ) -> Vec<String> {
     let mut dirs = recorded;
     for action in actions {
-        let Action::Manager(ManagerAction::Provision { manager, .. }) = action else {
+        let Action::Manager(node @ ManagerAction::Provision { .. }) = action else {
             continue;
         };
-        let Some(pm) = find_manager(registry, manager) else {
-            continue;
-        };
-        let Some(plan) = pm.bootstrap_plan() else {
-            continue;
-        };
-        for dir in plan.creates_path_dirs {
-            if !dirs.contains(&dir) {
-                dirs.push(dir);
+        // Every manager the node provisions, not only the one it is named
+        // for: a batched member's directories land on this host exactly as
+        // the leader's do, and an env file missing them is a binary cfgd
+        // installed that no login shell can find.
+        for manager in node.provisioned_managers() {
+            let Some(pm) = find_manager(registry, manager) else {
+                continue;
+            };
+            let Some(plan) = pm.bootstrap_plan() else {
+                continue;
+            };
+            for dir in plan.creates_path_dirs {
+                if !dirs.contains(&dir) {
+                    dirs.push(dir);
+                }
             }
         }
     }
@@ -689,6 +877,247 @@ mod tests {
             .iter()
             .map(format_action_description)
             .collect()
+    }
+
+    /// A mediator (`apt`) and two managers it delivers by plain install.
+    fn apt_with_two_mediated() -> Vec<MockPackageManager> {
+        vec![
+            MockPackageManager::new("apt"),
+            MockPackageManager::new("npm")
+                .unavailable()
+                .without_index()
+                .bootstrappable_via("apt")
+                .mediated_by("apt", &["nodejs", "npm"]),
+            MockPackageManager::new("pipx")
+                .unavailable()
+                .without_index()
+                .bootstrappable_via("apt")
+                .mediated_by("apt", &["pipx"]),
+        ]
+    }
+
+    #[test]
+    fn two_managers_one_mediator_delivers_collapse_onto_one_node() {
+        let actions = plan_actions(installs(&["apt", "npm", "pipx"]), apt_with_two_mediated());
+        let provisions: Vec<&Action> = actions
+            .iter()
+            .filter(|a| matches!(a, Action::Manager(ManagerAction::Provision { .. })))
+            .collect();
+        assert_eq!(
+            provisions.len(),
+            1,
+            "one apt-get install serves both, so one node says so: {:?}",
+            actions.iter().map(format_plan_item).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            format_plan_item(provisions[0]),
+            "provision npm, pipx via apt",
+            "the line has to account for every manager the command installs"
+        );
+        assert_eq!(
+            format_action_description(provisions[0]),
+            "manager:provision:npm",
+            "the batch keeps its leader's persisted identity, so no journal \
+             row or DAG edge is minted under a name nothing else knows"
+        );
+    }
+
+    #[test]
+    fn a_manager_no_plain_install_delivers_is_never_batched() {
+        // npm answers `mediated_packages` for apt; the nvm-shaped one does not,
+        // so there is no command to merge it into.
+        let actions = plan_actions(
+            installs(&["apt", "npm", "pipx"]),
+            vec![
+                MockPackageManager::new("apt"),
+                MockPackageManager::new("npm")
+                    .unavailable()
+                    .without_index()
+                    .bootstrappable_via("apt")
+                    .mediated_by("apt", &["nodejs", "npm"]),
+                MockPackageManager::new("pipx")
+                    .unavailable()
+                    .without_index()
+                    .bootstrappable_via("apt"),
+            ],
+        );
+        let lines: Vec<String> = actions
+            .iter()
+            .filter(|a| matches!(a, Action::Manager(ManagerAction::Provision { .. })))
+            .map(format_plan_item)
+            .collect();
+        assert_eq!(
+            lines,
+            vec!["provision npm via apt", "provision pipx via apt"],
+            "a vendor-script arm keeps its own node and its own command"
+        );
+    }
+
+    #[test]
+    fn a_manager_another_provision_installs_through_keeps_its_own_node() {
+        // pnpm's edge names `manager:provision:npm`, so npm cannot dissolve
+        // into somebody else's node — but it may still lead one.
+        let actions = plan_actions(
+            installs(&["apt", "npm", "pnpm", "pipx"]),
+            vec![
+                MockPackageManager::new("apt"),
+                MockPackageManager::new("npm")
+                    .unavailable()
+                    .without_index()
+                    .bootstrappable_via("apt")
+                    .mediated_by("apt", &["nodejs", "npm"]),
+                MockPackageManager::new("pipx")
+                    .unavailable()
+                    .without_index()
+                    .bootstrappable_via("apt")
+                    .mediated_by("apt", &["pipx"]),
+                MockPackageManager::new("pnpm")
+                    .unavailable()
+                    .without_index()
+                    .bootstrappable_via("npm"),
+            ],
+        );
+        let pnpm = actions
+            .iter()
+            .find(|a| matches!(a, Action::Manager(ManagerAction::Provision { manager, .. }) if manager == "pnpm"))
+            .expect("pnpm is provisioned");
+        let Action::Manager(pnpm_node) = pnpm else {
+            unreachable!("filtered to a manager action")
+        };
+        assert!(
+            pnpm_node
+                .depends_on()
+                .contains(&ManagerAction::provision_node("npm")),
+            "pnpm still waits on the node its `via` is provisioned by"
+        );
+        assert!(
+            actions.iter().any(|a| matches!(
+                a,
+                Action::Manager(node @ ManagerAction::Provision { .. })
+                    if node.node_id() == ManagerAction::provision_node("npm")
+            )),
+            "the node pnpm's edge names still exists"
+        );
+    }
+
+    #[test]
+    fn a_batched_members_own_path_dirs_reach_the_env_file() {
+        let managers = vec![
+            MockPackageManager::new("apt"),
+            MockPackageManager::new("npm")
+                .unavailable()
+                .without_index()
+                .bootstrappable_via("apt")
+                .mediated_by("apt", &["nodejs", "npm"])
+                .creating_dirs(&["/opt/npm/bin"]),
+            MockPackageManager::new("pipx")
+                .unavailable()
+                .without_index()
+                .bootstrappable_via("apt")
+                .mediated_by("apt", &["pipx"])
+                .creating_dirs(&["/opt/pipx/bin"]),
+        ];
+        let mut builder = ReconcilerTestHarness::builder();
+        for pm in managers {
+            builder = builder.with_package_manager(pm);
+        }
+        let harness = builder.build();
+        let actions = plan_managers(&harness.registry, &installs(&["apt", "npm", "pipx"]), &[]);
+        let dirs = fold_provision_path_dirs(&harness.registry, &actions, Vec::new());
+        assert!(
+            dirs.contains(&"/opt/pipx/bin".to_string()),
+            "a batched member's directory is on this host too: {dirs:?}"
+        );
+    }
+
+    #[test]
+    fn a_phase_selector_narrows_a_batch_to_the_manager_it_names() {
+        let actions = plan_actions(installs(&["apt", "npm", "pipx"]), apt_with_two_mediated());
+        let mut plan = prerequisites_plan(actions);
+        restrict_provision_batches(&mut plan, &PhaseName::Prerequisites, "pipx");
+        let lines: Vec<String> = plan
+            .phases
+            .iter()
+            .flat_map(|phase| phase.actions())
+            .filter(|a| matches!(a, Action::Manager(ManagerAction::Provision { .. })))
+            .map(format_plan_item)
+            .collect();
+        assert_eq!(
+            lines,
+            vec!["provision pipx via apt"],
+            "`--phase prerequisites.pipx` provisions pipx, not whatever else \
+             happens to share its apt command"
+        );
+    }
+
+    #[test]
+    fn a_batched_provision_runs_one_mediator_install_of_the_union() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+
+        let delivered = Arc::new(AtomicBool::new(false));
+        let installs_run = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let harness = ReconcilerTestHarness::builder()
+            .with_package_manager(
+                MockPackageManager::new("apt")
+                    .raising(delivered.clone())
+                    .recording_installs(installs_run.clone()),
+            )
+            .with_package_manager(
+                MockPackageManager::new("npm")
+                    .available_when(delivered.clone())
+                    .without_index()
+                    .bootstrappable_via("apt")
+                    .mediated_by("apt", &["nodejs", "npm"]),
+            )
+            .with_package_manager(
+                MockPackageManager::new("pipx")
+                    .available_when(delivered.clone())
+                    .without_index()
+                    .bootstrappable_via("apt")
+                    .mediated_by("apt", &["pipx"]),
+            )
+            .build();
+        let plan = prerequisites_plan(plan_managers(
+            &harness.registry,
+            &installs(&["npm", "pipx"]),
+            &[],
+        ));
+        let result = harness
+            .apply_with_filter(&plan, &test_printer(), None)
+            .expect("the batch applies");
+        assert!(
+            result.action_results.iter().all(|r| r.success),
+            "one apt install provisions both: {:?}",
+            result
+                .action_results
+                .iter()
+                .map(|r| (&r.description, &r.error))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            installs_run.lock().unwrap().as_slice(),
+            &[vec![
+                "nodejs".to_string(),
+                "npm".to_string(),
+                "pipx".to_string()
+            ]],
+            "exactly one mediator command, carrying the union of what each \
+             member's own bootstrap would have asked apt for"
+        );
+    }
+
+    /// The planner's manager actions as a one-phase plan, for the passes that
+    /// take a `Plan` rather than a loose action list.
+    fn prerequisites_plan(actions: Vec<Action>) -> Plan {
+        Plan {
+            phases: vec![Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::cfgd(crate::reconciler::MANAGERS_GROUP),
+                actions,
+            )],
+            warnings: vec![],
+        }
     }
 
     #[test]
@@ -1294,6 +1723,7 @@ mod tests {
         let pipx_provision = Action::Manager(ManagerAction::Provision {
             manager: "pipx".to_string(),
             via: "pipx installer".to_string(),
+            batched: vec![],
             depends_on: vec![ManagerAction::prereq_node("curl")],
         });
         let mut plan = one_phase_plan(

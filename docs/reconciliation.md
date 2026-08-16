@@ -259,7 +259,10 @@ but never a prerequisite tool a manager's installer merely depends on), or that
 tool itself — `curl` is keyed on its own name, `prerequisites.curl`, not on
 whichever manager needed it.
 `prerequisites.managers` is the whole-group equivalent of `cfgd:managers`, scoped to
-that one phase. A selector is only valid scoped to `prerequisites`; naming one after
+that one phase. Managers one mediator delivers by an ordinary package install share
+a single node (`provision npm, pipx via apt`), and a manager selector still names
+exactly one of them: `--skip prerequisites.npm` leaves `provision pipx via apt`
+behind, `--phase prerequisites.pipx` provisions `pipx` alone. A selector is only valid scoped to `prerequisites`; naming one after
 any other phase (`--phase packages.brew`) errors rather than silently matching
 nothing, and points at the phase the selector actually belongs to.
 

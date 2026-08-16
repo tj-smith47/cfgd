@@ -10,11 +10,14 @@ use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager};
 #[cfg(target_os = "linux")]
 use super::shared::detect_system_method;
 use super::shared::{
-    bootstrap_via_system_manager, parse_version_field, resolve_tool_with_fallbacks, run_pkg_cmd,
-    run_pkg_cmd_live, tool_cmd_with_resolver,
+    MediatedArms, bootstrap_via_system_manager, parse_version_field, resolve_tool_with_fallbacks,
+    run_pkg_cmd, run_pkg_cmd_live, system_manager_arms, tool_cmd_with_resolver,
 };
 
 pub struct FlatpakManager;
+
+/// What a mediator installs to deliver flatpak. Linux-only, so no brew arm.
+const FLATPAK_MEDIATED: MediatedArms = system_manager_arms(None, &["flatpak"]);
 
 pub(super) fn find_flatpak() -> Option<PathBuf> {
     resolve_tool_with_fallbacks("flatpak", &[])
@@ -53,7 +56,11 @@ impl PackageManager for FlatpakManager {
     }
 
     fn bootstrap(&self, cx: &PackageContext<'_>) -> Result<()> {
-        bootstrap_via_system_manager(cx, "flatpak", "flatpak")
+        bootstrap_via_system_manager(cx, FLATPAK_MEDIATED.system[0], "flatpak")
+    }
+
+    fn mediated_packages(&self, via: &str) -> Option<Vec<String>> {
+        FLATPAK_MEDIATED.packages_for(via)
     }
 
     fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {

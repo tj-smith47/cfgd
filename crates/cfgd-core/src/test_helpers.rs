@@ -2380,6 +2380,26 @@ pub struct MockPackageManager {
     /// most fixtures want the refresh node in the tree; `without_index()` is
     /// the `cargo`/`npm` shape, which must plan none.
     keeps_index: bool,
+    /// What a mediator installs to deliver this manager, keyed by mediator
+    /// name — the answer `PackageManager::mediated_packages` gives, and so
+    /// what decides whether the planner may batch this manager's provision
+    /// onto a sibling's. Empty by default: a mock is unbatchable until a
+    /// fixture says otherwise.
+    mediated: std::collections::BTreeMap<String, Vec<String>>,
+    /// When set, `is_available()` reads this flag instead of `available`.
+    /// That is the shape a provisioned manager really has: npm appears on the
+    /// host when APT's install lands, not when npm's own bootstrap is called —
+    /// and under a batched provision no member's `bootstrap` runs at all, so a
+    /// mock that can only flip itself can never reach the post-install
+    /// availability check.
+    availability: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Raised by this manager's `install()`. The mediator half of the pair
+    /// above.
+    raises: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Every `install()` this manager was asked to run, shared with the test
+    /// that owns the registry — a `Box<dyn PackageManager>` cannot be read
+    /// back for its own `install_calls`.
+    install_log: Option<std::sync::Arc<Mutex<Vec<Vec<String>>>>>,
 }
 
 impl MockPackageManager {
@@ -2399,6 +2419,10 @@ impl MockPackageManager {
             install_delay: None,
             witness: None,
             keeps_index: true,
+            mediated: std::collections::BTreeMap::new(),
+            availability: None,
+            raises: None,
+            install_log: None,
         }
     }
 
@@ -2463,6 +2487,36 @@ impl MockPackageManager {
         self
     }
 
+    /// Declare that `via` delivers this manager by installing `packages` —
+    /// the `npm`-from-`apt` shape, and the only thing that makes a provision
+    /// batchable.
+    pub fn mediated_by(mut self, via: &str, packages: &[&str]) -> Self {
+        self.mediated.insert(
+            via.to_string(),
+            packages.iter().map(|p| (*p).to_string()).collect(),
+        );
+        self
+    }
+
+    /// Read availability from `flag` rather than from a fixed bool.
+    pub fn available_when(mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.availability = Some(flag);
+        self
+    }
+
+    /// Raise `flag` from this manager's `install()` — the mediator that
+    /// delivers whatever reads the same flag through `available_when`.
+    pub fn raising(mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.raises = Some(flag);
+        self
+    }
+
+    /// Record every `install()` into a log the test keeps a handle on.
+    pub fn recording_installs(mut self, log: std::sync::Arc<Mutex<Vec<Vec<String>>>>) -> Self {
+        self.install_log = Some(log);
+        self
+    }
+
     /// Report this manager's installs to a witness shared with its peers.
     pub fn with_concurrency_witness(mut self, witness: std::sync::Arc<ConcurrencyWitness>) -> Self {
         self.witness = Some(witness);
@@ -2521,6 +2575,9 @@ impl crate::providers::PackageManager for MockPackageManager {
     }
 
     fn is_available(&self) -> bool {
+        if let Some(flag) = &self.availability {
+            return flag.load(std::sync::atomic::Ordering::SeqCst);
+        }
         self.available
             || self
                 .became_available
@@ -2541,6 +2598,10 @@ impl crate::providers::PackageManager for MockPackageManager {
                 .store(true, std::sync::atomic::Ordering::SeqCst);
         }
         Ok(())
+    }
+
+    fn mediated_packages(&self, via: &str) -> Option<Vec<String>> {
+        self.mediated.get(via).cloned()
     }
 
     fn path_dirs(&self, _cx: &crate::providers::PackageContext<'_>) -> Vec<String> {
@@ -2564,6 +2625,12 @@ impl crate::providers::PackageManager for MockPackageManager {
             std::thread::sleep(delay);
         }
         self.install_calls.lock().unwrap().push(packages.to_vec());
+        if let Some(log) = &self.install_log {
+            log.lock().unwrap().push(packages.to_vec());
+        }
+        if let Some(flag) = &self.raises {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         Ok(())
     }
 

@@ -304,6 +304,13 @@ pointing at `--phase prerequisites.brew` instead, since manager work lives in
 | `prerequisites.session` | the live-session broadcast (`RefreshLiveSession`) |
 | `prerequisites.brew` | just the brew manager's own node — NOT a prerequisite tool brew's installer shells out to (e.g. `curl`), which is keyed on its own name (`prerequisites.curl`) rather than on whichever manager's installer happens to need it |
 
+A manager name still selects exactly one manager when several share a node.
+Managers one mediator delivers by an ordinary package install collapse onto a
+single node (`provision npm, pipx via apt` — see
+[Package Managers](packages.md)), and every selector still addresses them one
+at a time: `--skip prerequisites.npm` leaves `provision pipx via apt` behind,
+and `--phase prerequisites.pipx` provisions `pipx` alone.
+
 `modules` and `modules.<name>` still work and print a deprecation naming their
 replacement.
 

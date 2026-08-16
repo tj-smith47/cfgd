@@ -2869,6 +2869,7 @@ fn action_resource_info_manager_provision() {
     let action = Action::Manager(ManagerAction::Provision {
         manager: "brew".into(),
         via: "homebrew installer".into(),
+        batched: vec![],
         depends_on: vec![],
     });
     let (rtype, rid) = action_resource_info(&action);

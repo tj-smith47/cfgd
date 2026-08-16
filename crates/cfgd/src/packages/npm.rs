@@ -10,9 +10,9 @@ use cfgd_core::output::Role;
 use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager, PackageStateStore};
 
 use super::shared::{
-    bootstrap_via_brew_then_system, detect_brew_system_method, pkg_run, planned_method_failed,
-    planned_method_unavailable, report_abandoned_step, run_pkg_cmd_live, run_pkg_query,
-    tool_cmd_with_resolver,
+    MediatedArms, bootstrap_via_brew_then_system, brew_then_system_arms, detect_brew_system_method,
+    pkg_run, planned_method_failed, planned_method_unavailable, report_abandoned_step,
+    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
 };
 
 pub struct NpmManager;
@@ -22,6 +22,11 @@ pub struct NpmManager;
 /// cascade declines toward it, so the two must name the same string or a
 /// planned `nvm` is a method nothing can run.
 const NPM_FALLBACK_METHOD: &str = "nvm";
+
+/// What a mediator installs to deliver npm. Read by `bootstrap` and by
+/// `mediated_packages`, so a batched provision asks apt for exactly the names
+/// the solo bootstrap does.
+const NPM_MEDIATED: MediatedArms = brew_then_system_arms("node", &["nodejs", "npm"]);
 
 /// Where a global npm operation should point, resolved once per operation so
 /// install/uninstall/update/list all agree — see [`resolve_npm_prefix`].
@@ -545,8 +550,8 @@ impl PackageManager for NpmManager {
         if bootstrap_via_brew_then_system(
             cx,
             "npm",
-            "node",
-            &["nodejs", "npm"],
+            NPM_MEDIATED.brew.unwrap_or("node"),
+            NPM_MEDIATED.system,
             NPM_FALLBACK_METHOD,
         )? {
             return Ok(());
@@ -584,6 +589,10 @@ impl PackageManager for NpmManager {
             message: "no installation method available".into(),
         }
         .into())
+    }
+
+    fn mediated_packages(&self, via: &str) -> Option<Vec<String>> {
+        NPM_MEDIATED.packages_for(via)
     }
 
     fn installed_packages(&self, cx: &PackageContext<'_>) -> Result<HashSet<String>> {

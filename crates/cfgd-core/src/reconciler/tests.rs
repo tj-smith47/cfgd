@@ -6191,6 +6191,7 @@ fn a_manager_nodes_description_parses_back_to_the_id_it_is_recorded_under() {
         Action::Manager(ManagerAction::Provision {
             manager: "npm".to_string(),
             via: "brew".to_string(),
+            batched: vec![],
             depends_on: vec![ManagerAction::refresh_node("brew")],
         }),
         Action::Manager(ManagerAction::Prerequisite {
@@ -7313,6 +7314,7 @@ fn apply_manager_provision_makes_manager_available() {
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "snap".to_string(),
                 via: "stub".to_string(),
+                batched: vec![],
                 depends_on: vec![],
             })],
         )],
@@ -7346,6 +7348,7 @@ fn apply_manager_provision_unknown_manager_errors() {
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "nonexistent".to_string(),
                 via: "stub".to_string(),
+                batched: vec![],
                 depends_on: vec![],
             })],
         )],
@@ -7381,6 +7384,7 @@ fn an_unprovisioned_managers_install_names_a_recovery_that_holds_off_a_filter() 
                 vec![Action::Manager(ManagerAction::Provision {
                     manager: "stub".to_string(),
                     via: "mock".to_string(),
+                    batched: vec![],
                     depends_on: vec![],
                 })],
             ),
@@ -10515,6 +10519,7 @@ fn format_action_description_manager_provision() {
     let action = Action::Manager(ManagerAction::Provision {
         manager: "brew".to_string(),
         via: "homebrew installer".to_string(),
+        batched: vec![],
         depends_on: vec![],
     });
     let desc = format_action_description(&action);
@@ -12086,6 +12091,7 @@ fn format_plan_items_manager_provision() {
         vec![Action::Manager(ManagerAction::Provision {
             manager: "brew".into(),
             via: "curl | bash".into(),
+            batched: vec![],
             depends_on: vec![],
         })],
     );
@@ -12780,6 +12786,7 @@ fn provision_only_plan(manager: &str, via: &str) -> Plan {
             vec![Action::Manager(ManagerAction::Provision {
                 manager: manager.to_string(),
                 via: via.to_string(),
+                batched: vec![],
                 depends_on: vec![],
             })],
         )],
@@ -15309,6 +15316,7 @@ fn action_matches_phase_filter_table() {
     let brew_provision = Action::Manager(ManagerAction::Provision {
         manager: "brew".to_string(),
         via: "curl".to_string(),
+        batched: vec![],
         depends_on: vec![],
     });
     let npm_refresh = Action::Manager(ManagerAction::RefreshIndex {
@@ -17954,6 +17962,7 @@ fn managers_group_is_built_at_rank_one() {
             Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                batched: vec![],
                 depends_on: vec![],
             }),
             module_install_action("nvim", "brew", "neovim"),
@@ -18031,6 +18040,7 @@ fn apply_manager_provision_is_skipped_when_already_available() {
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                batched: vec![],
                 depends_on: vec![],
             })],
         )],
@@ -18066,6 +18076,7 @@ fn action_index_is_the_plan_position_not_the_dispatch_counter() {
                 vec![Action::Manager(ManagerAction::Provision {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
+                    batched: vec![],
                     depends_on: vec![],
                 })],
             ),
@@ -19438,6 +19449,7 @@ fn retain_actions_drops_the_groups_it_empties() {
             Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                batched: vec![],
                 depends_on: vec![],
             }),
             module_install_action("nvim", "brew", "neovim"),
@@ -19522,6 +19534,7 @@ fn retain_groups_keeps_the_surviving_owners_in_sort_key_order() {
             Action::Manager(ManagerAction::Provision {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
+                batched: vec![],
                 depends_on: vec![],
             }),
             module_install_action("nvim", "brew", "neovim"),
@@ -19642,6 +19655,7 @@ fn provision_node(manager: &str, via: &str, depends_on: &[String]) -> Action {
     Action::Manager(ManagerAction::Provision {
         manager: manager.to_string(),
         via: via.to_string(),
+        batched: vec![],
         depends_on: depends_on.to_vec(),
     })
 }
@@ -20194,6 +20208,7 @@ fn manager_action_renders_in_cfgd_managers_group() {
         Action::Manager(ManagerAction::Provision {
             manager: "brew".to_string(),
             via: "homebrew installer".to_string(),
+            batched: vec![],
             depends_on: vec![],
         }),
         module_install_action("nvim", "brew", "neovim"),
@@ -20238,6 +20253,7 @@ fn manager_action_group_is_display_only() {
     let action = Action::Manager(ManagerAction::Provision {
         manager: "brew".to_string(),
         via: "homebrew installer".to_string(),
+        batched: vec![],
         depends_on: vec![],
     });
     assert_eq!(
@@ -21145,6 +21161,7 @@ fn a_provisions_planned_via_reaches_the_bootstrap_that_executes_it() {
             vec![Action::Manager(ManagerAction::Provision {
                 manager: "npm".to_string(),
                 via: "apt".to_string(),
+                batched: vec![],
                 depends_on: vec![],
             })],
         )],

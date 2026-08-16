@@ -461,20 +461,28 @@ pub(super) fn print_package_drift(
                 let Some(phrase) = super::live_drift::manager_drift_phrase(ma) else {
                     continue;
                 };
-                group
-                    .status(Role::Warn, format!("{}: {}", ma.manager(), phrase.state))
-                    .detail(phrase.detail);
                 match ma {
-                    ManagerAction::Provision { manager, via, .. } => {
-                        payload.packages.push(PackageDrift {
-                            manager: manager.clone(),
-                            shape: "provision".to_string(),
-                            packages: Vec::new(),
-                            bootstrap_method: Some(via.clone()),
-                            reason: None,
-                        });
+                    // One line and one payload row per manager the node
+                    // provisions: a batch installs several from one command,
+                    // and every one of them is missing on its own terms.
+                    ManagerAction::Provision { via, .. } => {
+                        for manager in ma.provisioned_managers() {
+                            group
+                                .status(Role::Warn, format!("{}: {}", manager, phrase.state))
+                                .detail(phrase.detail.clone());
+                            payload.packages.push(PackageDrift {
+                                manager: manager.to_string(),
+                                shape: "provision".to_string(),
+                                packages: Vec::new(),
+                                bootstrap_method: Some(via.clone()),
+                                reason: None,
+                            });
+                        }
                     }
                     ManagerAction::Refuse { manager, reason } => {
+                        group
+                            .status(Role::Warn, format!("{}: {}", manager, phrase.state))
+                            .detail(phrase.detail.clone());
                         payload.packages.push(PackageDrift {
                             manager: manager.clone(),
                             shape: "refused".to_string(),
@@ -833,6 +841,7 @@ mod tests {
             ManagerAction::Provision {
                 manager: "pipx".into(),
                 via: "pip install pipx".into(),
+                batched: vec![],
                 depends_on: vec![],
             },
             ManagerAction::Refuse {

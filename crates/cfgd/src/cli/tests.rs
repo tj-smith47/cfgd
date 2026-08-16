@@ -9690,6 +9690,7 @@ fn action_type_str_manager_variants() {
         super::action_type_str(&Action::Manager(ManagerAction::Provision {
             manager: "brew".to_string(),
             via: "homebrew installer".to_string(),
+            batched: vec![],
             depends_on: vec![],
         })),
         "provision"
@@ -10077,6 +10078,7 @@ fn filter_plan_skip_file_by_target() {
         &mut plan,
         &["files:/etc/foo".into()],
         &[],
+        None,
         &test_printer(),
         &ProviderRegistry::new(),
     );
@@ -10104,6 +10106,7 @@ fn filter_plan_empty_skip_and_only_noop() {
         &mut plan,
         &[],
         &[],
+        None,
         &test_printer(),
         &ProviderRegistry::new(),
     );
@@ -10131,6 +10134,7 @@ fn filter_plan_skip_uninstall_packages() {
         &mut plan,
         &["packages.brew.old-tool".into()],
         &[],
+        None,
         &test_printer(),
         &ProviderRegistry::new(),
     );
@@ -10164,6 +10168,7 @@ fn filter_plan_only_with_uninstall() {
         &mut plan,
         &[],
         &["packages.apt.vim".into()],
+        None,
         &test_printer(),
         &ProviderRegistry::new(),
     );
@@ -14972,6 +14977,7 @@ fn filter_plan_skip_removes_matching_packages() {
         &mut plan,
         &["packages.brew.fd".to_string()],
         &[],
+        None,
         &test_printer(),
         &ProviderRegistry::new(),
     );
@@ -15035,6 +15041,7 @@ fn filter_plan_only_keeps_matching_phase() {
         &mut plan,
         &[],
         &["packages".to_string()],
+        None,
         &test_printer(),
         &ProviderRegistry::new(),
     );
@@ -15077,6 +15084,7 @@ fn filter_plan_skip_uninstall_packages_env() {
         &mut plan,
         &["packages.npm.left-pad".to_string()],
         &[],
+        None,
         &test_printer(),
         &ProviderRegistry::new(),
     );
@@ -15110,6 +15118,7 @@ fn filter_plan_empty_filters_is_noop() {
         &mut plan,
         &[],
         &[],
+        None,
         &test_printer(),
         &ProviderRegistry::new(),
     );
@@ -15904,6 +15913,7 @@ fn action_path_manager_provision() {
     let action = reconciler::Action::Manager(reconciler::ManagerAction::Provision {
         manager: "brew".into(),
         via: "homebrew installer".into(),
+        batched: vec![],
         depends_on: vec![],
     });
     let path = super::action_path(&PhaseName::Prerequisites, &action);

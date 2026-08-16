@@ -1592,6 +1592,7 @@ mod tests {
         Action::Manager(ManagerAction::Provision {
             manager: manager.to_string(),
             via: via.to_string(),
+            batched: vec![],
             depends_on: depends_on.to_vec(),
         })
     }
@@ -1765,6 +1766,7 @@ mod tests {
         let brew_cask = Action::Manager(ManagerAction::Provision {
             manager: "brew-cask".to_string(),
             via: "brew".to_string(),
+            batched: vec![],
             depends_on: vec![ManagerAction::provision_node("brew")],
         });
         let mut slots = vec![

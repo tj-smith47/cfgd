@@ -379,6 +379,14 @@ pub struct ManagerActionOutput {
     pub via: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<String>,
+    /// The other managers this node's ONE `via` install also provisions.
+    /// Non-empty only for `state == "provisioned"`, and omitted from the wire
+    /// otherwise, so a consumer reading only `manager` sees exactly what it
+    /// always saw. Read it to learn what a single provision row really
+    /// delivers: `manager: "npm"` with `batched: ["pipx"]` is one
+    /// `apt-get install` covering both.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub batched: Vec<String>,
     /// Why this host cannot provision the manager. `Some` only when
     /// `state == "refused"`.
     #[serde(skip_serializing_if = "Option::is_none")]
