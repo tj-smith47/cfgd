@@ -196,8 +196,13 @@ impl SourceManager {
         // A read path never fetches, but it must not COMPOSE a checkout that was
         // cloned from a repository the spec no longer names — that is another
         // source's content wearing this one's name. Degrade exactly like the
-        // cache-miss above: the sync path is what discards and re-clones.
-        if !Self::cached_origin_matches(spec, &source_dir) {
+        // cache-miss above: the sync path is what discards and re-clones. Only
+        // a RECORDED origin that disagrees takes this arm — a cache that is not
+        // a repository falls through to the parse/signature checks below, whose
+        // hard errors are the fail-closed contract for a corrupt cache.
+        if Self::cached_recorded_origin(&source_dir)
+            .is_some_and(|recorded| recorded != spec.origin.url)
+        {
             printer.status_simple(
                 Role::Warn,
                 format!(
@@ -283,8 +288,13 @@ impl SourceManager {
         // whose recorded origin disagrees is discarded and re-cloned rather
         // than re-pointed: unrelated histories refuse the fast-forward, which
         // would quietly keep serving the OLD checkout after a "successful"
-        // fetch.
-        if source_dir.exists() && !Self::cached_origin_matches(spec, &source_dir) {
+        // fetch. A directory that is not a repository (or records no origin)
+        // is equally unfetchable, so it takes the same discard-and-reclone
+        // self-heal here on the sync path.
+        if source_dir.exists()
+            && Self::cached_recorded_origin(&source_dir)
+                .is_none_or(|recorded| recorded != spec.origin.url)
+        {
             printer.status_simple(
                 Role::Warn,
                 format!(
@@ -400,17 +410,16 @@ impl SourceManager {
         Ok(())
     }
 
-    /// Whether the cached checkout at `source_dir` was cloned from the origin
-    /// `spec` names. `false` for a directory that is not a repository or has
-    /// no `origin` remote — both are stale-cache shapes the caller discards.
-    fn cached_origin_matches(spec: &SourceSpec, source_dir: &Path) -> bool {
-        let Ok(repo) = Repository::open(source_dir) else {
-            return false;
-        };
-        let Ok(remote) = repo.find_remote("origin") else {
-            return false;
-        };
-        remote.url().ok() == Some(spec.origin.url.as_str())
+    /// The origin URL the cached checkout at `source_dir` records, or `None`
+    /// for a directory that is not a repository or has no `origin` remote.
+    /// `None` is deliberately NOT an answer about mismatch: the sync path
+    /// discards it as unfetchable either way, while the read path falls
+    /// through so a corrupt cache keeps hitting the parse/signature hard
+    /// errors it always has instead of being quietly skipped.
+    fn cached_recorded_origin(source_dir: &Path) -> Option<String> {
+        let repo = Repository::open(source_dir).ok()?;
+        let remote = repo.find_remote("origin").ok()?;
+        remote.url().ok().map(str::to_owned)
     }
 
     /// Fetch (pull) updates for an already-cloned source.

@@ -3025,6 +3025,62 @@ mod local_source_fixture {
             );
         });
     }
+
+    #[test]
+    #[serial]
+    fn load_source_reclones_a_cache_that_is_not_a_repository() {
+        // A cache directory with no git repository in it records no origin, so
+        // the sync path cannot fetch it. It takes the same discard-and-reclone
+        // self-heal as an origin mismatch instead of failing on the fetch.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "nonrepo-heal", None, &[]);
+            let cache_dir = tmp.path().join("cache");
+            let planted = cache_dir.join("nonrepo-heal");
+            std::fs::create_dir_all(&planted).unwrap();
+            std::fs::write(planted.join("cfgd-source.yaml"), "::: garbage :::").unwrap();
+
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = build_spec(
+                "nonrepo-heal",
+                &crate::test_helpers::file_url(&bare),
+                &detect_branch(&bare),
+            );
+            mgr.load_source(&spec, &test_printer())
+                .expect("a non-repository cache must be discarded and re-cloned");
+            assert!(mgr.get("nonrepo-heal").is_some());
+            assert!(
+                !head_oid(&cache_dir, "nonrepo-heal").is_empty(),
+                "the re-clone is a real checkout"
+            );
+            let manifest = std::fs::read_to_string(planted.join("cfgd-source.yaml")).unwrap();
+            assert!(
+                !manifest.contains("garbage"),
+                "the planted non-repo content must be gone"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_cached_still_hard_errors_on_a_corrupt_non_repo_cache() {
+        // The read-path origin check must not swallow the fail-closed contract:
+        // a cache that is not a repository records no origin, so it falls
+        // through to manifest parsing, and a corrupt manifest stays a hard
+        // error rather than a warn-and-skip.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let cache_dir = tmp.path().join("cache");
+            let planted = cache_dir.join("corrupt");
+            std::fs::create_dir_all(&planted).unwrap();
+            std::fs::write(planted.join("cfgd-source.yaml"), "::: garbage :::").unwrap();
+
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = build_spec("corrupt", "https://example.test/team.git", "master");
+            mgr.load_source_cached(&spec, &test_printer())
+                .expect_err("a corrupt cached manifest is a hard error, never a silent skip");
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
