@@ -97,6 +97,60 @@ impl Drop for FileLockGuard {
     }
 }
 
+/// The observation that a thread has reached a [`LockWait::Block`] acquire and
+/// is waiting on the holder.
+///
+/// It exists for the same reason [`crate::test_helpers::await_queued_path_writer`]
+/// does: "a contender is waiting" is a state no channel between the two threads
+/// can report, because the waiting thread is inside a syscall and runs no code
+/// of its own until the lock is free. Without it a test can only observe that
+/// the acquire eventually SUCCEEDED, which a non-blocking acquire also does the
+/// moment the holder happens to release first — so the blocking arm can be
+/// deleted outright and the test still passes.
+#[cfg(test)]
+mod blocking_witness {
+    use std::sync::{Condvar, LazyLock, Mutex, PoisonError};
+
+    static GATE: LazyLock<(Mutex<usize>, Condvar)> =
+        LazyLock::new(|| (Mutex::new(0), Condvar::new()));
+
+    /// Counts down when the acquire it was created for returns, however it
+    /// returns, so one test's waiter cannot be mistaken for the next's.
+    pub(super) struct Waiting;
+
+    impl Drop for Waiting {
+        fn drop(&mut self) {
+            let (count, signal) = &*GATE;
+            let mut count = count.lock().unwrap_or_else(PoisonError::into_inner);
+            *count = count.saturating_sub(1);
+            signal.notify_all();
+        }
+    }
+
+    pub(super) fn entering_blocking_acquire() -> Waiting {
+        let (count, signal) = &*GATE;
+        let mut guard = count.lock().unwrap_or_else(PoisonError::into_inner);
+        *guard += 1;
+        signal.notify_all();
+        Waiting
+    }
+
+    /// Block until some thread is inside a blocking source-lock acquire.
+    /// `timeout` is a deadlock escape, never a timing assertion: the answer is
+    /// the returned bool, and a caller asserts on that.
+    pub fn await_blocking_source_acquire(timeout: std::time::Duration) -> bool {
+        let (count, signal) = &*GATE;
+        let guard = count.lock().unwrap_or_else(PoisonError::into_inner);
+        let (guard, _) = signal
+            .wait_timeout_while(guard, timeout, |count| *count == 0)
+            .unwrap_or_else(PoisonError::into_inner);
+        *guard > 0
+    }
+}
+
+#[cfg(test)]
+pub use blocking_witness::await_blocking_source_acquire;
+
 /// What a contended acquire does about the holder.
 ///
 /// The machine-wide mutexes ([`acquire_apply_lock`], [`acquire_backup_lock`])
@@ -257,6 +311,8 @@ pub fn acquire_source_lock(
     match acquire_lock_at(&lock_path, LockWait::Refuse) {
         Err(errors::CfgdError::State(errors::StateError::ApplyLockHeld { .. })) => {
             on_wait();
+            #[cfg(test)]
+            let _waiting = blocking_witness::entering_blocking_acquire();
             acquire_lock_at(&lock_path, LockWait::Block)
         }
         other => other,

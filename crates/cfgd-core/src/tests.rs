@@ -610,6 +610,75 @@ fn backup_locks_are_per_unit_and_live_under_the_locks_dir() {
 }
 
 #[test]
+fn an_uncontended_source_lock_is_taken_without_announcing_a_wait() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    let guard = acquire_source_lock(&cache, || {
+        panic!("nothing holds the lock, so nothing waits")
+    })
+    .expect("a free lock is taken");
+    assert!(
+        cache.join(SOURCES_LOCK_FILENAME).is_file(),
+        "the lock lands in the cache dir it guards"
+    );
+    drop(guard);
+}
+
+#[test]
+fn a_contended_source_lock_announces_the_wait_and_completes_when_the_holder_releases() {
+    // The blocking arm is the one that can hang a CLI, so it is driven rather
+    // than reasoned about — with channels and the acquire's own witness, never
+    // a clock. The holder stays on THIS thread and the waiter is spawned, so
+    // the middle assertion is decidable: while the guard below is alive no
+    // correct acquire can have returned.
+    //
+    // `await_blocking_source_acquire` is what makes it decidable in the other
+    // direction too. Receiving `waited` only proves the waiter announced; it
+    // has not yet re-entered the lock, so releasing at that point lets a
+    // NON-blocking second acquire succeed on its first try. The witness fires
+    // from inside the acquire, so the holder does not release until the waiter
+    // is genuinely blocked on it: mutate the arm to `LockWait::Refuse` and this
+    // test goes red instead of passing on scheduling luck.
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    let guard = acquire_source_lock(&cache, || panic!("the first holder never waits"))
+        .expect("the holder takes a free lock");
+
+    let (waited_tx, waited_rx) = std::sync::mpsc::channel::<()>();
+    let (acquired_tx, acquired_rx) = std::sync::mpsc::channel::<()>();
+    let waiter_cache = cache.clone();
+    let waiter = std::thread::spawn(move || {
+        let held = acquire_source_lock(&waiter_cache, move || {
+            let _ = waited_tx.send(());
+        })
+        .expect("a contended acquire waits for the holder rather than refusing");
+        let _ = acquired_tx.send(());
+        drop(held);
+    });
+
+    waited_rx
+        .recv()
+        .expect("a lock already held must announce the wait before blocking on it");
+    assert!(
+        crate::await_blocking_source_acquire(std::time::Duration::from_secs(10)),
+        "the announced wait must be followed by a blocking acquire"
+    );
+    assert!(
+        matches!(
+            acquired_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ),
+        "the lock is still held on this thread, so the waiter must not hold one too"
+    );
+
+    drop(guard);
+    acquired_rx
+        .recv()
+        .expect("the wait ends when the holder releases");
+    waiter.join().expect("the waiter thread finishes");
+}
+
+#[test]
 fn backup_lock_rejects_a_name_that_would_escape_the_locks_dir() {
     // The name is interpolated into the lock filename, and this is a `pub`
     // cfgd-core API — a caller that skipped `validate_backup_specs` must be
