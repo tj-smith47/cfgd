@@ -442,7 +442,7 @@ mod tests {
     }
 
     fn take(buf: &Arc<Mutex<String>>) -> String {
-        buf.lock().unwrap().clone()
+        crate::test_helpers::captured_text(buf)
     }
 
     /// Drive `emit_structured` with a discarded stderr sink and a fresh error

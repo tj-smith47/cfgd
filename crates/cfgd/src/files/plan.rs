@@ -1251,7 +1251,7 @@ mod tests {
             records.iter().all(|r| !r.matches),
             "an unresolvable source is drift, matching what verify reports"
         );
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("Source not found") || output.contains("nonexistent"),
             "output should mention missing source, got: {output}"
@@ -1407,7 +1407,7 @@ mod tests {
                 .iter()
                 .any(|r| !r.matches)
         );
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("telemetry"),
             "diff must render the merged content, got: {output}"
@@ -1434,7 +1434,7 @@ mod tests {
                 .all(|r| r.matches)
         );
         assert!(
-            buf.lock().unwrap().is_empty(),
+            cfgd_core::test_helpers::captured_text(&buf).is_empty(),
             "a converged file prints nothing"
         );
     }
@@ -1527,7 +1527,7 @@ mod tests {
             records.iter().any(|r| !r.matches),
             "an unevaluable Patch file counts as drift"
         );
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("cannot evaluate patch spec"),
             "the reason is printed, got: {output}"

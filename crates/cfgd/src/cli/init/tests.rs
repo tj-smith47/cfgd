@@ -423,7 +423,7 @@ fn pick_profile_divergent_metadata_name_yields_resolvable_stem() {
         result, "work",
         "picker must yield the stem find_profile_path resolves, not metadata.name"
     );
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("metadata.name 'other'") && out.contains("using 'work'"),
         "picker path must surface the divergence warn; got: {out:?}"
@@ -2514,7 +2514,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
         result.err()
     );
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !output.contains("Skipped"),
         "Skipped must NOT fire when prompt is confirmed: {output}"
@@ -2678,7 +2678,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
         result.err()
     );
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Skipped"),
         "Skipped notice must fire when prompt is declined: {output}"

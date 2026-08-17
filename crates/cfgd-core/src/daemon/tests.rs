@@ -4861,7 +4861,7 @@ fn extract_source_resources_multiple_system_keys() {
 #[test]
 fn daemon_state_uptime_increases() {
     let state = DaemonState::new();
-    // Small sleep to ensure non-zero uptime
+    // sleep-ok: uptime is wall-clock elapsed time itself; the sleep IS the subject
     std::thread::sleep(Duration::from_millis(10));
     let response = state.to_response();
     // Uptime should be at least 0 (could be 0 if resolution is 1s)
@@ -10997,17 +10997,17 @@ mod harness {
     ) {
         let deadline = std::time::Instant::now() + timeout;
         loop {
-            if buf.lock().unwrap().contains(needle) {
+            let snapshot = crate::test_helpers::captured_text(buf);
+            if snapshot.contains(needle) {
                 return;
             }
             if std::time::Instant::now() >= deadline {
                 panic!(
                     "timed out after {:?} waiting for buffer to contain {:?}; got: {}",
-                    timeout,
-                    needle,
-                    buf.lock().unwrap()
+                    timeout, needle, snapshot
                 );
             }
+            // sleep-ok: this loop IS the observable — a bounded deadline poll, not a fixed-duration guess
             tokio::time::sleep(StdDuration::from_millis(5)).await;
         }
     }
@@ -11080,7 +11080,7 @@ mod harness {
         let (ctx, buf) = sighup_ctx(tmp, config_path);
         let mut backup_timers = crate::daemon::BackupTimers::empty();
         runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_timers);
-        let captured = captured_text(&buf);
+        let captured = crate::test_helpers::captured_text(&buf);
         (
             captured,
             reconcile_secs.load(Ordering::Relaxed),
@@ -11514,8 +11514,8 @@ spec:
         ));
         // Fire a SIGHUP-equivalent tick.
         senders.sighup_tx.send(()).await.unwrap();
-        // Give the loop a moment to process before shutdown.
-        tokio::time::sleep(StdDuration::from_millis(100)).await;
+        // Wait for the reload to actually land instead of guessing a duration.
+        wait_for_buffer_contains(&buf, "Timer intervals reloaded", StdDuration::from_secs(5)).await;
         senders.shutdown_tx.send(()).unwrap();
         tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
             .await
@@ -11523,7 +11523,7 @@ spec:
             .expect("join error")
             .expect("loop returned Err");
         assert_eq!(reconcile_secs_observe.load(Ordering::Relaxed), 77);
-        let captured = captured_text(&buf);
+        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
             captured.contains("Timer intervals reloaded"),
             "expected reload message in: {}",
@@ -11551,6 +11551,7 @@ spec:
         for _ in 0..3 {
             senders.reconcile_tx.send(()).await.unwrap();
         }
+        // sleep-ok: no reconcile_tasks means the tick is a silent no-op — no printer/state signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         senders.shutdown_tx.send(()).unwrap();
         tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
@@ -11582,6 +11583,7 @@ spec:
         ));
         senders.sync_tx.send(()).await.unwrap();
         senders.sync_tx.send(()).await.unwrap();
+        // sleep-ok: no sync_tasks means the tick is a silent no-op — no printer/state signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         senders.shutdown_tx.send(()).unwrap();
         tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
@@ -11611,6 +11613,7 @@ spec:
             sync_secs,
         ));
         senders.compliance_tx.send(()).await.unwrap();
+        // sleep-ok: compliance disabled means the tick is a silent no-op — no printer/state signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         senders.shutdown_tx.send(()).unwrap();
         tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
@@ -11858,6 +11861,7 @@ spec:
             sync_secs,
         ));
         senders.compliance_tx.send(()).await.unwrap();
+        // sleep-ok: proving the panicking handler didn't tear the loop down needs no forward signal — the assertion is that shutdown still completes cleanly
         tokio::time::sleep(StdDuration::from_millis(150)).await;
         senders.shutdown_tx.send(()).unwrap();
         tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
@@ -12269,7 +12273,7 @@ spec:
         let secs = Arc::new(AtomicU64::new(0));
         let (tx, mut rx) = mpsc::channel::<()>(8);
         let handle = super::super::spawn_interval_pump(secs, tx);
-        // Give the runtime a chance to schedule the pump task.
+        // sleep-ok: give the runtime a chance to schedule the pump task; no observable exists for "the pump task has been polled once"
         tokio::time::sleep(StdDuration::from_millis(10)).await;
         handle.abort();
         // No assertion on rx — we only verify the pump didn't spin or panic before
@@ -12706,7 +12710,7 @@ spec: {}
         )
         .expect("setup with a deprecated theme key still succeeds");
 
-        let captured = captured_text(&buf);
+        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
             captured.contains("theme.overrides.iconSuccess is renamed to iconOk"),
             "expected startup to drain the theme deprecation notice; got: {captured:?}"
@@ -13583,7 +13587,7 @@ spec: {}
             &["reconcile=30s".to_string(), "compliance=900s".to_string()],
             "/tmp/cfgd-banner-test.sock",
         );
-        let out = captured_text(&buf);
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Health: /tmp/cfgd-banner-test.sock"));
         assert!(out.contains("Intervals: reconcile=30s, compliance=900s"));
         assert!(out.contains("Daemon running"));
@@ -13848,8 +13852,9 @@ spec: {}
             env!("CARGO_PKG_VERSION"),
         ));
 
-        // Give the loop a tick to enter the select! arm
-        tokio::time::sleep(StdDuration::from_millis(20)).await;
+        // Wait for the startup banner instead of guessing when the loop has
+        // entered its select! arm.
+        wait_for_buffer_contains(&buf, "Daemon running", StdDuration::from_secs(5)).await;
         // Send shutdown
         senders.shutdown_tx.send(()).unwrap();
 
@@ -13863,7 +13868,7 @@ spec: {}
         assert!(result.is_ok(), "daemon should exit Ok, got {:?}", result);
 
         // Banner emitted by print_startup_banner
-        let out = captured_text(&buf);
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.contains("Daemon running"),
             "banner should announce running state, got: {}",
@@ -13900,8 +13905,14 @@ spec: {}
         // from setup.reconcile_tasks with a 300s interval; first tick
         // always fires because last_reconciled is None).
         senders.reconcile_tx.send(()).await.unwrap();
-        // Allow handle_reconcile to land before we shut down.
-        tokio::time::sleep(StdDuration::from_millis(150)).await;
+        // Poll for the reconcile's own side effect (a state.db file) rather
+        // than guessing how long handle_reconcile takes to land.
+        let store = tmp.path().join(crate::state::STATE_DB_FILENAME);
+        let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
+        while !store.exists() && std::time::Instant::now() < deadline {
+            // sleep-ok: bounded deadline poll on a filesystem side effect, not a fixed-duration guess
+            tokio::time::sleep(StdDuration::from_millis(10)).await;
+        }
         senders.shutdown_tx.send(()).unwrap();
 
         let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
@@ -13913,7 +13924,6 @@ spec: {}
         // (handle_reconcile opens the store via state_dir_override). Both the
         // override and the production-default paths resolve the same canonical
         // filename, so no sibling `cfgd.db` is ever created.
-        let store = tmp.path().join(crate::state::STATE_DB_FILENAME);
         assert!(
             store.exists(),
             "expected {} under {}",
@@ -13947,6 +13957,7 @@ spec: {}
         ));
 
         senders.sync_tx.send(()).await.unwrap();
+        // sleep-ok: no sync_tasks means the tick is a silent no-op — no printer/state signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(60)).await;
         senders.shutdown_tx.send(()).unwrap();
 
@@ -13997,11 +14008,10 @@ spec: {}
         )
         .unwrap();
         senders.sighup_tx.send(()).await.unwrap();
-        // Give the daemon enough headroom to process the SIGHUP and emit
-        // the reload chatter. 80ms is fine for native runs but tight under
-        // llvm-cov instrumentation, which slowed this test enough to lose
-        // the printer-buffer race in the coverage build.
-        tokio::time::sleep(StdDuration::from_millis(200)).await;
+        // Wait for the reload chatter instead of guessing a duration — a
+        // fixed 200ms was already bumped once after this test lost the
+        // printer-buffer race under llvm-cov instrumentation.
+        wait_for_buffer_contains(&buf, "Reloading configuration", StdDuration::from_secs(5)).await;
         senders.shutdown_tx.send(()).unwrap();
 
         let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
@@ -14009,7 +14019,7 @@ spec: {}
             .expect("daemon should shut down in time")
             .expect("daemon join");
         assert!(result.is_ok(), "daemon Ok, got {:?}", result);
-        let out = captured_text(&buf);
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.contains("Reloading configuration") || out.contains("Timer intervals reloaded"),
             "expected sighup reload chatter, got: {}",
@@ -14044,6 +14054,7 @@ spec: {}
         // a managed_paths entry — the handler tolerates unknown paths and
         // simply records into the debounce map.
         senders.file_tx.send(config_path.clone()).await.unwrap();
+        // sleep-ok: an unmanaged path prints nothing when debounced — no signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(80)).await;
         senders.shutdown_tx.send(()).unwrap();
 
@@ -14078,6 +14089,7 @@ spec: {}
         ));
 
         senders.compliance_tx.send(()).await.unwrap();
+        // sleep-ok: without a compliance config the tick writes and prints nothing — no signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(80)).await;
         senders.shutdown_tx.send(()).unwrap();
 
@@ -14125,6 +14137,7 @@ spec: {}
         // being perfectly healthy.
         let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
         while std::time::Instant::now() < deadline && !ipc_path.exists() {
+            // sleep-ok: bounded deadline poll on a filesystem side effect, not a fixed-duration guess
             tokio::time::sleep(StdDuration::from_millis(10)).await;
         }
         assert!(
@@ -14293,9 +14306,7 @@ spec: {}
         // concurrent test could observe / consume the signal.
         let (tx, mut rx) = mpsc::channel::<()>(8);
         let handle = super::super::spawn_sighup_pump(tx).expect("sighup pump registers");
-        // Give tokio the SIGHUP signal subscription a chance to wire up before
-        // we raise the signal. Without this the kill arrives before the
-        // listener exists and is dropped.
+        // sleep-ok: give tokio's SIGHUP subscription a chance to wire up before we raise the signal — no observable exists for OS signal-handler registration
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         // SAFETY: libc::kill against own PID is well-defined.
         unsafe {
@@ -14332,7 +14343,7 @@ spec: {}
             "wait_for_shutdown must return after SIGTERM"
         );
         joined.unwrap().expect("task join");
-        let out = captured_text(&buf);
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.contains("Received SIGTERM"),
             "shutdown printer should announce SIGTERM, got: {}",
@@ -14417,6 +14428,7 @@ spec: {}
                 satisfied = true;
                 break;
             }
+            // sleep-ok: bounded poll on the mock server's own matched() observable, not a fixed-duration guess
             tokio::time::sleep(StdDuration::from_millis(50)).await;
         }
         assert!(
@@ -14471,22 +14483,8 @@ spec: {}
         // synchronously before the banner is printed, so a banner in the
         // buffer means the signal raised below is delivered to the daemon
         // rather than to the default disposition that would kill this test
-        // process. Polled to a deadline rather than slept for a fixed span —
-        // a machine running the whole suite in parallel misses a fixed budget
-        // while being perfectly healthy.
-        let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
-        let mut banner = false;
-        while std::time::Instant::now() < deadline {
-            if buf.lock().unwrap().contains("Daemon running") {
-                banner = true;
-                break;
-            }
-            tokio::time::sleep(StdDuration::from_millis(25)).await;
-        }
-        assert!(
-            banner,
-            "production-trigger path must emit the startup banner before shutdown"
-        );
+        // process.
+        wait_for_buffer_contains(&buf, "Daemon running", StdDuration::from_secs(5)).await;
 
         // SIGTERM drives the production wait_for_shutdown task which sends on
         // the shutdown oneshot, exiting the loop cleanly.
@@ -14501,7 +14499,7 @@ spec: {}
             .expect("daemon join");
         assert!(result.is_ok(), "daemon should exit Ok, got {:?}", result);
 
-        let out = captured_text(&buf);
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.contains("Daemon stopped"),
             "cleanup path must run, got: {}",
@@ -14721,8 +14719,9 @@ spec: {}
             env!("CARGO_PKG_VERSION"),
         ));
 
-        tokio::time::sleep(StdDuration::from_millis(20)).await;
+        wait_for_buffer_contains(&buf, "Daemon running", StdDuration::from_secs(5)).await;
         senders.reconcile_tx.send(()).await.unwrap();
+        // sleep-ok: a clean reconcile tick prints nothing (see clean_reconcile_cycle.txt) — no signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(150)).await;
         senders.shutdown_tx.send(()).unwrap();
 
@@ -14736,7 +14735,7 @@ spec: {}
         assert!(result.is_ok(), "daemon should exit Ok, got {:?}", result);
 
         drop(printer);
-        let actual = normalize_ipc(&captured_text(&buf), &ipc_path);
+        let actual = normalize_ipc(&crate::test_helpers::captured_text(&buf), &ipc_path);
         assert_snapshot("clean_reconcile_cycle.txt", &actual);
     }
 
@@ -14775,8 +14774,9 @@ spec: {}
             env!("CARGO_PKG_VERSION"),
         ));
 
-        tokio::time::sleep(StdDuration::from_millis(20)).await;
+        wait_for_buffer_contains(&buf, "Daemon running", StdDuration::from_secs(5)).await;
         senders.file_tx.send(config_path).await.unwrap();
+        // sleep-ok: a drift-recording file tick prints nothing to the loop's Printer (see drift_event.txt) — no signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(80)).await;
         senders.shutdown_tx.send(()).unwrap();
 
@@ -14787,7 +14787,7 @@ spec: {}
         assert!(result.is_ok(), "daemon Ok, got {:?}", result);
 
         drop(printer);
-        let actual = normalize_ipc(&captured_text(&buf), &ipc_path);
+        let actual = normalize_ipc(&crate::test_helpers::captured_text(&buf), &ipc_path);
         assert_snapshot("drift_event.txt", &actual);
     }
 }
@@ -15853,6 +15853,7 @@ mod ipc_socket_security {
             if sock_path.exists() {
                 break;
             }
+            // sleep-ok: bounded poll on a filesystem side effect (the bound socket), not a fixed-duration guess
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(
@@ -16712,7 +16713,7 @@ mod tests_run_daemon_wrapper {
 // ===========================================================================
 
 mod backup_timers {
-    use super::harness::{captured_text, make_test_ctx, make_triggers, pre_loop, sighup_ctx};
+    use super::harness::{make_test_ctx, make_triggers, pre_loop, sighup_ctx};
     use super::*;
     use crate::daemon::backup::{
         BackupTask, BackupTimers, DegradedReason, ResolvedBackupTasks, build_backup_tasks,
@@ -17001,7 +17002,7 @@ mod backup_timers {
             "a changed schedule re-arms the timer"
         );
 
-        let captured = captured_text(&buf);
+        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
             captured.contains("Backup schedules reloaded: 1 added, 1 removed, 1 rescheduled"),
             "reload must report the timer-set delta: {captured}"
@@ -17181,6 +17182,7 @@ mod backup_timers {
                 Instant::now() < deadline,
                 "the loop's backup timer never fired"
             );
+            // sleep-ok: bounded deadline poll on a state-store observable, not a fixed-duration guess
             tokio::time::sleep(StdDuration::from_millis(25)).await;
         }
 
@@ -17505,7 +17507,7 @@ mod backup_timers {
             kept, armed,
             "the pending deadlines must survive the failure"
         );
-        let captured = captured_text(&buf);
+        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
             captured.contains("Backup schedules NOT reloaded"),
             "the operator must be told the reload was refused: {captured}"
@@ -17550,7 +17552,7 @@ mod backup_timers {
             "a healed config must restore the timers without a restart or a SIGHUP"
         );
         assert!(!set.is_degraded());
-        let captured = captured_text(&buf);
+        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
             captured.contains("Backup schedules restored: 1 scheduled"),
             "the recovery must be visible: {captured}"
@@ -17580,7 +17582,7 @@ mod backup_timers {
 
         assert_eq!(set.len(), 0);
         assert!(!set.is_degraded());
-        let captured = captured_text(&buf);
+        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
             captured.contains("Backup schedule resolved: no units configured"),
             "the zero case must not say 'restored': {captured}"
@@ -17698,7 +17700,7 @@ mod backup_timers {
             "adopting a partial set must not clear the degraded state"
         );
 
-        let captured = captured_text(&buf);
+        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
             captured.contains(
                 "Backup schedules restored: 1 scheduled (source composition unavailable)"
@@ -17744,7 +17746,7 @@ mod backup_timers {
             set.degraded_reason(),
             Some(crate::daemon::backup::DegradedReason::SourcesUnavailable)
         );
-        let captured = captured_text(&buf);
+        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
             captured.contains(
                 "Backup schedules reloaded: 1 added, 0 removed, 0 rescheduled (source composition unavailable)"
@@ -17784,7 +17786,7 @@ mod backup_timers {
         runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
 
         assert!(!set.is_degraded());
-        let captured = captured_text(&buf);
+        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
             captured.contains("✓ Backup schedules reloaded: 1 added, 0 removed, 0 rescheduled"),
             "got: {captured}"
@@ -18051,7 +18053,7 @@ mod backup_timers {
             let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
             crate::with_test_home(&home, || run(&state_dir, &store, &printer));
             drop(printer);
-            let human = captured_text(&buf);
+            let human = crate::test_helpers::captured_text(&buf);
             backups_block(&human)
         }
 
@@ -18166,6 +18168,7 @@ mod backup_timers {
             .with_ansi(false)
             .finish();
         tracing::subscriber::with_default(subscriber, f);
+        // raw-capture-ok: this buf is a tracing-log Arc<Mutex<Vec<u8>>>, not a Printer::for_test* text capture — captured_text doesn't type-check against it
         let bytes = buf.lock().expect("lock").clone();
         String::from_utf8(bytes).expect("utf8 logs")
     }

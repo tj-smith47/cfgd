@@ -697,7 +697,7 @@ mod tests {
 
     use super::*;
     use crate::output::Verbosity;
-    use crate::output::strip_ansi;
+
     use crate::providers::PackageAction;
     use crate::reconciler::types::PhaseName;
 
@@ -714,7 +714,7 @@ mod tests {
     }
 
     fn drawn(buf: &std::sync::Arc<std::sync::Mutex<String>>) -> String {
-        strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()))
+        crate::test_helpers::captured_text(buf)
     }
 
     /// Where each of `needles` was last drawn, panicking on one that never was

@@ -309,7 +309,7 @@ mod tests {
         let (r, sink, buf) = capture();
         r.render_section_open("Empty", /*keep_when_empty=*/ false);
         r.render_section_close(&sink);
-        assert!(buf.lock().unwrap().is_empty());
+        assert!(crate::test_helpers::captured_text(&buf).is_empty());
     }
 
     #[test]
@@ -317,7 +317,7 @@ mod tests {
         let (r, sink, buf) = capture();
         r.render_section_open("Files", /*keep_when_empty=*/ true);
         r.render_section_close(&sink);
-        let s = buf.lock().unwrap();
+        let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("Files"));
         assert!(s.contains("(none)"));
     }
@@ -331,9 +331,7 @@ mod tests {
         r.render_section_open("Phase: Packages", /*keep_when_empty=*/ true);
         r.render_section_commit_header(&sink);
         assert!(
-            buf.lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .contains("Phase: Packages"),
+            crate::test_helpers::captured_text(&buf).contains("Phase: Packages"),
             "the header is on screen before the section has a child"
         );
         r.render_section_close(&sink);
@@ -346,7 +344,7 @@ mod tests {
         r.render_section_commit_header(&sink);
         r.render_section_commit_header(&sink);
         r.render_section_close(&sink);
-        let out = buf.lock().unwrap_or_else(|e| e.into_inner());
+        let out = crate::test_helpers::captured_text(&buf);
         assert_eq!(out.matches("Phase: Packages").count(), 1, "got: {out}");
     }
 
@@ -359,7 +357,7 @@ mod tests {
         r.render_section_open("Files", true);
         r.render_section_commit_header(&sink);
         r.render_section_close(&sink);
-        let out = buf.lock().unwrap_or_else(|e| e.into_inner());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("(none)"), "got: {out}");
     }
 
@@ -371,7 +369,7 @@ mod tests {
         r.render_section_open("Phase: Packages", true);
         r.render_section_open("profile:work", true);
         r.render_section_commit_header(&sink);
-        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let out = crate::test_helpers::captured_text(&buf);
         let phase = out.find("Phase: Packages");
         let group = out.find("profile:work");
         assert!(
@@ -388,7 +386,7 @@ mod tests {
         r.render_section_open("Files", true);
         r.render_section_empty_state("No files yet");
         r.render_section_close(&sink);
-        let s = buf.lock().unwrap();
+        let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("No files yet"));
         assert!(!s.contains("(none)"));
     }
@@ -402,7 +400,7 @@ mod tests {
     fn section_close_pads_only_buffered_subjects_with_trailing_content() {
         use std::time::Duration;
 
-        use crate::output::{Printer, Role, strip_ansi};
+        use crate::output::{Printer, Role};
 
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         {
@@ -415,7 +413,7 @@ mod tests {
                 .duration(Duration::from_millis(400));
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
 
         // Width is the widest TRAILING subject (ripgrep, 7). One bare subject
         // is longer than that and one is shorter, so the assertions below fail
@@ -458,7 +456,7 @@ mod tests {
         // Simulate a child line at depth 1.
         r.write_line(&sink, 1, "- foo.txt");
         r.render_section_close(&sink);
-        let s = buf.lock().unwrap();
+        let s = crate::test_helpers::captured_text(&buf);
         // Header carries bold SGR; strip ANSI before shape assertions.
         let plain = crate::output::strip_ansi(&s);
         assert!(plain.starts_with("Files\n"), "got: {plain:?}");
@@ -473,7 +471,7 @@ mod tests {
         // section is known to have content. A phase heading that lost that
         // guarantee would let a live-region status window paint above a
         // heading that hasn't reached the sink yet.
-        use crate::output::{PhaseLabel, Printer, Role, strip_ansi};
+        use crate::output::{PhaseLabel, Printer, Role};
 
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         {
@@ -481,7 +479,7 @@ mod tests {
             let _ = s.status(Role::Ok, "ripgrep").detail("installed");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
 
         let heading = out
             .find("Phase: Packages")

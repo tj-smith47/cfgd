@@ -5481,7 +5481,7 @@ fn apply_continue_on_error_multiline_script_condenses_display_keeps_raw_descript
         failed.description
     );
 
-    let output = buf.lock().unwrap();
+    let output = crate::test_helpers::captured_text(&buf);
     assert!(
         !output.contains("raw-body-second-line-marker"),
         "display status subject must condense away subsequent lines, got: {output}"
@@ -18231,7 +18231,7 @@ impl ConcurrentApply {
     fn run_live(self, drive: impl FnOnce()) -> ConcurrentOutcome {
         let (printer, buf) = crate::output::Printer::for_test_live_scrollback();
         let (result, state) = self.run_on(printer, drive);
-        let transcript = crate::output::strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        let transcript = crate::test_helpers::captured_text(&buf);
         ConcurrentOutcome {
             result,
             state,
@@ -18668,6 +18668,7 @@ fn a_lane_worker_blocks_behind_an_exclusively_held_path_lock() {
     let outcome = ConcurrentApply::new(registry, plan)
         .with_modules(modules)
         .run(move || {
+            // sleep-ok: correctness here comes from the still-held write guard, not the duration — this only gives a correctly-guarded worker room to reach and block on it
             std::thread::sleep(std::time::Duration::from_millis(150));
             assert!(
                 dispatch_log(&drive_log).is_empty(),

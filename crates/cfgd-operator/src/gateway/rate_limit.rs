@@ -167,6 +167,7 @@ mod tests {
         let ip: IpAddr = "10.0.0.3".parse().unwrap();
         assert!(limiter.check(ip).is_ok());
         assert!(limiter.check(ip).is_err());
+        // sleep-ok: the token bucket refills against real wall-clock time — the sleep IS the subject
         std::thread::sleep(Duration::from_millis(200));
         assert!(limiter.check(ip).is_ok());
     }
@@ -187,6 +188,7 @@ mod tests {
         let ip: IpAddr = "10.0.0.5".parse().unwrap();
         // Burn one, sleep long enough to overflow if there were no cap.
         assert!(limiter.check(ip).is_ok());
+        // sleep-ok: the token bucket refills against real wall-clock time — the sleep IS the subject
         std::thread::sleep(Duration::from_millis(100));
         // Should be 2 tokens available again, not 11.
         assert!(limiter.check(ip).is_ok());

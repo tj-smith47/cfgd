@@ -54,7 +54,7 @@ macro_rules! golden_at {
             let ($p, buf) = $crate::output::Printer::for_test_at($verbosity);
             $body
             $p.flush();
-            let raw = buf.lock().unwrap().clone();
+            let raw = $crate::test_helpers::captured_text(&buf);
             let actual = $crate::output::strip_ansi(&raw);
             let path = std::path::Path::new("src/output/tests/snapshots")
                 .join(stringify!($bucket))
@@ -89,7 +89,7 @@ macro_rules! golden_themed {
             );
             $body
             $p.flush();
-            let raw = buf.lock().unwrap().clone();
+            let raw = $crate::test_helpers::captured_text(&buf);
             let actual = $crate::output::strip_ansi(&raw);
             let path = std::path::Path::new("src/output/tests/snapshots")
                 .join(stringify!($bucket))

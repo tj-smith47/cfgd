@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use super::*;
 use crate::config::FileStrategy;
 use crate::config::ScriptEntry;
-use crate::output::{Printer, PromptAnswer, Verbosity, strip_ansi};
+use crate::output::{Printer, PromptAnswer, Verbosity};
 use crate::providers::{FileAction, PackageAction};
 use crate::reconciler::{
     Action, ActionResult, Owner, Phase, PhaseName, Plan, ScriptAction, ScriptPhase,
@@ -183,7 +183,7 @@ fn rollup_lines_covers_every_apply_status() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     render_run_rollup(&short, RunTitle::Apply, &printer, None);
     drop(printer);
-    let out = strip_ansi(&buf.lock().unwrap());
+    let out = crate::test_helpers::captured_text(&buf);
     assert!(
         out.contains("3 actions not attempted"),
         "shortfall line missing: {out:?}"
@@ -226,7 +226,7 @@ fn a_run_that_attempted_nothing_says_so_instead_of_completing() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     render_run_rollup(&nothing, RunTitle::Backup, &printer, None);
     drop(printer);
-    let out = strip_ansi(&buf.lock().unwrap());
+    let out = crate::test_helpers::captured_text(&buf);
     assert_eq!(
         out.matches("not attempted").count(),
         1,
@@ -315,7 +315,7 @@ fn a_rollup_carrying_failures_does_not_lead_with_a_tick() {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         render_run_rollup(&tally, RunTitle::Apply, &printer, None);
         drop(printer);
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         let first = out.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
         assert!(
             !first.contains('✓'),
@@ -385,7 +385,7 @@ fn rollup_attaches_elapsed_to_the_last_line_emitted() {
         Some(Duration::from_millis(400)),
     );
     drop(printer);
-    let out = strip_ansi(&buf.lock().unwrap());
+    let out = crate::test_helpers::captured_text(&buf);
     let failed_line = out
         .lines()
         .find(|l| l.contains("1 action failed"))
@@ -520,7 +520,7 @@ fn header_action_count_matches_planned_total() {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         run.header(&printer);
         drop(printer);
-        strip_ansi(&buf.lock().unwrap())
+        crate::test_helpers::captured_text(&buf)
     };
 
     let unfiltered = ApplyRun::new(ctx(RunTitle::Apply), &plan);
@@ -579,7 +579,7 @@ fn the_header_carries_the_planned_count_only_for_an_executing_run() {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         run.header(&printer);
         drop(printer);
-        strip_ansi(&buf.lock().unwrap())
+        crate::test_helpers::captured_text(&buf)
     };
 
     let executing = render(ApplyRun::new(ctx(RunTitle::Apply), &plan));
@@ -635,7 +635,7 @@ fn header_omits_every_empty_row_and_skips_the_modules_phase() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     run.header(&printer);
     drop(printer);
-    let out = strip_ansi(&buf.lock().unwrap());
+    let out = crate::test_helpers::captured_text(&buf);
 
     assert!(!out.contains("Config"), "no config path, no row: {out:?}");
     assert!(!out.contains("Profile"), "no profile, no row: {out:?}");
@@ -668,7 +668,7 @@ fn header_renders_plan_warnings_at_row_depth() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     ApplyRun::new(ctx(RunTitle::Apply), &plan).header(&printer);
     drop(printer);
-    let out = strip_ansi(&buf.lock().unwrap());
+    let out = crate::test_helpers::captured_text(&buf);
     assert!(
         out.contains("\n  ⚠ EDITOR is set before the cfgd source line\n"),
         "warning must render at the header rows' indent: {out:?}"
@@ -689,7 +689,7 @@ fn preview_renders_phase_owner_action_and_sorts_profile_first() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     ApplyRun::new(ctx(RunTitle::Apply), &plan).preview(&printer);
     drop(printer);
-    let out = strip_ansi(&buf.lock().unwrap());
+    let out = crate::test_helpers::captured_text(&buf);
 
     assert!(
         out.contains("Phase: Packages\n"),
@@ -732,7 +732,7 @@ fn preview_renders_only_in_scope_phases_and_never_the_modules_phase() {
         .with_filter(Some(&filter))
         .preview(&printer);
     drop(printer);
-    let out = strip_ansi(&buf.lock().unwrap());
+    let out = crate::test_helpers::captured_text(&buf);
 
     assert!(
         out.contains("Phase: Files"),
@@ -763,7 +763,7 @@ fn preview_bullet_matches_the_execution_subject_for_a_sourced_script() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     ApplyRun::new(ctx(RunTitle::Apply), &plan).preview(&printer);
     drop(printer);
-    let out = strip_ansi(&buf.lock().unwrap());
+    let out = crate::test_helpers::captured_text(&buf);
 
     // The subject `scripts_apply` hands the status renderer, from the parts it
     // holds at execution time.
@@ -801,7 +801,7 @@ fn preview_bullet_matches_the_execution_subject_for_a_condensed_script() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     ApplyRun::new(ctx(RunTitle::Apply), &plan).preview(&printer);
     drop(printer);
-    let out = strip_ansi(&buf.lock().unwrap());
+    let out = crate::test_helpers::captured_text(&buf);
 
     let executed =
         crate::reconciler::script_run_subject(&body, &ScriptPhase::PreApply, "team-config")
@@ -835,7 +835,7 @@ fn execute_skips_the_preview_when_confirmation_is_skipped() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     let disposition = run.execute(&printer, Confirm::Skip, &mut exec).unwrap();
     drop(printer);
-    let out = strip_ansi(&buf.lock().unwrap());
+    let out = crate::test_helpers::captured_text(&buf);
 
     assert!(matches!(disposition, RunDisposition::Applied { .. }));
     assert_eq!(exec.calls, 1);
@@ -866,7 +866,7 @@ fn execute_previews_then_prompts_and_a_declined_prompt_runs_nothing() {
         .execute(&printer, Confirm::Ask("Apply these changes?"), &mut exec)
         .unwrap();
     drop(printer);
-    let out = strip_ansi(&buf.lock().unwrap());
+    let out = crate::test_helpers::captured_text(&buf);
 
     assert!(matches!(disposition, RunDisposition::Declined));
     assert_eq!(exec.calls, 0, "a declined run must execute nothing");
@@ -888,7 +888,7 @@ fn execute_on_a_preview_only_run_renders_the_tree_and_executes_nothing() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     let disposition = run.execute(&printer, Confirm::Skip, &mut exec).unwrap();
     drop(printer);
-    let out = strip_ansi(&buf.lock().unwrap());
+    let out = crate::test_helpers::captured_text(&buf);
 
     assert!(matches!(disposition, RunDisposition::Previewed));
     assert_eq!(exec.calls, 0);
@@ -909,7 +909,7 @@ fn a_backups_run_with_no_units_does_nothing() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     let (status, _reports) = run.execute_backups(&printer).unwrap();
     drop(printer);
-    let out = strip_ansi(&buf.lock().unwrap());
+    let out = crate::test_helpers::captured_text(&buf);
 
     assert_eq!(status, ApplyStatus::Success);
     assert!(
@@ -958,7 +958,7 @@ fn pseudo_phase_renders_a_bare_heading_with_owner_groups_under_it() {
         group.status_simple(Role::Ok, "snapshot notes.txt");
     }
     drop(printer);
-    let out = strip_ansi(&buf.lock().unwrap());
+    let out = crate::test_helpers::captured_text(&buf);
 
     assert!(
         out.starts_with("Backups\n"),

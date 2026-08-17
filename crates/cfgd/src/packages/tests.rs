@@ -3411,11 +3411,11 @@ fn apply_packages_skip_prints_warning() {
         origin: "local".into(),
     }];
     apply_packages(&actions, &[], &cx).unwrap();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("snap") && output.contains("cannot auto-install"),
         "expected skip warning, got: {}",
-        *output
+        output
     );
 }
 

@@ -609,7 +609,7 @@ fn open_in_editor_nonzero_exit_prints_warn_but_does_not_error() {
     // Must return Ok even when editor exits non-zero (only warns).
     open_in_editor(&file, &printer).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("non-zero"),
         "expected warn about non-zero exit, got: {output}"

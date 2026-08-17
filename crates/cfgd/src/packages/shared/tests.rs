@@ -1067,7 +1067,7 @@ fn run_pkg_cmd_live_install_success_extracts_brew_caveats() {
         "expected caveat message, got: {:?}",
         drained[0].message
     );
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !captured.contains("Post-install notes"),
         "the note travels back to the reconciler; nothing prints here: {captured}"
@@ -1095,7 +1095,7 @@ fn caller_owned_status_suppresses_the_windows_own_line() {
         "install",
     )
     .expect("shim exits 0");
-    let standalone = cfgd_core::output::strip_ansi(&buf.lock().unwrap().clone());
+    let standalone = cfgd_core::test_helpers::captured_text(&buf);
     assert_eq!(
         cfgd_core::test_helpers::settled_status_lines(&standalone).len(),
         1,
@@ -1113,7 +1113,7 @@ fn caller_owned_status_suppresses_the_windows_own_line() {
         "install",
     )
     .expect("shim exits 0");
-    let owned = cfgd_core::output::strip_ansi(&owned_buf.lock().unwrap().clone());
+    let owned = cfgd_core::test_helpers::captured_text(&owned_buf);
     assert_eq!(
         cfgd_core::test_helpers::settled_status_lines(&owned).len(),
         0,
@@ -1151,7 +1151,7 @@ fn caller_owned_status_suppresses_the_windows_own_line_on_failure() {
         Err(e) => e,
         Ok(_) => panic!("shim exits 1"),
     };
-    let standalone = cfgd_core::output::strip_ansi(&buf.lock().unwrap().clone());
+    let standalone = cfgd_core::test_helpers::captured_text(&buf);
     assert_eq!(
         cfgd_core::test_helpers::settled_status_lines(&standalone).len(),
         1,
@@ -1171,7 +1171,7 @@ fn caller_owned_status_suppresses_the_windows_own_line_on_failure() {
         Err(e) => e,
         Ok(_) => panic!("shim exits 1"),
     };
-    let owned = cfgd_core::output::strip_ansi(&owned_buf.lock().unwrap().clone());
+    let owned = cfgd_core::test_helpers::captured_text(&owned_buf);
     assert_eq!(
         cfgd_core::test_helpers::settled_status_lines(&owned).len(),
         0,
@@ -1233,7 +1233,7 @@ fn a_failed_caller_owned_batch_install_carries_every_cause() {
         "a status subject may not carry an embedded newline: {message:?}"
     );
 
-    let transcript = cfgd_core::output::strip_ansi(&buf.lock().unwrap().clone());
+    let transcript = cfgd_core::test_helpers::captured_text(&buf);
     assert_eq!(
         cfgd_core::test_helpers::settled_status_lines(&transcript).len(),
         0,

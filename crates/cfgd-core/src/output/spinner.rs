@@ -378,7 +378,6 @@ mod tests {
     use super::super::renderer::{Renderer, StringSink};
     use super::super::{Theme, Verbosity};
     use super::*;
-    use crate::output::strip_ansi;
 
     fn renderer() -> Arc<Renderer> {
         Arc::new(Renderer::new(Theme::default(), Verbosity::Normal))
@@ -427,7 +426,7 @@ mod tests {
         };
         let _ = sp.finish_ok("done");
         // _ drops here → Status committed
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("  ✓ done"), "got: {out:?}");
     }
 
@@ -449,7 +448,7 @@ mod tests {
                 _phantom: std::marker::PhantomData,
             };
         }
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         // Info role has no icon; subject text appears.
         assert!(out.contains("abandoned"), "got: {out:?}");
     }

@@ -745,7 +745,7 @@ fn display_source_manifest_emits_metadata_header_kv_lines() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::display_source_manifest(&printer, &manifest);
     drop(printer);
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(out.contains("Source Manifest"), "header missing: {out}");
     assert!(
         out.contains("Name") && out.contains("acme-platform"),
@@ -770,7 +770,7 @@ fn display_source_manifest_omits_profiles_kv_when_empty() {
     let profiles = super::display_source_manifest(&printer, &manifest);
     assert!(profiles.is_empty());
     drop(printer);
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !out.contains("Profiles"),
         "Profiles label must be suppressed when none provided, got: {out}"
@@ -803,7 +803,7 @@ fn display_source_manifest_summarizes_required_recommended_locked_counts() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::display_source_manifest(&printer, &manifest);
     drop(printer);
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(out.contains("Policy"), "Policy header missing: {out}");
     assert!(
         out.contains("1 item locked") && out.contains("cannot override"),
@@ -826,7 +826,7 @@ fn display_source_manifest_omits_zero_count_tiers() {
     let (printer, buf) = cfgd_core::output::Printer::for_test();
     super::display_source_manifest(&printer, &manifest);
     drop(printer);
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !out.contains("item required") && !out.contains("items recommended"),
         "zero-count tiers must be suppressed, got: {out}"
@@ -848,7 +848,7 @@ fn display_source_manifest_constraints_render_each_blocked_axis() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::display_source_manifest(&printer, &manifest);
     drop(printer);
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("Scripts: blocked"),
         "no-scripts line missing: {out}"
@@ -879,7 +879,7 @@ fn display_source_manifest_constraints_omitted_when_unrestricted() {
     let (printer, buf) = cfgd_core::output::Printer::for_test();
     super::display_source_manifest(&printer, &manifest);
     drop(printer);
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !out.contains("Scripts: blocked")
             && !out.contains("Secret access: blocked")
@@ -906,7 +906,7 @@ spec:
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::display_source_manifest(&printer, &manifest);
     drop(printer);
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(out.contains("Name") && out.contains("minimal"));
     assert!(
         !out.contains("Version"),
@@ -1837,7 +1837,7 @@ fn profiles_inheriting_warns_on_unparseable_manifest_and_keeps_real_inheritors()
         vec!["work"],
         "unparseable manifest must not hide the parseable inheritor"
     );
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("Skipping profile") && out.contains("broken.yaml"),
         "unparseable manifest must be surfaced as a warn naming its path; got: {out:?}"
@@ -1863,7 +1863,7 @@ fn profile_delete_still_refuses_when_parseable_inheritor_exists_beside_broken_ma
         dir.path().join("profiles").join("default.yaml").exists(),
         "refused delete must leave the profile on disk"
     );
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("Skipping profile") && out.contains("broken.yaml"),
         "delete guard scan must surface the unparseable manifest; got: {out:?}"
@@ -1886,7 +1886,7 @@ fn profile_create_succeeds_despite_unrelated_ambiguous_profile() {
     profile::cmd_profile_create(&cli, &printer, &args).unwrap();
 
     assert!(pdir.join("fresh").join("profile.yaml").exists());
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("Created profile 'fresh'"),
         "success Doc must still render; got: {out:?}"
@@ -1908,7 +1908,7 @@ fn profile_delete_succeeds_despite_unrelated_ambiguous_profile() {
     profile::cmd_profile_delete(&cli, &printer, "work", true, false).unwrap();
 
     assert!(!pdir.join("work.yaml").exists());
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("Deleted profile 'work'"),
         "success Doc must still render; got: {out:?}"
@@ -2516,7 +2516,7 @@ fn workflow_generate_empty_repo() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No profiles") || output.contains("nothing to generate"),
         "should warn about no profiles/modules, got: {output}"
@@ -3529,7 +3529,7 @@ fn scan_profile_names_warns_and_skips_malformed() {
         "good profiles scanned, malformed one absent"
     );
 
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("bad.yaml"),
         "warning must name the malformed profile path; got: {out:?}"
@@ -3560,7 +3560,7 @@ fn scan_profile_names_returns_stem_and_warns_on_divergent_metadata_name() {
         vec!["work".to_string()],
         "scan must return the resolvable filename stem, not the divergent metadata.name"
     );
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("metadata.name 'other'") && out.contains("using 'work'"),
         "divergence warn must name both the metadata.name and the stem in use; got: {out:?}"
@@ -3592,7 +3592,7 @@ fn scan_profile_names_warns_and_skips_ambiguous() {
         vec!["alpha".to_string()],
         "ambiguous profile skipped, scan continues"
     );
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("Skipping profile 'amb'"),
         "warning must name the ambiguous profile; got: {out:?}"
@@ -4016,7 +4016,7 @@ fn scan_profile_names_skips_invalid_stem() {
         vec!["work".to_string()],
         "invalid stem must be skipped"
     );
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("Skipping profile") && out.contains("invalid characters"),
         "invalid stem must warn with the Skipping-profile shape; got: {out:?}"
@@ -4043,7 +4043,7 @@ fn scan_module_names_skips_invalid_stem() {
         vec!["git".to_string()],
         "invalid stem must be skipped"
     );
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("Skipping module") && out.contains("invalid characters"),
         "invalid stem must warn with the Skipping-module shape; got: {out:?}"
@@ -4406,7 +4406,7 @@ fn cmd_doctor_with_valid_config() {
     assert!(result.is_ok(), "doctor failed: {:?}", result.err());
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(output.contains("Doctor"), "missing Doctor header");
     assert!(output.contains("Config file"), "missing config file status");
     assert!(
@@ -4441,7 +4441,7 @@ fn cmd_doctor_without_config() {
     );
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(output.contains("Doctor"), "missing Doctor header");
     assert!(
         output.contains("not found"),
@@ -4473,7 +4473,7 @@ fn cmd_doctor_missing_config_at_explicit_path_fails_verdict() {
     );
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains(&format!(
             "Config file: {} — not found",
@@ -4512,7 +4512,7 @@ fn cmd_doctor_json_missing_config_shape_is_unchanged() {
         super::doctor::run_doctor(&cli, &printer).unwrap();
         printer.flush();
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = match format {
             cfgd_core::output::OutputFormat::Json => extract_json(&output),
             _ => serde_yaml::from_str(output.trim()).unwrap(),
@@ -4925,7 +4925,7 @@ fn cmd_status_after_apply() {
 
     super::status::cmd_status(&cli, &printer, None, false).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Status"),
         "should contain Status heading, got: {output}"
@@ -4971,7 +4971,7 @@ fn cmd_log_after_apply() {
     )
     .unwrap();
     drop(log_printer);
-    let output = log_buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&log_buf);
     assert!(
         output.contains("Apply History"),
         "should contain Apply History header, got: {output}"
@@ -5046,7 +5046,7 @@ fn cmd_apply_dry_run_with_files() {
     assert!(!target.exists());
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan"),
         "should contain Plan header, got: {output}"
@@ -5160,7 +5160,7 @@ fn cmd_apply_idempotent() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Nothing to do"),
         "second apply should say nothing to do, got: {output}"
@@ -5199,7 +5199,7 @@ fn cmd_diff_with_files() {
     assert!(result.is_ok(), "diff failed: {:?}", result.err());
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(output.contains("Diff"), "missing Diff header");
     assert!(
         output.contains("-current content") || output.contains("+desired content"),
@@ -5595,7 +5595,7 @@ fn cmd_apply_with_module_filter() {
     assert!(result.is_ok(), "apply failed: {:?}", result.err());
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("test-mod") || output.contains("Nothing"),
         "apply with module filter should reference module or show plan, got: {output}"
@@ -5756,7 +5756,7 @@ fn cmd_status_with_modules() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(output.contains("Status"), "missing Status heading");
     assert!(
         output.contains("test-mod"),
@@ -5814,7 +5814,7 @@ fn cmd_status_with_drift_events() {
     super::status::cmd_status(&cli, &printer, None, false).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("curl"),
         "drift output should mention resource 'curl', got: {output}"
@@ -5891,7 +5891,7 @@ fn cmd_decide_accept_all_empty() {
     let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     assert!(state.pending_decisions().unwrap().is_empty());
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No pending") || output.contains("0 decision"),
         "should report no pending decisions, got: {output}"
@@ -5919,7 +5919,7 @@ fn cmd_decide_reject_all_empty() {
     let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     assert!(state.pending_decisions().unwrap().is_empty());
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No pending") || output.contains("0 decision"),
         "should report no pending decisions, got: {output}"
@@ -5952,7 +5952,7 @@ fn cmd_decide_accept_specific_resource() {
     let pending = state.pending_decisions().unwrap();
     assert_eq!(pending.len(), 0, "no decisions should remain pending");
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No pending decision")
             || output.contains("ACCEPTED")
@@ -5991,7 +5991,7 @@ fn cmd_decide_reject_by_source() {
         "no decisions should remain pending after reject"
     );
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No pending decisions")
             || output.contains("REJECTED")
@@ -6048,7 +6048,7 @@ fn execute_module_list() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Modules") || output.contains("No modules"),
         "module list should show modules header, got: {output}"
@@ -6069,7 +6069,7 @@ fn execute_workflow_generate() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("workflow")
             || output.contains("Workflow")
@@ -6090,7 +6090,7 @@ fn cmd_sync_no_sources() {
 
     super::sync::cmd_sync(&cli, &printer).unwrap();
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No sources") || output.contains("Sync"),
         "sync with no sources should report no-sources or show header, got: {output}"
@@ -6107,7 +6107,7 @@ fn cmd_pull_no_sources() {
     super::pull::cmd_pull(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No sources") || output.contains("Pull") || output.contains("no origin"),
         "pull with no sources should report no-sources, got: {output}"
@@ -6199,7 +6199,7 @@ fn cmd_verify_after_apply_with_env() {
     super::verify::cmd_verify(&cli, &verify_printer, None, false).unwrap();
     verify_printer.flush();
 
-    let output = verify_buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&verify_buf);
     assert!(
         output.contains("Verify"),
         "verify after apply should show Verify header, got: {output}"
@@ -6318,7 +6318,7 @@ fn cmd_plan_empty_profile() {
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("Phase"),
         "plan should show Plan header or phase info, got: {output}"
@@ -6344,7 +6344,7 @@ fn cmd_plan_reconcile_context() {
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("Phase"),
         "plan with reconcile context should show plan info, got: {output}"
@@ -6390,7 +6390,7 @@ fn cmd_plan_with_phase_filter() {
 
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("Packages"),
         "plan with phase filter should show plan, got: {output}"
@@ -6419,7 +6419,7 @@ fn cmd_plan_with_skip_filter() {
 
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("Phase"),
         "plan with skip filter should show plan, got: {output}"
@@ -6444,7 +6444,7 @@ fn cmd_plan_with_only_filter() {
 
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("Phase"),
         "plan with only filter should show plan, got: {output}"
@@ -6469,7 +6469,7 @@ fn cmd_plan_with_skip_scripts() {
 
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("Phase"),
         "plan with skip-scripts should show plan, got: {output}"
@@ -6500,7 +6500,7 @@ fn cmd_plan_with_module_filter() {
 
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("plan-mod"),
         "plan with module filter should reference module, got: {output}"
@@ -6591,7 +6591,7 @@ fn cmd_rollback_after_file_apply() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Rollback") || output.contains("restore"),
         "rollback output should mention rollback or restoration, got: {output}"
@@ -6675,7 +6675,7 @@ fn cmd_rollback_without_yes_and_prompt_confirmed_proceeds() {
         result.err()
     );
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Rollback") || output.contains("restore"),
         "should produce rollback output: {output}"
@@ -6705,7 +6705,7 @@ fn cmd_rollback_without_yes_and_prompt_declined_aborts() {
     );
     assert!(result.is_ok(), "prompt-declined rollback must return Ok");
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Aborted"),
         "should print Aborted when prompt is false: {output}"
@@ -7025,7 +7025,7 @@ fn cmd_apply_dry_run_with_skip_scripts() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Apply")
             || output.contains("Plan")
@@ -7057,7 +7057,7 @@ fn execute_plan_command() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("Phase"),
         "execute Plan should show plan info, got: {output}"
@@ -7077,7 +7077,7 @@ fn execute_compliance_snapshot() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Compliance") || output.contains("snapshot"),
         "execute Compliance should show compliance info, got: {output}"
@@ -7099,7 +7099,7 @@ fn execute_compliance_export() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Compliance")
             || output.contains("compliance")
@@ -7123,7 +7123,7 @@ fn execute_compliance_history() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Compliance") || output.contains("History") || output.contains("No"),
         "compliance history should show info, got: {output}"
@@ -7210,7 +7210,7 @@ fn cmd_plan_structured_json() {
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed = extract_json(&output);
     assert!(
         parsed.get("context").is_some(),
@@ -7246,7 +7246,7 @@ fn cmd_verify_structured_json() {
     super::verify::cmd_verify(&cli, &printer, None, false).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed = extract_json(&output);
     assert!(
         parsed.get("results").is_some(),
@@ -7284,7 +7284,7 @@ fn cmd_doctor_structured_json() {
     super::doctor::run_doctor(&cli, &printer).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed: serde_json::Value = serde_json::from_str(&output)
         .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
     assert!(
@@ -7323,7 +7323,7 @@ fn cmd_compliance_snapshot_structured_json() {
     super::compliance::cmd_compliance_snapshot(&cli, &printer).unwrap();
 
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed = extract_json(&output);
     assert!(
         parsed.get("snapshot").is_some(),
@@ -7362,7 +7362,7 @@ fn cmd_compliance_history_structured_json() {
     super::compliance::cmd_compliance_history(&cli, &printer, None).unwrap();
 
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed: serde_json::Value = serde_json::from_str(output.trim())
         .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
     assert_eq!(
@@ -7395,7 +7395,7 @@ fn cmd_diff_with_module_filter() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Diff") || output.contains("diff-mod"),
         "diff with module filter should mention the module, got: {output}"
@@ -7421,7 +7421,7 @@ fn cmd_verify_module_not_found() {
     );
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Verify") || output.contains("No managed"),
         "verify for nonexistent module should mention verify or no managed resources, got: {output}"
@@ -7468,7 +7468,7 @@ fn cmd_plan_module_with_packages() {
     );
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan")
             || output.contains("Phase")
@@ -7616,7 +7616,7 @@ fn module_list_empty_config_dir() {
     module::cmd_module_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Modules") || output.contains("No modules"),
         "module list with empty dir should show header or no-modules, got: {output}"
@@ -7645,7 +7645,7 @@ fn module_list_with_modules() {
     module::cmd_module_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(output.contains("vim"), "module list should contain 'vim'");
     assert!(output.contains("git"), "module list should contain 'git'");
 }
@@ -7661,7 +7661,7 @@ fn module_list_no_modules_dir() {
     module::cmd_module_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No modules") || output.contains("Modules"),
         "module list without modules dir should show header or no-modules, got: {output}"
@@ -7691,7 +7691,7 @@ fn module_list_with_config_and_profile() {
     module::cmd_module_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(output.contains("bat"), "module list should contain 'bat'");
 }
 
@@ -7769,7 +7769,7 @@ spec:
     module::cmd_module_show(&cli, &printer, "dev-tools", false).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("dev-tools"),
         "show should contain module name"
@@ -7809,7 +7809,7 @@ spec:
 
     module::cmd_module_show(&cli, &printer, "secrets-mod", false).unwrap();
     {
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(output.contains("API_KEY"), "show should list env var name");
     }
 
@@ -7817,7 +7817,7 @@ spec:
     buf.lock().unwrap().clear();
     module::cmd_module_show(&cli, &printer, "secrets-mod", true).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("API_KEY"),
         "show with values should list env"
@@ -7868,7 +7868,7 @@ spec:
     module::cmd_module_show(&cli, &printer, "scripted", false).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("scripted"),
         "show should contain module name"
@@ -8608,7 +8608,7 @@ fn module_registry_list_no_config() {
     module::cmd_module_registry_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No registries") || output.contains("Registries"),
         "registry list without config should show message, got: {output}"
@@ -8626,7 +8626,7 @@ fn module_registry_list_empty_registries() {
     module::cmd_module_registry_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Registries") || output.contains("No registries"),
         "registry list with none should report no registries, got: {output}"
@@ -8660,7 +8660,7 @@ spec:
     module::cmd_module_registry_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("community"),
         "registry list should contain 'community'"
@@ -8950,7 +8950,7 @@ spec:
     module::cmd_module_registry_remove(&cli, &printer, "community", false).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("community"),
         "output should mention removed registry name, got: {output}"
@@ -9117,7 +9117,7 @@ fn module_keys_list_no_keys() {
     module::cmd_module_keys_list(&printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Keys") || output.contains("No") || output.contains("cosign"),
         "keys list should show key info or no-keys, got: {output}"
@@ -9134,7 +9134,7 @@ fn module_keys_list_with_pub_key() {
     module::cmd_module_keys_list(&printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Keys") || output.contains("cosign"),
         "keys list should show key info, got: {output}"
@@ -9177,7 +9177,7 @@ fn module_list_structured_output_empty() {
     module::cmd_module_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed: serde_json::Value = serde_json::from_str(&output)
         .unwrap_or_else(|e| panic!("invalid JSON output: {e}, got: {output}"));
     assert!(parsed.is_array(), "JSON should be an array");
@@ -9199,7 +9199,7 @@ fn module_show_structured_output() {
     module::cmd_module_show(&cli, &printer, "json-mod", false).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed: serde_json::Value = serde_json::from_str(&output)
         .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
     assert_eq!(parsed["name"], "json-mod", "JSON should have module name");
@@ -9394,7 +9394,7 @@ fn load_config_and_profile_active_profile_delivered_by_source_emits_wrap_hint() 
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::error::render_cli_error(&printer, &err);
     printer.flush();
-    let out = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     let block = "spec:\n  sources:\n    - name: acme-corp\n      subscription:\n        profile: acme-backend\n";
     assert!(
         out.contains(block),
@@ -10361,7 +10361,7 @@ spec:
     super::source::cmd_source_show(&cli, &printer, "team-config").unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("team-config"),
         "source show should display source name, got: {output}"
@@ -10564,7 +10564,7 @@ fn cmd_decide_no_args_shows_pending() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No pending") || output.contains("Pending"),
         "decide should show pending decisions info, got: {output}"
@@ -10609,7 +10609,7 @@ fn cmd_decide_with_pending_decision() {
         "accepted decision should no longer be pending"
     );
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("curl") || output.contains("Accepted"),
         "output should mention the accepted resource, got: {output}"
@@ -10654,7 +10654,7 @@ fn cmd_decide_accept_all_with_pending() {
     let pending = state.pending_decisions().unwrap();
     assert!(pending.is_empty());
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("ACCEPTED") || output.contains("2 item"),
         "accept-all should mention accepted decisions, got: {output}"
@@ -10766,7 +10766,7 @@ fn cmd_compliance_history_structured() {
     super::compliance::cmd_compliance_history(&cli, &printer, None).unwrap();
 
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed: serde_json::Value = serde_json::from_str(output.trim())
         .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
     assert_eq!(
@@ -10835,7 +10835,7 @@ fn cmd_apply_module_only_no_profile() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("standalone-mod") || output.contains("Apply") || output.contains("Nothing"),
         "apply with module-only should mention the module, got: {output}"
@@ -10881,7 +10881,7 @@ fn cmd_plan_module_only_no_profile() {
     );
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Plan") || output.contains("solo") || output.contains("Nothing"),
         "plan with module-only should mention the module or plan, got: {output}"
@@ -11001,7 +11001,7 @@ fn execute_compliance_command() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Compliance") || output.contains("snapshot"),
         "compliance dispatch should produce output, got: {output}"
@@ -11053,7 +11053,7 @@ fn execute_decide_accept_all() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No pending")
             || output.contains("0 decision")
@@ -11074,7 +11074,7 @@ fn execute_sync_command() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Sync") || output.contains("No sources"),
         "sync dispatch should produce output, got: {output}"
@@ -11093,7 +11093,7 @@ fn execute_pull_command() {
 
     super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Pull") || output.contains("No sources") || output.contains("no origin"),
         "pull dispatch should produce output, got: {output}"
@@ -11172,7 +11172,7 @@ fn cmd_status_module_structured_output() {
     super::status::cmd_status(&cli, &printer, Some("json-mod"), false).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed = extract_json(&output);
     assert_eq!(parsed["name"], "json-mod", "should contain module name");
     assert_eq!(
@@ -11198,7 +11198,7 @@ fn cmd_verify_structured_output() {
     super::verify::cmd_verify(&cli, &printer, None, false).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed = extract_json(&output);
     assert!(
         parsed.get("results").is_some(),
@@ -11245,7 +11245,7 @@ fn cmd_plan_structured_output() {
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed = extract_json(&output);
     assert!(
         parsed.get("context").is_some(),
@@ -11803,7 +11803,7 @@ fn cmd_apply_dry_run_with_skip_and_only() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Apply")
             || output.contains("Plan")
@@ -11844,7 +11844,7 @@ fn cmd_plan_module_structured_output() {
     super::plan::cmd_plan(&cli, &printer, &args).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed = extract_json(&output);
     assert!(
         parsed.get("context").is_some(),
@@ -11897,7 +11897,7 @@ fn cmd_config_show_structured_json() {
     super::config_cmd::cmd_config_show(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed: serde_json::Value = serde_json::from_str(&output)
         .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
     assert_eq!(
@@ -12086,7 +12086,7 @@ fn cmd_doctor_without_config_succeeds() {
     super::doctor::run_doctor(&cli, &printer).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(output.contains("Doctor"), "missing Doctor header");
 }
 
@@ -12100,7 +12100,7 @@ fn cmd_doctor_with_rich_config() {
     super::doctor::run_doctor(&cli, &printer).unwrap();
     printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(output.contains("Doctor"), "missing Doctor header");
     assert!(
         output.contains("Package Managers"),
@@ -12599,7 +12599,7 @@ spec:
 
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         !output.contains(MSG_NOTHING_TO_DO),
@@ -12624,7 +12624,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
         };
         report_no_in_scope_actions(&printer, &scope);
         printer.flush();
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             out.contains(MSG_NOTHING_TO_DO),
             "no filter → up-to-date, got:\n{out}"
@@ -12643,7 +12643,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
         };
         report_no_in_scope_actions(&printer, &scope);
         printer.flush();
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             !out.contains(MSG_NOTHING_TO_DO),
             "filter-excluded-all must not claim up-to-date, got:\n{out}"
@@ -12669,7 +12669,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
         };
         report_no_in_scope_actions(&printer, &scope);
         printer.flush();
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             out.contains(MSG_NOTHING_TO_DO),
             "filter active but no pending work → up-to-date, got:\n{out}"
@@ -12687,7 +12687,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
         };
         report_no_in_scope_actions(&printer, &scope);
         printer.flush();
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             out.contains("Module 'nvm' matched no actions"),
             "expected module-miss warning, got:\n{out}"
@@ -12760,7 +12760,7 @@ spec:
 
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         !output.contains(MSG_NOTHING_TO_DO),
@@ -13212,7 +13212,7 @@ fn cmd_source_show_exists() {
     );
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("team-config") || output.contains("source:"),
         "source show should display source info, got: {output}"
@@ -13232,7 +13232,7 @@ fn cmd_source_show_structured_json() {
     super::source::cmd_source_show(&cli, &printer, "team-config").unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let parsed: serde_json::Value = serde_json::from_str(&output)
         .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
     assert_eq!(parsed["name"], "team-config");
@@ -13347,7 +13347,7 @@ fn cmd_workflow_generate_with_git_repo() {
     );
 
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Generated") || output.contains("workflow"),
         "workflow generate should mention generated workflow, got: {output}"
@@ -13479,7 +13479,7 @@ fn cmd_module_search_no_registries() {
     );
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No module registries") || output.contains("Search"),
         "search with no registries should say no registries, got: {output}"
@@ -17835,7 +17835,7 @@ fn cmd_decide_no_args_no_pending_shows_info() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No pending decisions"),
         "should report no pending decisions, got: {output}"
@@ -17868,7 +17868,7 @@ fn cmd_decide_no_args_with_pending_shows_list() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Pending Decisions"),
         "should show Pending Decisions header, got: {output}"
@@ -17928,7 +17928,7 @@ fn cmd_decide_reject_specific_resource_verifies_resolution() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("REJECTED"),
         "should confirm rejection, got: {output}"
@@ -17968,7 +17968,7 @@ fn cmd_decide_accept_specific_resource_verifies_messaging() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("ACCEPTED"),
         "should confirm acceptance, got: {output}"
@@ -18000,7 +18000,7 @@ fn cmd_decide_accept_nonexistent_resource_warns() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No pending decision found"),
         "should warn about nonexistent resource, got: {output}"
@@ -18041,7 +18041,7 @@ fn cmd_decide_accept_all_reports_count() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("ACCEPTED"),
         "should confirm acceptance, got: {output}"
@@ -18087,7 +18087,7 @@ fn cmd_decide_reject_by_source_preserves_other_sources() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("REJECTED"),
         "should confirm rejection, got: {output}"
@@ -18130,7 +18130,7 @@ fn cmd_decide_reject_by_source_with_no_matching_decisions() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No pending decisions for source"),
         "should report no decisions for this source, got: {output}"
@@ -18163,7 +18163,7 @@ fn cmd_decide_accept_single_item_singular_message() {
     .unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     // When exactly 1 item, the message should use singular "item" not "items"
     assert!(
         output.contains("1 item"),
@@ -19686,7 +19686,7 @@ fn the_legacy_phase_spelling_resolves_and_says_it_is_on_the_way_out() {
     )
     .unwrap();
     printer.flush();
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
 
     assert_eq!(filter, Some(PhaseFilter::Phase(PhaseName::Prerequisites)));
     assert!(
@@ -19703,7 +19703,7 @@ fn the_legacy_phase_spelling_resolves_and_says_it_is_on_the_way_out() {
     .unwrap();
     printer.flush();
     assert!(
-        buf.lock().unwrap().is_empty(),
+        cfgd_core::test_helpers::captured_text(&buf).is_empty(),
         "the current spelling earns no notice"
     );
 }
@@ -21211,7 +21211,7 @@ fn an_interactively_confirmed_apply_withholds_the_undecided_resource_too() {
     };
     super::apply::cmd_apply(&f.h.cli(), &printer, &args).unwrap();
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         f.kept.exists(),
@@ -21547,7 +21547,7 @@ fn an_apply_declined_at_the_prompt_records_nothing() {
     };
     super::apply::cmd_apply(&f.h.cli(), &printer, &args).unwrap();
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         !f.kept.exists() && !f.withheld.exists(),
@@ -21781,7 +21781,7 @@ fn decide_answers_an_item_no_run_has_recorded_yet() {
     )
     .unwrap();
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("REJECTED"),
         "decide answers the unrecorded item instead of denying it exists:\n{output}"
@@ -21823,7 +21823,7 @@ fn decide_lists_the_unrecorded_item_without_recording_it() {
     )
     .unwrap();
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         output.contains("withheld.txt"),
@@ -21849,7 +21849,7 @@ fn status_lists_the_unrecorded_item_the_plan_withholds() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::status::cmd_status(&f.h.cli(), &printer, None, false).unwrap();
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         output.contains("withheld.txt"),
@@ -22219,7 +22219,7 @@ fn a_declined_apply_records_no_auto_accepted_row() {
     };
     super::apply::cmd_apply(&f.h.cli(), &printer, &args).unwrap();
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Aborted"),
         "the run must actually reach and decline the confirm gate — a run \
@@ -22483,7 +22483,7 @@ fn status_still_renders_when_the_source_classification_is_unreadable() {
     super::status::cmd_status(&f.h.cli(), &printer, None, false)
         .expect("a read-only dashboard renders through a classification failure");
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         output.contains("Status"),
@@ -22668,7 +22668,7 @@ fn a_sourceless_status_skips_source_classification_entirely() {
     super::status::cmd_status(&h.cli(), &printer, None, false)
         .expect("no sources, no classification, no failure");
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         !output.contains("not classified"),
@@ -22708,7 +22708,7 @@ fn a_sourceless_decide_answers_the_store_without_classifying() {
     )
     .expect("no sources, no classification, no refusal");
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         output.contains("No pending decision found"),
@@ -22779,7 +22779,7 @@ fn a_degraded_decide_listing_still_shows_the_recorded_rows() {
     )
     .expect("a degraded listing renders, it does not refuse");
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         output.contains(&f.resource()),
@@ -22816,7 +22816,7 @@ fn decide_still_answers_a_recorded_row_when_the_picture_is_unreadable() {
     )
     .unwrap();
     printer.flush();
-    let output = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         output.contains("ACCEPTED"),

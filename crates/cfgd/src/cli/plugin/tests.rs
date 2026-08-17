@@ -213,6 +213,7 @@ async fn probe_with_deadline_degrades_on_stall() {
     // ("not connected"). A 10ms deadline keeps the test fast and deterministic.
     let deadline = std::time::Duration::from_millis(10);
     let stalled = async {
+        // sleep-ok: a never-completes-in-time stall is the subject under test — the deadline wrapper must degrade before this fires
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         ComponentVersion::Version("0.4.0".to_string())
     };

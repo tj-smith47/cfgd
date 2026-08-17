@@ -687,8 +687,7 @@ fn remove_with_retry(op: impl Fn() -> std::io::Result<()>, what: &str) {
             Ok(()) => return,
             Err(e) => {
                 last = Some(e);
-                // sleep-ok: waiting out a foreign scanner's transient handle;
-                // no in-process observable exists for another process's handle
+                // sleep-ok: waiting out a foreign scanner's transient handle; no in-process observable exists for another process's handle
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }

@@ -404,7 +404,7 @@ mod tests {
                 detail_style: None,
             },
         );
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("✓ done"), "got: {out:?}");
     }
 
@@ -424,7 +424,7 @@ mod tests {
                 detail_style: None,
             },
         );
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert_eq!(out.trim_end(), "⊙ note");
     }
 
@@ -444,7 +444,7 @@ mod tests {
                 detail_style: None,
             },
         );
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.contains("✗ /tmp/foo — permission denied"),
             "got: {out:?}"
@@ -467,7 +467,7 @@ mod tests {
                 detail_style: None,
             },
         );
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("(1.2s)"), "got: {out:?}");
     }
 
@@ -489,7 +489,7 @@ mod tests {
                 detail_style: None,
             },
         );
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.contains("boom"),
             "Fail must render at Quiet; got: {out:?}"
@@ -502,7 +502,7 @@ mod tests {
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Quiet);
         r.render_advisory(&sink, 0, "--jsonpath is deprecated");
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.contains("--jsonpath is deprecated"),
             "deprecation must render at Quiet; got: {out:?}"
@@ -527,7 +527,7 @@ mod tests {
                 detail_style: None,
             },
         );
-        assert!(buf.lock().unwrap().is_empty());
+        assert!(crate::test_helpers::captured_text(&buf).is_empty());
     }
 
     #[test]
@@ -552,7 +552,7 @@ mod tests {
                 detail_style: None,
             },
         );
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         // First physical line glues subject to the first detail line.
         assert!(
             out.lines().next().unwrap().contains(
@@ -589,7 +589,7 @@ mod tests {
                 detail_style: None,
             },
         );
-        let raw = buf.lock().unwrap().clone();
+        let raw = crate::test_helpers::captured_text(&buf);
         let visible = strip_ansi(&raw);
         assert!(
             visible.contains("sync failed — upstream: red text bold"),
@@ -625,7 +625,7 @@ mod tests {
         // whatever it timed.
         let (r, sink, buf) = capture();
         r.render_status_immediate(&sink, 0, &timed("provision brew"));
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
         assert_eq!(
             lines.len(),

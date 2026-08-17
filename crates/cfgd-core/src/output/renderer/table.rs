@@ -142,7 +142,7 @@ mod tests {
         let r = Renderer::new(Theme::default(), Verbosity::Normal);
         let t = Table::new(std::iter::empty::<String>());
         r.render_table(&sink, 0, &t);
-        assert!(buf.lock().unwrap().is_empty());
+        assert!(crate::test_helpers::captured_text(&buf).is_empty());
     }
 
     #[test]
@@ -154,7 +154,7 @@ mod tests {
             .row(["alice", "30"])
             .row(["bob", "25"]);
         r.render_table(&sink, 0, &t);
-        let out = buf.lock().unwrap();
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Name"));
         assert!(out.contains("Age"));
         assert!(out.contains("─"));
@@ -198,7 +198,7 @@ mod tests {
             .row(["京都", "100"])
             .row(["Tokyo", "200"]);
         r.render_table(&sink, 0, &t);
-        let out = crate::output::strip_ansi(&buf.lock().unwrap().clone());
+        let out = crate::test_helpers::captured_text(&buf);
         let lines: Vec<&str> = out.lines().collect();
         let kyoto = lines
             .iter()
@@ -225,7 +225,7 @@ mod tests {
             .row(["⚠️", "warn"])
             .row(["complete", "yep"]);
         r.render_table(&sink, 0, &t);
-        let out = crate::output::strip_ansi(&buf.lock().unwrap().clone());
+        let out = crate::test_helpers::captured_text(&buf);
         let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
         let ok_line = lines
             .iter()
@@ -262,7 +262,7 @@ mod tests {
             .row(["Москва", "ru"])
             .row(["Paris", "fr"]);
         r.render_table(&sink, 0, &t);
-        let out = crate::output::strip_ansi(&buf.lock().unwrap().clone());
+        let out = crate::test_helpers::captured_text(&buf);
         let lines: Vec<&str> = out.lines().collect();
         let ru = lines
             .iter()
@@ -295,7 +295,7 @@ mod tests {
             .row(["a\tb\x0Bc", "ok"])
             .row(["plain", "yep"]);
         r.render_table(&sink, 0, &t);
-        let out = crate::output::strip_ansi(&buf.lock().unwrap().clone());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("ok"), "missing ok row: {out:?}");
         assert!(out.contains("yep"), "missing yep row: {out:?}");
         let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();

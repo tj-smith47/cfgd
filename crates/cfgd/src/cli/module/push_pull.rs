@@ -1079,7 +1079,7 @@ spec:
                 result.is_err(),
                 "key-based --sign with no sibling cosign.pub must still fail the real disallowUnsigned admission rule"
             );
-            let warning = buf.lock().unwrap().clone();
+            let warning = cfgd_core::test_helpers::captured_text(&buf);
             assert!(
                 warning.contains("No sibling public key found"),
                 "missing sibling key must be surfaced to the user: {warning:?}"
@@ -1103,7 +1103,7 @@ spec:
                 result.is_err(),
                 "a KMS key reference with no derivable public key must still fail the real disallowUnsigned admission rule"
             );
-            let warning = buf.lock().unwrap().clone();
+            let warning = cfgd_core::test_helpers::captured_text(&buf);
             assert!(
                 warning.contains("KMS/PKCS#11 key reference"),
                 "a KMS-style --key must be recognized instead of guessing a nonsense sibling path: {warning:?}"
@@ -1130,7 +1130,7 @@ spec:
                 result.is_err(),
                 "a PKCS#11 key reference with no derivable public key must still fail the real disallowUnsigned admission rule"
             );
-            let warning = buf.lock().unwrap().clone();
+            let warning = cfgd_core::test_helpers::captured_text(&buf);
             assert!(
                 warning.contains("KMS/PKCS#11 key reference"),
                 "a pkcs11: --key must be recognized as a non-filesystem reference instead of being \

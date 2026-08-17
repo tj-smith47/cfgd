@@ -261,7 +261,7 @@ mod tests {
                 &printer, &notes,
             ))
             .expect("brew shim exits 0");
-        let standalone = buf.lock().unwrap().clone();
+        let standalone = cfgd_core::test_helpers::captured_text(&buf);
         assert_eq!(
             settled(&standalone),
             1,
@@ -280,7 +280,7 @@ mod tests {
                 .caller_owns_status(),
             )
             .expect("brew shim exits 0");
-        let owned = owned_buf.lock().unwrap().clone();
+        let owned = cfgd_core::test_helpers::captured_text(&owned_buf);
         assert_eq!(
             settled(&owned),
             0,

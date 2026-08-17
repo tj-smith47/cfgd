@@ -717,7 +717,7 @@ mod tests {
         let started = start_systemd_service(&printer, crate::Scope::User).expect("ok(false)");
         assert!(!started, "missing systemctl cannot start the service");
 
-        let out = buf.lock().expect("lock buf").clone();
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.contains("systemctl not found — daemon installed but not started"),
             "expected not-found warning: {out}"
@@ -742,7 +742,7 @@ mod tests {
         let started = start_systemd_service(&printer, crate::Scope::System).expect("ok(false)");
         assert!(!started);
 
-        let out = buf.lock().expect("lock buf").clone();
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.contains("Start it later with: systemctl enable --now cfgd.service"),
             "system-scope hint must be the bare (no --user) form: {out}"
@@ -764,7 +764,7 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         stop_systemd_service(&printer, crate::Scope::User);
 
-        let out = buf.lock().expect("lock buf").clone();
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.is_empty(),
             "stop under test-home override must produce no output, got: {out}"
@@ -786,7 +786,7 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         stop_systemd_service(&printer, crate::Scope::User);
 
-        let out = buf.lock().expect("lock buf").clone();
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.contains("systemctl not found — unit file removed but daemon may still be running"),
             "expected not-found warning: {out}"
@@ -810,7 +810,7 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         stop_systemd_service(&printer, crate::Scope::System);
 
-        let out = buf.lock().expect("lock buf").clone();
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.contains("Stop it manually with: systemctl disable --now cfgd.service"),
             "system-scope hint must be the bare (no --user) form: {out}"

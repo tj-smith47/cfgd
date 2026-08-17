@@ -589,7 +589,7 @@ mod tests {
         );
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         cmd_paths(&cli, &printer, &DirSources::all_default()).expect("cmd_paths must succeed");
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(out.contains("cfgd directories"), "heading missing: {out}");
         for label in ["Config", "State", "Cache", "Runtime"] {
             assert!(out.contains(label), "section {label} missing: {out}");
@@ -609,7 +609,7 @@ mod tests {
         );
         let (printer, buf) = Printer::for_test_with_format(OutputFormat::Json);
         cmd_paths(&cli, &printer, &DirSources::all_default()).expect("cmd_paths must succeed");
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         let v: serde_json::Value =
             serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("invalid JSON {e}: {out}"));
         assert!(v["config"]["dir"].is_string(), "config.dir: {v}");
@@ -637,7 +637,7 @@ mod tests {
 
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         cmd_paths(&cli, &printer, &DirSources::all_default()).expect("cmd_paths must succeed");
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(out.contains("scope"), "scope kv missing: {out}");
         assert!(out.contains("user"), "scope value missing: {out}");
     }

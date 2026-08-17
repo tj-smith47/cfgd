@@ -3089,7 +3089,7 @@ mod download_and_install_to {
             VerificationMode::Sha256Only,
             "no bundle → Sha256Only so caller falls back to SHA256-only"
         );
-        let captured = buf.lock().unwrap().clone();
+        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
             captured.contains("no cosign bundle attached"),
             "warning text must surface so operators see the trust downgrade: {captured}"
@@ -3140,7 +3140,7 @@ mod download_and_install_to {
         )
         .expect("missing cosign CLI is graceful-degrade, not Err");
         assert_eq!(outcome, VerificationMode::Sha256Only);
-        let captured = buf.lock().unwrap().clone();
+        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
             captured.contains("cosign CLI is not installed"),
             "warning must point operators at the install hint: {captured}"

@@ -150,7 +150,7 @@ mod tests {
         printer.emit(build_log_doc(&in_progress_log()));
         drop(printer);
 
-        let out = buf.lock().unwrap();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             out.contains("inProgress"),
             "log Status column should render display_str token, got: {out}"
@@ -173,7 +173,7 @@ mod tests {
         printer.emit(build_log_doc(&in_progress_log()));
         drop(printer);
 
-        let out = buf.lock().unwrap();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         let json: serde_json::Value = serde_json::from_str(&out).expect("valid json");
         assert_eq!(
             json["entries"][0]["status"],
@@ -204,7 +204,7 @@ mod tests {
         cmd_log_show_output(&printer, &state, apply_id).unwrap();
         drop(printer);
 
-        let out = buf.lock().unwrap();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             !out.contains("line-two"),
             "section header must condense away subsequent lines, got: {out}"

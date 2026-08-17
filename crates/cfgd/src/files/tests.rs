@@ -1195,7 +1195,7 @@ fn diff_detects_content_difference() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
     assert!(fm.diff(&resolved.merged, &printer).is_ok());
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("test.txt"),
         "diff output should reference the changed file, got: {output}"
@@ -1238,7 +1238,7 @@ fn diff_new_file_shown() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
     assert!(fm.diff(&resolved.merged, &printer).is_ok());
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("new.txt"),
         "diff output should reference the new file, got: {output}"

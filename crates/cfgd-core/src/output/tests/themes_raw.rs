@@ -18,6 +18,8 @@ fn render_with_theme(name: &str, doc: Doc) -> String {
     // borrower panicked while holding the guard, which the synchronous
     // emit/flush above cannot trigger. Recover the inner value either way
     // so the audit gate's no-unwrap rule stays clean.
+    // The raw truecolor SGR bytes are the assertion subject here, so this read
+    // stays raw: captured_text would strip the ANSI this test exists to check.
     match buf.lock() {
         Ok(g) => g.clone(),
         Err(poisoned) => poisoned.into_inner().clone(),

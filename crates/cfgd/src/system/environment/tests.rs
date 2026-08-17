@@ -1045,7 +1045,7 @@ fn macos_launchctl_setenv_warns_through_printer_when_launchctl_unavailable() {
         &cfgd_core::providers::SystemContext::new(&printer),
     );
 
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         captured.contains("launchctl setenv"),
         "printer should capture launchctl failure message, got: {captured}"
@@ -1063,7 +1063,7 @@ fn macos_launchctl_setenv_no_output_when_empty_managed() {
         &cfgd_core::providers::SystemContext::new(&printer),
     );
 
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         captured.is_empty(),
         "no printer output expected for empty managed, got: {captured}"
@@ -1083,7 +1083,7 @@ fn windows_set_var_warns_through_printer_when_setx_unavailable() {
         &cfgd_core::providers::SystemContext::new(&printer),
     );
 
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         captured.contains("setx MY_VAR"),
         "printer should capture setx failure message, got: {captured}"
@@ -1106,7 +1106,7 @@ TEST_ENV_VAR: "test_value"
     let result = ec.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
     result.expect("apply should succeed on Linux even when /etc paths require root");
 
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert_managing_count(&captured, 1);
 }
 
@@ -1164,7 +1164,7 @@ fn apply_linux_writes_etc_environment_and_profile_d_with_tempdir() {
     let result = ec.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
     result.expect("apply should succeed on Linux for a single managed var");
 
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert_managing_count(&captured, 1);
 }
 
@@ -1180,7 +1180,7 @@ fn apply_pluralizes_the_managed_variable_count() {
     let result = ec.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer));
     result.expect("apply should succeed for several managed vars");
 
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert_managing_count(&captured, 3);
 }
 
@@ -1279,7 +1279,7 @@ fn macos_launchctl_setenv_ok_success_path_with_fake_binary() {
         &cfgd_core::providers::SystemContext::new(&printer),
     );
 
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         captured.is_empty(),
         "successful launchctl should produce no printer output, got: {captured}"
@@ -1308,7 +1308,7 @@ fn macos_launchctl_setenv_ok_failure_path_with_fake_binary() {
         &cfgd_core::providers::SystemContext::new(&printer),
     );
 
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         captured.contains("launchctl setenv BAR"),
         "failed launchctl should print warning, got: {captured}"
@@ -1332,7 +1332,7 @@ fn windows_set_var_ok_success_path_with_fake_binary() {
         &cfgd_core::providers::SystemContext::new(&printer),
     );
 
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         captured.is_empty(),
         "successful setx should produce no printer output, got: {captured}"
@@ -1356,7 +1356,7 @@ fn windows_set_var_ok_failure_path_with_fake_binary() {
         &cfgd_core::providers::SystemContext::new(&printer),
     );
 
-    let captured = buf.lock().unwrap().clone();
+    let captured = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         captured.contains("setx BAD_VAR"),
         "failed setx should print warning, got: {captured}"

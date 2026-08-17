@@ -2182,7 +2182,7 @@ mod tests {
         );
         tree.finish();
 
-        let scrollback = crate::output::strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        let scrollback = crate::test_helpers::captured_text(&buf);
         for subject in [
             "provision brew via curl",
             "provision npm via brew",

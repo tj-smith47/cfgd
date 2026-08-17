@@ -605,7 +605,7 @@ mod tests {
             "default",
         ));
         drop(printer);
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
 
         assert!(
             out.contains("1 pkg, 1 file,"),
@@ -767,7 +767,7 @@ mod tests {
         cmd_status(&cli, &printer, None, false).unwrap();
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("Status"),
             "should render Status heading, got: {output}"
@@ -801,7 +801,7 @@ mod tests {
         cmd_status(&cli, &printer, None, false).unwrap();
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("Last Apply"),
             "should render Last Apply section, got: {output}"
@@ -840,7 +840,7 @@ mod tests {
         cmd_status(&cli, &printer, None, false).unwrap();
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             !output.contains("No drift detected"),
             "drift recorded — should NOT print all-clear line, got: {output}"
@@ -875,7 +875,7 @@ mod tests {
         cmd_status(&cli, &printer, None, false).unwrap();
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         // The label is appended only when source != "local", and it carries the
         // owner token so the attribution reads the same here as it does over a
         // `cfgd sync` group.
@@ -899,7 +899,7 @@ mod tests {
         cmd_status(&cli, &printer, None, false).unwrap();
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("Managed Resources"),
             "should print Managed Resources section, got: {output}"
@@ -930,7 +930,7 @@ mod tests {
         cmd_status(&cli, &printer, None, false).unwrap();
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             !output.contains("echo two"),
             "human table cell must not leak the raw multi-line body: {output}"
@@ -956,7 +956,7 @@ mod tests {
         cmd_status(&cli, &printer, None, false).unwrap();
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
         let resources = parsed["managedResources"].as_array().unwrap();
         assert_eq!(
@@ -1017,7 +1017,7 @@ mod tests {
         cmd_status(&cli, &printer, None, false).unwrap();
         drop(printer);
 
-        let captured = buf.lock().unwrap().clone();
+        let captured = cfgd_core::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())
             .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {captured}"));
         assert!(
@@ -1050,7 +1050,7 @@ mod tests {
         cmd_status(&cli, &printer, Some("test-mod"), false).unwrap();
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         // Per-module heading is "Status: <name>" — must be present.
         assert!(
             output.contains("Status: test-mod"),
@@ -1078,7 +1078,7 @@ mod tests {
         cmd_status_module(&cli, &printer, "ghost").unwrap();
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("Status: ghost"),
             "should print module heading, got: {output}"
@@ -1102,7 +1102,7 @@ mod tests {
         cmd_status_module(&cli, &printer, "ghost").unwrap();
         drop(printer);
 
-        let captured = buf.lock().unwrap().clone();
+        let captured = cfgd_core::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())
             .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {captured}"));
         assert_eq!(parsed["name"], "ghost");
@@ -1137,7 +1137,7 @@ mod tests {
         cmd_status_module(&cli, &printer, "test-mod").unwrap();
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("Status: test-mod"),
             "should print module heading, got: {output}"
@@ -1164,7 +1164,7 @@ mod tests {
         cmd_status_module(&cli, &printer, "test-mod").unwrap();
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("not applied"),
             "no state-store record should produce 'not applied', got: {output}"
@@ -1211,7 +1211,7 @@ mod tests {
         cmd_status_module(&cli, &printer, "test-mod").unwrap();
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("Deployed Files"),
             "deployed files section should be present, got: {output}"
@@ -1244,7 +1244,7 @@ mod tests {
         cmd_status_module(&cli, &printer, "test-mod").unwrap();
         drop(printer);
 
-        let captured = buf.lock().unwrap().clone();
+        let captured = cfgd_core::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())
             .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {captured}"));
         assert_eq!(parsed["name"], "test-mod");

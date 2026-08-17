@@ -319,7 +319,7 @@ mod tests {
         let code = render_cli_error(&printer, &err);
         printer.flush();
         assert_eq!(code, cfgd_core::exit::ExitCode::NoConfig);
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             out.contains("cfgd init"),
             "expected remediation naming `cfgd init`, got: {out:?}"
@@ -364,7 +364,7 @@ mod tests {
         );
         render_cli_error(&printer, &err);
         printer.flush();
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert_eq!(
             out.matches('✗').count(),
             1,
@@ -389,7 +389,7 @@ mod tests {
         );
         render_cli_error(&printer, &err);
         printer.flush();
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert_eq!(out.matches('✗').count(), 1, "one ✗ line, got: {out:?}");
         assert!(
             out.contains("Available modules: a, b"),
@@ -413,7 +413,7 @@ mod tests {
         );
         render_cli_error(&printer, &err);
         printer.flush();
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             !out.contains('✗'),
             "no human ✗ line in structured mode: {out:?}"
@@ -437,7 +437,7 @@ mod tests {
         let err = anyhow::anyhow!("some opaque failure");
         render_cli_error(&printer, &err);
         printer.flush();
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             !out.trim().is_empty(),
             "structured failure must not be silent"

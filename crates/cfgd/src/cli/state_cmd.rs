@@ -68,7 +68,7 @@ mod tests {
         cmd_state_forget_prefix(&printer, "npm", Some(dir.path()), cfgd_core::Scope::User).unwrap();
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("No persisted global-install prefix decision for 'npm'"),
             "got: {output}"
@@ -88,7 +88,7 @@ mod tests {
         cmd_state_forget_prefix(&printer, "npm", Some(dir.path()), cfgd_core::Scope::User).unwrap();
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("Forgot persisted global-install prefix for 'npm'"),
             "got: {output}"
@@ -116,7 +116,7 @@ mod tests {
         printer.emit(build_forget_prefix_doc("npm", Some(&record)));
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         let value: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
         assert_eq!(value["manager"], "npm");
         assert_eq!(value["forgotten"], true);
@@ -133,7 +133,7 @@ mod tests {
         printer.emit(build_forget_prefix_doc("npm", None));
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         let value: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
         assert_eq!(value["manager"], "npm");
         assert_eq!(value["forgotten"], false);

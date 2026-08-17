@@ -232,7 +232,7 @@ fn update_script_list_remove_nonexistent_reports_raw_argument_not_condensed() {
     );
     drop(printer);
     assert_eq!(changes, 0);
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("line-two"),
         "not-found message must echo the full raw argument, got: {out}"
@@ -320,7 +320,7 @@ fn prompt_restore_backups_no_op_when_no_backup_files_exist() {
     prompt_restore_backups(std::slice::from_ref(&target), &printer).expect("no backups → no-op");
 
     drop(printer);
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !out.contains("Restored"),
         "must not announce a restore: {out}"
@@ -355,7 +355,7 @@ fn prompt_restore_backups_with_confirmed_yes_restores_backup_to_target() {
         b"backup-contents",
         "target must contain backup bytes"
     );
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(out.contains("Restored"), "should announce restore: {out}");
 }
 
@@ -471,7 +471,7 @@ fn restore_or_remove_deployed_files_uses_shared_existed_semantics() {
     );
     assert!(!no_backup.exists(), "file with no backup must be removed");
 
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(out.contains("Restored"), "must announce restore: {out}");
     assert!(out.contains("Removed"), "must announce removal: {out}");
 }
@@ -610,7 +610,7 @@ fn profile_show_named_profile() {
 
     cmd_profile_show(&cli, &printer, Some("default")).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Profile: default"),
         "should show profile heading, got: {output}"
@@ -631,7 +631,7 @@ fn profile_show_active_profile() {
     // None means "show the active profile" — reads from cfgd.yaml
     cmd_profile_show(&cli, &printer, None).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Profile: default"),
         "should show active profile heading, got: {output}"
@@ -652,7 +652,7 @@ fn profile_show_inherited_profile_resolves_layers() {
     // work inherits from default, should resolve both layers
     cmd_profile_show(&cli, &printer, Some("work")).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Layers"),
         "should show Layers section, got: {output}"
@@ -704,7 +704,7 @@ fn profile_list_shows_profiles() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     cmd_profile_list(&cli, &printer).unwrap();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("default"),
         "should list 'default' profile, got: {output}"
@@ -725,7 +725,7 @@ fn profile_list_no_profiles_dir() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     cmd_profile_list(&cli, &printer).unwrap();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("not found"),
         "should warn about missing profiles dir, got: {output}"
@@ -743,7 +743,7 @@ fn profile_list_empty_profiles_dir() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     cmd_profile_list(&cli, &printer).unwrap();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No profiles found"),
         "should indicate no profiles found, got: {output}"
@@ -1106,7 +1106,7 @@ fn profile_create_with_system_settings() {
         serde_yaml::Value::String("net.core.somaxconn".to_string()),
         "sysctl value should match"
     );
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Created profile"),
         "should confirm profile creation, got: {output}"
@@ -1212,7 +1212,7 @@ fn profile_update_add_env() {
             .any(|e| e.name == "NEW_VAR" && e.value == "hello"),
         "NEW_VAR=hello should be in the profile env"
     );
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Set env: NEW_VAR=hello"),
         "should confirm env was set, got: {output}"
@@ -1240,7 +1240,7 @@ fn profile_update_remove_env() {
         !doc.spec.env.iter().any(|e| e.name == "EDITOR"),
         "EDITOR should be removed"
     );
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Removed env: EDITOR"),
         "should confirm env removal, got: {output}"
@@ -1271,7 +1271,7 @@ fn profile_update_add_alias() {
             .any(|a| a.name == "gs" && a.command == "git status"),
         "gs alias should be added to profile"
     );
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Set alias: gs=git status"),
         "should confirm alias was set, got: {output}"
@@ -1417,7 +1417,7 @@ fn profile_update_add_system_setting() {
         serde_yaml::Value::String("net.core.somaxconn".to_string()),
         "sysctl value should match"
     );
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Set system: sysctl=net.core.somaxconn"),
         "should confirm system setting was set, got: {output}"
@@ -1569,7 +1569,7 @@ fn profile_update_no_changes_succeeds() {
     let args = make_profile_update_args();
     cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No changes specified"),
         "should report no changes, got: {output}"
@@ -1631,7 +1631,7 @@ fn profile_delete_with_yes_flag() {
 
     let profile_path = dir.path().join("profiles").join("work.yaml");
     assert!(!profile_path.exists(), "profile file should be deleted");
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Deleted profile 'work'"),
         "should confirm deletion, got: {output}"
@@ -1836,7 +1836,7 @@ fn profile_edit_with_invalid_yaml_and_prompt_declined_breaks_with_warning() {
     cmd_profile_edit(&cli, &printer, "default").expect("edit must Ok even on Save-with-errors");
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Saved with validation errors"),
         "should warn about invalid save: {output}"
@@ -1863,7 +1863,7 @@ fn profile_delete_without_yes_and_prompt_confirmed_proceeds() {
         !profile_path.exists(),
         "prompt-yes path must remove the profile file"
     );
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Deleted profile 'work'"),
         "should announce deletion: {output}"
@@ -1890,7 +1890,7 @@ fn profile_delete_without_yes_and_prompt_declined_returns_cancelled() {
         profile_path.exists(),
         "prompt-no path must NOT remove the file"
     );
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Cancelled"),
         "should print Cancelled: {output}"
@@ -1916,7 +1916,7 @@ fn profile_show_json_schema() {
     cmd_profile_show(&cli, &printer, Some("default")).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     // Structured emit routes everything through stdout; payload starts at first '{'.
     let start = output.find('{').expect("should have JSON object in output");
     let json: serde_json::Value = serde_json::from_str(output[start..].trim()).unwrap();
@@ -1947,7 +1947,7 @@ fn profile_list_json_schema() {
     cmd_profile_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     assert!(json.is_array(), "should be an array");
     let arr = json.as_array().unwrap();
@@ -1983,7 +1983,7 @@ fn profile_list_json_empty() {
     cmd_profile_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     assert!(json.is_array());
     assert_eq!(json.as_array().unwrap().len(), 0);
@@ -2001,7 +2001,7 @@ fn profile_list_json_no_profiles_dir() {
     cmd_profile_list(&cli, &printer).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     assert!(json.is_array());
     assert_eq!(json.as_array().unwrap().len(), 0);
@@ -2036,7 +2036,7 @@ spec:
     cmd_profile_show(&cli, &printer, Some("files-test")).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Files"),
         "should show Files section, got: {output}"
@@ -2058,7 +2058,7 @@ fn profile_show_displays_packages_section() {
     cmd_profile_show(&cli, &printer, Some("default")).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Packages"),
         "should show Packages section, got: {output}"
@@ -2094,7 +2094,7 @@ spec:
     cmd_profile_show(&cli, &printer, Some("secret-show")).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Secrets"),
         "should show Secrets section, got: {output}"
@@ -2129,7 +2129,7 @@ spec:
     cmd_profile_show(&cli, &printer, Some("sys-show")).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("System"),
         "should show System section, got: {output}"
@@ -2151,7 +2151,7 @@ fn profile_switch_shows_transition() {
 
     cmd_profile_switch(&cli, "work", &printer).unwrap();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("default") && output.contains("work"),
         "should show transition from default to work, got: {output}"
@@ -2174,7 +2174,7 @@ fn profile_create_output_messages() {
     cmd_profile_create(&cli, &printer, &args).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Created profile 'fancy'"),
         "should confirm creation, got: {output}"
@@ -2276,7 +2276,7 @@ spec:
 
     cmd_profile_show(&cli, &printer, Some("rich")).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     // Verify all package manager display branches are exercised
     assert!(
@@ -2351,7 +2351,7 @@ fn profile_show_no_packages_omits_section() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     cmd_profile_show(&cli, &printer, Some("bare")).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
 
     // Renderer skips the Packages section header entirely when the merged
     // PackagesSpec is empty (section_if_nonempty contract).
@@ -2397,7 +2397,7 @@ spec:
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     cmd_profile_show(&cli, &printer, Some("env-secret")).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Secrets"),
         "should show Secrets section, got: {output}"
@@ -2438,7 +2438,7 @@ spec:
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     cmd_profile_show(&cli, &printer, Some("both-secret")).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Secrets"),
         "should show Secrets section, got: {output}"
@@ -2475,7 +2475,7 @@ fn profile_list_wide_format() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     printer.emit(super::list::build_profile_list_doc(&entries, true));
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Profile") && output.contains("Active") && output.contains("Modules"),
         "wide list should show table headers, got: {output}"
@@ -2507,7 +2507,7 @@ fn profile_show_no_env_omits_section() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     cmd_profile_show(&cli, &printer, Some("noenv")).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     // Layers always renders (every profile has itself as a layer); every other
     // optional section disappears when its underlying collection is empty.
     assert!(
@@ -2549,7 +2549,7 @@ fn profile_show_no_files_omits_section() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     cmd_profile_show(&cli, &printer, Some("nofiles")).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !output.contains("Files"),
         "Files section should be omitted when no managed files, got: {output}"
@@ -2582,7 +2582,7 @@ fn profile_update_add_package() {
             .is_some_and(|b| b.formulae.contains(&"neovim".to_string())),
         "brew formulae should contain neovim"
     );
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Added package: neovim"),
         "should confirm package addition, got: {output}"
@@ -2624,7 +2624,7 @@ fn profile_update_remove_nonexistent_package() {
 
     cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("not found"),
         "should warn about package not found, got: {output}"
@@ -2645,7 +2645,7 @@ fn profile_update_remove_nonexistent_env() {
 
     cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("not found"),
         "should warn about nonexistent env var, got: {output}"
@@ -2666,7 +2666,7 @@ fn profile_update_remove_nonexistent_alias() {
 
     cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("not found"),
         "should warn about nonexistent alias, got: {output}"
@@ -2687,7 +2687,7 @@ fn profile_update_remove_nonexistent_system_setting() {
 
     cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("not found"),
         "should warn about nonexistent system setting, got: {output}"
@@ -2708,7 +2708,7 @@ fn profile_update_remove_nonexistent_secret() {
 
     cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("not found"),
         "should warn about nonexistent secret target, got: {output}"
@@ -2730,7 +2730,7 @@ fn profile_update_add_duplicate_inherits() {
 
     cmd_profile_update(&cli, &printer, "work", &args).unwrap();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("already inherits"),
         "should warn about duplicate inherits, got: {output}"
@@ -2751,7 +2751,7 @@ fn profile_update_remove_nonexistent_inherits() {
 
     cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("not found"),
         "should warn about nonexistent inherits, got: {output}"
@@ -2779,7 +2779,7 @@ fn profile_update_add_duplicate_secret() {
     cmd_profile_update(&cli, &printer2, "default", &args2).unwrap();
 
     drop(printer2);
-    let output = buf2.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf2);
     assert!(
         output.contains("already exists"),
         "should warn about duplicate secret target, got: {output}"
@@ -3029,7 +3029,7 @@ mod profile_update_module_cleanup {
         );
 
         // User-visible signals are emitted by the cleanup branch.
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             out.contains("Removed 'ghmod' from modules.lock"),
             "should announce lockfile removal: {out}"
@@ -3090,7 +3090,7 @@ mod profile_update_module_cleanup {
         // restore returns false in a non-interactive printer, so we don't
         // assert on the restore loop body — we only pin the listing +
         // state-cleanup arms.
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             out.contains("Module 'statemod' deployed 1 file"),
             "should announce deployed-file count: {out}"
@@ -3217,7 +3217,7 @@ mod profile_update_module_cleanup {
             "should_clean=true + no backup → file must be removed: {}",
             deployed_path.display()
         );
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             out.contains("Removed:") && out.contains("deployed-no-backup.conf"),
             "should announce the fallback removal: {out}"
@@ -3273,7 +3273,7 @@ mod profile_update_module_cleanup {
             restored, b"original-pre-deploy-content",
             "atomic_write must have replaced deployed content with backup content"
         );
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             out.contains("Restored:") && out.contains("deployed-with-backup.conf"),
             "should announce the restore: {out}"
@@ -3337,7 +3337,7 @@ mod profile_update_module_cleanup {
             link_dest, original_target,
             "symlink must point back at the original target"
         );
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             out.contains("Restored:") && out.contains("deployed-symlink"),
             "should announce the symlink restore: {out}"
@@ -3438,7 +3438,7 @@ fn profile_update_add_file() {
         "source should reference the file: {:?}",
         files.managed[0].source
     );
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Added file"),
         "should confirm file was added, got: {output}"
@@ -3485,7 +3485,7 @@ spec:
         managed.is_empty(),
         "managed files should be empty after removal"
     );
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Removed file"),
         "should confirm file removal, got: {output}"
@@ -3522,7 +3522,7 @@ spec:
     cmd_profile_update(&cli, &printer, "default", &args).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("not found"),
         "should warn file not found in profile, got: {output}"
@@ -3580,7 +3580,7 @@ fn profile_update_remove_module_not_in_profile_warns() {
     cmd_profile_update(&cli, &printer, "default", &args).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("not found in profile"),
         "should warn that module is not in profile, got: {output}"
@@ -3744,7 +3744,7 @@ fn profile_update_remove_file_from_profile_with_no_files_spec_is_no_op() {
     cmd_profile_update(&cli, &printer, "default", &args).unwrap();
     drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("No changes"),
         "removing from profile with no files spec should report no changes, got: {output}"
@@ -4026,7 +4026,7 @@ fn profile_create_with_file_copies_source_and_populates_files_spec() {
     );
 
     // Output must confirm the profile was created.
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Created profile 'fileprof'"),
         "should confirm creation: {output}"
@@ -4451,7 +4451,7 @@ fn profile_list_mixed_forms() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     cmd_profile_list(&cli, &printer).unwrap();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     for name in ["default", "work", "modern"] {
         assert!(
             output.contains(name),
@@ -4493,7 +4493,7 @@ fn run_migrate(
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let result = migrate::run_profile_migrate(cli, &printer, name, all, dry_run, yes);
     drop(printer);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     (result, output)
 }
 
@@ -4665,7 +4665,7 @@ fn profile_migrate_dry_run_json_reports_failed() {
     let failed = migrate::run_profile_migrate(&cli, &printer, None, true, true, false).unwrap();
     drop(printer);
     assert_eq!(failed, 1);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     // Fail-role status lines are never suppressed, so the payload starts at
     // the first brace.
     let payload = &output[output.find('{').expect("payload must be present")..];
@@ -4912,7 +4912,7 @@ fn profile_migrate_prompt_decline_cancels() {
         migrate::run_profile_migrate(&cli, &printer, Some("work"), false, false, false).unwrap();
     drop(printer);
     assert_eq!(failed, 0);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Cancelled"),
         "declined prompt should cancel, got: {output}"
@@ -4955,7 +4955,7 @@ fn profile_migrate_json_payload_shape() {
     let failed = migrate::run_profile_migrate(&cli, &printer, None, true, false, true).unwrap();
     drop(printer);
     assert_eq!(failed, 0);
-    let output = buf.lock().unwrap().clone();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     assert_eq!(json["migrated"], 2);
     assert_eq!(json["failed"], 0);

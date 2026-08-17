@@ -371,7 +371,7 @@ mod tests {
             outer.bullet("all done");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Outer\n"), "outer header missing: {out:?}");
         assert!(out.contains("Inner\n"), "inner header missing: {out:?}");
         assert!(out.contains("complete"), "inner bullet missing: {out:?}");
@@ -407,7 +407,7 @@ mod tests {
             );
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         // Section header must appear in the rendered output.
         assert!(out.contains("Build\n"), "section header missing: {out:?}");
         // The streaming path emits the label as a Status(Running) line.
@@ -449,7 +449,7 @@ mod tests {
             parent.status_simple(Role::Ok, "parent-status");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Parent\n"), "parent header missing: {out:?}");
         assert!(out.contains("Child\n"), "child header missing: {out:?}");
         assert!(
@@ -476,6 +476,7 @@ mod tests {
             body(&s);
         }
         p.flush();
+        // raw-capture-ok: two callers compare the RAW capture for exact colour equality/inequality (action_subject_keeps_role_style_under_default, action_status_leaves_the_glyph_on_the_role_style) — captured_text would strip the ANSI both exist to check
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         raw.lines().skip(1).collect::<Vec<_>>().join("\n")
     }
@@ -547,7 +548,7 @@ mod tests {
             s.bullet("after");
         }
         p.flush();
-        let live = strip_ansi(&buf.lock().unwrap());
+        let live = crate::test_helpers::captured_text(&buf);
         let first = live.find("first").expect("status missing");
         let after = live.find("after").expect("bullet missing");
         assert!(
@@ -562,7 +563,7 @@ mod tests {
             s.bullet("after");
         }
         p.flush();
-        let buffered = strip_ansi(&buf.lock().unwrap());
+        let buffered = crate::test_helpers::captured_text(&buf);
         let first = buffered.find("first").expect("status missing");
         let after = buffered.find("after").expect("bullet missing");
         assert!(
@@ -583,7 +584,7 @@ mod tests {
             let _ = s.status(Role::Ok, "bare");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.contains(&format!("short{} — done", " ".repeat(15))),
             "subject was not padded to the column: {out:?}"
@@ -611,7 +612,8 @@ mod tests {
             owner.bullet("wrote init.lua");
         }
         p.flush();
-        let raw = buf.lock().unwrap().clone();
+        // raw-capture-ok: asserting the owner token's exact styled run reaches the renderer unrestyled — captured_text would strip the ANSI this test exists to check
+        let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(
             raw.contains(&expected),
             "owner token missing or restyled: {raw:?}"
@@ -638,7 +640,7 @@ mod tests {
             phase.status_simple(Role::Ok, "No file drift");
         }
         p.flush();
-        let plain = strip_ansi(&buf.lock().unwrap().clone());
+        let plain = crate::test_helpers::captured_text(&buf);
         assert!(
             !plain.contains("profile:tiny"),
             "a silent owner group must not head itself: {plain:?}"
@@ -655,7 +657,7 @@ mod tests {
             group.status_simple(Role::Info, "~/.gitconfig (new file)");
         }
         p.flush();
-        let plain = strip_ansi(&buf.lock().unwrap().clone());
+        let plain = crate::test_helpers::captured_text(&buf);
         assert!(
             plain.contains("\n  profile:tiny\n"),
             "a speaking owner group heads itself under its phase: {plain:?}"

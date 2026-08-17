@@ -661,7 +661,7 @@ mod tests {
             close_system_phase(&sec, false, 1);
         }
         drop(printer);
-        let human = strip_ansi(&buf.lock().expect("capture").clone());
+        let human = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             !human.contains("No system drift"),
             "a check that could not run is not a check that passed: {human}"
@@ -718,7 +718,7 @@ mod tests {
             close_system_phase(&sec, false, 0);
         }
         drop(printer);
-        let human = strip_ansi(&buf.lock().expect("capture").clone());
+        let human = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             human.contains("No system drift"),
             "an all-checks-ran, no-drift phase still says so"

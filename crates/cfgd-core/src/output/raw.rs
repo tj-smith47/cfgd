@@ -138,7 +138,7 @@ mod tests {
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Normal);
         r.render_diff(&sink, "a\nb\nc\n", "a\nB\nc\n");
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("-b"), "got: {out:?}");
         assert!(out.contains("+B"), "got: {out:?}");
     }
@@ -151,7 +151,7 @@ mod tests {
         let ss = SyntaxSet::load_defaults_newlines();
         let ts = syntect::highlighting::ThemeSet::load_defaults();
         r.render_syntax_highlight(&sink, "let x = 1;\nlet y = 2;\n", "rs", &ss, &ts);
-        let out = buf.lock().unwrap();
+        let out = crate::test_helpers::captured_text(&buf);
         let stripped = strip_ansi(&out);
         assert!(
             stripped.contains("let x"),
@@ -176,6 +176,7 @@ mod tests {
             let sink = StringSink(buf.clone());
             let r = Renderer::new(Theme::default().with_colors(colors), Verbosity::Normal);
             r.render_syntax_highlight(&sink, "let x = 1;\nlet y = 2;\n", "rs", &ss, &ts);
+            // raw-capture-ok: asserting on the presence/absence of raw ANSI escapes themselves — captured_text would strip them
             buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
         };
 
@@ -215,8 +216,8 @@ mod tests {
         p.data_line("raw payload");
         p.flush();
 
-        let stdout = stdout_buf.lock().unwrap();
-        let stderr = stderr_buf.lock().unwrap();
+        let stdout = crate::test_helpers::captured_text(&stdout_buf);
+        let stderr = crate::test_helpers::captured_text(&stderr_buf);
         // data_line is RAW: exact text on stdout, no decoration, no indent.
         assert!(stdout.contains("raw payload"), "stdout got: {stdout:?}");
         // And NOT routed through the section/indent system to stderr.

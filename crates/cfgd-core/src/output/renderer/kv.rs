@@ -107,7 +107,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::super::{Renderer, StringSink};
-    use crate::output::strip_ansi;
+
     use crate::output::{Theme, Verbosity};
 
     fn capture() -> (Renderer, StringSink, Arc<Mutex<String>>) {
@@ -125,7 +125,7 @@ mod tests {
             0,
             &[("Foo".into(), "1".into()), ("LongerKey".into(), "2".into())],
         );
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         // "Foo" padded to LongerKey.len() (= 9) + "  " gap + value.
         assert!(out.contains("Foo        1"), "got: {out:?}");
         assert!(out.contains("LongerKey  2"), "got: {out:?}");
@@ -137,7 +137,7 @@ mod tests {
         r.render_kv("Foo", "1");
         r.render_kv("LongerKey", "2");
         r.flush_kv_buffer(&sink);
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Foo        1"), "got: {out:?}");
         assert!(out.contains("LongerKey  2"), "got: {out:?}");
     }
@@ -147,7 +147,7 @@ mod tests {
         let (r, sink, buf) = capture();
         let long = "x".repeat(30);
         r.render_kv_block(&sink, 0, &[(long.clone(), "value".into())]);
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         let lines: Vec<&str> = out.lines().collect();
         assert!(lines.len() >= 2, "expected wrapped output, got {out:?}");
         assert_eq!(lines[0], long);
@@ -160,7 +160,7 @@ mod tests {
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Quiet);
         r.render_kv_block(&sink, 0, &[("Foo".into(), "1".into())]);
-        assert!(buf.lock().unwrap().is_empty());
+        assert!(crate::test_helpers::captured_text(&buf).is_empty());
     }
 
     /// Keys are a structural pivot, not a header: they take `theme.secondary`.
@@ -176,7 +176,8 @@ mod tests {
             Verbosity::Normal,
         );
         r.render_kv_block(&sink, 0, &[("Profile".into(), "work".into())]);
-        let out = buf.lock().unwrap().clone();
+        // raw-capture-ok: asserting on the raw secondary-slot SGR bytes themselves — captured_text would strip the ANSI this test exists to check
+        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
         let theme = Theme::from_preset("dracula").with_colors(true);
         assert!(

@@ -518,7 +518,7 @@ mod tests {
         p.heading("Hi");
         p.flush();
         // Buffer access compiles; contents depend on verbosity defaults.
-        let _contents = buf.lock().unwrap().clone();
+        let _contents = crate::test_helpers::captured_text(&buf);
     }
 
     #[test]
@@ -679,6 +679,7 @@ mod tests {
         };
 
         for (name, buf) in flat {
+            // raw-capture-ok: proving where the colour DECISION was made — captured_text would strip the escapes this test exists to check
             let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
             check(name, &raw);
         }
@@ -692,6 +693,7 @@ mod tests {
             Printer::for_test_with_theme_colored(Theme::from_preset("dracula"), Verbosity::Normal);
         p.status_simple(Role::Ok, "wrote /etc/hosts");
         p.flush();
+        // raw-capture-ok: proving this ONE constructor really does carry colour — captured_text would strip the escapes this test exists to check
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(
             raw.contains('\u{1b}'),
