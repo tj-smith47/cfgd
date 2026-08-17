@@ -523,6 +523,22 @@ pub(super) fn brew_available() -> bool {
     cfg!(target_os = "linux") && std::path::Path::new(LINUXBREW_PATH).exists()
 }
 
+/// Whether the `brew` this process would spawn is a test double.
+///
+/// `brew_path_dirs()` names the REAL linuxbrew/macOS prefix — a directory
+/// that, on a dev or CI host with an actual Homebrew installed, exists and is
+/// populated regardless of which brew a given test asked for. A shimmed test
+/// never installs anything there, so declaring it as this run's path
+/// directory would register a real, host-specific directory into the
+/// process-wide registry that `command_path` searches — making every other
+/// tool that host happens to have brew-installed newly "available" to every
+/// later test in the same process, none of which asked for it. Gates
+/// [`crate::packages::brew::BrewManager::created_path_dirs`] on exactly the
+/// same seam [`brew_cmd`] itself already short-circuits on.
+pub(super) fn brew_bin_is_shimmed() -> bool {
+    std::env::var(BREW_BIN_ENV).is_ok()
+}
+
 /// A system manager a bootstrap cascade can mediate through, as
 /// `(plan method, command)`.
 ///

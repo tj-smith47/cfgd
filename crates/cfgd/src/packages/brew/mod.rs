@@ -12,7 +12,7 @@ use cfgd_core::output::Role;
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    brew_available, brew_cmd, brew_path_dirs, command_failure_reason,
+    brew_available, brew_bin_is_shimmed, brew_cmd, brew_path_dirs, command_failure_reason,
     install_batch_then_per_package, pkg_run, run_pkg_cmd, run_pkg_cmd_live,
 };
 
@@ -405,6 +405,30 @@ impl PackageManager for BrewManager {
     }
 
     fn path_dirs(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
+        brew_path_dirs()
+    }
+
+    /// Same directories as [`path_dirs`](Self::path_dirs), answered again here
+    /// because that declaration only reaches the registry through
+    /// `record_bootstrap`, which fires when brew ITSELF bootstraps this run.
+    /// A machine whose image bakes brew in (or one bootstrapped in an earlier
+    /// run) resolves `brew_available()` true via the linuxbrew fallback path
+    /// without ever calling [`bootstrap`](Self::bootstrap) — so the directory
+    /// a formula install just populated (`pipx`, `nvim`, …) was never
+    /// registered, and the very next action to spawn that binary, or a
+    /// postApply script naming it, fails with "not found" even though brew
+    /// reported the install as successful seconds earlier. `created_path_dirs`
+    /// is asked after every install regardless of whether bootstrap ran, which
+    /// closes exactly that gap; declaring it unconditionally (not only when
+    /// this install newly created the directory) is safe because a directory
+    /// already registered is a no-op re-declaration, not a duplicate.
+    ///
+    /// Answers empty under [`brew_bin_is_shimmed`] — see its doc for why a
+    /// test double must not declare the real host's linuxbrew directory.
+    fn created_path_dirs(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Vec<String> {
+        if brew_bin_is_shimmed() {
+            return Vec::new();
+        }
         brew_path_dirs()
     }
 
