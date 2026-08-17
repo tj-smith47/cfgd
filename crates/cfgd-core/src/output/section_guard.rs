@@ -601,28 +601,29 @@ mod tests {
         );
     }
 
-    /// `Printer::section_caveats` paints its "Caveats" heading `theme.warning`
-    /// + bold — the one heading slot no other section uses. Every other
-    /// section (plain or owner) paints `theme.header`, so a style regression
-    /// that quietly routed this heading back through the ordinary path would
-    /// still pass a plain-string assertion; only comparing the raw styled run
-    /// against both candidates catches it.
+    /// `Printer::section_caveats` paints its "Caveats" heading `theme.accent`
+    /// + bold — the phase-name slot, because the heading is a phase-class
+    /// title meant to draw the eye. Every other section (plain or owner)
+    /// paints `theme.header`, so a style regression that quietly routed this
+    /// heading back through the ordinary path would still pass a plain-string
+    /// assertion; only comparing the raw styled run against both candidates
+    /// catches it.
     #[test]
     #[serial_test::serial]
-    fn section_caveats_heading_is_warning_bold_not_header() {
+    fn section_caveats_heading_is_accent_bold_not_header() {
         use crate::output::Theme;
 
         let theme = Theme::from_preset("dracula");
         let colored = theme.clone().with_colors(true);
-        let expected_warning_bold = colored
-            .warning
+        let expected_accent_bold = colored
+            .accent
             .clone()
             .bold()
             .apply_to("Caveats")
             .to_string();
         let header_styled = colored.header.apply_to("Caveats").to_string();
         assert_ne!(
-            expected_warning_bold, header_styled,
+            expected_accent_bold, header_styled,
             "the fixture theme must actually distinguish the two slots, or this test proves nothing"
         );
 
@@ -636,8 +637,8 @@ mod tests {
         // raw-capture-ok: asserting the heading's exact styled run reaches the renderer unrestyled — captured_text would strip the ANSI this test exists to check
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(
-            raw.contains(&expected_warning_bold),
-            "Caveats heading must be theme.warning + bold: {raw:?}"
+            raw.contains(&expected_accent_bold),
+            "Caveats heading must be theme.accent + bold: {raw:?}"
         );
         assert!(
             !raw.contains(&header_styled),

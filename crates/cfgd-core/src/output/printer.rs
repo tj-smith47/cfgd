@@ -733,18 +733,19 @@ impl Printer {
     /// collected during the run, grouped under the owner that produced it and
     /// rendered once at the very end instead of inline under each action.
     ///
-    /// `theme.warning`, bold: the one heading slot no other section uses, so
-    /// this heading reads apart from every ordinary `theme.header` section
-    /// title, and shares hue with the `⚠` glyphs of the notes beneath it.
-    /// Bold keeps it distinct under `--no-color` / `minimal`, where the
-    /// warning colour itself drops out but the attribute survives (per
-    /// no-color.org) — the same rule every other heading renders by.
+    /// `theme.accent`, bold: Caveats is a phase-class heading meant to draw
+    /// the eye, and `accent` is the slot phase names draw attention with — so
+    /// it reads apart from every ordinary `theme.header` section title while
+    /// still reading as part of the run's phase structure. Bold keeps it
+    /// distinct under `--no-color` / `minimal`, where the accent colour drops
+    /// out but the attribute survives (per no-color.org) — the same rule
+    /// every other heading renders by.
     #[must_use = "section closes when SectionGuard is dropped; bind it"]
     pub fn section_caveats(&self) -> super::section_guard::SectionGuard<'_> {
         let styled = self
             .renderer
             .theme
-            .warning
+            .accent
             .clone()
             .bold()
             .apply_to("Caveats")
