@@ -56,6 +56,13 @@ impl SessionSet {
 pub struct SessionRefresh {
     /// Variables whose live value actually changed.
     pub changed: usize,
+    /// Variables left alone because no session manager answered — distinct
+    /// from a variable already at its desired value, so the caller can tell
+    /// "nothing to do" from "nothing was possible" (see `SessionSet::Unavailable`).
+    /// On Linux the probe is per-dispatch, so one run's unavailable count is
+    /// all-or-nothing, but counting rather than flagging needs no such
+    /// assumption from its caller.
+    pub unavailable: usize,
     /// One already-collapsed diagnostic per setter that failed.
     pub failures: Vec<String>,
 }
@@ -185,7 +192,7 @@ pub fn refresh_session_env(vars: &[(String, String)]) -> SessionRefresh {
         };
         match outcome {
             SessionSet::Applied => refresh.changed += 1,
-            SessionSet::Unavailable => {}
+            SessionSet::Unavailable => refresh.unavailable += 1,
             SessionSet::Failed(message) => refresh.failures.push(message),
         }
     }
@@ -344,5 +351,36 @@ mod tests {
     fn an_unseamed_session_write_is_refused_under_test() {
         let _unset = crate::test_helpers::EnvVarGuard::unset(LAUNCHCTL_BIN_ENV);
         launchctl_setenv("EDITOR", "nvim");
+    }
+
+    /// The systemd-dispatch branch only exists on Linux/BSD builds:
+    /// `refresh_session_env`'s `cfg!(target_os)` arms are compile-time constants
+    /// fixed to the build target, so this gate mirrors them explicitly — on a
+    /// macOS build the same source would compile to the `launchctl` branch.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    #[serial_test::serial]
+    fn refresh_session_env_reports_unavailable_when_no_session_manager_answers() {
+        // A path that does not exist: `command_available_with_seam` treats a
+        // seam pointed at a missing file as "not available", which is what an
+        // unprovisioned machine with no systemd user manager looks like —
+        // never an unset seam, which the write path refuses under test.
+        let _seam = crate::test_helpers::EnvVarGuard::set(SYSTEMCTL_BIN_ENV, "/no/such/systemctl");
+
+        let refresh = refresh_session_env(&[("EDITOR".to_string(), "nvim".to_string())]);
+
+        assert_eq!(
+            refresh.changed, 0,
+            "no session manager could apply anything"
+        );
+        assert!(
+            refresh.unavailable >= 1,
+            "the unattempted variable must be counted as unavailable, not silently dropped"
+        );
+        assert!(
+            refresh.failures.is_empty(),
+            "an absent session manager is not a failure: {:?}",
+            refresh.failures
+        );
     }
 }

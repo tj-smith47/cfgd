@@ -20426,6 +20426,102 @@ fn metadata_detail_is_muted_and_error_detail_is_not() {
     );
 }
 
+/// A live-session refresh that cannot reach any session manager must say so —
+/// never render as "unchanged", which claims the surface was already correct
+/// rather than never reachable. Guards the fix for the defect where an
+/// unprovisioned Linux host (no systemd user manager) lied about `cfgd:session`.
+///
+/// Gated to the systemd dispatch branch: `refresh_session_env`'s
+/// `cfg!(target_os)` arms are compile-time constants fixed to the build
+/// target, so this gate mirrors them explicitly — a macOS build compiles the
+/// `launchctl` branch instead and would hit `refuse_unseamed_session_write`
+/// for a seam this test never points anywhere (see `env_session.rs`'s
+/// Linux/BSD-gated unit test for the same reasoning).
+#[cfg(all(unix, not(target_os = "macos")))]
+#[test]
+#[serial_test::serial]
+fn refresh_live_session_reports_no_session_manager_when_unavailable() {
+    // A missing path: `command_available_with_seam` reads it as "not
+    // available" regardless of what the host running this test actually has,
+    // so the test is deterministic on a workstation carrying a real systemd
+    // user manager just as on a container that has none.
+    let _seam =
+        crate::test_helpers::EnvVarGuard::set(crate::SYSTEMCTL_BIN_ENV, "/no/such/systemctl");
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::cfgd("session"),
+            vec![Action::Env(EnvAction::RefreshLiveSession {
+                vars: vec![("EDITOR".to_string(), "nvim".to_string())],
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply must succeed even when the session manager is unavailable");
+    let raw = cap.human();
+
+    assert!(
+        raw.contains("no session manager"),
+        "the skipped line must say why, not just that nothing changed: {raw}"
+    );
+    assert!(
+        !raw.contains("publish 1 var to the session manager \u{2014} unchanged"),
+        "the unavailable case must not render as the generic unchanged detail: {raw}"
+    );
+
+    // The result carries the new suffix the same way the pre-existing
+    // `:skipped` suffix already rides on `ActionResult.description` (see
+    // `env:write:` results elsewhere in this file) — a display-adjacent
+    // annotation on the in-memory result, not on the persisted id. What must
+    // stay byte-identical is what `parse_resource_from_description` derives
+    // from it once the suffix is stripped, which `managed_resources`/journal
+    // rows are keyed on; `parse_resource_from_description_cases` above pins
+    // that derivation for the bare `LIVE_SESSION_RESOURCE_ID` already.
+    assert_eq!(
+        result.action_results.len(),
+        1,
+        "one action, one result: {:?}",
+        result.action_results
+    );
+    assert_eq!(
+        result.action_results[0]
+            .description
+            .strip_suffix(super::apply::ENV_NO_SESSION_MANAGER_SUFFIX)
+            .unwrap_or(&result.action_results[0].description),
+        super::format::LIVE_SESSION_RESOURCE_ID,
+        "the description strips back to the same resource id every other run uses"
+    );
+    assert!(
+        !result.action_results[0].changed,
+        "nothing was actually applied to the session"
+    );
+    assert!(
+        result.action_results[0].success,
+        "an absent session manager is not a failure"
+    );
+}
+
 #[test]
 fn packages_tree_renders_profile_first_while_modules_execute_first() {
     let log = new_dispatch_log();

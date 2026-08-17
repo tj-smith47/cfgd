@@ -352,10 +352,27 @@ fn selector_matches(owner: &Owner, action: &Action, selector: &str) -> bool {
 /// that alternate by run and neither matches the id the planner derives.
 pub(super) const ENV_SKIPPED_SUFFIX: &str = ":skipped";
 
+/// Suffix `apply_env_action` appends to `LIVE_SESSION_RESOURCE_ID` when the
+/// refresh could not reach any session manager, rather than converging with
+/// nothing to do — see `SessionRefresh::unavailable`. A sibling of
+/// [`ENV_SKIPPED_SUFFIX`] rather than a variant of it: both mean "nothing was
+/// written", but only this one has a distinct display detail
+/// (`"no session manager"` instead of `"unchanged"`), and every consumer that
+/// strips one for the persisted id strips the other identically.
+pub(super) const ENV_NO_SESSION_MANAGER_SUFFIX: &str = ":no-session-manager";
+
 fn env_result_key(description: &str) -> &str {
     description
         .strip_suffix(ENV_SKIPPED_SUFFIX)
+        .or_else(|| description.strip_suffix(ENV_NO_SESSION_MANAGER_SUFFIX))
         .unwrap_or(description)
+}
+
+/// Whether an env-action description carries either "nothing was written"
+/// suffix — the general form `.contains(ENV_SKIPPED_SUFFIX)` calls used before
+/// this suffix existed, now covering both.
+fn env_result_unchanged(description: &str) -> bool {
+    description.contains(ENV_SKIPPED_SUFFIX) || description.contains(ENV_NO_SESSION_MANAGER_SUFFIX)
 }
 
 /// Whether the post-phase env regeneration must re-run over `path_dirs_now`,
@@ -1113,7 +1130,7 @@ impl<'a> super::Reconciler<'a> {
                     // — beside the failure line below it, which does the same.
                     match Self::apply_env_action(ea, printer, NoteSink::discarded()) {
                         Ok(desc) => {
-                            let changed = !desc.contains(ENV_SKIPPED_SUFFIX);
+                            let changed = !env_result_unchanged(&desc);
                             merge_env_result(&mut results, desc, changed);
                         }
                         Err(e) => {
@@ -1390,10 +1407,7 @@ impl<'a> super::Reconciler<'a> {
                 continue;
             }
 
-            let description = result
-                .description
-                .strip_suffix(ENV_SKIPPED_SUFFIX)
-                .unwrap_or(&result.description);
+            let description = env_result_key(&result.description);
             let (rtype, rid) = parse_resource_from_description(description);
             // A manager node is cfgd's own scaffolding, never a resource the
             // user declared: a refreshed index, a provisioned manager and a
@@ -1518,7 +1532,13 @@ impl<'a> super::Reconciler<'a> {
                     (None, true) => Role::Ok,
                     (None, false) => Role::Skipped,
                 };
-                let detail = (noop.is_none() && !action_changed).then(|| "unchanged".to_string());
+                let detail = (noop.is_none() && !action_changed).then(|| {
+                    if desc.ends_with(ENV_NO_SESSION_MANAGER_SUFFIX) {
+                        "no session manager".to_string()
+                    } else {
+                        "unchanged".to_string()
+                    }
+                });
                 let duration = (elapsed >= MIN_REPORTED_DURATION).then_some(elapsed);
                 ActionOutcome {
                     subject,
@@ -1594,7 +1614,7 @@ impl<'a> super::Reconciler<'a> {
                 .apply_manager_action(manager, printer, notes)
                 .map(|(desc, changed)| (desc, changed, None)),
             Action::Env(env) => Self::apply_env_action(env, printer, notes).map(|d| {
-                let changed = !d.contains(ENV_SKIPPED_SUFFIX);
+                let changed = !env_result_unchanged(&d);
                 (d, changed, None)
             }),
         }

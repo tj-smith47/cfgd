@@ -342,10 +342,17 @@ impl<'a> super::Reconciler<'a> {
                     notes.report(printer, crate::output::Role::Warn, failure);
                 }
                 if refresh.changed == 0 {
-                    return Ok(format!(
-                        "{LIVE_SESSION_RESOURCE_ID}{}",
+                    // `unavailable > 0` means no session manager answered for
+                    // at least one variable — distinct from every variable
+                    // already holding its desired value, so the apply tree
+                    // does not report "unchanged" for a surface that was
+                    // never reachable in the first place.
+                    let suffix = if refresh.unavailable > 0 {
+                        super::apply::ENV_NO_SESSION_MANAGER_SUFFIX
+                    } else {
                         super::apply::ENV_SKIPPED_SUFFIX
-                    ));
+                    };
+                    return Ok(format!("{LIVE_SESSION_RESOURCE_ID}{suffix}"));
                 }
                 // The changed count is not the id: the same surface reached
                 // twice in one apply (Env phase, then the late regeneration)
