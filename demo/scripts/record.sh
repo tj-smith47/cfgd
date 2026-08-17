@@ -2,19 +2,27 @@
 # Run a VHS tape and prove it actually produced a take.
 #
 # Takes a tape basename ($1, default "init" so the hero chain is unchanged):
-# records demo/<name>.tape -> demo/.out/<name>.mp4. The tape's own `Output`
-# line has to agree with that path — VHS reads its target from inside the
-# tape, not from an argument to this script.
+# records demo/<name>.tape. VHS reads its target from inside the tape, not
+# from an argument to this script, so the output path this script watches is
+# read straight out of the tape's own `Output "..."` line (the same
+# extraction the font precondition already runs on `Set FontFamily`) instead
+# of being reconstructed from $NAME — a tape and a hand-built path can drift
+# from each other; a tape and its own declared Output line cannot.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
 NAME="${1:-init}"
 TAPE="demo/${NAME}.tape"
-RAW="demo/.out/${NAME}.mp4"
 
 if [ ! -f "$TAPE" ]; then
     echo "$TAPE does not exist." >&2
+    exit 1
+fi
+
+RAW="$(sed -n 's/^Output "\(.*\)"$/\1/p' "$TAPE" | head -1)"
+if [ -z "$RAW" ]; then
+    echo "$TAPE declares no parseable \`Output \"...\"\` line — cannot know what it writes." >&2
     exit 1
 fi
 
