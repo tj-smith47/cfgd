@@ -14,6 +14,28 @@ use cfgd_core::reconciler::{Action, ManagerAction, VerifyResult};
 use crate::files::{CfgdFileManager, module_patch_binding};
 use crate::packages;
 
+/// The ONE shaping of a live [`VerifyResult`] into a recorded-shape
+/// [`cfgd_core::state::DriftEvent`], for a caller (`cmd_status`,
+/// `cmd_status_module`'s two drift loops) that must fold a live-scan finding
+/// into the same `-o json` `drift` array a recorded event lives in. `id: 0`
+/// and `resolved_by: None` mark it as never persisted — a live finding has no
+/// row of its own — and `source` is always [`cfgd_core::config::LOCAL_LAYER`],
+/// since a live scan has no config-layer provenance to attribute. `matches`
+/// is dropped: every caller has already filtered to `!matches` before
+/// reaching here, and `DriftEvent` carries no field for it.
+pub(super) fn drift_event_from(r: &VerifyResult) -> cfgd_core::state::DriftEvent {
+    cfgd_core::state::DriftEvent {
+        id: 0,
+        timestamp: cfgd_core::utc_now_iso8601(),
+        resource_type: r.resource_type.clone(),
+        resource_id: r.resource_id.clone(),
+        expected: Some(r.expected.clone()),
+        actual: Some(r.actual.clone()),
+        resolved_by: None,
+        source: cfgd_core::config::LOCAL_LAYER.to_string(),
+    }
+}
+
 /// Content-aware verify results for every managed file in the profile.
 ///
 /// Wraps [`CfgdFileManager::file_drift_results`] into the reconciler's
@@ -68,7 +90,7 @@ pub(super) fn module_file_verify_results(
                     );
                     crate::files::patch_drift_result(&file.target, evaluated)
                 }
-                None => fm.file_drift_one(&file.source, &file.target, None)?,
+                None => fm.file_drift_one(&file.source, &file.target, None, file.strategy)?,
             };
             results.push(VerifyResult {
                 resource_type: "module".to_string(),
@@ -186,7 +208,7 @@ fn package_action_drift(action: &PackageAction) -> Option<VerifyResult> {
             manager, packages, ..
         } => Some(VerifyResult {
             resource_type: "package".to_string(),
-            resource_id: format!("{}:{}", manager, packages.join(", ")),
+            resource_id: super::diff::package_resource_id(manager, packages),
             matches: false,
             expected: "installed".to_string(),
             actual: "not installed".to_string(),
@@ -195,7 +217,7 @@ fn package_action_drift(action: &PackageAction) -> Option<VerifyResult> {
             manager, packages, ..
         } => Some(VerifyResult {
             resource_type: "package".to_string(),
-            resource_id: format!("{}:{}", manager, packages.join(", ")),
+            resource_id: super::diff::package_resource_id(manager, packages),
             matches: false,
             expected: "absent".to_string(),
             actual: "to remove".to_string(),

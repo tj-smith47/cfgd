@@ -4118,7 +4118,9 @@ fn file_drift_one_missing_source_reports_non_matching() {
 
     let missing_source = config_dir.join("files").join("does-not-exist.txt");
     let target = config_dir.join("target").join("out.txt");
-    let result = fm.file_drift_one(&missing_source, &target, None).unwrap();
+    let result = fm
+        .file_drift_one(&missing_source, &target, None, None)
+        .unwrap();
 
     assert!(!result.matches, "missing source must be non-matching");
     assert!(

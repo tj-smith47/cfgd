@@ -30,7 +30,7 @@ fn diff_module_file(
             ))
         }
         // Module sources carry no tera origin, so pass None.
-        None => Ok(fm.diff_one(&file.source, &file.target, None, printer)?),
+        None => Ok(fm.diff_one(&file.source, &file.target, None, file.strategy, printer)?),
     }
 }
 
@@ -387,6 +387,17 @@ fn cmd_diff_module(
     }
 
     Ok(())
+}
+
+/// The ONE grammar for a package drift's `resource_id`: `<manager>:<packages,
+/// comma-joined>`. Three call sites mint this string — `package_action_drift`
+/// and `resolve_module_files_and_packages` (both in `live_drift.rs`) and
+/// `cmd_status_module`'s missing-package branch (`status.rs`) — and a
+/// consumer diffing two `DriftEvent`/`VerifyResult` streams needs all three to
+/// agree on the separator. `/` collides with a package name that legitimately
+/// contains one (a scoped npm package, `@org/name`), which `:` cannot.
+pub(super) fn package_resource_id(manager: &str, packages: &[String]) -> String {
+    format!("{}:{}", manager, packages.join(", "))
 }
 
 /// Drift record for a module-declared package that is not installed, or `None`

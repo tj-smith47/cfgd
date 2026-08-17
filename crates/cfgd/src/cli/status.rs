@@ -453,16 +453,7 @@ pub(super) fn cmd_status(
             &pkg_cx,
         )?;
         for r in &drift {
-            output.drift.push(cfgd_core::state::DriftEvent {
-                id: 0,
-                timestamp: cfgd_core::utc_now_iso8601(),
-                resource_type: r.resource_type.clone(),
-                resource_id: r.resource_id.clone(),
-                expected: Some(r.expected.clone()),
-                actual: Some(r.actual.clone()),
-                resolved_by: None,
-                source: LOCAL_LAYER.to_string(),
-            });
+            output.drift.push(super::live_drift::drift_event_from(r));
         }
         drift
     } else {
@@ -554,32 +545,25 @@ pub(super) fn cmd_status_module(
         .into_iter()
         .filter(|r| !r.matches)
         {
-            drift.push(cfgd_core::state::DriftEvent {
-                id: 0,
-                timestamp: cfgd_core::utc_now_iso8601(),
-                resource_type: r.resource_type,
-                resource_id: r.resource_id,
-                expected: Some(r.expected),
-                actual: Some(r.actual),
-                resolved_by: None,
-                source: LOCAL_LAYER.to_string(),
-            });
+            drift.push(super::live_drift::drift_event_from(&r));
         }
 
         let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
         for resolved_module in &resolved_modules {
             for pkg in &resolved_module.packages {
                 if let Some(pd) = super::diff::package_missing_drift(pkg, &mgr_map, &pkg_cx) {
-                    drift.push(cfgd_core::state::DriftEvent {
-                        id: 0,
-                        timestamp: cfgd_core::utc_now_iso8601(),
-                        resource_type: "package".to_string(),
-                        resource_id: format!("{}/{}", pd.manager, pd.packages.join(", ")),
-                        expected: Some("installed".to_string()),
-                        actual: Some("missing".to_string()),
-                        resolved_by: None,
-                        source: LOCAL_LAYER.to_string(),
-                    });
+                    drift.push(super::live_drift::drift_event_from(
+                        &cfgd_core::reconciler::VerifyResult {
+                            resource_type: "package".to_string(),
+                            resource_id: super::diff::package_resource_id(
+                                &pd.manager,
+                                &pd.packages,
+                            ),
+                            matches: false,
+                            expected: "installed".to_string(),
+                            actual: "missing".to_string(),
+                        },
+                    ));
                 }
             }
         }
@@ -593,12 +577,12 @@ pub(super) fn cmd_status_module(
         status,
         last_applied,
         drift_checked_live: exit_code,
-        drift: drift.clone(),
+        drift,
     };
 
     printer.emit(build_module_status_doc(&output, &deployed_files));
 
-    if exit_code && !drift.is_empty() {
+    if exit_code && !output.drift.is_empty() {
         cfgd_core::exit::ExitCode::DriftDetected.exit();
     }
 
@@ -1358,6 +1342,8 @@ mod tests {
     // `--exit-code` must return Ok rather than calling `process::exit`.
     #[test]
     fn cmd_status_module_exit_code_true_no_drift_returns_ok() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let config_dir = tempfile::tempdir().unwrap();
         let state_dir = tempfile::tempdir().unwrap();
         let target_dir = tempfile::tempdir().unwrap();
@@ -1378,13 +1364,28 @@ mod tests {
         );
         std::fs::write(mod_dir.join("module.yaml"), module_yaml).unwrap();
 
-        let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, _) = test_printers();
+        let mut cli = test_cli_for(config_path, state_dir.path());
+        cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+        let (printer, buf) = test_printers_json();
 
         let res = cmd_status_module(&cli, &printer, "test-mod", true);
         assert!(
             res.is_ok(),
             "exit_code=true with a converged module must return Ok, got: {res:?}"
+        );
+        drop(printer);
+
+        let captured = cfgd_core::test_helpers::captured_text(&buf);
+        let parsed: serde_json::Value = serde_json::from_str(captured.trim())
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {captured}"));
+        assert_eq!(
+            parsed["driftCheckedLive"], true,
+            "exit_code=true must have actually run the live scan, got: {parsed}"
+        );
+        assert_eq!(
+            parsed["drift"],
+            serde_json::json!([]),
+            "a converged module's live scan must find nothing, got: {parsed}"
         );
     }
 }

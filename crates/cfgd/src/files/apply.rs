@@ -274,8 +274,9 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
         source: &Path,
         target: &Path,
         origin: Option<&str>,
+        strategy: Option<FileStrategy>,
     ) -> Result<FileDriftResult> {
-        self.file_drift_one(source, target, origin)
+        self.file_drift_one(source, target, origin, strategy)
     }
 }
 

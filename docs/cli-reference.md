@@ -528,7 +528,33 @@ cfgd status                                 # human-readable table
 cfgd status -o json                         # full status as JSON
 cfgd status -o jsonpath='{.drift}'          # extract drift events
 cfgd status --module nvim                   # status for a single module (no profile required)
+cfgd status --module nvim --exit-code       # live scan: exit 5 if the module has drifted
 ```
+
+`cfgd status` (fleet-wide and `--module`) is a fast RECORDED-drift dashboard by
+default: it reads what a prior `apply`/`diff`/`verify`/daemon run already wrote to
+state, so on a host with no daemon and no prior scan it reports no drift however far
+the machine has actually drifted. `-o json`'s `drift` array and `driftCheckedLive`
+flag say which of those two you are holding — `driftCheckedLive: false` means
+`drift` is only what was previously recorded, not a claim about the machine right
+now:
+
+```jsonc
+{
+  "driftCheckedLive": false,
+  "drift": []
+}
+```
+
+`--exit-code` / `-e` runs the same live, read-only scan `diff`/`verify` do —
+`driftCheckedLive` flips to `true`, `drift` reflects what that scan actually found,
+and the command exits `5` if it is non-empty (see [Exit Codes](#exit-codes)). The
+live scan costs real time (each run is a full package/file check — roughly 10-15s
+per module in a typical container), so reach for it in CI gating, not in an
+interactive dashboard refresh. `status --module <name> --exit-code` scans that
+module's own files and missing packages only — it does not evaluate the module's
+system-config contribution (`effective_system_map` folds that into the
+profile-wide scan) or manager drift, matching the scope of `cfgd diff --module`.
 
 `pendingDecisions` lists the same rows `cfgd decide` offers, including
 classified-but-unrecorded items with `id: 0` (see [`cfgd plan`](#cfgd-plan)).

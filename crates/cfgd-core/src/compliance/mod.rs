@@ -369,6 +369,7 @@ pub fn collect_file_checks(
                 Path::new(&file.source),
                 &file.target,
                 file.tera_origin.as_deref(),
+                file.strategy,
             ) {
                 Ok(drift) => {
                     if drift.matches {

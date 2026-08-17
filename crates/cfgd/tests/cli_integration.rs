@@ -628,23 +628,35 @@ fn status_module_exit_code_catches_module_file_drift() {
     .unwrap();
 
     // Without --exit-code: fast dashboard, exit 0, no drift claimed even
-    // though the target's content is wrong.
+    // though the target's content is wrong. Read `-o json` rather than
+    // grepping human text — `!A || B` against a fixed "No drift" substring
+    // passed even when the drifted pair leaked in, since the fixture's
+    // human render always carries a "No drift"-shaped line somewhere.
     let quiet = Command::cargo_bin("cfgd")
         .unwrap()
         .arg("status")
         .arg("--module")
         .arg("accmod")
         .arg("--no-color")
+        .arg("-o")
+        .arg("json")
         .arg("--config")
         .arg(dir.path().join("cfgd.yaml"))
         .arg("--state-dir")
         .arg(state_dir.path())
         .assert()
         .success();
-    let quiet_out = String::from_utf8_lossy(&quiet.get_output().stderr).to_string();
-    assert!(
-        !quiet_out.contains("want:") || quiet_out.contains("No drift"),
-        "status without --exit-code must not claim live drift, got:\n{quiet_out}"
+    let quiet_stdout = String::from_utf8_lossy(&quiet.get_output().stdout).to_string();
+    let quiet_json: serde_json::Value =
+        serde_json::from_str(quiet_stdout.trim()).expect("status -o json is one JSON value");
+    assert_eq!(
+        quiet_json["driftCheckedLive"], false,
+        "status without --exit-code must not have run the live scan, got: {quiet_json}"
+    );
+    assert_eq!(
+        quiet_json["drift"],
+        serde_json::json!([]),
+        "status without --exit-code must not claim live drift, got: {quiet_json}"
     );
 
     // With --exit-code: the live scan runs, catches the drift, and exits 5 —
