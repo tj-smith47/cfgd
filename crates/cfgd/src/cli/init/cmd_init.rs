@@ -46,6 +46,10 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // signature and call `printer.status_simple`/`hint` directly rather than
     // through a bound `SectionGuard`.
     let init_section = printer.section("Initialize cfgd");
+    // The clone below runs inside a live output window, which paints beneath
+    // the last committed line — a heading still deferred to its first status
+    // would be written after the output it introduces.
+    init_section.commit_header();
     let init_depth = printer.depth_inheritance();
 
     if !check_prerequisites(printer) {
