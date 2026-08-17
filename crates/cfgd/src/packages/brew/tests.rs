@@ -157,28 +157,19 @@ fn parse_brew_versions_single_package_no_trailing_newline() {
 }
 
 #[test]
-#[serial_test::serial]
-fn brew_manager_created_path_dirs_matches_path_dirs_unconditionally() {
-    // The fix this test pins: `created_path_dirs` is asked after every
-    // install regardless of whether brew bootstrapped this run, while
-    // `path_dirs` only ever reaches the process/state registry through a
-    // bootstrap that fired. A machine with brew already on the image (the
-    // linuxbrew fallback answers `is_available` true) never calls
-    // `bootstrap`, so before this fix a freshly-`brew install`ed binary
-    // (nvim, pipx, ...) was never registered and the next action to spawn
-    // it failed "not found" seconds after brew reported success. Answering
-    // the same directories unconditionally here — not only when this
-    // specific install created them — closes that gap.
-    //
-    // `#[serial]` pairs this with every `brew_shim` test in the module below:
-    // outside a shim, `created_path_dirs` must equal `path_dirs`, and that
-    // equality only holds when no OTHER test's `CFGD_BREW_BIN` is live on
-    // this thread's env at the same instant.
+fn brew_manager_created_path_dirs_is_empty() {
+    // brew's prefix is never a directory cfgd itself created — Homebrew's own
+    // installer makes it, cfgd only ever runs that installer — so it must
+    // never reach the generated env file via `created_path_dirs` (the ONLY
+    // surface that publishes there), whatever `path_dirs` answers for
+    // in-process resolution. See `reconciler::packages::register_install_path_dirs`
+    // for where the install-time PATH-resolution gap is actually closed,
+    // at the process level only.
     let mgr = BrewManager;
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
-    assert_eq!(mgr.created_path_dirs(&cx), mgr.path_dirs(&cx));
+    assert!(mgr.created_path_dirs(&cx).is_empty());
 }
 
 #[test]
@@ -432,26 +423,6 @@ mod brew_shim {
             0,
             "empty package list must not spawn brew at all"
         );
-    }
-
-    #[test]
-    #[serial]
-    fn brew_manager_created_path_dirs_empty_under_a_shimmed_brew() {
-        // A shimmed brew never lives in the real linuxbrew/macOS prefix, so
-        // declaring `brew_path_dirs()` here would register a directory this
-        // test never installed anything into — and on a host with a REAL
-        // Homebrew (this box, and any dev machine), that directory exists and
-        // is populated regardless of the shim, polluting every later test in
-        // the process with tools this fixture never asked to be available.
-        // Reproduces the failure this test pins: before the guard,
-        // `created_path_dirs` returned the real prefix unconditionally and a
-        // later apply-snapshot test picked up host brew binaries it never
-        // declared, inflating its planned action count.
-        let _shim = ToolShim::install(SHIM_ENV, 0, "", "");
-        let p = test_printer();
-        let st = test_state();
-        let cx = test_package_context(&p, &st);
-        assert!(BrewManager.created_path_dirs(&cx).is_empty());
     }
 
     #[test]

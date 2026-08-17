@@ -12858,6 +12858,59 @@ fn an_install_records_the_directories_it_created_with_no_provision_in_the_run() 
     );
 }
 
+/// The install-time PATH gap this closes: a manager already available before
+/// this run does anything (baked into an image, or bootstrapped on a prior
+/// run) never bootstraps, so `path_dirs()` never reaches
+/// `record_bootstrap`. Its `created_path_dirs()` also answers empty (this
+/// manager creates nothing of its own — the brew shape), so nothing about it
+/// is cfgd's to persist either. Yet the very next action in this same run
+/// needs to resolve a binary this install just landed in that directory, so
+/// `register_install_path_dirs` registers it into the PROCESS-level registry
+/// regardless — proven by reading `bootstrapped_path_dirs()` directly rather
+/// than the state store, and proven NOT persisted by asserting the state
+/// store recorded nothing for this manager at all.
+#[test]
+#[serial_test::serial]
+fn an_install_with_no_bootstrap_and_nothing_created_still_registers_its_path_dirs_in_process() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        BootstrappingPackageManager::new("brew-like", &["/opt/brew-like/bin"]).already_available(),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+
+    reconciler
+        .apply(
+            &install_only_plan("brew-like", "some-formula"),
+            &make_empty_resolved(),
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    assert!(
+        crate::bootstrapped_path_dirs()
+            .iter()
+            .any(|d| d.to_string_lossy() == "/opt/brew-like/bin"),
+        "the install-time directory must be resolvable to the rest of this process"
+    );
+    assert!(
+        state.bootstrapped_managers().unwrap().is_empty(),
+        "a manager that created nothing must earn no persisted row — its \
+         directory is not cfgd's to publish into the generated env file"
+    );
+}
+
 /// The record a provision writes comes from the method the plan named, so a
 /// manager whose directories depend on its mediator records what the plan
 /// promised. The bootstrap itself changes what a live probe sees, so a record
