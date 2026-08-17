@@ -136,11 +136,11 @@ impl Renderer {
                 // the lines: a concurrent emission landing between
                 // `open_top_group` and the block would take this status's
                 // blank-line decision with it.
-                let (line, detail_tail) = self.compose_status(f);
+                let (line, trailer, detail_tail) = self.compose_status_split(f);
                 self.emit_with(w, |e| {
                     e.open_top_group(super::TopGroup::Status);
                     e.flush_section_headers();
-                    e.push_line(depth, &line);
+                    e.push_line_with_trailer(depth, &line, trailer.as_deref());
                     for tail in &detail_tail {
                         e.push_line(depth + 1, tail);
                     }
@@ -210,10 +210,10 @@ impl Renderer {
         if self.verbosity == Verbosity::Quiet && f.role != Role::Fail {
             return;
         }
-        let (line, detail_tail) = self.compose_status(f);
+        let (line, trailer, detail_tail) = self.compose_status_split(f);
         self.emit_with(w, |e| {
             e.flush_section_headers();
-            e.push_line(depth, &line);
+            e.push_line_with_trailer(depth, &line, trailer.as_deref());
             // Continuation lines indent one level past the subject so they
             // read as belonging to this status rather than as new siblings.
             for tail in &detail_tail {
@@ -267,11 +267,50 @@ impl Renderer {
             line.push_str(&dim.to_string());
         }
         if let Some(d) = f.duration {
-            let secs = d.as_secs_f64();
-            let dim = self.theme.muted.apply_to(format!(" ({:.1}s)", secs));
-            line.push_str(&dim.to_string());
+            line.push_str(&self.duration_trailer(d));
         }
         (line, detail_tail)
+    }
+
+    /// The styled ` (12.1s)` suffix `compose_status` appends when
+    /// `f.duration` is `Some` — the ONE formatting of it, so the full
+    /// single-string composition (`compose_status`, read by
+    /// `affordable_column` and `live_row.rs`'s single-line live-paint clamp,
+    /// which never wraps) and the split composition below
+    /// (`compose_status_split`, read by the wrapped multi-line commit path)
+    /// can never render different bytes for the same duration.
+    fn duration_trailer(&self, d: Duration) -> String {
+        let secs = d.as_secs_f64();
+        self.theme
+            .muted
+            .apply_to(format!(" ({:.1}s)", secs))
+            .to_string()
+    }
+
+    /// Same composition as `compose_status`, with the duration trailer held
+    /// out of the returned line instead of appended to it.
+    ///
+    /// The permanent-commit path (`render_status_immediate` and the
+    /// top-level `StatusRoute::Immediate` arm) needs the duration separated
+    /// from the rest of the line so a wrapped subject can anchor it to the
+    /// shared duration column on its LAST physical line
+    /// (`wrap::wrap_body_with_trailer`) instead of letting it fall wherever
+    /// the word-wrap of the full composed string happens to land it.
+    pub(crate) fn compose_status_split(
+        &self,
+        f: &StatusFields<'_>,
+    ) -> (String, Option<String>, Vec<String>) {
+        let (line, tail) = self.compose_status(&StatusFields {
+            role: f.role,
+            subject: f.subject,
+            detail: f.detail,
+            duration: None,
+            target: f.target,
+            subject_style: f.subject_style.clone(),
+            detail_style: f.detail_style.clone(),
+        });
+        let trailer = f.duration.map(|d| self.duration_trailer(d));
+        (line, trailer, tail)
     }
 
     /// Emit a Warn-styled diagnostic line that is shown regardless of verbosity
@@ -618,11 +657,10 @@ mod tests {
 
     #[test]
     fn an_elapsed_time_never_occupies_its_own_line() {
-        // compose_status folds the duration into the same String as the
-        // subject before render_status_immediate makes its one push_line
-        // call — there is no second push for the "(Ns)" suffix. A duration
-        // stranded on a line of its own would read as disconnected from
-        // whatever it timed.
+        // render_status_immediate makes its one push_line_with_trailer call
+        // for the subject and its duration together — there is no second
+        // push for the "(Ns)" suffix. A duration stranded on a line of its
+        // own would read as disconnected from whatever it timed.
         let (r, sink, buf) = capture();
         r.render_status_immediate(&sink, 0, &timed("provision brew"));
         let out = crate::test_helpers::captured_text(&buf);
@@ -635,6 +673,52 @@ mod tests {
         assert!(
             lines[0].contains("provision brew") && lines[0].contains("(12.1s)"),
             "subject and duration must share the one line: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_wrapped_statuss_duration_right_aligns_on_its_last_physical_line() {
+        // The apt-install shape from the brief this fix targets: a subject
+        // so long the whole composed line cannot fit even unpadded, so
+        // `pad_subject` gives up (`a_line_with_no_room_left_is_not_padded_at_all`)
+        // and the duration used to flow inline wherever the greedy word-wrap
+        // of the fully composed string happened to land it, reading as
+        // untimed in the duration column every other row aligns to.
+        let (r, sink, buf) = narrow(118);
+        let subject = "apt install build-essential, make, unzip, git, curl, ripgrep, xclip, \
+                        wl-clipboard, xdg-utils, npm, python3, python3-pip, python3-venv, \
+                        rustc, ruby-full, libyaml-dev";
+        r.render_status_immediate(
+            &sink,
+            1,
+            &StatusFields {
+                role: Role::Ok,
+                subject,
+                detail: None,
+                duration: Some(std::time::Duration::from_millis(23_600)),
+                target: None,
+                subject_style: None,
+                detail_style: None,
+            },
+        );
+        let out = crate::test_helpers::captured_text(&buf);
+        let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+        assert!(lines.len() > 1, "the subject needed to wrap: {lines:?}");
+        let last = *lines.last().unwrap_or(&"");
+        assert!(
+            last.trim_end().ends_with("(23.6s)"),
+            "the duration lands on the last wrapped line: {last:?}"
+        );
+        for line in &lines[..lines.len() - 1] {
+            assert!(
+                !line.contains("23.6s"),
+                "the duration must not land mid-wrap: {lines:?}"
+            );
+        }
+        assert_eq!(
+            console::measure_text_width(last),
+            118,
+            "the duration right-aligns to the shared duration column: {last:?}"
         );
     }
 }

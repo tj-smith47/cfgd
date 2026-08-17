@@ -374,6 +374,21 @@ impl Emitting<'_> {
     /// Drains any pending kvs first — otherwise buffered kvs would render
     /// *after* this non-kv line, inverting the call order.
     pub(crate) fn push_line(&mut self, depth: usize, body: &str) {
+        self.push_line_with_trailer(depth, body, None);
+    }
+
+    /// Same as [`Self::push_line`], but with `trailer` — a status line's
+    /// duration suffix — anchored to the shared duration column on the LAST
+    /// physical line a wrap produces (`wrap::wrap_body_with_trailer`)
+    /// instead of flowing inline with the rest of the wrapped body, where a
+    /// long enough subject strands it off the column every other row in the
+    /// section pads its own duration to.
+    pub(crate) fn push_line_with_trailer(
+        &mut self,
+        depth: usize,
+        body: &str,
+        trailer: Option<&str>,
+    ) {
         self.drain_kv_buffer();
         // The sink appends its own trailing newline per line, so a trailing
         // newline already in `body` would smuggle a physical line break past
@@ -395,7 +410,7 @@ impl Emitting<'_> {
         // sets the flag back true after this call returns.
         self.state.last_was_top_heading = false;
         let prefix = "  ".repeat(depth);
-        for physical in wrap::wrap_body(trimmed, &prefix, self.wrap_cols) {
+        for physical in wrap::wrap_body_with_trailer(trimmed, &prefix, self.wrap_cols, trailer) {
             self.out.push(physical);
         }
     }

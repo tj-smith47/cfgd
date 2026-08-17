@@ -247,6 +247,63 @@ fn wrap_segment(
     out
 }
 
+/// Same layout as [`wrap_body`], but with `trailer` — a status line's
+/// duration suffix — anchored flush right on the LAST physical line instead
+/// of flowing inline with the rest of the body.
+///
+/// `body` wraps as if the line were narrower by `trailer`'s own width, on
+/// EVERY physical line it produces, not only the last one: the wrap decision
+/// has no way to know in advance which line will end up last, so reserving
+/// the column throughout is what guarantees room for the trailer once
+/// wrapping is done — and `body_width > cols - trailer_width` is the same
+/// test as `body_width + trailer_width > cols`, so reserving up front decides
+/// wrap-or-not exactly as `wrap_body` already would from the fully composed
+/// string.
+///
+/// A body that still fits on ONE row even with the reservation gets the
+/// trailer glued straight on with no padding, exactly as `wrap_body` alone
+/// would have rendered the fully composed string — reaching for the `cols`
+/// edge only when a real multi-row wrap happened; an ordinary short status
+/// line pads to whatever alignment column its own section requested, never
+/// to the terminal's edge. Only once wrapping actually split the body does
+/// the last row get padded out to the raw `cols` ceiling `wrap_segment`
+/// already wraps every row against — the same edge `line_budget`'s content
+/// budget measures in from — and the trailer appended there: the shared
+/// duration column a section's OTHER rows reach by padding their own subject
+/// (`pad_subject`), so a row too long to reach that column by padding still
+/// reaches it with its duration.
+pub(crate) fn wrap_body_with_trailer(
+    body: &str,
+    prefix: &str,
+    cols: Option<usize>,
+    trailer: Option<&str>,
+) -> Vec<String> {
+    let Some(trailer) = trailer else {
+        return wrap_body(body, prefix, cols);
+    };
+    let trailer_width = display_width(&super::super::strip_ansi(trailer));
+    let reserved = cols.map(|c| c.saturating_sub(trailer_width));
+    let mut out = wrap_body(body, prefix, reserved);
+    let wrapped = out.len() > 1;
+    let Some(last) = out.last_mut() else {
+        // `wrap_body` never actually returns an empty vec (its own empty-body
+        // arm still yields one row carrying the prefix), but nothing here
+        // depends on that holding forever — the trailer still gets a row.
+        out.push(format!("{prefix}{trailer}"));
+        return out;
+    };
+    match (wrapped, cols) {
+        (true, Some(cols)) => {
+            let last_width = display_width(&super::super::strip_ansi(last));
+            let pad = cols.saturating_sub(last_width + trailer_width);
+            last.push_str(&" ".repeat(pad));
+            last.push_str(trailer);
+        }
+        _ => last.push_str(trailer),
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,5 +461,63 @@ mod tests {
             let w: usize = line.chars().filter_map(UnicodeWidthChar::width).sum();
             assert!(w <= 24, "line over budget: {line:?} ({w} cols)");
         }
+    }
+
+    #[test]
+    fn a_wrapped_bodys_trailer_right_aligns_on_the_last_line_only() {
+        // The apt-install shape this fix pins: a subject long enough that
+        // wrapping is unavoidable, plus a duration that must not simply flow
+        // inline wherever the last word happens to land.
+        let body = "\u{2713} apt install build-essential, make, unzip, git, curl, ripgrep, xclip, wl-clipboard, xdg-utils, npm, python3, python3-pip, python3-venv, rustc, ruby-full, libyaml-dev";
+        let trailer = " (23.6s)";
+        let cols = 118;
+        let out = wrap_body_with_trailer(body, "    ", Some(cols), Some(trailer));
+
+        assert!(out.len() > 1, "the body needed to wrap: {out:?}");
+        for line in &out {
+            let w = display_width(&super::super::super::strip_ansi(line));
+            assert!(w <= cols, "line over budget: {line:?} ({w} cols)");
+        }
+        let last = out.last().unwrap_or(&out[0]);
+        assert!(
+            last.ends_with(trailer),
+            "the trailer lands on the last row: {last:?}"
+        );
+        for line in &out[..out.len() - 1] {
+            assert!(
+                !line.contains("23.6s"),
+                "the trailer never lands on an earlier row: {out:?}"
+            );
+        }
+        let last_width = display_width(&super::super::super::strip_ansi(last));
+        assert_eq!(
+            last_width, cols,
+            "the trailer right-aligns to the shared duration column: {last:?}"
+        );
+    }
+
+    #[test]
+    fn a_body_that_still_fits_with_the_trailer_reserved_is_not_padded_to_the_edge() {
+        // Wrapping was never triggered — the trailer glues straight onto the
+        // one row exactly as `wrap_body` alone renders the fully composed
+        // string, so an ordinary short status line does not stretch out to
+        // the terminal's edge just because it carries a duration.
+        let out = wrap_body_with_trailer("✓ install ripgrep", "  ", Some(80), Some(" (1.2s)"));
+        assert_eq!(out, vec!["  ✓ install ripgrep (1.2s)"]);
+    }
+
+    #[test]
+    fn a_non_wrapping_sink_appends_the_trailer_with_no_padding() {
+        let out = wrap_body_with_trailer("✓ done", "  ", None, Some(" (1.2s)"));
+        assert_eq!(out, vec!["  ✓ done (1.2s)"]);
+    }
+
+    #[test]
+    fn no_trailer_wraps_exactly_like_wrap_body() {
+        let body = "alpha bravo charlie delta echo";
+        assert_eq!(
+            wrap_body_with_trailer(body, "", Some(24), None),
+            wrap_body(body, "", Some(24))
+        );
     }
 }
