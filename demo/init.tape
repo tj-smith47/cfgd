@@ -26,13 +26,13 @@ Set Height 1000
 Set TypingSpeed 50ms
 Set Padding 20
 
-# The GIF is encoded at 10fps, so recording any faster only makes vhs's
+# The GIF is encoded at 50fps, so recording any faster only makes vhs's
 # headless chromium screenshot a 1320x1000 viewport twice as often for frames
 # the encoder throws away — and a take that cannot sustain its declared rate
-# plays back faster than the session really ran. 10 also divides 100 exactly,
+# plays back faster than the session really ran. 50 also divides 100 exactly,
 # so every GIF frame delay lands on a whole centisecond and playback does not
 # drift against the recorded timing.
-Set Framerate 10
+Set Framerate 50
 
 # Everything up to the container's first prompt is hidden: the demo's claim is
 # that one command takes a bare machine to a working nvim, and `docker run` is
@@ -124,14 +124,16 @@ Type "nvim --version | head -1"
 Enter
 # The closing frame is the claim the whole recording exists to prove, and a
 # loop that cuts away from it the instant it appears reads as an accident.
-Sleep 5s
+# The extra 3s over the read-time minimum is deliberate breathing room before
+# the loop snaps back to the opening prompt.
+Sleep 8s
 
 # The ffmpeg pass that builds the GIF plays a head and a tail at 1:1 and
 # decimates everything between them. Two spans must land inside those ends:
 # the opening typing (~11s at 50ms plus container start, under a 22s head) and
 # everything from the install finishing onward — the 5s summary read, the env
 # source, nvim's start, the 5s settle, the 4s hero hold, the quit and the
-# version beats (~31s plus nvim's variable start, under a 34s tail). Only the
+# version beats (~34s plus nvim's variable start, under a 37s tail). Only the
 # install itself is compressed. Lengthen a beat here and the matching head/tail
 # second in demo/scripts/make-gif.sh moves with it, or the ramp eats footage
 # that has to play at real speed.
