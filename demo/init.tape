@@ -45,8 +45,11 @@ Enter
 # `-it` because the recording needs cfgd's TTY output (spinners, colour), and
 # `bash -l` because the source line cfgd injects lands in the login shell's own
 # rc. The image bakes no brew PATH: before the apply `nvim` resolves to nothing,
-# after it to the binary cfgd's own ~/.cfgd.env put on PATH.
-Type "docker run --rm -it cfgd-demo:latest bash -l"
+# after it to the binary cfgd's own ~/.cfgd.env put on PATH. `--hostname
+# jarvispro` names the container the same way the machine this demo stands in
+# for is named, so the prompt reads as a real host rather than Docker's random
+# hex id.
+Type "docker run --rm -it --hostname jarvispro cfgd-demo:latest bash -l"
 Enter
 # The container prompt ends in the workdir name; matching `cfgd$` instead of a
 # bare `$` keeps package-manager output from satisfying the wait early.

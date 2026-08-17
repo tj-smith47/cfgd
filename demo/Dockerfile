@@ -10,9 +10,8 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # ubuntu:24.04 ships a default `ubuntu` user at uid 1000 / gid 1000, which
-# collides with the uid this image needs `linuxbrew` to hold — WORKDIR, the
-# final COPY --chown, and USER all name that account. Remove it before
-# creating linuxbrew.
+# collides with the uid this image needs `tj` to hold — WORKDIR, the final
+# COPY --chown, and USER all name that account. Remove it before creating tj.
 RUN userdel -r ubuntu
 
 # None of this ships in a bare ubuntu:24.04, and each entry maps to one
@@ -40,25 +39,29 @@ ENV LANG=C.utf8 \
     LANGUAGE=C.utf8 \
     LC_ALL=C.utf8
 
-# Homebrew refuses to run as root, so linuxbrew needs passwordless sudo
-# (for cfgd's apt provider) codified up front, before it ever runs a command.
-RUN useradd --uid 1000 --create-home --shell /bin/bash --user-group linuxbrew \
-    && echo "linuxbrew ALL=(ALL) NOPASSWD: ALL" | tee /etc/sudoers.d/linuxbrew-nopasswd > /dev/null \
-    && chmod 0440 /etc/sudoers.d/linuxbrew-nopasswd \
-    && visudo -cf /etc/sudoers.d/linuxbrew-nopasswd
+# An ordinary user, not `linuxbrew`: the demo's claim is that cfgd bootstraps
+# Homebrew onto a bare machine, and starting the container already logged in
+# as `linuxbrew` — the account Homebrew's own installer creates when it runs
+# AS ROOT — would make it look pre-provisioned before cfgd runs a command. A
+# non-root `tj` takes cfgd's brew provider down its non-root install path
+# instead, installing straight into `tj`'s own home with no system user
+# created at all. `tj` still needs passwordless sudo, for cfgd's apt
+# provider (`sudo apt-get`), codified up front.
+RUN useradd --uid 1000 --create-home --shell /bin/bash --user-group tj \
+    && echo "tj ALL=(ALL) NOPASSWD: ALL" | tee /etc/sudoers.d/tj-nopasswd > /dev/null \
+    && chmod 0440 /etc/sudoers.d/tj-nopasswd \
+    && visudo -cf /etc/sudoers.d/tj-nopasswd
 
-USER linuxbrew
-WORKDIR /home/linuxbrew
+USER tj
+WORKDIR /home/tj
 
-# PATH is deliberately NOT baked here. When cfgd bootstraps Homebrew it
-# records the PATH directories that install contributed, then writes them
-# into ~/.cfgd.env and injects the source line into ~/.bashrc — so `nvim`
-# resolving after the apply is the product working, not the image
-# pre-arranging the outcome. These three HOMEBREW_* values stay because they
-# only name a prefix Homebrew installs into — they put nothing on PATH.
-ENV HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew \
-    HOMEBREW_CELLAR=/home/linuxbrew/.linuxbrew/Cellar \
-    HOMEBREW_REPOSITORY=/home/linuxbrew/.linuxbrew/Homebrew
+# PATH is deliberately NOT baked here, and neither is any HOMEBREW_* value —
+# both were the Homebrew-derived base image's job, not this one's. When cfgd
+# bootstraps Homebrew it records the PATH directories that install
+# contributed, then writes them into ~/.cfgd.env and injects the source line
+# into ~/.bashrc — so `nvim` resolving after the apply is the product
+# working, and the brew prefix existing at all, not the image pre-arranging
+# either outcome.
 
 # The image pins one cfgd build forever, so its update check can only ever say
 # "a newer cfgd exists" — an upgrade nag on camera that has nothing to do with
@@ -87,12 +90,11 @@ ENV COLORTERM=truecolor
 # No USER root switch for this or the WORKDIR/COPY below: COPY writes
 # directly into the build layer regardless of the active user's Unix write
 # permission on the target directory, so it needs no elevation, and staying
-# on linuxbrew keeps `WORKDIR /home/linuxbrew/cfgd` (which BuildKit creates
-# lazily, owned by whichever USER is active) linuxbrew-owned instead of
-# root-owned.
+# on tj keeps `WORKDIR /home/tj/cfgd` (which BuildKit creates lazily, owned
+# by whichever USER is active) tj-owned instead of root-owned.
 COPY --chmod=0755 demo/bin/cfgd /usr/local/bin/cfgd
 
-WORKDIR /home/linuxbrew/cfgd
+WORKDIR /home/tj/cfgd
 
 # Real source tree for `nvim .` to open on both sides of the demo. .dockerignore
 # is an allowlist — it ignores `*` and re-admits only what a cfgd-core build
@@ -101,4 +103,4 @@ WORKDIR /home/linuxbrew/cfgd
 # target/ (gigabytes of build output the demo has no use for) never reaches
 # the context in the first place. Last layer in the file, so editing the repo
 # never invalidates the apt and user-setup layers above it.
-COPY --chown=linuxbrew:linuxbrew . .
+COPY --chown=tj:tj . .
