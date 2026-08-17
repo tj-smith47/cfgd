@@ -2710,6 +2710,7 @@ fn env_apply_result(descriptions: &[&str]) -> ApplyResult {
         apply_id: 0,
         aborted: None,
         planned_total: descriptions.len(),
+        caveats: Vec::new(),
     }
 }
 
@@ -2721,7 +2722,7 @@ fn shell_env_reminder_silent_when_all_env_actions_skipped() {
         "env:session:refresh:skipped",
     ]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    print_shell_env_reminder(&result, &printer);
+    print_caveats(&result, &printer);
 
     let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -3097,7 +3098,7 @@ fn shell_env_reminder_names_the_written_env_file() {
             "env:inject:/home/u/.bashrc:skipped",
         ]);
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        print_shell_env_reminder(&result, &printer);
+        print_caveats(&result, &printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
         (out, home)
     });
@@ -3107,8 +3108,12 @@ fn shell_env_reminder_names_the_written_env_file() {
         "the test home must resolve to a real sandbox path, got: {home}"
     );
     assert!(
-        out.contains("Shell environment changed"),
-        "expected reminder heading, got: {out}"
+        out.contains("Caveats"),
+        "expected Caveats heading, got: {out}"
+    );
+    assert!(
+        out.contains("cfgd:env"),
+        "expected the cfgd:env owner group, got: {out}"
     );
     assert!(
         out.contains("run `source ~/.cfgd.env`"),
@@ -3136,7 +3141,7 @@ fn shell_env_reminder_picks_the_env_file_by_shell_not_by_emission_order() {
             "env:write:/home/u/.cfgd.env",
         ]);
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        print_shell_env_reminder(&result, &printer);
+        print_caveats(&result, &printer);
         cfgd_core::test_helpers::captured_text(&buf)
     });
 
@@ -3186,11 +3191,11 @@ fn shell_env_reminder_fires_for_source_line_injection_alone() {
         "env:inject:/home/u/.bashrc",
     ]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    print_shell_env_reminder(&result, &printer);
+    print_caveats(&result, &printer);
 
     let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        out.contains("Shell environment changed"),
+        out.contains("Caveats") && out.contains("cfgd:env"),
         "an rc file that only just learned to source the env file still leaves \
          the running shell stale: {out}"
     );
@@ -3200,7 +3205,7 @@ fn shell_env_reminder_fires_for_source_line_injection_alone() {
 fn shell_env_reminder_absent_under_structured_output() {
     let result = env_apply_result(&["env:write:/home/u/.cfgd.env"]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Quiet);
-    print_shell_env_reminder(&result, &printer);
+    print_caveats(&result, &printer);
 
     let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(

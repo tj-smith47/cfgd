@@ -720,6 +720,39 @@ impl Printer {
         }
     }
 
+    /// Open the run's closing `Caveats` section — provider narration
+    /// collected during the run, grouped under the owner that produced it and
+    /// rendered once at the very end instead of inline under each action.
+    ///
+    /// `theme.warning`, bold: the one heading slot no other section uses, so
+    /// this heading reads apart from every ordinary `theme.header` section
+    /// title, and shares hue with the `⚠` glyphs of the notes beneath it.
+    /// Bold keeps it distinct under `--no-color` / `minimal`, where the
+    /// warning colour itself drops out but the attribute survives (per
+    /// no-color.org) — the same rule every other heading renders by.
+    #[must_use = "section closes when SectionGuard is dropped; bind it"]
+    pub fn section_caveats(&self) -> super::section_guard::SectionGuard<'_> {
+        let styled = self
+            .renderer
+            .theme
+            .warning
+            .clone()
+            .bold()
+            .apply_to("Caveats")
+            .to_string();
+        self.renderer.render_section_open_styled(
+            "Caveats",
+            Some(styled),
+            /*keep_when_empty=*/ true,
+        );
+        super::section_guard::SectionGuard {
+            printer: self,
+            renderer: self.renderer.clone(),
+            sink: self.sink_stderr.clone(),
+            depth: 1,
+        }
+    }
+
     #[must_use = "section closes when SectionGuard is dropped; bind it"]
     pub fn section_or_collapse(
         &self,

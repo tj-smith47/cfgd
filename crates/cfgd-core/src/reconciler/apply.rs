@@ -150,20 +150,6 @@ impl Completions {
     }
 }
 
-/// The notes a provider produced during one action, under the status that
-/// action just emitted — whoever emitted it. The ONE render path for a note,
-/// package-manager caveat and system-configurator narration alike.
-///
-/// Public so a per-configurator snapshot bridge renders its capture through the
-/// same call the reconciler makes: a golden assembled from a test's own
-/// `attached_status` loop would keep passing after this derivation moved, and
-/// would then be pinning a shape cfgd no longer emits.
-pub fn emit_action_notes(section: &SectionGuard<'_>, notes: &[ActionNote]) {
-    for note in notes {
-        section.attached_status(note.role, note.body());
-    }
-}
-
 pub(super) fn emit_action_line(
     printer: &Printer,
     section: &SectionGuard<'_>,
@@ -181,13 +167,75 @@ pub(super) fn emit_action_line(
         }
         drop(builder);
     }
-    emit_action_notes(section, &outcome.notes);
+    // Notes no longer attach here: every note the action produced rides in
+    // `outcome.notes` to the run-wide `caveats` collector instead, and
+    // renders once as the closing `Caveats` section (`render_caveats`) —
+    // see `collect_caveats`'s call sites in `Reconciler::apply`.
+    //
     // Held back rather than streamed: two lanes streaming into one log
     // interleave line by line, so a concurrent phase captures its children's
     // output and lays each action's out under the line it belongs to. Empty
     // whenever a live window already showed it, and under `Verbosity::Quiet`.
     if !outcome.body.is_empty() {
         crate::output::OutputWindow::dump_below(printer, section.depth, &outcome.body);
+    }
+}
+
+/// Append a settled action's notes to the caveat group for the owner that
+/// produced them, merging into an existing group rather than opening a
+/// second `Caveats` heading for the same `kind:name` token — a module
+/// installing through more than one package manager gets one `module:<name>`
+/// group carrying every manager's notes, in the order they were collected.
+fn collect_caveats(
+    caveats: &mut Vec<(Owner, Vec<ActionNote>)>,
+    owner: &Owner,
+    notes: Vec<ActionNote>,
+) {
+    if notes.is_empty() {
+        return;
+    }
+    match caveats.iter_mut().find(|(existing, _)| existing == owner) {
+        Some((_, group)) => group.extend(notes),
+        None => caveats.push((owner.clone(), notes)),
+    }
+}
+
+/// Render the run's closing `Caveats` section: every note collected during
+/// the run, grouped under the `kind:name` owner that produced it — the same
+/// token the phase tree uses. Silent (opens nothing) when every group is
+/// empty, so a run that produced no caveats prints nothing extra.
+///
+/// Groups render in the order given — deciding THAT order (informational
+/// groups first, `cfgd:env`'s re-source reminder last, since it is the one
+/// thing the reader must still do) is the caller's job, and
+/// `cli::plan_ops::print_caveats` is the one assembler for a real `cfgd
+/// apply`; a per-configurator snapshot bridge is the other caller, with a
+/// single group of its own.
+///
+/// Within a group, `Role::Warn` notes render before every other role — a
+/// stable partition, so two `Warn`s (or two non-`Warn`s) keep the relative
+/// order they were collected in. Settle order among concurrent lanes is not
+/// deterministic (a fast manager can finish well before a slower one
+/// dispatched first), so a caveat's ROLE, not its arrival time, decides
+/// precedence: the reader's attention goes to what needs it before what is
+/// merely informational, and the render is reproducible for VHS/acceptance
+/// pinning regardless of which lane happened to settle first.
+pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
+    if groups.iter().all(|(_, notes)| notes.is_empty()) {
+        return;
+    }
+    let section = printer.section_caveats();
+    for (owner, notes) in groups {
+        if notes.is_empty() {
+            continue;
+        }
+        let group =
+            section.section_owner(&OwnerLabel::new(owner.kind.as_str(), owner.name.as_str()));
+        let mut ordered: Vec<&ActionNote> = notes.iter().collect();
+        ordered.sort_by_key(|note| note.role != Role::Warn);
+        for note in ordered {
+            group.status_simple(note.role, note.body());
+        }
     }
 }
 
@@ -609,6 +657,10 @@ impl<'a> super::Reconciler<'a> {
         // Post-install notes a manager produced during ONE action, drained
         // after that action's status line so they render attached to it.
         let notes = NoteSink::default();
+        // Provider narration collected across the whole run, grouped by owner,
+        // and rendered once as the closing `Caveats` section instead of inline
+        // under each action (see `collect_caveats` / `render_caveats`).
+        let mut caveats: Vec<(Owner, Vec<ActionNote>)> = Vec::new();
         // Library code reached from inside a phase or owner section renders at
         // that section's depth for the whole run: package-manager output
         // windows, script windows and every status they collapse into.
@@ -775,41 +827,47 @@ impl<'a> super::Reconciler<'a> {
                 // halves of this decision must never disagree, or an outcome
                 // is rendered twice or not at all.
                 let settles_in_place = tree.is_live();
-                let mut settle = |action: &Action, collected: super::lanes::LaneCollected| {
-                    let finished = completions.next();
-                    let settled = self.settle_action(SettleInput {
-                        action,
-                        journal_id: collected.journal_id,
-                        result: collected
-                            .result
-                            .map(|(desc, changed)| (desc, changed, None)),
-                        elapsed: collected.elapsed,
-                        notes: collected.notes,
-                        body: collected.body,
-                        finished,
-                        ledger: &ledger,
-                        results: &mut results,
-                    });
-                    match settled.outcome {
-                        Some(outcome) if settles_in_place => Some(outcome),
-                        Some(outcome) => {
-                            recorded.insert(action_key(action), outcome);
-                            None
+                let mut settle =
+                    |owner: &Owner, action: &Action, collected: super::lanes::LaneCollected| {
+                        let finished = completions.next();
+                        let settled = self.settle_action(SettleInput {
+                            action,
+                            journal_id: collected.journal_id,
+                            result: collected
+                                .result
+                                .map(|(desc, changed)| (desc, changed, None)),
+                            elapsed: collected.elapsed,
+                            notes: collected.notes,
+                            body: collected.body,
+                            finished,
+                            ledger: &ledger,
+                            results: &mut results,
+                        });
+                        match settled.outcome {
+                            Some(outcome) if settles_in_place => {
+                                collect_caveats(&mut caveats, owner, outcome.notes.clone());
+                                Some(outcome)
+                            }
+                            Some(outcome) => {
+                                collect_caveats(&mut caveats, owner, outcome.notes.clone());
+                                recorded.insert(action_key(action), outcome);
+                                None
+                            }
+                            // An action that reported its own status carries its
+                            // notes beside the outcome rather than inside it, and a
+                            // held-back tree has no line open to attach them under.
+                            // Unreachable: only the two script shapes self-report,
+                            // and neither is ever dispatched into a lane.
+                            None => {
+                                debug_assert!(
+                                    settled.notes.is_empty(),
+                                    "a self-reporting action reached a lane carrying notes"
+                                );
+                                collect_caveats(&mut caveats, owner, settled.notes);
+                                None
+                            }
                         }
-                        // An action that reported its own status carries its
-                        // notes beside the outcome rather than inside it, and a
-                        // held-back tree has no line open to attach them under.
-                        // Unreachable: only the two script shapes self-report,
-                        // and neither is ever dispatched into a lane.
-                        None => {
-                            debug_assert!(
-                                settled.notes.is_empty(),
-                                "a self-reporting action reached a lane carrying notes"
-                            );
-                            None
-                        }
-                    }
-                };
+                    };
                 abort_stop = self.dispatch_lanes(
                     &lane_dispatch,
                     &run,
@@ -978,11 +1036,10 @@ impl<'a> super::Reconciler<'a> {
                     match settled.outcome {
                         // One status line per plan action, always — except the two
                         // script shapes, whose line `execute_script` already
-                        // emitted. Their notes still belong under it.
+                        // emitted. Their notes still flow to the run-wide
+                        // `caveats` collector rather than attaching here.
                         None => {
-                            if let Some(section) = owner_section.as_ref() {
-                                emit_action_notes(section, &settled.notes);
-                            }
+                            collect_caveats(&mut caveats, owner, settled.notes);
                         }
                         // `PhaseName::Modules` opens no block: its only actions
                         // are platform-gated skips, which the header's
@@ -991,6 +1048,7 @@ impl<'a> super::Reconciler<'a> {
                             if let Some(section) = owner_section.as_ref() {
                                 emit_action_line(printer, section, &outcome);
                             }
+                            collect_caveats(&mut caveats, owner, outcome.notes.clone());
                         }
                     }
 
@@ -1077,6 +1135,7 @@ impl<'a> super::Reconciler<'a> {
                 apply_id,
                 aborted: Some(code),
                 planned_total,
+                caveats,
             });
         }
 
@@ -1357,6 +1416,7 @@ impl<'a> super::Reconciler<'a> {
             apply_id,
             aborted: None,
             planned_total,
+            caveats,
         })
     }
 

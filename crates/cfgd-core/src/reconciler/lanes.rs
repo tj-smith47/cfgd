@@ -117,20 +117,20 @@ pub(super) struct LaneCollector<'a, 'p, 'g> {
     /// Returns the line to render, and `None` when the caller kept it — off a
     /// TTY the phase's tree is written at close, in plan order, and nothing
     /// settles here.
-    settle: &'a mut dyn FnMut(&'p Action, LaneCollected) -> Option<ActionOutcome>,
+    settle: &'a mut dyn FnMut(&'p Owner, &'p Action, LaneCollected) -> Option<ActionOutcome>,
     tree: &'a mut PhaseTree<'p, 'g>,
 }
 
 impl<'a, 'p, 'g> LaneCollector<'a, 'p, 'g> {
     pub(super) fn new(
-        settle: &'a mut dyn FnMut(&'p Action, LaneCollected) -> Option<ActionOutcome>,
+        settle: &'a mut dyn FnMut(&'p Owner, &'p Action, LaneCollected) -> Option<ActionOutcome>,
         tree: &'a mut PhaseTree<'p, 'g>,
     ) -> Self {
         Self { settle, tree }
     }
 
     fn finished(&mut self, owner: &'p Owner, action: &'p Action, collected: LaneCollected) {
-        if let Some(outcome) = (self.settle)(action, collected) {
+        if let Some(outcome) = (self.settle)(owner, action, collected) {
             self.tree.settled(owner, action, outcome);
         }
     }
@@ -2009,7 +2009,7 @@ mod tests {
         let mut tree = PhaseTree::new(&printer, None, None, 0, 0);
         // Scoped so the closure's borrow of `answered` ends before it is read.
         {
-            let mut record = |_action: &Action, collected: LaneCollected| {
+            let mut record = |_owner: &Owner, _action: &Action, collected: LaneCollected| {
                 let message = collected
                     .result
                     .as_ref()
@@ -2048,7 +2048,7 @@ mod tests {
 
         let mut again = 0;
         {
-            let mut count = |_action: &Action, _collected: LaneCollected| {
+            let mut count = |_owner: &Owner, _action: &Action, _collected: LaneCollected| {
                 again += 1;
                 None
             };
@@ -2094,7 +2094,7 @@ mod tests {
         // Mirrors `apply.rs`'s live settle closure closely enough to prove
         // the wiring: every finished action becomes a `Fail`-role outcome
         // carrying the real error `fail_dependents` produced.
-        let mut record = |action: &Action, collected: LaneCollected| {
+        let mut record = |_owner: &Owner, action: &Action, collected: LaneCollected| {
             let subject = action_display_subject(action).to_string();
             let mut outcome = ActionOutcome::for_test(&subject, Duration::ZERO);
             outcome.role = crate::output::Role::Fail;

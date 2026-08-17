@@ -594,7 +594,7 @@ pub fn run_apply(
         }));
         // An aborted run can still have completed the Env phase, so the user's
         // shell is just as stale as after a full apply.
-        print_shell_env_reminder(&result, printer);
+        print_caveats(&result, printer);
         return Ok(ApplyOutcome {
             status: result.status,
             aborted_code: Some(code),
@@ -602,7 +602,7 @@ pub fn run_apply(
     }
 
     let mut status = result.status.clone();
-    print_shell_env_reminder(&result, printer);
+    print_caveats(&result, printer);
 
     // Link source commits to this apply for provenance tracking
     if !source_commits.is_empty() {

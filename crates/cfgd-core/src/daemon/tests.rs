@@ -18253,6 +18253,7 @@ mod backup_timers {
                 apply_id: 1,
                 aborted: None,
                 planned_total: 0,
+                caveats: Vec::new(),
             })
         }
     }

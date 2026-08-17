@@ -1,6 +1,9 @@
 Phase: System
   profile:snapshot
     ✓ set windowsRegistry.HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced.HideFileExt: 1 → 0
-      ✓ Set HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\HideFileExt = 0
 
 ✓ Windows registry applied
+
+Caveats
+  profile:snapshot
+    ✓ Set HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\HideFileExt = 0

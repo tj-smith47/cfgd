@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use crate::PathDisplayExt;
 use crate::config::*;
-use crate::providers::{PackageContext, PackageManager};
+use crate::providers::{ActionNote, PackageContext, PackageManager};
 
 use crate::providers::StubPackageManager as MockPackageManager;
 use crate::test_helpers::{
@@ -518,6 +518,7 @@ fn apply_result_counts() {
         apply_id: 0,
         aborted: None,
         planned_total: 2,
+        caveats: Vec::new(),
     };
 
     assert_eq!(result.succeeded(), 1);
@@ -20968,7 +20969,7 @@ fn streaming_phase_lines_appear_as_work_completes() {
 }
 
 #[test]
-fn action_notes_render_under_the_status_they_belong_to() {
+fn action_notes_collect_into_the_run_wide_caveats_group() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry
@@ -20978,28 +20979,30 @@ fn action_notes_render_under_the_status_they_belong_to() {
     let resolved = resolved_for("work", &["neovim"]);
 
     let plan = packages_phase(vec![install_action("brew", &["neovim"])]);
-    let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
-    let lines = transcript_lines(&out);
+    let (result, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
 
-    // Targets the install action's own status rather than the first checkmark
-    // seen: other lines in the transcript carry the same marker.
-    let status = lines
-        .iter()
-        .position(|l| l.contains("brew install neovim"))
-        .expect("the action's status");
-    assert_eq!(
-        lines[status + 1].trim(),
-        "\u{26A0} [brew] add /opt/brew/bin to PATH",
-        "one warn line per note, in order, under the status: {out}"
-    );
-    assert_eq!(
-        lines[status + 2].trim(),
-        "\u{26A0} [brew] restart your shell",
-        "in order: {out}"
-    );
+    // `apply()` no longer attaches a package manager's notes under the action
+    // line itself — they ride in `ApplyResult.caveats`, grouped by owner, for
+    // a caller to render once as the run's closing `Caveats` section.
     assert!(
-        !out.contains("Post-install notes"),
-        "the sub-header is gone with print_caveats: {out}"
+        !out.contains('\u{26A0}'),
+        "apply()'s own transcript carries no attached notes: {out}"
+    );
+    assert_eq!(
+        result.caveats.len(),
+        1,
+        "one owner group for the one action that reported: {:?}",
+        result.caveats
+    );
+    let (owner, notes) = &result.caveats[0];
+    assert_eq!(*owner, Owner::profile("work"));
+    assert_eq!(
+        notes.iter().map(ActionNote::body).collect::<Vec<_>>(),
+        vec![
+            "[brew] add /opt/brew/bin to PATH".to_string(),
+            "[brew] restart your shell".to_string(),
+        ],
+        "one note per push, in order, under the action's owner: {notes:?}"
     );
 }
 
@@ -21131,7 +21134,7 @@ fn resolved_with_sysctl_key() -> crate::config::ResolvedProfile {
 }
 
 #[test]
-fn configurator_narration_renders_attached_under_its_system_action_line() {
+fn configurator_narration_collects_into_the_run_wide_caveats_group() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry
@@ -21139,7 +21142,7 @@ fn configurator_narration_renders_attached_under_its_system_action_line() {
         .push(Box::new(NarratingConfigurator));
     let reconciler = Reconciler::new(&registry, &state);
 
-    let (_, out) = apply_transcript(
+    let (result, out) = apply_transcript(
         &reconciler,
         &sysctl_set_value_plan(),
         &resolved_with_sysctl_key(),
@@ -21155,22 +21158,29 @@ fn configurator_narration_renders_attached_under_its_system_action_line() {
         lines[status].trim_start().starts_with('\u{2713}'),
         "the action settles its own line first: {out}"
     );
-    // Untagged: the line above already says which configurator spoke.
-    assert_eq!(
-        lines[status + 1].trim(),
-        "\u{2299} sysctl -w net.ipv4.ip_forward=1",
-        "narration attaches under the action, keeping its Info role: {out}"
-    );
-    assert_eq!(
-        lines[status + 2].trim(),
-        "\u{26A0} reload deferred: /proc is read-only",
-        "and the Warn role survives the trip through the sink: {out}"
-    );
-    let attached_indent = lines[status + 1].len() - lines[status + 1].trim_start().len();
-    let status_indent = lines[status].len() - lines[status].trim_start().len();
+    // `apply()` no longer attaches a configurator's narration under the
+    // action line — it rides in `ApplyResult.caveats` for a caller to render
+    // once as the run's closing `Caveats` section.
     assert!(
-        attached_indent > status_indent,
-        "an attached note sits one level deeper than the line it belongs to: {out}"
+        status + 1 >= lines.len() || !lines[status + 1].trim_start().starts_with('\u{2299}'),
+        "apply()'s own transcript carries no attached narration: {out}"
+    );
+    assert_eq!(
+        result.caveats.len(),
+        1,
+        "one owner group for the one action that reported: {:?}",
+        result.caveats
+    );
+    let (owner, notes) = &result.caveats[0];
+    assert_eq!(*owner, Owner::profile("work"));
+    // Untagged: the action line already says which configurator spoke.
+    assert_eq!(
+        notes.iter().map(ActionNote::body).collect::<Vec<_>>(),
+        vec![
+            "sysctl -w net.ipv4.ip_forward=1".to_string(),
+            "reload deferred: /proc is read-only".to_string(),
+        ],
+        "narration collects in order, keeping its role: {notes:?}"
     );
 }
 

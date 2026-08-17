@@ -612,7 +612,7 @@ pub(super) fn apply_plan(
             // hardest: this apply may have installed the first package manager
             // on the box, and the invoking shell predates the env file naming
             // its PATH entries.
-            crate::cli::plan_ops::print_shell_env_reminder(&result, printer);
+            crate::cli::plan_ops::print_caveats(&result, printer);
             Ok(result.status)
         }
         cfgd_core::reconciler::RunDisposition::Declined => {

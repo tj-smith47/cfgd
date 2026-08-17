@@ -104,6 +104,7 @@ fn apply_result(
         apply_id: 1,
         aborted: None,
         planned_total: planned,
+        caveats: Vec::new(),
     }
 }
 

@@ -11,17 +11,54 @@ const UNIX_ENV_FILE: &str = ".cfgd.env";
 /// Basename of the PowerShell managed env file the reconciler writes.
 const PS_ENV_FILE: &str = ".cfgd-env.ps1";
 
-/// Tell the user their already-running shell predates the env file this apply
-/// wrote, so the freshly bootstrapped PATH entries are one command away instead
-/// of requiring a re-login nobody thinks to try.
+/// Render the run's closing `Caveats` section: every note providers reported
+/// during the run, plus (when this apply touched the shell env surface) the
+/// re-source reminder that used to print under its own "Shell environment
+/// changed" heading — folded into the `cfgd:env` group on real provenance
+/// rather than a heading invented for it alone.
 ///
-/// Gated purely on the descriptions `apply_env_action` returns — it suffixes
-/// `:skipped` when the on-disk bytes already matched — so nothing here re-stats
-/// the filesystem and races whatever ran after the Env phase.
-pub(in crate::cli) fn print_shell_env_reminder(
+/// Groups render informational-first, `cfgd:env` always last: it is the one
+/// group that is action-required (the reader has to actually run the command),
+/// so it is the last thing printed before the prompt returns. Every other
+/// group keeps the order `ApplyResult::caveats` collected it in.
+///
+/// The re-source text is gated purely on the descriptions `apply_env_action`
+/// returns — it suffixes `:skipped` when the on-disk bytes already matched —
+/// so nothing here re-stats the filesystem and races whatever ran after the
+/// Env phase.
+pub(in crate::cli) fn print_caveats(
     result: &cfgd_core::reconciler::ApplyResult,
     printer: &Printer,
 ) {
+    let mut caveats = result.caveats.clone();
+    let env_owner = cfgd_core::reconciler::Owner::cfgd("env");
+
+    if let Some(reminder) = shell_env_reminder_note(result) {
+        match caveats.iter_mut().find(|(owner, _)| *owner == env_owner) {
+            Some((_, notes)) => notes.push(reminder),
+            None => caveats.push((env_owner.clone(), vec![reminder])),
+        }
+    }
+
+    // `cfgd:env` renders last, after every informational group: it is the one
+    // group that is action-required (the reader has to actually run its
+    // command). Not a general owner ordering — `Owner::sort_key` is the only
+    // one of those, applied where `Phase::from_actions` builds the phase
+    // tree's groups — so this stays a one-off split-and-append on the single
+    // fixed `cfgd:env` owner rather than a second comparator.
+    let (mut informational, env_last): (Vec<_>, Vec<_>) = caveats
+        .into_iter()
+        .partition(|(owner, _)| *owner != env_owner);
+    informational.extend(env_last);
+
+    cfgd_core::reconciler::render_caveats(printer, &informational);
+}
+
+/// The `cfgd:env` re-source reminder, as a note — `None` when this apply
+/// never touched a shell env file worth sourcing.
+fn shell_env_reminder_note(
+    result: &cfgd_core::reconciler::ApplyResult,
+) -> Option<cfgd_core::providers::ActionNote> {
     let mut wrote_env = false;
     let mut candidates: Vec<&str> = Vec::new();
     for action in &result.action_results {
@@ -44,7 +81,7 @@ pub(in crate::cli) fn print_shell_env_reminder(
         }
     }
     if !wrote_env {
-        return;
+        return None;
     }
 
     // Windows can produce BOTH files in one apply, so the command is chosen by
@@ -67,10 +104,10 @@ pub(in crate::cli) fn print_shell_env_reminder(
         format!("source {shown}")
     };
 
-    // A warning, not a bullet: until the user acts, the shell they are sitting
-    // in disagrees with the environment this run just wrote.
-    let section = printer.section("Shell environment changed");
-    section.status_simple(Role::Warn, format!("run `{command}` — or open a new shell"));
+    Some(cfgd_core::providers::ActionNote::untagged(
+        Role::Warn,
+        format!("run `{command}` — or open a new shell"),
+    ))
 }
 
 /// The env file the shell the user is *standing in* can actually source.

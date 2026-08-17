@@ -122,30 +122,6 @@ impl<'p> SectionGuard<'p> {
             .with_subject_style(self.renderer.theme.primary.clone())
     }
 
-    /// A line belonging to the status directly above it rather than to this
-    /// section — a package manager's post-install note under the install that
-    /// produced it. One level deeper than this section's own statuses, so it
-    /// reads as attached to that line instead of as another action in the
-    /// group. Never padded to the live column: it carries no trailing field,
-    /// which is the same test the buffered path applies.
-    pub fn attached_status(&self, role: Role, subject: impl Into<String>) -> &Self {
-        let subject = subject.into();
-        self.renderer.render_status(
-            self.sink.as_ref(),
-            self.depth + 1,
-            &StatusFields {
-                role,
-                subject: &subject,
-                detail: None,
-                duration: None,
-                target: None,
-                subject_style: None,
-                detail_style: None,
-            },
-        );
-        self
-    }
-
     /// Write this section's header now rather than at its first child.
     ///
     /// For a section whose content can open a live region before it settles a
@@ -622,6 +598,50 @@ mod tests {
         assert!(
             plain.contains("\n  module:nvim\n"),
             "owner group must sit one level under its phase: {plain:?}"
+        );
+    }
+
+    /// `Printer::section_caveats` paints its "Caveats" heading `theme.warning`
+    /// + bold — the one heading slot no other section uses. Every other
+    /// section (plain or owner) paints `theme.header`, so a style regression
+    /// that quietly routed this heading back through the ordinary path would
+    /// still pass a plain-string assertion; only comparing the raw styled run
+    /// against both candidates catches it.
+    #[test]
+    #[serial_test::serial]
+    fn section_caveats_heading_is_warning_bold_not_header() {
+        use crate::output::Theme;
+
+        let theme = Theme::from_preset("dracula");
+        let colored = theme.clone().with_colors(true);
+        let expected_warning_bold = colored
+            .warning
+            .clone()
+            .bold()
+            .apply_to("Caveats")
+            .to_string();
+        let header_styled = colored.header.apply_to("Caveats").to_string();
+        assert_ne!(
+            expected_warning_bold, header_styled,
+            "the fixture theme must actually distinguish the two slots, or this test proves nothing"
+        );
+
+        let (p, buf) = Printer::for_test_with_theme_colored(theme, Verbosity::Normal);
+        {
+            let s = p.section_caveats();
+            let owner = s.section_owner(&crate::output::OwnerLabel::new("cfgd", "env"));
+            owner.status_simple(Role::Warn, "run `source ~/.cfgd.env` — or open a new shell");
+        }
+        p.flush();
+        // raw-capture-ok: asserting the heading's exact styled run reaches the renderer unrestyled — captured_text would strip the ANSI this test exists to check
+        let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            raw.contains(&expected_warning_bold),
+            "Caveats heading must be theme.warning + bold: {raw:?}"
+        );
+        assert!(
+            !raw.contains(&header_styled),
+            "Caveats heading must not fall back to theme.header: {raw:?}"
         );
     }
 
