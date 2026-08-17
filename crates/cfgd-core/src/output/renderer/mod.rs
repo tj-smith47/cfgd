@@ -107,6 +107,32 @@ impl RenderState {
         }
     }
 
+    /// Seed a fresh top-level state that continues a PRIOR renderer's
+    /// blank-line bookkeeping, for a derived `Printer` that shares the same
+    /// underlying sink (`Printer::rethemed`, `Printer::at_verbosity`).
+    ///
+    /// `Printer::build_derived` mints a brand-new `Renderer`, and a bare
+    /// `RenderState::new()` there defaults `leading: true` — which reads as
+    /// "nothing has been written to this sink yet" even when the parent
+    /// renderer just wrote a section and owes the next heading a blank line.
+    /// `cfgd init --theme <t>` hits exactly this: `cmd_init` closes its
+    /// "Initialize cfgd" section (arming `blank_pending` on the OLD renderer)
+    /// and then re-themes, which swaps in a renderer that has never heard of
+    /// that close and drops the blank line ahead of `Apply`. Structural state
+    /// — indent depth, the section stack, the buffered kvs — does NOT carry
+    /// over: the derived renderer starts at a genuine fresh top level, which
+    /// is what every `build_derived` caller intends.
+    pub(crate) fn continued_from(prior: &RenderState) -> Self {
+        Self {
+            blank_pending: prior.blank_pending,
+            leading: prior.leading,
+            last_top_group: prior.last_top_group,
+            last_was_top_heading: prior.last_was_top_heading,
+            last_top_in_doc: prior.last_top_in_doc,
+            ..Self::new()
+        }
+    }
+
     pub(crate) fn depth(&self) -> usize {
         self.indent_depth
     }
@@ -223,6 +249,34 @@ impl Renderer {
             bars: Some(bars),
             ..Self::new(theme, verbosity)
         }
+    }
+
+    /// Same wiring as [`Self::with_bars`], but the fresh renderer's blank-line
+    /// bookkeeping continues `seed` — a snapshot taken via
+    /// [`Self::continuation_seed`] from the renderer this one replaces —
+    /// instead of starting blank. The two renderers write the SAME sink
+    /// (`Printer::build_derived` clones `sink_stderr`/`sink_stdout` rather
+    /// than opening new ones), so the derived renderer's first heading must
+    /// still see whatever blank-line debt the replaced renderer owed it.
+    pub(crate) fn with_bars_continued(
+        theme: Theme,
+        verbosity: Verbosity,
+        bars: indicatif::MultiProgress,
+        seed: RenderState,
+    ) -> Self {
+        Self {
+            bars: Some(bars),
+            state: Mutex::new(seed),
+            ..Self::new(theme, verbosity)
+        }
+    }
+
+    /// Snapshot the blank-line bookkeeping a derived renderer needs from this
+    /// one — see [`RenderState::continued_from`] for why structural state
+    /// (indent depth, section stack, buffered kvs) is deliberately left out.
+    pub(crate) fn continuation_seed(&self) -> RenderState {
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        RenderState::continued_from(&s)
     }
 
     /// Build the indent prefix for the current depth.

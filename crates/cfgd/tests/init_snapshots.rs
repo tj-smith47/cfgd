@@ -237,6 +237,97 @@ fn init_with_apply_renders_apply_status_streaming() {
 }
 
 #[test]
+#[serial_test::serial]
+fn init_theme_rethemed_printer_still_owes_apply_a_blank_line() {
+    // `cfgd init --theme <preset> --apply-module <m>` re-themes mid-run:
+    // `cmd_init` closes its "Initialize cfgd" section (arming blank-pending
+    // on the printer it was called with) and then calls `printer.rethemed`,
+    // which swaps in a printer whose renderer had never heard of that close.
+    // Before `Renderer::with_bars_continued` / `RenderState::continued_from`,
+    // the fresh renderer defaulted `leading: true` and dropped the blank
+    // line the closed section owed — "Apply" rendered directly under
+    // "Initialized at …" whenever `--theme` was passed.
+    //
+    // Module-only (`apply_profile: None`), not profile-based like the sibling
+    // test above: the profile branch prints "Set active profile: …" on the
+    // rethemed printer BEFORE the Apply header, and that status line's own
+    // group-close re-arms blank-pending independently — masking this exact
+    // bug. `cfgd init --theme dracula --apply-module nvim --yes` (the README
+    // demo's actual command) takes the module-only branch, which has no such
+    // status line between the retheme and "Apply", so it is the one shape
+    // that actually exercises the gap this test guards.
+    let tmp = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(tmp.path());
+    // Redirect the apply-step state store off the shared default DB so this
+    // test doesn't contend with other --apply tests under parallel runs.
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    // SAFETY: serialized via #[serial].
+    unsafe {
+        std::env::set_var("CFGD_STATE_DIR", &state_dir);
+    }
+    let target = tmp.path().join("themed-cfg");
+    let target_str = target.to_string_lossy().into_owned();
+
+    // A module with no packages/files plans zero actions, hitting the same
+    // "Nothing to do" early return the sibling test relies on — the fix is
+    // about header placement, not about executing real package work.
+    let module_dir = target.join("modules").join("empty-mod");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: empty-mod\n  description: regression fixture\nspec: {}\n",
+    )
+    .unwrap();
+
+    let apply_modules = vec!["empty-mod".to_string()];
+    let args = InitArgs {
+        on_conflict: cfgd::cli::OnConflict::Ask,
+        path: Some(&target_str),
+        from: None,
+        branch: "master",
+        name: Some("themed-cfg"),
+        apply: false,
+        // `false`, not the sibling test's `true`: `RunTitle::as_str()` renders
+        // "Plan" under `--dry-run` and "Apply" otherwise, and the real demo
+        // command this guards (`cfgd init --theme dracula --apply-module
+        // nvim --yes`) never passes `--dry-run` — this has to see the actual
+        // "Apply" heading the fix targets, not its preview sibling.
+        dry_run: false,
+        yes: true,
+        install_daemon: false,
+        theme: Some("dracula"),
+        apply_profile: None,
+        apply_modules: &apply_modules,
+        cache_dir: None,
+        state_dir: None,
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+
+    let (printer, cap) = Printer::for_test_doc();
+    let result = cmd_init(&printer, &args);
+    drop(printer);
+    // SAFETY: serialized via #[serial].
+    unsafe {
+        std::env::remove_var("CFGD_STATE_DIR");
+    }
+    result.unwrap();
+
+    let human = strip_ansi(&cap.human());
+    let lines: Vec<&str> = human.lines().collect();
+    let apply_line = lines
+        .iter()
+        .position(|&l| l == "Apply")
+        .expect("the re-themed printer's apply section renders an \"Apply\" heading");
+    assert_eq!(
+        lines.get(apply_line.wrapping_sub(1)),
+        Some(&""),
+        "expected a blank line directly above the re-themed printer's \"Apply\" heading, got:\n{human}"
+    );
+}
+
+#[test]
 fn init_apply_then_next_steps_bridge_invariant() {
     // Bridge anchor: cmd_init's apply branch deliberately suppresses the
     // "Next steps" buffered section (the apply path already produced its

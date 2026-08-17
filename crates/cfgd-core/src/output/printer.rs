@@ -316,11 +316,20 @@ impl Printer {
         // re-resolving: re-reading the terminal would let the two disagree
         // mid-run, which is the whole class of bug the field exists to close.
         let theme = theme.with_colors(self.colors);
+        // The derived renderer writes the SAME sink as `self.renderer` (both
+        // clone `sink_stderr`/`sink_stdout` below rather than opening new
+        // ones), so it has to continue `self`'s blank-line bookkeeping rather
+        // than starting fresh — a bare `Renderer::with_bars` here defaults
+        // `leading: true`, which reads as "nothing has been written yet" even
+        // when `self` just closed a section that owes the next heading a
+        // blank line. See `RenderState::continued_from`.
+        let seed = self.renderer.continuation_seed();
         Self {
-            renderer: Arc::new(Renderer::with_bars(
+            renderer: Arc::new(Renderer::with_bars_continued(
                 theme,
                 verbosity,
                 self.multi_progress.clone(),
+                seed,
             )),
             output_format,
             sink_stderr: self.sink_stderr.clone(),
