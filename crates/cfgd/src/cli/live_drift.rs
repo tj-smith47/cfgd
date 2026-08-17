@@ -72,7 +72,12 @@ pub(super) fn module_file_verify_results(
             };
             results.push(VerifyResult {
                 resource_type: "module".to_string(),
-                resource_id: format!("{}/{}", module.name, drift.target),
+                // `drift.target` is posix-folded and, for a real deployed
+                // file, absolute — joining it under the module name with a
+                // bare `/` doubled up into `nvim//home/tj/...`. Trim the
+                // redundant leading separator so the id reads as one path,
+                // not two glued halves.
+                resource_id: format!("{}/{}", module.name, drift.target.trim_start_matches('/')),
                 matches: drift.matches,
                 expected: drift.expected,
                 actual: drift.actual,

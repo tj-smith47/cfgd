@@ -18,6 +18,35 @@ use cfgd_core::reconciler::{
 use super::is_file_encrypted;
 use super::template::is_tera_template;
 
+/// Whether `target_path` is currently linked to `source_path` — a symlink
+/// resolving exactly there, or the same inode (a hardlink). Used only by the
+/// diff-side directory guard, which has no declared strategy to branch on
+/// (that lives on the config-typed caller, several layers up); either check
+/// answering true is proof enough that the target IS the source, which is
+/// all a read-only diff needs. `is_same_inode` on two directories can never
+/// be true (POSIX has no directory hard links), so only the symlink arm can
+/// report a directory converged.
+fn is_linked_to(source_path: &Path, target_path: &Path) -> bool {
+    target_path
+        .read_link()
+        .map(|link| link == source_path)
+        .unwrap_or(false)
+        || cfgd_core::is_same_inode(source_path, target_path)
+}
+
+/// Describe why a directory-shaped target is not linked to its source, for
+/// the `actual` field of a drifted [`FileDriftResult`] (and the matching
+/// status line `diff_one` prints). Never reads either side's content.
+fn describe_unlinked(target_path: &Path) -> String {
+    if target_path.symlink_metadata().is_err() {
+        "missing".to_string()
+    } else if target_path.is_symlink() {
+        "symlink points elsewhere".to_string()
+    } else {
+        "present but not linked to managed source".to_string()
+    }
+}
+
 impl super::CfgdFileManager {
     /// Resolve the effective strategy for a managed file.
     /// Template files always use Copy (can't symlink unrendered templates).
@@ -347,6 +376,38 @@ impl super::CfgdFileManager {
             });
         }
 
+        // A directory-shaped managed entry (a module's whole `lua/` tree
+        // deployed by symlink) has no single-file content to render — the
+        // `fs::read_to_string` calls below error "Is a directory" the instant
+        // either side is one. Content equality is also the wrong question
+        // for a directory strategy: `converged_content_file` already draws
+        // this same line for apply (a directory target is a thing to
+        // replace, never content to match), so convergence here is link
+        // identity instead, checked before any read is attempted.
+        if source_path.is_dir() || target_path.is_dir() {
+            let matches = is_linked_to(source_path, &target_path);
+            if !matches {
+                printer.status_simple(
+                    Role::Info,
+                    format!(
+                        "{} ({})",
+                        target_path.posix(),
+                        describe_unlinked(&target_path)
+                    ),
+                );
+            }
+            return Ok(FileDriftResult {
+                target: target_id,
+                matches,
+                expected: "linked to managed source".to_string(),
+                actual: if matches {
+                    "linked to managed source".to_string()
+                } else {
+                    describe_unlinked(&target_path)
+                },
+            });
+        }
+
         let rendered_content = if is_tera_template(source_path) {
             self.render_template(source_path, origin)?
         } else {
@@ -449,6 +510,25 @@ impl super::CfgdFileManager {
                 matches: false,
                 expected: "managed source present".to_string(),
                 actual: format!("source not found: {}", source_path.posix()),
+            });
+        }
+
+        // Same directory guard as `diff_one` — see its comment. `verify`,
+        // `status --exit-code` and compliance all resolve through this
+        // function, so a module's directory-strategy files (a whole `lua/`
+        // tree deployed by symlink) would otherwise crash every one of them
+        // with "Is a directory" the instant either side is one.
+        if source_path.is_dir() || target_path.is_dir() {
+            let matches = is_linked_to(source_path, &target_path);
+            return Ok(FileDriftResult {
+                target: target_id,
+                matches,
+                expected: "linked to managed source".to_string(),
+                actual: if matches {
+                    "linked to managed source".to_string()
+                } else {
+                    describe_unlinked(&target_path)
+                },
             });
         }
 
@@ -787,6 +867,89 @@ mod tests {
         let result = FileManager::content_drift(&fm, &source, &target, None).unwrap();
         assert!(!result.matches);
         assert_eq!(result.actual, "missing");
+    }
+
+    #[test]
+    fn content_drift_trait_symlinked_directory_reports_no_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let source = config_dir.join("src_dir");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("a.lua"), "return {}").unwrap();
+        let target = config_dir.join("target_dir");
+        cfgd_core::create_symlink(&source, &target).unwrap();
+
+        let fm = make_manager(config_dir);
+        let result = FileManager::content_drift(&fm, &source, &target, None).unwrap();
+        assert!(
+            result.matches,
+            "a directory correctly symlinked to its source must report no drift, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn content_drift_trait_directory_target_not_a_symlink_reports_drift_without_crashing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let source = config_dir.join("src_dir");
+        fs::create_dir(&source).unwrap();
+        let target = config_dir.join("target_dir");
+        // A real directory, not a symlink — e.g. a Copy-strategy deployment,
+        // or a symlink someone replaced by hand. `fs::read_to_string` on
+        // either side of this pair is what used to error "Is a directory".
+        fs::create_dir(&target).unwrap();
+
+        let fm = make_manager(config_dir);
+        let result = FileManager::content_drift(&fm, &source, &target, None).unwrap();
+        assert!(!result.matches);
+        assert_eq!(result.actual, "present but not linked to managed source");
+    }
+
+    #[test]
+    fn content_drift_trait_directory_source_missing_target_reports_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let source = config_dir.join("src_dir");
+        fs::create_dir(&source).unwrap();
+        let target = config_dir.join("absent_dir");
+
+        let fm = make_manager(config_dir);
+        let result = FileManager::content_drift(&fm, &source, &target, None).unwrap();
+        assert!(!result.matches);
+        assert_eq!(result.actual, "missing");
+    }
+
+    #[test]
+    fn diff_one_symlinked_directory_reports_no_drift_and_does_not_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let source = config_dir.join("src_dir");
+        fs::create_dir(&source).unwrap();
+        let target = config_dir.join("target_dir");
+        cfgd_core::create_symlink(&source, &target).unwrap();
+
+        let fm = make_manager(config_dir);
+        let printer = Printer::for_test().0;
+        let result = fm.diff_one(&source, &target, None, &printer).unwrap();
+        assert!(result.matches);
+    }
+
+    #[test]
+    fn diff_one_directory_replaced_by_plain_directory_reports_drift_without_crashing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let source = config_dir.join("src_dir");
+        fs::create_dir(&source).unwrap();
+        let target = config_dir.join("target_dir");
+        fs::create_dir(&target).unwrap();
+
+        let fm = make_manager(config_dir);
+        let printer = Printer::for_test().0;
+        // The regression this guards: before the directory guard, this call
+        // returned `Err(FileError::Io { .. Is a directory .. })` instead of a
+        // drift record.
+        let result = fm.diff_one(&source, &target, None, &printer).unwrap();
+        assert!(!result.matches);
     }
 
     #[test]

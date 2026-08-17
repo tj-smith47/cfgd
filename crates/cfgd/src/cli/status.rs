@@ -58,46 +58,30 @@ pub struct ModuleStatus {
     pub depends: Vec<String>,
     pub status: String,
     pub last_applied: Option<String>,
+    /// Live drift found for this module's files and packages. Always empty
+    /// unless `--exit-code` requested the live scan — see `drift_checked_live`.
+    pub drift: Vec<cfgd_core::state::DriftEvent>,
+    /// Whether `drift` is the verdict of a live scan of this module or just
+    /// an unchecked empty default. Mirrors `StatusOutput::drift_checked_live`
+    /// so the two `-o json` shapes read the same way.
+    pub drift_checked_live: bool,
 }
 
-/// Build the fleet-wide `cfgd status` Doc. Caller supplies the precomputed
-/// payload and the configured `SourceSpec` list so the renderer can show
-/// "not yet fetched" rows for sources without state records.
-pub fn build_fleet_status_doc(
-    output: &StatusOutput,
-    configured_sources: &[String],
-    config_path: &Path,
-    profile_name: &str,
+/// Render the "Drift" section shared by the fleet-wide and per-module status
+/// docs. Both feed it the same `DriftEvent` shape, so a resource-id
+/// condensing rule or an attribution label added here reaches both surfaces
+/// without a second copy drifting out of sync.
+fn render_drift_section(
+    doc: Doc,
+    drift: &[cfgd_core::state::DriftEvent],
+    checked_live: bool,
 ) -> Doc {
-    let mut doc = Doc::new()
-        .heading("Status")
-        .kv("Config", config_path.display_posix())
-        .kv("Profile", profile_name);
-
-    match &output.last_apply {
-        Some(last) => {
-            doc = doc.section("Last Apply", |s| {
-                let mut s = s
-                    .kv("Time", &last.timestamp)
-                    .kv("Profile", &last.profile)
-                    .kv("Result", last.status.display_str());
-                if let Some(summary) = &last.summary {
-                    s = s.kv("Summary", summary);
-                }
-                s
-            });
-        }
-        None => {
-            doc = doc.status(Role::Info, "No applies recorded yet");
-        }
-    }
-
-    doc = if output.drift.is_empty() {
+    if drift.is_empty() {
         // Only the live scan may claim a detection. The recorded dashboard has
         // asked nothing of the machine, and "No drift detected" over a host
         // whose last apply left a declared package uninstalled is an assurance
         // no query backs.
-        let subject = if output.drift_checked_live {
+        let subject = if checked_live {
             "No drift detected"
         } else {
             "No drift recorded — `cfgd diff` checks the live machine"
@@ -105,7 +89,7 @@ pub fn build_fleet_status_doc(
         doc.section("Drift", |s| s.status(Role::Ok, subject))
     } else {
         doc.section("Drift", |s| {
-            output.drift.iter().fold(s, |s, event| {
+            drift.iter().fold(s, |s, event| {
                 // A "script" / "Running script" resource_id is the raw
                 // run_str body (preserved byte-identical for UPSERT matching
                 // against prior drift rows) — condense only here, at the
@@ -146,7 +130,42 @@ pub fn build_fleet_status_doc(
                 }
             })
         })
-    };
+    }
+}
+
+/// Build the fleet-wide `cfgd status` Doc. Caller supplies the precomputed
+/// payload and the configured `SourceSpec` list so the renderer can show
+/// "not yet fetched" rows for sources without state records.
+pub fn build_fleet_status_doc(
+    output: &StatusOutput,
+    configured_sources: &[String],
+    config_path: &Path,
+    profile_name: &str,
+) -> Doc {
+    let mut doc = Doc::new()
+        .heading("Status")
+        .kv("Config", config_path.display_posix())
+        .kv("Profile", profile_name);
+
+    match &output.last_apply {
+        Some(last) => {
+            doc = doc.section("Last Apply", |s| {
+                let mut s = s
+                    .kv("Time", &last.timestamp)
+                    .kv("Profile", &last.profile)
+                    .kv("Result", last.status.display_str());
+                if let Some(summary) = &last.summary {
+                    s = s.kv("Summary", summary);
+                }
+                s
+            });
+        }
+        None => {
+            doc = doc.status(Role::Info, "No applies recorded yet");
+        }
+    }
+
+    doc = render_drift_section(doc, &output.drift, output.drift_checked_live);
 
     if !configured_sources.is_empty() {
         doc = doc.section("Config Sources", |s| {
@@ -254,6 +273,8 @@ pub fn build_module_status_doc(output: &ModuleStatus, deployed_files: &[(String,
         doc = doc.kv("Last applied", last);
     }
 
+    doc = render_drift_section(doc, &output.drift, output.drift_checked_live);
+
     doc = doc.section_if_nonempty("Deployed Files", deployed_files, |s, files| {
         files.iter().fold(s, |s, (path, exists)| {
             if *exists {
@@ -278,6 +299,8 @@ pub fn build_module_status_not_found_doc(name: &str) -> Doc {
         depends: Vec::new(),
         status: "not found".into(),
         last_applied: None,
+        drift: Vec::new(),
+        drift_checked_live: false,
     };
     Doc::new()
         .heading(format!("Status: {}", name))
@@ -292,7 +315,7 @@ pub(super) fn cmd_status(
     exit_code: bool,
 ) -> anyhow::Result<()> {
     if let Some(mod_name) = module_filter {
-        return cmd_status_module(cli, printer, mod_name);
+        return cmd_status_module(cli, printer, mod_name, exit_code);
     }
 
     let (cfg, profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
@@ -464,6 +487,7 @@ pub(super) fn cmd_status_module(
     cli: &Cli,
     printer: &Printer,
     mod_name: &str,
+    exit_code: bool,
 ) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     // Propagate (vs. unwrap_or_default in cmd_status): the module-scoped path
@@ -490,15 +514,6 @@ pub(super) fn cmd_status_module(
         .unwrap_or_else(|| "not applied".into());
     let last_applied = state_rec.as_ref().map(|s| s.installed_at.clone());
 
-    let output = ModuleStatus {
-        name: mod_name.to_string(),
-        packages: module.spec.packages.len(),
-        files: module.spec.files.len(),
-        depends: module.spec.depends.clone(),
-        status,
-        last_applied,
-    };
-
     let deployed_files: Vec<(String, bool)> = state
         .module_deployed_files(mod_name)?
         .into_iter()
@@ -508,7 +523,85 @@ pub(super) fn cmd_status_module(
         })
         .collect();
 
+    // Same live, read-only re-check `diff --module` performs, and the same
+    // deliberate gate as the profile-wide command: plain `status --module`
+    // stays a fast recorded-only dashboard (this module surface has no
+    // recorded drift rows of its own to fall back to — module drift is only
+    // ever LIVE), and only `--exit-code` pays for a real scan of the file
+    // content and installed packages. Without this, a module that was
+    // sabotaged out-of-band read as clean forever, because "Deployed Files"
+    // below only checks presence.
+    let mut drift: Vec<cfgd_core::state::DriftEvent> = Vec::new();
+    if exit_code {
+        let platform = Platform::detect();
+        let registry = build_registry();
+        let mgr_map = managers_map(&registry);
+        let resolved_modules = modules::resolve_modules(
+            &[mod_name.to_string()],
+            &config_dir,
+            &cache_base,
+            &[],
+            &platform,
+            &mgr_map,
+            printer,
+        )?;
+        let resolved = empty_resolved_profile(mod_name, &active_profile_name(cli, None));
+        for r in super::live_drift::module_file_verify_results(
+            &config_dir,
+            &resolved,
+            &resolved_modules,
+        )?
+        .into_iter()
+        .filter(|r| !r.matches)
+        {
+            drift.push(cfgd_core::state::DriftEvent {
+                id: 0,
+                timestamp: cfgd_core::utc_now_iso8601(),
+                resource_type: r.resource_type,
+                resource_id: r.resource_id,
+                expected: Some(r.expected),
+                actual: Some(r.actual),
+                resolved_by: None,
+                source: LOCAL_LAYER.to_string(),
+            });
+        }
+
+        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
+        for resolved_module in &resolved_modules {
+            for pkg in &resolved_module.packages {
+                if let Some(pd) = super::diff::package_missing_drift(pkg, &mgr_map, &pkg_cx) {
+                    drift.push(cfgd_core::state::DriftEvent {
+                        id: 0,
+                        timestamp: cfgd_core::utc_now_iso8601(),
+                        resource_type: "package".to_string(),
+                        resource_id: format!("{}/{}", pd.manager, pd.packages.join(", ")),
+                        expected: Some("installed".to_string()),
+                        actual: Some("missing".to_string()),
+                        resolved_by: None,
+                        source: LOCAL_LAYER.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    let output = ModuleStatus {
+        name: mod_name.to_string(),
+        packages: module.spec.packages.len(),
+        files: module.spec.files.len(),
+        depends: module.spec.depends.clone(),
+        status,
+        last_applied,
+        drift_checked_live: exit_code,
+        drift: drift.clone(),
+    };
+
     printer.emit(build_module_status_doc(&output, &deployed_files));
+
+    if exit_code && !drift.is_empty() {
+        cfgd_core::exit::ExitCode::DriftDetected.exit();
+    }
+
     Ok(())
 }
 
@@ -1075,7 +1168,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status_module(&cli, &printer, "ghost").unwrap();
+        cmd_status_module(&cli, &printer, "ghost", false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1099,7 +1192,7 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status_module(&cli, &printer, "ghost").unwrap();
+        cmd_status_module(&cli, &printer, "ghost", false).unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -1134,7 +1227,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status_module(&cli, &printer, "test-mod").unwrap();
+        cmd_status_module(&cli, &printer, "test-mod", false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1161,7 +1254,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status_module(&cli, &printer, "test-mod").unwrap();
+        cmd_status_module(&cli, &printer, "test-mod", false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1208,7 +1301,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status_module(&cli, &printer, "test-mod").unwrap();
+        cmd_status_module(&cli, &printer, "test-mod", false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1241,7 +1334,7 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status_module(&cli, &printer, "test-mod").unwrap();
+        cmd_status_module(&cli, &printer, "test-mod", false).unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -1256,5 +1349,42 @@ mod tests {
             "lastApplied should be the installed_at timestamp, got: {parsed}"
         );
         assert!(parsed["depends"].is_array());
+    }
+
+    // The drift-catching, exit(5) branch is proven by the real subprocess in
+    // `tests/cli_integration.rs::status_module_exit_code_catches_module_file_drift`
+    // — `process::exit` cannot be exercised in-process. This test proves the
+    // complementary path: a converged module's live scan finds nothing, so
+    // `--exit-code` must return Ok rather than calling `process::exit`.
+    #[test]
+    fn cmd_status_module_exit_code_true_no_drift_returns_ok() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = target_dir.path().join("converged.conf");
+        std::fs::write(&target, "same content\n").unwrap();
+
+        let config_path = config_dir.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = config_dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(profiles_dir.join("default.yaml"), PROFILE_WITH_MODULE_YAML).unwrap();
+        let mod_dir = config_dir.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(mod_dir.join("conf"), "same content\n").unwrap();
+        let module_yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages: []\n  files:\n    - source: conf\n      target: {}\n",
+            cfgd_core::to_posix_string(&target)
+        );
+        std::fs::write(mod_dir.join("module.yaml"), module_yaml).unwrap();
+
+        let cli = test_cli_for(config_path, state_dir.path());
+        let (printer, _) = test_printers();
+
+        let res = cmd_status_module(&cli, &printer, "test-mod", true);
+        assert!(
+            res.is_ok(),
+            "exit_code=true with a converged module must return Ok, got: {res:?}"
+        );
     }
 }

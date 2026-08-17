@@ -395,7 +395,7 @@ fn cmd_diff_module(
 /// (choco/scoop/winget) and name-remapping ones (go) match installed state like
 /// with like — a raw name compare re-reports installed packages as missing on
 /// every `cfgd diff --module`.
-fn package_missing_drift(
+pub(super) fn package_missing_drift(
     pkg: &modules::ResolvedPackage,
     mgr_map: &std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager>,
     cx: &cfgd_core::providers::PackageContext<'_>,

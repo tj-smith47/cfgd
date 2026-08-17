@@ -146,6 +146,8 @@ fn per_module_output() -> ModuleStatus {
         depends: vec!["base".into()],
         status: "installed".into(),
         last_applied: Some("2026-05-14T10:00:00Z".into()),
+        drift: Vec::new(),
+        drift_checked_live: false,
     }
 }
 
