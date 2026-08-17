@@ -2,6 +2,9 @@
 
 cfgd follows the same pattern as Kubernetes controllers: declare desired state, diff against actual state, generate a plan, apply it, watch for drift. You never tell cfgd "install ripgrep" — you declare "ripgrep should be installed" and cfgd figures out what needs to change.
 
+![cfgd catching and healing drift](../demo/cfgd-drift.gif)
+*A file edited outside cfgd is caught by `cfgd status`, explained by `cfgd diff`, and healed by `cfgd apply`.*
+
 ## Phases
 
 Apply runs in a fixed phase order:
