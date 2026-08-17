@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
-# Run the VHS tape and prove it actually produced a take.
+# Run a VHS tape and prove it actually produced a take.
+#
+# Takes a tape basename ($1, default "init" so the hero chain is unchanged):
+# records demo/<name>.tape -> demo/.out/<name>.mp4. The tape's own `Output`
+# line has to agree with that path — VHS reads its target from inside the
+# tape, not from an argument to this script.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-TAPE=demo/init.tape
-RAW=demo/.out/raw.mp4
+NAME="${1:-init}"
+TAPE="demo/${NAME}.tape"
+RAW="demo/.out/${NAME}.mp4"
+
+if [ ! -f "$TAPE" ]; then
+    echo "$TAPE does not exist." >&2
+    exit 1
+fi
 
 # A failed tape leaves the previous run's mp4 untouched, and `task demo:gif`
 # would then ramp that stale take into the README GIF without a word. Clearing

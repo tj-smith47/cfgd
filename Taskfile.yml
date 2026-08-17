@@ -657,6 +657,25 @@ tasks:
     cmds:
       - bash demo/scripts/make-gif.sh
 
+  demo:drift:
+    desc: Record the drift-heal demo end to end (image, VHS take, flat GIF).
+    preconditions:
+      # Same font gate as demo:record, pointed at demo/drift.tape — see that
+      # target's comment for why both checks read the tape rather than a
+      # separately maintained value.
+      - sh: >-
+          [ -n "$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/drift.tape | head -1)" ]
+        msg: "demo/drift.tape declares no parseable `Set FontFamily \"…\"` line — the gate cannot know which font VHS will render."
+      - sh: >-
+          font="$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/drift.tape | head -1)";
+          [ -n "$font" ] && fc-list : family | grep -qF "$font"
+        msg: "The font demo/drift.tape asks for is not installed — the take would record tofu boxes instead of LazyVim's glyphs. Check `Set FontFamily` in the tape against `fc-list : family`."
+    cmds:
+      - task: demo:image
+      - bash demo/scripts/chromium-no-sandbox.sh
+      - bash demo/scripts/record.sh drift
+      - bash demo/scripts/make-gif-flat.sh drift
+
   # --- Deploy ---
 
   deploy:operator:
