@@ -18438,6 +18438,10 @@ impl PackageManager for EnumerationCountingManager {
 struct TickCountingHooks {
     derivations: Arc<std::sync::atomic::AtomicUsize>,
     enumerations: Arc<std::sync::atomic::AtomicUsize>,
+    /// Ticks that got PAST the derivation. A tick whose derivation failed
+    /// early returns before this, and without it a tick that bailed and a
+    /// tick that ran but said nothing are the same observation.
+    planned: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl DaemonHooks for TickCountingHooks {
@@ -18451,6 +18455,8 @@ impl DaemonHooks for TickCountingHooks {
         reg
     }
     fn plan_files(&self, _: &Path, _: &ResolvedProfile) -> crate::errors::Result<Vec<FileAction>> {
+        self.planned
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(vec![])
     }
     fn plan_packages(
@@ -18595,6 +18601,7 @@ async fn repeat_ticks_over_an_unchanged_config_derive_and_enumerate_once() {
         let hooks: Arc<dyn DaemonHooks> = Arc::new(TickCountingHooks {
             derivations: Arc::clone(&derivations),
             enumerations: Arc::clone(&enumerations),
+            planned: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         });
         let cache = Arc::new(super::tick_cache::TickCache::new());
         let state = Arc::new(Mutex::new(DaemonState::new()));
@@ -18636,6 +18643,7 @@ async fn a_touched_profile_re_derives_exactly_once() {
     let hooks: Arc<dyn DaemonHooks> = Arc::new(TickCountingHooks {
         derivations: Arc::clone(&derivations),
         enumerations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        planned: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     });
     let cache = Arc::new(super::tick_cache::TickCache::new());
     let state = Arc::new(Mutex::new(DaemonState::new()));
@@ -18721,6 +18729,7 @@ async fn a_touched_cached_source_profile_re_derives() {
     let hooks: Arc<dyn DaemonHooks> = Arc::new(TickCountingHooks {
         derivations: Arc::clone(&derivations),
         enumerations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        planned: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     });
     let cache = Arc::new(super::tick_cache::TickCache::new());
     let state = Arc::new(Mutex::new(DaemonState::new()));
@@ -18805,9 +18814,11 @@ async fn a_never_synced_source_is_warned_about_on_every_tick() {
     .unwrap();
 
     let derivations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let planned = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let hooks: Arc<dyn DaemonHooks> = Arc::new(TickCountingHooks {
         derivations: Arc::clone(&derivations),
         enumerations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        planned: Arc::clone(&planned),
     });
     let cache = Arc::new(super::tick_cache::TickCache::new());
     let state = Arc::new(Mutex::new(DaemonState::new()));
@@ -18815,7 +18826,10 @@ async fn a_never_synced_source_is_warned_about_on_every_tick() {
     let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
     let printer = Arc::new(printer);
 
-    for _ in 0..3 {
+    // Asserted per tick rather than only in total, so a shortfall names the
+    // tick that produced it instead of leaving a count to be reasoned back to a
+    // cause.
+    for tick in 1..=3 {
         drive_cached_tick_printing(
             &config_path,
             &state_dir,
@@ -18826,19 +18840,26 @@ async fn a_never_synced_source_is_warned_about_on_every_tick() {
             Arc::clone(&printer),
         )
         .await;
+        let so_far = crate::test_helpers::captured_text(&buf)
+            .matches("has no local cache yet")
+            .count();
+        assert_eq!(
+            planned.load(std::sync::atomic::Ordering::SeqCst),
+            tick,
+            "tick {tick} never reached planning — its derivation bailed, so the \
+             advisory count below would say nothing about the restatement"
+        );
+        assert_eq!(
+            so_far, tick,
+            "tick {tick} owed the operator the skip advisory and did not say it"
+        );
     }
 
     assert_eq!(
         derivations.load(std::sync::atomic::Ordering::SeqCst),
         1,
-        "the composition must have been derived once — otherwise the lines \
-         below prove nothing about the restatement"
-    );
-    let captured = crate::test_helpers::captured_text(&buf);
-    assert_eq!(
-        captured.matches("has no local cache yet").count(),
-        3,
-        "every tick owes the operator the skip advisory: {captured}"
+        "the composition must have been derived once — a re-derivation would \
+         print the advisory itself and prove nothing about the restatement"
     );
 }
 
@@ -18879,6 +18900,7 @@ async fn a_re_pointed_source_origin_re_derives() {
     let hooks: Arc<dyn DaemonHooks> = Arc::new(TickCountingHooks {
         derivations: Arc::clone(&derivations),
         enumerations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        planned: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     });
     let cache = Arc::new(super::tick_cache::TickCache::new());
     let state = Arc::new(Mutex::new(DaemonState::new()));

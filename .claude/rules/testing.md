@@ -75,6 +75,32 @@ hand-edited.
 Verify both ways before calling a test suite green; a suite only ever observed one way is
 how all of this shipped.
 
+## A fail-without-fix probe never mutates the shared working tree
+
+Proving a test fails without its fix means breaking the production code and watching
+the test go red. Doing that **in place** — edit, `cargo test`, restore — leaves the
+repository holding deliberately broken code for the length of a compile, and anything
+else reading the tree in that window (a second agent, a watch build, a full-workspace
+run someone else started) compiles the broken revision and reports failures that
+describe nothing anybody wrote.
+
+That is not hypothetical: two daemon advisory-restatement tests were reported failing
+under a full `--test-threads=16` workspace run, with counts (`0 of 3` and `1 of 3`)
+that exactly reproduced an in-tree probe of `CachedConfig::advisories_to_restate`
+returning `&[]`. Six later runs of the same binary at the same thread count were green,
+and the failure was never a concurrency defect at all — it was a probe window.
+
+Copy the tree first, and give the copy its own target dir:
+
+```bash
+cp -a /opt/repos/cfgd ~/.cache/cfgd-debug/probe
+CARGO_TARGET_DIR=~/.cache/cfgd-debug/probe-target \
+  cargo test --manifest-path ~/.cache/cfgd-debug/probe/Cargo.toml -p cfgd-core --features test-helpers --lib <filter>
+```
+
+The evidence is identical and no other reader can see the mutation. Scratch goes under
+`~/.cache/`, never `/tmp`.
+
 ## Fixture versions: use the 9.9.x sentinel range
 
 When a test hardcodes a version string as a scaffold (mock upgrade

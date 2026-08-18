@@ -912,9 +912,14 @@ mod tests {
         let cache = TickCache::new();
         let advisory = "source 'team' has never been synced — skipping".to_string();
 
+        // Asserted per tick, so a shortfall names the tick that produced it and
+        // says which of the two ways it went wrong: a tick that re-derived
+        // (derivations moved) is a reuse failure, and a tick that reused
+        // without restating (restated did not move) is a restatement failure.
+        // A total alone cannot tell those apart.
         let mut derivations = 0;
         let mut restated = 0;
-        for _ in 0..4 {
+        for tick in 1..=4 {
             let held = cache.config_derivation(&config_path, None, || {
                 derivations += 1;
                 crate::record_config_input(&config_path);
@@ -925,6 +930,17 @@ mod tests {
                 Err(()) => unreachable!("the derivation above cannot fail"),
             };
             restated += held.advisories_to_restate().len();
+            assert_eq!(
+                derivations, 1,
+                "tick {tick} re-derived the composition — the held derivation \
+                 was not reused"
+            );
+            assert_eq!(
+                restated,
+                tick - 1,
+                "tick {tick} reused the derivation and owed the operator the \
+                 advisory it did not restate"
+            );
         }
 
         assert_eq!(derivations, 1, "only the first tick composed");
