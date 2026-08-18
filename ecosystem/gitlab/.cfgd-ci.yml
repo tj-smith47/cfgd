@@ -36,6 +36,11 @@
     # checked-out repo explicitly or the plan silently reads the runner's HOME.
     # No pipes: a pipe would report the downstream command's exit code on
     # runners whose shell lacks pipefail, hiding a failed plan.
+    #
+    # Two runs, because no single invocation emits both renders: the first is
+    # the readable job log, the second is the artifact. The ARTIFACT is
+    # authoritative for anything downstream — it is the later of the two, so a
+    # machine that moved between them is described by the file, not the log.
     - cfgd plan --no-color --config "$CFGD_CONFIG_DIR/cfgd.yaml" $CFGD_ARGS
     - cfgd plan --config "$CFGD_CONFIG_DIR/cfgd.yaml" --output json $CFGD_ARGS > cfgd-plan.json
   artifacts:

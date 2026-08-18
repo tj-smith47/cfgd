@@ -75,8 +75,17 @@ spec:
         # at the workspace checkout explicitly or apply silently reads the
         # step container's HOME. pipefail (set above) keeps a failed apply from
         # being masked by tee's exit code.
+        # The exit code is captured rather than allowed to end the step here:
+        # under `set -e` a failed apply would skip the result write below, so
+        # downstream tasks would get no result precisely when they most need
+        # one. The step still fails — with the apply's own code — after writing.
+        set +e
         cfgd apply --yes --no-color --config ./cfgd.yaml $DRY_RUN $OUTPUT_FLAG $(params.args) | tee /tmp/cfgd-output.txt
+        CODE=${PIPESTATUS[0]}
+        set -e
 
         # Tekton caps a result at 4KB; ship the tail so the verdict survives
         # truncation, and point at the step log for the full output.
         tail -c 4000 /tmp/cfgd-output.txt > $(results.plan.path)
+
+        exit "$CODE"
