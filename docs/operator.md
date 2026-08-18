@@ -175,8 +175,7 @@ Validates CRD specs on create/update. Catches invalid configurations (missing re
 A module published as an OCI artifact can be mounted into a pod. A pod asks for it with one annotation. The mutating webhook rewrites the pod on admission, and the CSI node plugin pulls the artifact and bind-mounts it read-only before the container starts.
 
 ![module to cluster to pod](../demo/cfgd-k8s.gif)
-
-Pushing a module, registering it as a `Module`, and reading it back from inside a pod that only asked for it by name.
+*Pushing a module, registering it as a `Module`, and reading it back from inside a pod that only asked for it by name.*
 
 Three pieces have to be enabled in the chart:
 
