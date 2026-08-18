@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use rusqlite::params;
 
 use super::StateStore;
@@ -51,6 +53,23 @@ impl StateStore {
             ],
         )?;
         Ok(())
+    }
+
+    /// Every distinct `file_path` this apply has already backed up.
+    ///
+    /// The apply's own record of which files it TOUCHED: a backup row is
+    /// written immediately before a file action overwrites its target and
+    /// immediately before a module file is deployed, and never for a target the
+    /// run left alone. Reading it back is what lets the post-apply snapshot
+    /// re-read only those files instead of every managed target in the profile.
+    pub fn backed_up_paths_for_apply(&self, apply_id: i64) -> Result<HashSet<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT file_path FROM file_backups WHERE apply_id = ?1")?;
+        let paths = stmt
+            .query_map(params![apply_id], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<HashSet<_>, _>>()?;
+        Ok(paths)
     }
 
     /// Get a file backup by apply_id and path.

@@ -1371,44 +1371,16 @@ impl<'a> super::Reconciler<'a> {
         self.state
             .update_apply_status(apply_id, status.clone(), Some(&summary))?;
 
-        self.record_managed_resources(apply_id, &results)?;
-
-        // Update module state and file manifests for successfully applied modules
-        self.update_module_state(module_actions, apply_id, &results)?;
-
-        // Post-apply snapshot: capture the resolved content of all managed file
-        // targets (following symlinks). This ensures rollback can restore the
-        // exact content visible at this point, even for symlink-deployed files
-        // where the source may be modified in-place between applies.
-        let mut snapshot_paths = std::collections::HashSet::new();
-        for managed in &resolved.merged.files.managed {
-            let target = crate::expand_tilde(&managed.target);
-            let key = crate::to_posix_fs_key(&target);
-            if snapshot_paths.contains(&key) {
-                continue;
-            }
-            snapshot_paths.insert(key.clone());
-            if let Ok(Some(state)) = crate::capture_file_resolved_state(&target)
-                && let Err(e) = self.state.store_file_backup(apply_id, &key, &state)
-            {
-                tracing::debug!("post-apply snapshot for {}: {}", key, e);
-            }
-        }
-        for module in module_actions {
-            for file in &module.files {
-                let target = crate::expand_tilde(&file.target);
-                let key = crate::to_posix_fs_key(&target);
-                if snapshot_paths.contains(&key) {
-                    continue;
-                }
-                snapshot_paths.insert(key.clone());
-                if let Ok(Some(state)) = crate::capture_file_resolved_state(&target)
-                    && let Err(e) = self.state.store_file_backup(apply_id, &key, &state)
-                {
-                    tracing::debug!("post-apply snapshot for {}: {}", key, e);
-                }
-            }
-        }
+        // One transaction for the whole bookkeeping tail. Every write below is a
+        // per-row insert in a loop over the run's results, its modules and its
+        // touched files; individually committed, a large apply paid one WAL
+        // commit per row for work that is only meaningful as a whole.
+        self.state.in_transaction(|| {
+            self.record_managed_resources(apply_id, &results)?;
+            // Update module state and file manifests for successfully applied modules
+            self.update_module_state(module_actions, apply_id, &results)?;
+            self.snapshot_touched_files(apply_id, resolved, module_actions)
+        })?;
 
         Ok(ApplyResult {
             action_results: results,
@@ -1418,6 +1390,53 @@ impl<'a> super::Reconciler<'a> {
             planned_total,
             caveats,
         })
+    }
+
+    /// Post-apply snapshot: capture the resolved content (following symlinks)
+    /// of the managed file targets THIS apply touched, so a rollback to it
+    /// restores the bytes that were visible the moment it finished — which is
+    /// not the same as the pre-action backup for a symlink-deployed file, whose
+    /// target resolves through a link the action rewrote.
+    ///
+    /// Scoped to the touched set, read back from the backup rows the run itself
+    /// wrote (a row lands immediately before any file action overwrites its
+    /// target, and immediately before any module file is deployed). The
+    /// unscoped form re-read and re-stored EVERY managed target in the profile
+    /// on every apply — for a converged machine, that is the entire dotfile
+    /// tree read, hashed and written into the state DB as blobs to record that
+    /// nothing happened. A file the run did not touch still has its content
+    /// recorded under the apply that last wrote it, which is the apply a
+    /// rollback resolves it through; what is genuinely given up is undoing
+    /// OUT-OF-BAND edits to files no apply since has touched, which is drift for
+    /// `cfgd apply` to reconcile rather than history for a rollback to rewind.
+    fn snapshot_touched_files(
+        &self,
+        apply_id: i64,
+        resolved: &ResolvedProfile,
+        modules: &[ResolvedModule],
+    ) -> Result<()> {
+        let touched = self.state.backed_up_paths_for_apply(apply_id)?;
+        if touched.is_empty() {
+            return Ok(());
+        }
+        let mut snapshot_paths = std::collections::HashSet::new();
+        let managed_targets = resolved.merged.files.managed.iter().map(|m| &m.target);
+        let module_targets = modules
+            .iter()
+            .flat_map(|module| module.files.iter().map(|f| &f.target));
+        for target in managed_targets.chain(module_targets) {
+            let target = crate::expand_tilde(target);
+            let key = crate::to_posix_fs_key(&target);
+            if !touched.contains(&key) || !snapshot_paths.insert(key.clone()) {
+                continue;
+            }
+            if let Ok(Some(state)) = crate::capture_file_resolved_state(&target)
+                && let Err(e) = self.state.store_file_backup(apply_id, &key, &state)
+            {
+                tracing::debug!("post-apply snapshot for {}: {}", key, e);
+            }
+        }
+        Ok(())
     }
 
     /// Persist managed-resource tracking rows for the successfully-applied

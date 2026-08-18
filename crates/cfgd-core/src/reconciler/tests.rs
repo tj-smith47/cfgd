@@ -9158,8 +9158,9 @@ fn apply_module_deploy_files_leaves_a_target_that_already_holds_the_source_bytes
         crate::is_same_inode(&target_file, &witness),
         "a converged target must not be rewritten"
     );
-    // One row, not two: the post-apply rollback snapshot every managed target
-    // gets, without the pre-write backup an actual overwrite would have added.
+    // No rows at all: no pre-write backup, because nothing was overwritten, and
+    // therefore no post-apply snapshot either — the snapshot follows the
+    // touched set, and this target is not in it.
     let key = crate::to_posix_fs_key(&target_file);
     let rows = state
         .get_apply_backups(result.apply_id)
@@ -9168,8 +9169,8 @@ fn apply_module_deploy_files_leaves_a_target_that_already_holds_the_source_bytes
         .filter(|r| r.file_path == key)
         .count();
     assert_eq!(
-        rows, 1,
-        "a file that was never overwritten needs no pre-write backup row"
+        rows, 0,
+        "a file that was never overwritten needs neither a pre-write backup row nor a post-apply snapshot"
     );
     // The manifest row still records the file as this module's, so removal
     // still cleans it up.
