@@ -483,6 +483,25 @@ pub struct StateStore {
     pub(in crate::state) conn: Connection,
 }
 
+/// Rolls back an open [`StateStore::in_transaction`] batch unless it committed.
+///
+/// The `?` in `in_transaction` is what makes this a guard rather than a match
+/// arm: an early return from `f` must not leave the connection inside a
+/// transaction, because every later write on this store would then join a batch
+/// nobody will commit.
+struct TransactionGuard<'a> {
+    conn: &'a Connection,
+    finished: bool,
+}
+
+impl Drop for TransactionGuard<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = self.conn.execute_batch("ROLLBACK");
+        }
+    }
+}
+
 impl StateStore {
     /// Open or create a state store at the default location.
     /// Uses `~/.local/state/cfgd/state.db`.
@@ -523,13 +542,57 @@ impl StateStore {
     /// Open or create a state store at the given path.
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        // `synchronous=NORMAL` is the WAL-mode counterpart of the default
+        // `FULL`: a committing writer stops fsyncing the WAL on every commit and
+        // syncs at checkpoints instead. It is safe precisely BECAUSE `WAL` is
+        // set on the line beside it — under WAL, `NORMAL` still cannot lose or
+        // corrupt a committed transaction when the PROCESS dies (the WAL is
+        // durable in the page cache and replayed on the next open); the window
+        // it trades away is an OS crash or power loss between commit and
+        // checkpoint, which costs the most recent applies' journal rows on a
+        // machine that just lost power mid-apply. An apply writes one row per
+        // action plus a backup blob per touched file, and paying a disk sync for
+        // each was the single largest fixed cost of a large apply.
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
+        )?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         register_sql_functions(&conn)?;
 
         let mut store = Self { conn };
         store.run_migrations()?;
         Ok(store)
+    }
+
+    /// Run `f` with every write it performs committed as ONE transaction.
+    ///
+    /// Every `StateStore` write method takes `&self` and so runs in SQLite's
+    /// implicit per-statement transaction: a run recording a hundred managed
+    /// resources took a hundred commits, each one a WAL write and (before
+    /// `synchronous=NORMAL`) a disk sync. Wrap a LOOP of writes in this and the
+    /// whole loop costs one.
+    ///
+    /// `f` returning `Err` rolls the batch back, so a partially-recorded loop
+    /// never survives the failure that interrupted it — the caller's `?`
+    /// already abandons the run at that point, and half a bookkeeping sweep is
+    /// worse to reason about than none. A panic inside `f` rolls back too, via
+    /// the guard's `Drop`.
+    ///
+    /// NOT for a write whose whole value is being on disk BEFORE the next thing
+    /// happens: the journal's per-action begin/finish rows and the pre-action
+    /// file backups are the record a crashed apply is reconstructed from, and
+    /// batching them would lose exactly the rows describing the action that
+    /// crashed. Transactions do not nest — never call this from inside `f`.
+    pub fn in_transaction<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.conn.execute_batch("BEGIN")?;
+        let mut guard = TransactionGuard {
+            conn: &self.conn,
+            finished: false,
+        };
+        let value = f()?;
+        self.conn.execute_batch("COMMIT")?;
+        guard.finished = true;
+        Ok(value)
     }
 
     /// Create an in-memory state store (for testing).
