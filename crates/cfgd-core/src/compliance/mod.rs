@@ -95,6 +95,14 @@ pub struct ComplianceSummary {
 /// drift and needs the answers for something else too — `cfgd checkin` reports
 /// them to the gateway — so the machine is diffed once per command rather than
 /// once per consumer. `None` collects them here.
+///
+/// Pass what a caller ALREADY has, never a collection made for this call: the
+/// diff shells out to every configurator the profile declares, so a caller that
+/// collects eagerly to fill this argument has paid for a scan whose second
+/// consumer may never run. `cmd_checkin` holds the collection in a `OnceCell`
+/// and hands it over only when compliance is enabled, because its other
+/// consumer — the drift report — runs after the gateway answers and not at all
+/// when that call fails.
 #[allow(clippy::too_many_arguments)]
 pub fn collect_snapshot(
     profile_name: &str,

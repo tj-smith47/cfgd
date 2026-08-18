@@ -46,11 +46,9 @@ fn git_location_args() -> Vec<String> {
 /// value, which is what `git config --get` answers with.
 fn git_config_snapshot() -> std::collections::HashMap<String, String> {
     let loc = git_location_args();
-    let output = cfgd_core::git_cmd_local()
-        .arg("config")
-        .args(&loc)
-        .args(["--list", "-z"])
-        .output()
+    let mut cmd = cfgd_core::git_cmd_local();
+    cmd.arg("config").args(&loc).args(["--list", "-z"]);
+    let output = cfgd_core::command_output_with_timeout(&mut cmd, cfgd_core::COMMAND_TIMEOUT)
         .ok()
         .filter(|o| o.status.success());
     match output {
@@ -178,12 +176,18 @@ impl SystemConfigurator for GitConfigurator {
             None => return Ok(Vec::new()),
         };
 
+        let flattened = flatten_git_keys(mapping);
+        if flattened.is_empty() {
+            // Nothing declared, so the listing's answer would be discarded.
+            return Ok(Vec::new());
+        }
+
         let mut drifts = Vec::new();
         // One `git config --list` for every declared key, instead of one
         // `git config --get` per key.
         let snapshot = git_config_snapshot();
 
-        for (key, desired_val) in flatten_git_keys(mapping) {
+        for (key, desired_val) in flattened {
             // A non-scalar leaf (Sequence/Null) is not git-storable; apply()
             // warns on it, so diff() must agree by ignoring it rather than
             // reporting phantom drift against a Debug-encoded value.
@@ -236,12 +240,13 @@ impl SystemConfigurator for GitConfigurator {
                 format!("git config --global {} {}", key, desired_str),
             );
 
-            let output = cfgd_core::git_cmd_local()
-                .arg("config")
+            let mut cmd = cfgd_core::git_cmd_local();
+            cmd.arg("config")
                 .args(&loc)
-                .args([key.as_str(), &desired_str])
-                .output()
-                .map_err(CfgdError::Io)?;
+                .args([key.as_str(), &desired_str]);
+            let output =
+                cfgd_core::command_output_with_timeout(&mut cmd, cfgd_core::COMMAND_TIMEOUT)
+                    .map_err(CfgdError::Io)?;
 
             if !output.status.success() {
                 cx.report(
@@ -292,22 +297,20 @@ mod tests {
 
     /// Set a key directly in a git config file (used for test setup).
     fn git_config_set_file(file: &std::path::Path, key: &str, value: &str) {
-        let status = cfgd_core::git_cmd_local()
-            .args(["config", "--file"])
-            .arg(file)
-            .args([key, value])
-            .status()
+        let mut cmd = cfgd_core::git_cmd_local();
+        cmd.args(["config", "--file"]).arg(file).args([key, value]);
+        let output = cfgd_core::command_output_with_timeout(&mut cmd, cfgd_core::COMMAND_TIMEOUT)
             .expect("git config set failed");
-        assert!(status.success(), "git config set returned non-zero");
+        assert!(output.status.success(), "git config set returned non-zero");
     }
 
     /// Read a key from a specific git config file (used for apply assertions).
     fn git_config_get_file(file: &std::path::Path, key: &str) -> Option<String> {
-        cfgd_core::git_cmd_local()
-            .args(["config", "--file"])
+        let mut cmd = cfgd_core::git_cmd_local();
+        cmd.args(["config", "--file"])
             .arg(file)
-            .args(["--get", key])
-            .output()
+            .args(["--get", key]);
+        cfgd_core::command_output_with_timeout(&mut cmd, cfgd_core::COMMAND_TIMEOUT)
             .ok()
             .filter(|o| o.status.success())
             .map(|o| cfgd_core::stdout_lossy_trimmed(&o))
@@ -390,12 +393,35 @@ mod tests {
 
         let drifts = GitConfigurator.diff(&yaml).unwrap();
 
+        // Reading the WHOLE log is safe here, unlike the env-seam shims: this
+        // one is a PATH shim, and `install_named_path_shim_logged` holds the
+        // exclusive `path_env_mutation_guard` for its lifetime, so no other
+        // test can spawn through it while this assertion is being set up.
         assert_eq!(
             log.argv_log().lines().collect::<Vec<_>>(),
             vec!["config --global --list -z"],
             "one listing answers every declared key"
         );
         assert_eq!(drifts.len(), 3, "unexpected drifts: {drifts:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn git_diff_of_an_empty_mapping_lists_nothing() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let (_bin, _path, log) =
+            cfgd_core::test_helpers::install_named_path_shim_logged("git", 0, "", "");
+        let yaml: serde_yaml::Value = serde_yaml::from_str("push: {}\n").unwrap();
+
+        let drifts = GitConfigurator.diff(&yaml).unwrap();
+
+        assert!(drifts.is_empty());
+        assert_eq!(
+            log.argv_log(),
+            "",
+            "a profile declaring no git keys spawns nothing"
+        );
     }
 
     #[test]

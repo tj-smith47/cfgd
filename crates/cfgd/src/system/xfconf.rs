@@ -60,21 +60,35 @@ enum Snapshot {
 
 fn parse_channel_listing(dump: &str) -> HashMap<String, Snapshot> {
     let mut map = HashMap::new();
+    let mut last_property: Option<String> = None;
     for line in dump.lines() {
         let line = line.trim_end();
+        // Every property xfconf lists is an absolute path. A line that does not
+        // open with one is a CONTINUATION of the value above it — a value
+        // carrying a newline prints its remainder on lines of its own — so it
+        // names no property, and the property it continues is answered only in
+        // part by the line that was parsed for it. Marking that one opaque
+        // re-reads it per property, which is what the byte-for-byte parity rule
+        // asks for; inserting the continuation as a property would invent one.
+        if !line
+            .split_whitespace()
+            .next()
+            .is_some_and(|t| t.starts_with('/'))
+        {
+            if let Some(prev) = last_property.take() {
+                map.insert(prev, Snapshot::Opaque);
+            }
+            continue;
+        }
         let Some((property, rest)) = line.split_once(char::is_whitespace) else {
             // Nothing but padding after the property name. An empty string
             // prints that way, and so would any type this listing renders
             // blank, so the property is re-read rather than assumed empty —
             // the empty-string case costs one spawn and answers the same.
-            if !line.trim().is_empty() {
-                map.insert(line.trim().to_string(), Snapshot::Opaque);
-            }
+            map.insert(line.to_string(), Snapshot::Opaque);
+            last_property = Some(line.to_string());
             continue;
         };
-        if property.is_empty() {
-            continue;
-        }
         let value = rest.trim();
         let entry = if value.starts_with('[') {
             Snapshot::Opaque
@@ -82,6 +96,7 @@ fn parse_channel_listing(dump: &str) -> HashMap<String, Snapshot> {
             Snapshot::Value(value.to_string())
         };
         map.insert(property.to_string(), entry);
+        last_property = Some(property.to_string());
     }
     map
 }
@@ -103,8 +118,11 @@ impl SystemConfigurator for XfconfConfigurator {
         // One channel listing per declared channel, held for this call only.
         let mut snapshots: HashMap<String, HashMap<String, Snapshot>> = HashMap::new();
         if let Some(mapping) = desired.as_mapping() {
-            for channel_key in mapping.keys() {
+            for (channel_key, properties) in mapping {
+                // A channel declaring no properties has nothing to compare, so
+                // listing it is a spawn whose answer is discarded.
                 if let Some(channel) = channel_key.as_str()
+                    && properties.as_mapping().is_some_and(|m| !m.is_empty())
                     && !snapshots.contains_key(channel)
                 {
                     snapshots.insert(channel.to_string(), snapshot_channel(channel));
@@ -255,6 +273,56 @@ mod tests {
             snapshot.get("/general/empty"),
             Some(Snapshot::Opaque)
         ));
+    }
+
+    #[test]
+    fn a_value_carrying_a_newline_makes_the_property_it_belongs_to_opaque() {
+        // The listing puts one property per line, so a value carrying a newline
+        // spills onto lines of its own. Those lines open with the value's own
+        // text rather than the `/`-rooted property name every real entry opens
+        // with — reading one as a property would invent a property, and the
+        // property it continues was only half-read.
+        let snapshot = parse_channel_listing(
+            "/general/theme       Default\n\
+             /general/motd        line one\n\
+             line two\n\
+             /general/num         42\n",
+        );
+        assert!(matches!(
+            snapshot.get("/general/motd"),
+            Some(Snapshot::Opaque)
+        ));
+        assert!(
+            !snapshot.contains_key("line two"),
+            "a continuation line names no property"
+        );
+        // The properties on either side of it still answer from the listing.
+        assert!(matches!(
+            snapshot.get("/general/theme"),
+            Some(Snapshot::Value(v)) if v == "Default"
+        ));
+        assert!(matches!(
+            snapshot.get("/general/num"),
+            Some(Snapshot::Value(v)) if v == "42"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn xfconf_diff_of_a_channel_declaring_no_properties_lists_nothing() {
+        let shim =
+            cfgd_core::test_helpers::ToolShim::install(XFCONF_QUERY_BIN_ENV, 0, REAL_LISTING, "");
+        let yaml: serde_yaml::Value = serde_yaml::from_str("cfgdqp5empty: {}\n").unwrap();
+
+        let drifts = XfconfConfigurator.diff(&yaml).unwrap();
+
+        assert!(drifts.is_empty());
+        assert!(
+            shim.argv_lines_naming("cfgdqp5empty").is_empty(),
+            "a channel declaring no properties is never listed: {}",
+            shim.argv_log()
+        );
     }
 
     #[cfg(unix)]

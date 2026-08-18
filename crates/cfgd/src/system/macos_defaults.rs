@@ -43,8 +43,10 @@ impl SystemConfigurator for MacosDefaultsConfigurator {
                 None => continue,
             };
             let values = match domain_values.as_mapping() {
-                Some(m) => m,
-                None => continue,
+                Some(m) if !m.is_empty() => m,
+                // A domain declaring no keys has nothing to compare, so reading
+                // it is a spawn whose answer is discarded.
+                _ => continue,
             };
             // One `defaults read <domain>` for the whole block, instead of one
             // `defaults read <domain> <key>` per declared key.
@@ -205,17 +207,24 @@ fn parse_defaults_dump(dump: &str) -> DomainSnapshot {
 /// Strip a token's surrounding double quotes, refusing any token that carries a
 /// backslash — the dump's escapes are not the per-key read's spelling, so an
 /// escaped token has to be re-read rather than guessed at.
+///
+/// A token that OPENS with a quote and does not close with one is refused for
+/// the same reason: the split that produced it landed inside a quoted string
+/// (a key spelled `"a = b"` splits on its own ` = `), so neither half names
+/// what it appears to name.
 fn unquote(token: &str) -> Option<String> {
     if token.contains('\\') {
         return None;
     }
-    Some(
-        token
-            .strip_prefix('"')
-            .and_then(|t| t.strip_suffix('"'))
-            .unwrap_or(token)
-            .to_string(),
-    )
+    match token.strip_prefix('"') {
+        Some(rest) => rest.strip_suffix('"').map(str::to_string),
+        None => {
+            if token.ends_with('"') {
+                return None;
+            }
+            Some(token.to_string())
+        }
+    }
 }
 
 fn yaml_value_to_defaults_type(value: &serde_yaml::Value) -> (&'static str, String) {
@@ -332,6 +341,18 @@ mod tests {
     }
 
     #[test]
+    fn a_key_whose_own_spelling_carries_the_separator_falls_the_domain_back() {
+        // `defaults` quotes a key carrying spaces, so a key spelled `a = b`
+        // prints as `    "a = b" = 1;` and splits on ITS OWN separator: the
+        // halves are `"a` and `b" = 1;`, neither of which names anything. The
+        // domain has to fall back to per-key reads rather than answer under a
+        // key nobody declared.
+        assert!(parse_defaults_dump("{\n    \"a = b\" = 1;\n}\n").is_none());
+        // The same shape on the value side.
+        assert!(parse_defaults_dump("{\n    A = \"x = y\";\n}\n").is_some());
+    }
+
+    #[test]
     fn a_dump_that_is_not_a_plist_falls_back_entirely() {
         assert!(parse_defaults_dump("not a plist\n").is_none());
         assert!(parse_defaults_dump("{\n    A = 1;\n").is_none());
@@ -388,6 +409,23 @@ mod tests {
                 "read io.cfgd.qp5fixture ArrayVal"
             ],
             "the container is re-read per key; the scalar beside it is not"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn macos_defaults_diff_of_a_domain_declaring_no_keys_reads_nothing() {
+        let shim = cfgd_core::test_helpers::ToolShim::install(DEFAULTS_BIN_ENV, 0, REAL_DUMP, "");
+        let yaml: serde_yaml::Value = serde_yaml::from_str("io.cfgd.qp5empty: {}\n").unwrap();
+
+        let drifts = MacosDefaultsConfigurator.diff(&yaml).unwrap();
+
+        assert!(drifts.is_empty());
+        assert!(
+            shim.argv_lines_naming("io.cfgd.qp5empty").is_empty(),
+            "a domain declaring no keys is never read: {}",
+            shim.argv_log()
         );
     }
 

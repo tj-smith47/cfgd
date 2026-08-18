@@ -49,10 +49,24 @@ fn strip_gsettings_quotes(s: &str) -> &str {
 /// CHILD schemas lists their keys too, under their own schema id in the first
 /// field, which is why only lines naming the requested schema are kept: a child
 /// key would otherwise answer a question about a same-named key of the parent.
+///
+/// The declared string is passed through WHOLE, because a RELOCATABLE schema is
+/// declared as `<id>:<path>` and refuses to list without its path (`Schema … is
+/// relocatable (path must be specified)`); the listing then prints the BARE id
+/// in its first field, so the filter compares the id half. Matching the declared
+/// spelling instead dropped every line of every relocatable schema — custom
+/// keybindings, per-application notification settings, terminal profiles — and
+/// answered each of their keys with the empty string, which is permanent drift
+/// on a machine that is converged.
 fn snapshot_schema(schema: &str) -> HashMap<String, String> {
     let mut cmd = gsettings_cmd();
     cmd.args(["list-recursively", schema]);
-    parse_list_recursively(&read_command_output(&mut cmd), schema)
+    parse_list_recursively(&read_command_output(&mut cmd), schema_id(schema))
+}
+
+/// The id half of a `<id>:<path>` schema spec; the whole string for a plain one.
+fn schema_id(schema: &str) -> &str {
+    schema.split_once(':').map_or(schema, |(id, _)| id)
 }
 
 fn parse_list_recursively(dump: &str, schema: &str) -> HashMap<String, String> {
@@ -94,8 +108,12 @@ impl SystemConfigurator for GsettingsConfigurator {
         // twenty keys used to be twenty `gsettings get` spawns.
         let mut snapshots: HashMap<String, HashMap<String, String>> = HashMap::new();
         if let Some(mapping) = desired.as_mapping() {
-            for schema_key in mapping.keys() {
+            for (schema_key, keys) in mapping {
+                // A schema declaring nothing is asked nothing: the lookup below
+                // never runs for it, so its listing would be a spawn whose
+                // result no key reads.
                 if let Some(schema) = schema_key.as_str()
+                    && keys.as_mapping().is_some_and(|m| !m.is_empty())
                     && !snapshots.contains_key(schema)
                 {
                     snapshots.insert(schema.to_string(), snapshot_schema(schema));
@@ -218,6 +236,93 @@ mod tests {
                 .map(String::as_str),
             Some("300"),
             "and it must answer for the schema it belongs to"
+        );
+    }
+
+    /// Verbatim `gsettings list-recursively
+    /// 'org.gnome.desktop.notifications.application:/org/gnome/desktop/notifications/application/firefox/'`
+    /// output. The first field is the BARE id, not the `<id>:<path>` spelling
+    /// the command was given — asking for the id alone is refused (`Schema …
+    /// is relocatable (path must be specified)`), so the two spellings are not
+    /// interchangeable and the filter has to know which is which.
+    const REAL_RELOCATABLE_LISTING: &str = "org.gnome.desktop.notifications.application application-id ''\n\
+         org.gnome.desktop.notifications.application enable true\n\
+         org.gnome.desktop.notifications.application show-banners true\n";
+
+    const RELOCATABLE_SPEC: &str = "org.gnome.desktop.notifications.application:\
+                                    /org/gnome/desktop/notifications/application/firefox/";
+
+    #[test]
+    fn a_relocatable_schemas_keys_answer_from_its_listing() {
+        let snapshot =
+            parse_list_recursively(REAL_RELOCATABLE_LISTING, schema_id(RELOCATABLE_SPEC));
+        // Right-hand sides are the captured `gsettings get <id>:<path> <key>`
+        // output. Filtering on the declared `<id>:<path>` spelling dropped every
+        // line, so every key answered "" and drifted forever.
+        assert_eq!(snapshot.get("enable").map(String::as_str), Some("true"));
+        assert_eq!(
+            snapshot.get("show-banners").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(snapshot.get("application-id").map(String::as_str), Some(""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn gsettings_diff_of_a_relocatable_schema_reports_no_drift_when_converged() {
+        let shim = cfgd_core::test_helpers::ToolShim::install(
+            GSETTINGS_BIN_ENV,
+            0,
+            REAL_RELOCATABLE_LISTING,
+            "",
+        );
+        let mut keys = serde_yaml::Mapping::new();
+        keys.insert(
+            serde_yaml::Value::String("enable".into()),
+            serde_yaml::Value::Bool(true),
+        );
+        keys.insert(
+            serde_yaml::Value::String("show-banners".into()),
+            serde_yaml::Value::Bool(true),
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String(RELOCATABLE_SPEC.into()),
+            serde_yaml::Value::Mapping(keys),
+        );
+
+        let drifts = GsettingsConfigurator
+            .diff(&serde_yaml::Value::Mapping(outer))
+            .unwrap();
+
+        assert_eq!(
+            shim.argv_lines_naming("notifications.application"),
+            vec![format!("list-recursively {RELOCATABLE_SPEC}")],
+            "the listing is asked for by the full `<id>:<path>` spelling, which \
+             is the only one it accepts"
+        );
+        assert!(
+            drifts.is_empty(),
+            "a converged relocatable schema must report no drift: {drifts:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn gsettings_diff_of_an_empty_schema_block_spawns_nothing() {
+        let shim = cfgd_core::test_helpers::ToolShim::install(GSETTINGS_BIN_ENV, 0, "", "");
+        let yaml: serde_yaml::Value = serde_yaml::from_str("org.gnome.cfgd-empty: {}\n").unwrap();
+
+        let drifts = GsettingsConfigurator.diff(&yaml).unwrap();
+
+        assert!(drifts.is_empty());
+        assert_eq!(
+            shim.argv_lines_naming("org.gnome.cfgd-empty").len(),
+            0,
+            "a schema declaring no keys is asked nothing: {}",
+            shim.argv_log()
         );
     }
 

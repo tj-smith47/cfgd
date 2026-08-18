@@ -56,13 +56,19 @@ pub fn cmd_checkin(
         serde_yaml::to_string(&system).context("failed to serialize system config")?;
     let config_hash = cfgd_core::sha256_hex(config_yaml.as_bytes());
 
-    // The machine is diffed ONCE per checkin. Both consumers read from this:
-    // the compliance snapshot's system checks below, and the drift report sent
-    // after the gateway answers. Collecting it here also fixes the order the
-    // two used to disagree on — every drift is now in effective-system-map
-    // order, the same order compliance records it in.
-    let system_diffs =
-        cfgd_core::compliance::collect_system_diffs(&resolved.merged, &resolved_modules, &registry);
+    // The machine is diffed ONCE per checkin, and not until someone asks. Both
+    // consumers read from this cell: the compliance snapshot's system checks
+    // below, and the drift report sent after the gateway answers. Sharing it
+    // also fixes the order the two used to disagree on — every drift is now in
+    // effective-system-map order, the same order compliance records it in.
+    // Lazily, because the diff shells out to every configurator the profile
+    // declares: a checkin whose gateway call fails must not have paid for a
+    // scan of the machine nobody will read.
+    let system_diffs: std::cell::OnceCell<Vec<cfgd_core::compliance::SystemDiff>> =
+        std::cell::OnceCell::new();
+    let diff_system = || {
+        cfgd_core::compliance::collect_system_diffs(&resolved.merged, &resolved_modules, &registry)
+    };
 
     let compliance_summary = if let Some(ref compliance_cfg) = cfg.spec.compliance {
         if compliance_cfg.enabled {
@@ -78,7 +84,7 @@ pub fn cmd_checkin(
                 &[],
                 printer,
                 checkin_state,
-                Some(&system_diffs),
+                Some(system_diffs.get_or_init(diff_system)),
             ) {
                 Ok(snapshot) => {
                     printer.kv(
@@ -141,7 +147,7 @@ pub fn cmd_checkin(
         }
     }
 
-    let all_drifts = cfgd_core::compliance::system_drifts(&system_diffs);
+    let all_drifts = cfgd_core::compliance::system_drifts(system_diffs.get_or_init(diff_system));
 
     let drift_status = if !all_drifts.is_empty() {
         let sp = printer.spinner("Reporting drift");
@@ -510,6 +516,69 @@ spec:
             shim.argv_lines_naming("org.gnome.cfgd-checkin"),
             vec!["list-recursively org.gnome.cfgd-checkin"],
             "the compliance snapshot and the drift report share one diff pass"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn a_checkin_whose_gateway_call_fails_never_diffs_the_machine() {
+        // Compliance is off, so the only consumer of the diff is the drift
+        // report that runs AFTER the gateway answers. A 500 means it never
+        // does — and the machine must not have been scanned for a report
+        // nobody will read.
+        let shim = cfgd_core::test_helpers::ToolShim::install(
+            "CFGD_GSETTINGS_BIN",
+            0,
+            "org.gnome.cfgd-lazy color-scheme 'default'\n",
+            "",
+        );
+        let config_dir = make_test_config_dir();
+        std::fs::write(
+            config_dir.path().join("profiles").join("default.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  system:
+    gsettings:
+      org.gnome.cfgd-lazy:
+        color-scheme: prefer-dark
+"#,
+        )
+        .unwrap();
+
+        let state_dir = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(config_dir.path());
+        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+
+        let mut server = mockito::Server::new();
+        // The client retries a 5xx, so the count is "at least one attempt".
+        let checkin = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(500)
+            .with_body("boom")
+            .expect_at_least(1)
+            .create();
+
+        let cli = test_cli_for(config_dir.path(), state_dir.path());
+        let (printer, _cap) = Printer::for_test_doc();
+        let result = cmd_checkin(
+            &cli,
+            &printer,
+            &server.url(),
+            Some("test-key"),
+            Some("dev-1"),
+        );
+        drop(printer);
+
+        assert!(result.is_err(), "a 500 must fail the checkin");
+        checkin.assert();
+        assert!(
+            shim.argv_lines_naming("org.gnome.cfgd-lazy").is_empty(),
+            "the machine was scanned for a report the failed gateway call never sent: {}",
+            shim.argv_log()
         );
     }
 

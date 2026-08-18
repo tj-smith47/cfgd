@@ -502,14 +502,29 @@ systemd-tmpfiles-clean.timer                                                  st
 
         SystemdUnitConfigurator::default().diff(&yaml).unwrap();
 
+        // `CFGD_SYSTEMCTL_BIN` is process-global and five call sites across
+        // three crates spawn through it, so the whole log is not this test's to
+        // assert on — a parallel test's `systemctl` lands in it too. Each claim
+        // is filtered to the unit it is about.
         assert_eq!(
-            shim.argv_log().lines().collect::<Vec<_>>(),
-            vec![
-                "list-unit-files --no-legend --no-pager",
-                "is-enabled getty@tty7.service",
-                "is-enabled autovt@.service",
-            ],
-            "only the two the listing cannot answer are asked about"
+            shim.argv_lines_naming("list-unit-files"),
+            vec!["list-unit-files --no-legend --no-pager"],
+            "the listing is read exactly once for the whole block"
+        );
+        assert_eq!(
+            shim.argv_lines_naming("getty@tty7.service"),
+            vec!["is-enabled getty@tty7.service"],
+            "a template instance the listing omits is asked about once"
+        );
+        assert_eq!(
+            shim.argv_lines_naming("autovt@.service"),
+            vec!["is-enabled autovt@.service"],
+            "an alias is listed but never trusted, so it is asked about once"
+        );
+        assert!(
+            shim.argv_lines_naming("cron.service").is_empty(),
+            "a unit the listing answers is never asked about: {}",
+            shim.argv_log()
         );
     }
 

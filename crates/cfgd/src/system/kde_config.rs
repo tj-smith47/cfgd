@@ -32,9 +32,16 @@ const KWRITECONFIG_BIN_ENV: &str = "CFGD_KWRITECONFIG_BIN";
 /// ```
 pub struct KdeConfigConfigurator;
 
+/// A set seam names the binary outright, so the generation question is the
+/// seam's to answer: `tool_cmd` discards the default, and probing the host for
+/// a generation the spawn will not use describes the wrong machine.
+fn seam_is_set(env_var: &str) -> bool {
+    std::env::var_os(env_var).is_some()
+}
+
 /// Return the kwriteconfig command name (prefer v6, fallback to v5).
 fn kde_write_cmd() -> &'static str {
-    if cfgd_core::command_available("kwriteconfig6") {
+    if seam_is_set(KWRITECONFIG_BIN_ENV) || cfgd_core::command_available("kwriteconfig6") {
         "kwriteconfig6"
     } else {
         "kwriteconfig5"
@@ -43,7 +50,7 @@ fn kde_write_cmd() -> &'static str {
 
 /// Return the kreadconfig command name (prefer v6, fallback to v5).
 fn kde_read_cmd() -> &'static str {
-    if cfgd_core::command_available("kreadconfig6") {
+    if seam_is_set(KREADCONFIG_BIN_ENV) || cfgd_core::command_available("kreadconfig6") {
         "kreadconfig6"
     } else {
         "kreadconfig5"
@@ -188,7 +195,13 @@ impl SystemConfigurator for KdeConfigConfigurator {
     }
 
     fn is_available(&self) -> bool {
-        cfgd_core::command_available_with_seam(KWRITECONFIG_BIN_ENV, "kwriteconfig6")
+        if seam_is_set(KWRITECONFIG_BIN_ENV) {
+            // The v5 fallback is a question about the HOST, and a set seam means
+            // the host is not what runs: falling through to it answers
+            // "available" for a shim path that does not exist.
+            return cfgd_core::command_available_with_seam(KWRITECONFIG_BIN_ENV, "kwriteconfig6");
+        }
+        cfgd_core::command_available("kwriteconfig6")
             || cfgd_core::command_available("kwriteconfig5")
     }
 
@@ -209,8 +222,18 @@ impl SystemConfigurator for KdeConfigConfigurator {
                 None => continue,
             };
             let groups_map = match groups.as_mapping() {
-                Some(m) => m,
-                None => continue,
+                // A file whose groups declare no keys has nothing to compare,
+                // so reading its rc file (and its whole XDG cascade) answers a
+                // question nobody asked. Unlike the sibling configurators' own
+                // guards this one saves file I/O rather than a spawn, so no
+                // shim can observe it.
+                Some(m)
+                    if m.values()
+                        .any(|keys| keys.as_mapping().is_some_and(|k| !k.is_empty())) =>
+                {
+                    m
+                }
+                _ => continue,
             };
             // One read of the rc file for every group and key declared under
             // it, instead of one `kreadconfig` spawn per key.
@@ -549,6 +572,28 @@ mod tests {
                 "{generation} alone must make this configurator available"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn a_set_kwriteconfig_seam_answers_availability_by_itself() {
+        // The v5 arm is a question about the HOST. With the seam set, the host
+        // is not what runs, so falling through to it reports a KDE host for a
+        // shim path that does not exist — and a test that installed a shim to
+        // drive the unavailable branch would never reach it.
+        let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
+        let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let _probe = cfgd_core::test_helpers::ProbePath::containing(&["kwriteconfig5"]);
+        let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
+            KWRITECONFIG_BIN_ENV,
+            "/nonexistent/cfgd-qp5/kwriteconfig",
+        );
+
+        assert!(
+            !KdeConfigConfigurator.is_available(),
+            "a seam naming a missing binary is the answer, host binaries or not"
+        );
     }
 
     #[test]

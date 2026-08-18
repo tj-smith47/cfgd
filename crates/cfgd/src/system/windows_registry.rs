@@ -173,8 +173,10 @@ impl SystemConfigurator for WindowsRegistryConfigurator {
                 None => continue,
             };
             let values = match values_val.as_mapping() {
-                Some(m) => m,
-                None => continue,
+                // A key declaring no values has nothing to compare, so querying
+                // it is a spawn whose answer is discarded.
+                Some(m) if !m.is_empty() => m,
+                _ => continue,
             };
             // One `reg query <key>` for the whole key, instead of one per value.
             let snapshot = RegKeySnapshot::read(key_path);
@@ -201,8 +203,9 @@ impl SystemConfigurator for WindowsRegistryConfigurator {
                 None => continue,
             };
             let values = match values_val.as_mapping() {
-                Some(m) => m,
-                None => continue,
+                // Nothing to write, so nothing to read the existing types for.
+                Some(m) if !m.is_empty() => m,
+                _ => continue,
             };
             // The key's state BEFORE this run's writes — one spawn for the
             // whole key, and the only thing read from it is each value's
@@ -382,6 +385,34 @@ mod tests {
             shim.argv_lines_naming("cfgd-qp5"),
             vec![r"query HKCU\Software\cfgd-qp5"],
             "the pre-write state is read once for the whole key"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn registry_diff_of_a_key_declaring_no_values_queries_nothing() {
+        let shim = cfgd_core::test_helpers::ToolShim::install(
+            cfgd_core::REG_BIN_ENV,
+            0,
+            REG_QUERY_DUMP,
+            "",
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String(r"HKCU\Software\cfgd-qp5-empty".into()),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+
+        let drifts = WindowsRegistryConfigurator
+            .diff(&serde_yaml::Value::Mapping(outer))
+            .unwrap();
+
+        assert!(drifts.is_empty());
+        assert!(
+            shim.argv_lines_naming("cfgd-qp5-empty").is_empty(),
+            "a key declaring no values is never queried: {}",
+            shim.argv_log()
         );
     }
 
