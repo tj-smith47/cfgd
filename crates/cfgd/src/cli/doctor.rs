@@ -61,6 +61,33 @@ pub struct DoctorConfigSource {
 
 /// Gather every doctor check into the stable JSON payload + display-only extras.
 /// The lib call to `modules::load_all_modules` takes a `Printer`.
+/// Whether `manager` reports `resolved_name` installed.
+///
+/// The answer comes from the context's memo, so `doctor` asks each manager once
+/// for the whole module walk rather than once per declared package. The name is
+/// matched through `package_identity`, exactly as the drift walk in `cli::diff`
+/// does: a case-insensitive manager lists `wget` while the module declares
+/// `Wget`, and a raw comparison reads an installed package as missing. Without
+/// a state store there is no context, and every package reads not-installed —
+/// unchanged from before the memo.
+fn package_is_installed(
+    cx: Option<&cfgd_core::providers::PackageContext<'_>>,
+    mgr_map: &std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager>,
+    manager: &str,
+    resolved_name: &str,
+) -> bool {
+    let Some(cx) = cx else {
+        return false;
+    };
+    mgr_map
+        .get(manager)
+        .and_then(|m| {
+            let installed = cx.installed_for(*m).ok()?;
+            Some(installed.contains(&m.package_identity(resolved_name)))
+        })
+        .unwrap_or(false)
+}
+
 fn collect_doctor_output(
     cli: &Cli,
     printer: &Printer,
@@ -289,15 +316,12 @@ fn collect_doctor_output(
                                 // every module, and the memo behind the
                                 // context is what keeps that one question per
                                 // manager instead of one per entry.
-                                let installed = doctor_cx
-                                    .as_ref()
-                                    .and_then(|cx| {
-                                        mgr_map
-                                            .get(&resolved.manager)
-                                            .and_then(|m| cx.installed_for(*m).ok())
-                                    })
-                                    .map(|pkgs| pkgs.contains(&resolved.resolved_name))
-                                    .unwrap_or(false);
+                                let installed = package_is_installed(
+                                    doctor_cx.as_ref(),
+                                    &mgr_map,
+                                    &resolved.manager,
+                                    &resolved.resolved_name,
+                                );
                                 DoctorModulePackageCheck {
                                     name: entry.name.clone(),
                                     resolved_name: resolved.resolved_name,
@@ -800,4 +824,80 @@ fn config_ok(cfg: &DoctorConfigCheck) -> bool {
         cfg.state,
         DoctorConfigState::Valid | DoctorConfigState::MissingAtDefault
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mgr_map<'a>(
+        managers: &'a [&'a dyn cfgd_core::providers::PackageManager],
+    ) -> std::collections::HashMap<String, &'a dyn cfgd_core::providers::PackageManager> {
+        managers
+            .iter()
+            .map(|m| (m.name().to_string(), *m))
+            .collect()
+    }
+
+    // `cfgd diff` reports a chocolatey-declared `Wget` as installed because it
+    // matches through `package_identity`; `doctor` compared the raw declared
+    // name and reported the same package missing.
+    #[test]
+    fn a_case_insensitive_managers_package_reads_installed_in_doctor() {
+        let choco = cfgd_core::test_helpers::MockPackageManager::new("chocolatey")
+            .case_insensitive()
+            .with_installed(&["wget"]);
+        let managers: Vec<&dyn cfgd_core::providers::PackageManager> = vec![&choco];
+        let map = mgr_map(&managers);
+
+        let printer = cfgd_core::test_helpers::test_printer();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+
+        assert!(
+            package_is_installed(Some(&cx), &map, "chocolatey", "Wget"),
+            "a declared `Wget` must match the listed `wget`"
+        );
+        assert!(
+            !package_is_installed(Some(&cx), &map, "chocolatey", "ripgrep"),
+            "a genuinely absent package must still read not installed"
+        );
+    }
+
+    #[test]
+    fn every_package_reads_not_installed_without_a_state_store() {
+        let apt = cfgd_core::test_helpers::MockPackageManager::new("apt").with_installed(&["curl"]);
+        let managers: Vec<&dyn cfgd_core::providers::PackageManager> = vec![&apt];
+        assert!(!package_is_installed(
+            None,
+            &mgr_map(&managers),
+            "apt",
+            "curl"
+        ));
+    }
+
+    // One question per manager for the whole module walk, however many packages
+    // the modules declare under it.
+    #[test]
+    fn doctor_asks_each_manager_once_for_the_whole_walk() {
+        let enumerations = cfgd_core::test_helpers::measured_in_a_stable_generation(|| {
+            let apt = cfgd_core::test_helpers::MockPackageManager::new("apt")
+                .with_installed(&["curl", "jq"]);
+            let counter = apt.enumeration_counter();
+            let managers: Vec<&dyn cfgd_core::providers::PackageManager> = vec![&apt];
+            let map = mgr_map(&managers);
+
+            let printer = cfgd_core::test_helpers::test_printer();
+            let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+            let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+
+            for name in ["curl", "jq", "ripgrep", "fd"] {
+                package_is_installed(Some(&cx), &map, "apt", name);
+            }
+
+            counter.load(std::sync::atomic::Ordering::SeqCst)
+        });
+
+        assert_eq!(enumerations, 1);
+    }
 }
