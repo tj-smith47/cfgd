@@ -110,7 +110,7 @@ pub(super) async fn reconcile_machine_config(
         .unwrap_or(&[]);
 
     // Check if any DriftAlerts exist for this MachineConfig
-    let has_drift = has_active_drift_alerts(&ctx.client, &namespace, &name).await;
+    let has_drift = has_active_drift_alerts(&ctx.stores, &namespace, &name).await?;
 
     // Skip if we've already observed this generation, no drift, and condition already reflects that
     let generation_unchanged =
@@ -125,7 +125,7 @@ pub(super) async fn reconcile_machine_config(
 
     // Resolve moduleRefs against Module CRDs (cluster-scoped)
     let (modules_resolved_status, modules_resolved_reason, modules_resolved_message) =
-        resolve_module_refs(&ctx.client, &obj.spec.module_refs).await;
+        resolve_module_refs(&ctx.stores, &obj.spec.module_refs).await;
 
     let now = cfgd_core::utc_now_iso8601();
 

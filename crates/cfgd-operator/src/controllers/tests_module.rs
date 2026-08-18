@@ -9,8 +9,11 @@ use std::sync::Arc;
 
 use kube::runtime::controller::Action;
 
+use super::ControllerStores;
 use super::module::{evaluate_module_verification, reconcile_module};
-use super::test_kube_harness::{ExpectedCall, MockKubeHarness, expect_event_post};
+use super::test_kube_harness::{
+    ExpectedCall, MockKubeHarness, empty_stores, expect_event_post, seeded_store,
+};
 use crate::crds::{
     ClusterConfigPolicy, ClusterConfigPolicySpec, CosignSignature, Module, ModuleSignature,
     ModuleSpec, SecurityPolicy,
@@ -28,17 +31,11 @@ fn module_path(name: &str) -> String {
     format!("/apis/cfgd.io/v1alpha1/modules/{name}")
 }
 
-fn cluster_config_policies_path() -> &'static str {
-    "/apis/cfgd.io/v1alpha1/clusterconfigpolicies"
-}
-
-fn ccp_list(items: &[ClusterConfigPolicy]) -> serde_json::Value {
-    serde_json::json!({
-        "apiVersion": "cfgd.io/v1alpha1",
-        "kind": "ClusterConfigPolicyList",
-        "items": items,
-        "metadata": {},
-    })
+fn stores_with_ccps(policies: Vec<ClusterConfigPolicy>) -> ControllerStores {
+    ControllerStores {
+        cluster_config_policies: seeded_store(policies),
+        ..empty_stores()
+    }
 }
 
 fn make_module(name: &str, spec: ModuleSpec) -> Module {
@@ -128,30 +125,35 @@ async fn reconcile_module_with_no_artifact_records_local_only_status_with_keyles
 }
 
 #[tokio::test]
-async fn reconcile_module_with_artifact_lists_cluster_config_policies_and_records_available() {
+async fn reconcile_module_reads_cluster_config_policies_from_cache_and_records_available() {
     let spec = ModuleSpec {
         oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
         ..Default::default()
     };
     let module = make_module("ghcr-mod", spec);
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        // 1. LIST ClusterConfigPolicies (no policies — fail-open path).
-        ExpectedCall::list(cluster_config_policies_path()).returning_json(&ccp_list(&[])),
-        // 2. PATCH /status
-        ExpectedCall::patch_status(format!("{}/status", module_path("ghcr-mod")))
-            .returning_json(&module),
-        // 3. Available event
-        expect_event_post("default"),
-        // 4. Verified event (status=False because no signature)
-        expect_event_post("default"),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            // 1. PATCH /status — the policy read is served by the cache, not a LIST.
+            ExpectedCall::patch_status(format!("{}/status", module_path("ghcr-mod")))
+                .returning_json(&module),
+            // 2. Available event
+            expect_event_post("default"),
+            // 3. Verified event (status=False because no signature)
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![]),
+    );
 
     reconcile_module(Arc::new(module), ctx).await.unwrap();
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 4);
+    assert_eq!(
+        report.captured.len(),
+        3,
+        "the ClusterConfigPolicy read must cost no API call"
+    );
 
-    let status_body = report.captured[1].body_json();
+    let status_body = report.captured[0].body_json();
     let conditions = status_body["status"]["conditions"].as_array().unwrap();
     let available = conditions
         .iter()
@@ -219,18 +221,20 @@ async fn reconcile_module_with_unsigned_disallowed_and_no_signature_records_viol
         status: None,
     };
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(cluster_config_policies_path()).returning_json(&ccp_list(&[ccp])),
-        ExpectedCall::patch_status(format!("{}/status", module_path("unsigned-mod")))
-            .returning_json(&module),
-        expect_event_post("default"), // Available=False
-        expect_event_post("default"), // Verified
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path("unsigned-mod")))
+                .returning_json(&module),
+            expect_event_post("default"), // Available=False
+            expect_event_post("default"), // Verified
+        ],
+        stores_with_ccps(vec![ccp]),
+    );
 
     reconcile_module(Arc::new(module), ctx).await.unwrap();
 
     let report = harness.finish().await;
-    let status_body = report.captured[1].body_json();
+    let status_body = report.captured[0].body_json();
     let available = status_body["status"]["conditions"]
         .as_array()
         .unwrap()
@@ -267,18 +271,20 @@ async fn reconcile_module_with_trusted_registry_violation_records_status() {
         status: None,
     };
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(cluster_config_policies_path()).returning_json(&ccp_list(&[ccp])),
-        ExpectedCall::patch_status(format!("{}/status", module_path("untrusted-mod")))
-            .returning_json(&module),
-        expect_event_post("default"),
-        expect_event_post("default"),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path("untrusted-mod")))
+                .returning_json(&module),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![ccp]),
+    );
 
     reconcile_module(Arc::new(module), ctx).await.unwrap();
 
     let report = harness.finish().await;
-    let status_body = report.captured[1].body_json();
+    let status_body = report.captured[0].body_json();
     let available = status_body["status"]["conditions"]
         .as_array()
         .unwrap()
@@ -307,6 +313,121 @@ async fn reconcile_module_status_patch_failure_propagates_as_error() {
     );
 
     let _ = harness.finish().await;
+}
+
+// -----------------------------------------------------------------------
+// Patch-on-change / event-on-change
+// -----------------------------------------------------------------------
+
+/// Ten reconciles of a Module nobody touched write the status once and emit
+/// the Available/Verified pair once: every later pass computes the same status
+/// it already persisted and says nothing.
+#[tokio::test]
+async fn reconcile_module_repeated_reconciles_patch_status_once() {
+    let spec = ModuleSpec {
+        oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+        ..Default::default()
+    };
+    let mut module = make_module("steady-mod", spec);
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path("steady-mod")))
+                .returning_json(&module),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![]),
+    );
+    reconcile_module(Arc::new(module.clone()), ctx)
+        .await
+        .unwrap();
+    let first = harness.finish().await;
+    assert_eq!(first.captured.len(), 3);
+
+    module.status = Some(
+        serde_json::from_value(first.captured[0].body_json()["status"].clone())
+            .expect("status round-trips"),
+    );
+
+    for _ in 0..10 {
+        let (ctx, _registry, harness) =
+            MockKubeHarness::with_stores(vec![], stores_with_ccps(vec![]));
+        reconcile_module(Arc::new(module.clone()), ctx)
+            .await
+            .unwrap();
+        let report = harness.finish().await;
+        assert!(
+            report.captured.is_empty(),
+            "an unchanged Module status must make no API call"
+        );
+    }
+}
+
+/// A changed verdict is still announced: the same Module under a policy that
+/// now forbids unsigned artifacts patches and re-emits.
+#[tokio::test]
+async fn reconcile_module_emits_again_when_the_verdict_changes() {
+    let spec = ModuleSpec {
+        oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+        ..Default::default()
+    };
+    let mut module = make_module("turning-mod", spec);
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path("turning-mod")))
+                .returning_json(&module),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![]),
+    );
+    reconcile_module(Arc::new(module.clone()), ctx)
+        .await
+        .unwrap();
+    let first = harness.finish().await;
+    module.status = Some(
+        serde_json::from_value(first.captured[0].body_json()["status"].clone())
+            .expect("status round-trips"),
+    );
+
+    let strict = ClusterConfigPolicy {
+        metadata: kube::api::ObjectMeta {
+            name: Some("strict".to_string()),
+            uid: Some("uid-strict".to_string()),
+            ..Default::default()
+        },
+        spec: ClusterConfigPolicySpec {
+            security: SecurityPolicy {
+                trusted_registries: vec![],
+                allow_unsigned: false,
+            },
+            ..Default::default()
+        },
+        status: None,
+    };
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path("turning-mod")))
+                .returning_json(&module),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![strict]),
+    );
+    reconcile_module(Arc::new(module), ctx).await.unwrap();
+    let second = harness.finish().await;
+    assert_eq!(second.captured.len(), 3);
+    let available = second.captured[0].body_json()["status"]["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["type"] == "Available")
+        .unwrap()
+        .clone();
+    assert_eq!(available["reason"], "UnsignedNotAllowed");
 }
 
 // -----------------------------------------------------------------------

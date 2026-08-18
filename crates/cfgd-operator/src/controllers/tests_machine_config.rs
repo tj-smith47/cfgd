@@ -5,39 +5,22 @@ use std::sync::Arc;
 
 use kube::runtime::controller::Action;
 
-use super::MACHINE_CONFIG_FINALIZER;
 use super::machine_config::reconcile_machine_config;
 use super::test_fixtures::{machine_config, machine_config_path};
-use super::test_kube_harness::{ExpectedCall, MockKubeHarness, expect_event_post};
-use crate::crds::{Condition, MachineConfigStatus, ModuleRef};
+use super::test_kube_harness::{
+    ExpectedCall, MockKubeHarness, empty_stores, expect_event_post, seeded_store, unready_store,
+};
+use super::{ControllerStores, MACHINE_CONFIG_FINALIZER};
+use crate::crds::{Condition, DriftAlert, MachineConfigStatus, ModuleRef};
 use crate::metrics::ReconcileLabels;
 
 const NS: &str = "cfgd-system";
 
-fn drift_alerts_path() -> String {
-    format!("/apis/cfgd.io/v1alpha1/namespaces/{NS}/driftalerts")
-}
-
-fn modules_list_path() -> &'static str {
-    "/apis/cfgd.io/v1alpha1/modules"
-}
-
-fn empty_drift_list() -> serde_json::Value {
-    serde_json::json!({
-        "apiVersion": "cfgd.io/v1alpha1",
-        "kind": "DriftAlertList",
-        "items": [],
-        "metadata": {},
-    })
-}
-
-fn empty_module_list() -> serde_json::Value {
-    serde_json::json!({
-        "apiVersion": "cfgd.io/v1alpha1",
-        "kind": "ModuleList",
-        "items": [],
-        "metadata": {},
-    })
+fn stores_with_drift(alerts: Vec<DriftAlert>) -> ControllerStores {
+    ControllerStores {
+        drift_alerts: seeded_store(alerts),
+        ..empty_stores()
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -49,19 +32,20 @@ async fn reconcile_machine_config_adds_finalizer_when_missing() {
     let mc = machine_config("mc-noface", NS);
     assert!(mc.metadata.finalizers.is_none());
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        // 1. PATCH metadata to add finalizer
-        ExpectedCall::patch(machine_config_path(NS, "mc-noface"))
-            .with_query_contains("fieldManager=cfgd-operator")
-            .returning_json(&mc),
-        // 2. LIST DriftAlerts (has_active_drift_alerts)
-        ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
-        // 3. PATCH /status (no LIST modules — module_refs is empty)
-        ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-noface")))
-            .returning_json(&mc),
-        // 4. POST event (Reconciled)
-        expect_event_post(NS),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            // 1. PATCH metadata to add finalizer
+            ExpectedCall::patch(machine_config_path(NS, "mc-noface"))
+                .with_query_contains("fieldManager=cfgd-operator")
+                .returning_json(&mc),
+            // 2. PATCH /status — the drift read is served by the cache.
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-noface")))
+                .returning_json(&mc),
+            // 3. POST event (Reconciled)
+            expect_event_post(NS),
+        ],
+        empty_stores(),
+    );
 
     let action = reconcile_machine_config(Arc::new(mc), ctx.clone())
         .await
@@ -70,7 +54,11 @@ async fn reconcile_machine_config_adds_finalizer_when_missing() {
     assert_eq!(action, Action::requeue(std::time::Duration::from_secs(60)));
 
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 4);
+    assert_eq!(
+        report.captured.len(),
+        3,
+        "the DriftAlert read must cost no API call"
+    );
 
     // Finalizer-add patch contains MACHINE_CONFIG_FINALIZER.
     let finalizer_patch = report.captured[0].body_json();
@@ -101,11 +89,14 @@ async fn reconcile_machine_config_removes_finalizer_on_deletion_then_returns_awa
         k8s_openapi::jiff::Timestamp::now(),
     ));
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::patch(machine_config_path(NS, "mc-deleting"))
-            .with_query_contains("fieldManager=cfgd-operator")
-            .returning_json(&mc),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch(machine_config_path(NS, "mc-deleting"))
+                .with_query_contains("fieldManager=cfgd-operator")
+                .returning_json(&mc),
+        ],
+        empty_stores(),
+    );
 
     let action = reconcile_machine_config(Arc::new(mc), ctx).await.unwrap();
     assert_eq!(
@@ -137,23 +128,24 @@ async fn reconcile_machine_config_when_deletion_and_no_finalizer_skips_patch_and
     // No finalizer present — fall through to the normal flow but without
     // the add-finalizer patch (because deletion_timestamp is set).
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        // No finalizer-add or finalizer-remove patch.
-        // 1. LIST DriftAlerts (has_active_drift_alerts)
-        ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
-        // 2. PATCH /status
-        ExpectedCall::patch_status(format!(
-            "{}/status",
-            machine_config_path(NS, "mc-deleted-clean")
-        ))
-        .returning_json(&mc),
-        // 3. POST event
-        expect_event_post(NS),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            // No finalizer-add or finalizer-remove patch.
+            // 1. PATCH /status
+            ExpectedCall::patch_status(format!(
+                "{}/status",
+                machine_config_path(NS, "mc-deleted-clean")
+            ))
+            .returning_json(&mc),
+            // 2. POST event
+            expect_event_post(NS),
+        ],
+        empty_stores(),
+    );
 
     reconcile_machine_config(Arc::new(mc), ctx).await.unwrap();
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 3);
+    assert_eq!(report.captured.len(), 2);
 }
 
 // -----------------------------------------------------------------------
@@ -166,11 +158,14 @@ async fn reconcile_machine_config_returns_invalid_spec_error_when_hostname_empty
     mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
     mc.spec.hostname.clear(); // make spec invalid
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        // Validation fails before reaching the LIST/PATCH chain. Only the
-        // event POST goes out.
-        expect_event_post(NS),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            // Validation fails before reaching the PATCH chain. Only the
+            // event POST goes out.
+            expect_event_post(NS),
+        ],
+        empty_stores(),
+    );
 
     let result = reconcile_machine_config(Arc::new(mc), ctx).await;
     let err = result.expect_err("invalid spec must propagate");
@@ -204,16 +199,15 @@ async fn reconcile_machine_config_skips_when_generation_observed_and_no_drift() 
         package_versions: Default::default(),
     });
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        // Only 1 LIST — has_active_drift_alerts (returns no drift).
-        ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
-    ]);
+    // The drift check is a cache read, so an already-observed generation with
+    // no drift performs no API call at all.
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(vec![], empty_stores());
 
     let action = reconcile_machine_config(Arc::new(mc), ctx).await.unwrap();
     assert_eq!(action, Action::requeue(std::time::Duration::from_secs(60)));
 
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 1);
+    assert!(report.captured.is_empty());
 }
 
 // -----------------------------------------------------------------------
@@ -225,40 +219,36 @@ async fn reconcile_machine_config_emits_drift_event_when_active_alerts_match() {
     let mut mc = machine_config("mc-drifted", NS);
     mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
 
-    // Active DriftAlert for this MC:
-    let drift_list = serde_json::json!({
-        "apiVersion": "cfgd.io/v1alpha1",
-        "kind": "DriftAlertList",
-        "metadata": {},
-        "items": [super::test_fixtures::drift_alert(
-            "alert-on-drifted",
-            NS,
-            "mc-drifted",
-            crate::crds::DriftSeverity::Medium,
-        )],
-    });
+    // Active DriftAlert for this MC, seeded into the cache the reconcile reads.
+    let alert = super::test_fixtures::drift_alert(
+        "alert-on-drifted",
+        NS,
+        "mc-drifted",
+        crate::crds::DriftSeverity::Medium,
+    );
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        // 1. has_active_drift_alerts → returns true
-        ExpectedCall::list(drift_alerts_path()).returning_json(&drift_list),
-        // 2. PATCH /status
-        ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-drifted")))
-            .returning_json(&mc),
-        // 3. POST event (Reconciled)
-        expect_event_post(NS),
-        // 4. POST event (DriftDetected) — extra event because has_drift
-        expect_event_post(NS),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            // 1. PATCH /status
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-drifted")))
+                .returning_json(&mc),
+            // 2. POST event (Reconciled)
+            expect_event_post(NS),
+            // 3. POST event (DriftDetected) — extra event because has_drift
+            expect_event_post(NS),
+        ],
+        stores_with_drift(vec![alert]),
+    );
 
     reconcile_machine_config(Arc::new(mc), ctx.clone())
         .await
         .unwrap();
 
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 4);
+    assert_eq!(report.captured.len(), 3);
 
     // Status patch records DriftDetected=True.
-    let status_body = report.captured[1].body_json();
+    let status_body = report.captured[0].body_json();
     let conditions = status_body["status"]["conditions"]
         .as_array()
         .expect("conditions array");
@@ -293,25 +283,26 @@ async fn reconcile_machine_config_resolves_module_refs_and_records_modules_resol
         required: true,
     }];
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
-        // resolve_module_refs LISTs all Modules (cluster-scoped).
-        ExpectedCall::list(modules_list_path()).returning_json(&empty_module_list()),
-        ExpectedCall::patch_status(format!(
-            "{}/status",
-            machine_config_path(NS, "mc-with-modules")
-        ))
-        .returning_json(&mc),
-        expect_event_post(NS),
-    ]);
+    // Both cross-resource reads (DriftAlerts, Modules) are cache reads.
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!(
+                "{}/status",
+                machine_config_path(NS, "mc-with-modules")
+            ))
+            .returning_json(&mc),
+            expect_event_post(NS),
+        ],
+        empty_stores(),
+    );
 
     reconcile_machine_config(Arc::new(mc), ctx).await.unwrap();
 
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 4);
+    assert_eq!(report.captured.len(), 2);
 
     // The status-patch must contain ModulesResolved=False with reason ModulesNotFound.
-    let status_body = report.captured[2].body_json();
+    let status_body = report.captured[0].body_json();
     let conditions = status_body["status"]["conditions"]
         .as_array()
         .expect("conditions array");
@@ -339,15 +330,17 @@ async fn reconcile_machine_config_when_status_patch_fails_emits_reconcile_error_
     let mut mc = machine_config("mc-statuserr", NS);
     mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
-        ExpectedCall::patch_status(format!(
-            "{}/status",
-            machine_config_path(NS, "mc-statuserr")
-        ))
-        .returning_server_error(500, "etcd melted"),
-        expect_event_post(NS),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!(
+                "{}/status",
+                machine_config_path(NS, "mc-statuserr")
+            ))
+            .returning_server_error(500, "etcd melted"),
+            expect_event_post(NS),
+        ],
+        empty_stores(),
+    );
 
     let result = reconcile_machine_config(Arc::new(mc), ctx).await;
     let err = result.expect_err("status patch failure must propagate as Err");
@@ -386,20 +379,22 @@ async fn reconcile_machine_config_preserves_existing_compliant_condition_status(
         package_versions: Default::default(),
     });
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(drift_alerts_path()).returning_json(&empty_drift_list()),
-        ExpectedCall::patch_status(format!(
-            "{}/status",
-            machine_config_path(NS, "mc-with-compliant")
-        ))
-        .returning_json(&mc),
-        expect_event_post(NS),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!(
+                "{}/status",
+                machine_config_path(NS, "mc-with-compliant")
+            ))
+            .returning_json(&mc),
+            expect_event_post(NS),
+        ],
+        empty_stores(),
+    );
 
     reconcile_machine_config(Arc::new(mc), ctx).await.unwrap();
 
     let report = harness.finish().await;
-    let status_body = report.captured[1].body_json();
+    let status_body = report.captured[0].body_json();
     let conditions = status_body["status"]["conditions"]
         .as_array()
         .expect("conditions array");
@@ -412,4 +407,32 @@ async fn reconcile_machine_config_preserves_existing_compliant_condition_status(
         "Compliant condition value must be preserved across reconcile"
     );
     assert_eq!(compliant["reason"], "PolicyCompliant");
+}
+
+// -----------------------------------------------------------------------
+// Unpopulated caches
+// -----------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn reconcile_machine_config_when_drift_alert_cache_is_unpopulated_returns_error() {
+    let mut mc = machine_config("mc-nocache", NS);
+    mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![],
+        ControllerStores {
+            drift_alerts: unready_store(),
+            ..empty_stores()
+        },
+    );
+
+    let result = reconcile_machine_config(Arc::new(mc), ctx).await;
+    let err = result.expect_err("an unpopulated DriftAlert cache must propagate");
+    assert!(err.to_string().contains("DriftAlert watch cache"), "{err}");
+
+    let report = harness.finish().await;
+    assert!(
+        report.captured.is_empty(),
+        "a reconcile that cannot read its caches must not write a status"
+    );
 }

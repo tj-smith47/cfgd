@@ -1,14 +1,11 @@
 use std::sync::Arc;
 
-use k8s_openapi::api::core::v1::Namespace;
-use kube::api::{Api, ListParams, Patch, PatchParams};
+use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::{Resource, ResourceExt};
 use tracing::info;
 
-use crate::crds::{
-    ClusterConfigPolicy, ClusterConfigPolicyStatus, ConfigPolicy, ConfigPolicySpec, MachineConfig,
-};
+use crate::crds::{ClusterConfigPolicy, ClusterConfigPolicyStatus, ConfigPolicySpec};
 use crate::errors::OperatorError;
 use crate::metrics::PolicyLabels;
 
@@ -34,62 +31,51 @@ pub(super) async fn reconcile_cluster_config_policy(
         "reconciling ClusterConfigPolicy"
     );
 
-    // List all namespaces, filtering by namespace_selector if non-empty
-    let ns_api: Api<Namespace> = Api::all(ctx.client.clone());
-    let ns_list = ns_api
-        .list(&ListParams::default())
-        .await
-        .map_err(|e| OperatorError::Reconciliation(format!("failed to list namespaces: {e}")))?;
-
-    let matching_namespaces: Vec<String> = ns_list
-        .items
-        .iter()
-        .filter(|ns| {
-            let ns_labels = ns.metadata.labels.as_ref();
-            matches_selector(ns_labels, &obj.spec.namespace_selector)
-        })
+    // Namespaces come from the watch cache, filtered by namespace_selector.
+    let matching_namespaces: Vec<String> = ctx
+        .stores
+        .all_namespaces()
+        .await?
+        .into_iter()
+        .filter(|ns| matches_selector(ns.metadata.labels.as_ref(), &obj.spec.namespace_selector))
         .filter_map(|ns| ns.metadata.name.clone())
         .collect();
 
+    let already_reported = obj
+        .status
+        .as_ref()
+        .map(|s| s.non_compliant_machines.as_slice())
+        .unwrap_or(&[]);
+
     let mut compliant_count: u32 = 0;
-    let mut non_compliant_count: u32 = 0;
+    let mut non_compliant_machines: Vec<String> = Vec::new();
 
     for ns_name in &matching_namespaces {
-        let machines: Api<MachineConfig> = Api::namespaced(ctx.client.clone(), ns_name);
-        let mc_list = machines.list(&ListParams::default()).await.map_err(|e| {
-            OperatorError::Reconciliation(format!(
-                "failed to list MachineConfigs in namespace {ns_name}: {e}"
-            ))
-        })?;
+        let machines = ctx.stores.machine_configs_in(ns_name).await?;
 
         // ALL namespace-scoped ConfigPolicies take part in the merge — a
-        // label-filtered list would silently drop policies from the result.
-        let ns_policies_api: Api<ConfigPolicy> = Api::namespaced(ctx.client.clone(), ns_name);
-        let cp_list = ns_policies_api
-            .list(&ListParams::default())
-            .await
-            .map_err(|e| {
-                OperatorError::Reconciliation(format!(
-                    "failed to list ConfigPolicies in namespace {ns_name}: {e}"
-                ))
-            })?;
-
+        // label-filtered read would silently drop policies from the result.
+        let ns_policies = ctx.stores.config_policies_in(ns_name).await?;
         let ns_policy_specs: Vec<&ConfigPolicySpec> =
-            cp_list.items.iter().map(|cp| &cp.spec).collect();
+            ns_policies.iter().map(|cp| &cp.spec).collect();
         let merged = merge_policy_requirements(&obj.spec, &ns_policy_specs);
 
-        let (c, nc) = evaluate_policy_compliance(
+        let tally = evaluate_policy_compliance(
             &ctx,
-            &mc_list.items,
+            &machines,
             &merged.packages,
             &merged.modules,
             &merged.settings,
             &name,
+            already_reported,
         )
         .await;
-        compliant_count += c;
-        non_compliant_count += nc;
+        compliant_count += tally.compliant_count;
+        non_compliant_machines.extend(tally.non_compliant_machines);
     }
+
+    non_compliant_machines.sort();
+    let non_compliant_count = u32::try_from(non_compliant_machines.len()).unwrap_or(u32::MAX);
 
     let now = cfgd_core::utc_now_iso8601();
     let overall_status = if non_compliant_count == 0 {
@@ -106,49 +92,54 @@ pub(super) async fn reconcile_cluster_config_policy(
         .map(|s| s.conditions.as_slice())
         .unwrap_or(&[]);
 
-    let status = serde_json::json!({
-        "status": ClusterConfigPolicyStatus {
-            compliant_count,
-            non_compliant_count,
-            conditions: vec![
-                build_condition(
-                    existing_conditions,
-                    "Enforced", overall_status,
-                    if non_compliant_count == 0 { "AllCompliant" } else { "NonCompliantTargets" },
-                    &compliance_summary(compliant_count, non_compliant_count),
-                    &now, obj.meta().generation,
-                ),
-            ],
-        }
-    });
-
-    ccp_api
-        .patch_status(
-            &name,
-            &PatchParams::apply(FIELD_MANAGER_STATUS),
-            &Patch::Merge(status),
-        )
-        .await
-        .map_err(|e| {
-            OperatorError::Reconciliation(format!(
-                "failed to update ClusterConfigPolicy status for {name}: {e}"
-            ))
-        })?;
-
-    info!(
-        name = %name,
-        compliant = compliant_count,
-        non_compliant = non_compliant_count,
-        "clusterConfigPolicy status updated"
-    );
-
-    emit_policy_evaluation_events(
-        &ctx,
-        &obj.object_ref(&()),
+    let desired = ClusterConfigPolicyStatus {
         compliant_count,
         non_compliant_count,
-    )
-    .await;
+        non_compliant_machines,
+        conditions: vec![build_condition(
+            existing_conditions,
+            "Enforced",
+            overall_status,
+            if non_compliant_count == 0 {
+                "AllCompliant"
+            } else {
+                "NonCompliantTargets"
+            },
+            &compliance_summary(compliant_count, non_compliant_count),
+            &now,
+            obj.meta().generation,
+        )],
+    };
+
+    if obj.status.as_ref() != Some(&desired) {
+        ccp_api
+            .patch_status(
+                &name,
+                &PatchParams::apply(FIELD_MANAGER_STATUS),
+                &Patch::Merge(serde_json::json!({ "status": desired })),
+            )
+            .await
+            .map_err(|e| {
+                OperatorError::Reconciliation(format!(
+                    "failed to update ClusterConfigPolicy status for {name}: {e}"
+                ))
+            })?;
+
+        info!(
+            name = %name,
+            compliant = compliant_count,
+            non_compliant = non_compliant_count,
+            "clusterConfigPolicy status updated"
+        );
+
+        emit_policy_evaluation_events(
+            &ctx,
+            &obj.object_ref(&()),
+            compliant_count,
+            non_compliant_count,
+        )
+        .await;
+    }
 
     ctx.metrics
         .devices_compliant

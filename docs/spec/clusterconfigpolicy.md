@@ -52,6 +52,8 @@ spec:
 status:
   compliantCount: int
   nonCompliantCount: int
+  nonCompliantMachines:
+    - string
 
   conditions:
     - type: string
@@ -108,6 +110,7 @@ Written by the operator after each evaluation pass. Do not set manually.
 |-------|------|-------------|
 | `compliantCount` | uint | Number of matched `MachineConfig` resources that satisfy all requirements. |
 | `nonCompliantCount` | uint | Number of matched `MachineConfig` resources that violate one or more requirements. |
+| `nonCompliantMachines` | list | `namespace/name` of every violating `MachineConfig`, sorted. The operator emits a `PolicyViolation` event when a machine enters this list, not once per evaluation. |
 | `conditions` | list | Standard Kubernetes condition list. See [status.conditions[]](#statusconditions). |
 
 The `Enforced` condition surfaces in `kubectl get ccpol` as a dedicated column.

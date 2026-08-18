@@ -1,19 +1,20 @@
 use std::sync::Arc;
 
-use kube::api::{Api, ListParams, Patch, PatchParams};
+use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::runtime::events::EventType;
-use kube::{Client, Resource, ResourceExt};
+use kube::{Resource, ResourceExt};
 use tracing::{info, warn};
 
 use crate::crds::{
-    ClusterConfigPolicy, Module, ModuleRef, ModuleSignature, ModuleSpec, ModuleStatus,
-    is_valid_oci_reference, is_valid_pem_public_key,
+    Module, ModuleRef, ModuleSignature, ModuleSpec, ModuleStatus, is_valid_oci_reference,
+    is_valid_pem_public_key,
 };
 use crate::errors::OperatorError;
 
 use super::{
-    ControllerContext, FIELD_MANAGER_STATUS, build_condition, emit_event, record_reconcile_success,
+    ControllerContext, ControllerStores, FIELD_MANAGER_STATUS, build_condition, emit_event,
+    record_reconcile_success,
 };
 pub(super) async fn reconcile_module(
     obj: Arc<Module>,
@@ -42,7 +43,7 @@ pub(super) async fn reconcile_module(
 
     // Evaluate Available condition
     let (avail_status, avail_reason, avail_message, avail_event) =
-        evaluate_module_availability(&ctx.client, &name, &obj.spec).await;
+        evaluate_module_availability(&ctx.stores, &name, &obj.spec).await;
 
     conditions.push(build_condition(
         existing_conditions,
@@ -71,59 +72,65 @@ pub(super) async fn reconcile_module(
     let resolved_artifact = obj.spec.oci_artifact.clone();
     let verified = ver.status == "True";
 
-    let status = serde_json::json!({
-        "status": ModuleStatus {
-            resolved_artifact,
-            available_platforms: vec![],
-            verified,
-            signature_digest: ver.signature_digest,
-            attestations: vec![],
-            conditions,
-        }
-    });
+    let desired = ModuleStatus {
+        resolved_artifact,
+        available_platforms: vec![],
+        verified,
+        signature_digest: ver.signature_digest,
+        attestations: vec![],
+        conditions,
+    };
 
-    let modules_api: Api<Module> = Api::all(ctx.client.clone());
-    modules_api
-        .patch_status(
-            &name,
-            &PatchParams::apply(FIELD_MANAGER_STATUS),
-            &Patch::Merge(status),
+    // Both conditions carry their existing lastTransitionTime forward while
+    // their status holds, so a re-evaluation that reached the same verdict
+    // compares equal — and neither the write nor the pair of events it
+    // announces has anything new to say.
+    if obj.status.as_ref() != Some(&desired) {
+        let modules_api: Api<Module> = Api::all(ctx.client.clone());
+        modules_api
+            .patch_status(
+                &name,
+                &PatchParams::apply(FIELD_MANAGER_STATUS),
+                &Patch::Merge(serde_json::json!({ "status": desired })),
+            )
+            .await
+            .map_err(|e| {
+                OperatorError::Reconciliation(format!(
+                    "failed to update Module status for {name}: {e}"
+                ))
+            })?;
+
+        info!(name = %name, "module status updated");
+
+        // Emit availability event
+        emit_event(
+            &ctx.recorder,
+            &obj.object_ref(&()),
+            avail_event.0,
+            avail_event.1,
+            avail_event.2,
+            "Reconcile",
         )
-        .await
-        .map_err(|e| {
-            OperatorError::Reconciliation(format!("failed to update Module status for {name}: {e}"))
-        })?;
+        .await;
 
-    info!(name = %name, "module status updated");
-
-    // Emit availability event
-    emit_event(
-        &ctx.recorder,
-        &obj.object_ref(&()),
-        avail_event.0,
-        avail_event.1,
-        avail_event.2,
-        "Reconcile",
-    )
-    .await;
-
-    // Emit verification event
-    emit_event(
-        &ctx.recorder,
-        &obj.object_ref(&()),
-        ver.event.0,
-        ver.event.1,
-        ver.event.2,
-        "Reconcile",
-    )
-    .await;
+        // Emit verification event
+        emit_event(
+            &ctx.recorder,
+            &obj.object_ref(&()),
+            ver.event.0,
+            ver.event.1,
+            ver.event.2,
+            "Reconcile",
+        )
+        .await;
+    }
 
     record_reconcile_success(&ctx, "module", start);
 
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
 async fn evaluate_module_availability<'a>(
-    client: &Client,
+    stores: &ControllerStores,
     module_name: &str,
     spec: &ModuleSpec,
 ) -> (&'a str, &'a str, &'a str, (EventType, &'a str, String)) {
@@ -161,12 +168,11 @@ async fn evaluate_module_availability<'a>(
     }
 
     // Read all ClusterConfigPolicies for security constraints
-    let ccp_api: Api<ClusterConfigPolicy> = Api::all(client.clone());
-    let ccp_list = match ccp_api.list(&ListParams::default()).await {
+    let ccp_list = match stores.all_cluster_config_policies().await {
         Ok(list) => list,
         Err(e) => {
-            warn!(error = %e, "failed to list ClusterConfigPolicies for Module validation");
-            // If we can't list policies, allow the module (fail-open for availability)
+            warn!(error = %e, "ClusterConfigPolicy cache unavailable for Module validation");
+            // If we can't read policies, allow the module (fail-open for availability)
             return (
                 "True",
                 "ArtifactAvailable",
@@ -355,7 +361,7 @@ pub(super) fn evaluate_module_verification(
     }
 }
 pub(super) async fn resolve_module_refs(
-    client: &Client,
+    stores: &ControllerStores,
     module_refs: &[ModuleRef],
 ) -> (&'static str, &'static str, String) {
     if module_refs.is_empty() {
@@ -366,15 +372,14 @@ pub(super) async fn resolve_module_refs(
         );
     }
 
-    let modules_api: Api<Module> = Api::all(client.clone());
-    let module_list = match modules_api.list(&ListParams::default()).await {
+    let module_list = match stores.all_modules().await {
         Ok(list) => list,
         Err(e) => {
-            warn!(error = %e, "failed to list Modules for moduleRef resolution");
+            warn!(error = %e, "Module cache unavailable for moduleRef resolution");
             return (
                 "Unknown",
                 "ResolutionError",
-                "Failed to list Module resources".to_string(),
+                "Module cache is not populated".to_string(),
             );
         }
     };

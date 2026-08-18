@@ -576,6 +576,7 @@ mod tests {
             client,
             recorder,
             metrics: m,
+            stores: crate::controllers::test_kube_harness::empty_stores(),
         });
     }
 

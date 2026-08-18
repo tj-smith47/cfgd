@@ -5,59 +5,57 @@ use std::sync::Arc;
 
 use kube::runtime::controller::Action;
 
+use k8s_openapi::api::core::v1::Namespace;
+use kube::api::ObjectMeta;
+
+use super::ControllerStores;
 use super::cluster_config_policy::reconcile_cluster_config_policy;
-use super::test_fixtures::{
-    cluster_config_policy_with_spec, config_policy, machine_config, mc_list,
+use super::test_fixtures::{cluster_config_policy_with_spec, config_policy, machine_config};
+use super::test_kube_harness::{
+    ExpectedCall, MockKubeHarness, empty_stores, expect_event_post, seeded_store, unready_store,
 };
-use super::test_kube_harness::{ExpectedCall, MockKubeHarness, expect_event_post};
-use crate::crds::{ConfigPolicy, ModuleRef};
+use crate::crds::{ConfigPolicy, MachineConfig, ModuleRef};
 use crate::metrics::PolicyLabels;
 
 const NS_A: &str = "team-a";
 const NS_B: &str = "team-b";
 
-fn namespaces_path() -> &'static str {
-    "/api/v1/namespaces"
-}
-
-fn machine_configs_path(namespace: &str) -> String {
-    format!("/apis/cfgd.io/v1alpha1/namespaces/{namespace}/machineconfigs")
-}
-
-fn config_policies_path(namespace: &str) -> String {
-    format!("/apis/cfgd.io/v1alpha1/namespaces/{namespace}/configpolicies")
-}
-
 fn cluster_policy_path(name: &str) -> String {
     format!("/apis/cfgd.io/v1alpha1/clusterconfigpolicies/{name}")
 }
 
-fn ns_list(namespaces: &[&str]) -> serde_json::Value {
-    let items: Vec<serde_json::Value> = namespaces
-        .iter()
-        .map(|n| {
-            serde_json::json!({
-                "apiVersion": "v1",
-                "kind": "Namespace",
-                "metadata": { "name": n },
-            })
-        })
-        .collect();
-    serde_json::json!({
-        "apiVersion": "v1",
-        "kind": "NamespaceList",
-        "items": items,
-        "metadata": {},
-    })
+fn namespace(name: &str, labels: &[(&str, &str)]) -> Namespace {
+    Namespace {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            labels: if labels.is_empty() {
+                None
+            } else {
+                Some(
+                    labels
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect(),
+                )
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
-fn cp_list(items: &[ConfigPolicy]) -> serde_json::Value {
-    serde_json::json!({
-        "apiVersion": "cfgd.io/v1alpha1",
-        "kind": "ConfigPolicyList",
-        "items": items,
-        "metadata": {},
-    })
+/// Caches holding the cluster state a ClusterConfigPolicy reconcile reads.
+fn stores_with(
+    namespaces: &[&str],
+    machine_configs: Vec<MachineConfig>,
+    config_policies: Vec<ConfigPolicy>,
+) -> ControllerStores {
+    ControllerStores {
+        namespaces: seeded_store(namespaces.iter().map(|n| namespace(n, &[])).collect()),
+        machine_configs: seeded_store(machine_configs),
+        config_policies: seeded_store(config_policies),
+        ..empty_stores()
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -68,16 +66,16 @@ fn cp_list(items: &[ConfigPolicy]) -> serde_json::Value {
 async fn reconcile_cluster_config_policy_with_no_namespaces_marks_all_compliant() {
     let ccp = cluster_config_policy_with_spec("ccp-empty", Default::default());
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        // 1. LIST namespaces — empty.
-        ExpectedCall::list(namespaces_path()).returning_json(&ns_list(&[])),
-        // No per-namespace LISTs.
-        // 2. PATCH CCP /status
-        ExpectedCall::patch_status(format!("{}/status", cluster_policy_path("ccp-empty")))
-            .returning_json(&ccp),
-        // 3. POST Evaluated event (cluster-scoped event posts to default namespace).
-        expect_event_post("default"),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            // 1. PATCH CCP /status
+            ExpectedCall::patch_status(format!("{}/status", cluster_policy_path("ccp-empty")))
+                .returning_json(&ccp),
+            // 2. POST Evaluated event (cluster-scoped event posts to default namespace).
+            expect_event_post("default"),
+        ],
+        stores_with(&[], vec![], vec![]),
+    );
 
     let action = reconcile_cluster_config_policy(Arc::new(ccp), ctx.clone())
         .await
@@ -85,9 +83,13 @@ async fn reconcile_cluster_config_policy_with_no_namespaces_marks_all_compliant(
     assert_eq!(action, Action::requeue(std::time::Duration::from_secs(60)));
 
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 3);
+    assert_eq!(
+        report.captured.len(),
+        2,
+        "namespaces and their contents come from watch caches — no LISTs"
+    );
 
-    let ccp_status = report.captured[1].body_json();
+    let ccp_status = report.captured[0].body_json();
     assert_eq!(ccp_status["status"]["compliantCount"], 0);
     assert_eq!(ccp_status["status"]["nonCompliantCount"], 0);
     let enforced = ccp_status["status"]["conditions"]
@@ -119,32 +121,32 @@ async fn reconcile_cluster_config_policy_aggregates_compliant_counts_across_name
     }];
     let mc_b = machine_config("mc-b", NS_B);
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(namespaces_path()).returning_json(&ns_list(&[NS_A, NS_B])),
-        // team-a:
-        ExpectedCall::list(machine_configs_path(NS_A)).returning_json(&mc_list(&[mc_a])),
-        ExpectedCall::list(config_policies_path(NS_A)).returning_json(&cp_list(&[])),
-        // team-b:
-        ExpectedCall::list(machine_configs_path(NS_B)).returning_json(&mc_list(&[mc_b])),
-        ExpectedCall::list(config_policies_path(NS_B)).returning_json(&cp_list(&[])),
-        // mc-b is non-compliant — emit PolicyViolation event in NS_B.
-        expect_event_post(NS_B),
-        // CCP status patch
-        ExpectedCall::patch_status(format!("{}/status", cluster_policy_path("ccp-multi")))
-            .returning_json(&ccp),
-        // Cluster-scoped events post to default namespace ("").
-        expect_event_post("default"), // Evaluated
-        expect_event_post("default"), // NonCompliantTargets
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            // mc-b is non-compliant — emit PolicyViolation event in NS_B.
+            expect_event_post(NS_B),
+            // CCP status patch
+            ExpectedCall::patch_status(format!("{}/status", cluster_policy_path("ccp-multi")))
+                .returning_json(&ccp),
+            // Cluster-scoped events post to default namespace ("").
+            expect_event_post("default"), // Evaluated
+            expect_event_post("default"), // NonCompliantTargets
+        ],
+        stores_with(&[NS_A, NS_B], vec![mc_a, mc_b], vec![]),
+    );
 
     reconcile_cluster_config_policy(Arc::new(ccp), ctx.clone())
         .await
         .unwrap();
 
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 9);
+    assert_eq!(
+        report.captured.len(),
+        4,
+        "two namespaces used to cost five LISTs; the caches make it zero"
+    );
 
-    let ccp_status = report.captured[6].body_json();
+    let ccp_status = report.captured[1].body_json();
     assert_eq!(ccp_status["status"]["compliantCount"], 1);
     assert_eq!(ccp_status["status"]["nonCompliantCount"], 1);
     let enforced = ccp_status["status"]["conditions"]
@@ -193,24 +195,24 @@ async fn reconcile_cluster_config_policy_merges_namespace_policies_into_evaluati
         required: true,
     }];
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(namespaces_path()).returning_json(&ns_list(&[NS_A])),
-        ExpectedCall::list(machine_configs_path(NS_A)).returning_json(&mc_list(&[mc])),
-        ExpectedCall::list(config_policies_path(NS_A)).returning_json(&cp_list(&[ns_policy])),
-        // mc1 is non-compliant due to merged requirements
-        expect_event_post(NS_A), // PolicyViolation
-        ExpectedCall::patch_status(format!("{}/status", cluster_policy_path("ccp-merge")))
-            .returning_json(&ccp),
-        expect_event_post("default"), // Evaluated
-        expect_event_post("default"), // NonCompliantTargets
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            // mc1 is non-compliant due to merged requirements
+            expect_event_post(NS_A), // PolicyViolation
+            ExpectedCall::patch_status(format!("{}/status", cluster_policy_path("ccp-merge")))
+                .returning_json(&ccp),
+            expect_event_post("default"), // Evaluated
+            expect_event_post("default"), // NonCompliantTargets
+        ],
+        stores_with(&[NS_A], vec![mc], vec![ns_policy]),
+    );
 
     reconcile_cluster_config_policy(Arc::new(ccp), ctx)
         .await
         .unwrap();
 
     let report = harness.finish().await;
-    let ccp_status = report.captured[4].body_json();
+    let ccp_status = report.captured[1].body_json();
     assert_eq!(ccp_status["status"]["nonCompliantCount"], 1);
 }
 
@@ -229,37 +231,29 @@ async fn reconcile_cluster_config_policy_filters_namespaces_by_namespace_selecto
     };
     let ccp = cluster_config_policy_with_spec("ccp-scoped", ccp_spec);
 
-    // Two namespaces, only one labeled tier=prod.
-    let nslist = serde_json::json!({
-        "apiVersion": "v1",
-        "kind": "NamespaceList",
-        "metadata": {},
-        "items": [
-            {
-                "apiVersion": "v1",
-                "kind": "Namespace",
-                "metadata": {
-                    "name": NS_A,
-                    "labels": { "tier": "prod" },
-                },
-            },
-            {
-                "apiVersion": "v1",
-                "kind": "Namespace",
-                "metadata": { "name": NS_B },
-            },
-        ],
-    });
+    // Two namespaces, only one labeled tier=prod. The machine in NS_B violates
+    // the policy, so it would be counted (and would emit an event) if the
+    // namespace selector were ignored.
+    let mut mc_b = machine_config("mc-b", NS_B);
+    mc_b.spec.module_refs = vec![];
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(namespaces_path()).returning_json(&nslist),
-        // Only NS_A is iterated:
-        ExpectedCall::list(machine_configs_path(NS_A)).returning_json(&mc_list(&[])),
-        ExpectedCall::list(config_policies_path(NS_A)).returning_json(&cp_list(&[])),
-        ExpectedCall::patch_status(format!("{}/status", cluster_policy_path("ccp-scoped")))
-            .returning_json(&ccp),
-        expect_event_post("default"),
-    ]);
+    let stores = ControllerStores {
+        namespaces: seeded_store(vec![
+            namespace(NS_A, &[("tier", "prod")]),
+            namespace(NS_B, &[]),
+        ]),
+        machine_configs: seeded_store(vec![mc_b]),
+        ..empty_stores()
+    };
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", cluster_policy_path("ccp-scoped")))
+                .returning_json(&ccp),
+            expect_event_post("default"),
+        ],
+        stores,
+    );
 
     reconcile_cluster_config_policy(Arc::new(ccp), ctx)
         .await
@@ -267,46 +261,100 @@ async fn reconcile_cluster_config_policy_filters_namespaces_by_namespace_selecto
     let report = harness.finish().await;
     assert_eq!(
         report.captured.len(),
-        5,
+        2,
         "NS_B must NOT be iterated (no tier=prod label)"
     );
+    let ccp_status = report.captured[0].body_json();
+    assert_eq!(
+        ccp_status["status"]["compliantCount"], 0,
+        "the machine in the unselected namespace must not be counted"
+    );
+    assert_eq!(ccp_status["status"]["nonCompliantCount"], 0);
 }
 
 // -----------------------------------------------------------------------
-// LIST namespaces failure → propagated as Err
+// Unpopulated caches → propagated as Err
 // -----------------------------------------------------------------------
 
-#[tokio::test]
-async fn reconcile_cluster_config_policy_when_namespace_list_fails_returns_error() {
+#[tokio::test(start_paused = true)]
+async fn reconcile_cluster_config_policy_when_namespace_cache_is_unpopulated_returns_error() {
     let ccp = cluster_config_policy_with_spec("ccp-nslfail", Default::default());
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(namespaces_path()).returning_server_error(500, "etcd"),
-    ]);
-
-    let result = reconcile_cluster_config_policy(Arc::new(ccp), ctx).await;
-    let err = result.expect_err("namespace list failure must propagate");
-    assert!(
-        err.to_string().contains("failed to list namespaces"),
-        "{err}"
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![],
+        ControllerStores {
+            namespaces: unready_store(),
+            ..empty_stores()
+        },
     );
 
-    let _ = harness.finish().await;
+    let result = reconcile_cluster_config_policy(Arc::new(ccp), ctx).await;
+    let err = result.expect_err("an unpopulated namespace cache must propagate");
+    assert!(err.to_string().contains("Namespace watch cache"), "{err}");
+
+    let report = harness.finish().await;
+    assert!(report.captured.is_empty());
 }
 
-#[tokio::test]
-async fn reconcile_cluster_config_policy_when_per_namespace_mc_list_fails_returns_error() {
+#[tokio::test(start_paused = true)]
+async fn reconcile_cluster_config_policy_when_machine_config_cache_is_unpopulated_returns_error() {
     let ccp = cluster_config_policy_with_spec("ccp-mcfail", Default::default());
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::list(namespaces_path()).returning_json(&ns_list(&[NS_A])),
-        ExpectedCall::list(machine_configs_path(NS_A)).returning_server_error(500, "etcd"),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![],
+        ControllerStores {
+            namespaces: seeded_store(vec![namespace(NS_A, &[])]),
+            machine_configs: unready_store(),
+            ..empty_stores()
+        },
+    );
 
     let result = reconcile_cluster_config_policy(Arc::new(ccp), ctx).await;
-    let err = result.expect_err("per-ns MC list failure must propagate");
+    let err = result.expect_err("an unpopulated machine cache must propagate");
     let msg = err.to_string();
-    assert!(msg.contains("failed to list MachineConfigs"), "{msg}");
+    assert!(msg.contains("MachineConfig watch cache"), "{msg}");
 
-    let _ = harness.finish().await;
+    let report = harness.finish().await;
+    assert!(report.captured.is_empty());
+}
+
+// -----------------------------------------------------------------------
+// Patch-on-change
+// -----------------------------------------------------------------------
+
+/// The same evaluation twice writes once: the second reconcile compares its
+/// computed status against the persisted one and finds nothing to say.
+#[tokio::test]
+async fn reconcile_cluster_config_policy_writes_nothing_when_the_evaluation_is_unchanged() {
+    let mut ccp = cluster_config_policy_with_spec("ccp-steady", Default::default());
+    let mc = machine_config("mc-a", NS_A);
+
+    // First pass: no status yet, so the status is written and events fire.
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", cluster_policy_path("ccp-steady")))
+                .returning_json(&ccp),
+            expect_event_post("default"),
+        ],
+        stores_with(&[NS_A], vec![mc.clone()], vec![]),
+    );
+    reconcile_cluster_config_policy(Arc::new(ccp.clone()), ctx)
+        .await
+        .unwrap();
+    let first = harness.finish().await;
+    let patched = first.captured[0].body_json();
+    ccp.status =
+        Some(serde_json::from_value(patched["status"].clone()).expect("status round-trips"));
+
+    // Second pass: identical inputs, identical verdict, zero API calls.
+    let (ctx, _registry, harness) =
+        MockKubeHarness::with_stores(vec![], stores_with(&[NS_A], vec![mc], vec![]));
+    reconcile_cluster_config_policy(Arc::new(ccp), ctx)
+        .await
+        .unwrap();
+    let second = harness.finish().await;
+    assert!(
+        second.captured.is_empty(),
+        "an unchanged evaluation must make no API call"
+    );
 }

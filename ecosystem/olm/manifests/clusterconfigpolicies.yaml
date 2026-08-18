@@ -185,6 +185,16 @@ spec:
                 format: uint32
                 minimum: 0.0
                 type: integer
+              nonCompliantMachines:
+                default: []
+                description: |-
+                  `namespace/name` of every MachineConfig currently violating this policy,
+                  sorted. Persisted so a `PolicyViolation` event fires on the transition
+                  into violation rather than once per observation — an in-process memory
+                  would re-announce every machine after an operator restart.
+                items:
+                  type: string
+                type: array
             required:
             - compliantCount
             - nonCompliantCount

@@ -177,6 +177,12 @@ pub struct ConfigPolicySpec {
 pub struct ConfigPolicyStatus {
     pub compliant_count: u32,
     pub non_compliant_count: u32,
+    /// `namespace/name` of every MachineConfig currently violating this policy,
+    /// sorted. Persisted so a `PolicyViolation` event fires on the transition
+    /// into violation rather than once per observation — an in-process memory
+    /// would re-announce every machine after an operator restart.
+    #[serde(default)]
+    pub non_compliant_machines: Vec<String>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
 }
@@ -294,6 +300,12 @@ pub struct SecurityPolicy {
 pub struct ClusterConfigPolicyStatus {
     pub compliant_count: u32,
     pub non_compliant_count: u32,
+    /// `namespace/name` of every MachineConfig currently violating this policy,
+    /// sorted. Persisted so a `PolicyViolation` event fires on the transition
+    /// into violation rather than once per observation — an in-process memory
+    /// would re-announce every machine after an operator restart.
+    #[serde(default)]
+    pub non_compliant_machines: Vec<String>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
 }

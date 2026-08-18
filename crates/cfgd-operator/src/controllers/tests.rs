@@ -3169,6 +3169,7 @@ fn make_test_controller_context() -> (ControllerContext, prometheus_client::regi
             client,
             recorder,
             metrics,
+            stores: crate::controllers::test_kube_harness::empty_stores(),
         },
         registry,
     )

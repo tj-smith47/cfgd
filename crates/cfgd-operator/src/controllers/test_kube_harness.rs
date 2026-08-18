@@ -19,13 +19,63 @@ use http::{Method, Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use kube::Client;
 use kube::client::Body;
+use kube::runtime::reflector::{self, Lookup, Store};
+use kube::runtime::watcher;
 use prometheus_client::registry::Registry;
 use serde::Serialize;
 use tokio::task::JoinHandle;
 use tower_test::mock;
 
-use crate::controllers::ControllerContext;
+use crate::controllers::{ControllerContext, ControllerStores};
 use crate::metrics::Metrics;
+
+/// Build a populated, ready [`Store`] from a fixed set of objects.
+///
+/// Mirrors what a live reflector does on its initial list: `Init`, one
+/// `InitApply` per object, then `InitDone` — which is also what flips the
+/// store to ready. The `Writer` is dropped on return; a store that has already
+/// been marked ready stays ready and keeps its contents.
+pub(crate) fn seeded_store<K>(objects: Vec<K>) -> Store<K>
+where
+    K: Lookup + Clone + 'static,
+    K::DynamicType: Eq + std::hash::Hash + Clone + Default,
+{
+    let (store, mut writer) = reflector::store::<K>();
+    writer.apply_watcher_event(&watcher::Event::Init);
+    for object in objects {
+        writer.apply_watcher_event(&watcher::Event::InitApply(object));
+    }
+    writer.apply_watcher_event(&watcher::Event::InitDone);
+    store
+}
+
+/// A [`Store`] that has never completed an initial list — the shape a reconcile
+/// sees while the operator is still starting up.
+pub(crate) fn unready_store<K>() -> Store<K>
+where
+    K: Lookup + Clone + 'static,
+    K::DynamicType: Eq + std::hash::Hash + Clone + Default,
+{
+    let (store, writer) = reflector::store::<K>();
+    // Leaked rather than dropped: dropping the writer resolves
+    // `wait_until_ready` with `WriterDropped`, which is a different failure
+    // from the one under test (a cache that is simply not populated yet).
+    std::mem::forget(writer);
+    store
+}
+
+/// Every cache empty and ready — the default for a reconcile whose branch
+/// reads no cross-resource state.
+pub(crate) fn empty_stores() -> ControllerStores {
+    ControllerStores {
+        machine_configs: seeded_store(vec![]),
+        config_policies: seeded_store(vec![]),
+        cluster_config_policies: seeded_store(vec![]),
+        modules: seeded_store(vec![]),
+        drift_alerts: seeded_store(vec![]),
+        namespaces: seeded_store(vec![]),
+    }
+}
 
 /// One expected HTTP call in the reconcile's request sequence.
 ///
@@ -96,12 +146,6 @@ impl ExpectedCall {
     pub fn returning_json<T: Serialize>(mut self, value: &T) -> Self {
         self.response_body =
             serde_json::to_vec(value).expect("test fixture must serialize cleanly");
-        self
-    }
-
-    /// Reply with raw bytes (for non-JSON responses or pre-serialized payloads).
-    pub fn returning_raw(mut self, bytes: Vec<u8>) -> Self {
-        self.response_body = bytes;
         self
     }
 
@@ -220,6 +264,18 @@ impl MockKubeHarness {
     /// The `Registry` is returned alongside so the test can inspect emitted
     /// metrics after the reconcile completes.
     pub fn new(expected: Vec<ExpectedCall>) -> (Arc<ControllerContext>, Registry, Self) {
+        Self::with_stores(expected, empty_stores())
+    }
+
+    /// Same as [`MockKubeHarness::new`], but with caches the test has seeded.
+    ///
+    /// Every cross-resource read a reconcile makes now comes from these, so a
+    /// call that still reaches the mock service is a LIST the controller was
+    /// supposed to have stopped making — the queue is the assertion.
+    pub fn with_stores(
+        expected: Vec<ExpectedCall>,
+        stores: ControllerStores,
+    ) -> (Arc<ControllerContext>, Registry, Self) {
         let (mock_service, mut handle) = mock::pair::<Request<Body>, Response<Body>>();
 
         let driver = tokio::spawn(async move {
@@ -305,6 +361,7 @@ impl MockKubeHarness {
             client,
             recorder,
             metrics,
+            stores,
         });
 
         (ctx, registry, Self { driver })

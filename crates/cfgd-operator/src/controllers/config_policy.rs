@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use kube::api::{Api, ListParams, Patch, PatchParams};
+use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::runtime::events::EventType;
 use kube::{Resource, ResourceExt};
@@ -17,7 +17,7 @@ use cfgd_core::version_satisfies;
 
 use super::{
     ControllerContext, FIELD_MANAGER_STATUS, build_condition, compliance_summary, emit_event,
-    matches_selector, namespaced_api, record_reconcile_success,
+    machine_key, matches_selector, namespaced_api, record_reconcile_success, upsert_condition,
 };
 pub(super) async fn reconcile_config_policy(
     obj: Arc<ConfigPolicy>,
@@ -37,13 +37,12 @@ pub(super) async fn reconcile_config_policy(
 
     let machines: Api<MachineConfig> = namespaced_api(&ctx.client, &namespace)?;
 
-    let mc_list = machines.list(&ListParams::default()).await.map_err(|e| {
-        OperatorError::Reconciliation(format!("failed to list MachineConfigs: {e}"))
-    })?;
-
     // Filter MachineConfigs by target selector
-    let targeted_mcs: Vec<&MachineConfig> = mc_list
-        .iter()
+    let targeted_mcs: Vec<Arc<MachineConfig>> = ctx
+        .stores
+        .machine_configs_in(&namespace)
+        .await?
+        .into_iter()
         .filter(|mc| matches_selector(mc.metadata.labels.as_ref(), &obj.spec.target_selector))
         .collect();
 
@@ -85,9 +84,16 @@ pub(super) async fn reconcile_config_policy(
             &now,
             mc.meta().generation,
         );
+        // The condition is rebuilt from the object's own conditions every
+        // reconcile, so an unchanged verdict produces a byte-identical entry —
+        // patching it would be an etcd write and a watch fan-out per targeted
+        // machine per minute, forever.
+        if mc_existing_conditions.contains(&compliant_condition) {
+            continue;
+        }
         let mc_status_patch = serde_json::json!({
             "status": {
-                "conditions": [compliant_condition]
+                "conditions": upsert_condition(mc_existing_conditions, compliant_condition)
             }
         });
         if let Err(e) = machines
@@ -102,20 +108,26 @@ pub(super) async fn reconcile_config_policy(
         }
     }
 
+    let already_reported = obj
+        .status
+        .as_ref()
+        .map(|s| s.non_compliant_machines.as_slice())
+        .unwrap_or(&[]);
+
     // Evaluate compliance counts and emit violation events
-    let targeted_mc_refs: Vec<MachineConfig> = targeted_mcs.into_iter().cloned().collect();
-    let (compliant_count, non_compliant_count) = evaluate_policy_compliance(
+    let tally = evaluate_policy_compliance(
         &ctx,
-        &targeted_mc_refs,
+        &targeted_mcs,
         &obj.spec.packages,
         &obj.spec.required_modules,
         &obj.spec.settings,
         &name,
+        already_reported,
     )
     .await;
 
     let now = cfgd_core::utc_now_iso8601();
-    let overall_status = if non_compliant_count == 0 {
+    let overall_status = if tally.non_compliant_count == 0 {
         "True"
     } else {
         "False"
@@ -129,49 +141,57 @@ pub(super) async fn reconcile_config_policy(
         .map(|s| s.conditions.as_slice())
         .unwrap_or(&[]);
 
-    let status = serde_json::json!({
-        "status": ConfigPolicyStatus {
-            compliant_count,
-            non_compliant_count,
-            conditions: vec![
-                build_condition(
-                    existing_conditions,
-                    "Enforced", overall_status,
-                    if non_compliant_count == 0 { "AllCompliant" } else { "NonCompliantTargets" },
-                    &compliance_summary(compliant_count, non_compliant_count),
-                    &now, obj.meta().generation,
-                ),
-            ],
-        }
-    });
+    let desired = ConfigPolicyStatus {
+        compliant_count: tally.compliant_count,
+        non_compliant_count: tally.non_compliant_count,
+        non_compliant_machines: tally.non_compliant_machines,
+        conditions: vec![build_condition(
+            existing_conditions,
+            "Enforced",
+            overall_status,
+            if tally.non_compliant_count == 0 {
+                "AllCompliant"
+            } else {
+                "NonCompliantTargets"
+            },
+            &compliance_summary(tally.compliant_count, tally.non_compliant_count),
+            &now,
+            obj.meta().generation,
+        )],
+    };
 
-    policies
-        .patch_status(
-            &name,
-            &PatchParams::apply(FIELD_MANAGER_STATUS),
-            &Patch::Merge(status),
+    // `build_condition` carries the existing lastTransitionTime forward while
+    // the condition's status holds, so an unchanged evaluation compares equal
+    // and writes nothing.
+    if obj.status.as_ref() != Some(&desired) {
+        policies
+            .patch_status(
+                &name,
+                &PatchParams::apply(FIELD_MANAGER_STATUS),
+                &Patch::Merge(serde_json::json!({ "status": desired })),
+            )
+            .await
+            .map_err(|e| {
+                OperatorError::Reconciliation(format!(
+                    "failed to update ConfigPolicy status for {name}: {e}"
+                ))
+            })?;
+
+        info!(
+            name = %name,
+            compliant = tally.compliant_count,
+            non_compliant = tally.non_compliant_count,
+            "configPolicy status updated"
+        );
+
+        emit_policy_evaluation_events(
+            &ctx,
+            &obj.object_ref(&()),
+            tally.compliant_count,
+            tally.non_compliant_count,
         )
-        .await
-        .map_err(|e| {
-            OperatorError::Reconciliation(format!(
-                "failed to update ConfigPolicy status for {name}: {e}"
-            ))
-        })?;
-
-    info!(
-        name = %name,
-        compliant = compliant_count,
-        non_compliant = non_compliant_count,
-        "configPolicy status updated"
-    );
-
-    emit_policy_evaluation_events(
-        &ctx,
-        &obj.object_ref(&()),
-        compliant_count,
-        non_compliant_count,
-    )
-    .await;
+        .await;
+    }
 
     ctx.metrics
         .devices_compliant
@@ -179,7 +199,7 @@ pub(super) async fn reconcile_config_policy(
             policy: name.clone(),
             namespace: namespace.clone(),
         })
-        .set(i64::from(compliant_count));
+        .set(i64::from(tally.compliant_count));
 
     record_reconcile_success(&ctx, "config_policy", start);
 
@@ -221,16 +241,33 @@ pub(super) fn validate_policy_compliance(
     }
     true
 }
+/// Outcome of evaluating one policy against its targeted machines.
+pub(super) struct ComplianceTally {
+    pub(super) compliant_count: u32,
+    pub(super) non_compliant_count: u32,
+    /// `namespace/name` of every machine that failed, sorted — the value
+    /// persisted as `status.nonCompliantMachines`.
+    pub(super) non_compliant_machines: Vec<String>,
+}
+
+/// Count compliant/non-compliant machines, emitting a `PolicyViolation` Warning
+/// only for machines that were not already recorded as violating.
+///
+/// `already_reported` is the policy's own persisted `nonCompliantMachines`, so
+/// the transition memory survives an operator restart and is keyed per policy —
+/// the MachineConfig's `Compliant` condition cannot serve, because several
+/// policies may target one machine and each overwrites the other's verdict.
 pub(super) async fn evaluate_policy_compliance(
     ctx: &ControllerContext,
-    machine_configs: &[MachineConfig],
+    machine_configs: &[Arc<MachineConfig>],
     required_packages: &[PackageRef],
     required_modules: &[ModuleRef],
     required_settings: &BTreeMap<String, serde_json::Value>,
     policy_name: &str,
-) -> (u32, u32) {
+    already_reported: &[String],
+) -> ComplianceTally {
     let mut compliant_count: u32 = 0;
-    let mut non_compliant_count: u32 = 0;
+    let mut non_compliant_machines: Vec<String> = Vec::new();
 
     for mc in machine_configs {
         let compliant = validate_policy_compliance(
@@ -242,22 +279,38 @@ pub(super) async fn evaluate_policy_compliance(
         );
         if compliant {
             compliant_count += 1;
-        } else {
-            non_compliant_count += 1;
-            let mc_name = mc.name_any();
+            continue;
+        }
+
+        let key = machine_key(mc);
+        if !already_reported.iter().any(|k| k == &key) {
             emit_event(
                 &ctx.recorder,
                 &mc.object_ref(&()),
                 EventType::Warning,
                 "PolicyViolation",
-                format!("MachineConfig {} violates policy {}", mc_name, policy_name),
+                format!(
+                    "MachineConfig {} violates policy {}",
+                    mc.name_any(),
+                    policy_name
+                ),
                 "PolicyEvaluate",
             )
             .await;
         }
+        non_compliant_machines.push(key);
     }
 
-    (compliant_count, non_compliant_count)
+    // Sorted so the persisted set is order-independent: the cache hands back
+    // machines in hash order, and an unsorted list would compare unequal
+    // between reconciles and force a write.
+    non_compliant_machines.sort();
+
+    ComplianceTally {
+        compliant_count,
+        non_compliant_count: u32::try_from(non_compliant_machines.len()).unwrap_or(u32::MAX),
+        non_compliant_machines,
+    }
 }
 
 /// Emit standard post-evaluation events for a policy reconciler.

@@ -1,13 +1,16 @@
 use std::collections::BTreeMap;
+use std::hash::Hash;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::StreamExt;
+use k8s_openapi::api::core::v1::Namespace;
 use kube::api::Api;
-use kube::runtime::Controller;
 use kube::runtime::controller::Action;
 use kube::runtime::events::{Event, EventType, Recorder, Reporter};
-use kube::runtime::reflector::ObjectRef;
-use kube::runtime::watcher::Config as WatcherConfig;
+use kube::runtime::reflector::{ObjectRef, Store};
+use kube::runtime::watcher::{self, Config as WatcherConfig};
+use kube::runtime::{Controller, WatchStreamExt, reflector};
 use kube::{Client, ResourceExt};
 use tracing::{debug, info, warn};
 
@@ -127,6 +130,129 @@ pub struct ControllerContext {
     pub client: Client,
     pub recorder: Recorder,
     pub metrics: Metrics,
+    pub stores: ControllerStores,
+}
+
+/// How long a reconcile waits for a watch cache to finish its initial list
+/// before giving up and requeuing. Only ever spent on a cache that has not
+/// been populated yet — every later reconcile resolves immediately.
+const STORE_READY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The watch-backed caches every controller reads cross-resource state from.
+///
+/// Five of the six are the primary [`Store`] of the controller that roots that
+/// resource, so they cost no extra watch: the same stream that triggers a
+/// reconcile also populates the cache. `namespaces` is the exception — no
+/// controller roots a Namespace — and is fed by a dedicated reflector driven
+/// alongside the controllers in [`run`].
+#[derive(Clone)]
+pub struct ControllerStores {
+    pub machine_configs: Store<MachineConfig>,
+    pub config_policies: Store<ConfigPolicy>,
+    pub cluster_config_policies: Store<ClusterConfigPolicy>,
+    pub modules: Store<Module>,
+    pub drift_alerts: Store<DriftAlert>,
+    pub namespaces: Store<Namespace>,
+}
+
+/// Wait for `store` to have completed its initial list.
+///
+/// A cache that is not yet populated is indistinguishable from an empty
+/// cluster, and every caller here turns "no objects" into a status it writes —
+/// so a not-yet-ready cache must requeue rather than answer.
+async fn ready_store<K>(store: &Store<K>, kind: &str) -> Result<(), OperatorError>
+where
+    K: kube::runtime::reflector::Lookup + Clone + 'static,
+    K::DynamicType: Eq + Hash + Clone,
+{
+    match tokio::time::timeout(STORE_READY_TIMEOUT, store.wait_until_ready()).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(OperatorError::Reconciliation(format!(
+            "{kind} watch cache stopped before it was populated: {e}"
+        ))),
+        Err(_) => Err(OperatorError::Reconciliation(format!(
+            "{kind} watch cache was not populated within {}s",
+            STORE_READY_TIMEOUT.as_secs()
+        ))),
+    }
+}
+
+/// Order a cache snapshot by `(namespace, name)`.
+///
+/// A [`Store`] is a hash map, so its snapshot order is arbitrary and differs
+/// between processes. Every caller here walks the snapshot performing writes
+/// and emitting events, and an operator whose write order changes per restart
+/// is one nobody can read a log of.
+fn in_stable_order<K: kube::Resource>(mut objects: Vec<Arc<K>>) -> Vec<Arc<K>> {
+    objects.sort_by(|a, b| {
+        let key = |o: &Arc<K>| {
+            (
+                o.meta().namespace.clone().unwrap_or_default(),
+                o.meta().name.clone().unwrap_or_default(),
+            )
+        };
+        key(a).cmp(&key(b))
+    });
+    objects
+}
+
+impl ControllerStores {
+    /// Every MachineConfig in `namespace`.
+    pub(super) async fn machine_configs_in(
+        &self,
+        namespace: &str,
+    ) -> Result<Vec<Arc<MachineConfig>>, OperatorError> {
+        ready_store(&self.machine_configs, "MachineConfig").await?;
+        Ok(in_stable_order(self.machine_configs.state_filter(|mc| {
+            mc.metadata.namespace.as_deref() == Some(namespace)
+        })))
+    }
+
+    /// Every ConfigPolicy in `namespace`.
+    pub(super) async fn config_policies_in(
+        &self,
+        namespace: &str,
+    ) -> Result<Vec<Arc<ConfigPolicy>>, OperatorError> {
+        ready_store(&self.config_policies, "ConfigPolicy").await?;
+        Ok(in_stable_order(self.config_policies.state_filter(|cp| {
+            cp.metadata.namespace.as_deref() == Some(namespace)
+        })))
+    }
+
+    /// Every DriftAlert in `namespace`, or across the cluster when `namespace`
+    /// is empty.
+    pub(super) async fn drift_alerts_in(
+        &self,
+        namespace: &str,
+    ) -> Result<Vec<Arc<DriftAlert>>, OperatorError> {
+        ready_store(&self.drift_alerts, "DriftAlert").await?;
+        Ok(if namespace.is_empty() {
+            self.drift_alerts.state()
+        } else {
+            self.drift_alerts
+                .state_filter(|da| da.metadata.namespace.as_deref() == Some(namespace))
+        })
+    }
+
+    /// Every ClusterConfigPolicy.
+    pub(super) async fn all_cluster_config_policies(
+        &self,
+    ) -> Result<Vec<Arc<ClusterConfigPolicy>>, OperatorError> {
+        ready_store(&self.cluster_config_policies, "ClusterConfigPolicy").await?;
+        Ok(in_stable_order(self.cluster_config_policies.state()))
+    }
+
+    /// Every Module.
+    pub(super) async fn all_modules(&self) -> Result<Vec<Arc<Module>>, OperatorError> {
+        ready_store(&self.modules, "Module").await?;
+        Ok(in_stable_order(self.modules.state()))
+    }
+
+    /// Every Namespace.
+    pub(super) async fn all_namespaces(&self) -> Result<Vec<Arc<Namespace>>, OperatorError> {
+        ready_store(&self.namespaces, "Namespace").await?;
+        Ok(in_stable_order(self.namespaces.state()))
+    }
 }
 
 /// Get a namespaced API for a resource, or return an error if namespace is empty.
@@ -155,17 +281,55 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
     };
     let recorder = Recorder::new(client.clone(), reporter);
 
-    let ctx = Arc::new(ControllerContext {
-        client: client.clone(),
-        recorder,
-        metrics,
-    });
-
     let machines: Api<MachineConfig> = Api::all(client.clone());
     let alerts: Api<DriftAlert> = Api::all(client.clone());
     let policies: Api<ConfigPolicy> = Api::all(client.clone());
     let cluster_policies: Api<ClusterConfigPolicy> = Api::all(client.clone());
     let modules: Api<Module> = Api::all(client.clone());
+
+    // Each controller builder owns the reflector behind its primary watch, so
+    // taking its store here is what lets every OTHER controller read that
+    // resource from a cache instead of listing it per reconcile.
+    let mc_builder = Controller::new(machines, WatcherConfig::default());
+    let da_builder = Controller::new(alerts, WatcherConfig::default());
+    let cp_builder = Controller::new(policies, WatcherConfig::default());
+    let ccp_builder = Controller::new(cluster_policies, WatcherConfig::default());
+    let mod_builder = Controller::new(modules, WatcherConfig::default());
+
+    // Namespaces are read by the ClusterConfigPolicy controller but rooted by
+    // no controller, so this cache carries its own reflector.
+    let (ns_store, ns_writer) = reflector::store::<Namespace>();
+    let namespace_cache = reflector(
+        ns_writer,
+        watcher::watcher(
+            Api::<Namespace>::all(client.clone()),
+            WatcherConfig::default(),
+        ),
+    )
+    .default_backoff()
+    .for_each(|event| {
+        if let Err(error) = event {
+            warn!(error = %error, "namespace watch error");
+        }
+        futures::future::ready(())
+    });
+
+    let stores = ControllerStores {
+        machine_configs: mc_builder.store(),
+        config_policies: cp_builder.store(),
+        cluster_config_policies: ccp_builder.store(),
+        modules: mod_builder.store(),
+        drift_alerts: da_builder.store(),
+        namespaces: ns_store,
+    };
+    let cp_store = stores.config_policies.clone();
+
+    let ctx = Arc::new(ControllerContext {
+        client: client.clone(),
+        recorder,
+        metrics,
+        stores,
+    });
 
     let mc_ctx = Arc::clone(&ctx);
     let da_ctx = Arc::clone(&ctx);
@@ -177,7 +341,7 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         "starting controllers: MachineConfig, DriftAlert, ConfigPolicy, ClusterConfigPolicy, Module"
     );
 
-    let mc_controller = Controller::new(machines, WatcherConfig::default())
+    let mc_controller = mc_builder
         .owns(
             Api::<DriftAlert>::all(client.clone()),
             WatcherConfig::default(),
@@ -189,7 +353,7 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         )
         .for_each(log_reconcile::<MachineConfig>("MachineConfig"));
 
-    let da_controller = Controller::new(alerts, WatcherConfig::default())
+    let da_controller = da_builder
         .run(
             reconcile_drift_alert,
             make_error_policy::<DriftAlert>("drift_alert"),
@@ -197,8 +361,6 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         )
         .for_each(log_reconcile::<DriftAlert>("DriftAlert"));
 
-    let cp_builder = Controller::new(policies, WatcherConfig::default());
-    let cp_store = cp_builder.store();
     let cp_controller = cp_builder
         .watches(
             Api::<MachineConfig>::all(client.clone()),
@@ -221,7 +383,7 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         )
         .for_each(log_reconcile::<ConfigPolicy>("ConfigPolicy"));
 
-    let ccp_controller = Controller::new(cluster_policies, WatcherConfig::default())
+    let ccp_controller = ccp_builder
         .run(
             reconcile_cluster_config_policy,
             make_error_policy::<ClusterConfigPolicy>("cluster_config_policy"),
@@ -229,7 +391,7 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         )
         .for_each(log_reconcile::<ClusterConfigPolicy>("ClusterConfigPolicy"));
 
-    let mod_controller = Controller::new(modules, WatcherConfig::default())
+    let mod_controller = mod_builder
         .run(
             reconcile_module,
             make_error_policy::<Module>("module"),
@@ -237,12 +399,16 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         )
         .for_each(log_reconcile::<Module>("Module"));
 
+    // The namespace cache joins the controllers rather than being spawned: a
+    // reflector only advances while its stream is polled, and a cache nobody
+    // drives never becomes ready.
     tokio::join!(
         mc_controller,
         da_controller,
         cp_controller,
         ccp_controller,
-        mod_controller
+        mod_controller,
+        namespace_cache
     );
 
     Ok(())
@@ -302,6 +468,35 @@ pub(super) fn build_condition(
         last_transition_time: transition_time,
         observed_generation,
     }
+}
+
+/// Return `existing` with `condition` replacing the entry of the same type, or
+/// appended when there is none.
+///
+/// A `Patch::Merge` body replaces an array wholesale (RFC 7386), so a status
+/// patch carrying only the condition it computed deletes every sibling
+/// condition on the object. A controller that owns one condition of a shared
+/// status must send the whole list back.
+pub(super) fn upsert_condition(existing: &[Condition], condition: Condition) -> Vec<Condition> {
+    let mut conditions: Vec<Condition> = existing.to_vec();
+    match conditions
+        .iter_mut()
+        .find(|c| c.condition_type == condition.condition_type)
+    {
+        Some(slot) => *slot = condition,
+        None => conditions.push(condition),
+    }
+    conditions
+}
+
+/// `namespace/name` identity of a MachineConfig, as persisted in a policy's
+/// `status.nonCompliantMachines`.
+pub(super) fn machine_key(machine: &MachineConfig) -> String {
+    format!(
+        "{}/{}",
+        machine.metadata.namespace.as_deref().unwrap_or_default(),
+        machine.name_any()
+    )
 }
 
 // ---------------------------------------------------------------------------
