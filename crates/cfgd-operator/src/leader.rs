@@ -3,7 +3,7 @@ use std::time::Duration;
 use k8s_openapi::api::coordination::v1::Lease;
 use k8s_openapi::jiff::{SignedDuration, Timestamp};
 use kube::Client;
-use kube::api::{Api, Patch, PatchParams, PostParams};
+use kube::api::{Api, Patch, PatchParams};
 use tokio_util::sync::CancellationToken;
 
 use crate::errors::OperatorError;
@@ -119,9 +119,17 @@ impl LeaderElection {
                     });
 
                     let field_manager = self.field_manager();
-                    let params = if taking_over {
-                        // Takeover needs force=true to strip the stale
-                        // previous-holder's field manager from spec.*.
+                    let params = if expired {
+                        // Any expired lease is forced, not only one whose
+                        // holder differs: forcing is what strips the previous
+                        // owner's field manager off `spec.*`, and the previous
+                        // owner is not always another pod. A Lease minted by a
+                        // plain create carries the API server's inferred
+                        // `unknown` manager, and a pod that comes back under
+                        // its own former identity would otherwise conflict with
+                        // that stale ownership on every attempt, forever.
+                        // Nothing holds an expired lease, so there is nobody to
+                        // take it from.
                         PatchParams::apply(&field_manager).force()
                     } else {
                         // Self-renewal: we already own the fields; a plain
@@ -150,15 +158,20 @@ impl LeaderElection {
                 }
             }
             Err(kube::Error::Api(err)) if err.code == 404 => {
-                // Create the Lease
+                // Server-side apply, not a POST create. A plain create records
+                // `spec.*` under whatever field manager the API server infers
+                // for the request (`unknown`), so the pod that minted the Lease
+                // does not own the fields under the manager its own renewals
+                // apply with — every later renewal is then a 409 the loop reads
+                // as "another instance took over", and a single-replica
+                // operator on a fresh cluster shuts itself down within one
+                // renewal interval and never reaches Ready. Applying creates
+                // the Lease with the same ownership a renewal expects.
                 let now_str = rfc3339_micros(now)?;
-                let lease = serde_json::from_value(serde_json::json!({
+                let patch = serde_json::json!({
                     "apiVersion": "coordination.k8s.io/v1",
                     "kind": "Lease",
-                    "metadata": {
-                        "name": LEASE_NAME,
-                        "namespace": self.namespace,
-                    },
+                    "metadata": { "name": LEASE_NAME },
                     "spec": {
                         "holderIdentity": self.identity,
                         "leaseDurationSeconds": self.lease_duration_secs,
@@ -166,10 +179,17 @@ impl LeaderElection {
                         "renewTime": now_str,
                         "leaseTransitions": 0
                     }
-                }))
-                .map_err(|e| OperatorError::Leader(format!("Failed to build Lease: {e}")))?;
+                });
 
-                leases.create(&PostParams::default(), &lease).await?;
+                // Not forced: nothing owns a Lease that does not exist, and
+                // leaving force off is what decides a race between two pods
+                // that both saw the 404 — the second one's apply conflicts and
+                // it retries as a follower instead of overwriting the winner.
+                let field_manager = self.field_manager();
+                let params = PatchParams::apply(&field_manager);
+                leases
+                    .patch(LEASE_NAME, &params, &Patch::Apply(&patch))
+                    .await?;
                 Ok(true)
             }
             Err(e) => Err(OperatorError::KubeError(e)),
@@ -270,7 +290,77 @@ impl LeaderElection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http::Method;
     use serial_test::serial;
+
+    /// A Lease created with a plain `POST` records `spec.*` under the field
+    /// manager the API server infers (`unknown`), not the one this operator's
+    /// renewals apply with — so every renewal conflicts, and a single-replica
+    /// operator on a fresh cluster reads its own conflict as another instance
+    /// taking over and shuts itself down one renewal interval after it starts.
+    /// The first-ever acquire must therefore APPLY, under the operator's own
+    /// field manager, not create.
+    #[tokio::test]
+    async fn a_first_ever_acquire_applies_the_lease_under_the_operators_own_field_manager() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_404(LEASE_NAME),
+            ExpectedCall::patch(lease_path()).returning_json(&lease_json(TEST_ID, 15, 0)),
+        ]);
+
+        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+        assert!(
+            le.try_acquire()
+                .await
+                .expect("the 404 path must acquire the lease"),
+        );
+
+        let report = harness.finish().await;
+        let apply = &report.captured[1];
+        assert_eq!(apply.method, Method::PATCH);
+        assert!(
+            apply
+                .query
+                .contains(&format!("fieldManager=cfgd-operator-leader%3A{TEST_ID}")),
+            "the apply must carry this pod's own field manager, got `{}`",
+            apply.query
+        );
+        assert!(
+            !apply.query.contains("force=true"),
+            "nothing owns a Lease that does not exist, and leaving force off is what \
+             decides a race between two pods that both saw the 404, got `{}`",
+            apply.query
+        );
+        assert_eq!(apply.body_json()["spec"]["holderIdentity"], TEST_ID);
+        assert_eq!(apply.body_json()["spec"]["leaseTransitions"], 0);
+    }
+
+    /// Reclaiming an EXPIRED lease is forced whether or not the recorded holder
+    /// is this same identity: forcing is what strips the previous owner's field
+    /// manager off `spec.*`, and the previous owner is not always another pod.
+    #[tokio::test]
+    async fn an_expired_lease_still_held_under_this_identity_is_force_applied() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_json(&lease_json(TEST_ID, 15, 60)),
+            ExpectedCall::patch(lease_path())
+                .with_query_contains("force=true")
+                .returning_json(&lease_json(TEST_ID, 15, 0)),
+        ]);
+
+        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+        assert!(
+            le.try_acquire()
+                .await
+                .expect("an expired lease must be reclaimable"),
+        );
+
+        let report = harness.finish().await;
+        // Same identity, so this is a renewal rather than a transition — the
+        // force is about field ownership, not about counting a handover.
+        assert_eq!(
+            report.captured[1].body_json()["spec"]["leaseTransitions"],
+            0
+        );
+    }
 
     // SAFETY: env var mutations are serialized via #[serial]
     unsafe fn set_env(key: &str, val: &str) {
@@ -357,10 +447,6 @@ mod tests {
         format!("/apis/coordination.k8s.io/v1/namespaces/{TEST_NS}/leases/{LEASE_NAME}")
     }
 
-    fn collection_path() -> String {
-        format!("/apis/coordination.k8s.io/v1/namespaces/{TEST_NS}/leases")
-    }
-
     /// Build a Lease JSON payload whose renew_time is `secs_ago` seconds before now
     /// and whose holder is `holder`. `lease_duration_seconds` controls expiry math.
     fn lease_json(holder: &str, lease_duration: i32, secs_ago: i64) -> serde_json::Value {
@@ -378,29 +464,6 @@ mod tests {
                 "leaseTransitions": 0_i32,
             }
         })
-    }
-
-    #[tokio::test]
-    async fn try_acquire_creates_new_lease_when_get_returns_404() {
-        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
-            ExpectedCall::get(lease_path()).returning_404(LEASE_NAME),
-            // POST to the collection endpoint with the new Lease body
-            ExpectedCall::post(collection_path()).returning_json(&lease_json(TEST_ID, 15, 0)),
-        ]);
-
-        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
-        let acquired = le
-            .try_acquire()
-            .await
-            .expect("404 path should create the Lease");
-        assert!(acquired, "create-on-404 must return Ok(true)");
-
-        let report = harness.finish().await;
-        assert_eq!(report.captured.len(), 2);
-        // The POST body must declare us as holder.
-        let post_body = report.captured[1].body_json();
-        assert_eq!(post_body["spec"]["holderIdentity"], TEST_ID);
-        assert_eq!(post_body["spec"]["leaseTransitions"], 0);
     }
 
     #[tokio::test]
@@ -784,7 +847,7 @@ mod tests {
     async fn run_wins_acquisition_then_calls_on_started_callback() {
         let (ctx, _reg, harness) = MockKubeHarness::new(vec![
             ExpectedCall::get(lease_path()).returning_404(LEASE_NAME),
-            ExpectedCall::post(collection_path()).returning_json(&lease_json(TEST_ID, 15, 0)),
+            ExpectedCall::patch(lease_path()).returning_json(&lease_json(TEST_ID, 15, 0)),
         ]);
 
         let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
@@ -817,7 +880,7 @@ mod tests {
         let report = harness.finish().await;
         assert!(
             report.captured.len() >= 2,
-            "expected GET + POST to be captured, got {}",
+            "expected GET + apply to be captured, got {}",
             report.captured.len()
         );
     }
@@ -827,7 +890,7 @@ mod tests {
         let (ctx, _reg, harness) = MockKubeHarness::new(vec![
             ExpectedCall::get(lease_path()).returning_json(&lease_json("other-holder", 15, 0)),
             ExpectedCall::get(lease_path()).returning_404(LEASE_NAME),
-            ExpectedCall::post(collection_path()).returning_json(&lease_json(TEST_ID, 15, 0)),
+            ExpectedCall::patch(lease_path()).returning_json(&lease_json(TEST_ID, 15, 0)),
         ]);
 
         let mut le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
