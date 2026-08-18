@@ -7,6 +7,7 @@ use kube::runtime::controller::Action;
 
 use k8s_openapi::api::core::v1::Namespace;
 use kube::api::ObjectMeta;
+use kube::core::PartialObjectMeta;
 
 use super::ControllerStores;
 use super::cluster_config_policy::reconcile_cluster_config_policy;
@@ -24,8 +25,12 @@ fn cluster_policy_path(name: &str) -> String {
     format!("/apis/cfgd.io/v1alpha1/clusterconfigpolicies/{name}")
 }
 
-fn namespace(name: &str, labels: &[(&str, &str)]) -> Namespace {
-    Namespace {
+/// The namespace cache is a metadata watch, so its entries are
+/// `PartialObjectMeta` — the shape `metadata_watcher` really delivers.
+fn namespace(name: &str, labels: &[(&str, &str)]) -> PartialObjectMeta<Namespace> {
+    PartialObjectMeta {
+        types: None,
+        _phantom: std::marker::PhantomData,
         metadata: ObjectMeta {
             name: Some(name.to_string()),
             labels: if labels.is_empty() {
@@ -40,7 +45,6 @@ fn namespace(name: &str, labels: &[(&str, &str)]) -> Namespace {
             },
             ..Default::default()
         },
-        ..Default::default()
     }
 }
 
@@ -280,10 +284,13 @@ async fn reconcile_cluster_config_policy_filters_namespaces_by_namespace_selecto
 async fn reconcile_cluster_config_policy_when_namespace_cache_is_unpopulated_returns_error() {
     let ccp = cluster_config_policy_with_spec("ccp-nslfail", Default::default());
 
+    // The writer is held for the length of the assertion: dropping it would
+    // resolve the wait with `WriterDropped` instead of timing out.
+    let (namespaces, _writer) = unready_store();
     let (ctx, _registry, harness) = MockKubeHarness::with_stores(
         vec![],
         ControllerStores {
-            namespaces: unready_store(),
+            namespaces,
             ..empty_stores()
         },
     );
@@ -300,11 +307,12 @@ async fn reconcile_cluster_config_policy_when_namespace_cache_is_unpopulated_ret
 async fn reconcile_cluster_config_policy_when_machine_config_cache_is_unpopulated_returns_error() {
     let ccp = cluster_config_policy_with_spec("ccp-mcfail", Default::default());
 
+    let (machine_configs, _writer) = unready_store();
     let (ctx, _registry, harness) = MockKubeHarness::with_stores(
         vec![],
         ControllerStores {
             namespaces: seeded_store(vec![namespace(NS_A, &[])]),
-            machine_configs: unready_store(),
+            machine_configs,
             ..empty_stores()
         },
     );

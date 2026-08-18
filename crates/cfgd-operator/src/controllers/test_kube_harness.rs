@@ -15,6 +15,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::FutureExt;
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use kube::Client;
@@ -51,17 +52,17 @@ where
 
 /// A [`Store`] that has never completed an initial list — the shape a reconcile
 /// sees while the operator is still starting up.
-pub(crate) fn unready_store<K>() -> Store<K>
+///
+/// The `Writer` comes back with it and the test must hold it for the length of
+/// the assertion: dropping it resolves `wait_until_ready` with `WriterDropped`,
+/// which is a different failure from the one under test (a cache that is simply
+/// not populated yet).
+pub(crate) fn unready_store<K>() -> (Store<K>, reflector::store::Writer<K>)
 where
     K: Lookup + Clone + 'static,
     K::DynamicType: Eq + std::hash::Hash + Clone + Default,
 {
-    let (store, writer) = reflector::store::<K>();
-    // Leaked rather than dropped: dropping the writer resolves
-    // `wait_until_ready` with `WriterDropped`, which is a different failure
-    // from the one under test (a cache that is simply not populated yet).
-    std::mem::forget(writer);
-    store
+    reflector::store::<K>()
 }
 
 /// Every cache empty and ready — the default for a reconcile whose branch
@@ -251,10 +252,18 @@ pub(crate) fn expect_event_post(namespace: &str) -> ExpectedCall {
     }))
 }
 
+/// What the driver task hands back: the expected calls it matched, plus any
+/// request that arrived after the queue was exhausted.
+struct DriverOutcome {
+    captured: Vec<CapturedRequest>,
+    unexpected: Vec<String>,
+}
+
 /// The test harness. Holds the driver `JoinHandle` and the live `Client` /
 /// `ControllerContext` references the test passes into the reconcile fn.
 pub(crate) struct MockKubeHarness {
-    driver: JoinHandle<HarnessReport>,
+    driver: JoinHandle<DriverOutcome>,
+    stop: tokio::sync::oneshot::Sender<()>,
 }
 
 impl MockKubeHarness {
@@ -277,6 +286,7 @@ impl MockKubeHarness {
         stores: ControllerStores,
     ) -> (Arc<ControllerContext>, Registry, Self) {
         let (mock_service, mut handle) = mock::pair::<Request<Body>, Response<Body>>();
+        let (stop, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
 
         let driver = tokio::spawn(async move {
             let mut captured = Vec::with_capacity(expected.len());
@@ -346,7 +356,39 @@ impl MockKubeHarness {
                 send.send_response(response);
             }
 
-            HarnessReport { captured }
+            // The handle deliberately outlives the expected queue. Dropping it
+            // here closes the channel, so a further request fails as a
+            // transport error — and every caller that only `warn!`s a failed
+            // patch swallows that, leaving `captured` empty. A test asserting
+            // "this reconcile made no calls" would then be satisfied by a call
+            // it never saw. Answering with the same error while RECORDING the
+            // request keeps the reconcile's behaviour identical and makes the
+            // extra call visible.
+            let mut unexpected: Vec<String> = Vec::new();
+            let mut record_unexpected = |request: Request<Body>, send: mock::SendResponse<_>| {
+                unexpected.push(format!("{} {}", request.method(), request.uri().path()));
+                send.send_error("unexpected request after the harness queue was consumed");
+            };
+            loop {
+                tokio::select! {
+                    // Biased so a request already in the channel is taken
+                    // before the stop signal that raced it.
+                    biased;
+                    request = handle.next_request() => match request {
+                        Some((request, send)) => record_unexpected(request, send),
+                        None => break,
+                    },
+                    _ = &mut stop_rx => break,
+                }
+            }
+            while let Some(Some((request, send))) = handle.next_request().now_or_never() {
+                record_unexpected(request, send);
+            }
+
+            DriverOutcome {
+                captured,
+                unexpected,
+            }
         });
 
         let client = Client::new(mock_service, "default");
@@ -364,21 +406,35 @@ impl MockKubeHarness {
             stores,
         });
 
-        (ctx, registry, Self { driver })
+        (ctx, registry, Self { driver, stop })
     }
 
-    /// Await the driver, asserting all expected calls were consumed in order.
+    /// Await the driver, asserting all expected calls were consumed in order
+    /// and that the reconcile made no further call afterwards.
+    ///
     /// Panics if the driver hasn't finished within `5s` (likely the reconcile
     /// made fewer kube calls than expected).
     pub async fn finish(self) -> HarnessReport {
-        match tokio::time::timeout(Duration::from_secs(5), self.driver).await {
-            Ok(Ok(report)) => report,
+        // Releases the driver from its post-queue watch. Failure means the
+        // driver is already gone, which the join below reports properly.
+        let _ = self.stop.send(());
+        let outcome = match tokio::time::timeout(Duration::from_secs(5), self.driver).await {
+            Ok(Ok(outcome)) => outcome,
             Ok(Err(join_err)) => panic!("harness driver task panicked: {join_err}"),
             Err(_) => panic!(
                 "harness driver did not complete within 5s — \
                  the reconcile likely made fewer kube calls than expected, \
                  or made a call out of order"
             ),
+        };
+        assert!(
+            outcome.unexpected.is_empty(),
+            "the reconcile made {} request(s) beyond its expected queue: {}",
+            outcome.unexpected.len(),
+            outcome.unexpected.join(", "),
+        );
+        HarnessReport {
+            captured: outcome.captured,
         }
     }
 }

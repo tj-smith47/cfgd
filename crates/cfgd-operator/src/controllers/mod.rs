@@ -6,6 +6,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::Namespace;
 use kube::api::Api;
+use kube::core::PartialObjectMeta;
 use kube::runtime::controller::Action;
 use kube::runtime::events::{Event, EventType, Recorder, Reporter};
 use kube::runtime::reflector::{ObjectRef, Store};
@@ -16,7 +17,7 @@ use tracing::{debug, info, warn};
 
 use crate::crds::{
     ClusterConfigPolicy, Condition, ConfigPolicy, DriftAlert, DriftSeverity, LabelSelector,
-    MachineConfig, Module, SelectorOperator,
+    MAX_NON_COMPLIANT_MACHINES, MachineConfig, Module, SelectorOperator,
 };
 use crate::errors::OperatorError;
 use crate::metrics::{Metrics, ReconcileLabels};
@@ -152,7 +153,8 @@ pub struct ControllerStores {
     pub cluster_config_policies: Store<ClusterConfigPolicy>,
     pub modules: Store<Module>,
     pub drift_alerts: Store<DriftAlert>,
-    pub namespaces: Store<Namespace>,
+    /// Metadata-only: the two reads are `metadata.labels` and `metadata.name`.
+    pub namespaces: Store<PartialObjectMeta<Namespace>>,
 }
 
 /// Wait for `store` to have completed its initial list.
@@ -170,10 +172,23 @@ where
         Ok(Err(e)) => Err(OperatorError::Reconciliation(format!(
             "{kind} watch cache stopped before it was populated: {e}"
         ))),
-        Err(_) => Err(OperatorError::Reconciliation(format!(
-            "{kind} watch cache was not populated within {}s",
-            STORE_READY_TIMEOUT.as_secs()
-        ))),
+        Err(_) => {
+            // Logged as well as returned so it correlates with the per-watch
+            // error `warn!`s, which carry the same `kind` field. A timeout with
+            // a matching watch error is a watch that cannot establish; a
+            // timeout alone is an operator still completing its first list.
+            warn!(
+                kind = %kind,
+                timeout_secs = STORE_READY_TIMEOUT.as_secs(),
+                "watch cache never completed its initial list"
+            );
+            Err(OperatorError::Reconciliation(format!(
+                "{kind} watch cache never completed its initial list within {}s — \
+                 the operator is still starting up, or the {kind} watch cannot \
+                 establish (check RBAC and API server connectivity)",
+                STORE_READY_TIMEOUT.as_secs()
+            )))
+        }
     }
 }
 
@@ -226,12 +241,12 @@ impl ControllerStores {
         namespace: &str,
     ) -> Result<Vec<Arc<DriftAlert>>, OperatorError> {
         ready_store(&self.drift_alerts, "DriftAlert").await?;
-        Ok(if namespace.is_empty() {
+        Ok(in_stable_order(if namespace.is_empty() {
             self.drift_alerts.state()
         } else {
             self.drift_alerts
                 .state_filter(|da| da.metadata.namespace.as_deref() == Some(namespace))
-        })
+        }))
     }
 
     /// Every ClusterConfigPolicy.
@@ -248,8 +263,10 @@ impl ControllerStores {
         Ok(in_stable_order(self.modules.state()))
     }
 
-    /// Every Namespace.
-    pub(super) async fn all_namespaces(&self) -> Result<Vec<Arc<Namespace>>, OperatorError> {
+    /// Every Namespace, as metadata only.
+    pub(super) async fn all_namespaces(
+        &self,
+    ) -> Result<Vec<Arc<PartialObjectMeta<Namespace>>>, OperatorError> {
         ready_store(&self.namespaces, "Namespace").await?;
         Ok(in_stable_order(self.namespaces.state()))
     }
@@ -297,19 +314,22 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
     let mod_builder = Controller::new(modules, WatcherConfig::default());
 
     // Namespaces are read by the ClusterConfigPolicy controller but rooted by
-    // no controller, so this cache carries its own reflector.
-    let (ns_store, ns_writer) = reflector::store::<Namespace>();
+    // no controller, so this cache carries its own reflector. It is a METADATA
+    // watch: the only reads are `metadata.labels` and `metadata.name`, and a
+    // full-object cache would hold every namespace's spec, status, annotations
+    // and managedFields to answer them.
+    let (ns_store, ns_writer) = reflector::store::<PartialObjectMeta<Namespace>>();
     let namespace_cache = reflector(
         ns_writer,
         watcher::watcher(
-            Api::<Namespace>::all(client.clone()),
+            Api::<PartialObjectMeta<Namespace>>::all(client.clone()),
             WatcherConfig::default(),
         ),
     )
     .default_backoff()
     .for_each(|event| {
         if let Err(error) = event {
-            warn!(error = %error, "namespace watch error");
+            warn!(kind = "Namespace", error = %error, "watch error");
         }
         futures::future::ready(())
     });
@@ -487,6 +507,18 @@ pub(super) fn upsert_condition(existing: &[Condition], condition: Condition) -> 
         None => conditions.push(condition),
     }
     conditions
+}
+
+/// Sort a policy's violator list and bound it at [`MAX_NON_COMPLIANT_MACHINES`].
+///
+/// Sorting comes first for two reasons: the cache hands back machines in hash
+/// order, so an unsorted list would compare unequal between reconciles and force
+/// a write; and it makes the truncation deterministic, so the machines that fall
+/// outside a saturated cap are the same ones each time rather than a fresh
+/// arbitrary subset.
+pub(super) fn sort_and_cap_machines(machines: &mut Vec<String>) {
+    machines.sort();
+    machines.truncate(MAX_NON_COMPLIANT_MACHINES);
 }
 
 /// `namespace/name` identity of a MachineConfig, as persisted in a policy's

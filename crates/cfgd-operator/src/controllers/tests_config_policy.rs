@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use kube::ResourceExt;
 use kube::runtime::controller::Action;
 
 use super::ControllerStores;
@@ -12,8 +13,8 @@ use super::test_kube_harness::{
     ExpectedCall, MockKubeHarness, empty_stores, expect_event_post, seeded_store, unready_store,
 };
 use crate::crds::{
-    Condition, LabelSelector, LabelSelectorRequirement, MachineConfig, ModuleRef, PackageRef,
-    SelectorOperator,
+    Condition, LabelSelector, LabelSelectorRequirement, MAX_NON_COMPLIANT_MACHINES, MachineConfig,
+    ModuleRef, PackageRef, SelectorOperator,
 };
 use crate::metrics::{PolicyLabels, ReconcileLabels};
 
@@ -339,10 +340,13 @@ async fn reconcile_config_policy_with_match_expressions_does_not_exist_excludes_
 async fn reconcile_config_policy_when_machine_config_cache_is_unpopulated_returns_error() {
     let policy = config_policy("err-policy", NS);
 
+    // The writer is held for the length of the assertion: dropping it would
+    // resolve the wait with `WriterDropped` instead of timing out.
+    let (machine_configs, _writer) = unready_store();
     let (ctx, _registry, harness) = MockKubeHarness::with_stores(
         vec![],
         ControllerStores {
-            machine_configs: unready_store(),
+            machine_configs,
             ..empty_stores()
         },
     );
@@ -373,19 +377,28 @@ async fn reconcile_config_policy_when_machine_config_cache_is_unpopulated_return
 // Policy /status patch failure → propagated as Err
 // -----------------------------------------------------------------------
 
+/// A machine is targeted so the reconcile reaches the policy `/status` write
+/// the way production does — through the per-machine condition loop — rather
+/// than short-circuiting past it on an empty cache.
 #[tokio::test]
 async fn reconcile_config_policy_when_status_patch_fails_returns_error() {
     let policy = config_policy("statuserr-policy", NS);
+    let mc = machine_config("mc-statuserr", NS);
 
     let (ctx, _registry, harness) = MockKubeHarness::with_stores(
         vec![
+            ExpectedCall::patch_status(format!(
+                "{}/status",
+                machine_config_path(NS, "mc-statuserr")
+            ))
+            .returning_json(&mc),
             ExpectedCall::patch_status(format!(
                 "{}/status",
                 config_policy_path("statuserr-policy")
             ))
             .returning_server_error(500, "etcd melted"),
         ],
-        empty_stores(),
+        stores_with(vec![mc.clone()]),
     );
 
     let result = reconcile_config_policy(Arc::new(policy), ctx).await;
@@ -648,5 +661,88 @@ async fn reconcile_config_policy_preserves_sibling_conditions_on_the_machine() {
         types,
         vec!["Reconciled".to_string(), "Compliant".to_string()],
         "the patch must carry the machine's existing conditions plus Compliant"
+    );
+}
+
+/// The violator list is an enumeration inside a status object every operator
+/// replica watches, so it is bounded; the count beside it is not. A policy
+/// violated by more machines than the cap reports the exact total and lists the
+/// first `MAX_NON_COMPLIANT_MACHINES` of them in sorted order.
+#[tokio::test]
+async fn reconcile_config_policy_caps_the_violator_list_but_not_the_count() {
+    let over_cap = MAX_NON_COMPLIANT_MACHINES + 1;
+    let mut policy = config_policy("cap-policy", NS);
+    policy.spec.required_modules = vec![ModuleRef {
+        name: "kubectl".to_string(),
+        required: true,
+    }];
+
+    // Every machine violates, and each already carries the exact Compliant
+    // condition the controller would write — so the per-machine loop patches
+    // nothing and the queue stays about the policy's own status.
+    let machines: Vec<MachineConfig> = (0..over_cap)
+        .map(|i| {
+            let mut mc = machine_config(&format!("mc-{i:04}"), NS);
+            mc.status = Some(crate::crds::MachineConfigStatus {
+                last_reconciled: None,
+                observed_generation: Some(1),
+                conditions: vec![compliant_condition("False", "cap-policy")],
+                package_versions: Default::default(),
+            });
+            mc
+        })
+        .collect();
+
+    // Already reported, so no machine transitions and no violation event fires.
+    let mut reported: Vec<String> = machines
+        .iter()
+        .map(|mc| format!("{NS}/{}", mc.name_any()))
+        .collect();
+    reported.sort();
+    policy.status = Some(crate::crds::ConfigPolicyStatus {
+        compliant_count: 0,
+        non_compliant_count: 0,
+        non_compliant_machines: reported,
+        conditions: vec![],
+    });
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", config_policy_path("cap-policy")))
+                .returning_json(&policy),
+            expect_event_post(NS), // Evaluated
+            expect_event_post(NS), // NonCompliantTargets
+        ],
+        stores_with(machines),
+    );
+
+    reconcile_config_policy(Arc::new(policy), ctx)
+        .await
+        .unwrap();
+
+    let report = harness.finish().await;
+    let status = report.captured[0].body_json()["status"].clone();
+
+    assert_eq!(
+        status["nonCompliantCount"],
+        serde_json::json!(over_cap),
+        "the count is the exact total and is never capped"
+    );
+    let listed = status["nonCompliantMachines"]
+        .as_array()
+        .expect("nonCompliantMachines array");
+    assert_eq!(
+        listed.len(),
+        MAX_NON_COMPLIANT_MACHINES,
+        "the enumeration is bounded at the cap"
+    );
+    assert_eq!(
+        listed[0],
+        format!("{NS}/mc-0000"),
+        "truncation follows the sort, so which machines fall outside is deterministic"
+    );
+    assert_eq!(
+        listed[MAX_NON_COMPLIANT_MACHINES - 1],
+        format!("{NS}/mc-{:04}", MAX_NON_COMPLIANT_MACHINES - 1)
     );
 }

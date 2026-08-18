@@ -149,50 +149,88 @@ pub(super) async fn reconcile_machine_config(
         .map(|s| s.package_versions.clone())
         .unwrap_or_default();
 
-    let status = serde_json::json!({
-        "status": MachineConfigStatus {
-            last_reconciled: Some(now.clone()),
-            observed_generation: current_generation,
-            conditions: vec![
-                build_condition(
-                    existing_conditions,
-                    "Reconciled", "True", "ReconcileSuccess",
-                    &format!("MachineConfig {} reconciled successfully", name),
-                    &now, current_generation,
-                ),
-                build_condition(
-                    existing_conditions,
-                    "DriftDetected", drift_status, drift_reason,
-                    &drift_message,
-                    &now, current_generation,
-                ),
-                build_condition(
-                    existing_conditions,
-                    "ModulesResolved", modules_resolved_status, modules_resolved_reason,
-                    &modules_resolved_message,
-                    &now, current_generation,
-                ),
-                // Compliant is set by policy controllers — preserve existing value
-                build_condition(
-                    existing_conditions,
-                    "Compliant",
-                    find_condition_status(existing_conditions, "Compliant")
-                        .as_deref()
-                        .unwrap_or("Unknown"),
-                    find_condition_status(existing_conditions, "Compliant")
-                        .as_deref()
-                        .map(|s| if s == "True" { "PolicyCompliant" } else if s == "False" { "PolicyViolation" } else { "NotEvaluated" })
-                        .unwrap_or("NotEvaluated"),
-                    find_condition_status(existing_conditions, "Compliant")
-                        .as_deref()
-                        .map(|_| "Policy compliance evaluated by ConfigPolicy controller")
-                        .unwrap_or("Awaiting policy evaluation"),
-                    &now, current_generation,
-                ),
-            ],
-            package_versions: existing_package_versions,
-        }
-    });
+    // The reason and message are a function of the STATUS the policy
+    // controllers left, never of whether the condition exists: keyed on
+    // presence, a machine whose Compliant is `Unknown` got "Awaiting policy
+    // evaluation" on the pass that created it and "evaluated by ConfigPolicy
+    // controller" on the next one — a claim that no evaluation had made, and a
+    // second status write for a machine nothing had happened to.
+    let compliant_status =
+        find_condition_status(existing_conditions, "Compliant").unwrap_or_else(|| "Unknown".into());
+    let (compliant_reason, compliant_message) = match compliant_status.as_str() {
+        "True" => (
+            "PolicyCompliant",
+            "Policy compliance evaluated by ConfigPolicy controller",
+        ),
+        "False" => (
+            "PolicyViolation",
+            "Policy compliance evaluated by ConfigPolicy controller",
+        ),
+        _ => ("NotEvaluated", "Awaiting policy evaluation"),
+    };
+
+    let mut desired = MachineConfigStatus {
+        // Carried forward rather than refreshed, so the comparison below is
+        // about what the reconcile OBSERVED. Stamping `now` here would make
+        // every status unequal to its predecessor, and the drifted machine —
+        // which never takes the skip arm above — would pay a status write and
+        // two events on every 60s requeue for as long as the drift lasts.
+        last_reconciled: existing_status.and_then(|s| s.last_reconciled.clone()),
+        observed_generation: current_generation,
+        conditions: vec![
+            build_condition(
+                existing_conditions,
+                "Reconciled",
+                "True",
+                "ReconcileSuccess",
+                &format!("MachineConfig {} reconciled successfully", name),
+                &now,
+                current_generation,
+            ),
+            build_condition(
+                existing_conditions,
+                "DriftDetected",
+                drift_status,
+                drift_reason,
+                &drift_message,
+                &now,
+                current_generation,
+            ),
+            build_condition(
+                existing_conditions,
+                "ModulesResolved",
+                modules_resolved_status,
+                modules_resolved_reason,
+                &modules_resolved_message,
+                &now,
+                current_generation,
+            ),
+            // Compliant is set by policy controllers — preserve existing value
+            build_condition(
+                existing_conditions,
+                "Compliant",
+                &compliant_status,
+                compliant_reason,
+                compliant_message,
+                &now,
+                current_generation,
+            ),
+        ],
+        package_versions: existing_package_versions,
+    };
+
+    // Everything the reconcile observed is already recorded — write nothing and
+    // announce nothing. `build_condition` carries each condition's
+    // `lastTransitionTime` forward while its status holds, so a machine whose
+    // situation has not moved really does compare equal.
+    if existing_status == Some(&desired) {
+        info!(name = %name, "status already current, skipping write");
+        record_reconcile_success(&ctx, "machine_config", start);
+        return Ok(Action::requeue(std::time::Duration::from_secs(60)));
+    }
+
+    desired.last_reconciled = Some(now.clone());
+    let status = serde_json::json!({ "status": desired });
 
     if let Err(e) = machines_api
         .patch_status(

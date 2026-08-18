@@ -7,13 +7,15 @@
 #![cfg(test)]
 
 use http::Method;
-use serde_json::json;
 
 use super::drift::{create_drift_alert_crd, find_machine_config_for_device};
 use super::*;
 use crate::controllers::test_fixtures::mc_list;
 use crate::controllers::test_kube_harness::{ExpectedCall, MockKubeHarness};
-use crate::crds::{MachineConfig, MachineConfigSpec};
+use crate::crds::{
+    DriftAlert, DriftAlertSpec, DriftDetail, DriftSeverity, MachineConfig, MachineConfigReference,
+    MachineConfigSpec,
+};
 
 const HOSTNAME: &str = "host-prod";
 const DEVICE_ID: &str = "dev-001";
@@ -66,6 +68,31 @@ fn expected_alert_name() -> String {
     format!("drift-{}-{}", DEVICE_ID, stripped_ts())
 }
 
+/// The API server echoes the created object back, and the client deserializes
+/// it. A stub body missing `spec` fails to deserialize, which the create path
+/// reads as a failed attempt and retries — so a test using one silently
+/// exercises the retry arm instead of the success arm it is named for.
+fn created_alert_response(mc_ref: &str) -> DriftAlert {
+    let mut alert = DriftAlert::new(
+        &expected_alert_name(),
+        DriftAlertSpec {
+            device_id: DEVICE_ID.to_string(),
+            machine_config_ref: MachineConfigReference {
+                name: mc_ref.to_string(),
+                namespace: None,
+            },
+            drift_details: vec![DriftDetail {
+                field: detail().field,
+                expected: detail().expected,
+                actual: detail().actual,
+            }],
+            severity: DriftSeverity::Medium,
+        },
+    );
+    alert.metadata.namespace = Some("default".to_string());
+    alert
+}
+
 // -----------------------------------------------------------------------
 // create_drift_alert_crd
 // -----------------------------------------------------------------------
@@ -81,11 +108,7 @@ async fn create_drift_alert_crd_uses_matched_machine_config_name_for_label_and_r
         // 2. POST DriftAlert — accept (201).
         ExpectedCall::post(drift_alerts_create_path())
             .with_status(201)
-            .returning_json(&json!({
-                "apiVersion": "cfgd.io/v1alpha1",
-                "kind": "DriftAlert",
-                "metadata": { "name": expected_alert_name(), "namespace": "default" },
-            })),
+            .returning_json(&created_alert_response("mc-prod")),
     ]);
 
     create_drift_alert_crd(&ctx.client, DEVICE_ID, HOSTNAME, &[detail()], TIMESTAMP)
@@ -143,11 +166,7 @@ async fn create_drift_alert_crd_falls_back_to_synthetic_name_when_no_mc_matches(
         ExpectedCall::list(machine_configs_list_path()).returning_json(&mc_list(&[mc])),
         ExpectedCall::post(drift_alerts_create_path())
             .with_status(201)
-            .returning_json(&json!({
-                "apiVersion": "cfgd.io/v1alpha1",
-                "kind": "DriftAlert",
-                "metadata": { "name": expected_alert_name(), "namespace": "default" },
-            })),
+            .returning_json(&created_alert_response(&synthetic)),
     ]);
 
     create_drift_alert_crd(&ctx.client, DEVICE_ID, HOSTNAME, &[detail()], TIMESTAMP)
@@ -199,11 +218,7 @@ async fn create_drift_alert_crd_retries_on_server_error_then_succeeds() {
         // Attempt 2 → 201 → success.
         ExpectedCall::post(drift_alerts_create_path())
             .with_status(201)
-            .returning_json(&json!({
-                "apiVersion": "cfgd.io/v1alpha1",
-                "kind": "DriftAlert",
-                "metadata": { "name": expected_alert_name(), "namespace": "default" },
-            })),
+            .returning_json(&created_alert_response(&format!("{HOSTNAME}-mc"))),
     ]);
 
     create_drift_alert_crd(&ctx.client, DEVICE_ID, HOSTNAME, &[detail()], TIMESTAMP)

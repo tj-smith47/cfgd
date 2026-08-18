@@ -113,6 +113,9 @@ pub(super) async fn find_machine_config_for_device(
     use kube::ResourceExt;
     use kube::api::{Api, ListParams};
 
+    // A live read, deliberately: the gateway answers a device's request about
+    // the machine it is right now, and it holds no reflector of its own — a
+    // cache would have to be built and kept warm for one lookup per API call.
     let machines: Api<MachineConfig> = Api::all(client.clone());
     match machines.list(&ListParams::default()).await {
         Ok(list) => {

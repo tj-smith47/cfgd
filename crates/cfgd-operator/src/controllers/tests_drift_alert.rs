@@ -21,7 +21,7 @@ use super::test_fixtures::{
 use super::test_kube_harness::{
     ExpectedCall, MockKubeHarness, empty_stores, expect_event_post, seeded_store, unready_store,
 };
-use crate::crds::DriftSeverity;
+use crate::crds::{Condition, DriftSeverity};
 use crate::metrics::ReconcileLabels;
 
 const NS: &str = "cfgd-system";
@@ -214,6 +214,73 @@ async fn reconcile_drift_alert_with_existing_owner_ref_skips_owner_patch() {
         .filter(|r| r.method == Method::PATCH && r.path == drift_alert_path(NS, "alert-4"))
         .count();
     assert_eq!(metadata_patch_count, 0);
+}
+
+/// The DriftDetected condition this controller owns is patched back with the
+/// machine's other conditions intact — a merge patch replaces an array
+/// wholesale, so sending only the one condition deletes the rest. Losing
+/// `Compliant` here silently resets the machine's policy verdict.
+#[tokio::test]
+async fn reconcile_drift_alert_preserves_sibling_conditions_on_the_machine() {
+    let mut alert = drift_alert("alert-sib", NS, "mc-sib", DriftSeverity::High);
+    alert
+        .owner_references_mut()
+        .push(machine_config_owner_ref("mc-sib"));
+
+    let mut mc = machine_config("mc-sib", NS);
+    mc.status = Some(crate::crds::MachineConfigStatus {
+        last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
+        observed_generation: Some(1),
+        conditions: vec![
+            Condition {
+                condition_type: "Reconciled".to_string(),
+                status: "True".to_string(),
+                reason: "ReconcileSuccess".to_string(),
+                message: "ok".to_string(),
+                last_transition_time: "2026-01-01T00:00:00Z".to_string(),
+                observed_generation: Some(1),
+            },
+            Condition {
+                condition_type: "Compliant".to_string(),
+                status: "True".to_string(),
+                reason: "PolicyCompliant".to_string(),
+                message: "Compliant with policy p".to_string(),
+                last_transition_time: "2026-01-01T00:00:00Z".to_string(),
+                observed_generation: Some(1),
+            },
+        ],
+        package_versions: Default::default(),
+    });
+
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::get(machine_config_path(NS, "mc-sib")).returning_json(&mc),
+        ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-sib")))
+            .returning_json(&mc),
+        expect_event_post(NS),
+        ExpectedCall::patch_status(format!("{}/status", drift_alert_path(NS, "alert-sib")))
+            .returning_json(&alert),
+    ]);
+
+    reconcile_drift_alert(Arc::new(alert), ctx)
+        .await
+        .expect("drift is recorded on the machine");
+
+    let report = harness.finish().await;
+    let types: Vec<String> = report.captured[1].body_json()["status"]["conditions"]
+        .as_array()
+        .expect("conditions")
+        .iter()
+        .map(|c| c["type"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(
+        types,
+        vec![
+            "Reconciled".to_string(),
+            "Compliant".to_string(),
+            "DriftDetected".to_string()
+        ],
+        "the patch must carry the machine's existing conditions plus DriftDetected"
+    );
 }
 
 #[tokio::test]
@@ -445,8 +512,11 @@ async fn has_active_drift_alerts_ignores_alerts_in_another_namespace() {
 /// state, and must requeue instead of answering.
 #[tokio::test(start_paused = true)]
 async fn has_active_drift_alerts_errors_when_the_cache_is_not_populated() {
+    // The writer is held for the length of the assertion: dropping it would
+    // resolve the wait with `WriterDropped` instead of timing out.
+    let (drift_alerts, _writer) = unready_store();
     let stores = ControllerStores {
-        drift_alerts: unready_store(),
+        drift_alerts,
         ..empty_stores()
     };
 

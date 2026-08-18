@@ -270,6 +270,78 @@ async fn reconcile_machine_config_emits_drift_event_when_active_alerts_match() {
     assert_eq!(drift_count, 1);
 }
 
+/// A machine whose drift is already recorded is the one case the generation
+/// skip above cannot cover: `has_drift` is true, so the reconcile runs in full
+/// every 60s. It must still write nothing and announce nothing while the
+/// situation holds, or a drifted fleet costs one etcd write and two events per
+/// machine per minute for as long as the drift lasts.
+#[tokio::test]
+async fn reconcile_machine_config_drifted_repeated_reconciles_write_once() {
+    let mut mc = machine_config("mc-steady-drift", NS);
+    mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
+
+    let alert = super::test_fixtures::drift_alert(
+        "alert-on-steady",
+        NS,
+        "mc-steady-drift",
+        crate::crds::DriftSeverity::Medium,
+    );
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!(
+                "{}/status",
+                machine_config_path(NS, "mc-steady-drift")
+            ))
+            .returning_json(&mc),
+            expect_event_post(NS), // Reconciled
+            expect_event_post(NS), // DriftDetected
+        ],
+        stores_with_drift(vec![alert]),
+    );
+
+    reconcile_machine_config(Arc::new(mc.clone()), ctx.clone())
+        .await
+        .unwrap();
+
+    let report = harness.finish().await;
+    assert_eq!(report.captured.len(), 3, "the first pass records the drift");
+
+    // Feed the status the operator just wrote back onto the object, which is
+    // what the next reconcile reads off the watch.
+    mc.status = Some(
+        serde_json::from_value(report.captured[0].body_json()["status"].clone())
+            .expect("the patched status must round-trip"),
+    );
+
+    let alert = super::test_fixtures::drift_alert(
+        "alert-on-steady",
+        NS,
+        "mc-steady-drift",
+        crate::crds::DriftSeverity::Medium,
+    );
+    let (ctx, _registry, harness) =
+        MockKubeHarness::with_stores(vec![], stores_with_drift(vec![alert]));
+
+    for _ in 0..10 {
+        reconcile_machine_config(Arc::new(mc.clone()), ctx.clone())
+            .await
+            .unwrap();
+    }
+
+    let report = harness.finish().await;
+    assert!(
+        report.captured.is_empty(),
+        "a machine whose drift is already recorded must make no API call at all, \
+         but made: {:?}",
+        report
+            .captured
+            .iter()
+            .map(|r| format!("{} {}", r.method, r.path))
+            .collect::<Vec<_>>()
+    );
+}
+
 // -----------------------------------------------------------------------
 // Module resolution branch
 // -----------------------------------------------------------------------
@@ -418,10 +490,13 @@ async fn reconcile_machine_config_when_drift_alert_cache_is_unpopulated_returns_
     let mut mc = machine_config("mc-nocache", NS);
     mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
 
+    // The writer is held for the length of the assertion: dropping it would
+    // resolve the wait with `WriterDropped` instead of timing out.
+    let (drift_alerts, _writer) = unready_store();
     let (ctx, _registry, harness) = MockKubeHarness::with_stores(
         vec![],
         ControllerStores {
-            drift_alerts: unready_store(),
+            drift_alerts,
             ..empty_stores()
         },
     );

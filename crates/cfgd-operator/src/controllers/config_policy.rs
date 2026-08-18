@@ -17,7 +17,8 @@ use cfgd_core::version_satisfies;
 
 use super::{
     ControllerContext, FIELD_MANAGER_STATUS, build_condition, compliance_summary, emit_event,
-    machine_key, matches_selector, namespaced_api, record_reconcile_success, upsert_condition,
+    machine_key, matches_selector, namespaced_api, record_reconcile_success, sort_and_cap_machines,
+    upsert_condition,
 };
 pub(super) async fn reconcile_config_policy(
     obj: Arc<ConfigPolicy>,
@@ -47,6 +48,7 @@ pub(super) async fn reconcile_config_policy(
         .collect();
 
     // Update each targeted MachineConfig's Compliant condition
+    let mut verdicts: Vec<MachineVerdict<'_>> = Vec::with_capacity(targeted_mcs.len());
     for mc in &targeted_mcs {
         let compliant = validate_policy_compliance(
             &mc.spec,
@@ -55,6 +57,10 @@ pub(super) async fn reconcile_config_policy(
             &obj.spec.packages,
             &obj.spec.settings,
         );
+        verdicts.push(MachineVerdict {
+            machine: mc,
+            compliant,
+        });
         let mc_name = mc.name_any();
         let mc_existing_conditions = mc
             .status
@@ -115,16 +121,7 @@ pub(super) async fn reconcile_config_policy(
         .unwrap_or(&[]);
 
     // Evaluate compliance counts and emit violation events
-    let tally = evaluate_policy_compliance(
-        &ctx,
-        &targeted_mcs,
-        &obj.spec.packages,
-        &obj.spec.required_modules,
-        &obj.spec.settings,
-        &name,
-        already_reported,
-    )
-    .await;
+    let tally = evaluate_policy_compliance(&ctx, &verdicts, &name, already_reported).await;
 
     let now = cfgd_core::utc_now_iso8601();
     let overall_status = if tally.non_compliant_count == 0 {
@@ -250,6 +247,17 @@ pub(super) struct ComplianceTally {
     pub(super) non_compliant_machines: Vec<String>,
 }
 
+/// One machine paired with the verdict its policy reached about it.
+///
+/// The verdict travels with the machine rather than being recomputed here: the
+/// ConfigPolicy controller already decides it to build the machine's `Compliant`
+/// condition, and `validate_policy_compliance` walks every declared package,
+/// module and setting per machine.
+pub(super) struct MachineVerdict<'a> {
+    pub(super) machine: &'a MachineConfig,
+    pub(super) compliant: bool,
+}
+
 /// Count compliant/non-compliant machines, emitting a `PolicyViolation` Warning
 /// only for machines that were not already recorded as violating.
 ///
@@ -259,25 +267,16 @@ pub(super) struct ComplianceTally {
 /// policies may target one machine and each overwrites the other's verdict.
 pub(super) async fn evaluate_policy_compliance(
     ctx: &ControllerContext,
-    machine_configs: &[Arc<MachineConfig>],
-    required_packages: &[PackageRef],
-    required_modules: &[ModuleRef],
-    required_settings: &BTreeMap<String, serde_json::Value>,
+    verdicts: &[MachineVerdict<'_>],
     policy_name: &str,
     already_reported: &[String],
 ) -> ComplianceTally {
     let mut compliant_count: u32 = 0;
     let mut non_compliant_machines: Vec<String> = Vec::new();
 
-    for mc in machine_configs {
-        let compliant = validate_policy_compliance(
-            &mc.spec,
-            mc.status.as_ref(),
-            required_modules,
-            required_packages,
-            required_settings,
-        );
-        if compliant {
+    for verdict in verdicts {
+        let mc = verdict.machine;
+        if verdict.compliant {
             compliant_count += 1;
             continue;
         }
@@ -301,14 +300,14 @@ pub(super) async fn evaluate_policy_compliance(
         non_compliant_machines.push(key);
     }
 
-    // Sorted so the persisted set is order-independent: the cache hands back
-    // machines in hash order, and an unsorted list would compare unequal
-    // between reconciles and force a write.
-    non_compliant_machines.sort();
+    // The count is taken BEFORE the cap: it is the exact total, and only the
+    // enumeration beside it is bounded.
+    let non_compliant_count = u32::try_from(non_compliant_machines.len()).unwrap_or(u32::MAX);
+    sort_and_cap_machines(&mut non_compliant_machines);
 
     ComplianceTally {
         compliant_count,
-        non_compliant_count: u32::try_from(non_compliant_machines.len()).unwrap_or(u32::MAX),
+        non_compliant_count,
         non_compliant_machines,
     }
 }

@@ -265,6 +265,9 @@ async fn handle_validate_module(
 
 /// Enforce ClusterConfigPolicy rules on a Module: trusted registries and unsigned rejection.
 async fn enforce_module_policy(client: &Client, spec: &ModuleSpec) -> Result<(), String> {
+    // A live read, deliberately: admission must judge the state as it is at
+    // the moment of the request, and a reflector cache is seconds stale — a
+    // policy tightened a moment ago would not yet bar the module it forbids.
     let ccpols: Api<ClusterConfigPolicy> = Api::all(client.clone());
     let policies = ccpols
         .list(&ListParams::default())
@@ -426,7 +429,8 @@ async fn collect_policy_modules(client: &Client, namespace: &str) -> PolicyModul
         debug: Vec::new(),
     };
 
-    // Namespace-scoped ConfigPolicy
+    // Namespace-scoped ConfigPolicy. A live read, deliberately: admission must
+    // judge current state, and a reflector cache is seconds stale.
     if let Ok(policies) = Api::<ConfigPolicy>::namespaced(client.clone(), namespace)
         .list(&ListParams::default())
         .await
@@ -452,6 +456,8 @@ async fn collect_policy_modules(client: &Client, namespace: &str) -> PolicyModul
         .ok()
         .and_then(|ns| ns.metadata.labels);
 
+    // Live read for the same reason as the namespaced list above: admission
+    // decides on current state, never on a cached view of it.
     if let Ok(policies) = Api::<ClusterConfigPolicy>::all(client.clone())
         .list(&ListParams::default())
         .await

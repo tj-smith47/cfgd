@@ -10,11 +10,12 @@ use crate::errors::OperatorError;
 use crate::metrics::PolicyLabels;
 
 use super::config_policy::{
-    emit_policy_evaluation_events, evaluate_policy_compliance, merge_policy_requirements,
+    MachineVerdict, emit_policy_evaluation_events, evaluate_policy_compliance,
+    merge_policy_requirements, validate_policy_compliance,
 };
 use super::{
     ControllerContext, FIELD_MANAGER_STATUS, build_condition, compliance_summary, matches_selector,
-    record_reconcile_success,
+    record_reconcile_success, sort_and_cap_machines,
 };
 pub(super) async fn reconcile_cluster_config_policy(
     obj: Arc<ClusterConfigPolicy>,
@@ -60,22 +61,28 @@ pub(super) async fn reconcile_cluster_config_policy(
             ns_policies.iter().map(|cp| &cp.spec).collect();
         let merged = merge_policy_requirements(&obj.spec, &ns_policy_specs);
 
-        let tally = evaluate_policy_compliance(
-            &ctx,
-            &machines,
-            &merged.packages,
-            &merged.modules,
-            &merged.settings,
-            &name,
-            already_reported,
-        )
-        .await;
+        let verdicts: Vec<MachineVerdict<'_>> = machines
+            .iter()
+            .map(|mc| MachineVerdict {
+                machine: mc,
+                compliant: validate_policy_compliance(
+                    &mc.spec,
+                    mc.status.as_ref(),
+                    &merged.modules,
+                    &merged.packages,
+                    &merged.settings,
+                ),
+            })
+            .collect();
+
+        let tally = evaluate_policy_compliance(&ctx, &verdicts, &name, already_reported).await;
         compliant_count += tally.compliant_count;
         non_compliant_machines.extend(tally.non_compliant_machines);
     }
 
-    non_compliant_machines.sort();
+    // Exact total first; only the enumerated list beside it is bounded.
     let non_compliant_count = u32::try_from(non_compliant_machines.len()).unwrap_or(u32::MAX);
+    sort_and_cap_machines(&mut non_compliant_machines);
 
     let now = cfgd_core::utc_now_iso8601();
     let overall_status = if non_compliant_count == 0 {
