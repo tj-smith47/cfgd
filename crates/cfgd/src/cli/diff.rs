@@ -1016,28 +1016,33 @@ mod tests {
     // manager answers once however many packages are checked.
     #[test]
     fn package_missing_drift_asks_a_manager_once_for_every_package_it_owns() {
-        let mgr = cfgd_core::test_helpers::MockPackageManager::new("npm")
-            .with_installed(&["left-pad", "chalk"]);
-        let enumerations = mgr.enumeration_counter();
-        let mgr_map: std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> =
-            [(
+        let enumerations = cfgd_core::test_helpers::measured_in_a_stable_generation(|| {
+            let mgr = cfgd_core::test_helpers::MockPackageManager::new("npm")
+                .with_installed(&["left-pad", "chalk"]);
+            let enumerations = mgr.enumeration_counter();
+            let mgr_map: std::collections::HashMap<
+                String,
+                &dyn cfgd_core::providers::PackageManager,
+            > = [(
                 "npm".to_string(),
                 &mgr as &dyn cfgd_core::providers::PackageManager,
             )]
             .into_iter()
             .collect();
 
-        let (printer, _cap) = Printer::for_test_doc();
-        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
-        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+            let (printer, _cap) = Printer::for_test_doc();
+            let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+            let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
 
-        for name in ["left-pad", "chalk", "rimraf", "eslint", "prettier"] {
-            package_missing_drift(&resolved_pkg("npm", name), &mgr_map, &cx);
-        }
+            for name in ["left-pad", "chalk", "rimraf", "eslint", "prettier"] {
+                package_missing_drift(&resolved_pkg("npm", name), &mgr_map, &cx);
+            }
+
+            enumerations.load(std::sync::atomic::Ordering::SeqCst)
+        });
 
         assert_eq!(
-            enumerations.load(std::sync::atomic::Ordering::SeqCst),
-            1,
+            enumerations, 1,
             "five packages on one manager must cost one enumeration"
         );
     }

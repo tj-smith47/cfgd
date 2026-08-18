@@ -521,12 +521,16 @@ pub fn scan_installed_packages(
         if !manager.is_available() {
             continue;
         }
-        match manager.installed_packages_with_versions(cx) {
+        // Through the context's memo, not the manager directly: the generate
+        // session holds ONE context across up to `MAX_TURNS` tool calls, and a
+        // model that asks about installed packages on several turns re-listed
+        // every available manager on each one.
+        match cx.installed_for(*manager) {
             Ok(pkgs) => {
-                for pkg in pkgs {
+                for pkg in pkgs.listed() {
                     entries.push(InstalledPackageEntry {
-                        name: pkg.name,
-                        version: pkg.version,
+                        name: pkg.name.clone(),
+                        version: pkg.version.clone(),
                         manager: manager.name().to_string(),
                     });
                 }

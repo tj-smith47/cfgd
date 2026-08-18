@@ -460,6 +460,35 @@ fn test_scan_installed_packages_collects_from_multiple_managers() {
     assert_eq!(entries[2].manager, "brew");
 }
 
+// A generate session holds ONE context across every turn of its tool loop, so
+// a model that scans installed packages on several turns must not re-list the
+// machine each time.
+#[test]
+fn test_scan_installed_packages_asks_each_manager_once_per_session() {
+    let enumerations = cfgd_core::test_helpers::measured_in_a_stable_generation(|| {
+        let printer = cfgd_core::test_helpers::test_printer();
+        let state = cfgd_core::test_helpers::test_state();
+        let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+        let brew =
+            cfgd_core::test_helpers::MockPackageManager::new("brew").with_installed(&["ripgrep"]);
+        let counter = brew.enumeration_counter();
+        let managers: Vec<&dyn PackageManager> = vec![&brew];
+
+        for _ in 0..3 {
+            let entries = scan_installed_packages(&managers, None, &cx).unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].name, "ripgrep");
+        }
+
+        counter.load(std::sync::atomic::Ordering::SeqCst)
+    });
+
+    assert_eq!(
+        enumerations, 1,
+        "three scan turns on one context must cost one enumeration per manager"
+    );
+}
+
 #[test]
 fn test_scan_installed_packages_filter_by_manager() {
     let printer = cfgd_core::test_helpers::test_printer();

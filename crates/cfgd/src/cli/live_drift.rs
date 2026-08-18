@@ -846,34 +846,37 @@ mod tests {
     // `cmd_verify` built before — the same manager is enumerated twice.
     #[test]
     fn both_halves_of_verify_share_one_enumeration_per_manager() {
-        let mgr = cfgd_core::test_helpers::MockPackageManager::new("npm")
-            .with_installed(&["left-pad", "chalk"]);
-        let enumerations = mgr.enumeration_counter();
-        let mut registry = ProviderRegistry::new();
-        registry.add_package_manager(Box::new(mgr));
+        let enumerations = cfgd_core::test_helpers::measured_in_a_stable_generation(|| {
+            let mgr = cfgd_core::test_helpers::MockPackageManager::new("npm")
+                .with_installed(&["left-pad", "chalk"]);
+            let enumerations = mgr.enumeration_counter();
+            let mut registry = ProviderRegistry::new();
+            registry.add_package_manager(Box::new(mgr));
 
-        let resolved = resolved_no_files();
-        let modules = vec![
-            module_with_package("dev", "npm", "left-pad"),
-            module_with_package("web", "npm", "chalk"),
-        ];
-        let (printer, _cap) = Printer::for_test_doc();
-        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
-        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+            let resolved = resolved_no_files();
+            let modules = vec![
+                module_with_package("dev", "npm", "left-pad"),
+                module_with_package("web", "npm", "chalk"),
+            ];
+            let (printer, _cap) = Printer::for_test_doc();
+            let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+            let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
 
-        cfgd_core::reconciler::verify(&resolved, &registry, &state, &modules, &cx).unwrap();
-        manager_verify_results(
-            &resolved,
-            &registry,
-            &modules,
-            &std::collections::HashSet::new(),
-            &cx,
-        )
-        .unwrap();
+            cfgd_core::reconciler::verify(&resolved, &registry, &state, &modules, &cx).unwrap();
+            manager_verify_results(
+                &resolved,
+                &registry,
+                &modules,
+                &std::collections::HashSet::new(),
+                &cx,
+            )
+            .unwrap();
+
+            enumerations.load(std::sync::atomic::Ordering::SeqCst)
+        });
 
         assert_eq!(
-            enumerations.load(std::sync::atomic::Ordering::SeqCst),
-            1,
+            enumerations, 1,
             "both verify halves must read one enumeration per manager"
         );
     }
