@@ -69,9 +69,9 @@ fn expected_alert_name() -> String {
 }
 
 /// The API server echoes the created object back, and the client deserializes
-/// it. A stub body missing `spec` fails to deserialize, which the create path
-/// reads as a failed attempt and retries — so a test using one silently
-/// exercises the retry arm instead of the success arm it is named for.
+/// it. A stub body missing `spec` fails to deserialize, which sends the create
+/// path down its unparsable-body arm — so a test using one exercises that arm
+/// rather than the ordinary success it is named for.
 fn created_alert_response(mc_ref: &str) -> DriftAlert {
     let mut alert = DriftAlert::new(
         &expected_alert_name(),
@@ -206,6 +206,36 @@ async fn create_drift_alert_crd_treats_409_conflict_as_already_exists_no_retry()
         report.captured.len(),
         2,
         "409 must short-circuit retry — exactly one POST attempt"
+    );
+}
+
+/// A 2xx whose body does not deserialize means the object was created and only
+/// the server's echo of it is unreadable. Retrying would POST a second time and
+/// take a 409 to learn what the first response already said.
+#[tokio::test(start_paused = true)]
+async fn create_drift_alert_crd_does_not_retry_a_created_alert_with_an_unparsable_body() {
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list(machine_configs_list_path()).returning_json(&mc_list(&[])),
+        // 201, but the body is not a DriftAlert — the client cannot parse it.
+        ExpectedCall::post(drift_alerts_create_path())
+            .with_status(201)
+            .returning_json(&serde_json::json!({ "kind": "DriftAlert" })),
+    ]);
+
+    create_drift_alert_crd(&ctx.client, DEVICE_ID, HOSTNAME, &[detail()], TIMESTAMP)
+        .await
+        .expect("a created alert is Ok even when its echo cannot be parsed");
+
+    let report = harness.finish().await;
+    let posts: Vec<_> = report
+        .captured
+        .iter()
+        .filter(|r| r.method == Method::POST && r.path.ends_with("/driftalerts"))
+        .collect();
+    assert_eq!(
+        posts.len(),
+        1,
+        "an unparsable 2xx body is success, not a failed create to retry"
     );
 }
 

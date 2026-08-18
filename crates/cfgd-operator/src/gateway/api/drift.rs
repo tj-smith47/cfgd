@@ -79,6 +79,20 @@ pub(super) async fn create_drift_alert_crd(
                 );
                 return Ok(());
             }
+            // A deserialize error reaches here only from a 2xx body: kube turns
+            // every 4xx/5xx into `Api`, parsing failures included. The object
+            // was created and only the server's echo of it is unreadable, so a
+            // retry would POST a second time and learn from the 409 what this
+            // arm already knows.
+            Err(kube::Error::SerdeError(e)) => {
+                tracing::warn!(
+                    name = %alert_name,
+                    device_id = %device_id,
+                    error = %e,
+                    "driftAlert CRD created, but the response body could not be parsed"
+                );
+                return Ok(());
+            }
             Err(e) => {
                 tracing::warn!(
                     device_id = %device_id,
