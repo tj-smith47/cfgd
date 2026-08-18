@@ -356,7 +356,7 @@ pub struct Cli {
     #[arg(long, global = true, env = "CFGD_PROFILE")]
     pub profile: Option<String>,
 
-    /// Verbose output (-v = debug, -vv = trace). Also accepts CFGD_VERBOSE as an on/off flag.
+    /// Verbose output (-v = info, -vv = debug, -vvv = trace). Also accepts CFGD_VERBOSE as an on/off flag.
     #[arg(
         long,
         short,

@@ -843,7 +843,7 @@ These flags work with any subcommand:
 | `--cache-dir <dir>` | | `CFGD_CACHE_DIR` | Override the cache directory (source, module, and update-check caches) |
 | `--runtime-dir <dir>` | | `CFGD_RUNTIME_DIR` | Override the runtime directory (daemon socket, locks) |
 | `--profile <name>` | | `CFGD_PROFILE` | Override the active profile |
-| `--verbose` | `-v` | `CFGD_VERBOSE` | Show debug output (`-vv` = trace) |
+| `--verbose` | `-v` | `CFGD_VERBOSE` | Open one tracing level per flag (`-v` = info, `-vv` = debug, `-vvv` = trace) |
 | `--quiet` | `-q` | `CFGD_QUIET` | Suppress all non-error output |
 | `--color <auto\|always\|never>` | | `CFGD_COLOR` | When to colorize terminal output. `auto` (default) follows the terminal, `NO_COLOR` and `TERM=dumb`; `always` colorizes even when stderr is not a terminal, for a pager that renders escapes (`less -R`) or a captured transcript; `never` disables it. Colour is never emitted under `-o json`/`yaml`/`name`/`jsonpath`/`template` whatever this says — an escape inside a payload string is corrupt data |
 | `--no-color` | | `NO_COLOR` | Disable colored terminal output (alias for `--color never`) |
@@ -863,7 +863,7 @@ rule instead (anything except `""`/`"0"`/`"false"` opts out); see
 
 ```sh
 CFGD_QUIET=1   cfgd profile list -o name   # same as -q
-CFGD_VERBOSE=on cfgd plan                  # same as -v; bare integers still work (CFGD_VERBOSE=2 = trace)
+CFGD_VERBOSE=on cfgd plan                  # same as -v; bare integers still work (CFGD_VERBOSE=2 = -vv)
 ```
 
 #### Structured output shapes (`jsonpath` / `template`)

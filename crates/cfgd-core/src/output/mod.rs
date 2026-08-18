@@ -51,6 +51,9 @@ pub mod prompts;
 
 pub mod raw;
 
+pub mod tracing_writer;
+pub use tracing_writer::LiveTracingWriter;
+
 pub mod doc;
 pub use doc::{Doc, SectionBuilder, StatusFields};
 

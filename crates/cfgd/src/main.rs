@@ -54,7 +54,7 @@ fn normalize_boolish_env(var: &str) {
 /// integers but rejects boolish spellings. Map boolish ON (`y`/`yes`/`on`/…) to
 /// `1` and boolish OFF (`n`/`no`/`off`/…) to `0`; leave bare integers untouched
 /// (`canonical_bool_str` returns `None` for `2`, so `CFGD_VERBOSE=2` still means
-/// trace) and leave unrecognized values for clap to reject.
+/// what `-vv` means) and leave unrecognized values for clap to reject.
 fn normalize_cfgd_verbose_env() {
     if let Ok(raw) = std::env::var("CFGD_VERBOSE")
         && let Some(canonical) = canonical_bool_str(&raw)
@@ -64,6 +64,30 @@ fn normalize_cfgd_verbose_env() {
         unsafe {
             std::env::set_var("CFGD_VERBOSE", count);
         }
+    }
+}
+
+/// The `RUST_LOG`-style default the CLI's own flags ask for, one level per
+/// `-v`.
+///
+/// Default is `warn`, not `info`: an `info!` is cfgd narrating itself, and
+/// every user-facing thing it has to say is already a `Printer` line. What the
+/// tracing channel adds at that level is a second copy of the same sentence,
+/// written to a stream the live region repaints — the strand this and
+/// `LiveTracingWriter` close from opposite ends. `-v` restores `info` for
+/// anyone who wants the narration back.
+///
+/// `RUST_LOG` still outranks all of it: this is the fallback
+/// `tracing_env_filter` uses when the environment says nothing.
+fn tracing_filter_for(quiet: bool, verbose: u8) -> &'static str {
+    if quiet {
+        return "error";
+    }
+    match verbose {
+        0 => "warn",
+        1 => "info",
+        2 => "debug",
+        _ => "trace",
     }
 }
 
@@ -203,15 +227,11 @@ fn main() -> anyhow::Result<()> {
     };
 
     // Initialize tracing
-    let filter = if cli.quiet {
-        "error"
-    } else {
-        match cli.verbose {
-            0 => "info",
-            1 => "debug",
-            _ => "trace",
-        }
-    };
+    let filter = tracing_filter_for(cli.quiet, cli.verbose);
+    // Bound to the process printer once it exists, a few statements below.
+    // Built here because the subscriber has to be installed first: anything
+    // the printer's own construction logs would otherwise go nowhere.
+    let tracing_writer = cfgd_core::output::LiveTracingWriter::new();
     // The Windows Service path installs its OWN tracing subscriber (file +
     // Event Log sinks) inside `windows_service_main`. Claiming the global
     // subscriber slot here first would silently defeat it — its `try_init`
@@ -228,12 +248,15 @@ fn main() -> anyhow::Result<()> {
     );
     // Route tracing to stderr: stdout is reserved for `-o` machine output
     // (the `-o json` purity contract), mirroring Printer human-on-stderr.
+    // Through `LiveTracingWriter`, not `std::io::stderr`: an event written
+    // straight at the stream a live region repaints strands the region's last
+    // paint there permanently.
     if !is_windows_service {
         tracing_subscriber::fmt()
             .with_env_filter(cfgd_core::tracing_env_filter(filter))
             .with_target(false)
             .without_time()
-            .with_writer(std::io::stderr)
+            .with_writer(tracing_writer.clone())
             .init();
     }
 
@@ -261,6 +284,7 @@ fn main() -> anyhow::Result<()> {
         color_choice,
     )
     .with_list_envelope(cli.list_envelope);
+    tracing_writer.attach(&printer);
 
     if jsonpath_deprecated {
         // A deprecation notice is a stderr diagnostic, not `-o` data — and
@@ -327,9 +351,31 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical_bool_str, normalize_boolish_env, normalize_cfgd_verbose_env};
+    use super::{
+        canonical_bool_str, normalize_boolish_env, normalize_cfgd_verbose_env, tracing_filter_for,
+    };
     use cfgd_core::test_helpers::EnvVarGuard;
     use serial_test::serial;
+
+    /// The tracing channel is quiet by default and opens one level per `-v`.
+    ///
+    /// `info` used to be the default, which put a second copy of lines the
+    /// Printer already prints onto the stream the live region repaints.
+    #[test]
+    fn tracing_filter_opens_one_level_per_verbose_flag() {
+        assert_eq!(tracing_filter_for(false, 0), "warn");
+        assert_eq!(tracing_filter_for(false, 1), "info");
+        assert_eq!(tracing_filter_for(false, 2), "debug");
+        assert_eq!(tracing_filter_for(false, 9), "trace");
+    }
+
+    /// `--quiet` outranks any `-v` count clap collected alongside it.
+    #[test]
+    fn quiet_reports_errors_only_whatever_the_verbose_count_is() {
+        for verbose in [0, 1, 4] {
+            assert_eq!(tracing_filter_for(true, verbose), "error");
+        }
+    }
 
     #[test]
     fn canonical_bool_str_accepts_truthy_spellings() {
