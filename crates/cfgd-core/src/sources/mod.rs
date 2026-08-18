@@ -794,7 +794,7 @@ impl SourceManager {
 
         let name = spec.name.as_str();
         if self.allow_unsigned {
-            tracing::info!(
+            tracing::debug!(
                 source = %name,
                 "Signature verification skipped for source '{}' (allow-unsigned is set)",
                 name
@@ -1396,7 +1396,7 @@ pub fn verify_head_signature(name: &str, repo_dir: &Path) -> Result<()> {
 pub(super) fn classify_signature_status(name: &str, status: &str) -> Result<()> {
     match status {
         "G" | "U" => {
-            tracing::info!(
+            tracing::debug!(
                 source = %name,
                 "Source '{}' HEAD commit signature verified (status: {})",
                 name, status

@@ -70,20 +70,27 @@ fn normalize_cfgd_verbose_env() {
 /// The `RUST_LOG`-style default the CLI's own flags ask for, one level per
 /// `-v`.
 ///
-/// Default is `warn`, not `info`: an `info!` is cfgd narrating itself, and
-/// every user-facing thing it has to say is already a `Printer` line. What the
-/// tracing channel adds at that level is a second copy of the same sentence,
-/// written to a stream the live region repaints — the strand this and
-/// `LiveTracingWriter` close from opposite ends. `-v` restores `info` for
-/// anyone who wants the narration back.
+/// A command's default is `warn`, not `info`: an `info!` is cfgd narrating
+/// itself, and every user-facing thing it has to say is already a `Printer`
+/// line. What the tracing channel adds at that level is a second copy of the
+/// same sentence, written to a stream the live region repaints — the strand
+/// this and `LiveTracingWriter` close from opposite ends. `-v` restores `info`
+/// for anyone who wants the narration back.
+///
+/// `cfgd daemon` keeps `info` as its floor, because there the log IS the
+/// output: a service under systemd or launchd prints its reconcile ticks,
+/// sync results and update installs to journald through this channel and to
+/// no other, so dropping to `warn` would leave an operator reading an empty
+/// journal.
 ///
 /// `RUST_LOG` still outranks all of it: this is the fallback
 /// `tracing_env_filter` uses when the environment says nothing.
-fn tracing_filter_for(quiet: bool, verbose: u8) -> &'static str {
+fn tracing_filter_for(quiet: bool, verbose: u8, daemon: bool) -> &'static str {
     if quiet {
         return "error";
     }
     match verbose {
+        0 if daemon => "info",
         0 => "warn",
         1 => "info",
         2 => "debug",
@@ -227,7 +234,8 @@ fn main() -> anyhow::Result<()> {
     };
 
     // Initialize tracing
-    let filter = tracing_filter_for(cli.quiet, cli.verbose);
+    let is_daemon = matches!(cli.command, Some(cli::Command::Daemon { .. }));
+    let filter = tracing_filter_for(cli.quiet, cli.verbose, is_daemon);
     // Bound to the process printer once it exists, a few statements below.
     // Built here because the subscriber has to be installed first: anything
     // the printer's own construction logs would otherwise go nowhere.
@@ -311,7 +319,6 @@ fn main() -> anyhow::Result<()> {
     // location (or pin XDG_CONFIG_HOME). No-op off macOS and in non-interactive
     // sessions; re-resolve the config path when the dir was moved. Skipped for
     // the daemon, which must never block on a prompt when run in the foreground.
-    let is_daemon = matches!(cli.command, Some(cli::Command::Daemon { .. }));
     if !is_daemon
         && let Some(new_config) =
             cli::config_migration::maybe_migrate_macos_config(&printer, explicit_config, assume_yes)
@@ -363,17 +370,28 @@ mod tests {
     /// Printer already prints onto the stream the live region repaints.
     #[test]
     fn tracing_filter_opens_one_level_per_verbose_flag() {
-        assert_eq!(tracing_filter_for(false, 0), "warn");
-        assert_eq!(tracing_filter_for(false, 1), "info");
-        assert_eq!(tracing_filter_for(false, 2), "debug");
-        assert_eq!(tracing_filter_for(false, 9), "trace");
+        assert_eq!(tracing_filter_for(false, 0, false), "warn");
+        assert_eq!(tracing_filter_for(false, 1, false), "info");
+        assert_eq!(tracing_filter_for(false, 2, false), "debug");
+        assert_eq!(tracing_filter_for(false, 9, false), "trace");
     }
 
-    /// `--quiet` outranks any `-v` count clap collected alongside it.
+    /// The daemon's log is its only output, so its floor stays `info` — and
+    /// `-v` still opens the levels above it.
+    #[test]
+    fn the_daemon_keeps_info_as_its_floor() {
+        assert_eq!(tracing_filter_for(false, 0, true), "info");
+        assert_eq!(tracing_filter_for(false, 1, true), "info");
+        assert_eq!(tracing_filter_for(false, 2, true), "debug");
+    }
+
+    /// `--quiet` outranks any `-v` count clap collected alongside it, and the
+    /// daemon is not exempt: an operator who asked for silence gets it.
     #[test]
     fn quiet_reports_errors_only_whatever_the_verbose_count_is() {
         for verbose in [0, 1, 4] {
-            assert_eq!(tracing_filter_for(true, verbose), "error");
+            assert_eq!(tracing_filter_for(true, verbose, false), "error");
+            assert_eq!(tracing_filter_for(true, verbose, true), "error");
         }
     }
 

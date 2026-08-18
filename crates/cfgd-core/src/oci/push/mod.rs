@@ -138,7 +138,7 @@ pub(super) fn push_module_inner(
 
     let manifest_size = manifest_json.len() as u64;
     let manifest_digest = resolve_pushed_digest(&manifest_resp, &manifest_json);
-    tracing::info!(
+    tracing::debug!(
         reference = %oci_ref,
         digest = %manifest_digest,
         "module pushed"
@@ -232,7 +232,7 @@ pub fn push_module_multiplatform(
             if let Some(s) = spinner {
                 let _ = s.finish_ok(format!("Pushed multi-platform module to {artifact_ref}"));
             }
-            tracing::info!(
+            tracing::debug!(
                 reference = %oci_ref,
                 digest = %index_digest,
                 platforms = builds.len(),

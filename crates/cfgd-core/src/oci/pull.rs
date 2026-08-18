@@ -178,7 +178,7 @@ pub fn pull_module(
         let _ = s.finish_ok(format!("Pulled module from {artifact_ref}"));
     }
 
-    tracing::info!(
+    tracing::debug!(
         reference = %oci_ref,
         output = %output_dir.posix(),
         "module pulled"

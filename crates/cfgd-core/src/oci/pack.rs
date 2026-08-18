@@ -386,7 +386,7 @@ pub fn pack_image(
         let _ = s.finish_ok(format!("Packed image to {artifact_ref}"));
     }
 
-    tracing::info!(
+    tracing::debug!(
         reference = %oci_ref,
         digest = %manifest_digest,
         "image packed and pushed"

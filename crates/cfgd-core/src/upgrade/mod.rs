@@ -511,7 +511,7 @@ fn verify_cosign_bundle(
         }
     }
     outcome.map(|()| {
-        tracing::info!(asset = %bundle_asset.name, "cosign signature verified");
+        tracing::debug!(asset = %bundle_asset.name, "cosign signature verified");
         if require_cosign {
             VerificationMode::StrictCosignRequired
         } else {
@@ -1015,7 +1015,7 @@ pub fn restart_daemon_if_running() -> bool {
     // Daemon is running — terminate so the service manager restarts it
     // with the new binary.
     crate::terminate_process(status.pid);
-    tracing::info!("terminated daemon (pid {})", status.pid);
+    tracing::debug!("terminated daemon (pid {})", status.pid);
     true
 }
 

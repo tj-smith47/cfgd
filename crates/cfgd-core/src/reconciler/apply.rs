@@ -1171,7 +1171,7 @@ impl<'a> super::Reconciler<'a> {
         // triggered the regeneration are durable, so the run that stops
         // withholding still converges it.
         if self.withhold_env_surface {
-            tracing::info!("env surface withheld: skipping post-phase regeneration");
+            tracing::debug!("env surface withheld: skipping post-phase regeneration");
         } else if !secret_env_collector.is_empty() || path_dirs_changed {
             let (env_actions, _) = self.plan_env(
                 &resolved.merged.env,

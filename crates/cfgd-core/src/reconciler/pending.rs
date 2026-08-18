@@ -1560,7 +1560,7 @@ pub fn withhold_from_plan(plan: &mut Plan, exclusions: &DecisionExclusions) -> u
     super::managers::prune_to_surviving_consumers(plan);
     let withheld = before.saturating_sub(plan.total_actions());
     if withheld > 0 {
-        tracing::info!(
+        tracing::debug!(
             actions = withheld,
             "withheld actions whose resource awaits a source decision"
         );

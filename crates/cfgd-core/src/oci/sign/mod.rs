@@ -43,7 +43,7 @@ pub fn sign_artifact(artifact_ref: &str, key_path: Option<&str>) -> Result<(), O
         });
     }
 
-    tracing::info!(reference = artifact_ref, "artifact signed with cosign");
+    tracing::debug!(reference = artifact_ref, "artifact signed with cosign");
     Ok(())
 }
 
@@ -129,7 +129,7 @@ pub fn verify_signature(artifact_ref: &str, opts: &VerifyOptions<'_>) -> Result<
         });
     }
 
-    tracing::info!(reference = artifact_ref, "signature verified");
+    tracing::debug!(reference = artifact_ref, "signature verified");
     Ok(())
 }
 
@@ -220,7 +220,7 @@ pub fn attach_attestation(
         });
     }
 
-    tracing::info!(reference = artifact_ref, "attestation attached");
+    tracing::debug!(reference = artifact_ref, "attestation attached");
     Ok(())
 }
 
@@ -254,7 +254,7 @@ pub fn verify_attestation(
         });
     }
 
-    tracing::info!(reference = artifact_ref, "attestation verified");
+    tracing::debug!(reference = artifact_ref, "attestation verified");
     Ok(())
 }
 

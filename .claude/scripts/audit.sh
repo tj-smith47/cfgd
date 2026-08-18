@@ -443,8 +443,10 @@ check_pattern error \
     'output/'
 
 log_section "User-Facing Advisories (config/module/source domains)"
-# tracing::warn!/error! is invisible without RUST_LOG — an advisory routed
-# there is one the user never sees. This is what happened to
+# tracing::info!/warn!/error! is invisible without RUST_LOG — an advisory routed
+# there is one the user never sees, and `info!` is the least visible of the
+# three: the cfgd binary's own default filter is `warn`, so an info event needs
+# both RUST_LOG and a reader. This is what happened to
 # warn_on_legacy_theme_keys before it was rerouted through
 # CfgdConfig.deprecations + printer.deprecation() (see output-module.md).
 #
@@ -457,7 +459,7 @@ log_section "User-Facing Advisories (config/module/source domains)"
 # parse function calls (check_yaml_anchor_limit, read_manifest, …). Scanning the
 # whole domain covers all of them, and needs no span walk to be defeated by a
 # brace in a string literal or by a body-less trait signature. The domain
-# carries no legitimate tracing::warn!/error! today, so the marker below is the
+# carries no legitimate tracing::info!/warn!/error! today, so the marker below is the
 # whole allow-list; the separate "Config Parsing Boundary" gate above keeps
 # config-struct parsing from migrating out of these directories in the first
 # place.
@@ -477,7 +479,7 @@ while IFS= read -r -d '' rsfile; do
     esac
     file_hits=$(strip_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
         { code = code_only($0); comment = LAST_COMMENT }
-        code ~ /tracing::(warn|error)!/ &&
+        code ~ /tracing::(info|warn|error)!/ &&
         !is_comment_line($0) &&
         !marker_applies(comment, prev, prev_comment, "tracing-ok:") { print }
         { prev = $0; prev_comment = comment }
@@ -488,10 +490,10 @@ while IFS= read -r -d '' rsfile; do
 done < <(find "${advisory_scope_dirs[@]}" -name '*.rs' -print0 2>/dev/null)
 advisory_violations=$(echo "$advisory_violations" | sed '/^$/d')
 if [[ -n "$advisory_violations" ]]; then
-    log_error "tracing::warn!/error! in the config/module/source domains (invisible without RUST_LOG — route through the deprecations-Vec + printer.deprecation() pattern, or mark // tracing-ok: <why> if genuinely internal):"
+    log_error "tracing::info!/warn!/error! in the config/module/source domains (invisible without RUST_LOG — route through the deprecations-Vec + printer.deprecation() pattern, or mark // tracing-ok: <why> if genuinely internal):"
     echo "$advisory_violations" | head -20
 else
-    log_ok "No tracing::warn!/error! in the config/module/source domains"
+    log_ok "No tracing::info!/warn!/error! in the config/module/source domains"
 fi
 
 log_section "Controlled Shell Execution"

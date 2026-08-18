@@ -116,13 +116,14 @@ Every `cmd_*` function in `crates/cfgd/src/cli/` must have a row in
 `.claude/rules/structured-output-coverage.md`; `.claude/scripts/audit.sh`
 fails when one is missing.
 
-## No `tracing::warn!`/`tracing::error!` in the config/module/source domains
+## No `tracing::info!`/`warn!`/`error!` in the config/module/source domains
 
 Banned anywhere under `crates/cfgd-core/src/config/`,
 `crates/cfgd-core/src/modules/`, or `crates/cfgd-core/src/sources/` — the three
 domains whose whole job is turning user-authored YAML/TOML into cfgd's typed
-config. `tracing::warn!`/`tracing::error!` writes to a channel that's invisible
-without `RUST_LOG` set; a legacy-key deprecation, an ambiguous-profile notice,
+config. `tracing::info!`/`warn!`/`error!` writes to a channel that's invisible
+without `RUST_LOG` set (and `info!` is the least visible of the three — the cfgd
+binary's own default filter is `warn`); a legacy-key deprecation, an ambiguous-profile notice,
 or a malformed-manifest warning routed there is an advisory the user never
 sees, the exact bug `warn_on_legacy_theme_keys` shipped with before it was
 rerouted (see `parse::REMOVED_THEME_KEYS` / `RENAMED_THEME_KEYS`).
@@ -163,3 +164,65 @@ have to perform, or anything that changes what they should do next is
 user-facing. "Internal" means a diagnostic whose entire audience is someone
 already reading `RUST_LOG` output — cache timings, retry counts, protocol
 traces.
+
+## A tracing event never restates a Printer line
+
+**Whatever the domain: if a `Printer` already says it on this path, the tracing
+event may not say it again.** The duplicate is not merely noise — it is a second
+copy of the same sentence written to the ONE stream the live region repaints,
+and any write there that does not go through the region strands the last paint
+of whatever bar is on screen. `cfgd module push` printed its result three times
+that way (spinner label, `info!`, `finish_ok` + `Digest` kv) and left the
+spinner frozen on the terminal doing it.
+
+```rust
+// WRONG — the caller already prints "Signed artifact"
+tracing::info!(reference = artifact_ref, "artifact signed with cosign");
+
+// RIGHT — the fields are a debugging detail, the sentence is the Printer's
+tracing::debug!(reference = artifact_ref, "artifact signed with cosign");
+```
+
+Demote to `debug!` when the event carries a field the printed line does not (a
+digest, a pid, a count) — that keeps it for whoever is reading `RUST_LOG` and
+takes it out of everyone else's terminal. Delete it when it carries nothing the
+printed line does not.
+
+An event that is NOT a duplicate — a genuinely internal diagnostic, an event
+the daemon's journal is the only reader of — stays at the level it belongs at
+and carries the `// tracing-ok: <why>` marker inside the banned domains.
+
+## The two mechanisms that keep tracing off the live region
+
+Both live in `output/`; nothing outside it may reach for either.
+
+- **`output::LiveTracingWriter`** (`output/tracing_writer.rs`) — the `MakeWriter`
+  the cfgd binary installs on its subscriber. Every event is written through the
+  printer's `MultiProgress`, so it clears the bars, lands, and lets them repaint
+  beneath it. `main.rs` builds one before the subscriber (the subscriber has to
+  be live for anything the printer's construction logs) and calls `attach(&printer)`
+  once the process printer exists; an unattached writer, and one attached to a
+  printer with no live region, writes plain stderr. Never wire a subscriber to
+  `std::io::stderr` in the cfgd binary again.
+- **`main.rs::tracing_filter_for(quiet, verbose, daemon)`** — the default filter.
+  A command defaults to `warn` and each `-v` opens one level (`info`, `debug`,
+  `trace`); `--quiet` is `error`. `cfgd daemon` keeps `info` as its floor,
+  because there the log IS the output — a service prints its ticks to journald
+  through this channel and no other. `RUST_LOG` outranks all of it.
+
+## `LiveBarState` is shared by every renderer writing one live region
+
+`renderer::LiveBarState` (the live-bar count plus the broken-terminal latch) is
+held in an `Arc` and carried through `Printer::build_derived`, because a derived
+printer writes the SAME `MultiProgress` and the SAME sinks as its parent. A
+derived renderer counting its own bars starts at zero, answers the routing gate
+"no bar is live" while the parent's spinner is painting, and raw-writes over it
+— which is what froze `cfgd sync`'s spinner, since every quiet library sink
+(`cli/sync.rs`, `cli/compliance.rs`, `cli/source/show.rs`, `cli/daemon.rs`,
+`daemon/sync.rs`) is a derived printer whose `Fail` statuses, `alert()`s and
+`deprecation()`s survive `Verbosity::Quiet`. Never mint a fresh `LiveBarState`
+for a renderer that shares an existing region.
+
+A claim about a stranded paint is provable on ONE surface only —
+`Printer::for_test_live_terminal`, the emulated screen. See `shared-utils.md`,
+"three live-region capture constructors".

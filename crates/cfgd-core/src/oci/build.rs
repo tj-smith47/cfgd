@@ -234,7 +234,7 @@ pub fn build_module(
 
     let out = output_dir.path().to_path_buf();
     let _keep = output_dir.keep();
-    tracing::info!(output = %out.posix(), "module built");
+    tracing::debug!(output = %out.posix(), "module built");
     Ok(out)
 }
 
