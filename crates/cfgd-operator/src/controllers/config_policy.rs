@@ -326,7 +326,10 @@ async fn clear_compliant_verdicts(machines: &Api<MachineConfig>, names: &[String
         // The patch below replaces the whole conditions array, so it must be
         // built from the live object: a watch-cache copy can predate a
         // condition the machine controller wrote concurrently, and a merge
-        // built from it would silently revert that write.
+        // built from it would silently revert that write. One GET per machine
+        // is the accepted cost: this loop runs only when a policy is deleted,
+        // and the clear is already one PATCH per machine, so the read at most
+        // doubles a per-machine fan-out the write side cannot avoid.
         let live = match machines.get_opt(mc_name).await {
             Ok(Some(mc)) => mc,
             // Already gone; there is no verdict left to retire.

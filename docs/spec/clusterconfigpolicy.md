@@ -143,6 +143,23 @@ Follows the standard Kubernetes condition convention.
 
 ---
 
+## Deletion
+
+A `ClusterConfigPolicy` carries no cleanup finalizer, unlike
+[`ConfigPolicy`](configpolicy.md#deletion). Its verdict lives entirely in its
+own status (it writes no condition onto the machines it evaluates), and the API
+server removes that status with the object, so deletion leaves nothing behind
+for another controller to keep reporting.
+
+One trace does outlive the object: the policy's
+`cfgd_operator_devices_compliant` metric series keeps exporting its last count
+until the operator process restarts. Removing it would require a
+deletion-blocking finalizer bought purely for in-process metric hygiene, which
+is a worse trade than a bounded stale series: treat a series whose policy no
+longer exists as retired.
+
+---
+
 ## Full Example
 
 ```yaml
