@@ -11,7 +11,10 @@
 # Usage:
 #   setup-k8s-demo.sh up     # create cluster, build+load images, install chart
 #   setup-k8s-demo.sh down   # delete cluster, registry container, staged dirs
-set -euo pipefail
+# -E so up()'s ERR trap is inherited by the stage functions it calls; without it
+# bash runs no ERR trap for a failure inside a function, which is where every
+# stage of the bring-up runs.
+set -Eeuo pipefail
 
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$PWD"
@@ -42,6 +45,19 @@ require() {
     }
 }
 
+# `$CFGD_DEMO_K8S_DIR` is an override, so the path teardown recursively deletes
+# is caller-supplied. Refuse anything that is not a real subdirectory of $HOME:
+# an empty or unset value would make the delete `rm -rf /`-shaped, and `$HOME`
+# itself is the one subdirectory-of-$HOME that must never be the target.
+assert_work_dir_deletable() {
+    case "$WORK_DIR" in
+        "") echo "CFGD_DEMO_K8S_DIR resolved to an empty path; refusing to delete." >&2; return 1 ;;
+        "$HOME") echo "CFGD_DEMO_K8S_DIR is \$HOME; refusing to delete." >&2; return 1 ;;
+        "$HOME"/?*) return 0 ;;
+        *) echo "CFGD_DEMO_K8S_DIR ($WORK_DIR) is outside \$HOME; refusing to delete." >&2; return 1 ;;
+    esac
+}
+
 teardown() {
     log "Tearing down"
     # `kind delete` needs a kubeconfig path it may write to; a missing file is
@@ -49,7 +65,9 @@ teardown() {
     mkdir -p "$WORK_DIR"
     kind delete cluster --name "$CLUSTER_NAME" >/dev/null 2>&1 || true
     docker rm -f "$REGISTRY_NAME" >/dev/null 2>&1 || true
-    rm -rf "$WORK_DIR"
+    if assert_work_dir_deletable; then
+        rm -rf "$WORK_DIR"
+    fi
     echo "Deleted kind cluster '$CLUSTER_NAME', registry '$REGISTRY_NAME', and $WORK_DIR"
 }
 
@@ -87,16 +105,18 @@ create_cluster() {
 # the cluster network — not through containerd. Pods resolve names through
 # CoreDNS, which has no view of docker's embedded DNS, so the registry's docker
 # name is not resolvable there. A selector-less Service plus a hand-written
-# Endpoints pointing at the registry container's address on the kind network is
-# what makes `kind-registry:5000` mean the same thing inside a cfgd-system pod
-# as it does on the node.
+# EndpointSlice pointing at the registry container's address on the kind network
+# is what makes `kind-registry:5000` mean the same thing inside a cfgd-system pod
+# as it does on the node. EndpointSlice rather than the v1 Endpoints it replaces:
+# Endpoints is deprecated as of k8s 1.33, so a kind node-image bump would retire
+# the demo's only route to the registry.
 publish_registry_service() {
     log "Publishing $REGISTRY_NAME as a Service in $NAMESPACE"
     local reg_ip
     reg_ip="$(docker inspect -f '{{.NetworkSettings.Networks.kind.IPAddress}}' "$REGISTRY_NAME")"
     if [ -z "$reg_ip" ]; then
         echo "Could not determine $REGISTRY_NAME's address on the kind network." >&2
-        exit 1
+        return 1
     fi
     kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
     kubectl apply -f - <<EOF
@@ -112,18 +132,23 @@ spec:
       targetPort: 5000
       protocol: TCP
 ---
-apiVersion: v1
-kind: Endpoints
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
 metadata:
   name: ${REGISTRY_NAME}
   namespace: ${NAMESPACE}
-subsets:
+  labels:
+    kubernetes.io/service-name: ${REGISTRY_NAME}
+addressType: IPv4
+ports:
+  - name: registry
+    port: 5000
+    protocol: TCP
+endpoints:
   - addresses:
-      - ip: ${reg_ip}
-    ports:
-      - name: registry
-        port: 5000
-        protocol: TCP
+      - ${reg_ip}
+    conditions:
+      ready: true
 EOF
 }
 
@@ -165,6 +190,19 @@ build_and_load_images() {
     kind load docker-image "cfgd-operator:${IMAGE_TAG}" "cfgd-csi:${IMAGE_TAG}" --name "$CLUSTER_NAME"
 }
 
+# The host `cfgd` the tape's first beat runs. `--bin cfgd` is not optional: a
+# plain `cargo build -p cfgd` unifies features across the workspace and links a
+# test-helpers cfgd-core, whose binary resolves a fake $HOME and so pushes from
+# somewhere the recording never shows.
+build_host_cli() {
+    log "Building the host cfgd binary"
+    cargo build --release --bin cfgd
+    if [ ! -x "$REPO_ROOT/target/release/cfgd" ]; then
+        echo "cfgd was not built at $REPO_ROOT/target/release/cfgd" >&2
+        return 1
+    fi
+}
+
 install_cert_manager() {
     log "Installing cert-manager $CERT_MANAGER_VERSION"
     kubectl apply -f \
@@ -172,6 +210,32 @@ install_cert_manager() {
     kubectl wait --for=condition=Available --timeout=300s \
         -n cert-manager deployment/cert-manager \
         deployment/cert-manager-webhook deployment/cert-manager-cainjector
+    # Available says the Deployment has ready replicas, not that the webhook's
+    # Service has an endpoint behind it yet. cert-manager's own validating
+    # webhook intercepts the chart's Certificate, so a create landing in that
+    # window fails with a 500 that `helm --wait` cannot retry past.
+    kubectl wait --for=condition=Ready --timeout=180s \
+        -n cert-manager pod -l app.kubernetes.io/component=webhook
+    wait_for_webhook_endpoint
+}
+
+# Poll rather than `kubectl wait`: the EndpointSlice does not exist at all until
+# the first endpoint is published, and `kubectl wait` on an absent resource
+# fails immediately instead of waiting for it to appear.
+wait_for_webhook_endpoint() {
+    local deadline=$((SECONDS + 180))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        local ready
+        ready="$(kubectl get endpointslice -n cert-manager \
+            -l kubernetes.io/service-name=cert-manager-webhook \
+            -o jsonpath='{.items[*].endpoints[*].conditions.ready}' 2>/dev/null || true)"
+        case "$ready" in
+            *true*) return 0 ;;
+        esac
+        sleep 2
+    done
+    echo "cert-manager's webhook Service never got a ready endpoint." >&2
+    return 1
 }
 
 install_chart() {
@@ -180,6 +244,35 @@ install_chart() {
     # webhook silently skipped produces a pod that runs with no module and no
     # error, which is a worse demo (and a worse validation signal) than a loud
     # refusal.
+    # Retried because the Certificate create still races cert-manager's webhook
+    # even after its endpoint is ready: the caBundle the API server holds for
+    # that webhook is refreshed asynchronously, and the failure is a transient
+    # 500 that `helm --wait` reports as a dead install. `upgrade --install` is
+    # idempotent, so a retry resumes rather than duplicating.
+    local attempt
+    for attempt in 1 2 3; do
+        if helm_install_attempt; then
+            break
+        fi
+        if [ "$attempt" = 3 ]; then
+            echo "helm install failed three times." >&2
+            return 1
+        fi
+        log "helm install failed (attempt $attempt); retrying"
+        sleep 10
+    done
+
+    log "Waiting for the operator, the CSI driver, and the webhook certificate"
+    kubectl -n "$NAMESPACE" rollout status deployment/cfgd-operator --timeout=180s
+    kubectl -n "$NAMESPACE" rollout status daemonset/cfgd-csi --timeout=180s
+    # The MutatingWebhookConfiguration's caBundle is written by cert-manager's
+    # cainjector after the Certificate is issued. Creating the demo pod before
+    # that lands fails admission outright under failurePolicy=Fail.
+    kubectl wait --for=condition=Ready --timeout=180s \
+        -n "$NAMESPACE" certificate/cfgd-webhook-tls
+}
+
+helm_install_attempt() {
     helm upgrade --install cfgd "$REPO_ROOT/chart/cfgd" \
         -n "$NAMESPACE" --create-namespace \
         --set operator.enabled=true \
@@ -197,15 +290,6 @@ install_chart() {
         --set agent.enabled=false \
         --set deviceGateway.enabled=false \
         --wait --timeout=300s
-
-    log "Waiting for the operator, the CSI driver, and the webhook certificate"
-    kubectl -n "$NAMESPACE" rollout status deployment/cfgd-operator --timeout=180s
-    kubectl -n "$NAMESPACE" rollout status daemonset/cfgd-csi --timeout=180s
-    # The MutatingWebhookConfiguration's caBundle is written by cert-manager's
-    # cainjector after the Certificate is issued. Creating the demo pod before
-    # that lands fails admission outright under failurePolicy=Fail.
-    kubectl wait --for=condition=Ready --timeout=180s \
-        -n "$NAMESPACE" certificate/cfgd-webhook-tls
 }
 
 prepare_namespace() {
@@ -274,7 +358,15 @@ spec:
 EOF
 
     # The tape runs `cfgd` and `kubectl cfgd` from the freshly built tree, never
-    # from whatever version happens to be on the recording host's PATH.
+    # from whatever version happens to be on the recording host's PATH. Checked
+    # rather than assumed: `ln -sf` succeeds against a missing target, and the
+    # shell then skips the dangling link and resolves whatever cfgd is installed
+    # on the recording host — recording a different binary than the tree under
+    # test, silently.
+    if [ ! -x "$REPO_ROOT/target/release/cfgd" ]; then
+        echo "cfgd is missing at $REPO_ROOT/target/release/cfgd; refusing to link it." >&2
+        return 1
+    fi
     mkdir -p "$WORK_DIR/bin"
     ln -sf "$REPO_ROOT/target/release/cfgd" "$WORK_DIR/bin/cfgd"
     ln -sf "$REPO_ROOT/target/release/cfgd" "$WORK_DIR/bin/kubectl-cfgd"
@@ -288,14 +380,23 @@ up() {
     require cargo
     require cargo-zigbuild
 
+    # A stage that fails half way leaves a kind cluster, a registry container
+    # and a work dir standing; the caller's next run then starts from a state
+    # nobody described. Cleared on success so `up` does not tear down what it
+    # just built.
+    trap 'teardown; exit 1' ERR
+
     start_registry
     create_cluster
     publish_registry_service
+    build_host_cli
     build_and_load_images
     install_cert_manager
     install_chart
     prepare_namespace
     write_fixture
+
+    trap - ERR
 
     log "Ready"
     echo "  KUBECONFIG=$KUBECONFIG"
