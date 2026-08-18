@@ -776,6 +776,9 @@ CFGD_ALLOW_LOCAL_SOURCES=1 cfgd plan    # verify the composed result
 
 The manifest can ask for signature verification. Your subscription can demand it:
 
+![unsigned source refused, signed accepted](../demo/cfgd-source-trust.gif)
+*A subscription demanding signed commits refuses an unsigned source and syncs clean once the history is signed.*
+
 ```yaml
 spec:
   sources:
