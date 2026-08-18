@@ -70,6 +70,11 @@ fn parse_channel_listing(dump: &str) -> HashMap<String, Snapshot> {
         // part by the line that was parsed for it. Marking that one opaque
         // re-reads it per property, which is what the byte-for-byte parity rule
         // asks for; inserting the continuation as a property would invent one.
+        // The converse does not hold: `xfconf-query -l -v` has no record
+        // separator, so a continuation whose own text opens with `/` is
+        // indistinguishable from a property line and is taken for one. The
+        // empty-name arm below catches the leading-whitespace shape of that
+        // line; the flush-left shape cannot be told apart by this format.
         if !line
             .split_whitespace()
             .next()
@@ -89,6 +94,16 @@ fn parse_channel_listing(dump: &str) -> HashMap<String, Snapshot> {
             last_property = Some(line.to_string());
             continue;
         };
+        if property.is_empty() {
+            // A leading-whitespace line whose text opens with `/` passes the
+            // token guard but splits to an empty name: it is a continuation,
+            // not a property, so it must reach neither the map nor
+            // `last_property`.
+            if let Some(prev) = last_property.take() {
+                map.insert(prev, Snapshot::Opaque);
+            }
+            continue;
+        }
         let value = rest.trim();
         let entry = if value.starts_with('[') {
             Snapshot::Opaque
@@ -300,6 +315,32 @@ mod tests {
         assert!(matches!(
             snapshot.get("/general/theme"),
             Some(Snapshot::Value(v)) if v == "Default"
+        ));
+        assert!(matches!(
+            snapshot.get("/general/num"),
+            Some(Snapshot::Value(v)) if v == "42"
+        ));
+    }
+
+    #[test]
+    fn an_indented_continuation_opening_with_a_path_names_no_property() {
+        // A continuation whose own text opens with `/` defeats the token guard
+        // when flush-left (the format cannot tell it apart), but the indented
+        // shape splits to an empty name and must reach neither the map nor
+        // `last_property` — an empty key would collect every later
+        // continuation under `""` and leave the half-read property trusted.
+        let snapshot = parse_channel_listing(
+            "/general/motd        line one\n\
+             \x20 /usr/bin/x\n\
+             /general/num         42\n",
+        );
+        assert!(
+            !snapshot.contains_key(""),
+            "an empty property name must never enter the snapshot"
+        );
+        assert!(matches!(
+            snapshot.get("/general/motd"),
+            Some(Snapshot::Opaque)
         ));
         assert!(matches!(
             snapshot.get("/general/num"),
