@@ -197,18 +197,23 @@ pub fn plugin_main() -> anyhow::Result<()> {
     // rustls CryptoProvider is already installed by main() before dispatching here
     let cli = PluginCli::parse();
 
-    // Tracing to stderr; stdout is reserved for `-o` machine output.
+    // Tracing to stderr; stdout is reserved for `-o` machine output. Through
+    // the same live-region writer the primary CLI installs: this entry point
+    // builds a real `Printer` too, and an event written straight at stderr
+    // strands whatever bar that printer has on screen.
+    let tracing_writer = cfgd_core::output::LiveTracingWriter::new();
     tracing_subscriber::fmt()
         .with_env_filter(cfgd_core::tracing_env_filter("warn"))
         .with_target(false)
         .without_time()
-        .with_writer(std::io::stderr)
+        .with_writer(tracing_writer.clone())
         .init();
 
     // Same precedence as the primary CLI (main.rs), via the one shared
     // resolution both entry points call.
     let color_choice = crate::cli::resolve_color_choice(cli.no_color, cli.color);
     let printer = Printer::with_format(Verbosity::Normal, None, cli.output.0, color_choice);
+    tracing_writer.attach(&printer);
 
     let result = match cli.command {
         PluginCommand::Debug {
