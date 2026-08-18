@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::collections::HashMap;
 
 use cfgd_core::errors::Result;
 use cfgd_core::output::Role;
@@ -8,6 +8,13 @@ use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 use super::read_command_output;
 
 use super::{diff_nested_mapping, yaml_value_to_string};
+
+/// Test seam for every `gsettings` spawn in this configurator.
+const GSETTINGS_BIN_ENV: &str = "CFGD_GSETTINGS_BIN";
+
+fn gsettings_cmd() -> std::process::Command {
+    cfgd_core::tool_cmd(GSETTINGS_BIN_ENV, "gsettings")
+}
 
 /// GsettingsConfigurator — reads/writes GNOME/GTK desktop settings via `gsettings`.
 ///
@@ -33,9 +40,39 @@ fn strip_gsettings_quotes(s: &str) -> &str {
         .unwrap_or(s)
 }
 
-fn read_gsettings_value(schema: &str, key: &str) -> String {
-    let raw = read_command_output(Command::new("gsettings").args(["get", schema, key]));
-    strip_gsettings_quotes(&raw).to_string()
+/// Read one schema's keys in a single spawn.
+///
+/// `gsettings list-recursively <schema>` prints one `schema key value` line per
+/// key, with the value in the same GVariant spelling `gsettings get` returns —
+/// so the map's values are byte-identical to the per-key read, quotes and all,
+/// and [`strip_gsettings_quotes`] applies to both the same way. A schema with
+/// CHILD schemas lists their keys too, under their own schema id in the first
+/// field, which is why only lines naming the requested schema are kept: a child
+/// key would otherwise answer a question about a same-named key of the parent.
+fn snapshot_schema(schema: &str) -> HashMap<String, String> {
+    let mut cmd = gsettings_cmd();
+    cmd.args(["list-recursively", schema]);
+    parse_list_recursively(&read_command_output(&mut cmd), schema)
+}
+
+fn parse_list_recursively(dump: &str, schema: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for line in dump.lines() {
+        let mut parts = line.splitn(3, ' ');
+        let (Some(line_schema), Some(key), Some(value)) =
+            (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if line_schema != schema || key.is_empty() {
+            continue;
+        }
+        map.insert(
+            key.to_string(),
+            strip_gsettings_quotes(value.trim()).to_string(),
+        );
+    }
+    map
 }
 
 impl SystemConfigurator for GsettingsConfigurator {
@@ -44,7 +81,7 @@ impl SystemConfigurator for GsettingsConfigurator {
     }
 
     fn is_available(&self) -> bool {
-        cfgd_core::command_available("gsettings")
+        cfgd_core::command_available_with_seam(GSETTINGS_BIN_ENV, "gsettings")
     }
 
     fn current_state(&self) -> Result<serde_yaml::Value> {
@@ -52,7 +89,27 @@ impl SystemConfigurator for GsettingsConfigurator {
     }
 
     fn diff(&self, desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>> {
-        diff_nested_mapping(desired, read_gsettings_value)
+        // One `list-recursively` per declared schema, memoized for the length of
+        // this call: `diff_nested_mapping` asks per key, and a schema block of
+        // twenty keys used to be twenty `gsettings get` spawns.
+        let mut snapshots: HashMap<String, HashMap<String, String>> = HashMap::new();
+        if let Some(mapping) = desired.as_mapping() {
+            for schema_key in mapping.keys() {
+                if let Some(schema) = schema_key.as_str()
+                    && !snapshots.contains_key(schema)
+                {
+                    snapshots.insert(schema.to_string(), snapshot_schema(schema));
+                }
+            }
+        }
+
+        diff_nested_mapping(desired, |schema, key| {
+            snapshots
+                .get(schema)
+                .and_then(|keys| keys.get(key))
+                .cloned()
+                .unwrap_or_default()
+        })
     }
 
     fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
@@ -84,7 +141,7 @@ impl SystemConfigurator for GsettingsConfigurator {
                     format!("gsettings set {} {} {}", schema, key_str, gsettings_val),
                 );
 
-                let output = Command::new("gsettings")
+                let output = gsettings_cmd()
                     .args(["set", schema, key_str, &gsettings_val])
                     .output()
                     .map_err(cfgd_core::errors::CfgdError::Io)?;
@@ -110,6 +167,112 @@ impl SystemConfigurator for GsettingsConfigurator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Verbatim `gsettings list-recursively org.gnome.desktop.interface`
+    /// output (glib 2.86, Ubuntu), plus one line from a DIFFERENT schema to
+    /// pin the filter. Every value below was compared against the same host's
+    /// `gsettings get` for the same key — see
+    /// `snapshot_answers_what_the_per_key_read_answers`.
+    const REAL_LISTING: &str = "org.gnome.desktop.interface avatar-directories @as []\n\
+         org.gnome.desktop.interface clock-format '24h'\n\
+         org.gnome.desktop.interface color-scheme 'default'\n\
+         org.gnome.desktop.interface cursor-size 24\n\
+         org.gnome.desktop.interface enable-animations true\n\
+         org.gnome.desktop.interface font-name 'Adwaita Sans 11'\n\
+         org.gnome.desktop.a11y.keyboard bouncekeys-delay 300\n";
+
+    #[test]
+    fn snapshot_answers_what_the_per_key_read_answers() {
+        let snapshot = parse_list_recursively(REAL_LISTING, "org.gnome.desktop.interface");
+        // Right-hand sides are the captured `gsettings get <schema> <key>`
+        // output of the same host, folded through `strip_gsettings_quotes` the
+        // way the per-key path folds it. A listing value that needed different
+        // handling than a `get` value would show up here as a mismatch.
+        for (key, expected) in [
+            ("color-scheme", "default"),
+            ("font-name", "Adwaita Sans 11"),
+            ("cursor-size", "24"),
+            ("enable-animations", "true"),
+            ("clock-format", "24h"),
+            // An array reads identically both ways, so it needs no re-read.
+            ("avatar-directories", "@as []"),
+        ] {
+            assert_eq!(
+                snapshot.get(key).map(String::as_str),
+                Some(expected),
+                "listing and per-key read disagree about {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_never_answers_with_a_child_schemas_key() {
+        let snapshot = parse_list_recursively(REAL_LISTING, "org.gnome.desktop.interface");
+        assert!(
+            !snapshot.contains_key("bouncekeys-delay"),
+            "a key listed under another schema must not answer for this one"
+        );
+        assert_eq!(
+            parse_list_recursively(REAL_LISTING, "org.gnome.desktop.a11y.keyboard")
+                .get("bouncekeys-delay")
+                .map(String::as_str),
+            Some("300"),
+            "and it must answer for the schema it belongs to"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn gsettings_diff_reads_a_schema_once_however_many_keys_it_declares() {
+        let shim = cfgd_core::test_helpers::ToolShim::install(
+            GSETTINGS_BIN_ENV,
+            0,
+            "org.gnome.cfgd-test color-scheme 'default'\n\
+             org.gnome.cfgd-test font-name 'Adwaita Sans 11'\n\
+             org.gnome.cfgd-test cursor-size 24\n",
+            "",
+        );
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            "org.gnome.cfgd-test:\n  \
+             color-scheme: prefer-dark\n  \
+             font-name: Adwaita Sans 11\n  \
+             cursor-size: 24\n",
+        )
+        .unwrap();
+
+        let drifts = GsettingsConfigurator.diff(&yaml).unwrap();
+
+        assert_eq!(
+            shim.argv_lines_naming("org.gnome.cfgd-test"),
+            vec!["list-recursively org.gnome.cfgd-test"],
+            "one listing answers every key in the schema"
+        );
+        assert_eq!(drifts.len(), 1, "unexpected drifts: {drifts:?}");
+        assert_eq!(drifts[0].key, "org.gnome.cfgd-test.color-scheme");
+        assert_eq!(drifts[0].actual, "default");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn gsettings_diff_reads_each_declared_schema_once() {
+        let shim = cfgd_core::test_helpers::ToolShim::install(GSETTINGS_BIN_ENV, 0, "", "");
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str("org.gnome.cfgd-a:\n  x: 1\n  y: 2\norg.gnome.cfgd-b:\n  z: 3\n")
+                .unwrap();
+
+        GsettingsConfigurator.diff(&yaml).unwrap();
+
+        assert_eq!(
+            shim.argv_lines_naming("org.gnome.cfgd-"),
+            vec![
+                "list-recursively org.gnome.cfgd-a",
+                "list-recursively org.gnome.cfgd-b",
+            ],
+            "one listing per schema, none per key"
+        );
+    }
 
     #[test]
     fn gsettings_strip_quotes() {

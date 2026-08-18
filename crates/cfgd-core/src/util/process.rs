@@ -752,6 +752,20 @@ pub fn systemctl_available() -> bool {
     command_available_with_seam(SYSTEMCTL_BIN_ENV, "systemctl")
 }
 
+/// Test-seam env var for every `reg` invocation in the workspace.
+///
+/// Named here for the same reason as [`SYSTEMCTL_BIN_ENV`]: the Windows
+/// registry is read and written from two places — the user-session environment
+/// refresh (`util/env_session.rs`) and the `windowsRegistry` configurator — and
+/// a test can only redirect both when they agree on the spelling. The registry
+/// is not a path, so redirecting the binary is the only sandbox a test has.
+pub const REG_BIN_ENV: &str = "CFGD_REG_BIN";
+
+/// Build a `Command` for `reg`, honoring [`REG_BIN_ENV`].
+pub fn reg_cmd() -> std::process::Command {
+    tool_cmd(REG_BIN_ENV, "reg")
+}
+
 /// Like [`command_available`] but also returns true when the env-var seam
 /// points at an existing file. Use in `is_available()` checks where the
 /// caller wants a bool, not a `Result`.

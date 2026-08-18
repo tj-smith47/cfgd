@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -20,6 +21,48 @@ pub struct SystemdUnitConfigurator {
     /// Active config directory; relative `unitFile` paths resolve against it
     /// (matching file/secret source resolution). `None` ⇒ process-CWD-relative.
     config_dir: Option<PathBuf>,
+}
+
+/// Read every unit file's enablement state in one spawn.
+///
+/// `systemctl list-unit-files` prints `UNIT-FILE STATE PRESET` per unit, with
+/// the same state word `is-enabled` prints, so one call answers for every
+/// declared unit. It matters more here than anywhere else in this file: a
+/// `systemctl` with no manager behind it burns the ~90s D-Bus connect timeout
+/// PER CALL, and this turns a diff of N units from N of those into one.
+///
+/// Two states the listing cannot answer are deliberately left out of the map so
+/// the caller falls back to `is-enabled` for that unit alone: an `alias`, whose
+/// enablement is its target's, and any unit the listing does not name at all —
+/// a template INSTANCE (`wg-quick@wg0.service`) is enabled as a symlink and
+/// only the template (`wg-quick@.service`) is ever listed.
+fn snapshot_unit_states() -> HashMap<String, String> {
+    let mut cmd = cfgd_core::systemctl_cmd();
+    cmd.args(["list-unit-files", "--no-legend", "--no-pager"]);
+    let dump = cfgd_core::command_output_with_timeout(&mut cmd, SYSTEMCTL_TIMEOUT)
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| cfgd_core::stdout_lossy_trimmed(&o))
+        .unwrap_or_default();
+    parse_unit_files(&dump)
+}
+
+fn parse_unit_files(dump: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for line in dump.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(unit), Some(state)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        // `--no-legend` drops the header and the trailing count on a systemd
+        // that honors it; an older one still prints both, and neither names a
+        // unit — a unit file always carries a `.<type>` suffix.
+        if !unit.contains('.') || state == "alias" {
+            continue;
+        }
+        map.insert(unit.to_string(), state.to_string());
+    }
+    map
 }
 
 impl SystemdUnitConfigurator {
@@ -59,6 +102,13 @@ impl SystemConfigurator for SystemdUnitConfigurator {
             None => return Ok(drifts),
         };
 
+        // A profile declaring no units asks systemd nothing at all.
+        let states = if units.is_empty() {
+            HashMap::new()
+        } else {
+            snapshot_unit_states()
+        };
+
         for unit in units {
             let name = match unit.get("name").and_then(|v| v.as_str()) {
                 Some(n) => n,
@@ -70,12 +120,17 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
 
-            let mut cmd = cfgd_core::systemctl_cmd();
-            cmd.args(["is-enabled", name]);
-            let is_enabled = cfgd_core::command_output_with_timeout(&mut cmd, SYSTEMCTL_TIMEOUT)
-                .ok()
-                .map(|o| cfgd_core::stdout_lossy_trimmed(&o) == "enabled")
-                .unwrap_or(false);
+            let is_enabled = match states.get(name) {
+                Some(state) => state == "enabled",
+                None => {
+                    let mut cmd = cfgd_core::systemctl_cmd();
+                    cmd.args(["is-enabled", name]);
+                    cfgd_core::command_output_with_timeout(&mut cmd, SYSTEMCTL_TIMEOUT)
+                        .ok()
+                        .map(|o| cfgd_core::stdout_lossy_trimmed(&o) == "enabled")
+                        .unwrap_or(false)
+                }
+            };
 
             if is_enabled != desired_enabled {
                 drifts.push(SystemDrift {
@@ -360,18 +415,116 @@ mod tests {
         );
     }
 
+    /// Verbatim `systemctl list-unit-files --no-pager` output (systemd 259),
+    /// header and trailing count included — the two lines `--no-legend` drops
+    /// on a systemd that honours it and an older one still prints. Every state
+    /// below was compared against the same host's `systemctl is-enabled` for
+    /// the same unit.
+    const REAL_UNIT_FILES: &str = "\
+UNIT FILE                                                                     STATE           PRESET
+cron.service                                                                  enabled         enabled
+ssh.service                                                                   disabled        enabled
+getty@.service                                                                enabled         enabled
+autovt@.service                                                               alias           -
+systemd-tmpfiles-clean.timer                                                  static          -
+
+530 unit files listed.
+";
+
+    #[test]
+    fn listed_states_are_the_states_is_enabled_reports() {
+        let states = parse_unit_files(REAL_UNIT_FILES);
+        for (unit, expected) in [
+            ("cron.service", "enabled"),
+            ("ssh.service", "disabled"),
+            ("getty@.service", "enabled"),
+            ("systemd-tmpfiles-clean.timer", "static"),
+        ] {
+            assert_eq!(
+                states.get(unit).map(String::as_str),
+                Some(expected),
+                "listing and is-enabled disagree about {unit}"
+            );
+        }
+    }
+
+    #[test]
+    fn neither_the_legend_nor_the_count_nor_an_alias_enters_the_map() {
+        let states = parse_unit_files(REAL_UNIT_FILES);
+        // An alias's enablement is its target's, so it is left to `is-enabled`.
+        assert!(!states.contains_key("autovt@.service"));
+        // Neither header nor count names a unit; a unit file always carries a
+        // `.<type>` suffix.
+        assert!(!states.contains_key("UNIT"));
+        assert!(!states.contains_key("530"));
+        assert_eq!(states.len(), 4);
+    }
+
     #[cfg(unix)]
     #[test]
     #[serial_test::serial]
-    fn systemd_diff_reads_enablement_with_is_enabled() {
-        let shim = systemctl_shim("enabled\n");
-        let yaml: serde_yaml::Value =
-            serde_yaml::from_str("- name: cfgd-test-argv.service\n  enabled: true\n").unwrap();
+    fn systemd_diff_reads_every_listed_units_enablement_in_one_call() {
+        let shim = systemctl_shim(REAL_UNIT_FILES);
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            "- name: cron.service\n  enabled: true\n\
+             - name: ssh.service\n  enabled: true\n\
+             - name: systemd-tmpfiles-clean.timer\n  enabled: false\n",
+        )
+        .unwrap();
+
+        let drifts = SystemdUnitConfigurator::default().diff(&yaml).unwrap();
+
+        assert_eq!(
+            shim.argv_lines_naming("list-unit-files --no-legend"),
+            vec!["list-unit-files --no-legend --no-pager"],
+            "one listing answers every declared unit — and a diff must not \
+             mutate the manager"
+        );
+        assert_eq!(drifts.len(), 1, "unexpected drifts: {drifts:?}");
+        assert_eq!(drifts[0].key, "ssh.service.enabled");
+        assert_eq!(drifts[0].expected, "true");
+        assert_eq!(drifts[0].actual, "false");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn systemd_diff_falls_back_to_is_enabled_for_a_unit_the_listing_omits() {
+        let shim = systemctl_shim(REAL_UNIT_FILES);
+        // A template INSTANCE is enabled as a symlink; only the template it is
+        // built from is ever listed. An alias is listed but never trusted.
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            "- name: cron.service\n  enabled: true\n\
+             - name: getty@tty7.service\n  enabled: true\n\
+             - name: autovt@.service\n  enabled: true\n",
+        )
+        .unwrap();
+
+        SystemdUnitConfigurator::default().diff(&yaml).unwrap();
+
+        assert_eq!(
+            shim.argv_log().lines().collect::<Vec<_>>(),
+            vec![
+                "list-unit-files --no-legend --no-pager",
+                "is-enabled getty@tty7.service",
+                "is-enabled autovt@.service",
+            ],
+            "only the two the listing cannot answer are asked about"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn systemd_diff_of_no_units_asks_systemd_nothing() {
+        let shim = systemctl_shim(REAL_UNIT_FILES);
+        let yaml = serde_yaml::Value::Sequence(Vec::new());
         SystemdUnitConfigurator::default().diff(&yaml).unwrap();
         assert_eq!(
-            shim.argv_log().trim(),
-            "is-enabled cfgd-test-argv.service",
-            "a diff must not mutate the manager — `is-enabled` is the whole call"
+            shim.invocation_count(),
+            0,
+            "a profile declaring no units spawns nothing: {}",
+            shim.argv_log()
         );
     }
 

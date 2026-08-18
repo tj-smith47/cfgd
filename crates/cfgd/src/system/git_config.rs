@@ -37,19 +37,59 @@ fn git_location_args() -> Vec<String> {
     }
 }
 
-/// Read a single git config key.
+/// Read every key at the configured location in one spawn.
 ///
-/// Returns `Some(value)` if the key exists and git exits 0, `None` otherwise.
-fn git_config_get(key: &str) -> Option<String> {
+/// `git config --list -z` emits `key\nvalue\0` records (and a bare `key\0` for
+/// a valueless boolean), so a value carrying newlines — an alias body — is
+/// unambiguous in a way `--list`'s line format is not. It reads the same
+/// location `apply` writes, includes and all, and a repeated key keeps its LAST
+/// value, which is what `git config --get` answers with.
+fn git_config_snapshot() -> std::collections::HashMap<String, String> {
     let loc = git_location_args();
-    cfgd_core::git_cmd_local()
+    let output = cfgd_core::git_cmd_local()
         .arg("config")
         .args(&loc)
-        .args(["--get", key])
+        .args(["--list", "-z"])
         .output()
         .ok()
-        .filter(|o| o.status.success())
-        .map(|o| cfgd_core::stdout_lossy_trimmed(&o))
+        .filter(|o| o.status.success());
+    match output {
+        Some(o) => parse_config_list(&String::from_utf8_lossy(&o.stdout)),
+        None => std::collections::HashMap::new(),
+    }
+}
+
+fn parse_config_list(dump: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for record in dump.split('\0').filter(|r| !r.is_empty()) {
+        let (key, value) = match record.split_once('\n') {
+            Some((k, v)) => (k, v),
+            None => (record, ""),
+        };
+        map.insert(canonical_git_key(key), value.trim().to_string());
+    }
+    map
+}
+
+/// Fold a git config key to the spelling `--list` prints.
+///
+/// git matches the section and the variable case-INsensitively and a subsection
+/// case-SENSITIVELY (`remote.Origin.url` and `remote.origin.url` are two keys),
+/// so only the first and last segments are lowered and everything between is
+/// left exactly as written. Folding the whole key would answer a declared
+/// `remote.Origin.url` with a different remote's URL.
+fn canonical_git_key(key: &str) -> String {
+    let segments: Vec<&str> = key.split('.').collect();
+    match segments.len() {
+        0 | 1 => key.to_lowercase(),
+        2 => key.to_lowercase(),
+        _ => {
+            let first = segments[0].to_lowercase();
+            let last = segments[segments.len() - 1].to_lowercase();
+            let middle = segments[1..segments.len() - 1].join(".");
+            format!("{first}.{middle}.{last}")
+        }
+    }
 }
 
 /// Convert a YAML scalar to the string git config expects.
@@ -139,6 +179,9 @@ impl SystemConfigurator for GitConfigurator {
         };
 
         let mut drifts = Vec::new();
+        // One `git config --list` for every declared key, instead of one
+        // `git config --get` per key.
+        let snapshot = git_config_snapshot();
 
         for (key, desired_val) in flatten_git_keys(mapping) {
             // A non-scalar leaf (Sequence/Null) is not git-storable; apply()
@@ -149,7 +192,10 @@ impl SystemConfigurator for GitConfigurator {
             }
 
             let desired_str = value_to_git_string(desired_val);
-            let actual_str = git_config_get(&key).unwrap_or_default();
+            let actual_str = snapshot
+                .get(&canonical_git_key(&key))
+                .cloned()
+                .unwrap_or_default();
 
             if actual_str != desired_str {
                 drifts.push(SystemDrift {
@@ -270,6 +316,87 @@ mod tests {
     // ---------------------------------------------------------------------------
     // Pure unit tests — no filesystem interaction
     // ---------------------------------------------------------------------------
+
+    /// Verbatim `git config --file <f> --list -z` output (git 2.51) for a file
+    /// carrying a subsection, a repeated key, a multi-line alias body and a
+    /// valueless boolean. Every expectation below is the same file's
+    /// `git config --get <key>` output.
+    const REAL_LIST_Z: &str = "user.name\nJane Doe\0\
+        push.autosetupremote\ntrue\0\
+        remote.Origin.url\nhttps://a/b\0\
+        core.gitproxy\none\0\
+        core.gitproxy\ntwo\0\
+        alias.multi\n!f() {\n echo hi\n}; f\0\
+        core.bare\0";
+
+    #[test]
+    fn snapshot_answers_exactly_what_git_config_get_answers() {
+        let snapshot = parse_config_list(REAL_LIST_Z);
+        for (key, expected) in [
+            ("user.name", "Jane Doe"),
+            ("push.autosetupremote", "true"),
+            ("remote.Origin.url", "https://a/b"),
+            // `--get` of a repeated key answers with the LAST value.
+            ("core.gitproxy", "two"),
+            // A multi-line value: `-z` keeps it in one record, so the newlines
+            // inside the alias body are the value's own.
+            ("alias.multi", "!f() {\n echo hi\n}; f"),
+            // A valueless boolean prints an empty line from `--get`.
+            ("core.bare", ""),
+        ] {
+            assert_eq!(
+                snapshot.get(key).map(String::as_str),
+                Some(expected),
+                "listing and `--get` disagree about {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_declared_key_folds_to_the_spelling_the_listing_prints() {
+        let snapshot = parse_config_list(REAL_LIST_Z);
+        // git matches section and variable case-insensitively, so the declared
+        // spelling has to reach the listing's lowercased one.
+        assert_eq!(
+            snapshot
+                .get(&canonical_git_key("push.autoSetupRemote"))
+                .map(String::as_str),
+            Some("true")
+        );
+        // A subsection is case-SENSITIVE: two spellings are two keys.
+        assert_eq!(
+            snapshot
+                .get(&canonical_git_key("remote.Origin.URL"))
+                .map(String::as_str),
+            Some("https://a/b")
+        );
+        assert_eq!(snapshot.get(&canonical_git_key("remote.origin.url")), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn git_diff_lists_the_config_once_however_many_keys_it_declares() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        // The shim answers nothing, so every declared key drifts against the
+        // same empty string a missing key produced before — what the test is
+        // about is how many times git ran.
+        let (_bin, _path, log) =
+            cfgd_core::test_helpers::install_named_path_shim_logged("git", 0, "", "");
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            "user.name: Jane Doe\nuser.email: jane@work.com\npush:\n  autoSetupRemote: true\n",
+        )
+        .unwrap();
+
+        let drifts = GitConfigurator.diff(&yaml).unwrap();
+
+        assert_eq!(
+            log.argv_log().lines().collect::<Vec<_>>(),
+            vec!["config --global --list -z"],
+            "one listing answers every declared key"
+        );
+        assert_eq!(drifts.len(), 3, "unexpected drifts: {drifts:?}");
+    }
 
     #[test]
     fn value_to_git_string_conversions() {

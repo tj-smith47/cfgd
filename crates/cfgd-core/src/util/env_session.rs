@@ -72,11 +72,11 @@ pub struct SessionRefresh {
 /// neither is a path, so no test home, temp dir or `XDG_*` override can contain
 /// them. Redirecting the binary is the only sandbox available.
 ///
-/// `systemctl`'s seam is named in `util/process.rs` rather than here, because
-/// the system configurators spawn it too and one spelling has to cover both.
+/// `systemctl`'s and `reg`'s seams are named in `util/process.rs` rather than
+/// here, because the system configurators spawn both too and one spelling has
+/// to cover each.
 const LAUNCHCTL_BIN_ENV: &str = "CFGD_LAUNCHCTL_BIN";
 const SETX_BIN_ENV: &str = "CFGD_SETX_BIN";
-const REG_BIN_ENV: &str = "CFGD_REG_BIN";
 
 /// Which output stream a failing setter writes its diagnostic to.
 enum ErrStream {
@@ -232,7 +232,7 @@ fn read_session_var(key: &str) -> Option<String> {
             _ => None,
         }
     } else if cfg!(windows) {
-        let mut cmd = crate::tool_cmd(REG_BIN_ENV, "reg");
+        let mut cmd = crate::reg_cmd();
         cmd.args(["query", r"HKCU\Environment", "/v", key]);
         match crate::command_output_with_timeout(&mut cmd, ENV_REFRESH_TIMEOUT) {
             Ok(o) if o.status.success() => {

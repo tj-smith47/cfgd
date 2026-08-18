@@ -1547,6 +1547,23 @@ impl ToolShim {
     pub fn invocation_count(&self) -> usize {
         self.argv_log().lines().filter(|l| !l.is_empty()).count()
     }
+
+    /// The captured argv lines that name `subject`, in order.
+    ///
+    /// The seam this shim installs is an ENV VAR, which is process-global and
+    /// carries no exclusive guard — so any test running in parallel that spawns
+    /// the same tool lands in this log too, whatever `serial_test` group the
+    /// asserting test is in (`serial` excludes only other serial tests). A
+    /// spawn-count claim is always about one subject — one registry key, one
+    /// schema, one domain — so filter to the lines naming it rather than
+    /// asserting on a log another test also writes to.
+    pub fn argv_lines_naming(&self, subject: &str) -> Vec<String> {
+        self.argv_log()
+            .lines()
+            .filter(|l| l.contains(subject))
+            .map(str::to_string)
+            .collect()
+    }
 }
 
 #[cfg(unix)]
