@@ -2155,6 +2155,51 @@ impl Drop for EnumerationMemoTtlGuard {
     }
 }
 
+/// RAII pin of the provider-availability sweep's TTL, restoring the prior
+/// setting on drop. The sibling of [`EnumerationMemoTtlGuard`] over the sweep a
+/// `ProviderRegistry` memoizes: that one memoizes what a manager HAS, this one
+/// whether the manager is on the machine at all.
+///
+/// The ceiling exists for the holder that outlives one run — the daemon keeps
+/// one registry across ticks — so a test whose claim is that a sweep still
+/// stands pins `never_expires`, and one whose claim is that the ceiling retires
+/// a sweep pins `always_expired`. Pair every use with
+/// `#[serial_test::serial(availability_memo)]`: the pin is process-global and
+/// every test that reads this memo asserts on a COUNT of `is_available` probes.
+pub struct AvailabilityMemoTtlGuard {
+    prior: Option<u64>,
+}
+
+impl AvailabilityMemoTtlGuard {
+    /// Pin the TTL to `ttl`, saturating at the millisecond range.
+    pub fn pinned(ttl: std::time::Duration) -> Self {
+        let millis = u64::try_from(ttl.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(u64::MAX - 1);
+        Self {
+            prior: crate::providers::set_availability_memo_ttl_override(Some(millis)),
+        }
+    }
+
+    /// Pin the TTL beyond any test's lifetime. For a test whose claim is that a
+    /// sweep still stands.
+    pub fn never_expires() -> Self {
+        Self::pinned(std::time::Duration::from_millis(u64::MAX - 1))
+    }
+
+    /// Pin the TTL to zero, so every sweep is expired the moment it is stored.
+    /// For a test whose claim is that expiry retires one.
+    pub fn always_expired() -> Self {
+        Self::pinned(std::time::Duration::ZERO)
+    }
+}
+
+impl Drop for AvailabilityMemoTtlGuard {
+    fn drop(&mut self) {
+        crate::providers::set_availability_memo_ttl_override(self.prior);
+    }
+}
+
 /// RAII pin of the available-version memo's TTL, restoring the prior setting on
 /// drop. The sibling of [`EnumerationMemoTtlGuard`] over the other half of the
 /// package-manager memo pair: that one memoizes what a manager HAS, this one

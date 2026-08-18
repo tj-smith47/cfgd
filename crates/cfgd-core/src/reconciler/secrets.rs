@@ -27,7 +27,13 @@ impl<'a> super::Reconciler<'a> {
                         }
                     })?;
 
-                let decrypted = backend.decrypt_file(&source_path)?;
+                // Keyed on the RESOLVED path: two declarations naming one file
+                // by different relative spellings are one decryption.
+                let decrypted = self.secrets.resolve_with(
+                    backend.name(),
+                    &crate::to_posix_string(&source_path),
+                    || backend.decrypt_file(&source_path),
+                )?;
 
                 let target_path = expand_tilde(target);
                 crate::atomic_write(&target_path, decrypted.expose_secret().as_bytes())?;
@@ -46,17 +52,7 @@ impl<'a> super::Reconciler<'a> {
                 target,
                 ..
             } => {
-                let secret_provider = self
-                    .registry
-                    .secret_providers
-                    .iter()
-                    .find(|p| p.name() == provider)
-                    .ok_or_else(|| crate::errors::SecretError::ProviderNotAvailable {
-                        provider: provider.clone(),
-                        hint: format!("no provider '{}' registered", provider),
-                    })?;
-
-                let value = secret_provider.resolve(reference)?;
+                let value = self.resolve_provider_secret(provider, reference)?;
 
                 let target_path = expand_tilde(target);
                 crate::atomic_write(&target_path, value.expose_secret().as_bytes())?;
@@ -73,17 +69,7 @@ impl<'a> super::Reconciler<'a> {
                 envs,
                 ..
             } => {
-                let secret_provider = self
-                    .registry
-                    .secret_providers
-                    .iter()
-                    .find(|p| p.name() == provider)
-                    .ok_or_else(|| crate::errors::SecretError::ProviderNotAvailable {
-                        provider: provider.clone(),
-                        hint: format!("no provider '{}' registered", provider),
-                    })?;
-
-                let value = secret_provider.resolve(reference)?;
+                let value = self.resolve_provider_secret(provider, reference)?;
 
                 // Each secret source resolves to exactly ONE value.
                 // All env names in `envs` receive the same resolved value.
@@ -102,5 +88,30 @@ impl<'a> super::Reconciler<'a> {
             }
             SecretAction::Skip { source, .. } => Ok(format!("secret:skip:{}", source)),
         }
+    }
+
+    /// The value `provider` holds for `reference`, resolved at most once per run.
+    ///
+    /// Shared by the `Resolve` and `ResolveEnv` arms above, which are the SAME
+    /// declared reference seen from its two occurrences — the file it lands in
+    /// and the variables it exports. Resolving them independently spawned the
+    /// provider CLI twice for one value.
+    fn resolve_provider_secret(
+        &self,
+        provider: &str,
+        reference: &str,
+    ) -> Result<std::sync::Arc<secrecy::SecretString>> {
+        let secret_provider = self
+            .registry
+            .secret_providers
+            .iter()
+            .find(|p| p.name() == provider)
+            .ok_or_else(|| crate::errors::SecretError::ProviderNotAvailable {
+                provider: provider.to_string(),
+                hint: format!("no provider '{}' registered", provider),
+            })?;
+
+        self.secrets
+            .resolve_with(provider, reference, || secret_provider.resolve(reference))
     }
 }

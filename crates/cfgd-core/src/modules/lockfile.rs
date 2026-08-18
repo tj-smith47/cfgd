@@ -16,6 +16,7 @@ use super::{LoadedModule, SourceModuleRoot};
 /// Returns an empty lockfile if the file does not exist.
 pub fn load_lockfile(config_dir: &Path) -> Result<ModuleLockfile> {
     let lockfile_path = config_dir.join("modules.lock");
+    crate::record_config_input(&lockfile_path);
     if !lockfile_path.exists() {
         return Ok(ModuleLockfile::default());
     }

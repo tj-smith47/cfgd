@@ -33,6 +33,12 @@ pub struct CfgdFileManager {
     /// Name of the resolved profile, stamped into `CFGD_PROFILE` for
     /// `patch.script` filters.
     profile_name: String,
+    /// Secrets resolved while rendering THIS run's files, so a reference
+    /// interpolated into five templates spawns its backend once instead of
+    /// five times. Dies with the file manager, which is built per run — see
+    /// [`cfgd_core::providers::SecretCache`] for why plaintext gets no
+    /// longer-lived home than that.
+    secrets: cfgd_core::providers::SecretCache,
 }
 
 impl CfgdFileManager {
@@ -63,6 +69,7 @@ impl CfgdFileManager {
             source_contexts: HashMap::new(),
             global_strategy: FileStrategy::default(),
             profile_name: resolved.profile_name().to_string(),
+            secrets: cfgd_core::providers::SecretCache::new(),
         })
     }
 

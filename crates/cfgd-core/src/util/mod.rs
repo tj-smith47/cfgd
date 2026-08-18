@@ -1,5 +1,6 @@
 mod abort;
 mod apply_lock;
+mod config_inputs;
 mod constants;
 mod encryption;
 mod env_session;
@@ -16,6 +17,7 @@ mod yaml_merge;
 
 pub use abort::*;
 pub use apply_lock::*;
+pub use config_inputs::*;
 pub use constants::*;
 pub use encryption::*;
 pub use env_session::*;

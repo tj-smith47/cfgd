@@ -182,6 +182,11 @@ impl SourceManager {
         validate_source_name(&spec.name)?;
 
         let source_dir = self.cache_dir.join(&spec.name);
+        // The checkout DIRECTORY is an input of its own: a source that has never
+        // synced contributes nothing, and the arrival of its cache is what
+        // changes that answer — a fact no manifest read can report, because on
+        // this arm there is no manifest to read.
+        crate::record_config_input(&source_dir);
         if !source_dir.exists() {
             printer.status_simple(
                 Role::Warn,
@@ -1247,6 +1252,7 @@ fn validate_source_name(name: &str) -> Result<()> {
 /// Read and parse a cfgd-source.yaml manifest from a directory.
 fn read_manifest(name: &str, source_dir: &Path) -> Result<ConfigSourceDocument> {
     let manifest_path = source_dir.join(SOURCE_MANIFEST_FILE);
+    crate::record_config_input(&manifest_path);
     if !manifest_path.exists() {
         return Err(SourceError::InvalidManifest {
             name: name.to_string(),

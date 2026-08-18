@@ -2,7 +2,10 @@
 
 mod available;
 mod installed;
+mod secret_cache;
 pub mod skill;
+
+pub use secret_cache::SecretCache;
 
 #[cfg(any(test, feature = "test-helpers"))]
 pub(crate) use available::set_available_version_memo_ttl_override;
@@ -1166,21 +1169,67 @@ pub struct ProviderRegistry {
 /// runs it over the whole registry — per system action, twice inside
 /// `plan_system`, three times per compliance snapshot, once per daemon tick.
 /// The result is reusable exactly as long as no install has happened since —
-/// the shared [`crate::command_resolution_generation`]. Registration is the
-/// other thing that would invalidate it, and cannot be observed here: the
-/// provider vectors are private and every mutator clears the memo outright, so
-/// a sweep never has to be judged against a registry that has changed shape
-/// under it.
+/// the shared [`crate::command_resolution_generation`] — and no longer than
+/// [`AVAILABILITY_MEMO_TTL`]. Registration is the other thing that would
+/// invalidate it, and cannot be observed here: the provider vectors are private
+/// and every mutator clears the memo outright, so a sweep never has to be judged
+/// against a registry that has changed shape under it.
 struct AvailabilityMemo {
     generation: u64,
+    computed: std::time::Instant,
     available: Vec<usize>,
+}
+
+/// How long a sweep stands before the registry is probed again.
+///
+/// The generation counter covers every install, uninstall, provision and
+/// lifecycle script cfgd performs itself, and for a registry that dies with its
+/// run that is the whole space of events. It is NOT the whole space for a
+/// registry a DAEMON holds across ticks: nothing the daemon does moves the
+/// generation while it is merely watching, so a manager a human installed in
+/// another terminal would be answered around for as long as the daemon lives.
+/// Thirty seconds, matching [`crate::command_path`]'s memo, the installed
+/// enumeration memo and the available-version memo, for the same reason — see
+/// the 30-second convention in `shared-utils.md`.
+const AVAILABILITY_MEMO_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Millisecond override of [`AVAILABILITY_MEMO_TTL`], or [`u64::MAX`] for "no
+/// override", so a test never depends on wall time.
+#[cfg(any(test, feature = "test-helpers"))]
+static AVAILABILITY_MEMO_TTL_OVERRIDE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// How long a sweep stands, honouring the test override.
+fn availability_memo_ttl() -> std::time::Duration {
+    #[cfg(any(test, feature = "test-helpers"))]
+    {
+        let millis = AVAILABILITY_MEMO_TTL_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+        if millis != u64::MAX {
+            return std::time::Duration::from_millis(millis);
+        }
+    }
+    AVAILABILITY_MEMO_TTL
+}
+
+/// Pin the availability memo's ceiling, or hand back the default with `None`.
+/// Returns what was pinned before, so a guard can put it back.
+///
+/// Reach for it through `test_helpers::AvailabilityMemoTtlGuard`, never directly.
+#[cfg(any(test, feature = "test-helpers"))]
+pub(crate) fn set_availability_memo_ttl_override(millis: Option<u64>) -> Option<u64> {
+    let prior = AVAILABILITY_MEMO_TTL_OVERRIDE.swap(
+        millis.unwrap_or(u64::MAX),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    (prior != u64::MAX).then_some(prior)
 }
 
 impl AvailabilityMemo {
     /// The indices, or `None` when the sweep behind them can no longer be
     /// trusted.
     fn indices(&self, generation: u64) -> Option<&[usize]> {
-        (self.generation == generation).then_some(&self.available)
+        (self.generation == generation && self.computed.elapsed() < availability_memo_ttl())
+            .then_some(&self.available)
     }
 }
 
@@ -1218,6 +1267,7 @@ fn memoized_available<T: ?Sized>(
     // generation outran is rejected by the next lookup rather than trusted.
     *memo.lock().unwrap_or_else(|e| e.into_inner()) = Some(AvailabilityMemo {
         generation,
+        computed: std::time::Instant::now(),
         available: available.clone(),
     });
     available

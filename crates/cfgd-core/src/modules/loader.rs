@@ -19,6 +19,7 @@ const MAX_MODULE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 
 /// Read a `module.yaml` after enforcing [`MAX_MODULE_SIZE`].
 fn read_module_yaml_capped(module_yaml: &Path) -> Result<String> {
+    crate::record_config_input(module_yaml);
     if let Ok(meta) = std::fs::metadata(module_yaml)
         && meta.len() > MAX_MODULE_SIZE
     {
@@ -45,6 +46,10 @@ fn read_module_yaml_capped(module_yaml: &Path) -> Result<String> {
 /// Returns a map of module name → LoadedModule.
 pub fn load_modules(config_dir: &Path) -> Result<HashMap<String, LoadedModule>> {
     let modules_dir = config_dir.join("modules");
+    // The LISTING is the input here, not any one manifest: a module directory
+    // appearing or disappearing changes what this returns, and a directory's
+    // own stamp is what reports that.
+    crate::record_config_input(&modules_dir);
     if !modules_dir.is_dir() {
         return Ok(HashMap::new());
     }
@@ -109,6 +114,7 @@ pub fn load_modules(config_dir: &Path) -> Result<HashMap<String, LoadedModule>> 
 /// Load a single module from a given directory.
 pub fn load_module(module_dir: &Path) -> Result<LoadedModule> {
     let module_yaml = module_dir.join("module.yaml");
+    crate::record_config_input(&module_yaml);
     if !module_yaml.exists() {
         let name = module_dir
             .file_name()

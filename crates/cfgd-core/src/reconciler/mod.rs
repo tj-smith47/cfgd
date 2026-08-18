@@ -131,6 +131,16 @@ pub struct Reconciler<'a> {
     /// still gets the surface written behind its back the moment a secret
     /// resolves an env var or a package manager is bootstrapped mid-run.
     withhold_env_surface: bool,
+    /// Secrets resolved during THIS run, so one reference costs one spawn of
+    /// its backend however many actions name it.
+    ///
+    /// A single declared reference becomes a `Resolve` action for the file it
+    /// writes and a `ResolveEnv` action for the variables it exports, and both
+    /// used to spawn `op read` / `sops -d` for the same value. The cache lives
+    /// on the reconciler because a reconciler IS one run — a CLI apply builds
+    /// one and drops it, a daemon builds one per tick — so plaintext never
+    /// outlives the work that needed it.
+    secrets: crate::providers::SecretCache,
 }
 
 impl<'a> Reconciler<'a> {
@@ -140,6 +150,7 @@ impl<'a> Reconciler<'a> {
             state,
             home: resolved_home(),
             withhold_env_surface: false,
+            secrets: crate::providers::SecretCache::new(),
         }
     }
 
@@ -168,6 +179,7 @@ impl<'a> Reconciler<'a> {
             state,
             home: home.into(),
             withhold_env_surface: false,
+            secrets: crate::providers::SecretCache::new(),
         }
     }
 }

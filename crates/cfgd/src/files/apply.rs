@@ -237,6 +237,7 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                                     &provider_refs,
                                     self.secret_backend.as_deref(),
                                     &self.config_dir,
+                                    &self.secrets,
                                 )?;
                             }
 

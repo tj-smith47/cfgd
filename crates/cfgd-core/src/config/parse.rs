@@ -203,6 +203,7 @@ pub fn resolve_config_path(path: &Path) -> PathBuf {
 pub fn load_config(path: &Path) -> Result<CfgdConfig> {
     let resolved = resolve_config_path(path);
     let path = resolved.as_path();
+    crate::record_config_input(path);
     if !path.exists() {
         // A leading `~` survived expansion only because no home directory could
         // be resolved (HOME unset on Unix, USERPROFILE/HOME unset on Windows).
@@ -342,6 +343,7 @@ enum RawOrigin {
 
 /// Load a profile document from a YAML file
 pub fn load_profile(path: &Path) -> Result<ProfileDocument> {
+    crate::record_config_input(path);
     if !path.exists() {
         return Err(ConfigError::NotFound {
             path: path.to_path_buf(),
@@ -408,6 +410,7 @@ pub fn find_profile_path(
         profiles_dir.join(format!("{}.yml", name)),
     ]
     .into_iter()
+    .inspect(|p| crate::record_config_input(p))
     .filter(|p| p.is_file())
     .collect();
 

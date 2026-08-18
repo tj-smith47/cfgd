@@ -8215,6 +8215,221 @@ fn apply_secret_action_resource_ids_fold_the_target_path_to_posix() {
     }
 }
 
+/// A provider that counts how many times it was asked to resolve, so a test can
+/// assert on SPAWNS rather than on the value that came back.
+struct CountingSecretProvider {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl crate::providers::SecretProvider for CountingSecretProvider {
+    fn name(&self) -> &str {
+        "vault"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn resolve(&self, _reference: &str) -> Result<secrecy::SecretString> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(secrecy::SecretString::from("resolved-once".to_string()))
+    }
+}
+
+/// The backend counterpart: counts decryptions of a file reference.
+struct CountingSecretBackend {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl crate::providers::SecretBackend for CountingSecretBackend {
+    fn name(&self) -> &str {
+        "test-sops"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn encrypt_file(&self, _path: &std::path::Path) -> Result<()> {
+        Ok(())
+    }
+    fn decrypt_file(&self, _path: &std::path::Path) -> Result<secrecy::SecretString> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(secrecy::SecretString::from("decrypted-once".to_string()))
+    }
+    fn edit_file(&self, _path: &std::path::Path) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn one_reference_spawns_its_provider_once_across_both_of_its_occurrences() {
+    // A declared secret with both a target and `envs` plans a `Resolve` for the
+    // file and a `ResolveEnv` for the variables — two actions, ONE value. Each
+    // used to spawn `op read` / `vault kv get` for itself.
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .secret_providers
+        .push(Box::new(CountingSecretProvider {
+            calls: std::sync::Arc::clone(&calls),
+        }));
+    let reconciler = Reconciler::new(&registry, &state);
+    let tmp = tempfile::tempdir().unwrap();
+
+    let mut collector: Vec<(String, String)> = Vec::new();
+    reconciler
+        .apply_secret_action(
+            &SecretAction::Resolve {
+                provider: "vault".to_string(),
+                reference: "secret/data/gh#token".to_string(),
+                target: tmp.path().join("token.txt"),
+                origin: "local".to_string(),
+            },
+            tmp.path(),
+            &mut collector,
+        )
+        .expect("resolve should succeed");
+    reconciler
+        .apply_secret_action(
+            &SecretAction::ResolveEnv {
+                provider: "vault".to_string(),
+                reference: "secret/data/gh#token".to_string(),
+                envs: vec!["GH_TOKEN".to_string()],
+                origin: "local".to_string(),
+            },
+            tmp.path(),
+            &mut collector,
+        )
+        .expect("resolve-env should succeed");
+
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the file and env occurrences of one reference must share one resolution"
+    );
+    // Both surfaces still carry the value.
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("token.txt")).unwrap(),
+        "resolved-once"
+    );
+    assert_eq!(
+        collector,
+        vec![("GH_TOKEN".to_string(), "resolved-once".to_string())]
+    );
+}
+
+#[test]
+fn two_references_of_one_provider_each_spawn_their_own_resolution() {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .secret_providers
+        .push(Box::new(CountingSecretProvider {
+            calls: std::sync::Arc::clone(&calls),
+        }));
+    let reconciler = Reconciler::new(&registry, &state);
+    let tmp = tempfile::tempdir().unwrap();
+
+    let mut collector: Vec<(String, String)> = Vec::new();
+    for reference in ["secret/data/gh#token", "secret/data/aws#key"] {
+        reconciler
+            .apply_secret_action(
+                &SecretAction::ResolveEnv {
+                    provider: "vault".to_string(),
+                    reference: reference.to_string(),
+                    envs: vec!["TOKEN".to_string()],
+                    origin: "local".to_string(),
+                },
+                tmp.path(),
+                &mut collector,
+            )
+            .expect("resolve-env should succeed");
+    }
+
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "distinct references are distinct questions"
+    );
+}
+
+#[test]
+fn one_encrypted_file_decrypts_once_however_many_targets_it_feeds() {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.secret_backend = Some(Box::new(CountingSecretBackend {
+        calls: std::sync::Arc::clone(&calls),
+    }));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("token.enc");
+    std::fs::write(&source, "encrypted").unwrap();
+
+    let mut collector: Vec<(String, String)> = Vec::new();
+    for target in ["a.txt", "b.txt"] {
+        reconciler
+            .apply_secret_action(
+                &SecretAction::Decrypt {
+                    source: source.clone(),
+                    target: tmp.path().join(target),
+                    backend: "test-sops".to_string(),
+                    origin: "local".to_string(),
+                },
+                tmp.path(),
+                &mut collector,
+            )
+            .expect("decrypt should succeed");
+    }
+
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "one source file is one decryption however many targets it lands in"
+    );
+    for target in ["a.txt", "b.txt"] {
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join(target)).unwrap(),
+            "decrypted-once"
+        );
+    }
+}
+
+#[test]
+fn a_second_run_resolves_its_own_secrets() {
+    // The memo is the RUN's, never the process's: a rotated secret must be
+    // re-fetched by the next reconciler rather than answered out of the last
+    // one's memory.
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .secret_providers
+        .push(Box::new(CountingSecretProvider {
+            calls: std::sync::Arc::clone(&calls),
+        }));
+    let tmp = tempfile::tempdir().unwrap();
+
+    for _ in 0..2 {
+        let reconciler = Reconciler::new(&registry, &state);
+        let mut collector: Vec<(String, String)> = Vec::new();
+        reconciler
+            .apply_secret_action(
+                &SecretAction::ResolveEnv {
+                    provider: "vault".to_string(),
+                    reference: "secret/data/gh#token".to_string(),
+                    envs: vec!["GH_TOKEN".to_string()],
+                    origin: "local".to_string(),
+                },
+                tmp.path(),
+                &mut collector,
+            )
+            .expect("resolve-env should succeed");
+    }
+
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
 #[test]
 fn apply_secret_resolve_env_unknown_provider_errors() {
     let state = test_state();
