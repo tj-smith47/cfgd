@@ -2211,8 +2211,16 @@ impl Drop for AvailableVersionMemoTtlGuard {
 /// `serial_test` group; this one cannot, because its users ALSO need the
 /// unnamed group for `CFGD_ALLOW_LOCAL_SOURCES` and `serial_test` accepts only
 /// ident keys, so "the default group AND a named one" is inexpressible. Building
-/// the exclusion into the guard needs no attribute at the call site and cannot
-/// be forgotten by the next author.
+/// the exclusion into the guard needs no attribute at the call site, so no
+/// PINNING test can forget it.
+///
+/// What the exclusion does NOT cover: a test that drives a fetch without pinning
+/// at all. The pin is one process-global atomic and an unpinned test reads
+/// whatever is currently pinned, so a `never_expires` held here can spare an
+/// unpinned concurrent test a transfer it was counting on. Every test whose
+/// claim turns on whether a transfer happened must therefore pin, whichever
+/// direction it needs — the guard makes the exclusion automatic among pins, not
+/// among readers.
 pub struct GitRefreshWindowGuard {
     prior: Option<u64>,
     // Ordered after `prior` only for readability; `Drop` restores the atomic
@@ -3261,23 +3269,25 @@ mod tests {
 
     /// The guard's exclusion is the reason no window-pinning test carries a
     /// serial attribute for it, so the exclusion has to be observable rather
-    /// than assumed. Asking the mutex itself is deterministic — no second
-    /// thread, no clock — and goes red the moment the guard stops holding it.
+    /// than assumed. Every assertion here is made from INSIDE this test's own
+    /// guard: whether the lock is FREE is never this test's to claim, because
+    /// any of the window tests may hold it at any moment, and asserting on it
+    /// makes this test fail for someone else's correct behaviour.
     #[test]
     fn a_live_window_pin_holds_the_lock_that_keeps_a_second_pin_out() {
-        assert!(
-            GIT_REFRESH_WINDOW_PIN.try_lock().is_ok(),
-            "no pin is live, so the lock must be free"
-        );
         let pinned = GitRefreshWindowGuard::never_expires();
         assert!(
             GIT_REFRESH_WINDOW_PIN.try_lock().is_err(),
             "a live pin must hold the lock, or two tests can pin the window at once"
         );
         drop(pinned);
+        // The release is observed by taking the exclusion again rather than by
+        // asking whether the lock is free — a guard that failed to release
+        // would leave this acquisition unsatisfiable on the same thread.
+        let _second = GitRefreshWindowGuard::never_expires();
         assert!(
-            GIT_REFRESH_WINDOW_PIN.try_lock().is_ok(),
-            "dropping the pin must release the lock"
+            GIT_REFRESH_WINDOW_PIN.try_lock().is_err(),
+            "the second pin must hold the lock the first one released"
         );
     }
 

@@ -333,7 +333,10 @@ fn resolve_ref_object<'r>(
 /// Resolution mirrors [`checkout_ref`] exactly — `refs/tags/<name>`, then
 /// `refs/remotes/origin/<name>`, then the bare revision — because the question
 /// is precisely "will the checkout that follows find this?". A source with no
-/// ref pinned stays on the default branch and so has nothing to resolve.
+/// ref pinned names nothing a transfer has to deliver — it follows wherever its
+/// remote-tracking branch already points — so for that one the window alone
+/// decides, and inside it the checkout advances only as far as the last
+/// transfer reached.
 fn cache_resolves_ref(repo_path: &Path, git_src: &GitSource) -> bool {
     let Some(ref_name) = git_src.tag.as_deref().or(git_src.git_ref.as_deref()) else {
         return true;
@@ -622,8 +625,16 @@ fn unresolvable_ref_message(ref_name: &str, module_name: &str, e: &git2::Error) 
 }
 
 /// The remote-tracking branch an unpinned source follows: `origin/HEAD` when the
-/// remote publishes one, and otherwise the counterpart of the branch the clone
-/// left checked out.
+/// clone recorded one, and otherwise the counterpart of the branch the clone left
+/// checked out.
+///
+/// The fallback answers from the CURRENT branch, and [`detach_and_checkout`]
+/// leaves the checkout detached — where the shorthand is `HEAD` and names no
+/// branch. Read once and never written back, that arm is therefore good for
+/// exactly one advance, and every later resolve of the same checkout silently
+/// stops following upstream. So the answer is recorded as `origin/HEAD`, the
+/// same symbolic ref a clone would have written, which makes the first arm
+/// answer for the rest of the checkout's life.
 fn default_tracking_branch(repo: &git2::Repository) -> Option<String> {
     if let Ok(head) = repo.find_reference("refs/remotes/origin/HEAD")
         && let Ok(resolved) = head.resolve()
@@ -634,7 +645,16 @@ fn default_tracking_branch(repo: &git2::Repository) -> Option<String> {
     let head = repo.head().ok()?;
     let branch = head.shorthand().ok()?;
     let candidate = format!("refs/remotes/origin/{branch}");
-    repo.refname_to_id(&candidate).ok().map(|_| candidate)
+    repo.refname_to_id(&candidate).ok()?;
+    // Forced: reaching here means the existing `origin/HEAD`, if any, does not
+    // resolve, and a dangling one would otherwise refuse the write forever.
+    let _ = repo.reference_symbolic(
+        "refs/remotes/origin/HEAD",
+        &candidate,
+        true,
+        "cfgd: record the branch this checkout follows",
+    );
+    Some(candidate)
 }
 
 /// Move an UNPINNED source's working tree onto what the fetch just brought over.
@@ -1629,6 +1649,62 @@ mod tests {
     }
 
     #[test]
+    fn an_unpinned_checkout_keeps_following_its_branch_after_the_first_advance() {
+        // The advance detaches HEAD, and a detached HEAD has no branch
+        // shorthand — so the arm that recovers the tracking branch from the
+        // checked-out branch can answer exactly once unless what it found is
+        // written down. Driven directly against the refs, with no clone and no
+        // transport: whether a given git build re-creates `origin/HEAD` on
+        // fetch is not what this claim is about, and a checkout that has lost
+        // it must keep following its branch either way.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let first = repo
+            .commit(Some("HEAD"), &sig, &sig, "first", &tree, &[])
+            .unwrap();
+        let first_commit = repo.find_commit(first).unwrap();
+        let second = repo
+            .commit(None, &sig, &sig, "second", &tree, &[&first_commit])
+            .unwrap();
+        let second_commit = repo.find_commit(second).unwrap();
+        let third = repo
+            .commit(None, &sig, &sig, "third", &tree, &[&second_commit])
+            .unwrap();
+
+        // A remote-tracking branch one commit ahead of the checked-out branch,
+        // and deliberately no `origin/HEAD`.
+        let branch = repo.head().unwrap().shorthand().unwrap().to_string();
+        let tracking = format!("refs/remotes/origin/{branch}");
+        repo.reference(&tracking, second, true, "fixture").unwrap();
+
+        let git_src = GitSource {
+            repo_url: "file:///fixture".to_string(),
+            tag: None,
+            git_ref: None,
+            subdir: None,
+        };
+
+        advance_to_default_branch(&repo, &git_src, "tracking").expect("the first advance");
+        assert!(
+            repo.head_detached().unwrap(),
+            "the advance must detach HEAD, or this test proves nothing"
+        );
+        assert_eq!(repo.head().unwrap().target().unwrap(), second);
+
+        repo.reference(&tracking, third, true, "upstream moved")
+            .unwrap();
+        advance_to_default_branch(&repo, &git_src, "tracking").expect("the second advance");
+        assert_eq!(
+            repo.head().unwrap().target().unwrap(),
+            third,
+            "a checkout must keep following its branch after it has been detached once"
+        );
+    }
+
+    #[test]
     #[serial_test::serial]
     fn the_transfer_window_is_what_spares_the_second_source_its_fetch() {
         // The control for the test above: with the window pinned shut the same
@@ -1662,15 +1738,24 @@ mod tests {
         // checks the age before it answers — so a map that kept one would be
         // holding a URL for the life of the process to say nothing with. A
         // daemon fetching from many repositories is where that accumulates.
+        //
+        // Asserted on this test's OWN keys, never on the map's size: the map is
+        // process-global and every fetch test in the binary writes to it, so a
+        // length is a claim about what the rest of the suite was doing.
         let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
-        record_repo_refresh("https://example.invalid/first.git");
-        record_repo_refresh("https://example.invalid/second.git");
+        let stale = "https://example.invalid/forgets-stale.git";
+        let fresh = "https://example.invalid/forgets-fresh.git";
+        record_repo_refresh(stale);
+        record_repo_refresh(fresh);
         let map = repo_refreshes();
         assert!(
-            !map.contains_key("https://example.invalid/first.git"),
+            !map.contains_key(stale),
             "an expired entry must be dropped, not carried"
         );
-        assert_eq!(map.len(), 1, "only the entry just recorded may remain");
+        assert!(
+            map.contains_key(fresh),
+            "the entry just recorded must survive its own prune"
+        );
     }
 
     #[test]
@@ -1679,22 +1764,25 @@ mod tests {
         // faster than the window retires the old ones, so the cap is what makes
         // the map's size independent of how long the process runs.
         let _window = crate::test_helpers::GitRefreshWindowGuard::never_expires();
+        let filler = |i: usize| format!("https://example.invalid/ceiling-{i}.git");
         {
             let mut map = repo_refreshes();
             map.clear();
             for i in 0..REPO_REFRESH_MEMO_CAP {
-                map.insert(
-                    format!("https://example.invalid/{i}.git"),
-                    std::time::Instant::now(),
-                );
+                map.insert(filler(i), std::time::Instant::now());
             }
         }
-        record_repo_refresh("https://example.invalid/one-too-many.git");
+        record_repo_refresh("https://example.invalid/ceiling-one-too-many.git");
         let map = repo_refreshes();
-        assert_eq!(
-            map.len(),
-            1,
-            "reaching the ceiling must clear the map, leaving only the new entry"
+        // The property, not the size: with the window pinned open nothing else
+        // can retire these, so their absence is the clear and nothing else.
+        assert!(
+            !map.contains_key(&filler(0)) && !map.contains_key(&filler(REPO_REFRESH_MEMO_CAP - 1)),
+            "reaching the ceiling must clear the entries already held"
+        );
+        assert!(
+            map.contains_key("https://example.invalid/ceiling-one-too-many.git"),
+            "the entry that reached the ceiling must be the one kept"
         );
     }
 
@@ -1704,7 +1792,7 @@ mod tests {
     fn checkout_ref_errors_when_ref_points_to_non_commit() {
         // A tag pointing directly at a *tree* (not a commit) resolves via
         // revparse_single but fails peel_to_commit. The error must name the ref
-        // and the "does not point to a commit" failure mode (git.rs:380-383).
+        // and the "does not point to a commit" failure mode.
         let dir = tempfile::tempdir().unwrap();
         let repo = git2::Repository::init(dir.path()).unwrap();
         let sig = git2::Signature::now("Test", "test@example.com").unwrap();
@@ -1803,12 +1891,15 @@ mod tests {
         );
     }
 
-    // --- checkout_ref: no ref pinned is a clean no-op (stays on default) ---
+    // --- checkout_ref: no ref pinned, and no upstream to advance towards ---
 
     #[test]
-    fn checkout_ref_no_ref_is_noop() {
-        // With neither tag nor git_ref set, checkout_ref returns Ok without
-        // touching HEAD — the early-return arm (git.rs:360-363).
+    fn an_unpinned_checkout_with_no_tracking_branch_is_left_where_it_is() {
+        // An unpinned source advances to its remote-tracking branch, and this
+        // repository has none — no origin remote, no origin/HEAD. The degrade
+        // is what keeps that best-effort: HEAD stays put, still attached, and
+        // the resolve succeeds rather than failing over an upstream the user
+        // never asked for.
         let dir = tempfile::tempdir().unwrap();
         let repo = git2::Repository::init(dir.path()).unwrap();
         let sig = git2::Signature::now("Test", "test@example.com").unwrap();
@@ -1824,14 +1915,15 @@ mod tests {
             git_ref: None,
             subdir: None,
         };
-        checkout_ref(dir.path(), &git_src, "noref").expect("no-ref checkout must be a clean no-op");
+        checkout_ref(dir.path(), &git_src, "noref")
+            .expect("a checkout with no upstream to follow must still resolve");
 
         // HEAD is unchanged and still attached (not detached).
         let head_after = repo.head().unwrap().target().unwrap();
         assert_eq!(head_before, head_after, "HEAD must not move");
         assert!(
             !repo.head_detached().unwrap(),
-            "HEAD must remain attached when no ref is pinned"
+            "HEAD must remain attached when there is no tracking branch to move to"
         );
     }
 
@@ -1840,8 +1932,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn fetch_git_source_tag_precedence_over_ref() {
-        // When both a tag and a ?ref= are present, the tag wins (target_ref =
-        // tag.or(git_ref) at git.rs:358). The tag points at the root commit;
+        // When both a tag and a ?ref= are present, the tag wins (checkout_ref
+        // reads `tag.or(git_ref)`). The tag points at the root commit;
         // the branch carries an extra commit with feature.txt. Pinning to the
         // tag must yield the tag's tree (no feature.txt), proving precedence.
         let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");

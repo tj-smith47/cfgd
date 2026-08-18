@@ -607,6 +607,8 @@ Use `cfgd module upgrade` to move to a newer version.
 
 A module source that names a mutable ref (a branch, or a tag someone may move) is fetched rather than read from the cache. Within one process, each repository is transferred once and every module, file, or locked entry naming that repository reads the same snapshot: one `git fetch` brings over every ref, so a second look would learn nothing. A `cfgd apply` or `cfgd plan` run is one such process and always starts with a fetch.
 
+A source that pins nothing follows its default branch: each fetch moves its files onto whatever the branch now points at, so an upstream commit lands on the next run without re-adding the module. Pin a commit (`@<sha>`) or a tag (`@v1.2.0`) to hold a source still; `?ref=<branch>` follows that branch the same way the default one is followed.
+
 The daemon is long-lived, so the same repository is re-fetched at most once every 30 seconds. With the default `interval: 5m` every tick fetches. Setting an interval below 30s does not fetch faster than that — a module tracking a branch converges within 30 seconds either way.
 
 ## Modules from Config Sources

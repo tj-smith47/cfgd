@@ -5466,13 +5466,14 @@ mod git_fixture_tests {
     }
 
     #[test]
-    fn fetch_git_source_second_call_takes_fetch_existing_repo_path() {
-        // First call clones, second call must hit the
-        // `.git`-exists branch and route through fetch_existing_repo. Verify
-        // by adding a new commit to the source between calls and confirming
-        // the cached repo's HEAD still resolves cleanly. Default branch is
-        // not auto-fast-forwarded after fetch (cfgd does not move HEAD
-        // unless tag/ref is set) — so HEAD stays on first-clone commit.
+    fn a_second_resolve_fetches_the_cached_repository_and_deploys_its_new_tip() {
+        // The first call clones; the second must take the `.git`-exists branch
+        // through fetch_existing_repo and land the working tree on what that
+        // transfer brought over. The window is pinned open-ended so the second
+        // call really transfers — unpinned, it would be spared the fetch by
+        // whatever the first call recorded, and the assertion would be about
+        // the window rather than about the fetch path.
+        let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
         let src_dir = tempfile::tempdir().unwrap();
         let (src_repo, first_commit) = init_repo_with_commit(src_dir.path());
 
@@ -5491,17 +5492,16 @@ mod git_fixture_tests {
             first_commit.to_string()
         );
 
-        // Make a new commit on the source. The dest still points at first
-        // commit because cfgd doesn't auto-checkout default-branch tips.
-        let _second = add_commit(&src_repo, "second.txt", "second");
+        let second = add_commit(&src_repo, "second.txt", "second");
 
         let dest2 = fetch_git_source(&git_src, cache.path(), "mymod", &printer).unwrap();
         assert_eq!(dest2, dest1, "cache path should be deterministic");
-        // HEAD unchanged on second call — fetch only updated remote refs.
         assert_eq!(
             get_head_commit_sha(&dest2).unwrap(),
-            first_commit.to_string()
+            second.to_string(),
+            "an unpinned source deploys the tip its fetch brought over"
         );
+        assert!(dest2.join("second.txt").exists());
     }
 
     #[test]
