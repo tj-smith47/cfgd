@@ -3,7 +3,7 @@
 mod installed;
 pub mod skill;
 
-pub use installed::InstalledPackages;
+pub use installed::{InstalledEnumerations, InstalledPackages};
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -102,12 +102,35 @@ pub struct PackageContext<'a> {
     /// What each manager reported installed, memoized for this context — see
     /// [`PackageContext::installed_for`].
     ///
-    /// The memo is per-context and no production path shares one: a context is
-    /// moved, never cloned, and each lane worker mints its own through
-    /// `PackageExec::cx`. What the per-slot locking buys is that sharing one
-    /// would be SAFE and would still serialize nothing but a single manager
-    /// against itself — not that anything shares one today.
-    enumerations: installed::InstalledEnumerations,
+    /// Owned by the context on every path but one: a context is moved, never
+    /// cloned, and each lane worker mints its own through `PackageExec::cx`.
+    /// The exception is a host that OUTLIVES its contexts and rebuilds one per
+    /// unit of work — the MCP server, whose per-tool-call context would
+    /// otherwise re-enumerate every manager on every call — which owns the memo
+    /// itself and lends it through
+    /// [`PackageContext::with_shared_enumerations`]. Lending is safe because
+    /// each slot has its own lock and every entry is keyed by
+    /// [`crate::command_resolution_generation`], so an install performed
+    /// between two borrows voids the answer rather than being served over it.
+    enumerations: EnumerationMemo<'a>,
+}
+
+/// Where a [`PackageContext`]'s installed-package memo lives.
+enum EnumerationMemo<'a> {
+    /// The context owns it, and it dies with the context. Every path but the
+    /// long-lived-host one.
+    Owned(installed::InstalledEnumerations),
+    /// A host that outlives this context owns it and lends it for the call.
+    Shared(&'a installed::InstalledEnumerations),
+}
+
+impl EnumerationMemo<'_> {
+    fn get(&self) -> &installed::InstalledEnumerations {
+        match self {
+            Self::Owned(memo) => memo,
+            Self::Shared(memo) => memo,
+        }
+    }
 }
 
 impl<'a> PackageContext<'a> {
@@ -122,7 +145,30 @@ impl<'a> PackageContext<'a> {
             caller_owns_status: false,
             lane: None,
             provision_via: None,
-            enumerations: installed::InstalledEnumerations::default(),
+            enumerations: EnumerationMemo::Owned(installed::InstalledEnumerations::default()),
+        }
+    }
+
+    /// A context that answers `installed_for` out of a memo its CALLER owns, so
+    /// a host rebuilding a context per unit of work does not re-enumerate every
+    /// manager each time. The MCP server is that host: one server serves many
+    /// tool calls, each of which needs its own short-lived context.
+    ///
+    /// Everything else about it matches [`PackageContext::new`] — notes are
+    /// discarded, no lane, no provision.
+    pub fn with_shared_enumerations(
+        printer: &'a Printer,
+        state: &'a dyn PackageStateStore,
+        enumerations: &'a installed::InstalledEnumerations,
+    ) -> Self {
+        Self {
+            printer,
+            state,
+            notes: NoteSink::discarded(),
+            caller_owns_status: false,
+            lane: None,
+            provision_via: None,
+            enumerations: EnumerationMemo::Shared(enumerations),
         }
     }
 
@@ -140,7 +186,7 @@ impl<'a> PackageContext<'a> {
             caller_owns_status: false,
             lane: None,
             provision_via: None,
-            enumerations: installed::InstalledEnumerations::default(),
+            enumerations: EnumerationMemo::Owned(installed::InstalledEnumerations::default()),
         }
     }
 
@@ -231,10 +277,12 @@ impl<'a> PackageContext<'a> {
     /// enumeration: the slot's lock is held across the call, so asking about
     /// itself would deadlock.
     pub fn installed_for(&self, manager: &dyn PackageManager) -> Result<Arc<InstalledPackages>> {
-        self.enumerations.get_or_enumerate(manager.name(), || {
-            let listed = manager.installed_packages_with_versions(self)?;
-            Ok(InstalledPackages::from_listing(manager, listed))
-        })
+        self.enumerations
+            .get()
+            .get_or_enumerate(manager.name(), || {
+                let listed = manager.installed_packages_with_versions(self)?;
+                Ok(InstalledPackages::from_listing(manager, listed))
+            })
     }
 
     /// Report something that is NOT this action's status line — work done on

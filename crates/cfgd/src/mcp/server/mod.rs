@@ -71,6 +71,13 @@ pub struct McpServer {
     // terminal, but `PackageManager` methods still require a `PackageContext`.
     printer: cfgd_core::output::Printer,
     state: cfgd_core::state::StateStore,
+    /// What each manager reported installed, kept for the server's life rather
+    /// than for one tool call's. A context is short-lived here — it borrows
+    /// `printer` and `state`, so it cannot be a field beside them — and without
+    /// this every tool call re-ran `brew list`, `npm ls -g` and the rest. An
+    /// install performed by a tool call bumps the resolution generation, which
+    /// voids the memo, so a later call still sees what that install did.
+    enumerations: cfgd_core::providers::InstalledEnumerations,
 }
 
 impl McpServer {
@@ -92,6 +99,7 @@ impl McpServer {
             managers: packages::all_package_managers(),
             printer: cfgd_core::output::Printer::silent(),
             state,
+            enumerations: cfgd_core::providers::InstalledEnumerations::default(),
         })
     }
 
@@ -247,7 +255,11 @@ impl McpServer {
                     );
                 }
 
-                let pkg_cx = cfgd_core::providers::PackageContext::new(&self.printer, &self.state);
+                let pkg_cx = cfgd_core::providers::PackageContext::with_shared_enumerations(
+                    &self.printer,
+                    &self.state,
+                    &self.enumerations,
+                );
                 let result = crate::ai::tools::dispatch_tool_call(
                     dispatch_name,
                     &arguments,
