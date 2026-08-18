@@ -188,13 +188,17 @@ pub fn resolve_module_packages(
 /// `verify`, `compliance`, `checkin` and `decide` — none of which show a version
 /// — once per declared package, on every invocation and every daemon tick.
 ///
-/// Call it from the paths that consume the version and from no others. Today
-/// that is `apply`, `plan`, and the daemon's reconcile tick (all three feed
-/// [`crate::reconciler::Reconciler::plan`], whose `InstallPackages` description
-/// renders `brew install neovim (0.10.2)` and is also the persisted action
-/// description and the module's recorded packages hash), plus the two
-/// introspection surfaces that print a version per declared package (`cfgd
-/// doctor` and `cfgd module show`).
+/// Call it from the paths that consume the version and from no others. The rule
+/// is not a list to memorize: **every** caller of
+/// [`crate::reconciler::Reconciler::plan`] fills, because that planner's
+/// `InstallPackages` description renders `brew install neovim (0.10.2)` and is
+/// also the persisted action description and the module's recorded packages
+/// hash — a plan built over unfilled modules renders and STORES a different
+/// string than the same modules applied from anywhere else. That is six sites:
+/// `cfgd apply`, `cfgd plan`, the daemon's reconcile tick, both `cfgd init`
+/// apply paths, and `cfgd module create --apply`. Two more surfaces print a
+/// version per declared package without planning — `cfgd doctor` and `cfgd
+/// module show` — for eight in total.
 ///
 /// The gating reproduces what resolution used to do exactly, so those surfaces
 /// render byte-identically: a package already carrying a version (the

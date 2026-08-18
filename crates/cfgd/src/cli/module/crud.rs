@@ -258,7 +258,7 @@ pub fn cmd_module_create(
         let platform = cfgd_core::platform::Platform::current();
         let mgr_map = registry.manager_map();
         let cache_base = module_cache_dir(cli)?;
-        let resolved_modules = modules::resolve_modules(
+        let mut resolved_modules = modules::resolve_modules(
             std::slice::from_ref(name),
             &config_dir,
             &cache_base,
@@ -267,6 +267,7 @@ pub fn cmd_module_create(
             &mgr_map,
             printer,
         )?;
+        modules::fill_module_available_versions(&mut resolved_modules, &mgr_map);
 
         let resolved = config::ResolvedProfile {
             layers: Vec::new(),

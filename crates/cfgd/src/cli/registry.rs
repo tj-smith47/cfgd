@@ -306,7 +306,23 @@ impl PackageManagerFactoryGuard {
     pub(in crate::cli) fn hermetic_native() -> Self {
         Self::install(hermetic_managers)
     }
+
+    /// The same set, except the fake native manager also QUOTES a version for
+    /// every package it is asked about ([`FAKE_NATIVE_VERSION`]).
+    ///
+    /// For a test whose subject is the `(version)` suffix a rendered — and
+    /// persisted — install action carries, which is only there when the command
+    /// filled its resolved modules before planning.
+    pub(in crate::cli) fn hermetic_native_quoting_versions() -> Self {
+        Self::install(hermetic_managers_quoting_versions)
+    }
 }
+
+/// The version [`PackageManagerFactoryGuard::hermetic_native_quoting_versions`]
+/// makes the fake native manager offer. In the 9.9.x sentinel range, so it can
+/// never collide with a real release stream.
+#[cfg(test)]
+pub(in crate::cli) const FAKE_NATIVE_VERSION: &str = "9.9.1";
 
 #[cfg(test)]
 impl Drop for PackageManagerFactoryGuard {
@@ -317,6 +333,18 @@ impl Drop for PackageManagerFactoryGuard {
 
 #[cfg(test)]
 fn hermetic_managers() -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
+    hermetic_managers_with(None)
+}
+
+#[cfg(test)]
+fn hermetic_managers_quoting_versions() -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
+    hermetic_managers_with(Some(FAKE_NATIVE_VERSION))
+}
+
+#[cfg(test)]
+fn hermetic_managers_with(
+    version: Option<&'static str>,
+) -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
     let native = cfgd_core::platform::Platform::detect()
         .native_manager()
         .to_string();
@@ -325,7 +353,10 @@ fn hermetic_managers() -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
             .into_iter()
             .filter(|m| m.name() != native)
             .collect();
-    managers.push(Box::new(FakeNativeManager { name: native }));
+    managers.push(Box::new(FakeNativeManager {
+        name: native,
+        version,
+    }));
     managers
 }
 
@@ -336,6 +367,9 @@ fn hermetic_managers() -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
 #[cfg(test)]
 struct FakeNativeManager {
     name: String,
+    /// What it answers `available_version` with, for the tests whose subject is
+    /// the version a rendered action carries.
+    version: Option<&'static str>,
 }
 
 #[cfg(test)]
@@ -386,7 +420,7 @@ impl cfgd_core::providers::PackageManager for FakeNativeManager {
         Ok(())
     }
     fn available_version(&self, _package: &str) -> cfgd_core::errors::Result<Option<String>> {
-        Ok(None)
+        Ok(self.version.map(str::to_string))
     }
 }
 

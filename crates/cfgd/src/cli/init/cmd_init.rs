@@ -207,7 +207,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
             let platform = cfgd_core::platform::Platform::current();
             let mgr_map = registry.manager_map();
-            let resolved_modules = modules::resolve_modules(
+            let mut resolved_modules = modules::resolve_modules(
                 args.apply_modules,
                 &target_dir,
                 &cache_base,
@@ -216,6 +216,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 &mgr_map,
                 printer,
             )?;
+            modules::fill_module_available_versions(&mut resolved_modules, &mgr_map);
 
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
             let mut plan = reconciler.plan(
@@ -285,7 +286,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 }
             }
 
-            let resolved_modules = if !module_names.is_empty() {
+            let mut resolved_modules = if !module_names.is_empty() {
                 let platform = cfgd_core::platform::Platform::current();
                 let mgr_map = registry.manager_map();
                 let cache_base = module_cache_dir_for(args.cache_dir, args.scope)?;
@@ -333,6 +334,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             let file_actions = fm.plan(&resolved.merged)?;
 
             registry.file_manager = Some(Box::new(fm));
+
+            modules::fill_module_available_versions(&mut resolved_modules, &registry.manager_map());
 
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
             let mut plan = reconciler.plan(

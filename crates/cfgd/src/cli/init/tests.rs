@@ -976,6 +976,124 @@ fn cmd_init_with_from_local_path() {
 }
 
 #[test]
+#[serial_test::serial]
+fn cmd_init_apply_module_prices_the_package_it_installs() {
+    // `cfgd init --apply-module` plans, so its install action is rendered AND
+    // persisted with the version its manager quoted — the same string the
+    // module's packages_hash folds. Planning over unpriced modules stores a
+    // hash over empty versions that the next `cfgd apply` then rewrites for a
+    // module nobody changed. No snapshot binary covers this command.
+    let _pm_guard =
+        crate::cli::registry::PackageManagerFactoryGuard::hermetic_native_quoting_versions();
+    let dir = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+    let target = dir.path().join("config");
+    let module_dir = target.join("modules").join("priced-init-mod");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    // A package name no other test shares: the version memo is keyed by
+    // (manager, package) for the whole process.
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: priced-init-mod\nspec:\n  packages:\n    - name: qp4-init-tool\n",
+    )
+    .unwrap();
+
+    let state_dir = dir.path().join("state");
+    let cache_dir = dir.path().join("cache");
+    let (printer, cap) = Printer::for_test_at(Verbosity::Normal);
+    let target_str = target.display().to_string();
+    let modules = ["priced-init-mod".to_string()];
+    let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        path: Some(&target_str),
+        from: None,
+        branch: "master",
+        name: Some("priced-init"),
+        apply: false,
+        dry_run: false,
+        yes: true,
+        install_daemon: false,
+        theme: None,
+        apply_profile: None,
+        apply_modules: &modules,
+        cache_dir: Some(&cache_dir),
+        state_dir: Some(&state_dir),
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+
+    cmd_init_guarded(&printer, &args).expect("init with a module apply must succeed");
+    drop(printer);
+
+    let output = cfgd_core::test_helpers::captured_text(&cap);
+    assert!(
+        output.contains(&format!("({})", crate::cli::registry::FAKE_NATIVE_VERSION)),
+        "the install action must carry the version its manager quoted: {output}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn cmd_init_apply_profile_with_a_module_prices_the_package_it_installs() {
+    // The sibling of the test above: naming a profile alongside the module
+    // takes `cfgd init`'s OTHER apply path, which builds its own resolved
+    // modules and plans over them. Both paths render and persist the same
+    // description, so both fill — one covered path would leave the other free
+    // to drift.
+    let _pm_guard =
+        crate::cli::registry::PackageManagerFactoryGuard::hermetic_native_quoting_versions();
+    let dir = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+    let target = dir.path().join("config");
+    let module_dir = target.join("modules").join("priced-profile-mod");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: priced-profile-mod\nspec:\n  packages:\n    - name: qp4-profile-tool\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(target.join("profiles")).unwrap();
+    std::fs::write(
+        target.join("profiles").join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - priced-profile-mod\n",
+    )
+    .unwrap();
+
+    let state_dir = dir.path().join("state");
+    let cache_dir = dir.path().join("cache");
+    let (printer, cap) = Printer::for_test_at(Verbosity::Normal);
+    let target_str = target.display().to_string();
+    let modules = ["priced-profile-mod".to_string()];
+    let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        path: Some(&target_str),
+        from: None,
+        branch: "master",
+        name: Some("priced-profile-init"),
+        apply: false,
+        dry_run: false,
+        yes: true,
+        install_daemon: false,
+        theme: None,
+        apply_profile: Some("default"),
+        apply_modules: &modules,
+        cache_dir: Some(&cache_dir),
+        state_dir: Some(&state_dir),
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+
+    cmd_init_guarded(&printer, &args).expect("init with a profile apply must succeed");
+    drop(printer);
+
+    let output = cfgd_core::test_helpers::captured_text(&cap);
+    assert!(
+        output.contains(&format!("({})", crate::cli::registry::FAKE_NATIVE_VERSION)),
+        "the install action must carry the version its manager quoted: {output}"
+    );
+}
+
+#[test]
 fn ensure_config_file_creates_without_origin() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("cfgd.yaml");

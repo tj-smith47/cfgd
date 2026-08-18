@@ -2819,6 +2819,45 @@ fn cmd_module_create_with_apply_and_yes_drives_full_apply_sequence() {
 }
 
 #[test]
+#[serial_test::serial]
+fn cmd_module_create_apply_prices_the_package_it_installs() {
+    // `--apply` plans, so it renders AND PERSISTS `<mgr> install <pkg> (ver)`:
+    // the same description reaches the apply journal and folds into the
+    // module's packages_hash. A path that plans over unpriced modules writes a
+    // hash over empty versions, and the next `cfgd apply` overwrites it with a
+    // different one for an unchanged module. No snapshot binary covers this
+    // command, which is how it was missed.
+    let _pm_guard =
+        crate::cli::registry::PackageManagerFactoryGuard::hermetic_native_quoting_versions();
+    let dir = setup_config_dir();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+    let cli = test_cli(dir.path());
+    std::fs::write(
+        dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+    )
+    .unwrap();
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut args = make_module_create_args("priced-create-mod");
+    args.apply = true;
+    args.yes = true;
+    // A package name no other test shares: the version memo is keyed by
+    // (manager, package) for the whole process.
+    args.packages = vec!["qp4-created-tool".to_string()];
+
+    cmd_module_create(&cli, &printer, &args).expect("create-with-apply must succeed");
+    drop(printer);
+
+    let output = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        output.contains(&format!("({})", crate::cli::registry::FAKE_NATIVE_VERSION)),
+        "the install action must carry the version its manager quoted: {output}"
+    );
+}
+
+#[test]
 fn cmd_module_create_interactive_drives_full_prompt_sequence_via_harness() {
     // Interactive mode at crud.rs:43-83 was uncovered for many sessions
     // because Printer::for_test()'s prompt_text returned Err. The new
