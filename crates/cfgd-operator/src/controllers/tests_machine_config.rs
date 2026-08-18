@@ -203,11 +203,29 @@ async fn reconcile_machine_config_skips_when_generation_observed_and_no_drift() 
     // no drift performs no API call at all.
     let (ctx, _registry, harness) = MockKubeHarness::with_stores(vec![], empty_stores());
 
-    let action = reconcile_machine_config(Arc::new(mc), ctx).await.unwrap();
+    let action = reconcile_machine_config(Arc::new(mc), ctx.clone())
+        .await
+        .unwrap();
     assert_eq!(action, Action::requeue(std::time::Duration::from_secs(60)));
 
     let report = harness.finish().await;
     assert!(report.captured.is_empty());
+
+    // A steady machine stops advancing `lastReconciled` by design, so this
+    // counter is the only thing left that separates a healthy machine from a
+    // controller that has stopped reconciling it. The docs point liveness here.
+    let success = ctx
+        .metrics
+        .reconciliations_total
+        .get_or_create(&ReconcileLabels {
+            controller: "machine_config".to_string(),
+            result: "success".to_string(),
+        })
+        .get();
+    assert_eq!(
+        success, 1,
+        "a pass that found nothing to do is a reconcile that succeeded"
+    );
 }
 
 // -----------------------------------------------------------------------

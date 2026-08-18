@@ -164,7 +164,8 @@ so a machine that has not moved is not written to on every requeue. That makes
 `lastReconciled` a record of the last change: on a steady machine it can sit
 hours or days behind the last reconcile, and it is not a liveness signal. For
 liveness, read the operator's own reconcile metrics
-(`cfgd_operator_reconciliations_total`).
+(`cfgd_operator_reconciliations_total`), which advance on every pass including
+the ones that find nothing to change.
 
 ---
 

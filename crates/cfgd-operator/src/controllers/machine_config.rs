@@ -120,6 +120,13 @@ pub(super) async fn reconcile_machine_config(
         .any(|c| c.condition_type == "DriftDetected" && c.status == "True");
     if generation_unchanged && !has_drift && !had_drift {
         info!(name = %name, "already reconciled this generation, skipping");
+        // A pass that concluded there is nothing to do IS a reconciliation that
+        // succeeded, and it is the only signal a steady machine produces:
+        // `lastReconciled` deliberately stops advancing once the status stops
+        // changing, so a counter that also stopped would leave a healthy
+        // machine indistinguishable from a controller that had stopped
+        // reconciling it.
+        record_reconcile_success(&ctx, "machine_config", start);
         return Ok(Action::requeue(std::time::Duration::from_secs(60)));
     }
 
