@@ -92,6 +92,7 @@ fn collect_doctor_output(
     cli: &Cli,
     printer: &Printer,
 ) -> anyhow::Result<(DoctorOutput, DoctorExtras)> {
+    let ctx = RunContext::new(cli, printer);
     let (config_check, loaded_cfg) = if cli.config.exists() {
         match config::load_config(&cli.config) {
             Ok(mut cfg) => {
@@ -155,32 +156,30 @@ fn collect_doctor_output(
 
     let health = secrets::check_secrets_health(&config_dir, age_key_override.map(|p| p.as_path()));
 
-    let resolved_packages = if let Some(ref cfg) = loaded_cfg {
+    // Resolved ONCE and read by both the package report below and the module
+    // list further down: `doctor` asked the same question twice, and a profile
+    // resolution walks the inheritance chain off disk each time.
+    let doctor_profile = loaded_cfg.as_ref().and_then(|cfg| {
         let profiles_dir = profiles_dir(cli);
-        let profile_name = cli.profile.as_deref().or(cfg.spec.profile.as_deref());
-        if let Some(pn) = profile_name
-            && let Ok(mut resolved) = config::resolve_profile(pn, &profiles_dir)
-        {
-            if let Err(e) =
-                packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)
-            {
-                // Manifest resolution failed (missing referenced file, unreadable
-                // dir, parse error). Surface so the user knows the package report
-                // below is computed from a partial set.
-                printer.status_simple(
-                    Role::Warn,
-                    format!(
-                        "doctor: manifest resolution failed: {e} — package report may be incomplete"
-                    ),
-                );
-            }
-            Some(resolved.merged.packages)
-        } else {
-            None
+        let profile_name = cli.profile.as_deref().or(cfg.spec.profile.as_deref())?;
+        config::resolve_profile(profile_name, &profiles_dir).ok()
+    });
+
+    let resolved_packages = doctor_profile.as_ref().map(|resolved| {
+        let mut packages = resolved.merged.packages.clone();
+        if let Err(e) = ctx.resolve_manifest_packages(&mut packages) {
+            // Manifest resolution failed (missing referenced file, unreadable
+            // dir, parse error). Surface so the user knows the package report
+            // below is computed from a partial set.
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "doctor: manifest resolution failed: {e} — package report may be incomplete"
+                ),
+            );
         }
-    } else {
-        None
-    };
+        packages
+    });
 
     let registry = if let Some(ref pkgs) = resolved_packages {
         build_registry_with_profile(pkgs)
@@ -273,16 +272,10 @@ fn collect_doctor_output(
         }
     }
 
-    let module_list: Vec<String> = if let Some(ref cfg) = loaded_cfg {
-        let profiles_dir = profiles_dir(cli);
-        let profile_name = cli.profile.as_deref().or(cfg.spec.profile.as_deref());
-        profile_name
-            .and_then(|pn| config::resolve_profile(pn, &profiles_dir).ok())
-            .map(|r| r.merged.modules)
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let module_list: Vec<String> = doctor_profile
+        .as_ref()
+        .map(|r| r.merged.modules.clone())
+        .unwrap_or_default();
 
     let cache_base = module_cache_dir(cli).unwrap_or_default();
     let all_modules =
@@ -292,12 +285,11 @@ fn collect_doctor_output(
     // platform's manager and query installed_packages to know whether the
     // declared state is realized. The "modules-only" registry mirrors what
     // `cfgd apply` would use for the install path.
-    let modules_registry = build_registry();
-    let mgr_map = managers_map(&modules_registry);
+    let modules_registry = ctx.base_registry();
+    let mgr_map = managers_map(modules_registry);
     let platform = Platform::current();
-    let doctor_state = open_state_store(cli.state_dir.as_deref(), cli.scope()).ok();
-    let doctor_cx = doctor_state
-        .as_ref()
+    let doctor_cx = ctx
+        .state_opt()
         .map(|state| cfgd_core::providers::PackageContext::new(printer, state));
 
     let module_checks: Vec<DoctorModuleCheck> = module_list

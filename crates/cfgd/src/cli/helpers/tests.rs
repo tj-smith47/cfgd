@@ -745,9 +745,10 @@ fn compose_with_sources_no_sources_returns_local_profile_unchanged() {
     let cfg = config::load_config(&config_path).unwrap();
     let local = empty_resolved_profile("my-module", "work");
     let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
 
     let result = compose_with_sources(
-        &cli,
+        &ctx,
         &cfg,
         &local,
         &printer,
@@ -890,9 +891,10 @@ fn compose_with_sources_with_local_source_merges_source_profile() {
     let cfg = config::load_config(&config_path).unwrap();
     let local = empty_resolved_profile("my-module", "work");
     let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
 
     let result = compose_with_sources(
-        &cli,
+        &ctx,
         &cfg,
         &local,
         &printer,
@@ -956,9 +958,10 @@ fn compose_with_sources_merges_canonical_form_source_profile() {
     let cfg = config::load_config(&config_path).unwrap();
     let local = empty_resolved_profile("my-module", "work");
     let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
 
     let result = compose_with_sources(
-        &cli,
+        &ctx,
         &cfg,
         &local,
         &printer,
@@ -1006,11 +1009,12 @@ fn resolve_desired_state_read_path_sees_source_package_and_module() {
     let cfg = config::load_config(&config_path).unwrap();
     let local = empty_resolved_profile("my-module", "work");
     let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
 
     // Prime the cache with a refresh so the cache-only read path has a cache
     // dir to read (the daemon's sync task plays this role in production).
     compose_with_sources(
-        &cli,
+        &ctx,
         &cfg,
         &local,
         &printer,
@@ -1021,7 +1025,7 @@ fn resolve_desired_state_read_path_sees_source_package_and_module() {
 
     // Read path: cache-only, no network.
     let desired = resolve_desired_state(
-        &cli,
+        &ctx,
         &cfg,
         &local,
         None,
@@ -1086,10 +1090,11 @@ fn resolve_desired_state_read_path_cache_miss_falls_back_to_local() {
         packages: vec!["local-pkg".to_string()],
     });
     let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
 
     // No prime: cache dir for 'test-src' does not exist.
     let desired = resolve_desired_state(
-        &cli,
+        &ctx,
         &cfg,
         &local,
         None,
@@ -1139,10 +1144,11 @@ fn resolve_desired_state_apply_and_read_compute_same_module_set() {
     let cfg = config::load_config(&config_path).unwrap();
     let local = empty_resolved_profile("my-module", "work");
     let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
 
     // refresh = true (apply/plan path) primes the cache AND resolves.
     let apply_side = resolve_desired_state(
-        &cli,
+        &ctx,
         &cfg,
         &local,
         None,
@@ -1153,7 +1159,7 @@ fn resolve_desired_state_apply_and_read_compute_same_module_set() {
     .unwrap();
     // refresh = false (read path) on the now-primed cache.
     let read_side = resolve_desired_state(
-        &cli,
+        &ctx,
         &cfg,
         &local,
         None,
@@ -1199,9 +1205,10 @@ fn resolve_desired_state_no_sources_resolves_local_only() {
         merged: MergedProfile::default(),
     };
     let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
 
     let desired = resolve_desired_state(
-        &cli,
+        &ctx,
         &cfg,
         &local,
         None,
@@ -1391,7 +1398,8 @@ fn display_and_persist_conflicts_routes_roles_and_persists() {
     };
 
     let (printer, cap) = Printer::for_test_at(Verbosity::Normal);
-    display_and_persist_conflicts(&cli, &result, &printer);
+    let ctx = RunContext::new(&cli, &printer);
+    display_and_persist_conflicts(&ctx, &result, &printer);
     drop(printer);
 
     let out = cap.lock().expect("capture lock");

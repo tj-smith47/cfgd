@@ -78,15 +78,29 @@ pub(in crate::cli) fn load_config_and_profile(
 ) -> anyhow::Result<(CfgdConfig, String, ResolvedProfile)> {
     let mut cfg = config::load_config(&cli.config)?;
     drain_config_deprecations(printer, &mut cfg);
+    let (profile_name, resolved) = resolve_profile_for(cli, &cfg)?;
+    Ok((cfg, profile_name, resolved))
+}
+
+/// The profile in force for `cli` against an already-parsed `cfg`: the explicit
+/// `--profile`, else the config's active profile, resolved through the profiles
+/// directory with the source-delivered-profile decoration on a miss.
+///
+/// The resolution half of [`load_config_and_profile`], factored out so the
+/// run-scoped [`RunContext::config_and_profile`] answers the same question the
+/// same way instead of restating the rule beside it.
+pub(in crate::cli) fn resolve_profile_for(
+    cli: &Cli,
+    cfg: &CfgdConfig,
+) -> anyhow::Result<(String, ResolvedProfile)> {
     let profile_name = match cli.profile.as_deref() {
         Some(p) => p.to_string(),
         None => cfg.active_profile()?.to_string(),
     };
-    let resolved = match config::resolve_profile(&profile_name, &profiles_dir(cli)) {
-        Ok(resolved) => resolved,
-        Err(e) => return Err(decorate_profile_not_found(cli, &cfg, &profile_name, e)),
-    };
-    Ok((cfg, profile_name, resolved))
+    match config::resolve_profile(&profile_name, &profiles_dir(cli)) {
+        Ok(resolved) => Ok((profile_name, resolved)),
+        Err(e) => Err(decorate_profile_not_found(cli, cfg, &profile_name, e)),
+    }
 }
 
 /// Load config and resolve a profile, with the `--module` degrade shared by
@@ -860,13 +874,14 @@ pub(in crate::cli) struct DesiredState {
 /// single composition code path in [`SourceManager::compose`], then displays and
 /// persists any conflicts.
 pub(in crate::cli) fn compose_with_sources(
-    cli: &Cli,
+    ctx: &RunContext<'_>,
     cfg: &config::CfgdConfig,
     local_resolved: &ResolvedProfile,
     printer: &Printer,
     refresh: bool,
     mode: composition::ConstraintMode,
 ) -> anyhow::Result<composition::CompositionResult> {
+    let cli = ctx.cli();
     if cfg.spec.sources.is_empty() {
         // No sources, return local profile as-is
         return Ok(composition::CompositionResult {
@@ -890,7 +905,7 @@ pub(in crate::cli) fn compose_with_sources(
     }
 
     let result = mgr.compose(&cfg.spec.sources, local_resolved, mode)?;
-    display_and_persist_conflicts(cli, &result, printer);
+    display_and_persist_conflicts(ctx, &result, printer);
 
     // Report mode accumulates violations instead of aborting; without this the
     // only surface that ever showed them was a compliance snapshot, so an
@@ -959,7 +974,7 @@ pub(in crate::cli) fn compose_with_sources(
 /// store for `status`/history. Best-effort persistence: a state error is logged,
 /// not fatal, so a read-only filesystem never blocks a compose.
 fn display_and_persist_conflicts(
-    cli: &Cli,
+    ctx: &RunContext<'_>,
     result: &composition::CompositionResult,
     printer: &Printer,
 ) {
@@ -982,7 +997,7 @@ fn display_and_persist_conflicts(
     }
     drop(guard);
 
-    if let Ok(state) = open_state_store(cli.state_dir.as_deref(), cli.scope()) {
+    if let Some(state) = ctx.state_opt() {
         for conflict in &result.conflicts {
             if let Err(e) = state.record_source_conflict(
                 &conflict.winning_source,
@@ -1019,7 +1034,7 @@ fn display_and_persist_conflicts(
 /// consistently — a command that reports state must not silently report empty
 /// when the desired state is broken.
 pub(in crate::cli) fn resolve_desired_state(
-    cli: &Cli,
+    ctx: &RunContext<'_>,
     cfg: &config::CfgdConfig,
     local_resolved: &ResolvedProfile,
     module_filter: Option<&str>,
@@ -1027,7 +1042,8 @@ pub(in crate::cli) fn resolve_desired_state(
     refresh: bool,
     mode: composition::ConstraintMode,
 ) -> anyhow::Result<DesiredState> {
-    let composition = compose_with_sources(cli, cfg, local_resolved, printer, refresh, mode)?;
+    let cli = ctx.cli();
+    let composition = compose_with_sources(ctx, cfg, local_resolved, printer, refresh, mode)?;
     let composition::CompositionResult {
         resolved,
         source_env,
@@ -1037,7 +1053,7 @@ pub(in crate::cli) fn resolve_desired_state(
         ..
     } = composition;
 
-    let config_dir = config_dir(cli);
+    let config_dir = ctx.config_dir();
     let module_names = match module_filter {
         Some(name) => vec![name.to_string()],
         None => resolved.merged.modules.clone(),
@@ -1058,7 +1074,7 @@ pub(in crate::cli) fn resolve_desired_state(
         let cache_base = module_cache_dir(cli)?;
         match modules::resolve_modules(
             &module_names,
-            &config_dir,
+            config_dir,
             &cache_base,
             &source_module_roots,
             platform,

@@ -6,12 +6,13 @@ use cfgd_core::state::ComplianceHistoryRow;
 
 /// Collect a compliance snapshot, hash it, and store in the state store.
 /// Shared setup used by both `cmd_compliance_snapshot` and `cmd_compliance_export`.
-pub(super) fn collect_and_store_compliance_snapshot(
-    cli: &Cli,
-    printer: &Printer,
-) -> anyhow::Result<(CfgdConfig, ComplianceSnapshot)> {
-    let (cfg, _profile_name, local_resolved) = helpers::load_config_and_profile(cli, printer)?;
-    let config_dir = config_dir(cli);
+pub(super) fn collect_and_store_compliance_snapshot<'a>(
+    ctx: &'a RunContext<'_>,
+) -> anyhow::Result<(&'a CfgdConfig, ComplianceSnapshot)> {
+    let cli = ctx.cli();
+    let printer = ctx.printer();
+    let (cfg, _profile_name, local_resolved) = ctx.config_and_profile()?;
+    let config_dir = ctx.config_dir();
 
     // Compose with sources (cache-only — read paths stay offline) and resolve the
     // effective module set through the one shared resolver, so the compliance
@@ -21,9 +22,9 @@ pub(super) fn collect_and_store_compliance_snapshot(
     // check rather than aborting (exit 4). `compliance` reports state; it does not
     // gate on it — unlike apply/plan/daemon which compose in Enforce mode.
     let desired = resolve_desired_state(
-        cli,
-        &cfg,
-        &local_resolved,
+        ctx,
+        cfg,
+        local_resolved,
         None,
         &quiet_printer,
         false,
@@ -33,12 +34,12 @@ pub(super) fn collect_and_store_compliance_snapshot(
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
 
-    packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
+    ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
     let mut registry = build_registry_with_profile(&resolved.merged.packages);
     registry.file_manager = Some(Box::new(build_compliance_file_manager(
-        &config_dir,
+        config_dir,
         &resolved,
-        Some((printer, &cli.config)),
+        Some(ctx),
     )?));
 
     let profile_name = cli
@@ -55,17 +56,17 @@ pub(super) fn collect_and_store_compliance_snapshot(
 
     let sources: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
 
-    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+    let state = ctx.state()?;
     let mut snapshot = cfgd_core::compliance::collect_snapshot(
         profile_name,
         &resolved.merged,
         &resolved_modules,
-        &config_dir,
+        config_dir,
         &registry,
         &scope,
         &sources,
         &quiet_printer,
-        &state,
+        state,
     )?;
 
     // Fold the Report-mode source-constraint violations into the snapshot as
@@ -124,14 +125,16 @@ fn append_constraint_violation_checks(
 
 /// Build a snapshot and emit a compliance summary Doc.
 pub(super) fn cmd_compliance_snapshot(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    let (_cfg, snapshot) = collect_and_store_compliance_snapshot(cli, printer)?;
+    let ctx = RunContext::new(cli, printer);
+    let (_cfg, snapshot) = collect_and_store_compliance_snapshot(&ctx)?;
     printer.emit(build_compliance_summary_doc(&snapshot));
     Ok(())
 }
 
 /// Export snapshot to the configured export path and emit a compliance summary Doc.
 pub(super) fn cmd_compliance_export(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    let (cfg, snapshot) = collect_and_store_compliance_snapshot(cli, printer)?;
+    let ctx = RunContext::new(cli, printer);
+    let (cfg, snapshot) = collect_and_store_compliance_snapshot(&ctx)?;
 
     let export = cfg
         .spec

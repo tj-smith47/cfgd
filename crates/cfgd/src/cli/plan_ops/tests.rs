@@ -13,6 +13,29 @@ use cfgd_core::state::{ApplyStatus, StateStore};
 
 use super::*;
 
+/// A `Cli` whose config lives in `dir`, so a [`RunContext`] built from it
+/// resolves manifests against that directory.
+fn test_cli_in(dir: &std::path::Path) -> Cli {
+    Cli {
+        config: dir.join("cfgd.yaml"),
+        config_explicit: false,
+        profile: None,
+        verbose: 0,
+        quiet: true,
+        no_color: true,
+        color: crate::cli::ColorWhen::Auto,
+        output: crate::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+        list_envelope: false,
+        jsonpath: None,
+        state_dir: None,
+        config_dir: None,
+        cache_dir: None,
+        runtime_dir: None,
+        scope_arg: crate::cli::ScopeArg::User,
+        command: None,
+    }
+}
+
 /// A plan built with nothing withheld — the shape every payload test but the
 /// decision ones asserts against.
 fn no_decisions() -> reconciler::WithheldDecisions {
@@ -3764,11 +3787,14 @@ fn a_decision_never_withholds_a_package_the_operator_declares_in_a_manifest_file
         )
         .unwrap();
 
+    let cli = test_cli_in(dir.path());
+    let printer = Printer::for_test().0;
+    let ctx = RunContext::new(&cli, &printer);
     let (withheld, _review) = withheld_for_run(
+        &ctx,
         &store,
         &config_subscribed_to_acme(),
         &local_resolved("packages:\n  brew:\n    file: Brewfile\n"),
-        dir.path(),
         true,
         DecisionWrites::ReadOnly,
         &reconciler::ActualPackages::default(),
@@ -3798,11 +3824,14 @@ fn a_run_that_could_not_read_its_config_still_withholds_every_row() {
         )
         .unwrap();
 
+    let cli = test_cli_in(dir.path());
+    let printer = Printer::for_test().0;
+    let ctx = RunContext::new(&cli, &printer);
     let (withheld, _review) = withheld_for_run(
+        &ctx,
         &store,
         &cfgd_core::config::minimal_config(),
         &local_resolved("{}\n"),
-        dir.path(),
         false,
         DecisionWrites::ReadOnly,
         &reconciler::ActualPackages::default(),

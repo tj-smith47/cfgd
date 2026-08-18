@@ -28,6 +28,7 @@ pub mod profile;
 pub mod pull;
 mod registry;
 pub mod rollback;
+mod run_context;
 pub mod secret;
 pub mod skill;
 pub mod source;
@@ -50,6 +51,7 @@ pub(in crate::cli) use helpers::*;
 pub(in crate::cli) use output_types::*;
 pub(in crate::cli) use plan_ops::*;
 pub(in crate::cli) use registry::*;
+pub(in crate::cli) use run_context::RunContext;
 #[cfg(test)]
 pub(in crate::cli) use source::{
     DEFAULT_NONINTERACTIVE_PRIORITY, add_source_to_config, build_subscription_preview_input,

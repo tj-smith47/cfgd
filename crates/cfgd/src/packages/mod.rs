@@ -15,7 +15,7 @@
 //! - The provider registry (`all_package_managers`).
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::{LOCAL_LAYER, MergedProfile, PackagesSpec};
@@ -762,16 +762,112 @@ fn parse_cargo_toml(path: &Path) -> Result<Vec<String>> {
     Ok(packages)
 }
 
+/// What one manifest file parsed to, as stored in a [`ManifestCache`].
+#[derive(Clone)]
+enum ParsedManifest {
+    /// A Brewfile's `(taps, formulae, casks)`.
+    Brew(Vec<String>, Vec<String>, Vec<String>),
+    /// Every other manifest shape: a flat list of package names.
+    Names(Vec<String>),
+}
+
+/// The identity of the bytes a cached parse describes: modification time and
+/// length. A manifest a lifecycle hook rewrote mid-run changes at least one of
+/// them, so the next lookup re-reads instead of merging what the file used to
+/// say.
+type ManifestStamp = (Option<std::time::SystemTime>, u64);
+
+/// One cached manifest parse: the identity of the bytes it describes, and what
+/// they parsed to.
+type CachedManifest = (ManifestStamp, ParsedManifest);
+
+/// The manifest files already parsed during one run, keyed by path and kind.
+///
+/// [`resolve_manifest_packages`] runs twice on a `status` / `diff` / `plan`
+/// invocation — once over the composed profile and once over the local-only
+/// profile the source-decision scope is classified against — and both passes
+/// read and parse the SAME Brewfile, `package.json` and `Cargo.toml` off disk.
+/// The cache is keyed on the FILE rather than on the spec being filled, so the
+/// second pass is one `metadata()` call whichever spec it is merging into.
+///
+/// Deliberately not process-global: a manifest is only stable for the length of
+/// one run, and a cache outliving the run would hand a daemon tick the contents
+/// the file had an interval ago.
+#[derive(Default)]
+pub struct ManifestCache {
+    entries: std::cell::RefCell<HashMap<(PathBuf, &'static str), CachedManifest>>,
+}
+
+impl ManifestCache {
+    fn stamp(path: &Path) -> ManifestStamp {
+        match std::fs::metadata(path) {
+            Ok(meta) => (meta.modified().ok(), meta.len()),
+            Err(_) => (None, 0),
+        }
+    }
+
+    /// The parse of `path` under `kind`, reusing this run's result when the file
+    /// has not changed since it was read.
+    fn get_or_parse(
+        &self,
+        path: &Path,
+        kind: &'static str,
+        parse: impl FnOnce(&Path) -> Result<ParsedManifest>,
+    ) -> Result<ParsedManifest> {
+        let stamp = Self::stamp(path);
+        let key = (path.to_path_buf(), kind);
+        if let Some((cached_stamp, parsed)) = self.entries.borrow().get(&key)
+            && *cached_stamp == stamp
+        {
+            return Ok(parsed.clone());
+        }
+        let parsed = parse(path)?;
+        self.entries
+            .borrow_mut()
+            .insert(key, (stamp, parsed.clone()));
+        Ok(parsed)
+    }
+
+    fn names(
+        &self,
+        path: &Path,
+        kind: &'static str,
+        parse: fn(&Path) -> Result<Vec<String>>,
+    ) -> Result<Vec<String>> {
+        match self.get_or_parse(path, kind, |p| parse(p).map(ParsedManifest::Names))? {
+            ParsedManifest::Names(names) => Ok(names),
+            ParsedManifest::Brew(..) => Ok(Vec::new()),
+        }
+    }
+}
+
 /// Resolve manifest files referenced in package specs and merge their contents
 /// into the inline package lists. Paths are relative to `config_dir`.
+///
+/// Every parse is fresh. A caller that resolves manifests more than once in a
+/// run reaches [`resolve_manifest_packages_cached`] with the run's
+/// [`ManifestCache`] instead.
 pub fn resolve_manifest_packages(packages: &mut PackagesSpec, config_dir: &Path) -> Result<()> {
+    resolve_manifest_packages_cached(packages, config_dir, &ManifestCache::default())
+}
+
+/// [`resolve_manifest_packages`], reading each manifest at most once per run.
+pub fn resolve_manifest_packages_cached(
+    packages: &mut PackagesSpec,
+    config_dir: &Path,
+    cache: &ManifestCache,
+) -> Result<()> {
     // Brew: parse Brewfile, merge taps/formulae/casks
     if let Some(ref mut brew) = packages.brew
         && let Some(ref file) = brew.file
     {
         let path = config_dir.join(file);
-        if path.exists() {
-            let (taps, formulae, casks) = parse_brewfile(&path)?;
+        if path.exists()
+            && let ParsedManifest::Brew(taps, formulae, casks) =
+                cache.get_or_parse(&path, "brew", |p| {
+                    parse_brewfile(p).map(|(t, f, c)| ParsedManifest::Brew(t, f, c))
+                })?
+        {
             cfgd_core::union_extend(&mut brew.taps, &taps);
             cfgd_core::union_extend(&mut brew.formulae, &formulae);
             cfgd_core::union_extend(&mut brew.casks, &casks);
@@ -784,7 +880,7 @@ pub fn resolve_manifest_packages(packages: &mut PackagesSpec, config_dir: &Path)
     {
         let path = config_dir.join(file);
         if path.exists() {
-            let pkgs = parse_apt_manifest(&path)?;
+            let pkgs = cache.names(&path, "apt", parse_apt_manifest)?;
             cfgd_core::union_extend(&mut apt.packages, &pkgs);
         }
     }
@@ -795,7 +891,7 @@ pub fn resolve_manifest_packages(packages: &mut PackagesSpec, config_dir: &Path)
     {
         let path = config_dir.join(file);
         if path.exists() {
-            let pkgs = parse_npm_package_json(&path)?;
+            let pkgs = cache.names(&path, "npm", parse_npm_package_json)?;
             cfgd_core::union_extend(&mut npm.global, &pkgs);
         }
     }
@@ -806,7 +902,7 @@ pub fn resolve_manifest_packages(packages: &mut PackagesSpec, config_dir: &Path)
     {
         let path = config_dir.join(file);
         if path.exists() {
-            let pkgs = parse_cargo_toml(&path)?;
+            let pkgs = cache.names(&path, "cargo", parse_cargo_toml)?;
             cfgd_core::union_extend(&mut cargo.packages, &pkgs);
         }
     }

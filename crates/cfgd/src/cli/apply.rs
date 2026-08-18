@@ -194,10 +194,12 @@ pub fn run_apply(
     let (cfg, resolved, profile_label, config_parsed) =
         load_config_and_profile_module_scoped(cli, printer, module_filter)?;
 
+    let ctx = RunContext::new(cli, printer);
+
     // Open state only after config discovery so a missing config (or an
     // unresolvable home) surfaces before any state.db is created — otherwise a
     // NoConfig exit would leave an orphan state directory behind.
-    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+    let state = ctx.state()?;
 
     let mut registry = build_registry_with_config(Some(&cfg));
     registry.set_system_config_dir(&config_dir);
@@ -206,7 +208,7 @@ pub fn run_apply(
     // desired-state resolver every command shares, so apply and the read paths
     // compute an identical effective module set for the same config.
     let desired = resolve_desired_state(
-        cli,
+        &ctx,
         &cfg,
         &resolved,
         module_filter,
@@ -220,7 +222,7 @@ pub fn run_apply(
     let mut effective_resolved = desired.resolved;
 
     // Resolve manifest files (Brewfile, package.json, etc.) into package lists
-    packages::resolve_manifest_packages(&mut effective_resolved.merged.packages, &config_dir)?;
+    ctx.resolve_manifest_packages(&mut effective_resolved.merged.packages)?;
 
     // Extend registry with custom package managers from config
     registry.extend_package_managers(packages::custom_managers(
@@ -253,7 +255,7 @@ pub fn run_apply(
     // both run before a single action executes, so one enumeration per manager
     // answers both. Anything the apply itself installs or removes retires the
     // memo, so nothing downstream of an action can read a stale set.
-    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
+    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
 
     // In dry-run mode we don't need secret providers wired up — just plan files for display.
     // In apply mode we wire up the full file manager with secret providers.
@@ -271,7 +273,7 @@ pub fn run_apply(
             .map(|m| m.as_ref())
             .collect();
         let cfgd_installed = if prune_eligible {
-            cfgd_installed_packages(&state)?
+            cfgd_installed_packages(state)?
         } else {
             std::collections::HashSet::new()
         };
@@ -357,16 +359,16 @@ pub fn run_apply(
     // fallback knows no subscription list, and a foreign config naming someone
     // else's store does not write rows into it.
     let (withheld, review) = plan_ops::withheld_for_run(
-        &state,
+        &ctx,
+        state,
         &cfg,
         &effective_resolved,
-        &config_dir,
         config_parsed,
         plan_ops::DecisionWrites::ReadOnly,
         &actual_packages,
     )?;
     let exclusions = reconciler::DecisionExclusions::from_withheld(&withheld);
-    let reconciler = Reconciler::new(&registry, &state)
+    let reconciler = Reconciler::new(&registry, state)
         .withholding_env_surface(exclusions.withholds_env_surface());
     let mut plan = reconciler.plan(
         &effective_resolved,
@@ -443,7 +445,7 @@ pub fn run_apply(
         // (read-only — execute nothing here). Same gating + query as the apply
         // path so the preview matches the action.
         if prune_eligible {
-            preview_orphaned_custom_packages(&state, &registry, printer);
+            preview_orphaned_custom_packages(state, &registry, printer);
         }
         return Ok(ApplyOutcome::success());
     }
@@ -455,7 +457,7 @@ pub fn run_apply(
     handle_unmanaged_file_targets(
         &mut plan,
         &config_dir,
-        &state,
+        state,
         printer,
         yes,
         args.on_conflict,
@@ -472,8 +474,8 @@ pub fn run_apply(
             .iter()
             .map(|m| m.as_ref())
             .collect();
-        gc_stale_package_tracking(&state, &all_managers, &pkg_cx);
-        gc_orphaned_custom_packages(&state, &registry, printer);
+        gc_stale_package_tracking(state, &all_managers, &pkg_cx);
+        gc_orphaned_custom_packages(state, &registry, printer);
     }
 
     // Check if filtered plan has actions
@@ -514,7 +516,7 @@ pub fn run_apply(
         .with_filter(phase_filter.as_ref())
         .with_withheld(&withheld)
         .decisions_answerable(owns_the_store)
-        .with_pending_backups(&backup_units, &state);
+        .with_pending_backups(&backup_units, state);
 
     if !has_actions && pending_backups.is_empty() {
         run.header(printer);
@@ -524,7 +526,7 @@ pub fn run_apply(
         // fleet settles) could never mint the rows its own plan keeps naming.
         // No confirm gate exists on this path: nothing destructive follows.
         if store_writes {
-            reconciler::mint_decisions(&state, &review);
+            reconciler::mint_decisions(state, &review);
         }
         report_plan_verdict(printer, 0, Some(&scope));
         printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
@@ -564,7 +566,7 @@ pub fn run_apply(
     // `cfgd decide` can answer them without waiting for a daemon tick. A
     // declined run skips this — refusing the apply refuses its writes.
     if store_writes && !matches!(disposition, reconciler::RunDisposition::Declined) {
-        reconciler::mint_decisions(&state, &review);
+        reconciler::mint_decisions(state, &review);
     }
     let (result, backup_reports) = match disposition {
         reconciler::RunDisposition::Applied { result, backups } => (result, backups),

@@ -13612,7 +13612,12 @@ fn cmd_module_add_from_registry_not_configured_fails() {
 #[test]
 fn cmd_status_module_not_found_output() {
     let h = CliTestHarness::builder().build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), "nonexistent", false).unwrap();
+    super::status::cmd_status_module(
+        &RunContext::new(&h.cli(), h.printer()),
+        "nonexistent",
+        false,
+    )
+    .unwrap();
     h.assert_output_contains("nonexistent");
     h.assert_output_contains("not found");
 }
@@ -13620,7 +13625,8 @@ fn cmd_status_module_not_found_output() {
 #[test]
 fn cmd_status_module_not_found_json() {
     let h = CliTestHarness::builder().json().build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), "ghost-mod", false).unwrap();
+    super::status::cmd_status_module(&RunContext::new(&h.cli(), h.printer()), "ghost-mod", false)
+        .unwrap();
     let parsed = h.json_output();
     assert_eq!(parsed["name"], "ghost-mod");
     assert_eq!(parsed["status"], "not found");
@@ -13633,7 +13639,8 @@ fn cmd_status_module_found_output() {
     let h = CliTestHarness::builder()
             .module("my-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: my-mod\nspec:\n  packages:\n    - name: ripgrep\n  files: []\n")
             .build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), "my-mod", false).unwrap();
+    super::status::cmd_status_module(&RunContext::new(&h.cli(), h.printer()), "my-mod", false)
+        .unwrap();
     h.assert_output_contains("my-mod");
     // Status shows package count, not individual package names
     h.assert_output_contains("1");
@@ -13645,7 +13652,8 @@ fn cmd_status_module_found_json() {
             .json()
             .module("my-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: my-mod\nspec:\n  packages:\n    - name: ripgrep\n  files: []\n  depends:\n    - base\n")
             .build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), "my-mod", false).unwrap();
+    super::status::cmd_status_module(&RunContext::new(&h.cli(), h.printer()), "my-mod", false)
+        .unwrap();
     let parsed = h.json_output();
     assert_eq!(parsed["name"], "my-mod");
     assert_eq!(parsed["packages"], 1);
@@ -13881,7 +13889,8 @@ fn json_schema_status_module() {
         .json()
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), "test-mod", false).unwrap();
+    super::status::cmd_status_module(&RunContext::new(&h.cli(), h.printer()), "test-mod", false)
+        .unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(
         &parsed,
@@ -15480,7 +15489,11 @@ spec:
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: base-mod\nspec:\n  packages: []\n",
     );
 
-    let result = super::status::cmd_status_module(&h.cli(), h.printer(), "status-mod", false);
+    let result = super::status::cmd_status_module(
+        &RunContext::new(&h.cli(), h.printer()),
+        "status-mod",
+        false,
+    );
     assert!(
         result.is_ok(),
         "cmd_status_module should succeed: {:?}",
@@ -15530,7 +15543,11 @@ spec:
         .module("json-status-mod", module_yaml)
         .build();
 
-    let result = super::status::cmd_status_module(&h.cli(), h.printer(), "json-status-mod", false);
+    let result = super::status::cmd_status_module(
+        &RunContext::new(&h.cli(), h.printer()),
+        "json-status-mod",
+        false,
+    );
     assert!(
         result.is_ok(),
         "JSON module status should succeed: {:?}",
@@ -15552,7 +15569,11 @@ spec:
 fn cmd_status_module_json_output_not_found() {
     let h = CliTestHarness::builder().json().build();
 
-    let result = super::status::cmd_status_module(&h.cli(), h.printer(), "nonexistent-mod", false);
+    let result = super::status::cmd_status_module(
+        &RunContext::new(&h.cli(), h.printer()),
+        "nonexistent-mod",
+        false,
+    );
     assert!(result.is_ok(), "missing module JSON status should succeed");
 
     let json = h.json_output();

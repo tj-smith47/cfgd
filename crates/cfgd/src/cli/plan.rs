@@ -44,13 +44,15 @@ pub fn cmd_plan(
     let (cfg, resolved, profile_label, config_parsed) =
         load_config_and_profile_module_scoped(cli, printer, module_filter)?;
 
+    let ctx = RunContext::new(cli, printer);
+
     let mut registry = build_registry_with_config(Some(&cfg));
     registry.set_system_config_dir(&config_dir);
 
     // Compose with sources (network refresh) and resolve modules through the one
     // shared desired-state resolver — same path apply takes.
     let desired = resolve_desired_state(
-        cli,
+        &ctx,
         &cfg,
         &resolved,
         module_filter,
@@ -63,7 +65,7 @@ pub fn cmd_plan(
     let mut effective_resolved = desired.resolved;
 
     // Resolve manifest files (Brewfile, package.json, etc.) into package lists
-    packages::resolve_manifest_packages(&mut effective_resolved.merged.packages, &config_dir)?;
+    ctx.resolve_manifest_packages(&mut effective_resolved.merged.packages)?;
 
     // Extend registry with custom package managers from config
     registry.extend_package_managers(packages::custom_managers(
@@ -153,10 +155,10 @@ pub fn cmd_plan(
     // listed without a row being minted for it; the row lands when `cfgd
     // decide` answers it, or once an apply/tick proceeds.
     let (withheld, _review) = plan_ops::withheld_for_run(
+        &ctx,
         &state,
         &cfg,
         &effective_resolved,
-        &config_dir,
         config_parsed,
         plan_ops::DecisionWrites::ReadOnly,
         &actual_packages,

@@ -56,7 +56,8 @@ pub(super) fn cmd_decide(
     all: bool,
 ) -> anyhow::Result<()> {
     let resolution = action.resolution();
-    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+    let ctx = RunContext::new(cli, printer);
+    let state = ctx.state()?;
 
     // A resolution is inherently a write, so an item `cfgd plan` classified
     // that nothing has recorded yet becomes a real row HERE, through the same
@@ -87,7 +88,7 @@ pub(super) fn cmd_decide(
         }
         _ => plan_ops::DecisionWrites::ReadOnly,
     };
-    let classification = source_classification(cli, printer, &state, writes);
+    let classification = source_classification(&ctx, state, writes);
 
     if all {
         let count = state.resolve_all_decisions(resolution)?;
@@ -188,28 +189,29 @@ pub(super) fn cmd_decide(
 /// "nothing unrecorded" instead of running composition, so a local manifest
 /// typo on a sourceless machine cannot disable answering the store's rows.
 fn source_classification(
-    cli: &Cli,
-    printer: &Printer,
+    ctx: &RunContext<'_>,
     state: &cfgd_core::state::StateStore,
     writes: plan_ops::DecisionWrites<'_>,
 ) -> anyhow::Result<(
     reconciler::WithheldDecisions,
     reconciler::SourcePolicyReview,
 )> {
+    let cli = ctx.cli();
     if !cli.config.exists() {
         return Ok(Default::default());
     }
-    let (cfg, _profile_name, local_resolved) = load_config_and_profile(cli, printer)
+    let (cfg, _profile_name, local_resolved) = ctx
+        .config_and_profile()
         .with_context(|| format!("config {} is unreadable", cli.config.posix()))?;
     if cfg.spec.sources.is_empty() {
         return Ok(Default::default());
     }
     let desired = resolve_desired_state(
-        cli,
-        &cfg,
-        &local_resolved,
+        ctx,
+        cfg,
+        local_resolved,
         None,
-        printer,
+        ctx.printer(),
         false,
         composition::ConstraintMode::Report,
     )
@@ -218,10 +220,10 @@ fn source_classification(
     // classification auto-accepts nothing here — installed-but-undecided items
     // keep listing until a run that enumerates (plan/apply/tick) releases them.
     plan_ops::withheld_for_run(
+        ctx,
         state,
-        &cfg,
+        cfg,
         &desired.resolved,
-        &config_dir(cli),
         true,
         writes,
         &reconciler::ActualPackages::default(),

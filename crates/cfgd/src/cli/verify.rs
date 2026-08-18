@@ -15,18 +15,19 @@ pub fn cmd_verify(
     module_filter: Option<&str>,
     exit_code: bool,
 ) -> anyhow::Result<()> {
-    let config_dir = config_dir(cli);
-    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+    let ctx = RunContext::new(cli, printer);
+    let config_dir = ctx.config_dir();
+    let state = ctx.state()?;
 
     let (resolved, resolved_modules, mut registry) = if let Some(mod_name) = module_filter {
-        let resolved = empty_resolved_profile(mod_name, &active_profile_name(cli, None));
+        let resolved = empty_resolved_profile(mod_name, &ctx.active_profile_name());
         let registry = build_registry();
         let platform = Platform::current();
         let mgr_map = managers_map(&registry);
         let cache_base = module_cache_dir(cli)?;
         let mods = modules::resolve_modules(
             &[mod_name.to_string()],
-            &config_dir,
+            config_dir,
             &cache_base,
             &[],
             platform,
@@ -36,14 +37,14 @@ pub fn cmd_verify(
         .unwrap_or_default();
         (resolved, mods, registry)
     } else {
-        let (cfg, _profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
+        let (cfg, _profile_name, local_resolved) = ctx.config_and_profile()?;
         // Compose with sources (cache-only — read paths stay offline) and resolve
         // the effective module set through the one shared resolver, so `verify`
         // checks the same source-composed desired state that `apply` writes.
         let desired = resolve_desired_state(
-            cli,
-            &cfg,
-            &local_resolved,
+            &ctx,
+            cfg,
+            local_resolved,
             None,
             printer,
             false,
@@ -51,32 +52,31 @@ pub fn cmd_verify(
         )?;
         let mut resolved = desired.resolved;
         let mods = desired.modules;
-        packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
+        ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
         let registry = build_registry_with_profile(&resolved.merged.packages);
         (resolved, mods, registry)
     };
-    registry.set_system_config_dir(&config_dir);
+    registry.set_system_config_dir(config_dir);
 
     // ONE context for both halves of the run: the reconciler's package check
     // and the manager-drift plan below both diff against installed state, and
     // sharing the context is what makes that one enumeration per manager for
     // the whole command instead of one per half.
-    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
-    let mut results = reconciler::verify(&resolved, &registry, &state, &resolved_modules, &pkg_cx)?;
+    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
+    let mut results = reconciler::verify(&resolved, &registry, state, &resolved_modules, &pkg_cx)?;
     // The reconciler cannot reach the file manager (crate boundary), so it no
     // longer checks managed files. Fold in content-aware file results here so a
     // file whose bytes drifted out-of-band fails verification and drives
     // `verify --exit-code` to 5. Module-filter runs (empty merged profile) have
     // no managed files, so the profile-file fold is a no-op for them.
     results.extend(super::live_drift::file_verify_results(
-        &config_dir,
-        &resolved,
+        config_dir, &resolved,
     )?);
     // Module files are content-aware here (not in the reconciler, which is
     // presence-blind across the crate boundary): a byte-tampered module file
     // fails verification for both the full and `--module` paths.
     results.extend(super::live_drift::module_file_verify_results(
-        &config_dir,
+        config_dir,
         &resolved,
         &resolved_modules,
     )?);
@@ -85,7 +85,7 @@ pub fn cmd_verify(
     // refuse contributes no row there — the same gap `diff` and `status -e`
     // close via `plan_managers`. Fold that half in here too, so `verify -e`
     // cannot report clean on a host `diff`/`status -e` both flag as drifted.
-    let cfgd_installed = cfgd_installed_packages(&state)?;
+    let cfgd_installed = cfgd_installed_packages(state)?;
     results.extend(super::live_drift::manager_verify_results(
         &resolved,
         &registry,

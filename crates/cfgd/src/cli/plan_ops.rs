@@ -379,10 +379,10 @@ pub(in crate::cli) fn action_origin(action: &reconciler::Action) -> Option<Strin
 /// operator confirms the run — can hand the same classification to
 /// [`reconciler::mint_decisions`] later instead of classifying twice.
 pub(in crate::cli) fn withheld_for_run(
+    ctx: &RunContext<'_>,
     state: &cfgd_core::state::StateStore,
     cfg: &cfgd_core::config::CfgdConfig,
     resolved: &cfgd_core::config::ResolvedProfile,
-    config_dir: &Path,
     config_parsed: bool,
     writes: DecisionWrites<'_>,
     actual: &reconciler::ActualPackages,
@@ -391,7 +391,7 @@ pub(in crate::cli) fn withheld_for_run(
     reconciler::SourcePolicyReview,
 )> {
     let mut local = reconciler::local_profile(resolved);
-    packages::resolve_manifest_packages(&mut local.packages, config_dir)?;
+    ctx.resolve_manifest_packages(&mut local.packages)?;
 
     let scope = if config_parsed {
         reconciler::DecisionScope::new(cfg.spec.sources.iter().map(|s| s.name.as_str()), &local)

@@ -73,28 +73,29 @@ pub fn cmd_diff(
 ) -> anyhow::Result<()> {
     printer.heading("Diff");
 
-    let config_dir = config_dir(cli);
+    let ctx = RunContext::new(cli, printer);
+    let config_dir = ctx.config_dir();
 
     if let Some(mod_name) = module_filter {
-        return cmd_diff_module(cli, printer, mod_name, &config_dir, exit_code);
+        return cmd_diff_module(&ctx, mod_name, exit_code);
     }
 
-    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     printer.kv_block([
         ("Config".to_string(), cli.config.display_posix()),
-        ("Profile".to_string(), profile_name.clone()),
+        ("Profile".to_string(), profile_name.to_string()),
     ]);
     // Drift is reported under the same owner that would be named in the plan
     // that fixes it, so the two surfaces read as one coordinate system.
-    let profile_owner = Owner::profile(profile_name);
+    let profile_owner = Owner::profile(profile_name.to_string());
 
     // Compose with sources (cache-only — read paths stay offline) and resolve the
     // effective module set through the one shared resolver, so `diff` sees the
     // same source-composed desired state that `apply` writes.
     let desired = resolve_desired_state(
-        cli,
-        &cfg,
-        &local_resolved,
+        &ctx,
+        cfg,
+        local_resolved,
         None,
         printer,
         false,
@@ -103,7 +104,7 @@ pub fn cmd_diff(
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
 
-    packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
+    ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
 
     let registry = build_registry_with_profile(&resolved.merged.packages);
 
@@ -116,7 +117,7 @@ pub fn cmd_diff(
         // tree; depth inheritance is what lands their per-file lines inside
         // the owner group opened around them.
         let _inherit = printer.depth_inheritance();
-        let fm = CfgdFileManager::new(&config_dir, &resolved)?;
+        let fm = CfgdFileManager::new(config_dir, &resolved)?;
         let mut drift = false;
         {
             let group = files_phase.section_owner_or_collapse(&owner_label(&profile_owner));
@@ -132,7 +133,7 @@ pub fn cmd_diff(
                 files_phase.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
             live_file_group(&group);
             for file in &module.files {
-                let record = diff_module_file(&fm, &resolved, module, file, &config_dir, printer)?;
+                let record = diff_module_file(&fm, &resolved, module, file, config_dir, printer)?;
                 if record_file_drift(&mut diff_payload, record) {
                     drift = true;
                 }
@@ -155,9 +156,9 @@ pub fn cmd_diff(
             .collect();
         // Tracked-but-dropped packages must surface as drift here, so read the
         // cfgd-installed set from state to bound prune the same way apply does.
-        let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
-        let cfgd_installed = cfgd_installed_packages(&state)?;
-        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
+        let state = ctx.state()?;
+        let cfgd_installed = cfgd_installed_packages(state)?;
+        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
         let pkg_actions = packages::plan_packages(
             &resolved.merged,
             &resolved_modules,
@@ -280,16 +281,13 @@ fn diff_exit_code(summary: &DiffSummary) -> Option<cfgd_core::exit::ExitCode> {
         .then_some(cfgd_core::exit::ExitCode::DriftDetected)
 }
 
-fn cmd_diff_module(
-    cli: &Cli,
-    printer: &Printer,
-    mod_name: &str,
-    config_dir: &std::path::Path,
-    exit_code: bool,
-) -> anyhow::Result<()> {
-    let registry = build_registry();
+fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> anyhow::Result<()> {
+    let cli = ctx.cli();
+    let printer = ctx.printer();
+    let config_dir = ctx.config_dir();
+    let registry = ctx.base_registry();
     let platform = Platform::current();
-    let mgr_map = managers_map(&registry);
+    let mgr_map = managers_map(registry);
     let cache_base = module_cache_dir(cli)?;
     let resolved_modules = match modules::resolve_modules(
         &[mod_name.to_string()],
@@ -316,8 +314,8 @@ fn cmd_diff_module(
 
     printer.kv_block([("Module".to_string(), mod_name.to_string())]);
 
-    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
-    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
+    let state = ctx.state()?;
+    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
 
     let mut diff_payload = DiffOutput::default();
     let mut has_file_diff = false;
@@ -330,7 +328,7 @@ fn cmd_diff_module(
         // tera origin (None).
         let files_phase = printer.section_phase(&PhaseName::Files.section_label());
         let _inherit = printer.depth_inheritance();
-        let resolved = empty_resolved_profile(mod_name, &active_profile_name(cli, None));
+        let resolved = empty_resolved_profile(mod_name, &ctx.active_profile_name());
         let fm = CfgdFileManager::new(config_dir, &resolved)?;
         for module in &resolved_modules {
             let group =

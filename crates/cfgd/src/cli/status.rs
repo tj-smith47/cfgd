@@ -314,12 +314,13 @@ pub(super) fn cmd_status(
     module_filter: Option<&str>,
     exit_code: bool,
 ) -> anyhow::Result<()> {
+    let ctx = RunContext::new(cli, printer);
     if let Some(mod_name) = module_filter {
-        return cmd_status_module(cli, printer, mod_name, exit_code);
+        return cmd_status_module(&ctx, mod_name, exit_code);
     }
 
-    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
-    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    let state = ctx.state()?;
 
     let last_apply = state.last_apply()?;
     let drift_events = state.unresolved_drift()?;
@@ -341,9 +342,9 @@ pub(super) fn cmd_status(
     // effective module set once, so the module dashboard and the `-e` live scan
     // both reflect the same source-composed desired state that `apply` writes.
     let desired = resolve_desired_state(
-        cli,
-        &cfg,
-        &local_resolved,
+        &ctx,
+        cfg,
+        local_resolved,
         None,
         printer,
         false,
@@ -372,10 +373,10 @@ pub(super) fn cmd_status(
         // here and are released by the next plan/apply/tick, which does
         // enumerate.
         match plan_ops::withheld_for_run(
-            &state,
-            &cfg,
+            &ctx,
+            state,
+            cfg,
             &resolved,
-            &config_dir,
             true,
             plan_ops::DecisionWrites::ReadOnly,
             &reconciler::ActualPackages::default(),
@@ -396,7 +397,7 @@ pub(super) fn cmd_status(
         }
     }
 
-    let state_map = module_state_map(&state);
+    let state_map = module_state_map(state);
     let module_entries: Vec<ModuleStatusEntry> = resolved_modules
         .iter()
         .map(|module| {
@@ -439,11 +440,11 @@ pub(super) fn cmd_status(
     // exit 5 if any drift. This keeps the human verdict and the exit code in
     // agreement instead of printing "No drift detected" alongside exit 5.
     let live_drift = if exit_code {
-        packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
+        ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
         let mut registry = build_registry_with_profile(&resolved.merged.packages);
         registry.set_system_config_dir(&config_dir);
-        let cfgd_installed = cfgd_installed_packages(&state)?;
-        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
+        let cfgd_installed = cfgd_installed_packages(state)?;
+        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
         let drift = super::live_drift::live_drift_results(
             &config_dir,
             &resolved,
@@ -464,7 +465,7 @@ pub(super) fn cmd_status(
         &output,
         &configured_source_names,
         &cli.config,
-        &profile_name,
+        profile_name,
     ));
 
     if exit_code && !live_drift.is_empty() {
@@ -475,18 +476,19 @@ pub(super) fn cmd_status(
 }
 
 pub(super) fn cmd_status_module(
-    cli: &Cli,
-    printer: &Printer,
+    ctx: &RunContext<'_>,
     mod_name: &str,
     exit_code: bool,
 ) -> anyhow::Result<()> {
-    let config_dir = config_dir(cli);
+    let cli = ctx.cli();
+    let printer = ctx.printer();
+    let config_dir = ctx.config_dir();
     // Propagate (vs. unwrap_or_default in cmd_status): the module-scoped path
     // queries a single named module, so a missing cache dir means the query
     // cannot be answered, and it must error rather than silently claim the
     // module was not found.
     let cache_base = module_cache_dir(cli)?;
-    let all_modules = modules::load_all_modules(&config_dir, &cache_base, &[], printer)?;
+    let all_modules = modules::load_all_modules(config_dir, &cache_base, &[], printer)?;
 
     let module = match all_modules.get(mod_name) {
         Some(m) => m,
@@ -496,7 +498,7 @@ pub(super) fn cmd_status_module(
         }
     };
 
-    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+    let state = ctx.state()?;
     let state_rec = state.module_state_by_name(mod_name)?;
 
     let status = state_rec
@@ -525,30 +527,27 @@ pub(super) fn cmd_status_module(
     let mut drift: Vec<cfgd_core::state::DriftEvent> = Vec::new();
     if exit_code {
         let platform = Platform::current();
-        let registry = build_registry();
-        let mgr_map = managers_map(&registry);
+        let registry = ctx.base_registry();
+        let mgr_map = managers_map(registry);
         let resolved_modules = modules::resolve_modules(
             &[mod_name.to_string()],
-            &config_dir,
+            config_dir,
             &cache_base,
             &[],
             platform,
             &mgr_map,
             printer,
         )?;
-        let resolved = empty_resolved_profile(mod_name, &active_profile_name(cli, None));
-        for r in super::live_drift::module_file_verify_results(
-            &config_dir,
-            &resolved,
-            &resolved_modules,
-        )?
-        .into_iter()
-        .filter(|r| !r.matches)
+        let resolved = empty_resolved_profile(mod_name, &ctx.active_profile_name());
+        for r in
+            super::live_drift::module_file_verify_results(config_dir, &resolved, &resolved_modules)?
+                .into_iter()
+                .filter(|r| !r.matches)
         {
             drift.push(super::live_drift::drift_event_from(&r));
         }
 
-        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
+        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
         for resolved_module in &resolved_modules {
             for pkg in &resolved_module.packages {
                 if let Some(pd) = super::diff::package_missing_drift(pkg, &mgr_map, &pkg_cx) {
@@ -1152,7 +1151,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status_module(&cli, &printer, "ghost", false).unwrap();
+        cmd_status_module(&RunContext::new(&cli, &printer), "ghost", false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1176,7 +1175,7 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status_module(&cli, &printer, "ghost", false).unwrap();
+        cmd_status_module(&RunContext::new(&cli, &printer), "ghost", false).unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -1211,7 +1210,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status_module(&cli, &printer, "test-mod", false).unwrap();
+        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1238,7 +1237,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status_module(&cli, &printer, "test-mod", false).unwrap();
+        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1285,7 +1284,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status_module(&cli, &printer, "test-mod", false).unwrap();
+        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1318,7 +1317,7 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status_module(&cli, &printer, "test-mod", false).unwrap();
+        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false).unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -1368,7 +1367,7 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        let res = cmd_status_module(&cli, &printer, "test-mod", true);
+        let res = cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", true);
         assert!(
             res.is_ok(),
             "exit_code=true with a converged module must return Ok, got: {res:?}"

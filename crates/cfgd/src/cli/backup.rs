@@ -158,15 +158,16 @@ pub fn cmd_backup_list(
         return Ok(());
     }
 
-    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
+    let ctx = RunContext::new(cli, printer);
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     // Cache-only composition (no network refresh) and Report constraint mode:
     // listing backups is a read surface, the same class as
     // `status`/`diff`/`compliance`. `backup run` is not — it composes in
     // Enforce because it runs hooks and writes snapshots.
     let composition = compose_with_sources(
-        cli,
-        &cfg,
-        &local_resolved,
+        &ctx,
+        cfg,
+        local_resolved,
         printer,
         false,
         composition::ConstraintMode::Report,
@@ -180,7 +181,7 @@ pub fn cmd_backup_list(
         Some(n) => {
             let spec = find_backup_spec(&backups, n)?;
             if snapshots {
-                return list_unit_snapshots(cli, printer, spec, &profile_name);
+                return list_unit_snapshots(cli, printer, spec, profile_name);
             }
             vec![spec]
         }
@@ -333,14 +334,15 @@ pub fn run_backup_restore(
 ) -> anyhow::Result<Option<cfgd_core::backup::RestoreOutcome>> {
     printer.heading("Restore Backup");
 
-    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
+    let ctx = RunContext::new(cli, printer);
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     // Enforce, like `backup run`: a restore executes the unit's hooks and
     // overwrites live data, so a source constraint violation must abort rather
     // than be recorded and stepped over.
     let composition = compose_with_sources(
-        cli,
-        &cfg,
-        &local_resolved,
+        &ctx,
+        cfg,
+        local_resolved,
         printer,
         false,
         composition::ConstraintMode::Enforce,
@@ -350,7 +352,7 @@ pub fn run_backup_restore(
     let spec = find_backup_spec(&backups, args.name)?;
 
     let (config_dir, state, state_dir) = unit_context(cli)?;
-    let unit = BackupUnit::new(spec, &config_dir, &profile_name, &state_dir);
+    let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
 
     let snapshots = cfgd_core::backup::list_snapshots(&unit, &state)?;
     let selected: &SnapshotInfo =
@@ -512,16 +514,17 @@ pub fn run_backup_run(
     printer: &Printer,
     name: Option<&str>,
 ) -> anyhow::Result<BackupRunOutcome> {
-    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
+    let ctx = RunContext::new(cli, printer);
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     // Cache-only composition (no network refresh), but Enforce constraint mode:
     // `backup run` executes user-declared hooks and writes snapshots, so it is a
     // mutating surface like apply/plan/daemon and must abort on a source
     // violation rather than record it and continue. Only `backup list`, which
     // reads, composes in Report.
     let composition = compose_with_sources(
-        cli,
-        &cfg,
-        &local_resolved,
+        &ctx,
+        cfg,
+        local_resolved,
         printer,
         false,
         composition::ConstraintMode::Enforce,
@@ -545,13 +548,13 @@ pub fn run_backup_run(
     let (config_dir, state, state_dir) = unit_context(cli)?;
     let units: Vec<BackupUnit<'_>> = targets
         .iter()
-        .map(|spec| BackupUnit::new(spec, &config_dir, &profile_name, &state_dir))
+        .map(|spec| BackupUnit::new(spec, &config_dir, profile_name, &state_dir))
         .collect();
 
     let ctx = cfgd_core::reconciler::RunContext {
         title: cfgd_core::reconciler::RunTitle::Backup,
         config_path: Some(cli.config.as_path()),
-        profile: Some(profile_name.as_str()),
+        profile: Some(profile_name),
         modules: &[],
         trigger: None,
     };

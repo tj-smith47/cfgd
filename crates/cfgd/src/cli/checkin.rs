@@ -14,16 +14,17 @@ pub fn cmd_checkin(
 ) -> anyhow::Result<()> {
     printer.heading("Checkin");
 
-    let (cfg, _profile_name, local_resolved) = load_config_and_profile(cli, printer)?;
-    let config_dir = config_dir(cli);
+    let ctx = RunContext::new(cli, printer);
+    let (cfg, _profile_name, local_resolved) = ctx.config_and_profile()?;
+    let config_dir = ctx.config_dir();
 
     // Compose with sources (cache-only — read paths stay offline) and resolve the
     // effective module set through the one shared resolver, so the checkin
     // payload reflects the same source-composed desired state that `apply` writes.
     let desired = resolve_desired_state(
-        cli,
-        &cfg,
-        &local_resolved,
+        &ctx,
+        cfg,
+        local_resolved,
         None,
         printer,
         false,
@@ -34,9 +35,9 @@ pub fn cmd_checkin(
 
     let mut registry = build_registry_with_profile(&resolved.merged.packages);
     registry.file_manager = Some(Box::new(build_compliance_file_manager(
-        &config_dir,
+        config_dir,
         &resolved,
-        Some((printer, &cli.config)),
+        Some(&ctx),
     )?));
 
     let stored_cred = cfgd_core::server_client::load_credential().ok().flatten();
@@ -56,17 +57,17 @@ pub fn cmd_checkin(
     let compliance_summary = if let Some(ref compliance_cfg) = cfg.spec.compliance {
         if compliance_cfg.enabled {
             let profile_name = cfg.active_profile().unwrap_or("unknown");
-            let checkin_state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+            let checkin_state = ctx.state()?;
             match cfgd_core::compliance::collect_snapshot(
                 profile_name,
                 &resolved.merged,
                 &resolved_modules,
-                &config_dir,
+                config_dir,
                 &registry,
                 &compliance_cfg.scope,
                 &[],
                 printer,
-                &checkin_state,
+                checkin_state,
             ) {
                 Ok(snapshot) => {
                     printer.kv(
