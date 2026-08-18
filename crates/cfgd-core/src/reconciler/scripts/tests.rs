@@ -859,7 +859,12 @@ fn build_inline_command_interactive_shares_callers_process_group() {
     let _path_guard = crate::test_helpers::path_env_read_guard();
     let tmp = tempfile::tempdir().unwrap();
     let own_pgid = getpgrp();
-    let mut cmd = build_inline_command(ScriptShell::Sh, "sleep 0.3", tmp.path(), None, false);
+    // `exec` so the shell REPLACES itself instead of possibly forking the
+    // sleep (bash forks, dash execs): this child shares the caller's process
+    // group by design, so the sibling test's killpg escape is not available
+    // here — a forked grandchild would outlive `child.kill()` holding the
+    // test's stdio, which nextest reports as a leak.
+    let mut cmd = build_inline_command(ScriptShell::Sh, "exec sleep 5", tmp.path(), None, false);
     let mut child = cmd.spawn().expect("spawn must succeed");
     let child_pid = Pid::from_raw(child.id() as i32);
     let child_pgid = getpgid(Some(child_pid)).expect("child must still be alive");
