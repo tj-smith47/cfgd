@@ -1410,7 +1410,7 @@ fn ensure_target_writable_creates_parent() {
 #[test]
 fn format_tera_error_basic() {
     // Create a tera error by trying to render invalid template
-    let mut tera = Tera::default();
+    let mut tera = tera::Tera::default();
     let err = tera.add_raw_template("bad", "{{ invalid %}").unwrap_err();
     let formatted = format_tera_error(&err);
     assert!(!formatted.is_empty());
