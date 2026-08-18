@@ -1160,15 +1160,18 @@ log_section "PATH-guarded resolution asserts in test code (path-guard-ok:)"
 #
 # Function-scoped: walks each #[test] fn's body (brace-depth tracked) inside
 # the test-only corpus, and flags it only if a positive-assertion shape
-# appears WITHOUT a guard call anywhere in the same function body. Escape
-# hatch, on the assertion line or directly above:
+# appears WITHOUT a guard call anywhere in the same function body. An assertion
+# is tracked from `assert…!(` to its closing paren, so the call it asserts on
+# counts wherever inside it the formatter put it. Escape hatch, anywhere in
+# that same span — on the call line, on the `assert…!(` line, or on a comment
+# line directly above either:
 #   // path-guard-ok: <negative assertion / guard held by harness>
 path_guard_violations=$(while IFS= read -r -d '' rsfile; do
     extract_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
         function reset_fn() {
             in_fn = 0; depth = 0; has_positive = 0; has_guard = 0
             delete positive_lines; positive_lines_n = 0
-            delete positive_marked; fn_start_prev = ""; fn_start_prev_comment = ""
+            delete positive_marked; in_assert = 0; assert_bal = 0; assert_marked = 0
         }
         function flush_fn() {
             if (in_fn && has_positive && !has_guard) {
@@ -1178,6 +1181,20 @@ path_guard_violations=$(while IFS= read -r -d '' rsfile; do
             }
             reset_fn()
         }
+        # A resolution call whose SUCCESS is being claimed. The `file:line:`
+        # prefix, the crate path and ALL whitespace come off first, so
+        # `! crate::command_available(` reads as the negative it is and a
+        # parenthesised `(command_available(` still reads as positive.
+        function positive_call(line,   c) {
+            c = line
+            sub(/^[^:]*:[0-9]+:/, "", c)
+            gsub(/cfgd_core::|crate::/, "", c)
+            gsub(/[[:space:]]/, "", c)
+            if (c ~ /(^|[^!])command_available\(/) return 1
+            if (c ~ /(^|[^!])command_path\([^)]*\)\.is_some\(\)/) return 1
+            if (c ~ /(^|[^!])require_tool\([^)]*\)\.is_ok\(\)/) return 1
+            return 0
+        }
         BEGIN { reset_fn() }
         {
             code = code_only($0); comment = LAST_COMMENT
@@ -1186,25 +1203,43 @@ path_guard_violations=$(while IFS= read -r -d '' rsfile; do
                 in_fn = 1; depth = 0
             }
             if (in_fn) {
-                is_positive = (code ~ /assert!\([^!]*(cfgd_core::|crate::)?command_available\(/) || \
-                    (code ~ /assert!\([^!]*(cfgd_core::|crate::)?command_path\([^)]*\)\.is_some\(\)/) || \
-                    (code ~ /assert!\([^!]*(cfgd_core::|crate::)?require_tool\([^)]*\)\.is_ok\(\)/) || \
-                    (code ~ /assert_eq!\(.*(cfgd_core::|crate::)?command_available\(/) || \
-                    (code ~ /(cfgd_core::|crate::)?command_path\([^)]*\)\.(expect|unwrap)\(/) || \
+                # Outside an assertion, only an unwrapping resolution claims
+                # success on its own.
+                is_positive = (code ~ /(cfgd_core::|crate::)?command_path\([^)]*\)\.(expect|unwrap)\(/) || \
                     (code ~ /(cfgd_core::|crate::)?require_tool\([^)]*\)\.(expect|unwrap|is_ok)\(/)
-                # A wrapped assertion — `assert!(` on one line, the call on the
-                # next — is the same claim as the one-line form. Detected here
-                # because both of this gate\047s own regression tests write it
-                # that way, and an assertion the gate cannot see is a gate that
-                # reports OK forever. A wrapped NEGATIVE still carries its `!`
-                # on the call line, so it stays out.
-                is_positive = is_positive || \
-                    (prev_code ~ /assert!\([[:space:]]*$/ && \
-                     code ~ /:[0-9]+:[[:space:]]*(cfgd_core::|crate::)?(command_available\(|command_path\(.*\)\.is_some\(\)|require_tool\(.*\)\.is_ok\(\))/)
+                # An assertion is a SPAN, not a line: rustfmt wraps a long one
+                # over several, and a gate that only ever read the `assert!(`
+                # line reported OK forever for every wrapped shape. Balance the
+                # parens from the macro to its close and judge each line inside.
+                line_marked = 0
+                if (!in_assert) {
+                    if (match(code, /assert(_eq|_ne)?!\(/)) {
+                        rest = substr(code, RSTART)
+                        assert_bal = gsub(/\(/, "(", rest) - gsub(/\)/, ")", rest)
+                        if (positive_call(code)) is_positive = 1
+                        if (assert_bal > 0) {
+                            in_assert = 1
+                            # The marker written where the docs say to write it
+                            # — on the macro line or directly above it — has to
+                            # reach the call line the span later flags.
+                            assert_marked = marker_applies(comment, prev, prev_comment, "path-guard-ok:")
+                            line_marked = assert_marked
+                        }
+                    }
+                } else {
+                    if (positive_call(code)) is_positive = 1
+                    if (carries_marker(comment, "path-guard-ok:")) assert_marked = 1
+                    line_marked = assert_marked
+                    assert_bal += gsub(/\(/, "(", code) - gsub(/\)/, ")", code)
+                    # A marker belongs to ONE assertion; the next one in the
+                    # same function argues for itself.
+                    if (assert_bal <= 0) { in_assert = 0; assert_marked = 0 }
+                }
                 if (is_positive) {
                     positive_lines_n++
                     positive_lines[positive_lines_n] = $0
-                    positive_marked[positive_lines_n] = marker_applies(comment, prev, prev_comment, "path-guard-ok:")
+                    positive_marked[positive_lines_n] = line_marked || \
+                        marker_applies(comment, prev, prev_comment, "path-guard-ok:")
                     has_positive = 1
                 }
                 if (code ~ /path_env_read_guard\(\)|path_env_mutation_guard\(\)/) has_guard = 1
