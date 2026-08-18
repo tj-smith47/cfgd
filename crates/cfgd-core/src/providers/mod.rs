@@ -1,9 +1,13 @@
 // Provider traits and registry — consumed by packages/, files/, secrets/, reconciler/
 
+mod installed;
 pub mod skill;
+
+pub use installed::InstalledPackages;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -95,6 +99,13 @@ pub struct PackageContext<'a> {
     /// keeps its no-argument bootstrap contract while the one caller that holds
     /// a plan can bind execution to it.
     provision_via: Option<&'a str>,
+    /// What each manager reported installed, memoized for this context — see
+    /// [`PackageContext::installed_for`].
+    ///
+    /// Behind an `Arc` because the memo is shared across the lanes a concurrent
+    /// dispatch runs a context through; each context starts an empty memo of
+    /// its own, so no read leaks into a command that did not take it.
+    enumerations: Arc<installed::InstalledEnumerations>,
 }
 
 impl<'a> PackageContext<'a> {
@@ -109,6 +120,7 @@ impl<'a> PackageContext<'a> {
             caller_owns_status: false,
             lane: None,
             provision_via: None,
+            enumerations: Arc::default(),
         }
     }
 
@@ -126,6 +138,7 @@ impl<'a> PackageContext<'a> {
             caller_owns_status: false,
             lane: None,
             provision_via: None,
+            enumerations: Arc::default(),
         }
     }
 
@@ -178,6 +191,51 @@ impl<'a> PackageContext<'a> {
     pub fn caller_owns_status(mut self) -> Self {
         self.caller_owns_status = true;
         self
+    }
+
+    /// What `manager` reports installed, enumerated at most once per context
+    /// per machine state.
+    ///
+    /// The ONE installed-state read for every surface that diffs against it —
+    /// `diff`, `status -e`, `doctor`, `verify`, `compliance`, the planner and
+    /// the post-apply tracking GC. Each of those used to ask its manager
+    /// directly, several of them once per declared package, so a module with
+    /// five `apt` entries spawned five `dpkg-query` walks to answer one
+    /// question five times.
+    ///
+    /// An entry is stamped with [`crate::command_resolution_generation`] and
+    /// re-read whenever that has moved. The counter's two existing writers are
+    /// every path that puts a binary on the machine or takes one off it —
+    /// install, uninstall, provision, and a lifecycle script that runs an
+    /// installer of its own — which is the same event that changes what a
+    /// manager lists, so an installed-state memo needs no invalidation of its
+    /// own. It is what lets the daemon hold one context across a tick's plan,
+    /// its auto-apply and the tracking GC that follows: the GC re-enumerates
+    /// exactly when the apply changed something.
+    ///
+    /// An error is NOT memoized — a manager that could not be queried is asked
+    /// again by the next caller, which is what every call site did before.
+    ///
+    /// A `PackageManager` implementation must not call this from inside its own
+    /// enumeration: the slot's lock is held across the call, so asking about
+    /// itself would deadlock.
+    pub fn installed_for(&self, manager: &dyn PackageManager) -> Result<Arc<InstalledPackages>> {
+        let slot = self.enumerations.slot(manager.name());
+        let mut cached = slot.lock().unwrap_or_else(|e| e.into_inner());
+        // Read under the slot lock, so a mutation that landed while this thread
+        // waited for a sibling's enumeration voids that sibling's answer here
+        // rather than being served it.
+        let generation = crate::command_resolution_generation();
+        if let Some(hit) = cached.as_ref().filter(|c| c.generation == generation) {
+            return Ok(Arc::clone(&hit.packages));
+        }
+        let listed = manager.installed_packages_with_versions(self)?;
+        let packages = Arc::new(InstalledPackages::from_listing(manager, listed));
+        *cached = Some(installed::CachedEnumeration {
+            generation,
+            packages: Arc::clone(&packages),
+        });
+        Ok(packages)
     }
 
     /// Report something that is NOT this action's status line — work done on
@@ -1432,6 +1490,154 @@ mod tests {
 
     fn asked_count(counter: &std::sync::atomic::AtomicUsize) -> usize {
         counter.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// A manager that counts how often it was asked to enumerate.
+    struct EnumeratingManager {
+        mgr_name: String,
+        installed: HashSet<String>,
+        enumerations: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl EnumeratingManager {
+        fn new(name: &str, installed: &[&str]) -> Self {
+            Self {
+                mgr_name: name.to_string(),
+                installed: installed.iter().map(|p| (*p).to_string()).collect(),
+                enumerations: std::sync::Arc::default(),
+            }
+        }
+
+        fn counter(&self) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+            std::sync::Arc::clone(&self.enumerations)
+        }
+    }
+
+    impl PackageManager for EnumeratingManager {
+        fn name(&self) -> &str {
+            &self.mgr_name
+        }
+        fn is_available(&self) -> bool {
+            true
+        }
+        fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+            None
+        }
+        fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
+            Ok(())
+        }
+        fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
+            self.enumerations
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.installed.clone())
+        }
+        fn install(&self, _packages: &[String], _cx: &PackageContext<'_>) -> Result<()> {
+            Ok(())
+        }
+        fn uninstall(&self, _packages: &[String], _cx: &PackageContext<'_>) -> Result<()> {
+            Ok(())
+        }
+        fn available_version(&self, _package: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn installed_for_asks_one_manager_once_however_many_packages_are_checked() {
+        let (printer, _cap) = Printer::for_test();
+        let state = StateStore::open_in_memory().expect("store");
+        let cx = test_cx(&printer, &state);
+        let mgr = EnumeratingManager::new("apt", &["ripgrep", "fd", "bat"]);
+        let counter = mgr.counter();
+
+        for name in ["ripgrep", "fd", "bat", "jq", "curl"] {
+            let installed = cx.installed_for(&mgr).expect("enumeration");
+            assert_eq!(installed.contains(name), mgr.installed.contains(name));
+        }
+
+        assert_eq!(
+            asked_count(&counter),
+            1,
+            "five package questions must cost one enumeration"
+        );
+    }
+
+    #[test]
+    fn installed_for_keeps_one_managers_answer_out_of_anothers() {
+        let (printer, _cap) = Printer::for_test();
+        let state = StateStore::open_in_memory().expect("store");
+        let cx = test_cx(&printer, &state);
+        let apt = EnumeratingManager::new("apt", &["ripgrep"]);
+        let npm = EnumeratingManager::new("npm", &["typescript"]);
+        let (apt_count, npm_count) = (apt.counter(), npm.counter());
+
+        assert!(cx.installed_for(&apt).expect("apt").contains("ripgrep"));
+        assert!(!cx.installed_for(&npm).expect("npm").contains("ripgrep"));
+        assert!(cx.installed_for(&npm).expect("npm").contains("typescript"));
+
+        assert_eq!(asked_count(&apt_count), 1);
+        assert_eq!(asked_count(&npm_count), 1);
+    }
+
+    #[test]
+    fn installed_for_re_enumerates_once_a_run_changes_what_is_installed() {
+        let (printer, _cap) = Printer::for_test();
+        let state = StateStore::open_in_memory().expect("store");
+        let cx = test_cx(&printer, &state);
+        let mgr = EnumeratingManager::new("apt", &["ripgrep"]);
+        let counter = mgr.counter();
+
+        cx.installed_for(&mgr).expect("first");
+        cx.installed_for(&mgr).expect("memoized");
+        assert_eq!(asked_count(&counter), 1);
+
+        // What an install through the exec path does, and the only thing it has
+        // to do for a later read to see the machine as it now is.
+        crate::invalidate_command_resolution();
+
+        cx.installed_for(&mgr).expect("after the install");
+        assert_eq!(
+            asked_count(&counter),
+            2,
+            "an install must retire the observation that predates it"
+        );
+    }
+
+    #[test]
+    fn a_fresh_context_never_inherits_another_contexts_observation() {
+        let (printer, _cap) = Printer::for_test();
+        let state = StateStore::open_in_memory().expect("store");
+        let mgr = EnumeratingManager::new("apt", &["ripgrep"]);
+        let counter = mgr.counter();
+
+        test_cx(&printer, &state)
+            .installed_for(&mgr)
+            .expect("first context");
+        test_cx(&printer, &state)
+            .installed_for(&mgr)
+            .expect("second context");
+
+        assert_eq!(asked_count(&counter), 2);
+    }
+
+    #[test]
+    fn an_enumeration_error_is_not_memoized() {
+        let (printer, _cap) = Printer::for_test();
+        let state = StateStore::open_in_memory().expect("store");
+        let cx = test_cx(&printer, &state);
+        let mut mgr = StubPackageManager::new("apt");
+        mgr.installed_error = Some("database locked".to_string());
+
+        assert!(cx.installed_for(&mgr).is_err());
+        mgr.installed_error = None;
+        mgr.installed.insert("ripgrep".to_string());
+
+        assert!(
+            cx.installed_for(&mgr)
+                .expect("the retry must reach the manager")
+                .contains("ripgrep"),
+            "a manager that could not be queried must be asked again, not remembered as empty"
+        );
     }
 
     /// The sweep is `is_available()` over every registered provider, and it runs

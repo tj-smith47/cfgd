@@ -2474,6 +2474,11 @@ pub struct MockPackageManager {
     /// that owns the registry — a `Box<dyn PackageManager>` cannot be read
     /// back for its own `install_calls`.
     install_log: Option<std::sync::Arc<Mutex<Vec<Vec<String>>>>>,
+    /// How many times this manager was asked to enumerate what it has
+    /// installed. The observable behind every "asked once per manager, not once
+    /// per package" claim — a count, never a duration — and shared, because a
+    /// `Box<dyn PackageManager>` in a registry cannot be read back for it.
+    enumerations: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl MockPackageManager {
@@ -2497,7 +2502,14 @@ impl MockPackageManager {
             availability: None,
             raises: None,
             install_log: None,
+            enumerations: std::sync::Arc::default(),
         }
+    }
+
+    /// The shared counter of this manager's enumerations, taken BEFORE the
+    /// manager is boxed into a registry.
+    pub fn enumeration_counter(&self) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        std::sync::Arc::clone(&self.enumerations)
     }
 
     /// The `cargo`/`npm`/`pipx` shape: no local index, so no refresh node.
@@ -2686,6 +2698,8 @@ impl crate::providers::PackageManager for MockPackageManager {
         &self,
         _cx: &crate::providers::PackageContext<'_>,
     ) -> crate::errors::Result<std::collections::HashSet<String>> {
+        self.enumerations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(self.installed.clone())
     }
 
