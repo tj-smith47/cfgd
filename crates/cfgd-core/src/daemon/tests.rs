@@ -18481,10 +18481,33 @@ async fn drive_cached_tick(
     state: Arc<Mutex<DaemonState>>,
     notifier: Arc<Notifier>,
 ) {
+    drive_cached_tick_printing(
+        config_path,
+        state_dir,
+        hooks,
+        cache,
+        state,
+        notifier,
+        Arc::new(test_printer()),
+    )
+    .await
+}
+
+/// The same, against a printer the caller keeps — for a claim about what a tick
+/// SAYS rather than about what it derives.
+async fn drive_cached_tick_printing(
+    config_path: &Path,
+    state_dir: &Path,
+    hooks: Arc<dyn DaemonHooks>,
+    cache: Arc<super::tick_cache::TickCache>,
+    state: Arc<Mutex<DaemonState>>,
+    notifier: Arc<Notifier>,
+    printer: Arc<Printer>,
+) {
     let cp = config_path.to_path_buf();
     let sd = state_dir.to_path_buf();
     crate::spawn_blocking_with_test_home(move || {
-        let printer = test_printer();
+        let printer: &Printer = &printer;
         handle_reconcile(
             &cp,
             None,
@@ -18495,7 +18518,7 @@ async fn drive_cached_tick(
                 hooks: &*hooks,
                 state_dir_override: Some(&sd),
                 explicit_state_dir: true,
-                printer: &printer,
+                printer,
                 module_filter: None,
                 auto_apply_override: None,
                 drift_policy_override: None,
@@ -18745,5 +18768,164 @@ async fn a_touched_cached_source_profile_re_derives() {
         derivations.load(std::sync::atomic::Ordering::SeqCst),
         2,
         "a changed cached source profile must re-derive"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_never_synced_source_is_warned_about_on_every_tick() {
+    // The operator-visible half of holding a composition across ticks: the
+    // source is skipped, cfgd keeps reconciling without it, and nothing about
+    // that resolves itself. A warning that appears once and then stops reads as
+    // a warning that got fixed.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    // The reconcile runs on a blocking worker the thread-local test home does
+    // not reach, and this env var short-circuits the cache-dir resolution on
+    // every platform. The directory is deliberately never created — that is the
+    // condition under test.
+    let cache_root = tmp.path().join("cache-root").join("cfgd");
+    let _cache_env =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: NotifyOnly\n  sources:\n    - name: test-src\n      origin:\n        type: Git\n        url: https://example.test/team.git\n      subscription:\n        profile: team\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let derivations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hooks: Arc<dyn DaemonHooks> = Arc::new(TickCountingHooks {
+        derivations: Arc::clone(&derivations),
+        enumerations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    });
+    let cache = Arc::new(super::tick_cache::TickCache::new());
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+    let printer = Arc::new(printer);
+
+    for _ in 0..3 {
+        drive_cached_tick_printing(
+            &config_path,
+            &state_dir,
+            Arc::clone(&hooks),
+            Arc::clone(&cache),
+            Arc::clone(&state),
+            Arc::clone(&notifier),
+            Arc::clone(&printer),
+        )
+        .await;
+    }
+
+    assert_eq!(
+        derivations.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the composition must have been derived once — otherwise the lines \
+         below prove nothing about the restatement"
+    );
+    let captured = crate::test_helpers::captured_text(&buf);
+    assert_eq!(
+        captured.matches("has no local cache yet").count(),
+        3,
+        "every tick owes the operator the skip advisory: {captured}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_re_pointed_source_origin_re_derives() {
+    // The origin-mismatch verdict is read out of the checkout's own git config,
+    // and it is REPLAYED to the operator on every reusing tick — so the file it
+    // rests on has to be one of the inputs that can retire the composition.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let cache_root = tmp.path().join("cache-root").join("cfgd");
+    let _cache_env =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    stage_cached_source(
+        &cache_root,
+        "test-src",
+        "  env:\n    - name: TEAM\n      value: one\n",
+    );
+
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: NotifyOnly\n  sources:\n    - name: test-src\n      origin:\n        type: Git\n        url: https://example.test/team.git\n      subscription:\n        profile: team\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let derivations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hooks: Arc<dyn DaemonHooks> = Arc::new(TickCountingHooks {
+        derivations: Arc::clone(&derivations),
+        enumerations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    });
+    let cache = Arc::new(super::tick_cache::TickCache::new());
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+    for _ in 0..2 {
+        drive_cached_tick(
+            &config_path,
+            &state_dir,
+            Arc::clone(&hooks),
+            Arc::clone(&cache),
+            Arc::clone(&state),
+            Arc::clone(&notifier),
+        )
+        .await;
+    }
+    assert_eq!(
+        derivations.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "an unchanged checkout must be composed once"
+    );
+
+    // The checkout is re-pointed in place, which need not touch anything else
+    // under it.
+    let git_config = cache_root
+        .join("sources")
+        .join("test-src")
+        .join(".git")
+        .join("config");
+    let repointed = format!(
+        "{}\n[remote \"origin\"]\n\turl = https://example.test/somewhere-else-entirely.git\n",
+        std::fs::read_to_string(&git_config).unwrap()
+    );
+    std::fs::write(&git_config, repointed).unwrap();
+
+    drive_cached_tick(
+        &config_path,
+        &state_dir,
+        Arc::clone(&hooks),
+        Arc::clone(&cache),
+        Arc::clone(&state),
+        Arc::clone(&notifier),
+    )
+    .await;
+    assert_eq!(
+        derivations.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "a re-pointed origin must re-compose"
     );
 }

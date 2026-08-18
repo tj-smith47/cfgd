@@ -509,14 +509,12 @@ impl StateStore {
         Self::open_in_dir(&default_state_dir()?)
     }
 
-    /// Open or create the state store at `scope`'s default location — the
-    /// fallback for a daemon path whose materialized state dir is absent:
-    /// re-deriving from scope either lands on the same directory the loop
-    /// would have carried or fails the same way the materialization did,
-    /// where an unqualified [`Self::open_default`] would silently hand a
-    /// system-scope daemon the per-user store.
-    /// The database file this store is connected to, or `None` for a
-    /// memory-backed connection.
+    /// The database file this store is connected to, or `None` when it is not
+    /// backed by one.
+    ///
+    /// sqlite answers an EMPTY path for a temporary or in-memory database, which
+    /// is normalized to `None` here so the two "no file" answers are one and a
+    /// caller never asks the filesystem about `""`.
     ///
     /// For a holder that keeps a connection open across units of work: cfgd
     /// itself relocates the database (the legacy-state-dir migration inside
@@ -525,9 +523,18 @@ impl StateStore {
     /// [`crate::file_identity`] against the one captured at open is how such a
     /// holder notices, since neither sqlite nor the filesystem reports it.
     pub fn db_path(&self) -> Option<&Path> {
-        self.conn.path().map(Path::new)
+        self.conn
+            .path()
+            .filter(|path| !path.is_empty())
+            .map(Path::new)
     }
 
+    /// Open or create the state store at `scope`'s default location — the
+    /// fallback for a daemon path whose materialized state dir is absent:
+    /// re-deriving from scope either lands on the same directory the loop
+    /// would have carried or fails the same way the materialization did,
+    /// where an unqualified [`Self::open_default`] would silently hand a
+    /// system-scope daemon the per-user store.
     pub fn open_default_for(scope: crate::Scope) -> Result<Self> {
         Self::open_in_dir(&default_state_dir_for(scope)?)
     }

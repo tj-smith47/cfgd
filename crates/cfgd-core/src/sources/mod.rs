@@ -125,7 +125,7 @@ impl SourceManager {
     /// from an origin the spec no longer names) persist until someone runs
     /// `cfgd sync`, so a holder re-states them rather than letting them fall
     /// silent behind a cache hit.
-    pub fn take_skip_advisories(&mut self) -> Vec<String> {
+    pub(crate) fn take_skip_advisories(&mut self) -> Vec<String> {
         std::mem::take(&mut self.skip_advisories)
     }
 
@@ -501,6 +501,11 @@ impl SourceManager {
     /// through so a corrupt cache keeps hitting the parse/signature hard
     /// errors it always has instead of being quietly skipped.
     fn cached_recorded_origin(source_dir: &Path) -> Option<String> {
+        // The verdict derived from this read is replayed to the operator on
+        // every tick that reuses the composition, so the file it rests on has to
+        // be part of what retires that composition. Re-pointing an origin in
+        // place need not move the checkout directory's own stamp.
+        crate::record_config_input(&source_dir.join(".git").join("config"));
         let repo = Repository::open(source_dir).ok()?;
         let remote = repo.find_remote("origin").ok()?;
         remote.url().ok().map(str::to_owned)

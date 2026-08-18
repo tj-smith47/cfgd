@@ -46,6 +46,16 @@
 //! have no watcher over them, so the fingerprint is their only gate — which is
 //! why the sync tick, the one tick that rewrites those checkouts on purpose,
 //! invalidates outright rather than trusting a stat to notice.
+//!
+//! The same asymmetry bounds what a REPLAYED advisory can claim. The composition
+//! evaluated its skip conditions against live filesystem state; a reusing tick
+//! replays the sentence it recorded, whose truth is only as fresh as the
+//! derivation. A `cfgd sync` that fixes the condition normally retires the
+//! derivation with it — the checkout directory appears, or the
+//! discard-and-reclone recreates it, and either moves a recorded stamp — and
+//! `CONFIG_REUSE_MAX_AGE` bounds it regardless. But a replay is a snapshot, not
+//! a re-evaluation, and saying a resolved condition one tick too long is the
+//! exact inverse of the hazard the replay exists to prevent.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -145,7 +155,61 @@ pub(crate) struct TickCache {
     /// written back. Nothing in production ever sets it.
     #[cfg(test)]
     #[allow(clippy::type_complexity)]
-    before_store: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    before_store: Mutex<Option<Box<dyn Fn() + Send>>>,
+    /// Counts derivations queued for the config slot's store lock.
+    ///
+    /// The second window a test cannot otherwise reach: a derivation that has
+    /// already read the epoch and is now BLOCKED on the slot. Only a thread that
+    /// can observe that state can move the epoch inside it, which is the whole
+    /// of the ordering this cache claims. Nothing in production reads it.
+    #[cfg(test)]
+    store_gate: StoreGate,
+}
+
+/// The waiter count behind [`TickCache::store_gate`], with a condvar so a test
+/// waits on the state instead of guessing how long reaching it takes.
+#[cfg(test)]
+#[derive(Default)]
+struct StoreGate {
+    waiting: Mutex<usize>,
+    signal: std::sync::Condvar,
+}
+
+#[cfg(test)]
+impl StoreGate {
+    /// About to block on the slot.
+    fn entering(&self) {
+        let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+        *waiting += 1;
+        self.signal.notify_all();
+    }
+
+    /// Holding the slot.
+    fn entered(&self) {
+        let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+        *waiting = waiting.saturating_sub(1);
+    }
+
+    /// Block until a derivation is queued for the slot.
+    ///
+    /// `timeout` is a deadlock escape, never a timing assertion — a caller
+    /// asserts on the returned bool.
+    fn await_waiter(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+        while *waiting == 0 {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (next, _) = self
+                .signal
+                .wait_timeout(waiting, remaining)
+                .unwrap_or_else(|e| e.into_inner());
+            waiting = next;
+        }
+        true
+    }
 }
 
 impl TickCache {
@@ -159,12 +223,14 @@ impl TickCache {
             enumerations: Arc::new(crate::providers::InstalledEnumerations::default()),
             #[cfg(test)]
             before_store: Mutex::new(None),
+            #[cfg(test)]
+            store_gate: StoreGate::default(),
         }
     }
 
     /// Run `hook` between a derivation finishing and its result being stored.
     #[cfg(test)]
-    fn on_before_store(&self, hook: impl Fn() + Send + Sync + 'static) {
+    fn on_before_store(&self, hook: impl Fn() + Send + 'static) {
         *self.before_store.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(hook));
     }
 
@@ -213,13 +279,29 @@ impl TickCache {
         open: impl FnOnce() -> crate::errors::Result<StateStore>,
     ) -> crate::errors::Result<StoreHandle<'_>> {
         let mut slot = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(held) = slot.as_ref()
-            && !held.still_names_its_file()
-        {
-            tracing::warn!(
-                "state database moved or was replaced — reopening the daemon's connection"
-            );
-            *slot = None;
+        if let Some(held) = slot.as_mut() {
+            match held.path_verdict() {
+                HeldFileVerdict::Same => {}
+                HeldFileVerdict::Gone => {
+                    tracing::warn!(
+                        "state database moved or was replaced — reopening the daemon's connection"
+                    );
+                    *slot = None;
+                }
+                HeldFileVerdict::Unreadable(reason) => {
+                    // A probe that failed says nothing about whether the file
+                    // moved, and dropping a working connection over it would
+                    // trade a transient error for a lost store. Said once per
+                    // streak, because a condition lasting an hour would
+                    // otherwise say so on every tick.
+                    if let Some(reason) = reason {
+                        tracing::warn!(
+                            error = %reason,
+                            "cannot inspect the state database file — keeping the open connection"
+                        );
+                    }
+                }
+            }
         }
         if slot.is_none() {
             *slot = Some(HeldStore::capture(open()?));
@@ -291,7 +373,11 @@ impl TickCache {
         // UNDER the slot lock, and `invalidate` bumps it BEFORE it takes that
         // lock, so there is no window between the two in which an invalidation
         // can be lost.
+        #[cfg(test)]
+        self.store_gate.entering();
         let mut slot = self.config.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(test)]
+        self.store_gate.entered();
         if self.epoch.load(Ordering::SeqCst) == started_at_epoch {
             *slot = Some(held);
         }
@@ -373,23 +459,60 @@ struct HeldStore {
     /// memory-backed connection or a path that could not be inspected, which
     /// makes the check stand down rather than reopen on every lend.
     identity: Option<crate::FileIdentity>,
+    /// Whether the current run of failed probes has already been reported, so a
+    /// lasting condition says so once rather than once per tick. Cleared the
+    /// moment a probe succeeds again.
+    unreadable_reported: bool,
+}
+
+/// What the path a held connection was opened on names now.
+enum HeldFileVerdict {
+    /// Still the same file — or the question does not apply.
+    Same,
+    /// The path names nothing, or names a different file.
+    Gone,
+    /// The probe itself failed, carrying the reason the first time in a streak.
+    Unreadable(Option<std::io::Error>),
 }
 
 impl HeldStore {
     fn capture(store: StateStore) -> Self {
         let identity = store.db_path().and_then(crate::file_identity);
-        Self { store, identity }
+        Self {
+            store,
+            identity,
+            unreadable_reported: false,
+        }
     }
 
-    /// Whether the path this connection was opened on still names the same file.
-    fn still_names_its_file(&self) -> bool {
+    /// What the path this connection was opened on names now.
+    ///
+    /// A failed probe is deliberately NOT a mismatch: a directory that lost `+x`
+    /// or a third party holding the file open on Windows would otherwise close a
+    /// working connection over a question that was never answered.
+    fn path_verdict(&mut self) -> HeldFileVerdict {
         let Some(captured) = self.identity else {
-            return true;
+            return HeldFileVerdict::Same;
         };
-        self.store
-            .db_path()
-            .and_then(crate::file_identity)
-            .is_some_and(|current| current == captured)
+        let Some(path) = self.store.db_path() else {
+            return HeldFileVerdict::Gone;
+        };
+        match crate::try_file_identity(path) {
+            Ok(current) => {
+                self.unreadable_reported = false;
+                if current == captured {
+                    HeldFileVerdict::Same
+                } else {
+                    HeldFileVerdict::Gone
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => HeldFileVerdict::Gone,
+            Err(err) => {
+                let first = !self.unreadable_reported;
+                self.unreadable_reported = true;
+                HeldFileVerdict::Unreadable(first.then_some(err))
+            }
+        }
     }
 }
 
@@ -714,37 +837,68 @@ mod tests {
     }
 
     #[test]
-    fn an_invalidation_landing_between_a_derivation_and_its_store_is_not_lost() {
-        // The narrow ordering: the derivation has finished, the tick is holding
-        // the object, and the watcher fires before the slot is written. The
-        // hook drives exactly that instant, so nothing here depends on timing.
+    fn an_epoch_that_moves_while_the_store_is_blocked_discards_the_derivation() {
+        // The ordering the epoch-under-the-lock rule exists for, and the only
+        // one that tells it apart from reading the epoch first: the derivation
+        // has finished, it is BLOCKED on the slot, and the epoch moves while it
+        // waits. A derivation that read the epoch before queueing has already
+        // decided to store by then; one that reads it under the lock sees the
+        // bump the handover published.
+        //
+        // Every step waits on an observable — the hook's channel, the store
+        // gate's waiter count — so no ordering here rests on how long anything
+        // took.
         let tmp = tempfile::tempdir().unwrap();
         let config_path = tmp.path().join("cfgd.yaml");
         std::fs::write(&config_path, "first").unwrap();
-        let cache = Arc::new(TickCache::new());
+        let cache = TickCache::new();
         let calls = std::cell::Cell::new(0);
 
-        let weak = Arc::downgrade(&cache);
+        let (take_tx, take_rx) = std::sync::mpsc::channel::<()>();
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        // The hook runs on the deriving thread and returns only once the slot is
+        // held elsewhere, so the derivation is guaranteed to block below.
         cache.on_before_store(move || {
-            if let Some(cache) = weak.upgrade() {
-                cache.invalidate();
-            }
+            take_tx.send(()).unwrap();
+            held_rx.recv().unwrap();
         });
 
-        // The hook fires once, so this is the derivation that gets invalidated
-        // while in flight.
-        derive_reading(&cache, &config_path, &config_path, &calls, "raced");
+        let holder = &cache;
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                take_rx.recv().unwrap();
+                let slot = holder.config.lock().unwrap_or_else(|e| e.into_inner());
+                held_tx.send(()).unwrap();
+                assert!(
+                    holder.store_gate.await_waiter(GATE_BUDGET),
+                    "the derivation never queued for the slot"
+                );
+                // The epoch alone: `invalidate` would block on the very lock
+                // this thread is holding.
+                holder.epoch.fetch_add(1, Ordering::SeqCst);
+                drop(slot);
+            });
+
+            derive_reading(&cache, &config_path, &config_path, &calls, "raced");
+        });
+
         assert_eq!(calls.get(), 1);
+        derive_reading(&cache, &config_path, &config_path, &calls, "after");
+        assert_eq!(
+            calls.get(),
+            2,
+            "a derivation the epoch outran must not have been stored"
+        );
 
-        // It must not have been stored: the next tick re-derives.
-        derive_reading(&cache, &config_path, &config_path, &calls, "second");
-        assert_eq!(calls.get(), 2, "the raced derivation must not have stood");
-
-        // And the one that was NOT raced does stand, so the discard is aimed at
-        // the invalidation rather than at every derivation.
+        // And an undisturbed derivation still stands, so the discard is aimed at
+        // the moved epoch rather than at every store.
         derive_reading(&cache, &config_path, &config_path, &calls, "third");
         assert_eq!(calls.get(), 2);
     }
+
+    /// Deadlock escape for the store-gate wait. Asserted on as a bool, never as
+    /// a measurement.
+    const GATE_BUDGET: Duration = Duration::from_secs(10);
 
     #[test]
     fn every_reusing_tick_restates_the_composition_advisories() {
