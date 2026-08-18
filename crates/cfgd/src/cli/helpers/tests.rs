@@ -1429,3 +1429,54 @@ fn display_and_persist_conflicts_routes_roles_and_persists() {
         "state store must be openable after persistence"
     );
 }
+
+#[test]
+fn the_desired_state_registers_each_custom_manager_exactly_once() {
+    let tmp = tempdir().unwrap();
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(&config_path, CONFIG_YAML).unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("default.yaml"), PROFILE_YAML).unwrap();
+
+    let cli = make_cli(config_path.clone());
+    let cfg = config::load_config(&config_path).unwrap();
+    let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
+
+    let mut local = empty_resolved_profile("my-module", "work");
+    local.merged.modules.clear();
+    local.merged.packages.custom = vec![cfgd_core::config::CustomManagerSpec {
+        name: "mise".to_string(),
+        check: "mise --version".to_string(),
+        list_installed: "mise ls".to_string(),
+        install: "mise use -g {package}".to_string(),
+        uninstall: "mise rm -g {package}".to_string(),
+        update: None,
+        packages: vec!["node".to_string()],
+    }];
+
+    let desired = resolve_desired_state(
+        &ctx,
+        &cfg,
+        &local,
+        None,
+        &printer,
+        false,
+        composition::ConstraintMode::Report,
+    )
+    .unwrap();
+
+    // The registry the resolution hands back is the one the caller applies with.
+    // Registered twice, `package_managers()` answers with two managers of the
+    // same name, and every surface that folds over them — availability, the
+    // stranded-install warning, the concurrency lane keyed on the name — sees
+    // a manager that does not exist.
+    let mise = desired
+        .registry
+        .package_managers()
+        .iter()
+        .filter(|m| m.name() == "mise")
+        .count();
+    assert_eq!(mise, 1);
+}

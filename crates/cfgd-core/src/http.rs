@@ -72,11 +72,38 @@ pub fn http_agent(timeout: Duration) -> ureq::Agent {
 }
 
 fn build_agent(timeout: Duration) -> ureq::Agent {
+    #[cfg(test)]
+    record_build(timeout);
     ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
         .build()
         .into()
 }
+
+/// How many agents this process has actually built for `timeout`.
+///
+/// Counted per timeout rather than in total so a test can assert on a sentinel
+/// timeout of its own while the rest of the suite shares the named ones.
+#[cfg(test)]
+fn agent_builds(timeout: Duration) -> usize {
+    BUILD_COUNTS
+        .lock()
+        .ok()
+        .and_then(|counts| counts.get(&timeout).copied())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+fn record_build(timeout: Duration) {
+    if let Ok(mut counts) = BUILD_COUNTS.lock() {
+        *counts.entry(timeout).or_insert(0) += 1;
+    }
+}
+
+#[cfg(test)]
+static BUILD_COUNTS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<Duration, usize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 #[cfg(test)]
 mod tests {
@@ -96,5 +123,26 @@ mod tests {
     #[test]
     fn http_agent_builds_without_panic() {
         let _ = http_agent(HTTP_API_TIMEOUT);
+    }
+
+    #[test]
+    fn one_agent_is_built_per_timeout_however_many_requests_want_it() {
+        // A sentinel no production constant uses, so the count belongs to this
+        // test whatever else the suite is doing in parallel.
+        let sentinel = Duration::from_millis(7717);
+        assert_eq!(agent_builds(sentinel), 0);
+
+        // An OCI push of N layers asks per request; a per-call agent would drop
+        // its pooled TLS connection each time.
+        let agents: Vec<_> = (0..4).map(|_| http_agent(sentinel)).collect();
+        assert_eq!(agents.len(), 4);
+        assert_eq!(agent_builds(sentinel), 1);
+
+        // A different timeout is a different agent: the two are not
+        // interchangeable, so the key really is the timeout.
+        let other = Duration::from_millis(7718);
+        let _ = http_agent(other);
+        assert_eq!(agent_builds(other), 1);
+        assert_eq!(agent_builds(sentinel), 1);
     }
 }

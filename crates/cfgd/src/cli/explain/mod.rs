@@ -126,7 +126,15 @@ fn all_schemas() -> &'static [ResourceSchema] {
     SCHEMAS.get_or_init(build_all_schemas)
 }
 
+/// How many times this process has reflected the full schema set — the
+/// observable behind the memo, since a reflection is otherwise invisible except
+/// as time spent.
+#[cfg(test)]
+static SCHEMA_REFLECTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 fn build_all_schemas() -> Vec<ResourceSchema> {
+    #[cfg(test)]
+    SCHEMA_REFLECTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut schemas: Vec<ResourceSchema> = KIND_REGISTRY
         .iter()
         .map(|e| {

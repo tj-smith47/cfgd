@@ -3386,3 +3386,89 @@ fn is_file_work_classifies_by_resource_identity_not_phase() {
     assert!(entry("packages", "file", "~/.gitconfig").is_file_work());
     assert!(entry("post-scripts", "unknown", "file:~/.vimrc").is_file_work());
 }
+
+#[test]
+fn open_pins_wal_and_normal_synchronous() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StateStore::open(&dir.path().join("state.db")).unwrap();
+
+    let journal_mode: String = store
+        .conn
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
+    let synchronous: i64 = store
+        .conn
+        .query_row("PRAGMA synchronous", [], |r| r.get(0))
+        .unwrap();
+
+    // NORMAL is 1; the default FULL is 2. The two answers are asserted
+    // together because `synchronous=NORMAL` is only safe under WAL — read
+    // separately, either one could be right while the pair is wrong.
+    assert_eq!(journal_mode.to_lowercase(), "wal");
+    assert_eq!(synchronous, 1);
+}
+
+#[test]
+fn in_transaction_batches_every_write_into_one_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("state.db");
+    let store = StateStore::open(&db_path).unwrap();
+    let reader = StateStore::open(&db_path).unwrap();
+
+    store
+        .in_transaction(|| {
+            store.upsert_managed_resource("file", "~/.a", "profile:test", None, None)?;
+            store.upsert_managed_resource("file", "~/.b", "profile:test", None, None)?;
+            // Committed per statement, both rows would already be visible to
+            // another connection here; inside one transaction neither is.
+            assert!(reader.managed_resources().unwrap().is_empty());
+            Ok(())
+        })
+        .unwrap();
+
+    assert_eq!(reader.managed_resources().unwrap().len(), 2);
+}
+
+#[test]
+fn in_transaction_rolls_back_when_the_batch_fails() {
+    let store = StateStore::open_in_memory().unwrap();
+
+    let err: Result<()> = store.in_transaction(|| {
+        store.upsert_managed_resource("file", "~/.a", "profile:test", None, None)?;
+        Err(crate::errors::StateError::MigrationFailed {
+            message: "batch aborted".to_string(),
+        }
+        .into())
+    });
+    assert!(err.is_err());
+
+    // The row written before the failure is gone, and the connection is not
+    // left inside an open transaction: the next write commits on its own.
+    assert!(store.managed_resources().unwrap().is_empty());
+    store
+        .upsert_managed_resource("file", "~/.c", "profile:test", None, None)
+        .unwrap();
+    assert_eq!(store.managed_resources().unwrap().len(), 1);
+}
+
+#[test]
+fn in_transaction_rolls_back_when_the_batch_panics() {
+    let store = StateStore::open_in_memory().unwrap();
+
+    let prior_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        store.in_transaction::<()>(|| {
+            store.upsert_managed_resource("file", "~/.a", "profile:test", None, None)?;
+            panic!("batch panicked");
+        })
+    }));
+    std::panic::set_hook(prior_hook);
+    assert!(unwound.is_err());
+
+    assert!(store.managed_resources().unwrap().is_empty());
+    store
+        .upsert_managed_resource("file", "~/.c", "profile:test", None, None)
+        .unwrap();
+    assert_eq!(store.managed_resources().unwrap().len(), 1);
+}

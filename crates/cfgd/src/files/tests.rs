@@ -4130,3 +4130,41 @@ fn file_drift_one_missing_source_reports_non_matching() {
     );
     assert_eq!(result.expected, "managed source present");
 }
+
+// --- template registration ---
+
+#[test]
+fn a_repeated_render_reuses_the_registration_it_already_made() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path();
+    let files_dir = config_dir.join("files");
+    fs::create_dir_all(&files_dir).unwrap();
+    let tpl = files_dir.join("greeting.txt.tera");
+    fs::write(&tpl, "Hello {{ name }}!").unwrap();
+
+    let env = vec![EnvVar {
+        name: "name".into(),
+        value: "world".into(),
+    }];
+    let resolved = make_resolved_profile(env, FilesSpec::default());
+    let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+
+    // A run renders the same file repeatedly: the plan previews it, the apply
+    // writes it, a diff shows it again.
+    for _ in 0..3 {
+        assert_eq!(
+            fm.render_template_for_display(&tpl).unwrap(),
+            "Hello world!"
+        );
+    }
+    assert_eq!(fm.tera.lock().unwrap().registrations(), 1);
+
+    // A body that changed under the same name — a `preApply` hook rewriting a
+    // source template — is registered again rather than rendered stale.
+    fs::write(&tpl, "Goodbye {{ name }}!").unwrap();
+    assert_eq!(
+        fm.render_template_for_display(&tpl).unwrap(),
+        "Goodbye world!"
+    );
+    assert_eq!(fm.tera.lock().unwrap().registrations(), 2);
+}

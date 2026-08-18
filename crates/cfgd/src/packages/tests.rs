@@ -4127,3 +4127,97 @@ fn a_non_fixed_point_identity_never_collapses_a_listed_name() {
         "the not-installed item still owes its question"
     );
 }
+
+// --- ManifestCache ---
+
+fn apt_manifest_spec() -> PackagesSpec {
+    PackagesSpec {
+        apt: Some(cfgd_core::config::AptSpec {
+            file: Some("packages.apt.txt".into()),
+            packages: vec![],
+        }),
+        ..Default::default()
+    }
+}
+
+fn resolved_apt(spec: PackagesSpec) -> Vec<String> {
+    spec.apt.expect("apt spec present").packages
+}
+
+#[test]
+fn a_cached_manifest_is_read_once_per_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("packages.apt.txt");
+    std::fs::write(&manifest, "git\ncurl\n").unwrap();
+    let meta = std::fs::metadata(&manifest).unwrap();
+    let times = std::fs::FileTimes::new()
+        .set_accessed(meta.accessed().unwrap())
+        .set_modified(meta.modified().unwrap());
+
+    let cache = ManifestCache::default();
+    let mut first = apt_manifest_spec();
+    resolve_manifest_packages_cached(&mut first, dir.path(), &cache).unwrap();
+    assert_eq!(resolved_apt(first), vec!["git", "curl"]);
+
+    // Rewritten to the same length with the same mtime restored: the file is
+    // byte-for-byte indistinguishable, to everything the cache stats, from the
+    // one this run already read. A second pass answering with the OLD names is
+    // the only way to observe that it did not read the file again.
+    std::fs::write(&manifest, "ab\ncdefg\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&manifest)
+        .unwrap()
+        .set_times(times)
+        .unwrap();
+
+    let mut second = apt_manifest_spec();
+    resolve_manifest_packages_cached(&mut second, dir.path(), &cache).unwrap();
+    assert_eq!(resolved_apt(second), vec!["git", "curl"]);
+}
+
+#[test]
+fn a_changed_manifest_is_read_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("packages.apt.txt");
+    std::fs::write(&manifest, "git\ncurl\n").unwrap();
+
+    let cache = ManifestCache::default();
+    let mut first = apt_manifest_spec();
+    resolve_manifest_packages_cached(&mut first, dir.path(), &cache).unwrap();
+    assert_eq!(resolved_apt(first), vec!["git", "curl"]);
+
+    // A lifecycle hook rewriting a manifest mid-run changes its length, so the
+    // entry describing the old bytes is retired rather than merged.
+    std::fs::write(&manifest, "ripgrep\n").unwrap();
+    let mut second = apt_manifest_spec();
+    resolve_manifest_packages_cached(&mut second, dir.path(), &cache).unwrap();
+    assert_eq!(resolved_apt(second), vec!["ripgrep"]);
+}
+
+#[test]
+fn the_uncached_entry_point_never_reuses_a_parse() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("packages.apt.txt");
+    std::fs::write(&manifest, "git\ncurl\n").unwrap();
+    let meta = std::fs::metadata(&manifest).unwrap();
+    let times = std::fs::FileTimes::new()
+        .set_accessed(meta.accessed().unwrap())
+        .set_modified(meta.modified().unwrap());
+
+    let mut first = apt_manifest_spec();
+    resolve_manifest_packages(&mut first, dir.path()).unwrap();
+    assert_eq!(resolved_apt(first), vec!["git", "curl"]);
+
+    std::fs::write(&manifest, "ab\ncdefg\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&manifest)
+        .unwrap()
+        .set_times(times)
+        .unwrap();
+
+    let mut second = apt_manifest_spec();
+    resolve_manifest_packages(&mut second, dir.path()).unwrap();
+    assert_eq!(resolved_apt(second), vec!["ab", "cdefg"]);
+}

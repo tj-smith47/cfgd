@@ -1613,6 +1613,53 @@ mod tests {
     }
 
     #[test]
+    fn a_lent_memo_survives_the_context_that_borrowed_it() {
+        // The MCP server answers one tool call per context but lives for the
+        // whole session. Lending it the memo is what stops every call from
+        // re-enumerating every manager.
+        let (shared_asked, owned_asked) =
+            crate::test_helpers::measured_in_a_stable_generation(|| {
+                let (printer, _cap) = Printer::for_test();
+                let state = StateStore::open_in_memory().expect("store");
+                let mgr = EnumeratingManager::new("apt", &["ripgrep"]);
+                let counter = mgr.counter();
+
+                let enumerations = InstalledEnumerations::default();
+                for _ in 0..3 {
+                    let cx =
+                        PackageContext::with_shared_enumerations(&printer, &state, &enumerations);
+                    assert!(
+                        cx.installed_for(&mgr)
+                            .expect("enumeration")
+                            .contains("ripgrep")
+                    );
+                }
+                let shared = asked_count(&counter);
+
+                // The control: a context that owns its memo takes the answer
+                // with it, so the same three calls cost three enumerations.
+                let owned_mgr = EnumeratingManager::new("apt", &["ripgrep"]);
+                let owned_counter = owned_mgr.counter();
+                for _ in 0..3 {
+                    let cx = test_cx(&printer, &state);
+                    assert!(
+                        cx.installed_for(&owned_mgr)
+                            .expect("enumeration")
+                            .contains("ripgrep")
+                    );
+                }
+
+                (shared, asked_count(&owned_counter))
+            });
+
+        assert_eq!(
+            shared_asked, 1,
+            "three lent contexts must cost one enumeration"
+        );
+        assert_eq!(owned_asked, 3);
+    }
+
+    #[test]
     fn installed_for_keeps_one_managers_answer_out_of_anothers() {
         let (apt_asked, npm_asked) = crate::test_helpers::measured_in_a_stable_generation(|| {
             let (printer, _cap) = Printer::for_test();

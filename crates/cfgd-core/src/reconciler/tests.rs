@@ -21642,3 +21642,110 @@ fn a_provisions_planned_via_reaches_the_bootstrap_that_executes_it() {
         "bootstrap must see the method the plan resolved, not None"
     );
 }
+
+#[test]
+fn the_post_apply_snapshot_covers_only_the_files_the_run_touched() {
+    // One module, two files: one the run has to write and one already holding
+    // the source bytes. The snapshot follows the run's own backup rows, so the
+    // converged target is not re-read, re-hashed and re-stored as a blob to
+    // record that nothing happened to it.
+    let dir = tempfile::tempdir().unwrap();
+    let converged_source = dir.path().join("converged-source.txt");
+    let converged_target = dir.path().join("converged-target.txt");
+    std::fs::write(&converged_source, "already there").unwrap();
+    std::fs::write(&converged_target, "already there").unwrap();
+    let written_source = dir.path().join("written-source.txt");
+    let written_target = dir.path().join("written-target.txt");
+    std::fs::write(&written_source, "fresh").unwrap();
+    std::fs::write(&written_target, "stale").unwrap();
+
+    let resolved_file = |source: &std::path::Path, target: &std::path::Path| ResolvedFile {
+        source: source.to_path_buf(),
+        target: target.to_path_buf(),
+        is_git_source: false,
+        strategy: Some(crate::config::FileStrategy::Copy),
+        encryption: None,
+        permissions: None,
+        patch: None,
+    };
+    let files = vec![
+        resolved_file(&converged_source, &converged_target),
+        resolved_file(&written_source, &written_target),
+    ];
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let modules = vec![ResolvedModule {
+        name: "mymod".to_string(),
+        packages: vec![],
+        files: files.clone(),
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: BTreeMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+        origin: None,
+        platform_skip_reason: None,
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("test"),
+            vec![Action::Module(ModuleAction {
+                module_name: "mymod".to_string(),
+                kind: ModuleActionKind::DeployFiles { files },
+                origin: None,
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseFilter::Phase(PhaseName::Files)),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert_eq!(
+        std::fs::read_to_string(&written_target).unwrap(),
+        "fresh",
+        "the file the run had to write must be written"
+    );
+
+    let rows = state.get_apply_backups(result.apply_id).unwrap();
+    let rows_for = |p: &std::path::Path| {
+        let key = crate::to_posix_fs_key(p);
+        rows.iter().filter(|r| r.file_path == key).count()
+    };
+    // The written target carries both rows: the pre-write backup a rollback
+    // restores through, and the post-apply snapshot of what it ended up
+    // holding.
+    assert_eq!(rows_for(&written_target), 2);
+    assert_eq!(
+        rows_for(&converged_target),
+        0,
+        "an untouched managed target must not be snapshotted"
+    );
+}

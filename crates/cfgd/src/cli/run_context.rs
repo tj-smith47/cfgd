@@ -170,3 +170,138 @@ impl<'a> RunContext<'a> {
         packages::resolve_manifest_packages_cached(spec, &self.config_dir, &self.manifests)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cfgd_core::test_helpers::test_printer;
+
+    const CONFIG_YAML: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n";
+    const PROFILE_YAML: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: editor\n      value: vim\n";
+
+    fn cli_in(dir: &Path) -> Cli {
+        Cli {
+            config: dir.join("cfgd.yaml"),
+            config_explicit: false,
+            profile: None,
+            verbose: 0,
+            quiet: true,
+            no_color: true,
+            color: crate::cli::ColorWhen::Auto,
+            output: crate::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+            list_envelope: false,
+            jsonpath: None,
+            state_dir: None,
+            config_dir: None,
+            cache_dir: None,
+            runtime_dir: None,
+            scope_arg: crate::cli::ScopeArg::User,
+            command: None,
+        }
+    }
+
+    fn write_config(dir: &Path) {
+        std::fs::write(dir.join("cfgd.yaml"), CONFIG_YAML).unwrap();
+        std::fs::create_dir_all(dir.join("profiles")).unwrap();
+        std::fs::write(dir.join("profiles").join("default.yaml"), PROFILE_YAML).unwrap();
+    }
+
+    #[test]
+    fn the_config_is_parsed_once_per_run() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let printer = test_printer();
+        let cli = cli_in(dir.path());
+        let ctx = RunContext::new(&cli, &printer);
+
+        let first = ctx.config().unwrap() as *const CfgdConfig;
+        // The file is gone: a second parse could not succeed, so a second
+        // `config()` answering at all is the memo answering.
+        std::fs::remove_file(dir.path().join("cfgd.yaml")).unwrap();
+        let second = ctx.config().unwrap() as *const CfgdConfig;
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn the_profile_is_resolved_once_per_run() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let printer = test_printer();
+        let cli = cli_in(dir.path());
+        let ctx = RunContext::new(&cli, &printer);
+
+        let (_, name, resolved) = ctx.config_and_profile().unwrap();
+        assert_eq!(name, "default");
+        let first = resolved as *const ResolvedProfile;
+
+        std::fs::remove_dir_all(dir.path().join("profiles")).unwrap();
+        let (_, _, resolved) = ctx.config_and_profile().unwrap();
+
+        assert_eq!(first, resolved as *const ResolvedProfile);
+    }
+
+    #[test]
+    fn the_state_store_is_opened_once_per_run() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let state_dir = dir.path().join("state");
+        let printer = test_printer();
+        let mut cli = cli_in(dir.path());
+        cli.state_dir = Some(state_dir.clone());
+        let ctx = RunContext::new(&cli, &printer);
+
+        let first = ctx.state().unwrap() as *const StateStore;
+        // A second open would re-create the directory it was told to use, so
+        // the directory still being absent afterwards is the proof there was
+        // no second open.
+        std::fs::remove_dir_all(&state_dir).unwrap();
+        let second = ctx.state().unwrap() as *const StateStore;
+
+        assert_eq!(first, second);
+        assert!(!state_dir.exists());
+    }
+
+    #[test]
+    fn the_base_registry_is_built_once_per_run() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let printer = test_printer();
+        let cli = cli_in(dir.path());
+        let ctx = RunContext::new(&cli, &printer);
+
+        let first = ctx.base_registry() as *const ProviderRegistry;
+        let second = ctx.base_registry() as *const ProviderRegistry;
+
+        assert_eq!(first, second);
+    }
+
+    /// The parse is memoized, but the deprecation drain is a separate step, so
+    /// reusing the parse cannot start printing notices where the old
+    /// name-only path printed none — nor print them twice where it printed
+    /// once.
+    #[test]
+    fn deprecations_are_announced_once_and_never_by_the_name_only_read() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            format!("{CONFIG_YAML}  theme:\n    overrides:\n      subheader: red\n"),
+        )
+        .unwrap();
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+        let cli = cli_in(dir.path());
+        let ctx = RunContext::new(&cli, &printer);
+
+        assert_eq!(ctx.active_profile_name(), "default");
+        assert!(
+            cfgd_core::test_helpers::captured_text(&buf).is_empty(),
+            "the name-only read parsed the config but must not announce it"
+        );
+
+        ctx.config().unwrap();
+        ctx.config().unwrap();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert_eq!(out.matches("theme.overrides.subheader").count(), 1, "{out}");
+    }
+}

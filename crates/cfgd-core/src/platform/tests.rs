@@ -501,3 +501,21 @@ fn read_command_output_errors_on_missing_binary() {
         .expect_err("missing binary must error");
     let _ = err.to_string();
 }
+
+#[test]
+fn the_platform_is_detected_once_per_process() {
+    // Detection spawns `sw_vers` on macOS and `freebsd-version` on FreeBSD and
+    // reads `/etc/os-release` on Linux; every reader takes the memo, so the two
+    // answers are the SAME value rather than two equal ones.
+    let first = super::Platform::current();
+    let second = super::Platform::current();
+    assert!(std::ptr::eq(first, second));
+
+    // And the memo describes this host, not a default: it answers what a fresh
+    // detection answers.
+    let fresh = super::Platform::detect();
+    assert_eq!(first.os, fresh.os);
+    assert_eq!(first.distro, fresh.distro);
+    assert_eq!(first.version, fresh.version);
+    assert_eq!(first.arch, fresh.arch);
+}

@@ -1277,4 +1277,31 @@ mod tests {
             inner_next.children
         );
     }
+
+    #[test]
+    fn a_kind_derives_its_canonical_schema_once_per_process() {
+        // Deriving re-runs `schemars::schema_for!` and then walks the whole
+        // document twice to normalize it. A caller asking for both the compact
+        // and the pretty form of one kind must not pay for that twice, so the
+        // two calls hand back the SAME allocation rather than equal ones.
+        let entry = KIND_REGISTRY
+            .iter()
+            .find(|e| e.kind == "Profile")
+            .expect("Profile is a registered kind");
+
+        let first = entry.canonical_schema_value();
+        let second = entry.canonical_schema_value();
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+
+        // The memo is keyed by kind AND crd flag, so a different kind is a
+        // different derivation rather than the first one handed out again.
+        let other = KIND_REGISTRY
+            .iter()
+            .find(|e| e.kind == "Config")
+            .expect("Config is a registered kind");
+        assert!(!std::sync::Arc::ptr_eq(
+            &first,
+            &other.canonical_schema_value()
+        ));
+    }
 }

@@ -474,3 +474,22 @@ fn explain_cmd_field_path_past_variant_boundary_human_and_error() {
         "expected the standard unknown-field-path error, got: {err}"
     );
 }
+
+#[test]
+fn every_schema_is_reflected_once_per_process_including_the_bad_name_path() {
+    use std::sync::atomic::Ordering;
+
+    // Warm the memo, whichever test in this binary got there first.
+    let _ = all_schemas();
+    let reflections = SCHEMA_REFLECTIONS.load(Ordering::Relaxed);
+    assert_eq!(reflections, 1, "the memo must reflect exactly once");
+
+    // A mistyped name reads the set twice — once for the lookup that misses,
+    // once to list the available names in the error — and a successful lookup
+    // reads it again. None of the three is a second reflection.
+    let (printer, _buf) = Printer::for_test_at(Verbosity::Normal);
+    assert!(cmd_explain(&printer, Some("Modle"), false).is_err());
+    cmd_explain(&printer, Some("module"), false).unwrap();
+
+    assert_eq!(SCHEMA_REFLECTIONS.load(Ordering::Relaxed), reflections);
+}

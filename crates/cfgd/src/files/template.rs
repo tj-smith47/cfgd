@@ -40,6 +40,11 @@ pub(super) fn insert_system_facts(ctx: &mut Context) {
 struct TemplateEngine {
     tera: Tera,
     registered: std::collections::HashMap<String, String>,
+    /// How many bodies this engine has actually handed to `add_raw_template`.
+    /// The observable behind the skip: a render that reused a registration
+    /// leaves it where a re-registration would have raised it.
+    #[cfg(test)]
+    registrations: usize,
 }
 
 impl TemplateEngine {
@@ -50,6 +55,8 @@ impl TemplateEngine {
         Self {
             tera,
             registered: std::collections::HashMap::new(),
+            #[cfg(test)]
+            registrations: 0,
         }
     }
 
@@ -60,6 +67,10 @@ impl TemplateEngine {
         }
         self.tera.add_raw_template(name, content)?;
         self.registered.insert(name.to_string(), digest);
+        #[cfg(test)]
+        {
+            self.registrations += 1;
+        }
         Ok(())
     }
 }
@@ -83,6 +94,12 @@ impl TemplateEngines {
             local: TemplateEngine::new(false),
             sandboxed: TemplateEngine::new(true),
         }
+    }
+
+    /// Total `add_raw_template` calls across both engines.
+    #[cfg(test)]
+    pub(super) fn registrations(&self) -> usize {
+        self.local.registrations + self.sandboxed.registrations
     }
 
     fn for_origin(&mut self, source_origin: Option<&str>) -> &mut TemplateEngine {
