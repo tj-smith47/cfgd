@@ -603,6 +603,12 @@ A locked module is resolved by its recorded `commit`, not by `pinnedRef`. A comm
 
 Use `cfgd module upgrade` to move to a newer version.
 
+### Fetch behavior
+
+A module source that names a mutable ref (a branch, or a tag someone may move) is fetched rather than read from the cache. Within one process, each repository is transferred once and every module, file, or locked entry naming that repository reads the same snapshot: one `git fetch` brings over every ref, so a second look would learn nothing. A `cfgd apply` or `cfgd plan` run is one such process and always starts with a fetch.
+
+The daemon is long-lived, so the same repository is re-fetched at most once every 30 seconds. With the default `interval: 5m` every tick fetches. Setting an interval below 30s does not fetch faster than that — a module tracking a branch converges within 30 seconds either way.
+
 ## Modules from Config Sources
 
 [Config sources](sources.md) can deliver module bodies via `spec.provides.modules` in their `cfgd-source.yaml` manifest. This makes the source a **module library** in addition to (or instead of) providing profiles. The `provides.modules` list is the delivery allow-list — only modules named there are made available to subscribers.

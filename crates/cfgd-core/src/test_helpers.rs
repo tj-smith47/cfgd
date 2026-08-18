@@ -966,6 +966,41 @@ impl BareGitRepo {
         &self.head_branch
     }
 
+    /// Commit onto the default branch AFTER the fixture was built, the way an
+    /// upstream moves between two of a test's own fetches.
+    ///
+    /// The builder's working clone is gone by then, so the commit is written
+    /// straight into the bare repository: each entry replaces or adds one
+    /// top-level file over the current tip's tree. Paths are single-segment —
+    /// a nested path needs a tree per level and no fixture has wanted one.
+    pub fn publish_commit(&self, message: &str, files: &[(&str, &str)]) -> git2::Oid {
+        let repo = git2::Repository::open_bare(self.path()).expect("open bare repo");
+        let branch_ref = format!("refs/heads/{}", self.head_branch);
+        let parent_oid = repo
+            .refname_to_id(&branch_ref)
+            .expect("resolve head branch");
+        let parent = repo.find_commit(parent_oid).expect("find tip commit");
+        let parent_tree = parent.tree().expect("tip tree");
+
+        let mut builder = repo
+            .treebuilder(Some(&parent_tree))
+            .expect("tree builder over the tip");
+        for (path, content) in files {
+            assert!(
+                !path.contains('/'),
+                "publish_commit takes top-level paths only, got {path}"
+            );
+            let blob = repo.blob(content.as_bytes()).expect("write blob");
+            builder.insert(path, blob, 0o100644).expect("insert blob");
+        }
+        let tree_id = builder.write().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find written tree");
+
+        let sig = git2::Signature::now("cfgd-test", "test@cfgd.io").expect("signature");
+        repo.commit(Some(&branch_ref), &sig, &sig, message, &tree, &[&parent])
+            .expect("commit onto the default branch")
+    }
+
     /// Check whether a lightweight tag exists in the bare repo.
     pub fn has_tag(&self, name: &str) -> bool {
         self.bare_repo
@@ -2163,17 +2198,42 @@ impl Drop for AvailableVersionMemoTtlGuard {
 /// transfer served both pins `never_expires`, so the assertion is about the
 /// mechanism rather than about how long two adjacent statements took.
 ///
-/// Pinning needs no serialization of its own: fixture repositories live in
-/// per-test temp directories, so no two tests share a key in the refresh map,
-/// and neither pin can change the ANSWER a concurrent test reads — only whether
-/// its own repository is transferred again.
+/// **The pin serializes itself**: constructing a guard takes a process-global
+/// mutex that is held until it drops, so two pins cannot overlap however the
+/// tests holding them are scheduled. That is not the sibling guards' contract
+/// and it is deliberate. Per-test temp directories keep two tests from sharing a
+/// key in the refresh MAP, but the pin is a single process-global atomic, and
+/// every test that reads this window asserts on whether a transfer HAPPENED —
+/// precisely what the pin decides. A concurrent `always_expired` landing inside
+/// a `never_expires` test opens the window to zero, its second fetch reaches for
+/// an upstream the fixture has deleted, and the test goes hard red.
+/// [`AvailableVersionMemoTtlGuard`] closes the same hazard with a named
+/// `serial_test` group; this one cannot, because its users ALSO need the
+/// unnamed group for `CFGD_ALLOW_LOCAL_SOURCES` and `serial_test` accepts only
+/// ident keys, so "the default group AND a named one" is inexpressible. Building
+/// the exclusion into the guard needs no attribute at the call site and cannot
+/// be forgotten by the next author.
 pub struct GitRefreshWindowGuard {
     prior: Option<u64>,
+    // Ordered after `prior` only for readability; `Drop` restores the atomic
+    // explicitly and the lock is released after that, when this field drops.
+    _lock: std::sync::MutexGuard<'static, ()>,
 }
 
+/// Held for the life of every [`GitRefreshWindowGuard`], so at most one pin of
+/// the refresh window exists in the process at a time.
+static GIT_REFRESH_WINDOW_PIN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 impl GitRefreshWindowGuard {
-    /// Pin the window to `ttl`, saturating at the millisecond range.
+    /// Pin the window to `ttl`, saturating at the millisecond range. Blocks
+    /// while another guard is alive.
     pub fn pinned(ttl: std::time::Duration) -> Self {
+        // A test that panicked while pinned poisoned the mutex; the pin it left
+        // behind was already restored by its own `Drop` during the unwind, so
+        // the lock still hands out sound exclusion.
+        let lock = GIT_REFRESH_WINDOW_PIN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // `u64::MAX` is the "no override" sentinel, so a pin that would land on
         // it saturates one below: `pinned(Duration::MAX)` must pin the window
         // out of reach, never silently restore the default it was called to
@@ -2183,6 +2243,7 @@ impl GitRefreshWindowGuard {
             .min(u64::MAX - 1);
         Self {
             prior: crate::modules::set_repo_refresh_ttl_override(Some(millis)),
+            _lock: lock,
         }
     }
 
@@ -3197,6 +3258,28 @@ mod tests {
     use super::*;
     use crate::providers::FileManager;
     use secrecy::ExposeSecret;
+
+    /// The guard's exclusion is the reason no window-pinning test carries a
+    /// serial attribute for it, so the exclusion has to be observable rather
+    /// than assumed. Asking the mutex itself is deterministic — no second
+    /// thread, no clock — and goes red the moment the guard stops holding it.
+    #[test]
+    fn a_live_window_pin_holds_the_lock_that_keeps_a_second_pin_out() {
+        assert!(
+            GIT_REFRESH_WINDOW_PIN.try_lock().is_ok(),
+            "no pin is live, so the lock must be free"
+        );
+        let pinned = GitRefreshWindowGuard::never_expires();
+        assert!(
+            GIT_REFRESH_WINDOW_PIN.try_lock().is_err(),
+            "a live pin must hold the lock, or two tests can pin the window at once"
+        );
+        drop(pinned);
+        assert!(
+            GIT_REFRESH_WINDOW_PIN.try_lock().is_ok(),
+            "dropping the pin must release the lock"
+        );
+    }
 
     /// Concurrent dispatch is made of a reader that cannot leave its critical
     /// section until a SECOND reader enters it: a lane worker blocked in a

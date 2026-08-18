@@ -204,7 +204,7 @@ pub fn load_locked_modules(
 /// must degrade to the tag rather than fail the load with an unresolvable ref.
 fn locked_ref(entry: &ModuleLockEntry) -> String {
     let commit = entry.commit.trim();
-    if commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if super::git::is_full_object_id(commit) {
         return commit.to_string();
     }
     entry.pinned_ref.clone()

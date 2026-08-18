@@ -258,7 +258,7 @@ fn cache_answers_pinned_ref(repo_path: &Path, git_src: &GitSource) -> bool {
     let Some(ref_name) = git_src.tag.as_deref().or(git_src.git_ref.as_deref()) else {
         return false;
     };
-    if ref_name.len() != 40 || !ref_name.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if !is_full_object_id(ref_name) {
         return false;
     }
     let Ok(oid) = git2::Oid::from_str(ref_name) else {
@@ -271,6 +271,17 @@ fn cache_answers_pinned_ref(repo_path: &Path, git_src: &GitSource) -> bool {
         return false;
     }
     repo.find_commit(oid).is_ok()
+}
+
+/// Whether `value` is a full SHA-1 object name — 40 ASCII hex digits.
+///
+/// The ONE spelling of "this ref is an immutable pin". Three decisions turn on
+/// it and none may re-derive it: the fetch short-circuit, the recovery advice a
+/// missing pin earns, and which of a lockfile entry's two refs is checked out.
+/// An abbreviated id is deliberately NOT one — it is ambiguous, so it is not a
+/// pin.
+pub(super) fn is_full_object_id(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// The two REF namespaces a pinned name is searched in, in the order
@@ -343,6 +354,12 @@ static REPO_REFRESHES: std::sync::OnceLock<
     std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
 > = std::sync::OnceLock::new();
 
+/// Ceiling on how many repositories the window remembers at once, matching
+/// [`crate::providers`]'s version memo and `command_path`'s. Losing the map
+/// costs at most one redundant fetch per repository still in play, which is
+/// exactly what the process did before the window existed.
+const REPO_REFRESH_MEMO_CAP: usize = 1024;
+
 /// How long a transfer stands for before the same repository is fetched again.
 ///
 /// The window is what makes "once per run" true without a run being threaded
@@ -406,8 +423,19 @@ fn repo_refreshed_recently(repo_url: &str) -> bool {
 }
 
 /// Record that `repo_url`'s refs are now as current as a transfer can make them.
+///
+/// An expired entry can never be read again — [`repo_refreshed_recently`] tests
+/// the age before it answers — so recording is also where the dead ones go. The
+/// cap is the backstop for the one shape pruning does not cover: a process that
+/// keeps fetching new repositories faster than the window retires the old ones.
 fn record_repo_refresh(repo_url: &str) {
-    repo_refreshes().insert(repo_url.to_string(), std::time::Instant::now());
+    let ttl = repo_refresh_ttl();
+    let mut map = repo_refreshes();
+    map.retain(|_, at| at.elapsed() < ttl);
+    if map.len() >= REPO_REFRESH_MEMO_CAP {
+        map.clear();
+    }
+    map.insert(repo_url.to_string(), std::time::Instant::now());
 }
 
 /// Open a git2 repo with a consistent error mapping.
@@ -575,21 +603,116 @@ pub(super) fn fetch_existing_repo(
     Ok(())
 }
 
+/// Why a ref would not resolve once the cache is as current as a transfer can
+/// make it, and what the reader can do about it.
+///
+/// A full object id reaching this point is a commit the remote no longer offers
+/// — a force-push or a garbage collection — and a bare `cannot find ref
+/// '<40 hex>'` hands the reader a hex string with nothing to do about it. The
+/// recovery is the one `verify_lockfile_integrity` already names for the same
+/// module in the adjacent failure, so the two paths send the user to the same
+/// command.
+fn unresolvable_ref_message(ref_name: &str, module_name: &str, e: &git2::Error) -> String {
+    if is_full_object_id(ref_name) {
+        return format!(
+            "pinned commit {ref_name} is no longer in the repository or on its remote (history rewritten or garbage-collected) — re-pin with 'cfgd module upgrade {module_name}': {e}"
+        );
+    }
+    format!("cannot find ref '{ref_name}': {e}")
+}
+
+/// The remote-tracking branch an unpinned source follows: `origin/HEAD` when the
+/// remote publishes one, and otherwise the counterpart of the branch the clone
+/// left checked out.
+fn default_tracking_branch(repo: &git2::Repository) -> Option<String> {
+    if let Ok(head) = repo.find_reference("refs/remotes/origin/HEAD")
+        && let Ok(resolved) = head.resolve()
+        && let Ok(name) = resolved.name()
+    {
+        return Some(name.to_string());
+    }
+    let head = repo.head().ok()?;
+    let branch = head.shorthand().ok()?;
+    let candidate = format!("refs/remotes/origin/{branch}");
+    repo.refname_to_id(&candidate).ok().map(|_| candidate)
+}
+
+/// Move an UNPINNED source's working tree onto what the fetch just brought over.
+///
+/// A source naming no tag and no ref follows its default branch, and a fetch
+/// updates `refs/remotes/origin/*` without touching the working tree — so
+/// returning here without moving HEAD left the module's deployed files at
+/// whatever commit the ORIGINAL clone landed on, for the life of the checkout.
+/// Every later fetch paid the network cost and changed nothing the user could
+/// see, which reads exactly like cfgd ignoring their upstream.
+///
+/// Best-effort by design: a repository whose remote-tracking branch cannot be
+/// identified stays where it is rather than failing the resolve, because a fresh
+/// clone is already at the right commit and an unpinned source has nothing the
+/// user asked for that could be missed.
+fn advance_to_default_branch(
+    repo: &git2::Repository,
+    git_src: &GitSource,
+    module_name: &str,
+) -> Result<()> {
+    let Some(tracking) = default_tracking_branch(repo) else {
+        return Ok(());
+    };
+    let Ok(commit) = repo
+        .revparse_single(&tracking)
+        .and_then(|obj| obj.peel_to_commit())
+    else {
+        return Ok(());
+    };
+    if repo.head().ok().and_then(|h| h.target()) == Some(commit.id()) {
+        return Ok(());
+    }
+    detach_and_checkout(repo, commit.id(), &tracking, git_src, module_name)
+}
+
+/// Put the working tree on `commit`, discarding whatever is in it.
+///
+/// The one checkout in this module: both the pinned and the unpinned paths land
+/// here, so a module's files are replaced the same way whichever named the
+/// commit. `label` is what the caller asked for, and names the failure.
+fn detach_and_checkout(
+    repo: &git2::Repository,
+    commit: git2::Oid,
+    label: &str,
+    git_src: &GitSource,
+    module_name: &str,
+) -> Result<()> {
+    repo.set_head_detached(commit)
+        .map_err(|e| ModuleError::GitFetchFailed {
+            module: module_name.to_string(),
+            url: git_src.repo_url.clone(),
+            message: format!("cannot detach HEAD to '{label}': {e}"),
+        })?;
+
+    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+        .map_err(|e| ModuleError::GitFetchFailed {
+            module: module_name.to_string(),
+            url: git_src.repo_url.clone(),
+            message: format!("checkout failed for '{label}': {e}"),
+        })?;
+
+    Ok(())
+}
+
 fn checkout_ref(repo_path: &Path, git_src: &GitSource, module_name: &str) -> Result<()> {
     let repo = open_repo(repo_path, module_name, &git_src.repo_url)?;
 
     let target_ref = git_src.tag.as_deref().or(git_src.git_ref.as_deref());
 
     let Some(ref_name) = target_ref else {
-        // No specific ref — stay on default branch
-        return Ok(());
+        return advance_to_default_branch(&repo, git_src, module_name);
     };
 
     // Try as a tag first, then as a branch
     let obj = resolve_ref_object(&repo, ref_name).map_err(|e| ModuleError::GitFetchFailed {
         module: module_name.to_string(),
         url: git_src.repo_url.clone(),
-        message: format!("cannot find ref '{ref_name}': {e}"),
+        message: unresolvable_ref_message(ref_name, module_name, &e),
     })?;
 
     // Peel to commit
@@ -601,21 +724,7 @@ fn checkout_ref(repo_path: &Path, git_src: &GitSource, module_name: &str) -> Res
             message: format!("ref '{ref_name}' does not point to a commit: {e}"),
         })?;
 
-    repo.set_head_detached(commit.id())
-        .map_err(|e| ModuleError::GitFetchFailed {
-            module: module_name.to_string(),
-            url: git_src.repo_url.clone(),
-            message: format!("cannot detach HEAD to '{ref_name}': {e}"),
-        })?;
-
-    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
-        .map_err(|e| ModuleError::GitFetchFailed {
-            module: module_name.to_string(),
-            url: git_src.repo_url.clone(),
-            message: format!("checkout failed for '{ref_name}': {e}"),
-        })?;
-
-    Ok(())
+    detach_and_checkout(&repo, commit.id(), ref_name, git_src, module_name)
 }
 
 /// Get the HEAD commit SHA from a git repo.
@@ -1484,6 +1593,43 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
+    fn an_unpinned_source_advances_to_what_the_fetch_brought_over() {
+        // A source naming no tag and no ref follows its default branch. A fetch
+        // updates refs/remotes/origin/* without touching the working tree, so a
+        // resolve that stopped there left the module's deployed files at the
+        // commit the ORIGINAL clone landed on forever — every later run paid the
+        // transfer and showed the user nothing for it.
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
+        let bare = crate::test_helpers::BareGitRepo::builder()
+            .commit("init", &[("a.txt", "v1")])
+            .build();
+
+        let cache_base = tempfile::tempdir().unwrap();
+        let printer = crate::test_helpers::test_printer();
+
+        let src = parse_git_source(&bare.url()).unwrap();
+        assert!(
+            src.tag.is_none() && src.git_ref.is_none(),
+            "the fixture must be unpinned for this claim to be about the default branch"
+        );
+        let path = fetch_git_source(&src, cache_base.path(), "tracking", &printer)
+            .expect("the first resolve clones the repository");
+        assert_eq!(std::fs::read_to_string(path.join("a.txt")).unwrap(), "v1");
+
+        bare.publish_commit("move the branch on", &[("a.txt", "v2")]);
+
+        let again = fetch_git_source(&src, cache_base.path(), "tracking", &printer)
+            .expect("the second resolve fetches the moved branch");
+        assert_eq!(
+            std::fs::read_to_string(again.join("a.txt")).unwrap(),
+            "v2",
+            "an unpinned source must deploy the commit the fetch brought over"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn the_transfer_window_is_what_spares_the_second_source_its_fetch() {
         // The control for the test above: with the window pinned shut the same
         // sequence fails, which is also what proves the removed upstream really
@@ -1508,6 +1654,48 @@ mod tests {
         let second = parse_git_source(&format!("{}?ref=feature", bare.url())).unwrap();
         fetch_git_source(&second, cache_base.path(), "two", &printer)
             .expect_err("with the window pinned shut the second source must attempt a transfer");
+    }
+
+    #[test]
+    fn the_window_forgets_a_repository_it_can_no_longer_answer_for() {
+        // An entry past the window is unreadable — `repo_refreshed_recently`
+        // checks the age before it answers — so a map that kept one would be
+        // holding a URL for the life of the process to say nothing with. A
+        // daemon fetching from many repositories is where that accumulates.
+        let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
+        record_repo_refresh("https://example.invalid/first.git");
+        record_repo_refresh("https://example.invalid/second.git");
+        let map = repo_refreshes();
+        assert!(
+            !map.contains_key("https://example.invalid/first.git"),
+            "an expired entry must be dropped, not carried"
+        );
+        assert_eq!(map.len(), 1, "only the entry just recorded may remain");
+    }
+
+    #[test]
+    fn the_window_never_grows_past_its_ceiling() {
+        // The prune above cannot bound a process that reaches new repositories
+        // faster than the window retires the old ones, so the cap is what makes
+        // the map's size independent of how long the process runs.
+        let _window = crate::test_helpers::GitRefreshWindowGuard::never_expires();
+        {
+            let mut map = repo_refreshes();
+            map.clear();
+            for i in 0..REPO_REFRESH_MEMO_CAP {
+                map.insert(
+                    format!("https://example.invalid/{i}.git"),
+                    std::time::Instant::now(),
+                );
+            }
+        }
+        record_repo_refresh("https://example.invalid/one-too-many.git");
+        let map = repo_refreshes();
+        assert_eq!(
+            map.len(),
+            1,
+            "reaching the ceiling must clear the map, leaving only the new entry"
+        );
     }
 
     // --- checkout_ref: ref that does not peel to a commit ---
@@ -1545,6 +1733,73 @@ mod tests {
         assert!(
             msg.contains("tree-tag"),
             "error must name the offending ref: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_pinned_commit_the_remote_no_longer_has_says_how_to_re_pin() {
+        // The one failure a locked module can reach after the cache is as
+        // current as a transfer can make it: the recorded commit was rewritten
+        // or collected upstream. A bare "cannot find ref '<40 hex>'" hands the
+        // reader a hex string and no next step, so the resolution path names
+        // the same recovery the integrity check already does.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+
+        let missing = "0".repeat(40);
+        let git_src = GitSource {
+            repo_url: "file:///fixture".to_string(),
+            tag: Some(missing.clone()),
+            git_ref: None,
+            subdir: None,
+        };
+        let err = checkout_ref(dir.path(), &git_src, "pinned-mod")
+            .expect_err("a commit the repository does not hold must fail to checkout");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cfgd module upgrade pinned-mod"),
+            "the message must name the command that re-pins the module: {msg}"
+        );
+        assert!(
+            msg.contains(&missing),
+            "the message must still name the commit that is missing: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_missing_tag_is_still_reported_as_a_missing_ref() {
+        // The narrow half: only a full object id earns the re-pin advice. A tag
+        // that is simply absent is a different failure and keeps its own words,
+        // so widening the advice to every ref cannot pass unnoticed.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+
+        let git_src = GitSource {
+            repo_url: "file:///fixture".to_string(),
+            tag: Some("v9.9.0".to_string()),
+            git_ref: None,
+            subdir: None,
+        };
+        let err = checkout_ref(dir.path(), &git_src, "tagged-mod")
+            .expect_err("an absent tag must fail to checkout");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cannot find ref 'v9.9.0'"),
+            "an absent tag keeps the plain missing-ref message: {msg}"
+        );
+        assert!(
+            !msg.contains("module upgrade"),
+            "re-pin advice belongs to an immutable pin, not to a tag: {msg}"
         );
     }
 
