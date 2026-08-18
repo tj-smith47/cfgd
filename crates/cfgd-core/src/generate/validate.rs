@@ -1,6 +1,18 @@
 use crate::generate::{SchemaKind, ValidationResult};
 use crate::schema::{KIND_REGISTRY, KindEntry};
 
+/// `spec` keys that exist ONLY on the cluster-side `Module` CRD. A document
+/// carrying one of them cannot be a local module manifest, so validating it
+/// against the local entry can only produce an "unknown field" error naming a
+/// field the author spelled correctly for the resource they were writing.
+///
+/// Discrimination is by key rather than by "try both entries": a CRD entry
+/// deliberately omits `deny_unknown_fields` (Kubernetes rejects structural
+/// schemas carrying `additionalProperties: false`), so a fallback that accepted
+/// either entry would make every `kind: Module` document trivially valid and
+/// silently drop the unknown-field guard on local manifests.
+const CRD_ONLY_MODULE_SPEC_KEYS: &[&str] = &["ociArtifact", "mountPolicy", "signature"];
+
 /// Look up the registry entry for a `kind` string, preferring the local
 /// document entry when a CRD entry shares the same `kind` (both a local and a
 /// CRD `Module` exist; local documents are what these validators receive).
@@ -9,6 +21,28 @@ pub(crate) fn entry_for_kind(kind: &str) -> Option<&'static KindEntry> {
         .iter()
         .find(|e| e.kind == kind && !e.crd)
         .or_else(|| KIND_REGISTRY.iter().find(|e| e.kind == kind))
+}
+
+/// Look up the registry entry for a parsed document, reading its `spec` to pick
+/// between a local and a CRD entry that share the same `kind`. Falls back to
+/// [`entry_for_kind`]'s local-first preference for every other document.
+fn entry_for_document(kind: &str, value: &serde_yaml::Value) -> Option<&'static KindEntry> {
+    let carries_crd_only_key = value
+        .get("spec")
+        .and_then(|spec| spec.as_mapping())
+        .is_some_and(|spec| {
+            CRD_ONLY_MODULE_SPEC_KEYS
+                .iter()
+                .any(|key| spec.contains_key(serde_yaml::Value::from(*key)))
+        });
+
+    if carries_crd_only_key
+        && let Some(entry) = KIND_REGISTRY.iter().find(|e| e.kind == kind && e.crd)
+    {
+        return Some(entry);
+    }
+
+    entry_for_kind(kind)
 }
 
 /// Validate a YAML document, reading its `kind` and dispatching to the matching
@@ -32,7 +66,7 @@ pub fn validate_document(yaml: &str) -> ValidationResult {
         };
     };
 
-    let Some(entry) = entry_for_kind(kind) else {
+    let Some(entry) = entry_for_document(kind, &value) else {
         return ValidationResult {
             valid: false,
             errors: vec![format!("unknown kind '{kind}'")],
@@ -105,6 +139,33 @@ mod tests {
     #[test]
     fn validate_rejects_unknown_field_for_configsource() {
         let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: x\nspec:\n  bogusField: 1\n";
+        let r = validate_document(yaml);
+        assert!(!r.valid);
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.to_lowercase().contains("bogusfield")),
+            "error must name the unknown field, got: {:?}",
+            r.errors
+        );
+    }
+
+    #[test]
+    fn validate_routes_a_module_carrying_a_crd_only_key_to_the_crd_schema() {
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: tools\nspec:\n  ociArtifact: registry:5000/demo/tools:v1\n  mountPolicy: Always\n";
+        let r = validate_document(yaml);
+        assert!(
+            r.valid,
+            "a cluster-side Module must validate against the CRD schema, got: {:?}",
+            r.errors
+        );
+    }
+
+    #[test]
+    fn validate_still_rejects_an_unknown_field_on_a_local_module() {
+        // The CRD schema accepts unknown fields by construction, so routing a
+        // local manifest to it would make this pass vacuously.
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: m\nspec:\n  bogusField: 1\n";
         let r = validate_document(yaml);
         assert!(!r.valid);
         assert!(
