@@ -298,21 +298,27 @@ async fn reconcile_cluster_config_policy_counts_every_violator_above_the_cap() {
         .map(|i| machine_config(&format!("mc-{i:04}"), NS_A))
         .collect();
 
-    // Already reported, so no machine transitions and no violation event fires.
-    let mut reported: Vec<String> = machines
+    // The memory a previous evaluation could actually have persisted: the exact
+    // count beside a list the schema's `maxItems` permits. Seeding all 501 keys
+    // would be a status the API server rejects.
+    let mut remembered: Vec<String> = machines
         .iter()
         .map(|mc| format!("{NS_A}/{}", mc.metadata.name.clone().unwrap_or_default()))
         .collect();
-    reported.sort();
+    remembered.sort();
+    remembered.truncate(MAX_NON_COMPLIANT_MACHINES);
     ccp.status = Some(crate::crds::ClusterConfigPolicyStatus {
         compliant_count: 0,
-        non_compliant_count: 0,
-        non_compliant_machines: reported,
+        non_compliant_count: u32::try_from(over_cap).unwrap_or(u32::MAX),
+        non_compliant_machines: remembered,
         conditions: vec![],
     });
 
     let (ctx, _registry, harness) = MockKubeHarness::with_stores(
         vec![
+            // The machine truncated out of the transition memory reads as a new
+            // violator every evaluation, which is the documented degradation.
+            expect_event_post(NS_A), // PolicyViolation
             ExpectedCall::patch_status(format!("{}/status", cluster_policy_path("ccp-cap")))
                 .returning_json(&ccp),
             expect_event_post("default"), // Evaluated
@@ -326,7 +332,14 @@ async fn reconcile_cluster_config_policy_counts_every_violator_above_the_cap() {
         .unwrap();
 
     let report = harness.finish().await;
-    let status = report.captured[0].body_json()["status"].clone();
+    let status = report
+        .find(
+            http::Method::PATCH,
+            &format!("{}/status", cluster_policy_path("ccp-cap")),
+        )
+        .expect("the policy status patch must have been captured")
+        .body_json()["status"]
+        .clone();
 
     assert_eq!(
         status["nonCompliantCount"],

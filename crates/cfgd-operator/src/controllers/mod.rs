@@ -31,6 +31,7 @@ use crate::crds::{
 pub(super) const FIELD_MANAGER_OPERATOR: &str = "cfgd-operator";
 pub(super) const FIELD_MANAGER_STATUS: &str = "cfgd-operator/status";
 pub(super) const MACHINE_CONFIG_FINALIZER: &str = "cfgd.io/machine-config-cleanup";
+pub(super) const CONFIG_POLICY_FINALIZER: &str = "cfgd.io/config-policy-cleanup";
 
 pub(super) fn compliance_summary(compliant: u32, non_compliant: u32) -> String {
     format!("{compliant} compliant, {non_compliant} non-compliant")

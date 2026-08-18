@@ -17,6 +17,11 @@ use super::{
     ControllerContext, FIELD_MANAGER_STATUS, build_condition, compliance_summary, matches_selector,
     record_reconcile_success, sort_and_cap_machines,
 };
+
+// No cleanup finalizer here, unlike ConfigPolicy: this controller writes nothing
+// onto the machines it evaluates. Its verdict lives entirely in its own status,
+// which the API server removes with the object, so deletion leaves nothing behind
+// for another controller to keep reporting.
 pub(super) async fn reconcile_cluster_config_policy(
     obj: Arc<ClusterConfigPolicy>,
     ctx: Arc<ControllerContext>,

@@ -88,7 +88,17 @@ pub(super) fn machine_config_status_with_drift_detected() -> MachineConfigStatus
     }
 }
 
+/// A ConfigPolicy the operator has already registered, i.e. carrying its
+/// cleanup finalizer. A policy WITHOUT it is a policy on its first reconcile,
+/// which is a distinct branch and gets its own fixture below.
 pub(super) fn config_policy(name: &str, namespace: &str) -> ConfigPolicy {
+    let mut policy = new_config_policy(name, namespace);
+    policy.metadata.finalizers = Some(vec![super::CONFIG_POLICY_FINALIZER.to_string()]);
+    policy
+}
+
+/// A ConfigPolicy as the user creates it: no finalizer yet.
+pub(super) fn new_config_policy(name: &str, namespace: &str) -> ConfigPolicy {
     ConfigPolicy {
         metadata: meta(name, Some(namespace)),
         spec: ConfigPolicySpec::default(),

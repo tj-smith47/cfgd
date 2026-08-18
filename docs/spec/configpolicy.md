@@ -139,6 +139,23 @@ Follows the standard Kubernetes condition convention.
 
 ---
 
+## Deletion
+
+The operator adds the finalizer `cfgd.io/config-policy-cleanup` to every
+ConfigPolicy it reconciles. The verdict a policy writes lives on the machines it
+targets (the `Compliant` condition of each matched `MachineConfig`), so deleting
+the policy without clearing that verdict would leave every machine reporting a
+judgement no policy makes any more.
+
+On deletion the operator resets `Compliant` on each targeted machine to
+`Unknown` / `NotEvaluated` / "Awaiting policy evaluation", then removes its
+finalizer. A machine still targeted by another policy is re-evaluated by that
+policy on its next pass. Clearing is best effort per machine: a machine the API
+server refuses is logged and skipped, so one unreachable object cannot strand
+the deleted policy.
+
+---
+
 ## Full Example
 
 ```yaml

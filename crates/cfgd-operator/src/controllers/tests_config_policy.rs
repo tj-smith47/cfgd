@@ -3,15 +3,16 @@
 
 use std::sync::Arc;
 
+use http::Method;
 use kube::ResourceExt;
 use kube::runtime::controller::Action;
 
-use super::ControllerStores;
 use super::config_policy::reconcile_config_policy;
-use super::test_fixtures::{config_policy, machine_config, machine_config_path};
+use super::test_fixtures::{config_policy, machine_config, machine_config_path, new_config_policy};
 use super::test_kube_harness::{
     ExpectedCall, MockKubeHarness, empty_stores, expect_event_post, seeded_store, unready_store,
 };
+use super::{CONFIG_POLICY_FINALIZER, ControllerStores};
 use crate::crds::{
     Condition, LabelSelector, LabelSelectorRequirement, MAX_NON_COMPLIANT_MACHINES, MachineConfig,
     ModuleRef, PackageRef, SelectorOperator,
@@ -664,6 +665,26 @@ async fn reconcile_config_policy_preserves_sibling_conditions_on_the_machine() {
     );
 }
 
+/// The status a previous evaluation of these machines could actually have
+/// persisted: the exact count beside a list the schema's `maxItems` permits.
+/// Seeding all of them instead would be a fixture the API server rejects, and it
+/// would hide the very degradation the cap documents.
+fn persisted_violator_memory(machines: &[MachineConfig]) -> crate::crds::ConfigPolicyStatus {
+    let mut remembered: Vec<String> = machines
+        .iter()
+        .map(|mc| format!("{NS}/{}", mc.name_any()))
+        .collect();
+    remembered.sort();
+    let total = u32::try_from(remembered.len()).unwrap_or(u32::MAX);
+    remembered.truncate(MAX_NON_COMPLIANT_MACHINES);
+    crate::crds::ConfigPolicyStatus {
+        compliant_count: 0,
+        non_compliant_count: total,
+        non_compliant_machines: remembered,
+        conditions: vec![],
+    }
+}
+
 /// The violator list is an enumeration inside a status object every operator
 /// replica watches, so it is bounded; the count beside it is not. A policy
 /// violated by more machines than the cap reports the exact total and lists the
@@ -693,21 +714,13 @@ async fn reconcile_config_policy_caps_the_violator_list_but_not_the_count() {
         })
         .collect();
 
-    // Already reported, so no machine transitions and no violation event fires.
-    let mut reported: Vec<String> = machines
-        .iter()
-        .map(|mc| format!("{NS}/{}", mc.name_any()))
-        .collect();
-    reported.sort();
-    policy.status = Some(crate::crds::ConfigPolicyStatus {
-        compliant_count: 0,
-        non_compliant_count: 0,
-        non_compliant_machines: reported,
-        conditions: vec![],
-    });
+    policy.status = Some(persisted_violator_memory(&machines));
 
     let (ctx, _registry, harness) = MockKubeHarness::with_stores(
         vec![
+            // The one machine outside the persisted memory reads as a new
+            // violator on every evaluation. See the re-fire test below.
+            expect_event_post(NS), // PolicyViolation, mc-0500
             ExpectedCall::patch_status(format!("{}/status", config_policy_path("cap-policy")))
                 .returning_json(&policy),
             expect_event_post(NS), // Evaluated
@@ -721,7 +734,14 @@ async fn reconcile_config_policy_caps_the_violator_list_but_not_the_count() {
         .unwrap();
 
     let report = harness.finish().await;
-    let status = report.captured[0].body_json()["status"].clone();
+    let status = report
+        .find(
+            Method::PATCH,
+            &format!("{}/status", config_policy_path("cap-policy")),
+        )
+        .expect("the policy status patch must have been captured")
+        .body_json()["status"]
+        .clone();
 
     assert_eq!(
         status["nonCompliantCount"],
@@ -744,5 +764,297 @@ async fn reconcile_config_policy_caps_the_violator_list_but_not_the_count() {
     assert_eq!(
         listed[MAX_NON_COMPLIANT_MACHINES - 1],
         format!("{NS}/mc-{:04}", MAX_NON_COMPLIANT_MACHINES - 1)
+    );
+}
+
+/// The documented degradation above the cap, pinned. `PolicyViolation` fires
+/// once per machine because the policy's persisted `nonCompliantMachines` is the
+/// transition memory, and a machine truncated out of that list is never in it —
+/// so it reads as a new violator on every evaluation, forever. The docs promise
+/// exactly this; without a test the promise is a paragraph.
+#[tokio::test]
+async fn reconcile_config_policy_refires_violation_events_for_machines_past_the_cap() {
+    let over_cap = MAX_NON_COMPLIANT_MACHINES + 1;
+    let outside_the_cap = format!("mc-{:04}", MAX_NON_COMPLIANT_MACHINES);
+    let mut policy = config_policy("refire-policy", NS);
+    policy.spec.required_modules = vec![ModuleRef {
+        name: "kubectl".to_string(),
+        required: true,
+    }];
+
+    let machines: Vec<MachineConfig> = (0..over_cap)
+        .map(|i| {
+            let mut mc = machine_config(&format!("mc-{i:04}"), NS);
+            mc.status = Some(crate::crds::MachineConfigStatus {
+                last_reconciled: None,
+                observed_generation: Some(1),
+                conditions: vec![compliant_condition("False", "refire-policy")],
+                package_versions: Default::default(),
+            });
+            mc
+        })
+        .collect();
+    policy.status = Some(persisted_violator_memory(&machines));
+
+    let assert_refired = |report: &super::test_kube_harness::HarnessReport, pass: &str| {
+        let violation = report.captured[0].body_json();
+        assert_eq!(
+            violation["reason"], "PolicyViolation",
+            "{pass}: the first call must be the violation event"
+        );
+        assert_eq!(
+            violation["regarding"]["name"], outside_the_cap,
+            "{pass}: only the machine truncated out of the transition memory re-fires"
+        );
+    };
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            expect_event_post(NS), // PolicyViolation
+            ExpectedCall::patch_status(format!("{}/status", config_policy_path("refire-policy")))
+                .returning_json(&policy),
+            expect_event_post(NS), // Evaluated
+            expect_event_post(NS), // NonCompliantTargets
+        ],
+        stores_with(machines.clone()),
+    );
+    reconcile_config_policy(Arc::new(policy.clone()), ctx)
+        .await
+        .unwrap();
+    let first = harness.finish().await;
+    assert_refired(&first, "first evaluation");
+
+    // What the operator persisted is what the next evaluation reads, and it
+    // still cannot hold the machine outside the cap.
+    policy.status = Some(
+        serde_json::from_value(
+            first
+                .find(
+                    Method::PATCH,
+                    &format!("{}/status", config_policy_path("refire-policy")),
+                )
+                .expect("the policy status patch must have been captured")
+                .body_json()["status"]
+                .clone(),
+        )
+        .expect("the patched status must round-trip"),
+    );
+
+    // Nothing about the cluster moved, so patch-on-change writes no status and
+    // announces no evaluation. The violation event fires anyway: that is the
+    // degradation, isolated to a single call.
+    let (ctx, _registry, harness) =
+        MockKubeHarness::with_stores(vec![expect_event_post(NS)], stores_with(machines));
+    reconcile_config_policy(Arc::new(policy), ctx)
+        .await
+        .unwrap();
+    let second = harness.finish().await;
+    assert_eq!(
+        second.captured.len(),
+        1,
+        "an unchanged evaluation past the cap makes exactly one call, the re-fired event"
+    );
+    assert_refired(&second, "second evaluation");
+}
+
+// -----------------------------------------------------------------------
+// Finalizer: the verdict is retired with the policy that made it
+// -----------------------------------------------------------------------
+
+/// A policy on its first reconcile is registered before it judges anything: the
+/// verdict it is about to write onto each machine can only be retired by a last
+/// reconcile, and only a finalizer guarantees one.
+#[tokio::test]
+async fn reconcile_config_policy_adds_finalizer_when_missing() {
+    let policy = new_config_policy("fresh-policy", NS);
+    assert!(policy.metadata.finalizers.is_none());
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch(config_policy_path("fresh-policy"))
+                .with_query_contains("fieldManager=cfgd-operator")
+                .returning_json(&policy),
+            ExpectedCall::patch_status(format!("{}/status", config_policy_path("fresh-policy")))
+                .returning_json(&policy),
+            expect_event_post(NS), // Evaluated
+        ],
+        stores_with(vec![]),
+    );
+
+    reconcile_config_policy(Arc::new(policy), ctx)
+        .await
+        .unwrap();
+
+    let report = harness.finish().await;
+    let added = report.captured[0].body_json();
+    assert_eq!(
+        added["metadata"]["finalizers"],
+        serde_json::json!([CONFIG_POLICY_FINALIZER])
+    );
+}
+
+/// Deleting a policy retires the verdict it left behind. The machine controller
+/// carries `Compliant` forward verbatim and holds no policy lookup of its own,
+/// so nothing else can clear it: without this the machine would name a policy
+/// that no longer exists for as long as the machine exists.
+#[tokio::test]
+async fn reconcile_config_policy_clears_its_verdict_from_machines_on_deletion() {
+    let mut policy = config_policy("doomed-policy", NS);
+    policy.spec.required_modules = vec![ModuleRef {
+        name: "kubectl".to_string(),
+        required: true,
+    }];
+    policy.metadata.deletion_timestamp = Some(
+        k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(k8s_openapi::jiff::Timestamp::now()),
+    );
+
+    // The machine as the policy left it: judged non-compliant, naming the policy.
+    let mut judged = machine_config("mc-judged", NS);
+    judged.status = Some(crate::crds::MachineConfigStatus {
+        last_reconciled: None,
+        observed_generation: Some(1),
+        conditions: vec![
+            Condition {
+                condition_type: "Reconciled".to_string(),
+                status: "True".to_string(),
+                reason: "ReconcileSuccess".to_string(),
+                message: "ok".to_string(),
+                last_transition_time: "2026-01-01T00:00:00Z".to_string(),
+                observed_generation: Some(1),
+            },
+            compliant_condition("False", "doomed-policy"),
+        ],
+        package_versions: Default::default(),
+    });
+
+    // A machine no policy ever judged has nothing to retire, so it is not written to.
+    let untouched = machine_config("mc-unjudged", NS);
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-judged")))
+                .returning_json(&judged),
+            ExpectedCall::patch(config_policy_path("doomed-policy")).returning_json(&policy),
+        ],
+        stores_with(vec![judged.clone(), untouched]),
+    );
+
+    let action = reconcile_config_policy(Arc::new(policy), ctx)
+        .await
+        .unwrap();
+    assert_eq!(action, Action::await_change());
+
+    let report = harness.finish().await;
+    assert_eq!(
+        report.captured.len(),
+        2,
+        "only the judged machine is written to, then the finalizer is dropped"
+    );
+
+    let conditions = report.captured[0].body_json()["status"]["conditions"]
+        .as_array()
+        .expect("conditions array")
+        .clone();
+    let compliant = conditions
+        .iter()
+        .find(|c| c["type"] == "Compliant")
+        .expect("Compliant condition");
+    assert_eq!(compliant["status"], "Unknown");
+    assert_eq!(compliant["reason"], "NotEvaluated");
+    assert_eq!(
+        compliant["message"], "Awaiting policy evaluation",
+        "the reset is the same triple the machine controller synthesizes for a never-judged machine"
+    );
+    assert!(
+        conditions.iter().any(|c| c["type"] == "Reconciled"),
+        "the machine's other conditions must survive the reset"
+    );
+
+    assert_eq!(
+        report.captured[1].body_json()["metadata"]["finalizers"],
+        serde_json::json!([]),
+        "the finalizer is dropped only after the verdicts are cleared"
+    );
+}
+
+/// The reset is the machine controller's own never-evaluated triple, so the two
+/// agree by construction: the machine controller carries it forward unchanged
+/// and writes nothing.
+#[tokio::test]
+async fn a_machine_whose_policy_was_deleted_reaches_steady_state() {
+    let mut mc = machine_config("mc-orphaned", NS);
+    mc.metadata.finalizers = Some(vec![super::MACHINE_CONFIG_FINALIZER.to_string()]);
+    mc.status = Some(crate::crds::MachineConfigStatus {
+        last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
+        observed_generation: Some(1),
+        conditions: vec![Condition {
+            condition_type: "Compliant".to_string(),
+            status: "Unknown".to_string(),
+            reason: "NotEvaluated".to_string(),
+            message: "Awaiting policy evaluation".to_string(),
+            last_transition_time: "2026-01-01T00:00:00Z".to_string(),
+            observed_generation: Some(1),
+        }],
+        package_versions: Default::default(),
+    });
+
+    let alert = super::test_fixtures::drift_alert(
+        "alert-orphaned",
+        NS,
+        "mc-orphaned",
+        crate::crds::DriftSeverity::Medium,
+    );
+
+    // Drift keeps the reconcile off the early-return arm, so it really rebuilds
+    // and compares the condition rather than skipping the question.
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!(
+                "{}/status",
+                machine_config_path(NS, "mc-orphaned")
+            ))
+            .returning_json(&mc),
+            expect_event_post(NS), // Reconciled
+            expect_event_post(NS), // DriftDetected
+        ],
+        ControllerStores {
+            drift_alerts: seeded_store(vec![alert]),
+            ..empty_stores()
+        },
+    );
+    super::machine_config::reconcile_machine_config(Arc::new(mc.clone()), ctx)
+        .await
+        .unwrap();
+    let first = harness.finish().await;
+    mc.status = Some(
+        serde_json::from_value(first.captured[0].body_json()["status"].clone())
+            .expect("the patched status must round-trip"),
+    );
+
+    let alert = super::test_fixtures::drift_alert(
+        "alert-orphaned",
+        NS,
+        "mc-orphaned",
+        crate::crds::DriftSeverity::Medium,
+    );
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![],
+        ControllerStores {
+            drift_alerts: seeded_store(vec![alert]),
+            ..empty_stores()
+        },
+    );
+    super::machine_config::reconcile_machine_config(Arc::new(mc), ctx)
+        .await
+        .unwrap();
+    let second = harness.finish().await;
+    assert!(
+        second.captured.is_empty(),
+        "a cleared verdict is a steady state, not a new thing to write: {:?}",
+        second
+            .captured
+            .iter()
+            .map(|r| format!("{} {}", r.method, r.path))
+            .collect::<Vec<_>>()
     );
 }

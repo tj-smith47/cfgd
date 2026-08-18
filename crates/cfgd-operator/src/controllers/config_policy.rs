@@ -16,9 +16,9 @@ use crate::metrics::PolicyLabels;
 use cfgd_core::version_satisfies;
 
 use super::{
-    ControllerContext, FIELD_MANAGER_STATUS, build_condition, compliance_summary, emit_event,
-    machine_key, matches_selector, namespaced_api, record_reconcile_success, sort_and_cap_machines,
-    upsert_condition,
+    CONFIG_POLICY_FINALIZER, ControllerContext, FIELD_MANAGER_OPERATOR, FIELD_MANAGER_STATUS,
+    build_condition, compliance_summary, emit_event, machine_key, matches_selector, namespaced_api,
+    record_reconcile_success, sort_and_cap_machines, upsert_condition,
 };
 pub(super) async fn reconcile_config_policy(
     obj: Arc<ConfigPolicy>,
@@ -46,6 +46,42 @@ pub(super) async fn reconcile_config_policy(
         .into_iter()
         .filter(|mc| matches_selector(mc.metadata.labels.as_ref(), &obj.spec.target_selector))
         .collect();
+
+    let finalizers = obj.metadata.finalizers.as_deref().unwrap_or(&[]);
+    let has_finalizer = finalizers.iter().any(|f| f == CONFIG_POLICY_FINALIZER);
+
+    let policies: Api<ConfigPolicy> = namespaced_api(&ctx.client, &namespace)?;
+
+    if obj.metadata.deletion_timestamp.is_some() {
+        if has_finalizer {
+            info!(name = %name, "configPolicy being deleted, clearing its verdicts");
+            clear_compliant_verdicts(&machines, &targeted_mcs).await;
+            remove_finalizer(&policies, &name, finalizers).await?;
+        }
+        return Ok(Action::await_change());
+    }
+
+    if !has_finalizer {
+        // The verdict this policy writes onto each machine outlives the policy
+        // unless something clears it, and only a finalizer guarantees a last
+        // reconcile in which to do that. The alternative — having the machine
+        // controller ask whether a policy still exists — is the cross-controller
+        // coupling that made the two rewrite each other's condition.
+        let mut updated: Vec<String> = finalizers.to_vec();
+        updated.push(CONFIG_POLICY_FINALIZER.to_string());
+        let patch = serde_json::json!({ "metadata": { "finalizers": updated } });
+        policies
+            .patch(
+                &name,
+                &PatchParams::apply(FIELD_MANAGER_OPERATOR),
+                &Patch::Merge(patch),
+            )
+            .await
+            .map_err(|e| {
+                OperatorError::Reconciliation(format!("failed to add finalizer to {name}: {e}"))
+            })?;
+        info!(name = %name, "added finalizer to ConfigPolicy");
+    }
 
     // Update each targeted MachineConfig's Compliant condition
     let mut verdicts: Vec<MachineVerdict<'_>> = Vec::with_capacity(targeted_mcs.len());
@@ -238,6 +274,85 @@ pub(super) fn validate_policy_compliance(
     }
     true
 }
+/// Reset the `Compliant` condition on every machine this policy had judged.
+///
+/// The policy controller owns that condition, so its deletion is the only event
+/// that can retire the verdict: the machine controller carries whatever is there
+/// forward verbatim, and asking it to look up whether the naming policy still
+/// exists would put a policy read back into the machine reconcile. The value
+/// written is the same triple the machine controller synthesizes for a machine
+/// no policy has evaluated, so a machine another policy still targets is simply
+/// re-judged on that policy's next pass rather than left in a third state.
+///
+/// Best effort per machine: a failure here must not block the finalizer, or a
+/// deleted policy is stuck forever on one unreachable machine.
+async fn clear_compliant_verdicts(machines: &Api<MachineConfig>, targeted: &[Arc<MachineConfig>]) {
+    let now = cfgd_core::utc_now_iso8601();
+    for mc in targeted {
+        let existing = mc
+            .status
+            .as_ref()
+            .map(|s| s.conditions.as_slice())
+            .unwrap_or(&[]);
+        // Nothing to retire, and writing one would announce an evaluation that
+        // never happened.
+        if super::find_condition(existing, "Compliant").is_none() {
+            continue;
+        }
+        let cleared = build_condition(
+            existing,
+            "Compliant",
+            "Unknown",
+            "NotEvaluated",
+            "Awaiting policy evaluation",
+            &now,
+            mc.meta().generation,
+        );
+        if existing.contains(&cleared) {
+            continue;
+        }
+        let mc_name = mc.name_any();
+        let patch = serde_json::json!({
+            "status": { "conditions": upsert_condition(existing, cleared) }
+        });
+        if let Err(e) = machines
+            .patch_status(
+                &mc_name,
+                &PatchParams::apply(FIELD_MANAGER_STATUS),
+                &Patch::Merge(patch),
+            )
+            .await
+        {
+            warn!(name = %mc_name, error = %e, "failed to clear Compliant condition on MachineConfig");
+        }
+    }
+}
+
+/// Drop this controller's finalizer, releasing the policy for deletion.
+async fn remove_finalizer(
+    policies: &Api<ConfigPolicy>,
+    name: &str,
+    finalizers: &[String],
+) -> Result<(), OperatorError> {
+    let remaining: Vec<&str> = finalizers
+        .iter()
+        .filter(|f| f.as_str() != CONFIG_POLICY_FINALIZER)
+        .map(String::as_str)
+        .collect();
+    let patch = serde_json::json!({ "metadata": { "finalizers": remaining } });
+    policies
+        .patch(
+            name,
+            &PatchParams::apply(FIELD_MANAGER_OPERATOR),
+            &Patch::Merge(patch),
+        )
+        .await
+        .map_err(|e| {
+            OperatorError::Reconciliation(format!("failed to remove finalizer from {name}: {e}"))
+        })?;
+    Ok(())
+}
+
 /// Outcome of evaluating one policy against its targeted machines.
 pub(super) struct ComplianceTally {
     pub(super) compliant_count: u32,
