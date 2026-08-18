@@ -288,7 +288,7 @@ fn cmd_diff_module(
     exit_code: bool,
 ) -> anyhow::Result<()> {
     let registry = build_registry();
-    let platform = Platform::detect();
+    let platform = Platform::current();
     let mgr_map = managers_map(&registry);
     let cache_base = module_cache_dir(cli)?;
     let resolved_modules = match modules::resolve_modules(
@@ -296,7 +296,7 @@ fn cmd_diff_module(
         config_dir,
         &cache_base,
         &[],
-        &platform,
+        platform,
         &mgr_map,
         printer,
     ) {

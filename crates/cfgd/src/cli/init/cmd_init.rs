@@ -205,14 +205,14 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 merged: config::MergedProfile::default(),
             };
 
-            let platform = cfgd_core::platform::Platform::detect();
+            let platform = cfgd_core::platform::Platform::current();
             let mgr_map = super::managers_map(&registry);
             let resolved_modules = modules::resolve_modules(
                 args.apply_modules,
                 &target_dir,
                 &cache_base,
                 &[],
-                &platform,
+                platform,
                 &mgr_map,
                 printer,
             )?;
@@ -286,7 +286,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             }
 
             let resolved_modules = if !module_names.is_empty() {
-                let platform = cfgd_core::platform::Platform::detect();
+                let platform = cfgd_core::platform::Platform::current();
                 let mgr_map = super::managers_map(&registry);
                 let cache_base = module_cache_dir_for(args.cache_dir, args.scope)?;
                 // Validate --apply-module names exist (load once, check all)
@@ -303,7 +303,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     &target_dir,
                     &cache_base,
                     &[],
-                    &platform,
+                    platform,
                     &mgr_map,
                     printer,
                 )?

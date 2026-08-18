@@ -1053,7 +1053,7 @@ pub(in crate::cli) fn resolve_desired_state(
             build_registry_with_config_and_packages(Some(cfg), Some(&resolved.merged.packages));
         registry
             .extend_package_managers(packages::custom_managers(&resolved.merged.packages.custom));
-        let platform = Platform::detect();
+        let platform = Platform::current();
         let mgr_map = managers_map(&registry);
         let cache_base = module_cache_dir(cli)?;
         match modules::resolve_modules(
@@ -1061,7 +1061,7 @@ pub(in crate::cli) fn resolve_desired_state(
             &config_dir,
             &cache_base,
             &source_module_roots,
-            &platform,
+            platform,
             &mgr_map,
             printer,
         ) {

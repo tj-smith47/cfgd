@@ -332,7 +332,7 @@ pub(crate) fn cmd_module_show(
     } else {
         let registry = build_registry();
         let mgr_map = managers_map(&registry);
-        let platform = Platform::detect();
+        let platform = Platform::current();
         module
             .spec
             .packages
@@ -364,7 +364,7 @@ pub(crate) fn cmd_module_show(
                     format!(", platforms: {}", entry.platforms.join("/"))
                 };
 
-                match modules::resolve_package(entry, name, &platform, &mgr_map) {
+                match modules::resolve_package(entry, name, platform, &mgr_map) {
                     Ok(Some(resolved)) => PackageDisplay::Resolved {
                         name: entry.name.clone(),
                         manager: resolved.manager.clone(),

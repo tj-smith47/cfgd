@@ -21,7 +21,7 @@ pub fn cmd_verify(
     let (resolved, resolved_modules, mut registry) = if let Some(mod_name) = module_filter {
         let resolved = empty_resolved_profile(mod_name, &active_profile_name(cli, None));
         let registry = build_registry();
-        let platform = Platform::detect();
+        let platform = Platform::current();
         let mgr_map = managers_map(&registry);
         let cache_base = module_cache_dir(cli)?;
         let mods = modules::resolve_modules(
@@ -29,7 +29,7 @@ pub fn cmd_verify(
             &config_dir,
             &cache_base,
             &[],
-            &platform,
+            platform,
             &mgr_map,
             printer,
         )

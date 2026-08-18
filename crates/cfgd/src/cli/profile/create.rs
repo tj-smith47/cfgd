@@ -88,7 +88,7 @@ pub fn cmd_profile_create(
     } else {
         let known = super::known_manager_names();
         let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
-        let default_mgr = Platform::detect().native_manager().to_string();
+        let default_mgr = Platform::current().native_manager().to_string();
         let pkgs = pkg_list
             .iter()
             .map(|s| {

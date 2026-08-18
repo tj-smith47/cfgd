@@ -191,7 +191,7 @@ pub fn cmd_profile_update(
     // Add packages
     let known = super::known_manager_names();
     let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
-    let default_mgr = Platform::detect().native_manager().to_string();
+    let default_mgr = Platform::current().native_manager().to_string();
     for pkg_str in &add_packages {
         let (mgr_opt, pkg) = super::parse_package_flag(pkg_str, &known_refs);
         let mgr = mgr_opt.unwrap_or_else(|| default_mgr.clone());

@@ -48,6 +48,25 @@ pub struct Platform {
 }
 
 impl Platform {
+    /// The detected platform for this process, detected at most once.
+    ///
+    /// Every production reader takes this rather than [`Platform::detect`]:
+    /// detection spawns `sw_vers` on macOS and `freebsd-version` on FreeBSD and
+    /// reads `/etc/os-release` on Linux, and it was being paid per file manager,
+    /// per module walk and per daemon tick. Caching for the life of the process
+    /// needs no invalidation counterpart because none of its inputs can change
+    /// under a running process: the OS, its distribution release file and the
+    /// CPU architecture are fixed at boot, and a distro upgrade that rewrites
+    /// `/etc/os-release` mid-run still leaves the running binary on the kernel
+    /// and userland it started under.
+    ///
+    /// [`Platform::detect`] stays public for the two callers that must observe
+    /// the real host each time: the detection unit tests, and this memo itself.
+    pub fn current() -> &'static Platform {
+        static PLATFORM: std::sync::OnceLock<Platform> = std::sync::OnceLock::new();
+        PLATFORM.get_or_init(Platform::detect)
+    }
+
     /// Detect the current platform.
     ///
     /// - macOS: uses `cfg!(target_os)` and `sw_vers` for version.

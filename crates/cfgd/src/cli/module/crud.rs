@@ -255,7 +255,7 @@ pub fn cmd_module_create(
         registry.set_system_config_dir(&config_dir);
         let store = super::open_state_store(cli.state_dir.as_deref(), cli.scope())?;
 
-        let platform = cfgd_core::platform::Platform::detect();
+        let platform = cfgd_core::platform::Platform::current();
         let mgr_map = super::managers_map(&registry);
         let cache_base = module_cache_dir(cli)?;
         let resolved_modules = modules::resolve_modules(
@@ -263,7 +263,7 @@ pub fn cmd_module_create(
             &config_dir,
             &cache_base,
             &[],
-            &platform,
+            platform,
             &mgr_map,
             printer,
         )?;

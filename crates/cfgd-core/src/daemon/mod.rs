@@ -132,7 +132,7 @@ pub(crate) fn resolve_daemon_modules(
     if resolved.merged.modules.is_empty() {
         return Vec::new();
     }
-    let platform = crate::platform::Platform::detect();
+    let platform = crate::platform::Platform::current();
     let mgr_map: HashMap<String, &dyn PackageManager> = registry
         .package_managers()
         .iter()
@@ -145,7 +145,7 @@ pub(crate) fn resolve_daemon_modules(
         config_dir,
         &cache_base,
         source_roots,
-        &platform,
+        platform,
         &mgr_map,
         printer,
     ) {

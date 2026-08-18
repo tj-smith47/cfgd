@@ -102,7 +102,7 @@ pub fn collect_snapshot(
     printer: &Printer,
     state: &StateStore,
 ) -> Result<ComplianceSnapshot> {
-    let platform = Platform::detect();
+    let platform = Platform::current();
     let hostname = crate::hostname_string();
 
     let machine = MachineInfo {

@@ -524,7 +524,7 @@ pub(super) fn cmd_status_module(
     // below only checks presence.
     let mut drift: Vec<cfgd_core::state::DriftEvent> = Vec::new();
     if exit_code {
-        let platform = Platform::detect();
+        let platform = Platform::current();
         let registry = build_registry();
         let mgr_map = managers_map(&registry);
         let resolved_modules = modules::resolve_modules(
@@ -532,7 +532,7 @@ pub(super) fn cmd_status_module(
             &config_dir,
             &cache_base,
             &[],
-            &platform,
+            platform,
             &mgr_map,
             printer,
         )?;
