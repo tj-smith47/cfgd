@@ -173,12 +173,15 @@ spec:
               nonCompliantMachines:
                 default: []
                 description: |-
-                  `namespace/name` of every MachineConfig currently violating this policy,
-                  sorted. Persisted so a `PolicyViolation` event fires on the transition
-                  into violation rather than once per observation — an in-process memory
-                  would re-announce every machine after an operator restart.
+                  `namespace/name` of the MachineConfigs currently violating this policy,
+                  sorted and capped at [`MAX_NON_COMPLIANT_MACHINES`]. Persisted so a
+                  `PolicyViolation` event fires on the transition into violation rather
+                  than once per observation — an in-process memory would re-announce every
+                  machine after an operator restart. `nonCompliantCount` is the exact
+                  total and is never capped.
                 items:
                   type: string
+                maxItems: 500
                 type: array
             required:
             - compliantCount

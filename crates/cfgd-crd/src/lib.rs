@@ -15,6 +15,22 @@ use schemars::JsonSchema;
 use semver::VersionReq;
 use serde::{Deserialize, Serialize};
 
+/// Ceiling on the `nonCompliantMachines` list a policy status enumerates.
+///
+/// A status object every operator replica watches has to stay well inside
+/// etcd's ~1.5 MiB limit, and a policy violated fleet-wide would otherwise
+/// carry one entry per machine. At the RFC 1123 worst case (a 253-character
+/// namespace and name) 500 entries is ~250 KiB, which leaves the conditions
+/// list and the rest of the object ample room.
+///
+/// The cap is on the ENUMERATION only: `nonCompliantCount` remains exact, so no
+/// number a user reads is ever wrong. The truncation is applied to a sorted
+/// list, so which machines fall outside is deterministic rather than
+/// per-reconcile arbitrary — a machine beyond the cap is absent from the
+/// transition memory and therefore re-fires its `PolicyViolation` event on each
+/// evaluation, which is the documented degradation at that scale.
+pub const MAX_NON_COMPLIANT_MACHINES: usize = 500;
+
 // ---------------------------------------------------------------------------
 // MachineConfig
 // ---------------------------------------------------------------------------
@@ -177,11 +193,14 @@ pub struct ConfigPolicySpec {
 pub struct ConfigPolicyStatus {
     pub compliant_count: u32,
     pub non_compliant_count: u32,
-    /// `namespace/name` of every MachineConfig currently violating this policy,
-    /// sorted. Persisted so a `PolicyViolation` event fires on the transition
-    /// into violation rather than once per observation — an in-process memory
-    /// would re-announce every machine after an operator restart.
+    /// `namespace/name` of the MachineConfigs currently violating this policy,
+    /// sorted and capped at [`MAX_NON_COMPLIANT_MACHINES`]. Persisted so a
+    /// `PolicyViolation` event fires on the transition into violation rather
+    /// than once per observation — an in-process memory would re-announce every
+    /// machine after an operator restart. `nonCompliantCount` is the exact
+    /// total and is never capped.
     #[serde(default)]
+    #[schemars(length(max = MAX_NON_COMPLIANT_MACHINES))]
     pub non_compliant_machines: Vec<String>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
@@ -300,11 +319,14 @@ pub struct SecurityPolicy {
 pub struct ClusterConfigPolicyStatus {
     pub compliant_count: u32,
     pub non_compliant_count: u32,
-    /// `namespace/name` of every MachineConfig currently violating this policy,
-    /// sorted. Persisted so a `PolicyViolation` event fires on the transition
-    /// into violation rather than once per observation — an in-process memory
-    /// would re-announce every machine after an operator restart.
+    /// `namespace/name` of the MachineConfigs currently violating this policy,
+    /// sorted and capped at [`MAX_NON_COMPLIANT_MACHINES`]. Persisted so a
+    /// `PolicyViolation` event fires on the transition into violation rather
+    /// than once per observation — an in-process memory would re-announce every
+    /// machine after an operator restart. `nonCompliantCount` is the exact
+    /// total and is never capped.
     #[serde(default)]
+    #[schemars(length(max = MAX_NON_COMPLIANT_MACHINES))]
     pub non_compliant_machines: Vec<String>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
