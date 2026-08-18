@@ -34,11 +34,44 @@ pub const HTTP_AI_TIMEOUT: Duration = Duration::from_secs(120);
 /// should not starve the daemon's notification loop.
 pub const HTTP_WEBHOOK_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Build a `ureq::Agent` with `timeout` applied as the global per-call
-/// timeout. Exists so every call site that wants a timeout can use one line
-/// and we can change agent configuration (user-agent defaults, connection
+/// The `ureq::Agent` this process uses for `timeout`, built at most once per
+/// distinct timeout. Exists so every call site that wants a timeout can use one
+/// line and we can change agent configuration (user-agent defaults, connection
 /// pooling, TLS options) in exactly one place if it becomes necessary.
+///
+/// Shared rather than freshly built because an `Agent` OWNS the connection
+/// pool: a per-call agent throws its pooled TLS connections away when it drops,
+/// so an OCI push of N layers and an upgrade's manifest-then-download pair each
+/// paid a full TCP + TLS handshake per request to the same host. `Agent::clone`
+/// is documented as allocation-free (the config, pool and resolver are all
+/// `Arc`), so handing out a clone costs a refcount bump.
+///
+/// Keyed by the timeout because that is the only per-call configuration cfgd
+/// varies; the five named constants above are the whole key space in practice.
+/// A caller that ever needs a genuinely different agent shape (a proxy, a
+/// client certificate) must build its own rather than widen this key, since two
+/// agents differing in anything but timeout are not interchangeable.
 pub fn http_agent(timeout: Duration) -> ureq::Agent {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static AGENTS: OnceLock<Mutex<HashMap<Duration, ureq::Agent>>> = OnceLock::new();
+    let agents = AGENTS.get_or_init(|| Mutex::new(HashMap::new()));
+
+    // A poisoned lock means a panic unwound while the map was borrowed. The map
+    // holds nothing but agents, so reusing it is safe, and a caller must still
+    // get a usable agent — falling back to an unshared build keeps the request
+    // working at the cost of this one connection pool.
+    let Ok(mut agents) = agents.lock() else {
+        return build_agent(timeout);
+    };
+    agents
+        .entry(timeout)
+        .or_insert_with(|| build_agent(timeout))
+        .clone()
+}
+
+fn build_agent(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
         .build()
