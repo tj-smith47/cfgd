@@ -102,7 +102,7 @@ impl TemplateEngines {
         self.local.registrations + self.sandboxed.registrations
     }
 
-    fn for_origin(&mut self, source_origin: Option<&str>) -> &mut TemplateEngine {
+    fn engine_for(&mut self, source_origin: Option<&str>) -> &mut TemplateEngine {
         if source_origin.is_some() {
             &mut self.sandboxed
         } else {
@@ -139,7 +139,7 @@ impl super::CfgdFileManager {
         // tera 2.0 requires to happen before `add_raw_template` — that call runs
         // `finalize_templates()`, which validates every function a template
         // calls.
-        let engine = engines.for_origin(source_origin);
+        let engine = engines.engine_for(source_origin);
         engine
             .ensure_template(&template_name, &template_content)
             .map_err(|e| FileError::TemplateError {
