@@ -200,6 +200,55 @@ impl RenderState {
     }
 }
 
+/// The live-region bookkeeping every renderer writing ONE `MultiProgress`
+/// shares, and the reason it is `Arc`-held rather than a pair of fields.
+///
+/// `Printer::build_derived` mints a fresh `Renderer` around the SAME
+/// `MultiProgress` and the SAME sinks. A derived renderer counting its own
+/// bars starts at zero, so `emit_block`'s routing gate answers "no bar is
+/// live" while the parent's spinner is painting, takes the raw branch, and
+/// leaves that paint on the terminal for good — the quiet library sinks
+/// (`cli/sync.rs`, `cli/compliance.rs`, `daemon/sync.rs`, …) all emit through
+/// exactly that shape, and their `Fail` statuses, `alert()`s and
+/// `deprecation()`s survive `Verbosity::Quiet`. Sharing the count makes the
+/// routing decision one decision for the whole live region instead of one per
+/// renderer that happens to hold a handle to it.
+///
+/// The broken-terminal latch is shared for the same reason: one dead terminal
+/// is dead for every renderer writing it, and a per-renderer latch would have
+/// each of them re-discover the break with its own dropped emission.
+pub(crate) struct LiveBarState {
+    /// Bars currently drawn, maintained by `LiveBarGuard`. Bound to the bars
+    /// that were actually `multi.add`ed: a hidden bar is never added, so
+    /// counting one would open the routing gate over an empty multi.
+    live_bars: AtomicUsize,
+    /// One-way latch: set when a routed write returned an io error. Later
+    /// writes go straight to the sink, which swallows write errors exactly as
+    /// every write did before the routing existed.
+    bars_broken: AtomicBool,
+}
+
+impl LiveBarState {
+    fn new() -> Self {
+        Self {
+            live_bars: AtomicUsize::new(0),
+            bars_broken: AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn count(&self) -> usize {
+        self.live_bars.load(Relaxed)
+    }
+
+    pub(crate) fn broken(&self) -> bool {
+        self.bars_broken.load(Relaxed)
+    }
+
+    fn mark_broken(&self) {
+        self.bars_broken.store(true, Relaxed);
+    }
+}
+
 /// Renderer is created per Printer. All state lives in `RenderState` behind a
 /// Mutex so the caller doesn't see interior mutability.
 pub struct Renderer {
@@ -211,14 +260,9 @@ pub struct Renderer {
     /// multi's target rather than the sink. indicatif's handle is `Clone` and
     /// internally `Arc`-shared.
     pub(crate) bars: Option<indicatif::MultiProgress>,
-    /// Bars currently drawn, maintained by `LiveBarGuard`. Bound to the bars
-    /// that were actually `multi.add`ed: a hidden bar is never added, so
-    /// counting one would open the routing gate over an empty multi.
-    pub(crate) live_bars: AtomicUsize,
-    /// One-way latch: set when a routed write returned an io error. Later
-    /// writes go straight to the sink, which swallows write errors exactly as
-    /// every write did before the routing existed.
-    pub(crate) bars_broken: AtomicBool,
+    /// Live-bar count + broken latch for `bars`, shared with every renderer
+    /// derived from this one — see [`LiveBarState`].
+    pub(crate) live: std::sync::Arc<LiveBarState>,
     /// Non-zero while a `DepthInheritGuard` is alive.
     pub(crate) inherit_guards: AtomicUsize,
 }
@@ -230,8 +274,7 @@ impl Renderer {
             verbosity,
             state: Mutex::new(RenderState::new()),
             bars: None,
-            live_bars: AtomicUsize::new(0),
-            bars_broken: AtomicBool::new(false),
+            live: std::sync::Arc::new(LiveBarState::new()),
             inherit_guards: AtomicUsize::new(0),
         }
     }
@@ -258,15 +301,21 @@ impl Renderer {
     /// (`Printer::build_derived` clones `sink_stderr`/`sink_stdout` rather
     /// than opening new ones), so the derived renderer's first heading must
     /// still see whatever blank-line debt the replaced renderer owed it.
+    ///
+    /// `live` is the replaced renderer's own [`LiveBarState`], not a fresh one:
+    /// both renderers write the one live region, so both have to route their
+    /// emissions through the one clear-and-repaint decision it holds.
     pub(crate) fn with_bars_continued(
         theme: Theme,
         verbosity: Verbosity,
         bars: indicatif::MultiProgress,
         seed: RenderState,
+        live: std::sync::Arc<LiveBarState>,
     ) -> Self {
         Self {
             bars: Some(bars),
             state: Mutex::new(seed),
+            live,
             ..Self::new(theme, verbosity)
         }
     }
@@ -342,17 +391,13 @@ impl Renderer {
         // ONE match with a guard: a second match on `self.bars` is how the
         // latch arm below loses its fallback without anyone noticing.
         match &self.bars {
-            Some(mp)
-                if !self.bars_broken.load(Relaxed)
-                    && self.live_bars.load(Relaxed) > 0
-                    && !mp.is_hidden() =>
-            {
+            Some(mp) if !self.live.broken() && self.live.count() > 0 && !mp.is_hidden() => {
                 // `println` splits on '\n' itself, so one call is one
                 // clear/redraw cycle for the whole emission.
                 if mp.println(lines.join("\n")).is_err() {
                     // Latch AND fall through: the emission that discovers the
                     // broken terminal is the one most likely to explain it.
-                    self.bars_broken.store(true, Relaxed);
+                    self.live.mark_broken();
                     plain();
                 }
             }
@@ -394,12 +439,12 @@ impl Renderer {
 /// Increments the renderer's live-bar count on construction and decrements it
 /// on drop. Held by the `Spinner` / `ProgressBar` wrapper, so the count tracks
 /// the bar's real lifetime with no paired decrement to forget.
-pub(crate) struct LiveBarGuard(std::sync::Arc<Renderer>);
+pub(crate) struct LiveBarGuard(std::sync::Arc<LiveBarState>);
 
 impl LiveBarGuard {
     pub(crate) fn acquire(renderer: &std::sync::Arc<Renderer>) -> Self {
-        renderer.live_bars.fetch_add(1, Relaxed);
-        Self(renderer.clone())
+        renderer.live.live_bars.fetch_add(1, Relaxed);
+        Self(renderer.live.clone())
     }
 }
 
@@ -1175,7 +1220,7 @@ mod tests {
         let f = BarsFixture::new(true);
         f.renderer.write_line(&f.sink, 0, "first");
         assert!(
-            f.renderer.bars_broken.load(Relaxed),
+            f.renderer.live.broken(),
             "an io error must latch the routing off"
         );
         assert!(
@@ -1247,14 +1292,14 @@ mod tests {
     #[test]
     fn live_bar_count_returns_to_zero() {
         let mut f = BarsFixture::new(false);
-        assert_eq!(f.renderer.live_bars.load(Relaxed), 1);
+        assert_eq!(f.renderer.live.count(), 1);
         let second = LiveBarGuard::acquire(&f.renderer);
-        assert_eq!(f.renderer.live_bars.load(Relaxed), 2);
+        assert_eq!(f.renderer.live.count(), 2);
         drop(second);
-        assert_eq!(f.renderer.live_bars.load(Relaxed), 1);
+        assert_eq!(f.renderer.live.count(), 1);
         f.live = None;
         assert_eq!(
-            f.renderer.live_bars.load(Relaxed),
+            f.renderer.live.count(),
             0,
             "the guard's Drop is the only decrement, so it must fire"
         );

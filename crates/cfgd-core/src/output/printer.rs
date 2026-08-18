@@ -300,6 +300,10 @@ impl Printer {
     /// call (the daemon's own printer) would stand up a second
     /// `MultiProgress` doing independent cursor arithmetic on the one real
     /// stderr the process printer already owns.
+    ///
+    /// The live-bar bookkeeping travels with the `MultiProgress` rather than
+    /// being minted fresh — see [`super::renderer::LiveBarState`] for the
+    /// stranded-paint bug a per-renderer count causes.
     fn build_derived(
         &self,
         verbosity: Verbosity,
@@ -330,6 +334,7 @@ impl Printer {
                 verbosity,
                 self.multi_progress.clone(),
                 seed,
+                self.renderer.live.clone(),
             )),
             output_format,
             sink_stderr: self.sink_stderr.clone(),
@@ -827,6 +832,46 @@ mod tests {
 
     use crate::test_helpers::EnvVarGuard;
     use serial_test::serial;
+
+    /// A quiet library sink derived from a printer that has a spinner running
+    /// must clear and repaint that spinner around its own line, not write over
+    /// the top of it.
+    ///
+    /// The bug: `cfgd sync` hands `load_source` a `Verbosity::Quiet` printer,
+    /// whose `Fail` statuses and `alert()`s are printed anyway. Derived from a
+    /// renderer with its own zero live-bar count, each of those took the raw
+    /// branch and left the "Syncing sources" frame on the terminal for the rest
+    /// of the session — the frozen spinner the user recorded on camera.
+    ///
+    /// Read from the emulated screen, the only live capture that can see a
+    /// paint the region never took back.
+    #[test]
+    fn a_derived_printers_line_does_not_strand_the_parents_live_bar() {
+        let (parent, screen) = Printer::for_test_live_terminal(24, 100);
+        let sp = parent.spinner("Syncing sources");
+        // Joins the steady-tick thread, so this thread is the only writer and
+        // the bar has already painted one frame — no sleep, no race.
+        sp.bar.disable_steady_tick();
+        let quiet = parent.at_verbosity(Verbosity::Quiet);
+        quiet.status_simple(crate::output::Role::Fail, "source acme: fetch failed");
+        sp.finish_ok("Synced sources");
+        parent.flush();
+
+        let held = screen.contents();
+        assert!(
+            !held.contains("Syncing sources"),
+            "the running spinner's paint was stranded on the terminal: {held:?}"
+        );
+        assert_eq!(
+            held.matches("source acme: fetch failed").count(),
+            1,
+            "the derived line must land exactly once: {held:?}"
+        );
+        assert!(
+            held.contains("Synced sources"),
+            "the settled line went missing: {held:?}"
+        );
+    }
 
     #[test]
     fn structured_format_auto_quiets() {
