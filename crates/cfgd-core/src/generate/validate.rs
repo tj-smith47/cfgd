@@ -1,17 +1,46 @@
+use std::collections::BTreeSet;
+use std::sync::LazyLock;
+
 use crate::generate::{SchemaKind, ValidationResult};
 use crate::schema::{KIND_REGISTRY, KindEntry};
 
-/// `spec` keys that exist ONLY on the cluster-side `Module` CRD. A document
-/// carrying one of them cannot be a local module manifest, so validating it
+/// The `spec` keys a kind's CRD entry accepts and its local entry does not,
+/// derived from the two `schemars` field trees rather than written down. A
+/// document carrying one of them cannot be a local manifest, so validating it
 /// against the local entry can only produce an "unknown field" error naming a
 /// field the author spelled correctly for the resource they were writing.
 ///
-/// Discrimination is by key rather than by "try both entries": a CRD entry
+/// Derived rather than listed because a hand-written list rots in exactly one
+/// direction: a field added to `cfgd_crd::ModuleSpec` and not added here sends
+/// the document that carries only that field back to the local entry, which is
+/// the same false rejection this discrimination exists to prevent. Reading the
+/// schemas keeps the two in step by construction.
+///
+/// Discrimination by key rather than "try both entries": a CRD entry
 /// deliberately omits `deny_unknown_fields` (Kubernetes rejects structural
 /// schemas carrying `additionalProperties: false`), so a fallback that accepted
-/// either entry would make every `kind: Module` document trivially valid and
+/// either entry would make every dual-registered document trivially valid and
 /// silently drop the unknown-field guard on local manifests.
-const CRD_ONLY_MODULE_SPEC_KEYS: &[&str] = &["ociArtifact", "mountPolicy", "signature"];
+static CRD_ONLY_SPEC_KEYS: LazyLock<Vec<(&'static str, BTreeSet<String>)>> = LazyLock::new(|| {
+    KIND_REGISTRY
+        .iter()
+        .filter(|entry| entry.crd)
+        .filter_map(|crd_entry| {
+            let local = KIND_REGISTRY
+                .iter()
+                .find(|e| e.kind == crd_entry.kind && !e.crd)?;
+            let local_keys: BTreeSet<String> =
+                local.field_tree().into_iter().map(|f| f.name).collect();
+            let crd_only: BTreeSet<String> = crd_entry
+                .field_tree()
+                .into_iter()
+                .map(|f| f.name)
+                .filter(|name| !local_keys.contains(name))
+                .collect();
+            (!crd_only.is_empty()).then_some((crd_entry.kind, crd_only))
+        })
+        .collect()
+});
 
 /// Look up the registry entry for a `kind` string, preferring the local
 /// document entry when a CRD entry shares the same `kind` (both a local and a
@@ -25,16 +54,25 @@ pub(crate) fn entry_for_kind(kind: &str) -> Option<&'static KindEntry> {
 
 /// Look up the registry entry for a parsed document, reading its `spec` to pick
 /// between a local and a CRD entry that share the same `kind`. Falls back to
-/// [`entry_for_kind`]'s local-first preference for every other document.
+/// [`entry_for_kind`]'s local-first preference for every other document — a kind
+/// registered once, or one whose two entries accept the same keys, has nothing
+/// to discriminate on.
 fn entry_for_document(kind: &str, value: &serde_yaml::Value) -> Option<&'static KindEntry> {
-    let carries_crd_only_key = value
-        .get("spec")
-        .and_then(|spec| spec.as_mapping())
-        .is_some_and(|spec| {
-            CRD_ONLY_MODULE_SPEC_KEYS
-                .iter()
-                .any(|key| spec.contains_key(serde_yaml::Value::from(*key)))
-        });
+    let crd_only = CRD_ONLY_SPEC_KEYS
+        .iter()
+        .find(|(entry_kind, _)| *entry_kind == kind)
+        .map(|(_, keys)| keys);
+
+    let carries_crd_only_key = crd_only.is_some_and(|crd_only| {
+        value
+            .get("spec")
+            .and_then(|spec| spec.as_mapping())
+            .is_some_and(|spec| {
+                crd_only
+                    .iter()
+                    .any(|key| spec.contains_key(serde_yaml::Value::from(key.as_str())))
+            })
+    });
 
     if carries_crd_only_key
         && let Some(entry) = KIND_REGISTRY.iter().find(|e| e.kind == kind && e.crd)
@@ -148,6 +186,30 @@ mod tests {
             "error must name the unknown field, got: {:?}",
             r.errors
         );
+    }
+
+    #[cfg(feature = "crd")]
+    #[test]
+    fn the_discriminating_key_set_is_derived_from_the_module_schemas() {
+        let (_, module_keys) = CRD_ONLY_SPEC_KEYS
+            .iter()
+            .find(|(kind, _)| *kind == "Module")
+            .expect("Module is registered both locally and as a CRD");
+
+        for key in ["ociArtifact", "mountPolicy", "signature"] {
+            assert!(
+                module_keys.contains(key),
+                "{key} is on the CRD ModuleSpec and not the local one, so it must \
+                 discriminate; derived set: {module_keys:?}"
+            );
+        }
+        for shared in ["packages", "files", "scripts", "env", "depends"] {
+            assert!(
+                !module_keys.contains(shared),
+                "{shared} exists on both ModuleSpecs, so it says nothing about which \
+                 resource the author meant; derived set: {module_keys:?}"
+            );
+        }
     }
 
     #[test]
