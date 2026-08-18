@@ -314,6 +314,18 @@ mod tests {
         );
     }
 
+    /// `u64::MAX` millis is the "no override" sentinel. A pin asking for a
+    /// ceiling that large means "out of reach", so it must not fold back into
+    /// the 30s default the caller pinned to escape.
+    #[test]
+    #[serial_test::serial(enumeration_memo)]
+    fn a_ceiling_pinned_at_the_sentinel_is_still_a_pin() {
+        let _ttl = crate::test_helpers::EnumerationMemoTtlGuard::pinned(
+            std::time::Duration::from_millis(u64::MAX),
+        );
+        assert!(enumeration_memo_ttl() > ENUMERATION_MEMO_TTL);
+    }
+
     #[test]
     fn a_manager_gets_the_same_slot_every_time() {
         let memo = InstalledEnumerations::default();

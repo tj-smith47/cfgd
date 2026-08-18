@@ -490,8 +490,14 @@ fn export_snapshot_to_file_yaml() {
 // manager used to enumerate it once per section. One context makes the two
 // sections read one listing.
 #[test]
+#[serial_test::serial(enumeration_memo)]
 fn a_declared_and_watched_manager_is_enumerated_once_per_snapshot() {
     use crate::config::MergedProfile;
+
+    // The count is a memo-hit claim, so the memo's age ceiling is pinned out of
+    // reach and the pin is serialized — it is process-global, and a sibling test
+    // pins it to zero.
+    let _ttl = crate::test_helpers::EnumerationMemoTtlGuard::never_expires();
 
     let enumerations = crate::test_helpers::measured_in_a_stable_generation(|| {
         let mgr =

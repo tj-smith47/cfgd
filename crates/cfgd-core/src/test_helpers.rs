@@ -2022,7 +2022,13 @@ pub struct CommandPathMemoTtlGuard {
 impl CommandPathMemoTtlGuard {
     /// Pin the TTL to `ttl`, saturating at the millisecond range.
     pub fn pinned(ttl: std::time::Duration) -> Self {
-        let millis = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX - 1);
+        // `u64::MAX` is the "no override" sentinel, so a pin that would land on
+        // it saturates one below: `pinned(Duration::MAX)` must pin the ceiling
+        // out of reach, never silently restore the default it was called to
+        // displace.
+        let millis = u64::try_from(ttl.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(u64::MAX - 1);
         Self {
             prior: crate::set_command_path_memo_ttl_override(Some(millis)),
         }
@@ -2066,7 +2072,13 @@ pub struct EnumerationMemoTtlGuard {
 impl EnumerationMemoTtlGuard {
     /// Pin the TTL to `ttl`, saturating at the millisecond range.
     pub fn pinned(ttl: std::time::Duration) -> Self {
-        let millis = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX - 1);
+        // `u64::MAX` is the "no override" sentinel, so a pin that would land on
+        // it saturates one below: `pinned(Duration::MAX)` must pin the ceiling
+        // out of reach, never silently restore the default it was called to
+        // displace.
+        let millis = u64::try_from(ttl.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(u64::MAX - 1);
         Self {
             prior: crate::providers::set_enumeration_memo_ttl_override(Some(millis)),
         }

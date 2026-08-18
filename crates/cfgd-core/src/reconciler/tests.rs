@@ -480,10 +480,16 @@ fn verify_returns_results() {
 }
 
 #[test]
+#[serial_test::serial(enumeration_memo)]
 fn verify_asks_each_manager_once_however_many_packages_are_declared() {
     // Measured in a stable generation: anything in this binary that installs
     // something retires the memo, and the second package's read would then
     // legitimately re-enumerate.
+    //
+    // The count is a memo-hit claim, so the memo's age ceiling is pinned out of
+    // reach and the pin is serialized — it is process-global, and a sibling test
+    // pins it to zero.
+    let _ttl = crate::test_helpers::EnumerationMemoTtlGuard::never_expires();
     let (package_results, enumerations) =
         crate::test_helpers::measured_in_a_stable_generation(|| {
             let state = test_state();
@@ -525,7 +531,12 @@ fn verify_asks_each_manager_once_however_many_packages_are_declared() {
 }
 
 #[test]
+#[serial_test::serial(enumeration_memo)]
 fn one_context_spans_the_verify_walk_and_the_tracking_gc_with_one_enumeration() {
+    // The count is a memo-hit claim, so the memo's age ceiling is pinned out of
+    // reach and the pin is serialized — it is process-global, and a sibling test
+    // pins it to zero.
+    let _ttl = crate::test_helpers::EnumerationMemoTtlGuard::never_expires();
     let (stale, enumerations) = crate::test_helpers::measured_in_a_stable_generation(|| {
         let state = test_state();
         let mut registry = ProviderRegistry::new();

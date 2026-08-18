@@ -888,6 +888,11 @@ mod tests {
     // `cmd_verify` built before — the same manager is enumerated twice.
     #[test]
     fn both_halves_of_verify_share_one_enumeration_per_manager() {
+        // The count is a memo-hit claim, so the memo's age ceiling is pinned out
+        // of reach — unpinned it rests on the 30s wall clock. No serialization:
+        // nothing in this crate's test binary pins the ceiling to zero, and a
+        // longer ceiling can only let another test's entries live longer.
+        let _ttl = cfgd_core::test_helpers::EnumerationMemoTtlGuard::never_expires();
         let enumerations = cfgd_core::test_helpers::measured_in_a_stable_generation(|| {
             let mgr = cfgd_core::test_helpers::MockPackageManager::new("npm")
                 .with_installed(&["left-pad", "chalk"]);

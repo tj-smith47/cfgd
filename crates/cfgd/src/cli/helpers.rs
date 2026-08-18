@@ -875,6 +875,12 @@ pub(in crate::cli) struct DesiredState {
 }
 
 impl DesiredState {
+    /// Whether the resolution itself already built the registry.
+    #[cfg(test)]
+    pub(in crate::cli) fn registry_built(&self) -> bool {
+        self.registry.get().is_some()
+    }
+
     /// Take the run's config-aware registry, building it on first ask.
     ///
     /// `cfg` is a parameter rather than a field because the registry's other
@@ -882,13 +888,6 @@ impl DesiredState {
     /// `OnceCell` initializer stored beside it could borrow. Owned, because
     /// every caller mutates what it gets (`set_system_config_dir`) or hands it
     /// to a `Reconciler` that wants it by value.
-    /// Whether the resolution itself needed the registry, for the test that
-    /// pins the laziness — an eager build makes both halves answer `true`.
-    #[cfg(test)]
-    pub(in crate::cli) fn registry_built(&self) -> bool {
-        self.registry.get().is_some()
-    }
-
     pub(in crate::cli) fn take_registry(&mut self, cfg: &config::CfgdConfig) -> ProviderRegistry {
         self.registry.take().unwrap_or_else(|| {
             build_registry_with_config_and_packages(Some(cfg), Some(&self.resolved.merged.packages))

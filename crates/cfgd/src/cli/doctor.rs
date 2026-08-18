@@ -882,6 +882,11 @@ mod tests {
     // the modules declare under it.
     #[test]
     fn doctor_asks_each_manager_once_for_the_whole_walk() {
+        // The count is a memo-hit claim, so the memo's age ceiling is pinned out
+        // of reach — unpinned it rests on the 30s wall clock. No serialization:
+        // nothing in this crate's test binary pins the ceiling to zero, and a
+        // longer ceiling can only let another test's entries live longer.
+        let _ttl = cfgd_core::test_helpers::EnumerationMemoTtlGuard::never_expires();
         let enumerations = cfgd_core::test_helpers::measured_in_a_stable_generation(|| {
             let apt = cfgd_core::test_helpers::MockPackageManager::new("apt")
                 .with_installed(&["curl", "jq"]);

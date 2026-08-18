@@ -350,12 +350,14 @@ pub(super) fn cmd_status(
         false,
         composition::ConstraintMode::Report,
     )?;
-    // Kept for the `-e` live scan below, which is the only half that needs a
-    // registry — a resolution that walked modules built one already, so this
-    // reuses it instead of building a second. Taken before the other fields,
-    // because a partial move out of `desired` would block the `&mut self` this
-    // accessor needs.
-    let mut registry = desired.take_registry(cfg);
+    // Taken ONLY for the `-e` live scan below, the one half that reads a
+    // registry: a plain `cfgd status` is an offline dashboard, and building a
+    // registry it never reads would construct every package manager and
+    // configurator the host supports for nothing. Taken here rather than at the
+    // scan because the two field moves below are partial moves out of `desired`,
+    // which block the `&mut self` the accessor needs — and `Some` exactly when
+    // `exit_code`, so the scan below can bind it instead of re-testing the flag.
+    let registry = exit_code.then(|| desired.take_registry(cfg));
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
 
@@ -445,7 +447,7 @@ pub(super) fn cmd_status(
     // BEFORE emitting, fold its findings into the displayed Drift section, then
     // exit 5 if any drift. This keeps the human verdict and the exit code in
     // agreement instead of printing "No drift detected" alongside exit 5.
-    let live_drift = if exit_code {
+    let live_drift = if let Some(mut registry) = registry {
         ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
         registry.set_system_config_dir(&config_dir);
         let cfgd_installed = cfgd_installed_packages(state)?;
@@ -532,6 +534,10 @@ pub(super) fn cmd_status_module(
     let mut drift: Vec<cfgd_core::state::DriftEvent> = Vec::new();
     if exit_code {
         let platform = Platform::current();
+        // Deliberately the config-FREE registry: a module resolves against the
+        // managers it declares and cannot reach the profile's `packages.custom`,
+        // so resolving it through a config-aware registry would map a module
+        // package onto a manager the module cannot use.
         let registry = ctx.base_registry();
         let mgr_map = managers_map(registry);
         let resolved_modules = modules::resolve_modules(
