@@ -90,16 +90,19 @@ that exactly reproduced an in-tree probe of `CachedConfig::advisories_to_restate
 returning `&[]`. Six later runs of the same binary at the same thread count were green,
 and the failure was never a concurrency defect at all — it was a probe window.
 
-Copy the tree first, and give the copy its own target dir:
+Copy the tree first — **excluding `target/`**, which is tens of GB and duplicating it
+filled the shared VM's root filesystem to 100% mid-CI — and give the copy its own
+target dir:
 
 ```bash
-cp -a /opt/repos/cfgd ~/.cache/cfgd-debug/probe
+rsync -a --exclude=/target /opt/repos/cfgd/ ~/.cache/cfgd-debug/probe/
 CARGO_TARGET_DIR=~/.cache/cfgd-debug/probe-target \
   cargo test --manifest-path ~/.cache/cfgd-debug/probe/Cargo.toml -p cfgd-core --features test-helpers --lib <filter>
 ```
 
 The evidence is identical and no other reader can see the mutation. Scratch goes under
-`~/.cache/`, never `/tmp`.
+`~/.cache/`, never `/tmp`, and the probe tree AND its target dir are deleted as soon as
+the probe's red run is captured — never left standing for a later probe to reuse.
 
 ## Fixture versions: use the 9.9.x sentinel range
 
