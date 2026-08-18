@@ -352,6 +352,10 @@ pub(super) fn cmd_status(
     )?;
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
+    // Kept for the `-e` live scan below, which is the only half that needs a
+    // registry — the resolver built one for module resolution either way, so
+    // this reuses it instead of building a second.
+    let mut registry = desired.registry;
 
     // The plan withholds items no run has recorded a row for yet; a dashboard
     // that hides them contradicts the plan it summarizes. Same classification
@@ -441,7 +445,6 @@ pub(super) fn cmd_status(
     // agreement instead of printing "No drift detected" alongside exit 5.
     let live_drift = if exit_code {
         ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
-        let mut registry = build_registry_with_profile(&resolved.merged.packages);
         registry.set_system_config_dir(&config_dir);
         let cfgd_installed = cfgd_installed_packages(state)?;
         let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
@@ -539,10 +542,15 @@ pub(super) fn cmd_status_module(
             printer,
         )?;
         let resolved = empty_resolved_profile(mod_name, &ctx.active_profile_name());
-        for r in
-            super::live_drift::module_file_verify_results(config_dir, &resolved, &resolved_modules)?
-                .into_iter()
-                .filter(|r| !r.matches)
+        let fm = CfgdFileManager::new(config_dir, &resolved)?;
+        for r in super::live_drift::module_file_verify_results(
+            &fm,
+            config_dir,
+            &resolved,
+            &resolved_modules,
+        )?
+        .into_iter()
+        .filter(|r| !r.matches)
         {
             drift.push(super::live_drift::drift_event_from(&r));
         }

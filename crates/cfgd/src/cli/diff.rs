@@ -103,10 +103,13 @@ pub fn cmd_diff(
     )?;
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
+    // The registry the resolver already built from this config and these
+    // composed packages. Its only difference from a `build_registry_with_profile`
+    // of the same spec is the config-derived secret backend and default file
+    // strategy, neither of which any check below reads.
+    let registry = desired.registry;
 
     ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
-
-    let registry = build_registry_with_profile(&resolved.merged.packages);
 
     let mut diff_payload = DiffOutput::default();
     let mut has_system_drift = false;

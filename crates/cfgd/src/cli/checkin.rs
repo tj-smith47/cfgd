@@ -33,7 +33,7 @@ pub fn cmd_checkin(
     let resolved = desired.resolved;
     let resolved_modules = desired.modules;
 
-    let mut registry = build_registry_with_profile(&resolved.merged.packages);
+    let mut registry = desired.registry;
     registry.file_manager = Some(Box::new(build_compliance_file_manager(
         config_dir,
         &resolved,

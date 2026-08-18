@@ -52,8 +52,8 @@ pub fn cmd_verify(
         )?;
         let mut resolved = desired.resolved;
         let mods = desired.modules;
+        let registry = desired.registry;
         ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
-        let registry = build_registry_with_profile(&resolved.merged.packages);
         (resolved, mods, registry)
     };
     registry.set_system_config_dir(config_dir);
@@ -69,13 +69,16 @@ pub fn cmd_verify(
     // file whose bytes drifted out-of-band fails verification and drives
     // `verify --exit-code` to 5. Module-filter runs (empty merged profile) have
     // no managed files, so the profile-file fold is a no-op for them.
-    results.extend(super::live_drift::file_verify_results(
-        config_dir, &resolved,
-    )?);
+    // ONE file manager for both folds: each construction rebuilds the template
+    // context and the full secret-provider set, and both halves check the same
+    // profile.
+    let fm = CfgdFileManager::new(config_dir, &resolved)?;
+    results.extend(super::live_drift::file_verify_results(&fm, &resolved)?);
     // Module files are content-aware here (not in the reconciler, which is
     // presence-blind across the crate boundary): a byte-tampered module file
     // fails verification for both the full and `--module` paths.
     results.extend(super::live_drift::module_file_verify_results(
+        &fm,
         config_dir,
         &resolved,
         &resolved_modules,

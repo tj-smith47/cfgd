@@ -42,11 +42,15 @@ pub(super) fn drift_event_from(r: &VerifyResult) -> cfgd_core::state::DriftEvent
 /// `VerifyResult` shape so `cmd_verify` can fold file content drift in beside
 /// the package/system/module/env results it already collects. A drifted or
 /// missing file yields a non-matching result, driving `verify --exit-code` to 5.
+///
+/// Takes the file manager rather than building one: this and
+/// [`module_file_verify_results`] run back to back on every `verify` and every
+/// `status --exit-code`, over the same profile, and each construction rebuilds
+/// the template context and the whole secret-provider set.
 pub(super) fn file_verify_results(
-    config_dir: &std::path::Path,
+    fm: &CfgdFileManager,
     resolved: &ResolvedProfile,
 ) -> anyhow::Result<Vec<VerifyResult>> {
-    let fm = CfgdFileManager::new(config_dir, resolved)?;
     let drift = fm.file_drift_results(&resolved.merged)?;
     Ok(drift
         .into_iter()
@@ -69,11 +73,11 @@ pub(super) fn file_verify_results(
 /// `origin`, so `None` is passed — consistent with how they deploy. The
 /// `resource_id` is `"<module>/<target>"` so module-file drift is attributable.
 pub(super) fn module_file_verify_results(
+    fm: &CfgdFileManager,
     config_dir: &std::path::Path,
     resolved: &ResolvedProfile,
     modules: &[ResolvedModule],
 ) -> anyhow::Result<Vec<VerifyResult>> {
-    let fm = CfgdFileManager::new(config_dir, resolved)?;
     let mut results = Vec::new();
     for module in modules {
         for file in &module.files {
@@ -128,16 +132,19 @@ pub(super) fn live_drift_results(
 ) -> anyhow::Result<Vec<VerifyResult>> {
     let mut drift = Vec::new();
 
+    // One file manager for both file halves of the scan.
+    let fm = CfgdFileManager::new(config_dir, resolved)?;
+
     // Files: content-aware comparison via the file manager.
     drift.extend(
-        file_verify_results(config_dir, resolved)?
+        file_verify_results(&fm, resolved)?
             .into_iter()
             .filter(|r| !r.matches),
     );
 
     // Module files: content-aware comparison for each resolved module.
     drift.extend(
-        module_file_verify_results(config_dir, resolved, modules)?
+        module_file_verify_results(&fm, config_dir, resolved, modules)?
             .into_iter()
             .filter(|r| !r.matches),
     );
@@ -390,7 +397,11 @@ mod tests {
         std::fs::write(&target, "hello\n").unwrap();
 
         let resolved = resolved_with_file(target);
-        let results = file_verify_results(dir.path(), &resolved).unwrap();
+        let results = file_verify_results(
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
+            &resolved,
+        )
+        .unwrap();
         assert_eq!(results.len(), 1);
         assert!(
             results[0].matches,
@@ -409,7 +420,11 @@ mod tests {
         std::fs::write(&target, "tampered\n").unwrap();
 
         let resolved = resolved_with_file(target);
-        let results = file_verify_results(dir.path(), &resolved).unwrap();
+        let results = file_verify_results(
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
+            &resolved,
+        )
+        .unwrap();
         assert_eq!(results.len(), 1);
         assert!(
             !results[0].matches,
@@ -425,7 +440,11 @@ mod tests {
         let target = dir.path().join("never-deployed.txt");
 
         let resolved = resolved_with_file(target);
-        let results = file_verify_results(dir.path(), &resolved).unwrap();
+        let results = file_verify_results(
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
+            &resolved,
+        )
+        .unwrap();
         assert_eq!(results.len(), 1);
         assert!(!results[0].matches);
         assert_eq!(results[0].actual, "missing");
@@ -530,7 +549,13 @@ mod tests {
 
         let resolved = resolved_with_file(dir.path().join("unused.txt"));
         let modules = vec![module_with_file("accmod", source, target)];
-        let results = module_file_verify_results(dir.path(), &resolved, &modules).unwrap();
+        let results = module_file_verify_results(
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
+            dir.path(),
+            &resolved,
+            &modules,
+        )
+        .unwrap();
         assert_eq!(results.len(), 1);
         assert!(
             results[0].matches,
@@ -550,7 +575,13 @@ mod tests {
 
         let resolved = resolved_with_file(dir.path().join("unused.txt"));
         let modules = vec![module_with_file("accmod", source, target)];
-        let results = module_file_verify_results(dir.path(), &resolved, &modules).unwrap();
+        let results = module_file_verify_results(
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
+            dir.path(),
+            &resolved,
+            &modules,
+        )
+        .unwrap();
         assert_eq!(results.len(), 1);
         assert!(
             !results[0].matches,
@@ -595,7 +626,13 @@ mod tests {
             patch: Some(spec),
         });
 
-        let results = module_file_verify_results(dir.path(), &resolved, &modules).unwrap();
+        let results = module_file_verify_results(
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
+            dir.path(),
+            &resolved,
+            &modules,
+        )
+        .unwrap();
         assert_eq!(results.len(), 2);
         assert!(!results[0].matches, "drifted Patch target must fail");
         assert_eq!(results[0].resource_type, "module");
@@ -625,8 +662,13 @@ mod tests {
             blocked_by: None,
         });
 
-        let results = module_file_verify_results(dir.path(), &resolved, &modules)
-            .expect("one unevaluable file must not fail the scan");
+        let results = module_file_verify_results(
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
+            dir.path(),
+            &resolved,
+            &modules,
+        )
+        .expect("one unevaluable file must not fail the scan");
         assert_eq!(results.len(), 1);
         assert!(!results[0].matches);
         assert!(

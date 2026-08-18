@@ -35,7 +35,7 @@ pub(super) fn collect_and_store_compliance_snapshot<'a>(
     let resolved_modules = desired.modules;
 
     ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
-    let mut registry = build_registry_with_profile(&resolved.merged.packages);
+    let mut registry = desired.registry;
     registry.file_manager = Some(Box::new(build_compliance_file_manager(
         config_dir,
         &resolved,

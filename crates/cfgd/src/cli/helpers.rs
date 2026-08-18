@@ -858,6 +858,12 @@ pub(in crate::cli) fn set_nested_yaml_value(
 pub(in crate::cli) struct DesiredState {
     pub resolved: ResolvedProfile,
     pub modules: Vec<cfgd_core::modules::ResolvedModule>,
+    /// The config-aware provider registry the resolution built to map module
+    /// packages onto managers — the ONE registry a composing run needs, handed
+    /// back rather than rebuilt by the caller. `set_system_config_dir` is the
+    /// caller's to apply: the read paths that never set it must keep not
+    /// setting it.
+    pub registry: ProviderRegistry,
     pub source_env: std::collections::HashMap<String, Vec<cfgd_core::config::EnvVar>>,
     pub source_commits: std::collections::HashMap<String, String>,
     /// Source security-constraint violations surfaced when the caller composed in
@@ -1059,16 +1065,24 @@ pub(in crate::cli) fn resolve_desired_state(
         None => resolved.merged.modules.clone(),
     };
 
+    // Config-aware registry so a module that references a custom package manager
+    // (declared in cfg / composed packages) resolves identically on every
+    // command — matching the apply path's registry. Built HERE and handed back
+    // on `DesiredState` so the caller reuses it: every command that composes a
+    // desired state then built a second, identical registry of its own, and a
+    // registry build constructs every package manager and every configurator
+    // this host supports.
+    //
+    // `build_registry_with_config_and_packages` already registers the spec's
+    // custom managers; the second `extend_package_managers` this replaced added
+    // each of them a SECOND time, so `package_managers()` answered with two
+    // entries per custom manager.
+    let registry =
+        build_registry_with_config_and_packages(Some(cfg), Some(&resolved.merged.packages));
+
     let modules = if module_names.is_empty() {
         Vec::new()
     } else {
-        // Config-aware registry so a module that references a custom package
-        // manager (declared in cfg / composed packages) resolves identically on
-        // every command — matching the apply path's registry.
-        let mut registry =
-            build_registry_with_config_and_packages(Some(cfg), Some(&resolved.merged.packages));
-        registry
-            .extend_package_managers(packages::custom_managers(&resolved.merged.packages.custom));
         let platform = Platform::current();
         let mgr_map = managers_map(&registry);
         let cache_base = module_cache_dir(cli)?;
@@ -1096,6 +1110,7 @@ pub(in crate::cli) fn resolve_desired_state(
     Ok(DesiredState {
         resolved,
         modules,
+        registry,
         source_env,
         source_commits,
         constraint_violations,

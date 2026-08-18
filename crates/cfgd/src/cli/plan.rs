@@ -46,9 +46,6 @@ pub fn cmd_plan(
 
     let ctx = RunContext::new(cli, printer);
 
-    let mut registry = build_registry_with_config(Some(&cfg));
-    registry.set_system_config_dir(&config_dir);
-
     // Compose with sources (network refresh) and resolve modules through the one
     // shared desired-state resolver — same path apply takes.
     let desired = resolve_desired_state(
@@ -63,14 +60,13 @@ pub fn cmd_plan(
     let source_env = desired.source_env;
     let resolved_modules = desired.modules;
     let mut effective_resolved = desired.resolved;
+    // The resolver built this from the same config and composed packages this
+    // path would have used, custom managers included.
+    let mut registry = desired.registry;
+    registry.set_system_config_dir(&config_dir);
 
     // Resolve manifest files (Brewfile, package.json, etc.) into package lists
     ctx.resolve_manifest_packages(&mut effective_resolved.merged.packages)?;
-
-    // Extend registry with custom package managers from config
-    registry.extend_package_managers(packages::custom_managers(
-        &effective_resolved.merged.packages.custom,
-    ));
 
     // `PhaseArg`'s base phase is clap-validated; a selector combined with
     // `--phase modules` is the one combination `resolve_phase_filter` still
