@@ -1974,6 +1974,34 @@ impl Drop for BootstrappedPathDirsGuard {
     }
 }
 
+/// Run `measure` inside a window in which nothing else moved the process-wide
+/// resolution generation (`crate::command_resolution_generation`), retrying with
+/// a fresh call until it gets one.
+///
+/// Every memo-hit claim — "the sweep ran once", "the memoized miss still
+/// stands" — is only measurable while that generation holds still, and any test
+/// in the binary that runs a mock install or a lifecycle script bumps it for
+/// everyone. Without this the assertion is not wrong, it is unmeasurable, and it
+/// fails at random on a loaded runner. `serial_test::serial` cannot substitute:
+/// it excludes only other serial tests, not the parallel majority.
+///
+/// `measure` must be re-runnable — build the registry, counters and probe files
+/// it observes INSIDE the closure, so a retry measures a fresh subject rather
+/// than one an abandoned attempt already warmed.
+pub fn measured_in_a_stable_generation<T>(mut measure: impl FnMut() -> T) -> T {
+    for _ in 0..64 {
+        let before = crate::command_resolution_generation();
+        let measured = measure();
+        if crate::command_resolution_generation() == before {
+            return measured;
+        }
+    }
+    panic!(
+        "the resolution generation never held still across a measurement — \
+         something in this binary is invalidating it continuously"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Env-var test guards — replace per-file `struct EnvVarGuard` / `fn with_env`
 // duplicates. Pair with `serial_test::serial` because env-var mutation is

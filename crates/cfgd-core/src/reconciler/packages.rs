@@ -255,6 +255,10 @@ impl<'x> PackageExec<'x> {
         cx: &PackageContext<'_>,
     ) -> Result<()> {
         let result = pm.install(packages, cx);
+        // An install can land a binary in a directory that was already on
+        // `PATH` — the whole point of `apt install curl` — which registers no
+        // new directory and so would leave a memoized "not found" standing.
+        crate::invalidate_command_resolution();
         self.register_install_path_dirs(pm);
         self.record_created_path_dirs(pm);
         result
@@ -462,8 +466,8 @@ impl<'x> PackageExec<'x> {
                         pending.push(*name);
                     }
                 }
-                match pending.as_slice() {
-                    [] => {}
+                let outcome = match pending.as_slice() {
+                    [] => Ok(()),
                     // A batch of one is the solo path exactly: its own cascade,
                     // its own fallback arm, its own error words. The merged
                     // command below is only reached when merging is what the
@@ -472,10 +476,20 @@ impl<'x> PackageExec<'x> {
                         // The method travels into the bootstrap so the cascade
                         // runs the mediator the line named — which is also the
                         // mediator whose lane this action holds.
-                        lookup(one)?.bootstrap(&cx.for_provision(via))?;
+                        lookup(one)?.bootstrap(&cx.for_provision(via))
                     }
-                    many => self.provision_batch(many, via)?,
+                    many => self.provision_batch(many, via),
+                };
+                // Before the outcome is propagated, and whatever it was: a
+                // cascade that failed at its last step may still have put the
+                // manager on the machine, and the check below asks a question
+                // whose memoized answer predates the install either way. A node
+                // whose members were all available already ran nothing and so
+                // changed nothing.
+                if !pending.is_empty() {
+                    crate::invalidate_command_resolution();
                 }
+                outcome?;
                 for name in &members {
                     let pm = lookup(name)?;
                     self.record_bootstrap(pm.as_ref(), via);

@@ -575,6 +575,10 @@ pub(crate) fn execute_script_with_tty(
         shell_override,
         abort,
     );
+    // A user script is the one thing cfgd runs whose effects it cannot predict:
+    // a `preApply` hook that installs a toolchain must be visible to everything
+    // planned after it, so no memoized command resolution outlives one.
+    crate::invalidate_command_resolution();
     if !st.reported() {
         match &out {
             Ok(_) => st.finish_ok(started.elapsed()),

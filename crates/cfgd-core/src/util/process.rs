@@ -300,14 +300,36 @@ pub fn stderr_lossy_trimmed(output: &std::process::Output) -> String {
 /// a caller can then launch the shim correctly (a native `Command::new("scoop")`
 /// only ever finds `scoop.exe`). On Unix, resolves the bare name against the exec
 /// bit. Returns `None` when nothing on `$PATH` matches.
+///
+/// The answer is memoized per command name, keyed to the exact `PATH` value and
+/// the [`command_resolution_generation`] it was computed under, because the walk
+/// is one `stat` per candidate directory (times five extensions on Windows) and
+/// the callers are loops: the apply dispatcher asks whether a manager is
+/// available once per dispatch iteration per slot, the module planner asks
+/// inside a sort key, and the secret planner asks once per declared reference.
+/// A miss is the expensive case — it stats every directory on `PATH` before
+/// answering — so negative answers are memoized too.
 pub fn command_path(cmd: &str) -> Option<std::path::PathBuf> {
+    let path_env = std::env::var_os("PATH");
+    let generation = command_resolution_generation();
+    if let Some(memoized) = memoized_command_path(cmd, path_env.as_deref(), generation) {
+        return memoized;
+    }
+    let resolved = walk_for_command(cmd, path_env.as_deref());
+    remember_command_path(cmd, path_env.as_deref(), generation, &resolved);
+    resolved
+}
+
+/// The uncached walk behind [`command_path`]: every `PATH` entry first, then
+/// every directory a bootstrap registered this run.
+fn walk_for_command(cmd: &str, path_env: Option<&std::ffi::OsStr>) -> Option<std::path::PathBuf> {
     let extensions: &[&str] = if cfg!(windows) {
         &[".exe", ".com", ".ps1", ".cmd", ".bat"]
     } else {
         &[""]
     };
-    if let Some(paths) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&paths) {
+    if let Some(paths) = path_env {
+        for dir in std::env::split_paths(paths) {
             if let Some(hit) = probe_dir_for_command(&dir, cmd, extensions) {
                 return Some(hit);
             }
@@ -319,6 +341,121 @@ pub fn command_path(cmd: &str) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+/// One command name's resolution, plus everything it was resolved under.
+///
+/// The key travels with the entry rather than sitting on the map as a whole,
+/// which costs a copy of `PATH` per command name and buys two things: a lookup
+/// under a different `PATH` cannot evict an entry it merely disagrees with (the
+/// test suite changes `PATH` on one thread while another asks about it), and a
+/// value is only ever returned to a caller whose exact key produced it.
+struct MemoizedPath {
+    /// The `PATH` this was resolved against. `None` is a real value, distinct
+    /// from an empty string: an unset `PATH` contributes no directories at all,
+    /// while `""` splits into one empty entry that POSIX reads as the current
+    /// directory.
+    path: Option<std::ffi::OsString>,
+    generation: u64,
+    computed: std::time::Instant,
+    resolved: Option<std::path::PathBuf>,
+}
+
+static COMMAND_PATH_MEMO: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, MemoizedPath>>,
+> = std::sync::OnceLock::new();
+
+/// How long a memoized resolution stands before it is recomputed, bounding the
+/// staleness cfgd cannot see coming: the generation counter covers every install
+/// cfgd performs itself, but a daemon runs for weeks beside a user who installs
+/// things with their own hands, and an answer pinned for the process's lifetime
+/// would never notice.
+const COMMAND_PATH_MEMO_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Entry ceiling before the map is dropped wholesale. Command names come from a
+/// closed set of provider and tool names, so this is never reached in practice;
+/// it exists so a long-lived daemon cannot grow the map without bound if one
+/// day they come from config.
+const COMMAND_PATH_MEMO_CAP: usize = 1024;
+
+fn command_path_memo()
+-> std::sync::MutexGuard<'static, std::collections::HashMap<String, MemoizedPath>> {
+    // A poisoned lock still holds usable resolutions: a panic in another thread
+    // is no reason to stop answering where a binary lives.
+    COMMAND_PATH_MEMO
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// The memoized answer for `cmd`, or `None` when it has to be walked for.
+///
+/// The lock is released before that walk — it is never held across a filesystem
+/// probe, a spawn, or a `PATH_ENV_LOCK` acquisition.
+fn memoized_command_path(
+    cmd: &str,
+    path_env: Option<&std::ffi::OsStr>,
+    generation: u64,
+) -> Option<Option<std::path::PathBuf>> {
+    let memo = command_path_memo();
+    let entry = memo.get(cmd)?;
+    if entry.generation != generation
+        || entry.path.as_deref() != path_env
+        || entry.computed.elapsed() >= COMMAND_PATH_MEMO_TTL
+    {
+        return None;
+    }
+    Some(entry.resolved.clone())
+}
+
+/// Record what the walk found, under the exact key it was computed for.
+fn remember_command_path(
+    cmd: &str,
+    path_env: Option<&std::ffi::OsStr>,
+    generation: u64,
+    resolved: &Option<std::path::PathBuf>,
+) {
+    let mut memo = command_path_memo();
+    if memo.len() >= COMMAND_PATH_MEMO_CAP {
+        memo.clear();
+    }
+    memo.insert(
+        cmd.to_string(),
+        MemoizedPath {
+            path: path_env.map(std::ffi::OsStr::to_os_string),
+            generation,
+            computed: std::time::Instant::now(),
+            resolved: resolved.clone(),
+        },
+    );
+}
+
+/// Bumped by everything that can change what a command name resolves to: a
+/// bootstrap that put a manager on the machine, an install that landed a binary
+/// in a directory already on `PATH`, a lifecycle script that ran an installer of
+/// its own, and every registration of a bootstrapped directory.
+///
+/// It is the shared key behind both memos — [`command_path`]'s and
+/// `ProviderRegistry`'s availability sweep — so one bump makes both re-ask, and
+/// a mid-apply bootstrap still flips "unavailable" to "available" on the very
+/// next question instead of on the next process.
+static COMMAND_RESOLUTION_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// The current value of the resolution generation. A memo stamps its entries
+/// with this and recomputes whenever it has moved.
+pub fn command_resolution_generation() -> u64 {
+    COMMAND_RESOLUTION_GENERATION.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Declare that something may have changed what commands resolve to.
+///
+/// Call it from any path that installs, provisions, or otherwise puts a binary
+/// on the machine — the cost is one atomic increment, and the cost of missing
+/// one is a manager that stays "not available" for the rest of the run after the
+/// bootstrap that installed it succeeded.
+pub fn invalidate_command_resolution() {
+    COMMAND_RESOLUTION_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// First `dir/cmd{ext}` that is a real, executable file, in `extensions` order.
@@ -372,6 +509,10 @@ pub fn register_bootstrapped_path_dirs(dirs: &[String]) {
             guard.push(path);
         }
     }
+    drop(guard);
+    // The directories are searched by `command_path`, so anything it already
+    // answered was answered without them.
+    invalidate_command_resolution();
 }
 
 /// Compose a `PATH` value whose leading entries are `dirs`, followed by
@@ -457,6 +598,9 @@ pub fn restore_bootstrapped_path_dirs(dirs: Vec<std::path::PathBuf>) {
     *BOOTSTRAPPED_PATH_DIRS
         .write()
         .unwrap_or_else(|e| e.into_inner()) = dirs;
+    // Rewinding the registry changes what `command_path` resolves exactly as
+    // registering does, so the memo built over the old list has to go too.
+    invalidate_command_resolution();
 }
 
 /// Check if a command is available on the system via PATH lookup.
@@ -591,6 +735,11 @@ mod tests {
 
     #[test]
     fn a_signal_killed_child_is_named_by_its_signal_not_by_a_code_it_never_returned() {
+        // These spawn `sh` by bare name, so they resolve it through `PATH` and
+        // belong under the read guard like every other production reader —
+        // without it the spawn fails outright while another test holds `PATH`
+        // pointed at a tempdir of its own.
+        let _path = crate::test_helpers::path_env_read_guard();
         let ok = std::process::Command::new("sh")
             .args(["-c", "exit 7"])
             .status()
@@ -706,6 +855,103 @@ mod tests {
             crate::test_helpers::EnvVarGuard::set("PATH", &on_path.path().to_string_lossy());
 
         assert_eq!(command_path(stem).as_deref(), Some(preferred.as_path()));
+    }
+
+    /// A memoized answer is reused until something declares it may have moved.
+    ///
+    /// The observation is the filesystem changing under a resolution already
+    /// made: without a memo the second lookup finds the file the first one
+    /// missed, so this test cannot pass on an uncached walk. It also pins the
+    /// two halves of the contract that make that safe — a miss is memoized (the
+    /// expensive case in the dispatcher's hot loop), and an invalidation is
+    /// enough on its own, with no `PATH` change and no directory registered.
+    #[test]
+    #[serial]
+    fn a_memoized_miss_stands_until_something_invalidates_it() {
+        // Declared before the `EnvVarGuard`s below so it drops last, bracketing
+        // the whole window in which `PATH` is this test's tempdir.
+        let _path_excl = crate::test_helpers::path_env_mutation_guard();
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let stem = "cfgd-probe-memoized-miss";
+
+        // Each attempt gets its own directory, so a retry memoizes its own miss
+        // rather than reading one an abandoned attempt already recorded.
+        let (dir, expected, memoized) =
+            crate::test_helpers::measured_in_a_stable_generation(|| {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let path =
+                    crate::test_helpers::EnvVarGuard::set("PATH", &dir.path().to_string_lossy());
+                assert!(
+                    command_path(stem).is_none(),
+                    "nothing named {stem} exists yet"
+                );
+                let expected = write_probe_tool(dir.path(), stem);
+                let memoized = command_path(stem);
+                drop(path);
+                (dir, expected, memoized)
+            });
+
+        assert!(
+            memoized.is_none(),
+            "the memoized miss must answer without re-walking PATH"
+        );
+
+        let _path = crate::test_helpers::EnvVarGuard::set("PATH", &dir.path().to_string_lossy());
+        invalidate_command_resolution();
+
+        assert_eq!(
+            command_path(stem).as_deref(),
+            Some(expected.as_path()),
+            "an invalidation must make the next lookup walk again"
+        );
+    }
+
+    /// A memoized answer belongs to the `PATH` it was computed under, so a
+    /// changed `PATH` is recomputed with no invalidation call at all — which is
+    /// what keeps every `ProbePath` / `EnvVarGuard` fixture in the suite honest.
+    #[test]
+    #[serial]
+    fn a_changed_path_is_resolved_again_without_an_invalidation() {
+        let _path_excl = crate::test_helpers::path_env_mutation_guard();
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let empty = tempfile::tempdir().expect("tempdir");
+        let holding = tempfile::tempdir().expect("tempdir");
+        let stem = "cfgd-probe-path-rekey";
+        let expected = write_probe_tool(holding.path(), stem);
+
+        let first = crate::test_helpers::EnvVarGuard::set("PATH", &empty.path().to_string_lossy());
+        assert!(command_path(stem).is_none());
+        drop(first);
+
+        let _second =
+            crate::test_helpers::EnvVarGuard::set("PATH", &holding.path().to_string_lossy());
+        assert_eq!(
+            command_path(stem).as_deref(),
+            Some(expected.as_path()),
+            "a lookup under a different PATH must not read the old PATH's answer"
+        );
+    }
+
+    /// The generation is what a bootstrap moves, and it moves for BOTH memos:
+    /// registering a directory is one way, and a bare invalidation — what an
+    /// install landing a binary in a directory already on `PATH` reports — is
+    /// the other.
+    #[test]
+    #[serial]
+    fn registering_a_directory_moves_the_resolution_generation() {
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let before = command_resolution_generation();
+
+        register_bootstrapped_path_dirs(&[dir.path().to_string_lossy().into_owned()]);
+        let after_register = command_resolution_generation();
+        assert!(
+            after_register > before,
+            "registering a directory changes what command_path resolves"
+        );
+
+        invalidate_command_resolution();
+        assert!(command_resolution_generation() > after_register);
     }
 
     #[test]

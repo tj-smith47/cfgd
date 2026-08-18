@@ -7337,6 +7337,137 @@ fn apply_manager_provision_makes_manager_available() {
     assert!(registry.package_managers[0].is_available());
 }
 
+/// The registry answers availability from a memoized sweep, and the dispatcher
+/// keeps ASKING it rather than snapshotting — so a provision that lands a
+/// manager mid-run has to retire the sweep taken before it, or every question
+/// asked for the rest of the run is answered from a picture of the machine that
+/// predates the install.
+#[test]
+fn a_provisioned_manager_appears_in_the_registrys_next_availability_sweep() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(BootstrappablePackageManager::new("snap")));
+
+    // The sweep the dispatcher would already be holding when the node runs.
+    assert!(registry.available_package_managers().is_empty());
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::profile("test"),
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: "snap".to_string(),
+                via: "stub".to_string(),
+                batched: vec![],
+                depends_on: vec![],
+            })],
+        )],
+        warnings: vec![],
+    };
+    let (result, _) = apply_manager_plan(&registry, &state, &plan);
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    let available = registry.available_package_managers();
+    assert_eq!(
+        available.len(),
+        1,
+        "the provision must retire the old sweep"
+    );
+    assert_eq!(available[0].name(), "snap");
+}
+
+/// A manager whose `install()` lands a real executable in a directory that was
+/// already on `PATH` — the `apt install curl` shape. It registers no new
+/// directory, so nothing about `PATH` changes and the install itself is the only
+/// thing that can report the machine moved.
+struct PathPopulatingManager {
+    dir: std::path::PathBuf,
+    stem: String,
+}
+
+impl PackageManager for PathPopulatingManager {
+    fn name(&self) -> &str {
+        "writer"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
+    }
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self, _: &PackageContext<'_>) -> Result<HashSet<String>> {
+        Ok(HashSet::new())
+    }
+    fn install(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
+        let name = if cfg!(windows) {
+            format!("{}.exe", self.stem)
+        } else {
+            self.stem.clone()
+        };
+        let path = self.dir.join(name);
+        std::fs::write(&path, b"#!/bin/sh\nexit 0\n")?;
+        crate::set_file_permissions(&path, 0o755)?;
+        Ok(())
+    }
+    fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _package: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+/// An install that lands a binary somewhere `PATH` already pointed makes the
+/// answer to "is this tool here" different, with no directory registered and no
+/// `PATH` change to notice — so the install has to say so itself.
+#[test]
+#[serial_test::serial]
+fn an_install_into_a_directory_already_on_path_retires_the_memoized_miss() {
+    // Declared before the `EnvVarGuard` below so it drops last.
+    let _path_excl = crate::test_helpers::path_env_mutation_guard();
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _path = crate::test_helpers::EnvVarGuard::set("PATH", &dir.path().to_string_lossy());
+    let stem = "cfgd-probe-installed-by-apply";
+
+    assert!(
+        !crate::command_available(stem),
+        "the tool is not there yet — and this miss is what gets memoized"
+    );
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(PathPopulatingManager {
+            dir: dir.path().to_path_buf(),
+            stem: stem.to_string(),
+        }));
+    // The action runs through `PackageExec` directly rather than through
+    // `apply()`: the lane dispatcher refuses to run while this thread holds the
+    // PATH mutation guard, and a worker's own read guard would deadlock behind
+    // it. What is under test is the exec's own invalidation either way.
+    let (printer, _buf) = Printer::for_test();
+    let notes = crate::providers::NoteSink::discarded();
+    let exec = crate::reconciler::packages::PackageExec::new(&registry, &state, &printer, notes);
+    exec.apply_package_action(&PackageAction::Install {
+        manager: "writer".to_string(),
+        packages: vec!["tool".to_string()],
+        origin: "local".to_string(),
+    })
+    .expect("install");
+
+    assert!(
+        crate::command_available(stem),
+        "a tool this run installed must be resolvable to the actions after it"
+    );
+}
+
 #[test]
 fn apply_manager_provision_unknown_manager_errors() {
     let state = test_state();

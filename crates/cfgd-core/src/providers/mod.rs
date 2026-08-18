@@ -1018,6 +1018,74 @@ pub struct ProviderRegistry {
     pub secret_backend: Option<Box<dyn SecretBackend>>,
     pub secret_providers: Vec<Box<dyn SecretProvider>>,
     pub default_file_strategy: crate::config::FileStrategy,
+    /// Which registered providers answered `is_available()` yes, and what that
+    /// answer was keyed to. See [`AvailabilityMemo`].
+    available_managers: std::sync::Mutex<Option<AvailabilityMemo>>,
+    available_configurators: std::sync::Mutex<Option<AvailabilityMemo>>,
+}
+
+/// One availability sweep's result, plus everything that can invalidate it.
+///
+/// `is_available()` is a `PATH` probe for nearly every provider, and the sweep
+/// runs it over the whole registry — per system action, twice inside
+/// `plan_system`, three times per compliance snapshot, once per daemon tick.
+/// The result is reusable exactly as long as two things hold: no install has
+/// happened since (the shared [`crate::command_resolution_generation`]), and no
+/// provider has been registered since (`count`, because the fields are public
+/// and a caller may push into them after the first sweep — the stored indices
+/// would then describe a shorter registry).
+struct AvailabilityMemo {
+    generation: u64,
+    count: usize,
+    available: Vec<usize>,
+}
+
+impl AvailabilityMemo {
+    /// The indices, or `None` when the sweep behind them can no longer be
+    /// trusted.
+    fn indices(&self, generation: u64, count: usize) -> Option<&[usize]> {
+        (self.generation == generation && self.count == count).then_some(&self.available)
+    }
+}
+
+/// Sweep `providers` for availability, or reuse `memo` when nothing that could
+/// change the answer has happened since it was taken.
+fn memoized_available<T: ?Sized>(
+    providers: &[Box<T>],
+    memo: &std::sync::Mutex<Option<AvailabilityMemo>>,
+    is_available: impl Fn(&T) -> bool,
+) -> Vec<usize> {
+    let generation = crate::command_resolution_generation();
+    // A poisoned lock still holds a usable sweep; and re-sweeping is always
+    // correct, so neither arm here can be wrong about availability.
+    if let Some(hit) = memo
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.indices(generation, providers.len()))
+        .map(<[usize]>::to_vec)
+    {
+        return hit;
+    }
+    // The sweep runs with NO lock held: a provider's `is_available()` may probe
+    // the filesystem or take the PATH read guard, and holding a lock another
+    // thread wants across that is how a deadlock is built. Two threads racing
+    // here duplicate one sweep and agree on its result, which costs a walk and
+    // risks nothing.
+    let available: Vec<usize> = providers
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| is_available(p.as_ref()))
+        .map(|(i, _)| i)
+        .collect();
+    // Stamped with the generation read BEFORE the sweep, so a sweep the
+    // generation outran is rejected by the next lookup rather than trusted.
+    *memo.lock().unwrap_or_else(|e| e.into_inner()) = Some(AvailabilityMemo {
+        generation,
+        count: providers.len(),
+        available: available.clone(),
+    });
+    available
 }
 
 impl ProviderRegistry {
@@ -1029,23 +1097,29 @@ impl ProviderRegistry {
             secret_backend: None,
             secret_providers: Vec::new(),
             default_file_strategy: crate::config::FileStrategy::Symlink,
+            available_managers: std::sync::Mutex::new(None),
+            available_configurators: std::sync::Mutex::new(None),
         }
     }
 
     pub fn available_package_managers(&self) -> Vec<&dyn PackageManager> {
-        self.package_managers
-            .iter()
-            .filter(|pm| pm.is_available())
-            .map(|pm| pm.as_ref())
-            .collect()
+        memoized_available(&self.package_managers, &self.available_managers, |pm| {
+            pm.is_available()
+        })
+        .into_iter()
+        .filter_map(|i| self.package_managers.get(i).map(Box::as_ref))
+        .collect()
     }
 
     pub fn available_system_configurators(&self) -> Vec<&dyn SystemConfigurator> {
-        self.system_configurators
-            .iter()
-            .filter(|sc| sc.is_available())
-            .map(|sc| sc.as_ref())
-            .collect()
+        memoized_available(
+            &self.system_configurators,
+            &self.available_configurators,
+            |sc| sc.is_available(),
+        )
+        .into_iter()
+        .filter_map(|i| self.system_configurators.get(i).map(Box::as_ref))
+        .collect()
     }
 
     /// The set of registered (config-present) package-manager names — used to
@@ -1229,6 +1303,195 @@ mod tests {
 
     fn test_cx<'a>(printer: &'a Printer, state: &'a StateStore) -> PackageContext<'a> {
         PackageContext::new(printer, state)
+    }
+
+    /// A manager that counts how often it is asked whether it is available and
+    /// reads the answer from a flag the test owns — the shape of a manager a
+    /// bootstrap puts on the machine while the run is still going.
+    struct CountingManager {
+        mgr_name: String,
+        available: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl CountingManager {
+        fn new(
+            name: &str,
+            available: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+        ) -> (Self, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+            let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            (
+                Self {
+                    mgr_name: name.to_string(),
+                    available: std::sync::Arc::clone(available),
+                    asked: std::sync::Arc::clone(&asked),
+                },
+                asked,
+            )
+        }
+    }
+
+    impl PackageManager for CountingManager {
+        fn name(&self) -> &str {
+            &self.mgr_name
+        }
+        fn is_available(&self) -> bool {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.available.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn bootstrap_plan(&self) -> Option<BootstrapPlan> {
+            None
+        }
+        fn bootstrap(&self, _cx: &PackageContext<'_>) -> Result<()> {
+            Ok(())
+        }
+        fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
+            Ok(HashSet::new())
+        }
+        fn install(&self, _packages: &[String], _cx: &PackageContext<'_>) -> Result<()> {
+            Ok(())
+        }
+        fn uninstall(&self, _packages: &[String], _cx: &PackageContext<'_>) -> Result<()> {
+            Ok(())
+        }
+        fn available_version(&self, _package: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    fn asked_count(counter: &std::sync::atomic::AtomicUsize) -> usize {
+        counter.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The sweep is `is_available()` over every registered provider, and it runs
+    /// per system action, twice inside `plan_system` and once per daemon tick —
+    /// so repeating the question costs one sweep, not one per asking.
+    #[test]
+    #[serial_test::serial]
+    fn repeated_availability_sweeps_ask_each_manager_once() {
+        // Re-runnable: a retry builds its own registry, so the sweep it counts
+        // is its own.
+        let (here_asked, gone_asked) = crate::test_helpers::measured_in_a_stable_generation(|| {
+            let present = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let absent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (here, here_asked) = CountingManager::new("here", &present);
+            let (gone, gone_asked) = CountingManager::new("gone", &absent);
+            let mut registry = ProviderRegistry::new();
+            registry.package_managers.push(Box::new(here));
+            registry.package_managers.push(Box::new(gone));
+
+            for _ in 0..5 {
+                let available = registry.available_package_managers();
+                assert_eq!(available.len(), 1);
+                assert_eq!(available[0].name(), "here");
+            }
+            (asked_count(&here_asked), asked_count(&gone_asked))
+        });
+
+        assert_eq!(here_asked, 1);
+        assert_eq!(gone_asked, 1);
+    }
+
+    /// A manager that becomes available mid-run must appear in the very next
+    /// sweep — that is what the bootstrap's invalidation buys, and the reason
+    /// the dispatcher keeps ASKING the registry rather than snapshotting it.
+    #[test]
+    #[serial_test::serial]
+    fn a_bootstrap_invalidation_lets_a_new_manager_into_the_sweep() {
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (pending, asked) = CountingManager::new("pending", &flag);
+        let mut registry = ProviderRegistry::new();
+        registry.package_managers.push(Box::new(pending));
+
+        // Everything before the invalidation is a memo-hit claim, so it is
+        // measured inside one generation. The flag is raised inside it: a
+        // manager becomes available while the run holds a sweep taken before.
+        let (while_memoized, asked_again) =
+            crate::test_helpers::measured_in_a_stable_generation(|| {
+                flag.store(false, std::sync::atomic::Ordering::SeqCst);
+                assert!(registry.available_package_managers().is_empty());
+                let after_first = asked_count(&asked);
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                (
+                    registry.available_package_managers().len(),
+                    asked_count(&asked) - after_first,
+                )
+            });
+        assert_eq!(
+            while_memoized, 0,
+            "the memoized sweep stands until an install reports itself"
+        );
+        assert_eq!(asked_again, 0, "and it is not re-swept to say so");
+
+        crate::invalidate_command_resolution();
+
+        let available = registry.available_package_managers();
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0].name(), "pending");
+    }
+
+    /// The registry's provider vectors are public and a builder pushes into
+    /// them, so a memo keyed only on the generation would answer a later sweep
+    /// with indices taken over a shorter registry.
+    #[test]
+    #[serial_test::serial]
+    fn a_provider_registered_after_the_first_sweep_is_swept_too() {
+        let present = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (first, _) = CountingManager::new("first", &present);
+        let mut registry = ProviderRegistry::new();
+        registry.package_managers.push(Box::new(first));
+        assert_eq!(registry.available_package_managers().len(), 1);
+
+        let (second, _) = CountingManager::new("second", &present);
+        registry.package_managers.push(Box::new(second));
+
+        let available = registry.available_package_managers();
+        assert_eq!(available.len(), 2);
+        assert_eq!(available[1].name(), "second");
+    }
+
+    /// The configurator sweep is the same memo over the other vector; a system
+    /// action asks it once per action.
+    #[test]
+    #[serial_test::serial]
+    fn repeated_configurator_sweeps_ask_each_configurator_once() {
+        struct CountingConfigurator {
+            asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        }
+        impl SystemConfigurator for CountingConfigurator {
+            fn name(&self) -> &str {
+                "counting"
+            }
+            fn is_available(&self) -> bool {
+                self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                true
+            }
+            fn current_state(&self) -> Result<serde_yaml::Value> {
+                Ok(serde_yaml::Value::Null)
+            }
+            fn diff(&self, _desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>> {
+                Ok(Vec::new())
+            }
+            fn apply(&self, _desired: &serde_yaml::Value, _cx: &SystemContext<'_>) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let swept = crate::test_helpers::measured_in_a_stable_generation(|| {
+            let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut registry = ProviderRegistry::new();
+            registry
+                .system_configurators
+                .push(Box::new(CountingConfigurator {
+                    asked: std::sync::Arc::clone(&asked),
+                }));
+
+            for _ in 0..4 {
+                assert_eq!(registry.available_system_configurators().len(), 1);
+            }
+            asked_count(&asked)
+        });
+        assert_eq!(swept, 1);
     }
 
     #[test]

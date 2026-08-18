@@ -1192,6 +1192,15 @@ path_guard_violations=$(while IFS= read -r -d '' rsfile; do
                     (code ~ /assert_eq!\(.*(cfgd_core::|crate::)?command_available\(/) || \
                     (code ~ /(cfgd_core::|crate::)?command_path\([^)]*\)\.(expect|unwrap)\(/) || \
                     (code ~ /(cfgd_core::|crate::)?require_tool\([^)]*\)\.(expect|unwrap|is_ok)\(/)
+                # A wrapped assertion — `assert!(` on one line, the call on the
+                # next — is the same claim as the one-line form. Detected here
+                # because both of this gate\047s own regression tests write it
+                # that way, and an assertion the gate cannot see is a gate that
+                # reports OK forever. A wrapped NEGATIVE still carries its `!`
+                # on the call line, so it stays out.
+                is_positive = is_positive || \
+                    (prev_code ~ /assert!\([[:space:]]*$/ && \
+                     code ~ /:[0-9]+:[[:space:]]*(cfgd_core::|crate::)?(command_available\(|command_path\(.*\)\.is_some\(\)|require_tool\(.*\)\.is_ok\(\))/)
                 if (is_positive) {
                     positive_lines_n++
                     positive_lines[positive_lines_n] = $0
@@ -1204,7 +1213,7 @@ path_guard_violations=$(while IFS= read -r -d '' rsfile; do
                 depth += opens - closes
                 if (depth <= 0 && opens + closes > 0) flush_fn()
             }
-            prev = $0; prev_comment = comment
+            prev = $0; prev_comment = comment; prev_code = code
         }
         END { flush_fn() }
     '

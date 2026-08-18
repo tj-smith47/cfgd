@@ -1375,6 +1375,9 @@ fn interactive_script_without_tty_skips_with_warn() {
 #[serial_test::serial]
 fn a_script_that_installs_a_tool_retires_the_memoized_miss() {
     let (printer, _buf) = crate::output::Printer::for_test();
+    // Brackets both probes: another test emptying `PATH` between them would
+    // turn the resolution this one is about into a false negative.
+    let _path = crate::test_helpers::path_env_read_guard();
     let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
     let tmp = tempfile::tempdir().unwrap();
     let stem = "cfgd-probe-installed-by-script";
