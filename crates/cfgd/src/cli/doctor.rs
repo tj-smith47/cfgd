@@ -59,8 +59,6 @@ pub struct DoctorConfigSource {
     pub cached_path: Option<String>,
 }
 
-/// Gather every doctor check into the stable JSON payload + display-only extras.
-/// The lib call to `modules::load_all_modules` takes a `Printer`.
 /// Whether `manager` reports `resolved_name` installed.
 ///
 /// The answer comes from the context's memo, so `doctor` asks each manager once
@@ -88,6 +86,8 @@ fn package_is_installed(
         .unwrap_or(false)
 }
 
+/// Gather every doctor check into the stable JSON payload + display-only extras.
+/// The lib call to `modules::load_all_modules` takes a `Printer`.
 fn collect_doctor_output(
     cli: &Cli,
     printer: &Printer,
