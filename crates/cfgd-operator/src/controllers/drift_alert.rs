@@ -13,8 +13,8 @@ use crate::metrics::DriftLabels;
 
 use super::{
     ControllerContext, ControllerStores, FIELD_MANAGER_OPERATOR, FIELD_MANAGER_STATUS,
-    build_drift_alert_conditions, emit_event, namespaced_api, record_reconcile_metrics,
-    record_reconcile_success,
+    build_condition, build_drift_alert_conditions, emit_event, namespaced_api,
+    record_reconcile_metrics, record_reconcile_success, upsert_condition,
 };
 pub(super) async fn reconcile_drift_alert(
     obj: Arc<DriftAlert>,
@@ -161,23 +161,27 @@ pub(super) async fn reconcile_drift_alert(
                     .inc();
 
                 let now = cfgd_core::utc_now_iso8601();
-                let mc_generation = mc.meta().generation;
+                let mc_existing_conditions = mc
+                    .status
+                    .as_ref()
+                    .map(|s| s.conditions.as_slice())
+                    .unwrap_or(&[]);
+                let drift_condition = build_condition(
+                    mc_existing_conditions,
+                    "DriftDetected",
+                    "True",
+                    "DriftActive",
+                    &format!(
+                        "Drift detected on device {} — {}",
+                        obj.spec.device_id,
+                        cfgd_core::pluralize(obj.spec.drift_details.len(), "detail")
+                    ),
+                    &now,
+                    mc.meta().generation,
+                );
                 let mc_status = serde_json::json!({
                     "status": {
-                        "conditions": [
-                            {
-                                "type": "DriftDetected",
-                                "status": "True",
-                                "reason": "DriftActive",
-                                "message": format!(
-                                    "Drift detected on device {} — {}",
-                                    obj.spec.device_id,
-                                    cfgd_core::pluralize(obj.spec.drift_details.len(), "detail")
-                                ),
-                                "lastTransitionTime": now.clone(),
-                                "observedGeneration": mc_generation,
-                            }
-                        ]
+                        "conditions": upsert_condition(mc_existing_conditions, drift_condition)
                     }
                 });
 
