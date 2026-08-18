@@ -54,6 +54,23 @@ pub(super) async fn create_drift_alert_crd(
         ),
     ]));
 
+    // `Api::create` mints `kube::Error::SerdeError` from two places: serializing
+    // this object into the request body, before anything is sent, and
+    // deserializing a 2xx response. Only the second means the alert exists, and
+    // the error carries nothing that tells them apart — so the first is ruled
+    // out here instead of argued about. `serde_json::to_vec` is pure and
+    // deterministic over the same value, so once it has succeeded here it
+    // cannot fail inside the loop, and every `SerdeError` below is a response.
+    if let Err(e) = serde_json::to_vec(&alert) {
+        tracing::error!(
+            name = %alert_name,
+            device_id = %device_id,
+            error = %e,
+            "driftAlert CRD could not be serialized; not sent — drift recorded in database only"
+        );
+        return Ok(());
+    }
+
     let retry = cfgd_core::retry::BackoffConfig::DEFAULT_TRANSIENT;
     let mut last_err = None;
 
@@ -79,11 +96,13 @@ pub(super) async fn create_drift_alert_crd(
                 );
                 return Ok(());
             }
-            // A deserialize error reaches here only from a 2xx body: kube turns
-            // every 4xx/5xx into `Api`, parsing failures included. The object
-            // was created and only the server's echo of it is unreadable, so a
-            // retry would POST a second time and learn from the 409 what this
-            // arm already knows.
+            // A response-side deserialize error, and only that: the request-side
+            // source is ruled out by the serialization above, and no 4xx/5xx can
+            // arrive here because kube turns every one of those into `Api`,
+            // including the branch where the error body itself fails to parse.
+            // So the object was created and only the server's echo of it is
+            // unreadable; a retry would POST a second time and learn from the
+            // 409 what this arm already knows.
             Err(kube::Error::SerdeError(e)) => {
                 tracing::warn!(
                     name = %alert_name,
