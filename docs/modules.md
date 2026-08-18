@@ -599,6 +599,8 @@ modules:
 
 The `integrity` field is a sha256 hash of the module directory contents. cfgd verifies this hash on every apply to detect tampering or corruption. The lockfile is written atomically (write to a temp file, then rename) to prevent partial writes from corrupting the lock state.
 
+A locked module is resolved by its recorded `commit`, not by `pinnedRef`. A commit is immutable, so once the module cache holds it, every later run resolves the module from the cache with no network access: repeated applies and daemon ticks on a machine whose cache is warm fetch nothing. A cache that cannot answer the pin (a first run on a new machine, or a cache that was cleared) is populated once, then behaves the same way.
+
 Use `cfgd module upgrade` to move to a newer version.
 
 ## Modules from Config Sources

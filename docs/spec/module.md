@@ -579,8 +579,8 @@ spec:
     - acme/kubectl
 ```
 
-Remote module versions are pinned in `modules.lock` at the config root. Run `cfgd module update`
-to fetch new versions.
+Remote module versions are pinned in `modules.lock` at the config root. Run `cfgd module upgrade <name>`
+to fetch new versions (`cfgd module update` edits a local module's spec, it does not re-fetch).
 
 A registry reference without an explicit `@tag` (e.g. `acme/nvim`) resolves to the module's
 **latest published git tag** — module versions are git tags named `<module>/<version>` — never a

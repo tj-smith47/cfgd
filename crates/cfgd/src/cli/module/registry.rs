@@ -154,7 +154,7 @@ pub fn cmd_module_add_remote(
                 .status(
                     Role::Info,
                     format!(
-                        "Module '{}' is already in the lockfile — use 'cfgd module update {}' to change versions",
+                        "Module '{}' is already in the lockfile — use 'cfgd module upgrade {}' to change versions",
                         module_name, module_name
                     ),
                 )

@@ -3214,7 +3214,7 @@ fn load_all_modules_with_empty_lockfile_returns_no_remote_modules() {
 #[test]
 fn load_all_modules_errors_when_locked_module_cache_missing() {
     // A lockfile entry with no cache directory must fail with a clear error
-    // ("run cfgd module update") rather than silently skipping — silent skip
+    // ("run cfgd module upgrade <name>") rather than silently skipping — silent skip
     // would mean the user's pinned remote module never gets applied and they
     // wouldn't know.
     let dir = tempfile::tempdir().unwrap();
@@ -3238,6 +3238,60 @@ fn load_all_modules_errors_when_locked_module_cache_missing() {
     assert!(
         result.is_err(),
         "expected error when locked remote module has no cache"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_locked_entry_resolves_from_the_cache_with_the_remote_gone() {
+    // The lockfile's whole purpose is that a locked module is already decided:
+    // its `commit` is an immutable object id, so once the cache holds it there
+    // is nothing a fetch could learn. Removing the upstream after the cache is
+    // materialized turns that into a hard assertion — any transfer attempt now
+    // fails loudly, so a load that still succeeds is a load that stayed local.
+    let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    // Pinned shut, so the per-repository transfer window cannot be what spared
+    // the load its fetch — only resolving the entry by its commit can.
+    let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
+
+    let bare = crate::test_helpers::BareGitRepo::builder()
+        .commit(
+            "init",
+            &[(
+                "module.yaml",
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: remote-mod\nspec: {}\n",
+            )],
+        )
+        .tag("v1.0.0")
+        .build();
+
+    let dir = tempfile::tempdir().unwrap();
+    let cache_base = dir.path().join("cache");
+    let printer = test_printer();
+
+    let src = parse_git_source(&format!("{}@v1.0.0", bare.url())).unwrap();
+    let local = fetch_git_source(&src, &cache_base, "remote-mod", &printer)
+        .expect("materializing the locked module's cache must succeed");
+    let commit = get_head_commit_sha(&git_cache_dir(&cache_base, &src.repo_url)).unwrap();
+    let integrity = hash_module_contents(&local).unwrap();
+
+    std::fs::write(
+        dir.path().join("modules.lock"),
+        format!(
+            "modules:\n  - name: remote-mod\n    url: \"{}@v1.0.0\"\n    pinnedRef: \"v1.0.0\"\n    commit: \"{commit}\"\n    integrity: \"{integrity}\"\n",
+            bare.url()
+        ),
+    )
+    .unwrap();
+
+    std::fs::remove_dir_all(bare.path()).expect("remove upstream");
+
+    let modules = load_all_modules(dir.path(), &cache_base, &[], &printer)
+        .expect("a locked entry the cache already holds must load with no remote");
+    assert!(
+        modules.contains_key("remote-mod"),
+        "the locked module must be loaded, got {:?}",
+        modules.keys().collect::<Vec<_>>()
     );
 }
 

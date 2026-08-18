@@ -120,7 +120,10 @@ pub fn verify_lockfile_integrity(lock_entry: &ModuleLockEntry, cache_base: &Path
         return Err(ModuleError::GitFetchFailed {
             module: lock_entry.name.clone(),
             url: lock_entry.url.clone(),
-            message: "cached module directory does not exist — run 'cfgd module update'".into(),
+            message: format!(
+                "cached module directory does not exist — run 'cfgd module upgrade {}'",
+                lock_entry.name
+            ),
         }
         .into());
     }
@@ -140,6 +143,20 @@ pub fn verify_lockfile_integrity(lock_entry: &ModuleLockEntry, cache_base: &Path
 
 /// Load remote modules from the lockfile, fetching if needed, and merge
 /// them into the given modules map.
+///
+/// A locked entry is resolved by the COMMIT the lock records, not by the tag it
+/// was locked from. Both name the same tree — `commit` is what `pinnedRef`
+/// resolved to at lock time, and re-pinning either is what `cfgd module upgrade`
+/// is for — but only the commit is an immutable object id, which is what lets
+/// [`fetch_git_source`] answer it out of the cache with no network at all. Every
+/// run used to pay one full fetch cycle per locked entry to re-learn where a
+/// pinned tag pointed, which by the lockfile's own contract cannot have moved.
+///
+/// A cache that cannot answer the pin is still materialized from the remote: the
+/// lockfile is a determinism guarantee, not an offline one (see `docs/modules.md`
+/// — a machine that has never fetched a locked module has nothing to resolve
+/// from, and cloning a recorded commit is deterministic). What is gone is the
+/// per-run fetch of an entry the cache already holds.
 pub fn load_locked_modules(
     config_dir: &Path,
     cache_base: &Path,
@@ -159,7 +176,7 @@ pub fn load_locked_modules(
         // Build a GitSource with the pinned ref
         let pinned_src = GitSource {
             repo_url: git_src.repo_url.clone(),
-            tag: Some(entry.pinned_ref.clone()),
+            tag: Some(locked_ref(entry)),
             git_ref: None,
             subdir: entry.subdir.clone(),
         };
@@ -176,6 +193,21 @@ pub fn load_locked_modules(
     }
 
     Ok(())
+}
+
+/// The ref a locked entry is checked out at: its recorded commit when the lock
+/// carries a full object id, and otherwise the tag it was locked from.
+///
+/// The fallback is not a legacy shim — `commit` has always been written by
+/// `get_head_commit_sha`, so every lockfile cfgd wrote carries a full id — it is
+/// for a lockfile a human edited or truncated, where a short or empty `commit`
+/// must degrade to the tag rather than fail the load with an unresolvable ref.
+fn locked_ref(entry: &ModuleLockEntry) -> String {
+    let commit = entry.commit.trim();
+    if commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return commit.to_string();
+    }
+    entry.pinned_ref.clone()
 }
 
 /// Load module bodies delivered by subscribed ConfigSources into `modules`.
