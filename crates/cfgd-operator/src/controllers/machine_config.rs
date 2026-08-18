@@ -54,6 +54,10 @@ pub(super) async fn reconcile_machine_config(
                     "failed to remove finalizer from {name}: {e}"
                 ))
             })?;
+        // A deletion pass is a reconciliation that succeeded; during a
+        // deletion-heavy period this counter is the only sign the controller
+        // is alive at all.
+        record_reconcile_success(&ctx, "machine_config", start);
         return Ok(Action::await_change());
     }
 

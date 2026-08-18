@@ -98,7 +98,9 @@ async fn reconcile_machine_config_removes_finalizer_on_deletion_then_returns_awa
         empty_stores(),
     );
 
-    let action = reconcile_machine_config(Arc::new(mc), ctx).await.unwrap();
+    let action = reconcile_machine_config(Arc::new(mc), ctx.clone())
+        .await
+        .unwrap();
     assert_eq!(
         action,
         Action::await_change(),
@@ -107,6 +109,16 @@ async fn reconcile_machine_config_removes_finalizer_on_deletion_then_returns_awa
 
     let report = harness.finish().await;
     assert_eq!(report.captured.len(), 1);
+
+    let success = ctx
+        .metrics
+        .reconciliations_total
+        .get_or_create(&ReconcileLabels {
+            controller: "machine_config".to_string(),
+            result: "success".to_string(),
+        })
+        .get();
+    assert_eq!(success, 1, "a deletion pass is a successful reconciliation");
 
     // Patch removes the finalizer (resulting list is empty).
     let body = report.captured[0].body_json();
