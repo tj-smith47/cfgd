@@ -418,11 +418,19 @@ pub(super) async fn handle_sync_tick(
             task.allow_unsigned,
         )
         .await;
-        if changed && !task.auto_apply {
-            tracing::info!(
-                source = %task.source_name,
-                "changes detected but auto-apply is disabled — run 'cfgd sync' interactively"
-            );
+        if changed {
+            // The sync tick is the one tick that knowingly rewrites the source
+            // cache under the reconcile branch's feet. It runs on its own timer
+            // in the same select loop, and the fetch replaces whole checkouts,
+            // so the next reconcile must re-derive rather than compare
+            // fingerprints against a tree that is no longer the one it read.
+            ctx.tick_cache.invalidate();
+            if !task.auto_apply {
+                tracing::info!(
+                    source = %task.source_name,
+                    "changes detected but auto-apply is disabled — run 'cfgd sync' interactively"
+                );
+            }
         }
     }
     Ok(())

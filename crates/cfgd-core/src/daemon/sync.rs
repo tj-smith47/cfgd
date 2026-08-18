@@ -397,7 +397,7 @@ pub(crate) fn handle_compliance_snapshot(
         &printer,
         scope,
     ) {
-        Ok(r) => r,
+        Ok(composed) => (composed.resolved, composed.source_module_roots),
         Err(e) => {
             tracing::error!(
                 error = %e,

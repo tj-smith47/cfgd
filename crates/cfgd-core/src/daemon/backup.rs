@@ -524,7 +524,7 @@ pub(super) fn resolve_backup_tasks(
     let local = config::resolve_profile(profile_name, &profiles_dir)?;
 
     let (specs, degraded) = match super::compose_daemon_desired_state(cfg, &local, printer, scope) {
-        Ok((resolved, _)) => (resolved.merged.backups, None),
+        Ok(composed) => (composed.resolved.merged.backups, None),
         Err(e) => {
             tracing::warn!(
                 error = %e,

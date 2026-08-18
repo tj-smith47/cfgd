@@ -410,6 +410,11 @@ pub fn find_profile_path(
         profiles_dir.join(format!("{}.yml", name)),
     ]
     .into_iter()
+    // Every spelling is recorded, including the ones that do not exist, and the
+    // recording deliberately precedes the filter: the same profile reappearing
+    // under a different extension changes which file the run reads, and an
+    // absent-input entry is the only thing that can report it. Folded into the
+    // `.filter()` below, a daemon holding a derivation would never re-derive.
     .inspect(|p| crate::record_config_input(p))
     .filter(|p| p.is_file())
     .collect();

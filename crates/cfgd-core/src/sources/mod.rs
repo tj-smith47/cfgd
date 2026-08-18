@@ -83,6 +83,12 @@ pub struct SourceManager {
     sources: HashMap<String, CachedSource>,
     /// When true, skip signature verification even if a source requires it.
     allow_unsigned: bool,
+    /// Every "this source was skipped" advisory this manager has emitted, in the
+    /// order it emitted them. Recorded as well as printed so a caller that
+    /// REUSES a composition can re-state a condition that still holds without
+    /// re-composing to hear it again — a persistent warning that stops appearing
+    /// reads as resolved. See [`Self::take_skip_advisories`].
+    skip_advisories: Vec<String>,
 }
 
 impl SourceManager {
@@ -92,12 +98,35 @@ impl SourceManager {
             cache_dir: cache_dir.to_path_buf(),
             sources: HashMap::new(),
             allow_unsigned: false,
+            skip_advisories: Vec::new(),
         }
     }
 
     /// Set whether to allow unsigned source content (bypasses signature verification).
     pub fn set_allow_unsigned(&mut self, allow: bool) {
         self.allow_unsigned = allow;
+    }
+
+    /// Say — and remember — that a source was skipped and the composition went
+    /// on without it.
+    ///
+    /// The ONE emission point for a skip advisory, so the sentence a caller
+    /// re-states later is byte-identical to the one it first printed rather than
+    /// a second copy that can drift from it.
+    fn skip_advisory(&mut self, printer: &Printer, message: String) {
+        printer.status_simple(Role::Warn, &message);
+        self.skip_advisories.push(message);
+    }
+
+    /// Take the skip advisories emitted since the last take.
+    ///
+    /// For a caller that holds a composition across more than one unit of work:
+    /// the conditions these describe (a source never synced, a checkout cloned
+    /// from an origin the spec no longer names) persist until someone runs
+    /// `cfgd sync`, so a holder re-states them rather than letting them fall
+    /// silent behind a cache hit.
+    pub fn take_skip_advisories(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.skip_advisories)
     }
 
     /// Default source cache directory: `<cache-root>/sources` under the single
@@ -188,8 +217,8 @@ impl SourceManager {
         // this arm there is no manifest to read.
         crate::record_config_input(&source_dir);
         if !source_dir.exists() {
-            printer.status_simple(
-                Role::Warn,
+            self.skip_advisory(
+                printer,
                 format!(
                     "Source '{}' has no local cache yet — run 'cfgd sync' to fetch it; using local state only",
                     spec.name
@@ -208,8 +237,8 @@ impl SourceManager {
         if Self::cached_recorded_origin(&source_dir)
             .is_some_and(|recorded| recorded != spec.origin.url)
         {
-            printer.status_simple(
-                Role::Warn,
+            self.skip_advisory(
+                printer,
                 format!(
                     "Source '{}': cached checkout was cloned from a different origin — run 'cfgd sync' to re-fetch it; skipped without verifying its signature, using local state only",
                     spec.name

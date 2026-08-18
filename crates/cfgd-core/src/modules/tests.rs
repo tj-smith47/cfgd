@@ -3590,6 +3590,47 @@ fn load_source_modules_respects_allow_list_and_precedence() {
     assert_eq!(modules["offered-mod"].origin.as_deref(), Some("team"));
 }
 
+#[test]
+fn an_offered_body_that_has_not_arrived_is_still_a_recorded_input() {
+    // A source can declare a module before its body is published. The load
+    // skips it, and the daemon holds the derivation that skipped it — so the
+    // body landing on a later sync is only visible if the ABSENT file was
+    // recorded as an input.
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module(source.path(), "present-mod", "pkg");
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir: modules_dir.clone(),
+        offered: vec!["present-mod".into(), "later-mod".into()],
+        scripts_permitted: true,
+    };
+
+    let recorder = crate::ConfigInputRecorder::start();
+    let mut modules = std::collections::HashMap::new();
+    load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap();
+    let inputs = recorder.finish();
+
+    let absent = modules_dir.join("later-mod").join("module.yaml");
+    assert!(
+        inputs.paths().any(|p| p == absent),
+        "the offered body that was not there must be a recorded input: {:?}",
+        inputs.paths().collect::<Vec<_>>()
+    );
+    assert!(
+        inputs.unchanged(),
+        "nothing has moved yet, so the derivation still stands"
+    );
+
+    // The body arrives. The recorded set must now say so.
+    write_source_module(source.path(), "later-mod", "pkg");
+    assert!(
+        !inputs.unchanged(),
+        "an arriving body must retire the derivation that skipped it"
+    );
+}
+
 /// Write a source module body carrying a `preApply` lifecycle script; returns
 /// the `modules/` directory path.
 fn write_source_module_with_script(root: &Path, name: &str) -> std::path::PathBuf {

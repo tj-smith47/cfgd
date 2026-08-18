@@ -11455,6 +11455,116 @@ spec:
         assert_eq!(tasks[0].last_synced, Some(recent));
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sync_that_pulled_changes_retires_the_held_derivation() {
+        // The sync tick rewrites the source checkout the reconcile branch reads
+        // from. Nothing under the config directory moved, so the watcher never
+        // fires and the input fingerprints still stand — the invalidation has
+        // to come from the tick that did the rewriting.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let work_dir = pulled_source_checkout(tmp.path());
+
+        let (ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, "held").unwrap();
+
+        let derivations = std::cell::Cell::new(0);
+        let ask = || {
+            let _ = ctx.tick_cache.config_derivation(&config_path, None, || {
+                derivations.set(derivations.get() + 1);
+                crate::record_config_input(&config_path);
+                Ok::<_, ()>(crate::daemon::tick_cache::test_derived_config(
+                    "held",
+                    Vec::new(),
+                ))
+            });
+        };
+
+        ask();
+        ask();
+        assert_eq!(derivations.get(), 1, "an unchanged config is derived once");
+
+        let mut tasks = vec![SyncTask {
+            source_name: "team".to_string(),
+            repo_path: work_dir.clone(),
+            auto_pull: true,
+            auto_push: false,
+            auto_apply: false,
+            interval: StdDuration::from_secs(0),
+            last_synced: None,
+            require_signed_commits: false,
+            allow_unsigned: true,
+        }];
+        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+        assert!(
+            work_dir.join("NEWFILE").exists(),
+            "the fixture must really have pulled something"
+        );
+
+        ask();
+        assert_eq!(
+            derivations.get(),
+            2,
+            "the tick that rewrote the checkout must retire the derivation"
+        );
+    }
+
+    /// A work tree whose `origin` carries one commit the work tree does not, so
+    /// a `handle_sync` with `auto_pull` really transfers something.
+    fn pulled_source_checkout(root: &Path) -> PathBuf {
+        let bare_dir = root.join("bare.git");
+        let work_dir = root.join("work");
+        let pusher_dir = root.join("pusher");
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        git2::Repository::init_bare(&bare_dir).unwrap();
+
+        let repo = git2::Repository::clone(bare_dir.to_str().unwrap(), &work_dir).unwrap();
+        commit_file(&repo, &work_dir, "README", "v1\n", "initial");
+        repo.find_remote("origin")
+            .unwrap()
+            .push(&["refs/heads/master:refs/heads/master"], None)
+            .unwrap();
+
+        let pusher = git2::Repository::clone(bare_dir.to_str().unwrap(), &pusher_dir).unwrap();
+        commit_file(&pusher, &pusher_dir, "NEWFILE", "synced\n", "add newfile");
+        pusher
+            .find_remote("origin")
+            .unwrap()
+            .push(&["refs/heads/master:refs/heads/master"], None)
+            .unwrap();
+
+        work_dir
+    }
+
+    fn commit_file(
+        repo: &git2::Repository,
+        work_dir: &Path,
+        name: &str,
+        body: &str,
+        message: &str,
+    ) {
+        {
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "cfgd-test").unwrap();
+            config.set_str("user.email", "test@cfgd.io").unwrap();
+        }
+        std::fs::write(work_dir.join(name), body).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new(name)).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = repo.signature().unwrap();
+        let parents = match repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
+            Some(parent) => vec![parent],
+            None => Vec::new(),
+        };
+        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parent_refs)
+            .unwrap();
+    }
+
     // ----- handle_compliance_tick tests -----
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

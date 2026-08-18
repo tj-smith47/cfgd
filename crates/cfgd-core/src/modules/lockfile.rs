@@ -238,6 +238,13 @@ pub fn load_source_modules(
                 continue;
             }
             let module_yaml = root.modules_dir.join(name).join("module.yaml");
+            // Recorded BEFORE the existence test, and so recorded even when the
+            // answer is "nothing there": an offered module whose body arrives on
+            // a later sync is a change to the desired state, and the only thing
+            // that can report it is an absent-input entry for the file that was
+            // missing. The source checkout's own directory stamp cannot — the
+            // body lands two levels below it.
+            crate::record_config_input(&module_yaml);
             if !module_yaml.exists() {
                 continue;
             }

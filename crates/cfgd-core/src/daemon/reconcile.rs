@@ -289,9 +289,9 @@ pub(crate) fn handle_reconcile(
         // early-return, leaving the prior desired state (and last_reconcile) intact.
         // A benign never-synced cache-miss is warn+skip inside the resolver, not an
         // Err, so cache-miss still reconciles local-only.
-        let (resolved, source_module_roots) =
+        let composed =
             match super::compose_daemon_desired_state(&cfg, &local_resolved, printer, scope) {
-                Ok(r) => r,
+                Ok(c) => c,
                 Err(e) => {
                     tracing::error!(
                         error = %e,
@@ -308,19 +308,28 @@ pub(crate) fn handle_reconcile(
             };
 
         let mut registry = hooks.build_registry(&cfg);
-        hooks.extend_registry_custom_managers(&mut registry, &resolved.merged.packages);
+        hooks.extend_registry_custom_managers(&mut registry, &composed.resolved.merged.packages);
 
         Ok(super::tick_cache::DerivedConfig {
             cfg,
             profile_name,
-            resolved,
-            source_module_roots,
+            resolved: composed.resolved,
+            source_module_roots: composed.source_module_roots,
             registry,
+            source_advisories: composed.skip_advisories,
         })
     });
     let Ok(derived) = derived else {
         return;
     };
+    // A source with no local cache, or one whose checkout came from an origin
+    // the spec no longer names, is skipped by the composition and said out loud
+    // by it. The condition persists until someone runs `cfgd sync`, so a tick
+    // that REUSED the composition re-states what that composition said instead
+    // of falling silent — an operator watching a warning stop reads it as fixed.
+    for advisory in derived.advisories_to_restate() {
+        printer.status_simple(crate::output::Role::Warn, advisory.as_str());
+    }
     let cfg = &*derived.cfg;
     let profile_name = derived.profile_name.as_str();
     let resolved = &*derived.resolved;

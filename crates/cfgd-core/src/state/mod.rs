@@ -515,6 +515,19 @@ impl StateStore {
     /// would have carried or fails the same way the materialization did,
     /// where an unqualified [`Self::open_default`] would silently hand a
     /// system-scope daemon the per-user store.
+    /// The database file this store is connected to, or `None` for a
+    /// memory-backed connection.
+    ///
+    /// For a holder that keeps a connection open across units of work: cfgd
+    /// itself relocates the database (the legacy-state-dir migration inside
+    /// [`Self::open`]), and a connection survives that relocation attached to an
+    /// inode the path no longer names. Comparing this path's
+    /// [`crate::file_identity`] against the one captured at open is how such a
+    /// holder notices, since neither sqlite nor the filesystem reports it.
+    pub fn db_path(&self) -> Option<&Path> {
+        self.conn.path().map(Path::new)
+    }
+
     pub fn open_default_for(scope: crate::Scope) -> Result<Self> {
         Self::open_in_dir(&default_state_dir_for(scope)?)
     }

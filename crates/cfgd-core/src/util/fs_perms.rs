@@ -122,44 +122,68 @@ pub fn is_executable(path: &std::path::Path, _metadata: &std::fs::Metadata) -> b
         .unwrap_or(false)
 }
 
-/// Check if two paths refer to the same file (same inode on Unix, same file index on Windows).
+/// A file's identity on its filesystem: inode + device on Unix, file index +
+/// volume serial on Windows.
+///
+/// Two paths yielding the same identity name one file — that is
+/// [`is_same_inode`], which is built from this. The OTHER question it answers is
+/// the one a long-lived handle has to ask: does this path STILL name the file I
+/// opened? After a rename there is no second path left to compare, so a holder
+/// captures the identity at open and re-derives it from the path later. A daemon
+/// holding a SQLite connection while a CLI run migrates the database out from
+/// under it would otherwise write into an orphaned inode with no error and no
+/// log line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileIdentity {
+    device: u64,
+    file: u64,
+}
+
+/// The identity of the file `path` names right now, or `None` when nothing is
+/// there (or it cannot be inspected).
 #[cfg(unix)]
-pub fn is_same_inode(a: &std::path::Path, b: &std::path::Path) -> bool {
+pub fn file_identity(path: &std::path::Path) -> Option<FileIdentity> {
     use std::os::unix::fs::MetadataExt;
-    match (std::fs::metadata(a), std::fs::metadata(b)) {
-        (Ok(ma), Ok(mb)) => ma.ino() == mb.ino() && ma.dev() == mb.dev(),
+    let meta = std::fs::metadata(path).ok()?;
+    Some(FileIdentity {
+        device: meta.dev(),
+        file: meta.ino(),
+    })
+}
+
+/// Check if two paths refer to the same file (same inode on Unix, same file index on Windows).
+pub fn is_same_inode(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (file_identity(a), file_identity(b)) {
+        (Some(ia), Some(ib)) => ia == ib,
         _ => false,
     }
 }
 
+/// The identity of the file `path` names right now, or `None` when nothing is
+/// there (or it cannot be opened).
 #[cfg(windows)]
-pub fn is_same_inode(a: &std::path::Path, b: &std::path::Path) -> bool {
+pub fn file_identity(path: &std::path::Path) -> Option<FileIdentity> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION;
     use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
 
-    fn file_info(path: &std::path::Path) -> Option<BY_HANDLE_FILE_INFORMATION> {
-        let file = std::fs::File::open(path).ok()?;
-        // SAFETY: `BY_HANDLE_FILE_INFORMATION` is a plain-old-data struct of
-        // integer fields; the all-zero bit pattern is a valid initial value
-        // that `GetFileInformationByHandle` will overwrite before we read it.
-        let mut info = unsafe { std::mem::zeroed() };
-        // SAFETY: `file.as_raw_handle()` returns a valid, open Win32 file
-        // handle owned by `file`, which outlives the call. `&mut info`
-        // points to sufficient, aligned, writable memory for the out
-        // parameter. No aliasing: `info` is stack-local.
-        let ret = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) };
-        if ret != 0 { Some(info) } else { None }
+    let file = std::fs::File::open(path).ok()?;
+    // SAFETY: `BY_HANDLE_FILE_INFORMATION` is a plain-old-data struct of
+    // integer fields; the all-zero bit pattern is a valid initial value
+    // that `GetFileInformationByHandle` will overwrite before we read it.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: `file.as_raw_handle()` returns a valid, open Win32 file
+    // handle owned by `file`, which outlives the call. `&mut info`
+    // points to sufficient, aligned, writable memory for the out
+    // parameter. No aliasing: `info` is stack-local.
+    let ret = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) };
+    if ret == 0 {
+        return None;
     }
-
-    match (file_info(a), file_info(b)) {
-        (Some(ia), Some(ib)) => {
-            ia.dwVolumeSerialNumber == ib.dwVolumeSerialNumber
-                && ia.nFileIndexHigh == ib.nFileIndexHigh
-                && ia.nFileIndexLow == ib.nFileIndexLow
-        }
-        _ => false,
-    }
+    Some(FileIdentity {
+        device: u64::from(info.dwVolumeSerialNumber),
+        file: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    })
 }
 
 #[cfg(test)]

@@ -35,6 +35,17 @@
 //! in `shared-utils.md`), so a daemon ticking at 30s or slower re-resolves on
 //! every tick exactly as it did before this cache existed, and one ticking at
 //! 5s stops paying it six times a minute.
+//!
+//! # The fingerprint is `(mtime, len)`, and for source inputs it is alone
+//!
+//! That pair is the house convention (`packages::ManifestCache` judges its
+//! re-reads on the identical one) and it cannot see a same-length rewrite
+//! landing inside the filesystem's timestamp granularity. Under the config
+//! DIRECTORY that is covered twice over: the daemon's recursive watcher fires
+//! on the write itself and invalidates. Inputs read out of the SOURCE cache
+//! have no watcher over them, so the fingerprint is their only gate — which is
+//! why the sync tick, the one tick that rewrites those checkouts on purpose,
+//! invalidates outright rather than trusting a stat to notice.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -68,13 +79,16 @@ struct ConfigDerivation {
     identity: (PathBuf, Option<String>),
     /// This derivation's id, minted from [`TickCache::next_derivation_id`].
     id: u64,
-    inputs: ConfigInputs,
+    /// Behind an `Arc` so a reuse check can take the input set out from under
+    /// the slot lock and re-stat it without holding anything.
+    inputs: Arc<ConfigInputs>,
     derived_at: Instant,
     cfg: Arc<CfgdConfig>,
     profile_name: String,
     resolved: Arc<ResolvedProfile>,
     source_module_roots: Arc<Vec<SourceModuleRoot>>,
     registry: Arc<ProviderRegistry>,
+    source_advisories: Arc<Vec<String>>,
 }
 
 /// The module half, and the config derivation it was resolved against.
@@ -82,7 +96,7 @@ struct ModuleDerivation {
     /// The id of the config derivation these modules were resolved against. A
     /// re-derived config means new modules whatever the module inputs say.
     config_derivation_id: u64,
-    inputs: ConfigInputs,
+    inputs: Arc<ConfigInputs>,
     resolved_at: Instant,
     modules: Arc<Vec<ResolvedModule>>,
 }
@@ -115,12 +129,23 @@ pub(crate) struct TickCache {
     /// two threads could hold at once would let two of them use one sqlite
     /// handle concurrently. The lock is what makes the lend sound, and the
     /// daemon's ticks are sequential, so nothing ever waits on it.
-    store: Mutex<Option<StateStore>>,
+    ///
+    /// Every lend re-checks that the path still names the file the connection
+    /// was opened on, and re-opens when it does not — see [`HeldStore`].
+    store: Mutex<Option<HeldStore>>,
     /// What each manager reported installed, lent to every tick's
     /// `PackageContext` instead of re-enumerated per tick. Bounded inside
     /// itself by the resolution generation and a 30s ceiling, which is exactly
     /// the lend the MCP server already relies on.
     enumerations: Arc<crate::providers::InstalledEnumerations>,
+    /// Fires between a derivation finishing and its result being stored.
+    ///
+    /// The window a test cannot otherwise reach: an `invalidate()` landing after
+    /// the tick holds a finished derivation but before that derivation is
+    /// written back. Nothing in production ever sets it.
+    #[cfg(test)]
+    #[allow(clippy::type_complexity)]
+    before_store: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 impl TickCache {
@@ -132,6 +157,31 @@ impl TickCache {
             modules: Mutex::new(None),
             store: Mutex::new(None),
             enumerations: Arc::new(crate::providers::InstalledEnumerations::default()),
+            #[cfg(test)]
+            before_store: Mutex::new(None),
+        }
+    }
+
+    /// Run `hook` between a derivation finishing and its result being stored.
+    #[cfg(test)]
+    fn on_before_store(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *self.before_store.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(hook));
+    }
+
+    fn fire_before_store(&self) {
+        #[cfg(test)]
+        {
+            // Cloned out of the lock: the hook's whole purpose is to reach back
+            // into this cache, and a hook holding its own slot's guard would
+            // deadlock rather than race.
+            let hook = self
+                .before_store
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(hook) = hook {
+                hook();
+            }
         }
     }
 
@@ -163,8 +213,16 @@ impl TickCache {
         open: impl FnOnce() -> crate::errors::Result<StateStore>,
     ) -> crate::errors::Result<StoreHandle<'_>> {
         let mut slot = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(held) = slot.as_ref()
+            && !held.still_names_its_file()
+        {
+            tracing::warn!(
+                "state database moved or was replaced — reopening the daemon's connection"
+            );
+            *slot = None;
+        }
         if slot.is_none() {
-            *slot = Some(open()?);
+            *slot = Some(HeldStore::capture(open()?));
         }
         Ok(StoreHandle { slot })
     }
@@ -184,15 +242,25 @@ impl TickCache {
             config_path.to_path_buf(),
             profile_override.map(str::to_string),
         );
-        if let Some(hit) = self
+        // The candidate is taken out from under the lock BEFORE its inputs are
+        // re-stat'd: `unchanged()` is one syscall per recorded input, and holding
+        // the slot across them would pin the watcher thread's `invalidate()`
+        // behind a stat storm it has nothing to do with.
+        let candidate = self
             .config
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .filter(|held| held.identity == identity)
             .filter(|held| held.derived_at.elapsed() < CONFIG_REUSE_MAX_AGE)
-            .filter(|held| held.inputs.unchanged())
-            .map(CachedConfig::from_held)
+            .map(|held| {
+                (
+                    Arc::clone(&held.inputs),
+                    CachedConfig::from_held(held, true),
+                )
+            });
+        if let Some((inputs, hit)) = candidate
+            && inputs.unchanged()
         {
             return Ok(hit);
         }
@@ -206,21 +274,28 @@ impl TickCache {
         let held = ConfigDerivation {
             identity,
             id: self.next_derivation_id.fetch_add(1, Ordering::SeqCst),
-            inputs,
+            inputs: Arc::new(inputs),
             derived_at: Instant::now(),
             cfg: Arc::new(derived.cfg),
             profile_name: derived.profile_name,
             resolved: Arc::new(derived.resolved),
             source_module_roots: Arc::new(derived.source_module_roots),
             registry: Arc::new(derived.registry),
+            source_advisories: Arc::new(derived.source_advisories),
         };
-        let fresh = CachedConfig::from_held(&held);
+        let fresh = CachedConfig::from_held(&held, false);
+        self.fire_before_store();
         // The derivation ran unlocked, so an invalidation may have landed while
         // it was in flight. Storing it anyway would answer the next tick with a
-        // config read before the change that invalidated it.
+        // config read before the change that invalidated it. The epoch is read
+        // UNDER the slot lock, and `invalidate` bumps it BEFORE it takes that
+        // lock, so there is no window between the two in which an invalidation
+        // can be lost.
+        let mut slot = self.config.lock().unwrap_or_else(|e| e.into_inner());
         if self.epoch.load(Ordering::SeqCst) == started_at_epoch {
-            *self.config.lock().unwrap_or_else(|e| e.into_inner()) = Some(held);
+            *slot = Some(held);
         }
+        drop(slot);
         Ok(fresh)
     }
 
@@ -231,15 +306,16 @@ impl TickCache {
         config: &CachedConfig,
         resolve: impl FnOnce() -> Vec<ResolvedModule>,
     ) -> Arc<Vec<ResolvedModule>> {
-        if let Some(hit) = self
+        let candidate = self
             .modules
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .filter(|held| held.config_derivation_id == config.derivation_id)
             .filter(|held| held.resolved_at.elapsed() < MODULE_REUSE_TTL)
-            .filter(|held| held.inputs.unchanged())
-            .map(|held| Arc::clone(&held.modules))
+            .map(|held| (Arc::clone(&held.inputs), Arc::clone(&held.modules)));
+        if let Some((inputs, hit)) = candidate
+            && inputs.unchanged()
         {
             return hit;
         }
@@ -247,23 +323,26 @@ impl TickCache {
         let started_at_epoch = self.epoch.load(Ordering::SeqCst);
         let recorder = ConfigInputRecorder::start();
         let modules = Arc::new(resolve());
-        let inputs = recorder.finish();
+        let inputs = Arc::new(recorder.finish());
 
+        self.fire_before_store();
+        let mut slot = self.modules.lock().unwrap_or_else(|e| e.into_inner());
         if self.epoch.load(Ordering::SeqCst) == started_at_epoch {
-            *self.modules.lock().unwrap_or_else(|e| e.into_inner()) = Some(ModuleDerivation {
+            *slot = Some(ModuleDerivation {
                 config_derivation_id: config.derivation_id,
                 inputs,
                 resolved_at: Instant::now(),
                 modules: Arc::clone(&modules),
             });
         }
+        drop(slot);
         modules
     }
 }
 
 /// One tick's borrow of the daemon's state store.
 pub(crate) struct StoreHandle<'a> {
-    slot: std::sync::MutexGuard<'a, Option<StateStore>>,
+    slot: std::sync::MutexGuard<'a, Option<HeldStore>>,
 }
 
 impl StoreHandle<'_> {
@@ -274,7 +353,43 @@ impl StoreHandle<'_> {
     /// code does not panic; a caller treats it as the open failure it would
     /// have to be.
     pub(crate) fn get(&self) -> Option<&StateStore> {
-        self.slot.as_ref()
+        self.slot.as_ref().map(|held| &held.store)
+    }
+}
+
+/// A held connection and the identity of the file it was opened on.
+///
+/// cfgd itself MOVES the state database: `StateStore::open` performs a
+/// legacy-state-dir migration that checkpoints the WAL and renames the file. A
+/// CLI run doing that while the daemon holds a connection leaves the daemon
+/// writing into an orphaned inode — no error, no log line, forever, where before
+/// this cache the next tick's `open` recovered within one interval. The same
+/// shape covers an operator deleting the state directory. This is the pattern
+/// `acquire_lock_at` already uses for lock files: after taking the thing, check
+/// that the path still names it.
+struct HeldStore {
+    store: StateStore,
+    /// The file the connection is attached to, captured at open. `None` for a
+    /// memory-backed connection or a path that could not be inspected, which
+    /// makes the check stand down rather than reopen on every lend.
+    identity: Option<crate::FileIdentity>,
+}
+
+impl HeldStore {
+    fn capture(store: StateStore) -> Self {
+        let identity = store.db_path().and_then(crate::file_identity);
+        Self { store, identity }
+    }
+
+    /// Whether the path this connection was opened on still names the same file.
+    fn still_names_its_file(&self) -> bool {
+        let Some(captured) = self.identity else {
+            return true;
+        };
+        self.store
+            .db_path()
+            .and_then(crate::file_identity)
+            .is_some_and(|current| current == captured)
     }
 }
 
@@ -285,6 +400,8 @@ pub(crate) struct DerivedConfig {
     pub(crate) resolved: ResolvedProfile,
     pub(crate) source_module_roots: Vec<SourceModuleRoot>,
     pub(crate) registry: ProviderRegistry,
+    /// What the composition said out loud about sources it skipped.
+    pub(crate) source_advisories: Vec<String>,
 }
 
 /// One tick's handle on the config-derived objects.
@@ -295,51 +412,87 @@ pub(crate) struct CachedConfig {
     pub(crate) resolved: Arc<ResolvedProfile>,
     pub(crate) source_module_roots: Arc<Vec<SourceModuleRoot>>,
     pub(crate) registry: Arc<ProviderRegistry>,
+    /// The composition's skip advisories, carried so a REUSING tick can re-state
+    /// a condition that still holds. See [`Self::advisories_to_restate`].
+    source_advisories: Arc<Vec<String>>,
+    /// Whether this handle came from a held derivation rather than from one this
+    /// caller just ran. The derivation printed its own advisories; a reuse did
+    /// not, and has to.
+    reused: bool,
     /// Which derivation this came from, so a module set can say which config it
     /// was resolved against.
     derivation_id: u64,
 }
 
 impl CachedConfig {
-    fn from_held(held: &ConfigDerivation) -> Self {
+    fn from_held(held: &ConfigDerivation, reused: bool) -> Self {
         Self {
             cfg: Arc::clone(&held.cfg),
             profile_name: held.profile_name.clone(),
             resolved: Arc::clone(&held.resolved),
             source_module_roots: Arc::clone(&held.source_module_roots),
             registry: Arc::clone(&held.registry),
+            source_advisories: Arc::clone(&held.source_advisories),
+            reused,
             derivation_id: held.id,
         }
+    }
+
+    /// The advisories this tick still owes the operator.
+    ///
+    /// Empty on the tick that derived — the composition printed them itself as
+    /// it went. Non-empty on every tick that REUSED that derivation, so a source
+    /// with no local cache is reported once per tick exactly as it was before
+    /// the derivation was ever held across ticks. Suppressing them would make an
+    /// unchanged, still-broken source look like one that got fixed.
+    pub(crate) fn advisories_to_restate(&self) -> &[String] {
+        if self.reused {
+            &self.source_advisories
+        } else {
+            &[]
+        }
+    }
+}
+
+/// A derivation whose `profile_name` says which call produced it, so a test can
+/// tell a reused object from a re-derived one without comparing addresses.
+///
+/// Shared with the daemon's own tests, which drive a tick against this cache.
+#[cfg(test)]
+pub(super) fn test_derived_config(marker: &str, source_advisories: Vec<String>) -> DerivedConfig {
+    use crate::config::{ConfigMetadata, ConfigSpec, MergedProfile};
+    DerivedConfig {
+        cfg: CfgdConfig {
+            api_version: crate::API_VERSION.into(),
+            kind: "CfgdConfig".into(),
+            metadata: ConfigMetadata {
+                name: marker.into(),
+            },
+            spec: ConfigSpec::default(),
+            deprecations: Vec::new(),
+        },
+        profile_name: marker.to_string(),
+        resolved: ResolvedProfile {
+            layers: Vec::new(),
+            merged: MergedProfile::default(),
+        },
+        source_module_roots: Vec::new(),
+        registry: ProviderRegistry::new(),
+        source_advisories,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CfgdConfig, ConfigMetadata, ConfigSpec, MergedProfile};
 
-    /// A derivation whose `profile_name` says which call produced it, so a test
-    /// can tell a reused object from a re-derived one without comparing
-    /// addresses.
     fn derived(marker: &str) -> DerivedConfig {
-        DerivedConfig {
-            cfg: CfgdConfig {
-                api_version: crate::API_VERSION.into(),
-                kind: "CfgdConfig".into(),
-                metadata: ConfigMetadata {
-                    name: marker.into(),
-                },
-                spec: ConfigSpec::default(),
-                deprecations: Vec::new(),
-            },
-            profile_name: marker.to_string(),
-            resolved: ResolvedProfile {
-                layers: Vec::new(),
-                merged: MergedProfile::default(),
-            },
-            source_module_roots: Vec::new(),
-            registry: ProviderRegistry::new(),
-        }
+        test_derived_config(marker, Vec::new())
+    }
+
+    /// The same, carrying what the composition said about skipped sources.
+    fn derived_advising(marker: &str, source_advisories: Vec<String>) -> DerivedConfig {
+        test_derived_config(marker, source_advisories)
     }
 
     /// Derive against `input`, recording it the way a real reader does.
@@ -558,5 +711,106 @@ mod tests {
             assert!(held.get().is_some());
         }
         assert_eq!(opens, 1);
+    }
+
+    #[test]
+    fn an_invalidation_landing_between_a_derivation_and_its_store_is_not_lost() {
+        // The narrow ordering: the derivation has finished, the tick is holding
+        // the object, and the watcher fires before the slot is written. The
+        // hook drives exactly that instant, so nothing here depends on timing.
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, "first").unwrap();
+        let cache = Arc::new(TickCache::new());
+        let calls = std::cell::Cell::new(0);
+
+        let weak = Arc::downgrade(&cache);
+        cache.on_before_store(move || {
+            if let Some(cache) = weak.upgrade() {
+                cache.invalidate();
+            }
+        });
+
+        // The hook fires once, so this is the derivation that gets invalidated
+        // while in flight.
+        derive_reading(&cache, &config_path, &config_path, &calls, "raced");
+        assert_eq!(calls.get(), 1);
+
+        // It must not have been stored: the next tick re-derives.
+        derive_reading(&cache, &config_path, &config_path, &calls, "second");
+        assert_eq!(calls.get(), 2, "the raced derivation must not have stood");
+
+        // And the one that was NOT raced does stand, so the discard is aimed at
+        // the invalidation rather than at every derivation.
+        derive_reading(&cache, &config_path, &config_path, &calls, "third");
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn every_reusing_tick_restates_the_composition_advisories() {
+        // A source with no local cache is skipped, and the composition says so
+        // once per tick. Holding the derivation across ticks must not turn that
+        // into "said once, ever" — an unchanged, still-broken source would then
+        // look like one that got fixed.
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, "first").unwrap();
+        let cache = TickCache::new();
+        let advisory = "source 'team' has never been synced — skipping".to_string();
+
+        let mut derivations = 0;
+        let mut restated = 0;
+        for _ in 0..4 {
+            let held = cache.config_derivation(&config_path, None, || {
+                derivations += 1;
+                crate::record_config_input(&config_path);
+                Ok::<_, ()>(derived_advising("first", vec![advisory.clone()]))
+            });
+            let held = match held {
+                Ok(c) => c,
+                Err(()) => unreachable!("the derivation above cannot fail"),
+            };
+            restated += held.advisories_to_restate().len();
+        }
+
+        assert_eq!(derivations, 1, "only the first tick composed");
+        assert_eq!(
+            restated, 3,
+            "each of the three reusing ticks owes the operator the advisory"
+        );
+    }
+
+    #[test]
+    fn a_state_database_that_moved_out_from_under_the_daemon_is_reopened() {
+        // cfgd itself moves this file: `StateStore::open` migrates a legacy
+        // state dir by renaming the database. A daemon holding the old
+        // connection would write into an orphaned inode with no error, forever.
+        let tmp = tempfile::tempdir().unwrap();
+        let state_dir = tmp.path().join("state");
+        let cache = TickCache::new();
+        let mut opens = 0;
+        let open_once = |cache: &TickCache, opens: &mut usize| {
+            let held = cache
+                .store(|| {
+                    *opens += 1;
+                    StateStore::open_in_dir(&state_dir)
+                })
+                .unwrap();
+            assert!(held.get().is_some());
+        };
+
+        open_once(&cache, &mut opens);
+        open_once(&cache, &mut opens);
+        assert_eq!(opens, 1, "an unmoved database is lent, not reopened");
+
+        std::fs::remove_dir_all(&state_dir).unwrap();
+        open_once(&cache, &mut opens);
+        assert_eq!(
+            opens, 2,
+            "the path no longer names the file that was opened"
+        );
+
+        open_once(&cache, &mut opens);
+        assert_eq!(opens, 2, "the reopened connection is lent like any other");
     }
 }

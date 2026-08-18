@@ -187,9 +187,13 @@ pub(crate) fn compose_daemon_desired_state(
     local: &ResolvedProfile,
     printer: &Printer,
     scope: crate::Scope,
-) -> Result<(ResolvedProfile, Vec<crate::modules::SourceModuleRoot>)> {
+) -> Result<DaemonComposition> {
     if cfg.spec.sources.is_empty() {
-        return Ok((local.clone(), Vec::new()));
+        return Ok(DaemonComposition {
+            resolved: local.clone(),
+            source_module_roots: Vec::new(),
+            skip_advisories: Vec::new(),
+        });
     }
     let cache_dir = crate::sources::SourceManager::default_cache_dir_for(scope)
         .unwrap_or_else(|_| PathBuf::from(".cfgd-sources"));
@@ -203,7 +207,22 @@ pub(crate) fn compose_daemon_desired_state(
         local,
         crate::composition::ConstraintMode::Enforce,
     )?;
-    Ok((result.resolved, result.source_module_roots))
+    Ok(DaemonComposition {
+        resolved: result.resolved,
+        source_module_roots: result.source_module_roots,
+        skip_advisories: mgr.take_skip_advisories(),
+    })
+}
+
+/// What composing the daemon's desired state produced.
+pub(crate) struct DaemonComposition {
+    pub(crate) resolved: ResolvedProfile,
+    pub(crate) source_module_roots: Vec<crate::modules::SourceModuleRoot>,
+    /// The "this source was skipped" lines the composition printed, kept so a
+    /// caller REUSING this composition can re-state them. The conditions they
+    /// describe persist until someone runs `cfgd sync`, and a warning that stops
+    /// appearing reads as resolved.
+    pub(crate) skip_advisories: Vec<String>,
 }
 
 const DEBOUNCE_MS: u64 = 500;
