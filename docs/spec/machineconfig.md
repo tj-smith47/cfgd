@@ -150,14 +150,21 @@ files:
 
 ### status
 
-Written by the operator after each reconciliation pass. Do not set manually.
+Written by the operator when a reconciliation pass changes it. Do not set manually.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `lastReconciled` | string (ISO 8601) | Timestamp of the last successful reconciliation. |
+| `lastReconciled` | string (ISO 8601) | Timestamp of the last status **change**, not of the last reconcile. |
 | `observedGeneration` | int | The `metadata.generation` that was last processed by the controller. |
 | `conditions` | list | Standard Kubernetes condition list. Drift is reported here as a `DriftDetected` condition. See [status.conditions[]](#statusconditions). |
 | `packageVersions` | map | Reported installed versions keyed by package name (e.g. `{"kubectl": "1.28.3"}`). Versions are loose semver: `1.28`, `1.28.3`. |
+
+The operator patches `status` only when the pass observed something different,
+so a machine that has not moved is not written to on every requeue. That makes
+`lastReconciled` a record of the last change: on a steady machine it can sit
+hours or days behind the last reconcile, and it is not a liveness signal. For
+liveness, read the operator's own reconcile metrics
+(`cfgd_operator_reconciliations_total`).
 
 ---
 

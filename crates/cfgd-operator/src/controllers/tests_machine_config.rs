@@ -343,6 +343,192 @@ async fn reconcile_machine_config_drifted_repeated_reconciles_write_once() {
 }
 
 // -----------------------------------------------------------------------
+// Compliant is owned by the policy controllers
+// -----------------------------------------------------------------------
+
+/// A `Compliant` condition as the ConfigPolicy controller writes it.
+fn policy_written_compliant(policy: &str) -> Condition {
+    Condition {
+        condition_type: "Compliant".to_string(),
+        status: "False".to_string(),
+        reason: "PolicyViolation".to_string(),
+        message: format!("Violates policy {policy}"),
+        last_transition_time: "2026-01-01T00:00:00Z".to_string(),
+        observed_generation: Some(1),
+    }
+}
+
+/// The machine controller rebuilds every condition on the object each pass,
+/// `Compliant` included, and must carry the policy controller's own reason and
+/// message through untouched. Substituting its own text is a claim about a
+/// verdict it did not reach, and `Condition` compares by every field, so the
+/// policy controller reads the substitution back as a change and rewrites it.
+#[tokio::test]
+async fn reconcile_machine_config_carries_the_policys_compliant_message_forward() {
+    let mut mc = machine_config("mc-policy-text", NS);
+    mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
+    mc.status = Some(MachineConfigStatus {
+        last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
+        observed_generation: Some(1),
+        conditions: vec![policy_written_compliant("p")],
+        package_versions: Default::default(),
+    });
+
+    // Drift keeps the reconcile off the early-return arm, which is the path on
+    // which the machine controller rebuilds and republishes the condition.
+    let alert = super::test_fixtures::drift_alert(
+        "alert-policy-text",
+        NS,
+        "mc-policy-text",
+        crate::crds::DriftSeverity::Medium,
+    );
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!(
+                "{}/status",
+                machine_config_path(NS, "mc-policy-text")
+            ))
+            .returning_json(&mc),
+            expect_event_post(NS), // Reconciled
+            expect_event_post(NS), // DriftDetected
+        ],
+        stores_with_drift(vec![alert]),
+    );
+
+    reconcile_machine_config(Arc::new(mc), ctx).await.unwrap();
+
+    let report = harness.finish().await;
+    let conditions = report.captured[0].body_json()["status"]["conditions"]
+        .as_array()
+        .expect("conditions array")
+        .clone();
+    let compliant = conditions
+        .iter()
+        .find(|c| c["type"] == "Compliant")
+        .expect("Compliant condition must survive the rewrite");
+
+    assert_eq!(
+        compliant["message"], "Violates policy p",
+        "the machine controller must not rewrite the policy's Compliant message"
+    );
+    assert_eq!(compliant["reason"], "PolicyViolation");
+    assert_eq!(compliant["status"], "False");
+}
+
+/// The two controllers watch each other's writes: a MachineConfig status write
+/// requeues every ConfigPolicy in the namespace, and the policy's patch of the
+/// machine requeues the machine. If they disagree about any field of
+/// `Compliant`, each one's patch-on-change guard sees the difference the other
+/// just created and the pair spins at watch speed for as long as the drift
+/// lasts. Steady state is the assertion: after one machine write, neither
+/// controller has anything left to say about the machine.
+#[tokio::test]
+async fn a_drifted_policy_targeted_machine_reaches_steady_state() {
+    let mut mc = machine_config("mc-pingpong", NS);
+    mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
+    mc.status = Some(MachineConfigStatus {
+        last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
+        observed_generation: Some(1),
+        conditions: vec![policy_written_compliant("pp-policy")],
+        package_versions: Default::default(),
+    });
+
+    let drift = || {
+        super::test_fixtures::drift_alert(
+            "alert-pingpong",
+            NS,
+            "mc-pingpong",
+            crate::crds::DriftSeverity::Medium,
+        )
+    };
+
+    // The machine controller records the drift once.
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!(
+                "{}/status",
+                machine_config_path(NS, "mc-pingpong")
+            ))
+            .returning_json(&mc),
+            expect_event_post(NS), // Reconciled
+            expect_event_post(NS), // DriftDetected
+        ],
+        stores_with_drift(vec![drift()]),
+    );
+    reconcile_machine_config(Arc::new(mc.clone()), ctx)
+        .await
+        .unwrap();
+    let first = harness.finish().await;
+    mc.status = Some(
+        serde_json::from_value(first.captured[0].body_json()["status"].clone())
+            .expect("the patched status must round-trip"),
+    );
+
+    // The policy controller, requeued by that write, finds its own verdict
+    // already on the machine and patches nothing. Its own status is seeded as
+    // already-evaluated, so the only call it could make is the machine patch.
+    let mut policy = super::test_fixtures::config_policy("pp-policy", NS);
+    policy.spec.required_modules = vec![ModuleRef {
+        name: "kubectl".to_string(),
+        required: true,
+    }];
+    policy.status = Some(crate::crds::ConfigPolicyStatus {
+        compliant_count: 0,
+        non_compliant_count: 1,
+        non_compliant_machines: vec![format!("{NS}/mc-pingpong")],
+        conditions: vec![],
+    });
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!(
+                "/apis/cfgd.io/v1alpha1/namespaces/{NS}/configpolicies/pp-policy/status"
+            ))
+            .returning_json(&policy),
+            expect_event_post(NS), // Evaluated
+            expect_event_post(NS), // NonCompliantTargets
+        ],
+        ControllerStores {
+            machine_configs: seeded_store(vec![mc.clone()]),
+            ..empty_stores()
+        },
+    );
+    super::config_policy::reconcile_config_policy(Arc::new(policy), ctx)
+        .await
+        .unwrap();
+    let second = harness.finish().await;
+    assert!(
+        second
+            .find(
+                http::Method::PATCH,
+                &format!("{}/status", machine_config_path(NS, "mc-pingpong"))
+            )
+            .is_none(),
+        "the policy controller must not rewrite the machine's Compliant condition, but did: {:?}",
+        second
+            .captured
+            .iter()
+            .map(|r| format!("{} {}", r.method, r.path))
+            .collect::<Vec<_>>()
+    );
+
+    // And the machine controller, requeued by nothing new, writes nothing.
+    let (ctx, _registry, harness) =
+        MockKubeHarness::with_stores(vec![], stores_with_drift(vec![drift()]));
+    reconcile_machine_config(Arc::new(mc), ctx).await.unwrap();
+    let third = harness.finish().await;
+    assert!(
+        third.captured.is_empty(),
+        "a drifted policy-targeted machine must reach steady state, but made: {:?}",
+        third
+            .captured
+            .iter()
+            .map(|r| format!("{} {}", r.method, r.path))
+            .collect::<Vec<_>>()
+    );
+}
+
+// -----------------------------------------------------------------------
 // Module resolution branch
 // -----------------------------------------------------------------------
 

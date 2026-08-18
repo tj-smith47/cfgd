@@ -14,7 +14,7 @@ use super::drift_alert::has_active_drift_alerts;
 use super::module::resolve_module_refs;
 use super::{
     ControllerContext, FIELD_MANAGER_OPERATOR, FIELD_MANAGER_STATUS, MACHINE_CONFIG_FINALIZER,
-    build_condition, emit_event, find_condition_status, namespaced_api, record_reconcile_success,
+    build_condition, emit_event, find_condition, namespaced_api, record_reconcile_success,
 };
 
 pub(super) async fn reconcile_machine_config(
@@ -149,25 +149,19 @@ pub(super) async fn reconcile_machine_config(
         .map(|s| s.package_versions.clone())
         .unwrap_or_default();
 
-    // The reason and message are a function of the STATUS the policy
-    // controllers left, never of whether the condition exists: keyed on
-    // presence, a machine whose Compliant is `Unknown` got "Awaiting policy
-    // evaluation" on the pass that created it and "evaluated by ConfigPolicy
-    // controller" on the next one — a claim that no evaluation had made, and a
-    // second status write for a machine nothing had happened to.
-    let compliant_status =
-        find_condition_status(existing_conditions, "Compliant").unwrap_or_else(|| "Unknown".into());
-    let (compliant_reason, compliant_message) = match compliant_status.as_str() {
-        "True" => (
-            "PolicyCompliant",
-            "Policy compliance evaluated by ConfigPolicy controller",
-        ),
-        "False" => (
-            "PolicyViolation",
-            "Policy compliance evaluated by ConfigPolicy controller",
-        ),
-        _ => ("NotEvaluated", "Awaiting policy evaluation"),
-    };
+    // `Compliant` belongs to the policy controllers: its status, reason AND
+    // message are all theirs, and this controller only carries them through.
+    // Rewriting any of the three is not cosmetic — a `Condition` compares by
+    // every field, so each controller's guard reads the other's text as a change
+    // and patches it back, and a drifted machine (which never takes the skip arm
+    // above) ping-pongs with the policy controller at watch speed rather than
+    // reaching steady state. Text is synthesized only for a machine no policy
+    // has evaluated, the one case with nothing to preserve.
+    let (compliant_status, compliant_reason, compliant_message) =
+        match find_condition(existing_conditions, "Compliant") {
+            Some(c) => (c.status.as_str(), c.reason.as_str(), c.message.as_str()),
+            None => ("Unknown", "NotEvaluated", "Awaiting policy evaluation"),
+        };
 
     let mut desired = MachineConfigStatus {
         // Carried forward rather than refreshed, so the comparison below is
@@ -209,7 +203,7 @@ pub(super) async fn reconcile_machine_config(
             build_condition(
                 existing_conditions,
                 "Compliant",
-                &compliant_status,
+                compliant_status,
                 compliant_reason,
                 compliant_message,
                 &now,

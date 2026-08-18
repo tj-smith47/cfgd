@@ -438,15 +438,22 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
 // Condition helpers
 // ---------------------------------------------------------------------------
 
+/// Find an existing condition by type, returning None if not found.
+pub(super) fn find_condition<'a>(
+    conditions: &'a [Condition],
+    condition_type: &str,
+) -> Option<&'a Condition> {
+    conditions
+        .iter()
+        .find(|c| c.condition_type == condition_type)
+}
+
 /// Find an existing condition's status by type, returning None if not found.
 pub(super) fn find_condition_status(
     conditions: &[Condition],
     condition_type: &str,
 ) -> Option<String> {
-    conditions
-        .iter()
-        .find(|c| c.condition_type == condition_type)
-        .map(|c| c.status.clone())
+    find_condition(conditions, condition_type).map(|c| c.status.clone())
 }
 
 /// Find an existing condition's last_transition_time by type.
@@ -454,10 +461,7 @@ pub(super) fn find_condition_transition_time(
     conditions: &[Condition],
     condition_type: &str,
 ) -> Option<String> {
-    conditions
-        .iter()
-        .find(|c| c.condition_type == condition_type)
-        .map(|c| c.last_transition_time.clone())
+    find_condition(conditions, condition_type).map(|c| c.last_transition_time.clone())
 }
 
 /// Build a condition, preserving lastTransitionTime if the status hasn't changed.
