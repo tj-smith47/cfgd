@@ -1743,13 +1743,26 @@ images:
         drop(printer);
 
         let printed = out.lock().expect("lock capture").clone();
+        // The capture writes both sinks into ONE buffer, and the rewrite
+        // summary is a stderr status line that names the reference it replaced.
+        // In production those are separate streams; here the status lines have
+        // to be dropped before asking what the DATA channel carries.
+        let manifest_only = printed
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('\u{2299}'))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
-            printed.contains("registry.jarvispro.io/gome/server@sha256:deadbeef"),
+            manifest_only.contains("registry.jarvispro.io/gome/server@sha256:deadbeef"),
             "stdout must carry the pinned digest ref: {printed}"
         );
         assert!(
-            !printed.contains("gome/server:abc"),
+            !manifest_only.contains("gome/server:abc"),
             "stdout must not carry the old mutable tag: {printed}"
+        );
+        assert!(
+            printed.contains("\u{2299} pinned registry.jarvispro.io/gome/server:abc"),
+            "the rewrite summary must reach the human channel: {printed}"
         );
         // The unmapped volume passes through untouched.
         assert!(

@@ -705,13 +705,15 @@ impl super::CfgdFileManager {
 
         if let Some(mode_str) = mode_str {
             // On Windows, file permissions are not applicable (NTFS uses inherited ACLs).
-            // Skip generating SetPermissions actions and log a one-time info message.
+            // Skip generating SetPermissions actions and warn once. `warn!`, not
+            // `info!`: a declared `mode:` being ignored is something the author
+            // has to act on, and the default filter shows `warn` and above.
             #[cfg(windows)]
             {
                 use std::sync::Once;
                 static WARN_ONCE: Once = Once::new();
                 WARN_ONCE.call_once(|| {
-                    tracing::info!(
+                    tracing::warn!(
                         "file permissions are not applicable on Windows (NTFS uses inherited ACLs); \
                          permissions settings will be ignored"
                     );

@@ -703,9 +703,11 @@ pub fn cmd_deploy(
         })));
     } else {
         // Human/table mode: stdout must stay a clean pipe (pipeable to kubectl),
-        // so the rewrite summary goes to STDERR via tracing, never stdout.
+        // so the rewrite summary goes to STDERR — through the Printer, which is
+        // the human channel, rather than through tracing, whose default filter
+        // means nobody reads it.
         for (old, new) in &rewrites {
-            tracing::info!(reference = %old, pinned = %new, "pinned image reference");
+            printer.status_simple(Role::Info, format!("pinned {old} → {new}"));
         }
         printer.data_line(&yaml_out);
     }
