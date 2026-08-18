@@ -281,7 +281,7 @@ impl<'x> PackageExec<'x> {
     fn provision_batch(&self, members: &[&str], via: &str) -> Result<()> {
         let mediator = self
             .registry
-            .package_managers
+            .package_managers()
             .iter()
             .find(|pm| pm.name() == via)
             .ok_or_else(|| crate::errors::PackageError::ManagerNotFound {
@@ -291,7 +291,7 @@ impl<'x> PackageExec<'x> {
         for name in members {
             let pm = self
                 .registry
-                .package_managers
+                .package_managers()
                 .iter()
                 .find(|pm| pm.name() == *name)
                 .ok_or_else(|| crate::errors::PackageError::ManagerNotFound {
@@ -349,7 +349,7 @@ impl<'x> PackageExec<'x> {
     fn package_manager_missing_error(&self, manager: &str) -> crate::errors::CfgdError {
         let registered = self
             .registry
-            .package_managers
+            .package_managers()
             .iter()
             .any(|pm| pm.name() == manager);
         if registered {
@@ -395,7 +395,14 @@ impl<'x> PackageExec<'x> {
             } => {
                 for pm in self.registry.available_package_managers() {
                     if pm.name() == manager {
-                        pm.uninstall(packages, &cx)?;
+                        let removed = pm.uninstall(packages, &cx);
+                        // A removal takes a binary OFF `PATH` — the mirror of
+                        // the install side, and just as invisible to a memo
+                        // keyed on `PATH` alone. Reported whether or not the
+                        // command as a whole succeeded, because a partial
+                        // uninstall has already deleted what it deleted.
+                        crate::invalidate_command_resolution();
+                        removed?;
                         return Ok(format!(
                             "package:{}:uninstall:{}",
                             manager,
@@ -425,7 +432,7 @@ impl<'x> PackageExec<'x> {
         // different failure when the manager is not registered at all.
         let lookup = |name: &str| {
             self.registry
-                .package_managers
+                .package_managers()
                 .iter()
                 .find(|pm| pm.name() == name)
                 .ok_or_else(|| crate::errors::PackageError::ManagerNotFound {
@@ -643,7 +650,7 @@ impl<'x> PackageExec<'x> {
                 // Find the manager — check all registered, not just available
                 let pm = self
                     .registry
-                    .package_managers
+                    .package_managers()
                     .iter()
                     .find(|m| m.name() == first.manager);
 

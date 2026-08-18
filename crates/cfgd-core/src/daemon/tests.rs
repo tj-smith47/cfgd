@@ -2478,15 +2478,13 @@ fn unchanged_machine_collected_twice_hashes_equal_and_the_daemon_skips_the_secon
             name.to_string(),
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
         );
-        registry
-            .system_configurators
-            .push(Box::new(MockSystemConfigurator::new(name).with_drift(
-                vec![SystemDrift {
-                    key: format!("{name}-setting"),
-                    expected: "10".into(),
-                    actual: "60".into(),
-                }],
-            )));
+        registry.add_system_configurator(Box::new(MockSystemConfigurator::new(name).with_drift(
+            vec![SystemDrift {
+                key: format!("{name}-setting"),
+                expected: "10".into(),
+                actual: "60".into(),
+            }],
+        )));
     }
 
     let printer = crate::test_helpers::test_printer();
@@ -9274,7 +9272,7 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
     impl DaemonHooks for DecisionHooks {
         fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
             let mut reg = ProviderRegistry::new();
-            reg.package_managers.push(Box::new(RecordingInstallManager {
+            reg.add_package_manager(Box::new(RecordingInstallManager {
                 installed: Arc::clone(&self.installed),
             }));
             reg
@@ -9506,7 +9504,7 @@ async fn a_tick_that_cannot_record_a_decision_still_withholds_the_item() {
     impl DaemonHooks for MintDeniedHooks {
         fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
             let mut reg = ProviderRegistry::new();
-            reg.package_managers.push(Box::new(RecordingInstallManager {
+            reg.add_package_manager(Box::new(RecordingInstallManager {
                 installed: Arc::clone(&self.installed),
             }));
             reg
@@ -9825,14 +9823,13 @@ async fn handle_reconcile_auto_policy_prunes_tracked_dropped_package() {
     impl DaemonHooks for PruneHooks {
         fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
             let mut reg = ProviderRegistry::new();
-            reg.package_managers
-                .push(Box::new(RecordingUninstallManager {
-                    uninstalled: Arc::clone(&self.uninstalled),
-                    // bat is still on the system; ripgrep too (desired, kept).
-                    installed: ["bat".to_string(), "ripgrep".to_string()]
-                        .into_iter()
-                        .collect(),
-                }));
+            reg.add_package_manager(Box::new(RecordingUninstallManager {
+                uninstalled: Arc::clone(&self.uninstalled),
+                // bat is still on the system; ripgrep too (desired, kept).
+                installed: ["bat".to_string(), "ripgrep".to_string()]
+                    .into_iter()
+                    .collect(),
+            }));
             reg
         }
         fn plan_files(
@@ -9968,12 +9965,11 @@ async fn handle_reconcile_auto_policy_gcs_stale_tracking_row() {
     impl DaemonHooks for GcHooks {
         fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
             let mut reg = ProviderRegistry::new();
-            reg.package_managers
-                .push(Box::new(RecordingUninstallManager {
-                    uninstalled: Arc::clone(&self.uninstalled),
-                    // Only bat is on the system — phantom is gone.
-                    installed: ["bat".to_string()].into_iter().collect(),
-                }));
+            reg.add_package_manager(Box::new(RecordingUninstallManager {
+                uninstalled: Arc::clone(&self.uninstalled),
+                // Only bat is on the system — phantom is gone.
+                installed: ["bat".to_string()].into_iter().collect(),
+            }));
             reg
         }
         fn plan_files(
@@ -15289,11 +15285,10 @@ async fn handle_reconcile_compose_error_skips_tick_and_preserves_source_package(
     impl DaemonHooks for PrunePkgHooks {
         fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
             let mut reg = ProviderRegistry::new();
-            reg.package_managers
-                .push(Box::new(RecordingUninstallManager {
-                    uninstalled: Arc::clone(&self.uninstalled),
-                    installed: ["source-pkg".to_string()].into_iter().collect(),
-                }));
+            reg.add_package_manager(Box::new(RecordingUninstallManager {
+                uninstalled: Arc::clone(&self.uninstalled),
+                installed: ["source-pkg".to_string()].into_iter().collect(),
+            }));
             reg
         }
         fn plan_files(
@@ -15505,11 +15500,10 @@ async fn handle_reconcile_required_uncached_source_skips_tick_and_preserves_pack
     impl DaemonHooks for PrunePkgHooks {
         fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
             let mut reg = ProviderRegistry::new();
-            reg.package_managers
-                .push(Box::new(RecordingUninstallManager {
-                    uninstalled: Arc::clone(&self.uninstalled),
-                    installed: ["source-pkg".to_string()].into_iter().collect(),
-                }));
+            reg.add_package_manager(Box::new(RecordingUninstallManager {
+                uninstalled: Arc::clone(&self.uninstalled),
+                installed: ["source-pkg".to_string()].into_iter().collect(),
+            }));
             reg
         }
         fn plan_files(

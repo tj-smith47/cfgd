@@ -3649,12 +3649,8 @@ fn stranded_warning_counts_actions_not_distinct_managers() {
 fn no_stranded_warning_when_every_manager_is_available() {
     let mut plan = brew_provision_plan();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(AvailableManager("brew")));
-    registry
-        .package_managers
-        .push(Box::new(AvailableManager("brew-tap")));
+    registry.add_package_manager(Box::new(AvailableManager("brew")));
+    registry.add_package_manager(Box::new(AvailableManager("brew-tap")));
     let (printer, buf) = Printer::for_test();
     filter_plan(
         &mut plan,

@@ -293,7 +293,7 @@ impl<'a> super::Reconciler<'a> {
             }
             let registered = self
                 .registry
-                .system_configurators
+                .system_configurators()
                 .iter()
                 .any(|c| c.name() == key);
             let reason = if registered {
@@ -539,7 +539,7 @@ impl<'a> super::Reconciler<'a> {
                 .map(|mgr| {
                     let class = match self
                         .registry
-                        .package_managers
+                        .package_managers()
                         .iter()
                         .find(|m| m.name() == mgr.as_str())
                     {

@@ -1855,7 +1855,7 @@ fn warn_stranded_installs(
             continue;
         }
         let available = registry
-            .package_managers
+            .package_managers()
             .iter()
             .any(|pm| pm.name() == manager && pm.is_available());
         if !available {

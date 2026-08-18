@@ -149,7 +149,7 @@ pub fn cmd_diff(
     let has_pkg_drift = {
         let pkg_sec = printer.section_phase(&PhaseName::Packages.section_label());
         let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
-            .package_managers
+            .package_managers()
             .iter()
             .map(|m| m.as_ref())
             .collect();

@@ -1445,7 +1445,7 @@ impl<'a> super::Reconciler<'a> {
                             // after its manager block leaves the config.
                             let uninstall_cmd = self
                                 .registry
-                                .package_managers
+                                .package_managers()
                                 .iter()
                                 .find(|m| m.name() == manager)
                                 .and_then(|m| m.persisted_uninstall());

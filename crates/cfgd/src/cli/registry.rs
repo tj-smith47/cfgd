@@ -78,9 +78,7 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
         registry: &mut ProviderRegistry,
         packages: &cfgd_core::config::PackagesSpec,
     ) {
-        registry
-            .package_managers
-            .extend(crate::packages::custom_managers(&packages.custom));
+        registry.extend_package_managers(crate::packages::custom_managers(&packages.custom));
     }
 
     fn build_file_manager(
@@ -163,107 +161,67 @@ pub(in crate::cli) fn build_registry_with_config_and_packages(
     packages: Option<&cfgd_core::config::PackagesSpec>,
 ) -> ProviderRegistry {
     let mut registry = ProviderRegistry::new();
-    registry.package_managers = package_managers_for_registry();
+    registry.set_package_managers(package_managers_for_registry());
 
     // Register system configurators based on OS
     use crate::system::*;
 
     // ShellConfigurator: `chsh` on Unix, Windows Terminal settings.json on Windows
     if cfg!(unix) || cfg!(windows) {
-        registry
-            .system_configurators
-            .push(Box::new(ShellConfigurator));
+        registry.add_system_configurator(Box::new(ShellConfigurator));
     }
 
     if cfg!(target_os = "macos") {
-        registry
-            .system_configurators
-            .push(Box::new(MacosDefaultsConfigurator));
-        registry
-            .system_configurators
-            .push(Box::new(LaunchAgentConfigurator));
+        registry.add_system_configurator(Box::new(MacosDefaultsConfigurator));
+        registry.add_system_configurator(Box::new(LaunchAgentConfigurator));
     }
 
     if cfg!(target_os = "linux") {
-        registry
-            .system_configurators
-            .push(Box::new(SystemdUnitConfigurator::default()));
+        registry.add_system_configurator(Box::new(SystemdUnitConfigurator::default()));
         // Linux desktop configurators — each checks CLI availability at runtime via is_available()
-        registry
-            .system_configurators
-            .push(Box::new(GsettingsConfigurator));
-        registry
-            .system_configurators
-            .push(Box::new(KdeConfigConfigurator));
-        registry
-            .system_configurators
-            .push(Box::new(XfconfConfigurator));
+        registry.add_system_configurator(Box::new(GsettingsConfigurator));
+        registry.add_system_configurator(Box::new(KdeConfigConfigurator));
+        registry.add_system_configurator(Box::new(XfconfConfigurator));
     }
 
     // Environment configurator is available on Unix and Windows
     if cfg!(unix) || cfg!(windows) {
-        registry
-            .system_configurators
-            .push(Box::new(EnvironmentConfigurator));
+        registry.add_system_configurator(Box::new(EnvironmentConfigurator));
     }
 
     // Windows registry configurator
     if cfg!(windows) {
-        registry
-            .system_configurators
-            .push(Box::new(WindowsRegistryConfigurator));
+        registry.add_system_configurator(Box::new(WindowsRegistryConfigurator));
     }
 
     // Windows service configurator
     if cfg!(windows) {
-        registry
-            .system_configurators
-            .push(Box::new(WindowsServiceConfigurator));
+        registry.add_system_configurator(Box::new(WindowsServiceConfigurator));
     }
 
     // SSH key configurator — available unconditionally (ssh-keygen on all platforms)
-    registry
-        .system_configurators
-        .push(Box::new(SshKeysConfigurator));
+    registry.add_system_configurator(Box::new(SshKeysConfigurator));
 
     // GPG key configurator — available on any platform where gpg is installed
     if cfgd_core::command_available("gpg") {
-        registry
-            .system_configurators
-            .push(Box::new(GpgKeysConfigurator));
+        registry.add_system_configurator(Box::new(GpgKeysConfigurator));
     }
 
     // Git configurator — cross-platform, gated on git being available at runtime
     if cfgd_core::command_available("git") {
-        registry
-            .system_configurators
-            .push(Box::new(GitConfigurator));
+        registry.add_system_configurator(Box::new(GitConfigurator));
     }
 
     // Node/infrastructure system configurators (Linux-only, gated at compile time)
     #[cfg(unix)]
     {
-        registry
-            .system_configurators
-            .push(Box::new(SysctlConfigurator));
-        registry
-            .system_configurators
-            .push(Box::new(KernelModuleConfigurator));
-        registry
-            .system_configurators
-            .push(Box::new(ContainerdConfigurator));
-        registry
-            .system_configurators
-            .push(Box::new(KubeletConfigurator));
-        registry
-            .system_configurators
-            .push(Box::new(AppArmorConfigurator));
-        registry
-            .system_configurators
-            .push(Box::new(SeccompConfigurator));
-        registry
-            .system_configurators
-            .push(Box::new(CertificateConfigurator));
+        registry.add_system_configurator(Box::new(SysctlConfigurator));
+        registry.add_system_configurator(Box::new(KernelModuleConfigurator));
+        registry.add_system_configurator(Box::new(ContainerdConfigurator));
+        registry.add_system_configurator(Box::new(KubeletConfigurator));
+        registry.add_system_configurator(Box::new(AppArmorConfigurator));
+        registry.add_system_configurator(Box::new(SeccompConfigurator));
+        registry.add_system_configurator(Box::new(CertificateConfigurator));
     }
 
     // Register secret backend and providers
@@ -282,9 +240,7 @@ pub(in crate::cli) fn build_registry_with_config_and_packages(
 
     // Extend with custom package managers from profile packages spec
     if let Some(spec) = packages {
-        registry
-            .package_managers
-            .extend(packages::custom_managers(&spec.custom));
+        registry.extend_package_managers(packages::custom_managers(&spec.custom));
     }
 
     registry
@@ -551,7 +507,7 @@ mod tests {
             let _guard = PackageManagerFactoryGuard::hermetic_native();
             let registry = build_registry_with_config(None);
             let native_mgr = registry
-                .package_managers
+                .package_managers()
                 .iter()
                 .find(|m| m.name() == native)
                 .expect("hermetic set must carry a manager named as the native manager");
@@ -562,7 +518,7 @@ mod tests {
             // Exactly one manager owns the native name — the fake replaced the real one.
             assert_eq!(
                 registry
-                    .package_managers
+                    .package_managers()
                     .iter()
                     .filter(|m| m.name() == native)
                     .count(),
@@ -574,7 +530,10 @@ mod tests {
         // Dropping the guard restores the real manager set for this thread.
         let restored = build_registry_with_config(None);
         assert!(
-            restored.package_managers.iter().any(|m| m.name() == native),
+            restored
+                .package_managers()
+                .iter()
+                .any(|m| m.name() == native),
             "real set still exposes the native manager by name after guard drop"
         );
     }
@@ -628,7 +587,7 @@ mod tests {
     fn build_registry_registers_package_managers_and_secret_backend() {
         let registry = build_registry_with_config(None);
         assert!(
-            !registry.package_managers.is_empty(),
+            !registry.package_managers().is_empty(),
             "registry must register at least one package manager"
         );
         let backend = registry
@@ -669,8 +628,8 @@ mod tests {
         let a = build_registry();
         let b = build_registry_with_config(None);
         assert_eq!(
-            a.package_managers.len(),
-            b.package_managers.len(),
+            a.package_managers().len(),
+            b.package_managers().len(),
             "zero-arg build_registry must match build_registry_with_config(None)"
         );
         assert_eq!(

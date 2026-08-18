@@ -239,15 +239,13 @@ fn collect_system_checks_maps_drifts() {
     use crate::test_helpers::MockSystemConfigurator;
 
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(MockSystemConfigurator::new("shell").with_drift(
-            vec![SystemDrift {
-                key: "defaultShell".into(),
-                expected: "/bin/zsh".into(),
-                actual: "/bin/bash".into(),
-            }],
-        )));
+    registry.add_system_configurator(Box::new(MockSystemConfigurator::new("shell").with_drift(
+        vec![SystemDrift {
+            key: "defaultShell".into(),
+            expected: "/bin/zsh".into(),
+            actual: "/bin/bash".into(),
+        }],
+    )));
 
     let mut system = BTreeMap::new();
     system.insert(
@@ -273,9 +271,7 @@ fn collect_system_checks_compliant_when_no_drift() {
     use crate::test_helpers::MockSystemConfigurator;
 
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(MockSystemConfigurator::new("shell")));
+    registry.add_system_configurator(Box::new(MockSystemConfigurator::new("shell")));
 
     let mut system = BTreeMap::new();
     system.insert(
@@ -393,7 +389,7 @@ fn watch_package_manager_returns_installed() {
     use crate::providers::StubPackageManager;
 
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("mock").with_installed(&["ripgrep", "fd"]),
     ));
 
@@ -500,7 +496,7 @@ fn collect_package_checks_installed_package_compliant() {
     profile.packages.pipx = vec!["ripgrep".into()];
 
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("pipx").with_installed(&["ripgrep"]),
     ));
 
@@ -528,7 +524,7 @@ fn collect_package_checks_routes_through_package_identity_for_case_insensitive_m
     profile.packages.chocolatey = vec!["Wget".into()];
 
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("chocolatey")
             .case_folding()
             .with_installed(&["wget"]),
@@ -555,7 +551,7 @@ fn collect_package_checks_missing_package_violation() {
     profile.packages.pipx = vec!["missing-pkg".into()];
 
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("pipx").with_installed(&[]),
     ));
 
@@ -581,7 +577,7 @@ fn collect_package_checks_empty_desired_skips_manager() {
 
     let profile = MergedProfile::default();
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("pipx").with_installed(&["curl"]),
     ));
 
@@ -603,7 +599,7 @@ fn collect_package_checks_manager_query_error_emits_warning_and_skips_packages()
     profile.packages.pipx = vec!["ripgrep".into(), "fd".into()];
 
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("pipx").with_installed_error("permission denied: /var/lib/pipx"),
     ));
 
@@ -636,7 +632,7 @@ fn watch_package_manager_query_error_emits_warning() {
     use crate::providers::StubPackageManager;
 
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("snap")
             .with_installed_error("snapd not responding (no such file or directory)"),
     ));
@@ -670,12 +666,10 @@ fn collect_package_checks_multiple_managers() {
     profile.packages.dnf = vec!["fd-find".into()];
 
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("pipx").with_installed(&["ripgrep"]),
     ));
-    registry
-        .package_managers
-        .push(Box::new(StubPackageManager::new("dnf").with_installed(&[])));
+    registry.add_package_manager(Box::new(StubPackageManager::new("dnf").with_installed(&[])));
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();
@@ -755,13 +749,11 @@ fn collect_system_checks_no_drift_compliant() {
     );
 
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(InlineSystemMock {
-            configurator_name: "mock".to_string(),
-            drift_tuples: vec![],
-            should_fail: false,
-        }));
+    registry.add_system_configurator(Box::new(InlineSystemMock {
+        configurator_name: "mock".to_string(),
+        drift_tuples: vec![],
+        should_fail: false,
+    }));
 
     let checks = collect_system_checks(&profile, &[], &registry).unwrap();
     assert_eq!(checks.len(), 1);
@@ -778,13 +770,11 @@ fn collect_system_checks_with_drift_violation() {
     );
 
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(InlineSystemMock {
-            configurator_name: "mock".to_string(),
-            drift_tuples: vec![("net.ipv4.ip_forward".into(), "1".into(), "0".into())],
-            should_fail: false,
-        }));
+    registry.add_system_configurator(Box::new(InlineSystemMock {
+        configurator_name: "mock".to_string(),
+        drift_tuples: vec![("net.ipv4.ip_forward".into(), "1".into(), "0".into())],
+        should_fail: false,
+    }));
 
     let checks = collect_system_checks(&profile, &[], &registry).unwrap();
     assert_eq!(checks.len(), 1);
@@ -827,13 +817,11 @@ fn collect_system_checks_diff_error_warning() {
     );
 
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(InlineSystemMock {
-            configurator_name: "mock".to_string(),
-            drift_tuples: vec![],
-            should_fail: true,
-        }));
+    registry.add_system_configurator(Box::new(InlineSystemMock {
+        configurator_name: "mock".to_string(),
+        drift_tuples: vec![],
+        should_fail: true,
+    }));
 
     let checks = collect_system_checks(&profile, &[], &registry).unwrap();
     assert_eq!(checks.len(), 1);
@@ -851,16 +839,14 @@ fn collect_system_checks_multiple_drifts_multiple_violations() {
     );
 
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(InlineSystemMock {
-            configurator_name: "mock".to_string(),
-            drift_tuples: vec![
-                ("a".into(), "1".into(), "0".into()),
-                ("b".into(), "true".into(), "false".into()),
-            ],
-            should_fail: false,
-        }));
+    registry.add_system_configurator(Box::new(InlineSystemMock {
+        configurator_name: "mock".to_string(),
+        drift_tuples: vec![
+            ("a".into(), "1".into(), "0".into()),
+            ("b".into(), "true".into(), "false".into()),
+        ],
+        should_fail: false,
+    }));
 
     let checks = collect_system_checks(&profile, &[], &registry).unwrap();
     assert_eq!(checks.len(), 2);
@@ -1368,7 +1354,7 @@ fn collect_package_checks_includes_module_only_package() {
     }];
 
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("pipx").with_installed(&[]),
     ));
 
@@ -1428,15 +1414,13 @@ fn collect_system_checks_includes_module_only_tweak() {
     );
 
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
-            vec![SystemDrift {
-                key: "vm.swappiness".into(),
-                expected: "10".into(),
-                actual: "60".into(),
-            }],
-        )));
+    registry.add_system_configurator(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
+        vec![SystemDrift {
+            key: "vm.swappiness".into(),
+            expected: "10".into(),
+            actual: "60".into(),
+        }],
+    )));
 
     let checks = collect_system_checks(&profile, &[m], &registry).unwrap();
     assert_eq!(checks.len(), 1);
@@ -1489,18 +1473,16 @@ fn collect_snapshot_includes_module_resources_and_content_check() {
 
     let mut registry = ProviderRegistry::new();
     registry.file_manager = Some(Box::new(MockFileManager::new()));
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         StubPackageManager::new("pipx").with_installed(&[]),
     ));
-    registry
-        .system_configurators
-        .push(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
-            vec![SystemDrift {
-                key: "vm.swappiness".into(),
-                expected: "10".into(),
-                actual: "60".into(),
-            }],
-        )));
+    registry.add_system_configurator(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
+        vec![SystemDrift {
+            key: "vm.swappiness".into(),
+            expected: "10".into(),
+            actual: "60".into(),
+        }],
+    )));
 
     let printer = crate::test_helpers::test_printer();
     let state = crate::test_helpers::test_state();

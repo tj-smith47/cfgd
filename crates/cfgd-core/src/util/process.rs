@@ -372,6 +372,40 @@ static COMMAND_PATH_MEMO: std::sync::OnceLock<
 /// would never notice.
 const COMMAND_PATH_MEMO_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Millisecond override of [`COMMAND_PATH_MEMO_TTL`], or [`u64::MAX`] for "no
+/// override". It exists so a test never depends on wall time: a test asserting
+/// that a memoized answer STANDS pins the TTL out of reach, and one asserting
+/// that it expires pins it to zero. Both claims are then about the mechanism
+/// rather than about how long two adjacent statements happened to take.
+#[cfg(any(test, feature = "test-helpers"))]
+static COMMAND_PATH_MEMO_TTL_OVERRIDE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// How long a memoized resolution stands, honouring the test override.
+fn command_path_memo_ttl() -> std::time::Duration {
+    #[cfg(any(test, feature = "test-helpers"))]
+    {
+        let millis = COMMAND_PATH_MEMO_TTL_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+        if millis != u64::MAX {
+            return std::time::Duration::from_millis(millis);
+        }
+    }
+    COMMAND_PATH_MEMO_TTL
+}
+
+/// Pin the memo TTL, or hand back the default with `None`. Returns what was
+/// pinned before, so a guard can put it back.
+///
+/// Reach for it through `test_helpers::CommandPathMemoTtlGuard`, never directly.
+#[cfg(any(test, feature = "test-helpers"))]
+pub(crate) fn set_command_path_memo_ttl_override(millis: Option<u64>) -> Option<u64> {
+    let prior = COMMAND_PATH_MEMO_TTL_OVERRIDE.swap(
+        millis.unwrap_or(u64::MAX),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    (prior != u64::MAX).then_some(prior)
+}
+
 /// Entry ceiling before the map is dropped wholesale. Command names come from a
 /// closed set of provider and tool names, so this is never reached in practice;
 /// it exists so a long-lived daemon cannot grow the map without bound if one
@@ -401,7 +435,7 @@ fn memoized_command_path(
     let entry = memo.get(cmd)?;
     if entry.generation != generation
         || entry.path.as_deref() != path_env
-        || entry.computed.elapsed() >= COMMAND_PATH_MEMO_TTL
+        || entry.computed.elapsed() >= command_path_memo_ttl()
     {
         return None;
     }
@@ -872,6 +906,9 @@ mod tests {
         // the whole window in which `PATH` is this test's tempdir.
         let _path_excl = crate::test_helpers::path_env_mutation_guard();
         let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        // "Still stands" is the claim, so the TTL must not be able to retire the
+        // entry between two adjacent statements on a stalled runner.
+        let _ttl = crate::test_helpers::CommandPathMemoTtlGuard::never_expires();
         let stem = "cfgd-probe-memoized-miss";
 
         // Each attempt gets its own directory, so a retry memoizes its own miss
@@ -903,6 +940,34 @@ mod tests {
             command_path(stem).as_deref(),
             Some(expected.as_path()),
             "an invalidation must make the next lookup walk again"
+        );
+    }
+
+    /// The TTL is the only thing that retires an answer nothing in cfgd caused
+    /// to change — a binary a human installed by hand beside a running daemon.
+    /// Pinned to zero, every entry is expired the moment it is stored, so the
+    /// second lookup finds a file written after the first one missed. With the
+    /// expiry arm removed the memoized miss answers instead.
+    #[test]
+    #[serial]
+    fn an_expired_memo_entry_is_walked_for_again() {
+        let _path_excl = crate::test_helpers::path_env_mutation_guard();
+        let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+        let _ttl = crate::test_helpers::CommandPathMemoTtlGuard::always_expired();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _path = crate::test_helpers::EnvVarGuard::set("PATH", &dir.path().to_string_lossy());
+        let stem = "cfgd-probe-memo-expiry";
+
+        assert!(
+            command_path(stem).is_none(),
+            "nothing named {stem} exists yet"
+        );
+        let expected = write_probe_tool(dir.path(), stem);
+
+        assert_eq!(
+            command_path(stem).as_deref(),
+            Some(expected.as_path()),
+            "an expired entry must be walked for again, with nothing invalidated"
         );
     }
 

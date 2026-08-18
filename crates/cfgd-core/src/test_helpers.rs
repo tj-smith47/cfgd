@@ -2002,6 +2002,51 @@ pub fn measured_in_a_stable_generation<T>(mut measure: impl FnMut() -> T) -> T {
     );
 }
 
+/// RAII pin of the `command_path` memo's TTL, restoring the prior setting on
+/// drop.
+///
+/// The memo expires an entry after 30 seconds so a weeks-long daemon notices a
+/// binary a human installed by hand. That ceiling is invisible to production
+/// and load-bearing for it, but it is wall time, and a test asserting either
+/// that a memoized answer STANDS or that it EXPIRES would otherwise be asserting
+/// about how long two adjacent statements took on a loaded runner. Pin it and
+/// the claim is about the mechanism.
+///
+/// Pinning is process-global and needs no serialization of its own: a longer TTL
+/// only lets another test's entries live longer, and a zero TTL only makes them
+/// recompute — neither can change the ANSWER any concurrent test reads.
+pub struct CommandPathMemoTtlGuard {
+    prior: Option<u64>,
+}
+
+impl CommandPathMemoTtlGuard {
+    /// Pin the TTL to `ttl`, saturating at the millisecond range.
+    pub fn pinned(ttl: std::time::Duration) -> Self {
+        let millis = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX - 1);
+        Self {
+            prior: crate::set_command_path_memo_ttl_override(Some(millis)),
+        }
+    }
+
+    /// Pin the TTL beyond any test's lifetime, so no memoized entry can expire
+    /// mid-test. For a test whose claim is that an answer still stands.
+    pub fn never_expires() -> Self {
+        Self::pinned(std::time::Duration::from_millis(u64::MAX - 1))
+    }
+
+    /// Pin the TTL to zero, so every entry is expired the moment it is stored.
+    /// For a test whose claim is that expiry retires an answer.
+    pub fn always_expired() -> Self {
+        Self::pinned(std::time::Duration::ZERO)
+    }
+}
+
+impl Drop for CommandPathMemoTtlGuard {
+    fn drop(&mut self) {
+        crate::set_command_path_memo_ttl_override(self.prior);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Env-var test guards — replace per-file `struct EnvVarGuard` / `fn with_env`
 // duplicates. Pair with `serial_test::serial` because env-var mutation is
@@ -2766,10 +2811,10 @@ impl ReconcilerTestHarnessBuilder {
         let mut registry = crate::providers::ProviderRegistry::new();
 
         for pm in self.package_managers {
-            registry.package_managers.push(Box::new(pm));
+            registry.add_package_manager(Box::new(pm));
         }
         for sc in self.system_configurators {
-            registry.system_configurators.push(Box::new(sc));
+            registry.add_system_configurator(Box::new(sc));
         }
         for sp in self.secret_providers {
             registry.secret_providers.push(Box::new(sp));
@@ -4010,7 +4055,7 @@ env:
                 .build();
 
             // The configurator is wired in
-            assert_eq!(h.registry.system_configurators.len(), 1);
+            assert_eq!(h.registry.system_configurators().len(), 1);
 
             // Plan still works (system drift doesn't automatically generate actions
             // without matching profile system config), so it yields no phases.
@@ -4058,8 +4103,8 @@ env:
             assert_eq!(result.status, ApplyStatus::Success);
 
             // Verify full wiring: all providers present
-            assert_eq!(h.registry.package_managers.len(), 1);
-            assert_eq!(h.registry.system_configurators.len(), 1);
+            assert_eq!(h.registry.package_managers().len(), 1);
+            assert_eq!(h.registry.system_configurators().len(), 1);
             assert_eq!(h.registry.secret_providers.len(), 1);
             assert!(h.registry.file_manager.is_some());
         }

@@ -144,7 +144,7 @@ pub(super) fn live_drift_results(
 
     // Packages: any non-Skip action means the installed set diverges from desired.
     let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
-        .package_managers
+        .package_managers()
         .iter()
         .map(|m| m.as_ref())
         .collect();
@@ -325,7 +325,7 @@ pub(super) fn manager_verify_results(
     cx: &cfgd_core::providers::PackageContext<'_>,
 ) -> anyhow::Result<Vec<VerifyResult>> {
     let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
-        .package_managers
+        .package_managers()
         .iter()
         .map(|m| m.as_ref())
         .collect();
@@ -725,7 +725,7 @@ mod tests {
         let resolved = resolved_no_files();
 
         let mut registry = ProviderRegistry::new();
-        registry.package_managers.push(Box::new(
+        registry.add_package_manager(Box::new(
             cfgd_core::test_helpers::MockPackageManager::new("brew").with_installed(&[]),
         ));
 
@@ -761,7 +761,7 @@ mod tests {
         let resolved = resolved_no_files();
 
         let mut registry = ProviderRegistry::new();
-        registry.package_managers.push(Box::new(
+        registry.add_package_manager(Box::new(
             cfgd_core::test_helpers::MockPackageManager::new("npm")
                 .unavailable()
                 .bootstrappable_via("pip install npm-bootstrap"),
@@ -800,7 +800,7 @@ mod tests {
         let resolved = resolved_no_files();
 
         let mut registry = ProviderRegistry::new();
-        registry.package_managers.push(Box::new(
+        registry.add_package_manager(Box::new(
             cfgd_core::test_helpers::MockPackageManager::new("npm")
                 .unavailable()
                 .bootstrappable_via("pip install npm-bootstrap")
@@ -843,7 +843,7 @@ mod tests {
     fn manager_verify_results_flags_a_provisionable_manager_as_drift() {
         let resolved = resolved_no_files();
         let mut registry = ProviderRegistry::new();
-        registry.package_managers.push(Box::new(
+        registry.add_package_manager(Box::new(
             cfgd_core::test_helpers::MockPackageManager::new("npm")
                 .unavailable()
                 .bootstrappable_via("pip install npm-bootstrap"),
@@ -881,7 +881,7 @@ mod tests {
     fn manager_verify_results_flags_a_refused_manager_as_drift() {
         let resolved = resolved_no_files();
         let mut registry = ProviderRegistry::new();
-        registry.package_managers.push(Box::new(
+        registry.add_package_manager(Box::new(
             cfgd_core::test_helpers::MockPackageManager::new("npm")
                 .unavailable()
                 .bootstrappable_via("pip install npm-bootstrap")
@@ -975,7 +975,7 @@ mod tests {
         let resolved = resolved_no_files();
 
         let mut registry = ProviderRegistry::new();
-        registry.system_configurators.push(Box::new(
+        registry.add_system_configurator(Box::new(
             cfgd_core::test_helpers::MockSystemConfigurator::new("sysctl").with_drift(vec![
                 cfgd_core::providers::SystemDrift {
                     key: "vm.swappiness".to_string(),

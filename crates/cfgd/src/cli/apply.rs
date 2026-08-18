@@ -223,7 +223,7 @@ pub fn run_apply(
     packages::resolve_manifest_packages(&mut effective_resolved.merged.packages, &config_dir)?;
 
     // Extend registry with custom package managers from config
-    registry.package_managers.extend(packages::custom_managers(
+    registry.extend_package_managers(packages::custom_managers(
         &effective_resolved.merged.packages.custom,
     ));
 
@@ -259,7 +259,7 @@ pub fn run_apply(
         )
     } else {
         let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
-            .package_managers
+            .package_managers()
             .iter()
             .map(|m| m.as_ref())
             .collect();
@@ -462,7 +462,7 @@ pub fn run_apply(
     // be reached after the `has_actions` gate. Best-effort.
     if prune_eligible {
         let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
-            .package_managers
+            .package_managers()
             .iter()
             .map(|m| m.as_ref())
             .collect();
@@ -871,7 +871,7 @@ mod tests {
         // Registry contains only built-in managers, so cargo is "known" but
         // widgetmgr / legacymgr are not — exactly the orphan condition.
         let mut registry = cfgd_core::providers::ProviderRegistry::new();
-        registry.package_managers = crate::packages::all_package_managers();
+        registry.set_package_managers(crate::packages::all_package_managers());
 
         // Normal verbosity: Accent/Warn status lines are suppressed under Quiet
         // (the default for `for_test`).

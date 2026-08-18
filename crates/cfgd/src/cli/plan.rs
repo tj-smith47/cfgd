@@ -66,7 +66,7 @@ pub fn cmd_plan(
     packages::resolve_manifest_packages(&mut effective_resolved.merged.packages, &config_dir)?;
 
     // Extend registry with custom package managers from config
-    registry.package_managers.extend(packages::custom_managers(
+    registry.extend_package_managers(packages::custom_managers(
         &effective_resolved.merged.packages.custom,
     ));
 
@@ -96,7 +96,7 @@ pub fn cmd_plan(
         )
     } else {
         let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
-            .package_managers
+            .package_managers()
             .iter()
             .map(|m| m.as_ref())
             .collect();

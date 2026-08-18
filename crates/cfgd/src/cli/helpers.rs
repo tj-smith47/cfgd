@@ -659,7 +659,7 @@ pub(in crate::cli) fn managers_map(
     registry: &ProviderRegistry,
 ) -> std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> {
     registry
-        .package_managers
+        .package_managers()
         .iter()
         .map(|m| (m.name().to_string(), m.as_ref()))
         .collect()
@@ -1052,8 +1052,7 @@ pub(in crate::cli) fn resolve_desired_state(
         let mut registry =
             build_registry_with_config_and_packages(Some(cfg), Some(&resolved.merged.packages));
         registry
-            .package_managers
-            .extend(packages::custom_managers(&resolved.merged.packages.custom));
+            .extend_package_managers(packages::custom_managers(&resolved.merged.packages.custom));
         let platform = Platform::detect();
         let mgr_map = managers_map(&registry);
         let cache_base = module_cache_dir(cli)?;

@@ -1236,7 +1236,7 @@ mod tests {
 
             let state = cfgd_core::test_helpers::test_state();
             let mut registry = ProviderRegistry::new();
-            registry.package_managers = crate::packages::all_package_managers();
+            registry.set_package_managers(crate::packages::all_package_managers());
             let reconciler = Reconciler::new(&registry, &state);
 
             reconciler
@@ -1301,7 +1301,7 @@ mod tests {
 
             let state = cfgd_core::test_helpers::test_state();
             let mut registry = ProviderRegistry::new();
-            registry.package_managers = crate::packages::all_package_managers();
+            registry.set_package_managers(crate::packages::all_package_managers());
             let reconciler = Reconciler::new(&registry, &state);
 
             let plan = Plan {
@@ -2144,7 +2144,7 @@ mod tests {
 
             let state = cfgd_core::test_helpers::test_state();
             let mut registry = ProviderRegistry::new();
-            registry.package_managers = crate::packages::all_package_managers();
+            registry.set_package_managers(crate::packages::all_package_managers());
             let reconciler = Reconciler::new(&registry, &state);
 
             let plan = Plan {

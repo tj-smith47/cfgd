@@ -420,7 +420,7 @@ fn build_actions(
 /// it is what keeps this a spelling gate rather than a second planner.
 pub fn prerequisite_selectors(registry: &ProviderRegistry) -> BTreeSet<String> {
     let mut selectors = BTreeSet::new();
-    for pm in &registry.package_managers {
+    for pm in registry.package_managers() {
         selectors.insert(node_manager(registry, pm.name()).to_string());
         if let Some(plan) = pm.bootstrap_plan() {
             selectors.extend(plan.requires);
@@ -738,7 +738,7 @@ fn node_manager<'r>(registry: &'r ProviderRegistry, name: &'r str) -> &'r str {
 
 fn find_manager<'r>(registry: &'r ProviderRegistry, name: &str) -> Option<&'r dyn PackageManager> {
     registry
-        .package_managers
+        .package_managers()
         .iter()
         .find(|pm| pm.name() == name)
         .map(|pm| pm.as_ref())
@@ -788,7 +788,7 @@ pub(super) fn fold_provision_path_dirs<'a>(
 /// has none, which is the refusal path.
 fn prerequisite_installer(registry: &ProviderRegistry) -> Option<&dyn PackageManager> {
     registry
-        .package_managers
+        .package_managers()
         .iter()
         .map(|pm| pm.as_ref())
         .find(|pm| is_system_manager(pm.name()) && pm.is_available())

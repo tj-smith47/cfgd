@@ -705,7 +705,7 @@ fn managers_map_empty_registry_returns_empty_map() {
 #[test]
 fn managers_map_keys_match_manager_names() {
     let mut registry = ProviderRegistry::new();
-    registry.package_managers = packages::all_package_managers();
+    registry.set_package_managers(packages::all_package_managers());
     let map = managers_map(&registry);
     assert!(
         !map.is_empty(),

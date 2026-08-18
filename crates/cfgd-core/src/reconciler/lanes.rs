@@ -361,7 +361,7 @@ fn transitive_depends(modules: &[ResolvedModule]) -> HashMap<&str, HashSet<&str>
 /// sense and so drains nothing.
 fn drains_phase(registry: &ProviderRegistry, manager: &str) -> bool {
     registry
-        .package_managers
+        .package_managers()
         .iter()
         .any(|pm| pm.name() == manager && !pm.is_available())
 }

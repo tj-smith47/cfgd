@@ -6931,7 +6931,7 @@ fn managers_map_round_trips_registry_managers_by_name() {
         !map.is_empty(),
         "registry must produce at least one manager"
     );
-    for m in &registry.package_managers {
+    for m in registry.package_managers() {
         assert!(
             map.contains_key(m.name()),
             "managers_map missing entry for {}",
@@ -7523,11 +7523,15 @@ fn open_state_store_default() {
 fn build_registry_has_package_managers() {
     let registry = super::build_registry();
     assert_eq!(
-        registry.package_managers.len(),
+        registry.package_managers().len(),
         20,
         "registry should have all 20 package managers"
     );
-    let names: Vec<&str> = registry.package_managers.iter().map(|m| m.name()).collect();
+    let names: Vec<&str> = registry
+        .package_managers()
+        .iter()
+        .map(|m| m.name())
+        .collect();
     assert!(names.contains(&"brew"), "should include brew");
     assert!(names.contains(&"cargo"), "should include cargo");
     assert!(names.contains(&"apt"), "should include apt");
@@ -7541,12 +7545,12 @@ fn build_registry_has_system_configurators() {
     // plus conditionally gpg and git (both available in CI/dev). At minimum we should have
     // the unconditional ones.
     assert!(
-        registry.system_configurators.len() >= 6,
+        registry.system_configurators().len() >= 6,
         "registry should have at least 6 system configurators on Linux, got: {}",
-        registry.system_configurators.len()
+        registry.system_configurators().len()
     );
     let names: Vec<&str> = registry
-        .system_configurators
+        .system_configurators()
         .iter()
         .map(|c| c.name())
         .collect();
@@ -14555,11 +14559,11 @@ fn workstation_daemon_hooks_build_registry_returns_populated_registry() {
     };
     let registry = hooks.build_registry(&cfg);
     assert!(
-        !registry.package_managers.is_empty(),
+        !registry.package_managers().is_empty(),
         "build_registry should return a registry with at least one package manager"
     );
     assert!(
-        !registry.system_configurators.is_empty(),
+        !registry.system_configurators().is_empty(),
         "build_registry should return a registry with at least one system configurator"
     );
 }
@@ -15689,11 +15693,11 @@ fn build_registry_with_config_populates_secret_backend() {
         "should have a secret backend configured"
     );
     assert!(
-        !registry.package_managers.is_empty(),
+        !registry.package_managers().is_empty(),
         "should have package managers"
     );
     assert!(
-        !registry.system_configurators.is_empty(),
+        !registry.system_configurators().is_empty(),
         "should have system configurators"
     );
 }
@@ -15702,7 +15706,7 @@ fn build_registry_with_config_populates_secret_backend() {
 fn build_registry_with_no_config_uses_defaults() {
     let registry = super::build_registry_with_config_and_packages(None, None);
     assert!(
-        !registry.package_managers.is_empty(),
+        !registry.package_managers().is_empty(),
         "should have default package managers even without config"
     );
     assert!(
@@ -19964,9 +19968,7 @@ impl cfgd_core::providers::PackageManager for NamedManagerStub {
 #[test]
 fn resolve_phase_filter_rejects_an_unknown_selector_and_lists_the_legal_vocabulary() {
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(NamedManagerStub("brew", &[])));
+    registry.add_package_manager(Box::new(NamedManagerStub("brew", &[])));
     let (printer, _buf) = test_printer_capture();
     let err = super::resolve_phase_filter(
         Some(super::PhaseArg {
@@ -19993,9 +19995,7 @@ fn resolve_phase_filter_accepts_a_prerequisite_tool_as_a_selector() {
     // `--phase` validator listed manager families only, so one grammar was
     // legal on one flag and rejected on the other.
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(NamedManagerStub("brew", &["curl"])));
+    registry.add_package_manager(Box::new(NamedManagerStub("brew", &["curl"])));
     let (printer, _buf) = test_printer_capture();
     let filter = super::resolve_phase_filter(
         Some(super::PhaseArg {

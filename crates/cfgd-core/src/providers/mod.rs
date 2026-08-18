@@ -1012,8 +1012,11 @@ pub enum SecretAction {
 // --- ProviderRegistry ---
 
 pub struct ProviderRegistry {
-    pub package_managers: Vec<Box<dyn PackageManager>>,
-    pub system_configurators: Vec<Box<dyn SystemConfigurator>>,
+    /// Private because registering a provider has to retire the availability
+    /// sweep taken before it — see [`ProviderRegistry::add_package_manager`].
+    /// Read through [`ProviderRegistry::package_managers`].
+    package_managers: Vec<Box<dyn PackageManager>>,
+    system_configurators: Vec<Box<dyn SystemConfigurator>>,
     pub file_manager: Option<Box<dyn FileManager>>,
     pub secret_backend: Option<Box<dyn SecretBackend>>,
     pub secret_providers: Vec<Box<dyn SecretProvider>>,
@@ -1029,22 +1032,22 @@ pub struct ProviderRegistry {
 /// `is_available()` is a `PATH` probe for nearly every provider, and the sweep
 /// runs it over the whole registry — per system action, twice inside
 /// `plan_system`, three times per compliance snapshot, once per daemon tick.
-/// The result is reusable exactly as long as two things hold: no install has
-/// happened since (the shared [`crate::command_resolution_generation`]), and no
-/// provider has been registered since (`count`, because the fields are public
-/// and a caller may push into them after the first sweep — the stored indices
-/// would then describe a shorter registry).
+/// The result is reusable exactly as long as no install has happened since —
+/// the shared [`crate::command_resolution_generation`]. Registration is the
+/// other thing that would invalidate it, and cannot be observed here: the
+/// provider vectors are private and every mutator clears the memo outright, so
+/// a sweep never has to be judged against a registry that has changed shape
+/// under it.
 struct AvailabilityMemo {
     generation: u64,
-    count: usize,
     available: Vec<usize>,
 }
 
 impl AvailabilityMemo {
     /// The indices, or `None` when the sweep behind them can no longer be
     /// trusted.
-    fn indices(&self, generation: u64, count: usize) -> Option<&[usize]> {
-        (self.generation == generation && self.count == count).then_some(&self.available)
+    fn indices(&self, generation: u64) -> Option<&[usize]> {
+        (self.generation == generation).then_some(&self.available)
     }
 }
 
@@ -1062,7 +1065,7 @@ fn memoized_available<T: ?Sized>(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
-        .and_then(|m| m.indices(generation, providers.len()))
+        .and_then(|m| m.indices(generation))
         .map(<[usize]>::to_vec)
     {
         return hit;
@@ -1082,7 +1085,6 @@ fn memoized_available<T: ?Sized>(
     // generation outran is rejected by the next lookup rather than trusted.
     *memo.lock().unwrap_or_else(|e| e.into_inner()) = Some(AvailabilityMemo {
         generation,
-        count: providers.len(),
         available: available.clone(),
     });
     available
@@ -1100,6 +1102,75 @@ impl ProviderRegistry {
             available_managers: std::sync::Mutex::new(None),
             available_configurators: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Every registered package manager, available or not.
+    pub fn package_managers(&self) -> &[Box<dyn PackageManager>] {
+        &self.package_managers
+    }
+
+    /// Every registered system configurator, available or not.
+    pub fn system_configurators(&self) -> &[Box<dyn SystemConfigurator>] {
+        &self.system_configurators
+    }
+
+    /// Register one package manager, retiring the availability sweep taken
+    /// before it.
+    ///
+    /// Registration is the one event besides an install that changes what a
+    /// sweep should answer, and it is why the vector behind it is private: a
+    /// caller that could push directly would leave a sweep standing that
+    /// describes a registry it no longer matches.
+    pub fn add_package_manager(&mut self, manager: Box<dyn PackageManager>) {
+        self.package_managers.push(manager);
+        self.clear_manager_availability();
+    }
+
+    /// Register several package managers, retiring the sweep once.
+    pub fn extend_package_managers(
+        &mut self,
+        managers: impl IntoIterator<Item = Box<dyn PackageManager>>,
+    ) {
+        self.package_managers.extend(managers);
+        self.clear_manager_availability();
+    }
+
+    /// Replace the registered package managers wholesale.
+    pub fn set_package_managers(&mut self, managers: Vec<Box<dyn PackageManager>>) {
+        self.package_managers = managers;
+        self.clear_manager_availability();
+    }
+
+    /// Register one system configurator, retiring the availability sweep taken
+    /// before it.
+    pub fn add_system_configurator(&mut self, configurator: Box<dyn SystemConfigurator>) {
+        self.system_configurators.push(configurator);
+        self.clear_configurator_availability();
+    }
+
+    /// Register several system configurators, retiring the sweep once.
+    pub fn extend_system_configurators(
+        &mut self,
+        configurators: impl IntoIterator<Item = Box<dyn SystemConfigurator>>,
+    ) {
+        self.system_configurators.extend(configurators);
+        self.clear_configurator_availability();
+    }
+
+    fn clear_manager_availability(&mut self) {
+        // `&mut self` is the whole synchronisation: no other reference to this
+        // registry can exist, so the lock cannot be contended.
+        *self
+            .available_managers
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    fn clear_configurator_availability(&mut self) {
+        *self
+            .available_configurators
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     pub fn available_package_managers(&self) -> Vec<&dyn PackageManager> {
@@ -1377,8 +1448,8 @@ mod tests {
             let (here, here_asked) = CountingManager::new("here", &present);
             let (gone, gone_asked) = CountingManager::new("gone", &absent);
             let mut registry = ProviderRegistry::new();
-            registry.package_managers.push(Box::new(here));
-            registry.package_managers.push(Box::new(gone));
+            registry.add_package_manager(Box::new(here));
+            registry.add_package_manager(Box::new(gone));
 
             for _ in 0..5 {
                 let available = registry.available_package_managers();
@@ -1401,7 +1472,7 @@ mod tests {
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (pending, asked) = CountingManager::new("pending", &flag);
         let mut registry = ProviderRegistry::new();
-        registry.package_managers.push(Box::new(pending));
+        registry.add_package_manager(Box::new(pending));
 
         // Everything before the invalidation is a memo-hit claim, so it is
         // measured inside one generation. The flag is raised inside it: a
@@ -1430,24 +1501,53 @@ mod tests {
         assert_eq!(available[0].name(), "pending");
     }
 
-    /// The registry's provider vectors are public and a builder pushes into
-    /// them, so a memo keyed only on the generation would answer a later sweep
-    /// with indices taken over a shorter registry.
+    /// Registration is the second thing that retires a sweep: the CLI builds a
+    /// registry in stages and adds custom managers after a plan has already
+    /// asked what is available, so a memo the mutators did not clear would
+    /// answer the later sweep with indices taken over a shorter registry.
     #[test]
     #[serial_test::serial]
     fn a_provider_registered_after_the_first_sweep_is_swept_too() {
         let present = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let (first, _) = CountingManager::new("first", &present);
         let mut registry = ProviderRegistry::new();
-        registry.package_managers.push(Box::new(first));
+        registry.add_package_manager(Box::new(first));
         assert_eq!(registry.available_package_managers().len(), 1);
 
         let (second, _) = CountingManager::new("second", &present);
-        registry.package_managers.push(Box::new(second));
+        registry.add_package_manager(Box::new(second));
 
         let available = registry.available_package_managers();
         assert_eq!(available.len(), 2);
         assert_eq!(available[1].name(), "second");
+    }
+
+    /// Every other way into the registry retires its sweep too — the reason the
+    /// vectors are private is that one that did not would answer for providers
+    /// it never asked.
+    #[test]
+    #[serial_test::serial]
+    fn every_registration_path_retires_the_sweep() {
+        let present = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let mut registry = ProviderRegistry::new();
+        assert!(registry.available_package_managers().is_empty());
+        assert!(registry.available_system_configurators().is_empty());
+
+        let (batched, _) = CountingManager::new("batched", &present);
+        registry.extend_package_managers([Box::new(batched) as Box<dyn PackageManager>]);
+        assert_eq!(registry.available_package_managers().len(), 1);
+
+        let (replacement, _) = CountingManager::new("replacement", &present);
+        registry.set_package_managers(vec![Box::new(replacement)]);
+        let available = registry.available_package_managers();
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0].name(), "replacement");
+
+        registry.add_system_configurator(Box::new(StubConfigurator {
+            name: "late".to_string(),
+            available: true,
+        }));
+        assert_eq!(registry.available_system_configurators().len(), 1);
     }
 
     /// The configurator sweep is the same memo over the other vector; a system
@@ -1480,11 +1580,9 @@ mod tests {
         let swept = crate::test_helpers::measured_in_a_stable_generation(|| {
             let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let mut registry = ProviderRegistry::new();
-            registry
-                .system_configurators
-                .push(Box::new(CountingConfigurator {
-                    asked: std::sync::Arc::clone(&asked),
-                }));
+            registry.add_system_configurator(Box::new(CountingConfigurator {
+                asked: std::sync::Arc::clone(&asked),
+            }));
 
             for _ in 0..4 {
                 assert_eq!(registry.available_system_configurators().len(), 1);
@@ -1497,12 +1595,8 @@ mod tests {
     #[test]
     fn registry_filters_available_managers() {
         let mut registry = ProviderRegistry::new();
-        registry
-            .package_managers
-            .push(Box::new(StubPackageManager::new("mock")));
-        registry
-            .package_managers
-            .push(Box::new(StubPackageManager::new("mock2").unavailable()));
+        registry.add_package_manager(Box::new(StubPackageManager::new("mock")));
+        registry.add_package_manager(Box::new(StubPackageManager::new("mock2").unavailable()));
 
         let available = registry.available_package_managers();
         assert_eq!(available.len(), 1);
@@ -1574,8 +1668,8 @@ mod tests {
     #[test]
     fn provider_registry_default_matches_new() {
         let reg = ProviderRegistry::default();
-        assert!(reg.package_managers.is_empty());
-        assert!(reg.system_configurators.is_empty());
+        assert!(reg.package_managers().is_empty());
+        assert!(reg.system_configurators().is_empty());
         assert!(reg.file_manager.is_none());
         assert!(reg.secret_backend.is_none());
         assert!(reg.secret_providers.is_empty());
@@ -1607,11 +1701,11 @@ mod tests {
     #[test]
     fn available_system_configurators_filters_unavailable() {
         let mut reg = ProviderRegistry::new();
-        reg.system_configurators.push(Box::new(StubConfigurator {
+        reg.add_system_configurator(Box::new(StubConfigurator {
             name: "shell".to_string(),
             available: true,
         }));
-        reg.system_configurators.push(Box::new(StubConfigurator {
+        reg.add_system_configurator(Box::new(StubConfigurator {
             name: "systemd".to_string(),
             available: false,
         }));

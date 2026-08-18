@@ -312,7 +312,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             };
 
             let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
-                .package_managers
+                .package_managers()
                 .iter()
                 .map(|m| m.as_ref())
                 .collect();

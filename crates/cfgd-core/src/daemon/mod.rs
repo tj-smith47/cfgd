@@ -134,7 +134,7 @@ pub(crate) fn resolve_daemon_modules(
     }
     let platform = crate::platform::Platform::detect();
     let mgr_map: HashMap<String, &dyn PackageManager> = registry
-        .package_managers
+        .package_managers()
         .iter()
         .map(|m| (m.name().to_string(), m.as_ref() as &dyn PackageManager))
         .collect();

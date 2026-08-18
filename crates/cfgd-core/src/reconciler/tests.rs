@@ -445,7 +445,7 @@ fn verify_returns_results() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
 
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         MockPackageManager::new("cargo").with_installed(&["ripgrep"]),
     ));
 
@@ -1231,7 +1231,7 @@ fn module_state_stored_after_apply() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
 
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         MockPackageManager::new("brew").with_installed(&["neovim"]),
     ));
 
@@ -1319,7 +1319,7 @@ fn verify_module_drift_packages() {
     let mut registry = ProviderRegistry::new();
 
     // ripgrep is NOT installed — should drift
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         MockPackageManager::new("brew").with_installed(&["neovim"]),
     ));
 
@@ -1402,7 +1402,7 @@ fn verify_module_all_installed_emits_per_package_pass_rows() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
 
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         MockPackageManager::new("brew").with_installed(&["neovim", "ripgrep"]),
     ));
 
@@ -1451,7 +1451,7 @@ fn verify_routes_through_package_identity_for_name_remapping_manager() {
     let mut registry = ProviderRegistry::new();
     let mut go = TrackingPackageManager::with_installed("go", &["2fa"]);
     go.identity_strip = true;
-    registry.package_managers.push(Box::new(go));
+    registry.add_package_manager(Box::new(go));
 
     let resolved = make_empty_resolved();
     let printer = test_printer();
@@ -1570,7 +1570,7 @@ fn verify_module_package_not_installed_is_module_drift() {
     // recorded in the state store under `<module>/<name>`.
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         MockPackageManager::new("brew").with_installed(&[]),
     ));
 
@@ -1602,7 +1602,7 @@ fn verify_package_in_profile_and_module_appears_once() {
     // `package:` row for the profile scope.
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         MockPackageManager::new("brew").with_installed(&[]),
     ));
 
@@ -1641,9 +1641,7 @@ fn verify_module_package_on_unavailable_manager_is_skipped() {
     // matching how profile packages on unavailable managers are already skipped.
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(MockPackageManager::new("brew").unavailable()));
+    registry.add_package_manager(Box::new(MockPackageManager::new("brew").unavailable()));
 
     let resolved = make_empty_resolved();
     let printer = test_printer();
@@ -1668,9 +1666,7 @@ fn verify_profile_package_on_unavailable_manager_is_skipped() {
     // The profile-origin half of the same consistency rule.
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(MockPackageManager::new("brew").unavailable()));
+    registry.add_package_manager(Box::new(MockPackageManager::new("brew").unavailable()));
 
     let mut resolved = make_empty_resolved();
     resolved.merged.packages.brew = Some(crate::config::BrewSpec {
@@ -1696,15 +1692,13 @@ fn verify_module_system_tweak_surfaces_as_system_drift() {
     // the effective (profile ⊕ modules) system map.
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
-            vec![crate::providers::SystemDrift {
-                key: "vm.swappiness".to_string(),
-                expected: "10".to_string(),
-                actual: "60".to_string(),
-            }],
-        )));
+    registry.add_system_configurator(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
+        vec![crate::providers::SystemDrift {
+            key: "vm.swappiness".to_string(),
+            expected: "10".to_string(),
+            actual: "60".to_string(),
+        }],
+    )));
 
     // Profile has NO system config; the module contributes the sysctl key.
     let resolved = make_empty_resolved();
@@ -2892,9 +2886,7 @@ fn apply_package_install_tracks_under_identity_for_go_like_manager() {
     // be the identity `go/2fa` so prune later matches installed state.
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::go_like("go")));
+    registry.add_package_manager(Box::new(TrackingPackageManager::go_like("go")));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -2947,9 +2939,7 @@ fn apply_package_install_tracks_under_identity_for_go_like_manager() {
 fn apply_package_install_calls_mock_and_records_state() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::new("brew")));
+    registry.add_package_manager(Box::new(TrackingPackageManager::new("brew")));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -2999,7 +2989,7 @@ fn apply_package_install_calls_mock_and_records_state() {
     assert!(result.action_results[1].description.contains("ripgrep"));
 
     // Verify install was actually called on the tracking mock
-    let pm = registry.package_managers[0].as_ref();
+    let pm = registry.package_managers()[0].as_ref();
     let cx = test_package_context(&printer, &state);
     let installed = pm.installed_packages(&cx).unwrap();
     assert!(installed.contains("ripgrep"));
@@ -3054,15 +3044,11 @@ impl PackageManager for ScriptedLikeManager {
 fn apply_scripted_install_persists_uninstall_cmd_and_builtin_leaves_null() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(ScriptedLikeManager {
-            name: "widgetmgr".to_string(),
-            uninstall_cmd: "widgetmgr rm {package}".to_string(),
-        }));
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::new("cargo")));
+    registry.add_package_manager(Box::new(ScriptedLikeManager {
+        name: "widgetmgr".to_string(),
+        uninstall_cmd: "widgetmgr rm {package}".to_string(),
+    }));
+    registry.add_package_manager(Box::new(TrackingPackageManager::new("cargo")));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -3130,12 +3116,10 @@ fn apply_scripted_install_persists_uninstall_cmd_and_builtin_leaves_null() {
 fn apply_package_uninstall_calls_mock() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::with_installed(
-            "brew",
-            &["ripgrep", "fd"],
-        )));
+    registry.add_package_manager(Box::new(TrackingPackageManager::with_installed(
+        "brew",
+        &["ripgrep", "fd"],
+    )));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -3176,7 +3160,7 @@ fn apply_package_uninstall_calls_mock() {
     assert_eq!(result.action_results.len(), 1);
     assert!(result.action_results[0].success);
 
-    let pm = registry.package_managers[0].as_ref();
+    let pm = registry.package_managers()[0].as_ref();
     let cx = test_package_context(&printer, &state);
     let installed = pm.installed_packages(&cx).unwrap();
     assert!(!installed.contains("ripgrep"));
@@ -3187,9 +3171,7 @@ fn apply_package_uninstall_calls_mock() {
 fn apply_package_install_tracks_per_package_managed_resource() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::new("brew")));
+    registry.add_package_manager(Box::new(TrackingPackageManager::new("brew")));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -3250,12 +3232,10 @@ fn apply_package_uninstall_untracks_managed_resource() {
         .unwrap();
 
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::with_installed(
-            "brew",
-            &["ripgrep"],
-        )));
+    registry.add_package_manager(Box::new(TrackingPackageManager::with_installed(
+        "brew",
+        &["ripgrep"],
+    )));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -3602,12 +3582,10 @@ fn apply_env_inject_appends_to_existing_content() {
 fn apply_full_flow_plan_apply_verify_consistent() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::with_installed(
-            "brew",
-            &["git"],
-        )));
+    registry.add_package_manager(Box::new(TrackingPackageManager::with_installed(
+        "brew",
+        &["git"],
+    )));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -3670,9 +3648,7 @@ fn apply_full_flow_plan_apply_verify_consistent() {
 fn apply_records_summary_json() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::new("brew")));
+    registry.add_package_manager(Box::new(TrackingPackageManager::new("brew")));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -3723,9 +3699,7 @@ fn apply_records_summary_json() {
 fn apply_with_phase_filter_only_runs_matching_phase() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::new("brew")));
+    registry.add_package_manager(Box::new(TrackingPackageManager::new("brew")));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -3780,9 +3754,7 @@ fn apply_with_phase_filter_only_runs_matching_phase() {
 fn apply_with_phase_filter_runs_only_packages() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::new("brew")));
+    registry.add_package_manager(Box::new(TrackingPackageManager::new("brew")));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -3920,12 +3892,8 @@ fn apply_file_create_action_writes_file() {
 fn apply_multiple_package_actions_all_succeed() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::new("brew")));
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::new("cargo")));
+    registry.add_package_manager(Box::new(TrackingPackageManager::new("brew")));
+    registry.add_package_manager(Box::new(TrackingPackageManager::new("cargo")));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -3976,8 +3944,8 @@ fn apply_multiple_package_actions_all_succeed() {
     assert_eq!(result.failed(), 0);
 
     // Verify both managers had their install called
-    let brew = registry.package_managers[0].as_ref();
-    let cargo = registry.package_managers[1].as_ref();
+    let brew = registry.package_managers()[0].as_ref();
+    let cargo = registry.package_managers()[1].as_ref();
     let cx = test_package_context(&printer, &state);
     assert!(brew.installed_packages(&cx).unwrap().contains("jq"));
     assert!(cargo.installed_packages(&cx).unwrap().contains("bat"));
@@ -4056,12 +4024,10 @@ fn a_pruned_refresh_node_leaves_the_index_alone() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     let updates = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    registry
-        .package_managers
-        .push(Box::new(UpdateCountingPackageManager::new(
-            "apt",
-            updates.clone(),
-        )));
+    registry.add_package_manager(Box::new(UpdateCountingPackageManager::new(
+        "apt",
+        updates.clone(),
+    )));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -4103,9 +4069,7 @@ fn a_pruned_refresh_node_leaves_the_index_alone() {
 fn a_prerequisite_is_never_recorded_as_a_user_managed_resource() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::new("apt")));
+    registry.add_package_manager(Box::new(TrackingPackageManager::new("apt")));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -5115,12 +5079,8 @@ fn apply_partial_when_some_actions_fail() {
     let mut registry = ProviderRegistry::new();
 
     // One working manager, one failing
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::new("brew")));
-    registry
-        .package_managers
-        .push(Box::new(FailingPackageManager::new("apt")));
+    registry.add_package_manager(Box::new(TrackingPackageManager::new("brew")));
+    registry.add_package_manager(Box::new(FailingPackageManager::new("apt")));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -5179,9 +5139,7 @@ fn apply_failed_when_all_actions_fail() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
 
-    registry
-        .package_managers
-        .push(Box::new(FailingPackageManager::new("apt")));
+    registry.add_package_manager(Box::new(FailingPackageManager::new("apt")));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -5285,11 +5243,9 @@ fn apply_survives_a_panicking_lane_worker_instead_of_hanging() {
     // coordinator's `tx`-drop and `inbox.recv()` disconnect path along with
     // it.
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(PanickingPackageManager {
-            name: "panicky".to_string(),
-        }));
+    registry.add_package_manager(Box::new(PanickingPackageManager {
+        name: "panicky".to_string(),
+    }));
 
     let pkg_actions = vec![PackageAction::Install {
         manager: "panicky".to_string(),
@@ -5344,9 +5300,7 @@ fn apply_continue_on_error_post_script_continues() {
     // A post-apply script with continueOnError=true should not abort the apply
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::new("brew")));
+    registry.add_package_manager(Box::new(TrackingPackageManager::new("brew")));
 
     let reconciler = Reconciler::new(&registry, &state);
     let mut resolved = make_empty_resolved();
@@ -7304,9 +7258,7 @@ impl PackageManager for BootstrappablePackageManager {
 fn apply_manager_provision_makes_manager_available() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(BootstrappablePackageManager::new("snap")));
+    registry.add_package_manager(Box::new(BootstrappablePackageManager::new("snap")));
 
     let plan = Plan {
         phases: vec![Phase::from_actions(
@@ -7334,7 +7286,7 @@ fn apply_manager_provision_makes_manager_available() {
     );
 
     // Manager should now be available
-    assert!(registry.package_managers[0].is_available());
+    assert!(registry.package_managers()[0].is_available());
 }
 
 /// The registry answers availability from a memoized sweep, and the dispatcher
@@ -7346,9 +7298,7 @@ fn apply_manager_provision_makes_manager_available() {
 fn a_provisioned_manager_appears_in_the_registrys_next_availability_sweep() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(BootstrappablePackageManager::new("snap")));
+    registry.add_package_manager(Box::new(BootstrappablePackageManager::new("snap")));
 
     // The sweep the dispatcher would already be holding when the node runs.
     assert!(registry.available_package_managers().is_empty());
@@ -7379,12 +7329,25 @@ fn a_provisioned_manager_appears_in_the_registrys_next_availability_sweep() {
 }
 
 /// A manager whose `install()` lands a real executable in a directory that was
-/// already on `PATH` — the `apt install curl` shape. It registers no new
-/// directory, so nothing about `PATH` changes and the install itself is the only
-/// thing that can report the machine moved.
+/// already on `PATH`, and whose `uninstall()` takes it away again — the
+/// `apt install curl` / `apt remove curl` shape. Neither direction registers or
+/// unregisters a directory, so nothing about `PATH` changes and the action
+/// itself is the only thing that can report the machine moved.
 struct PathPopulatingManager {
     dir: std::path::PathBuf,
     stem: String,
+}
+
+impl PathPopulatingManager {
+    /// Where this manager's binary lives, under the name the host resolves it by.
+    fn binary(&self) -> std::path::PathBuf {
+        let name = if cfg!(windows) {
+            format!("{}.exe", self.stem)
+        } else {
+            self.stem.clone()
+        };
+        self.dir.join(name)
+    }
 }
 
 impl PackageManager for PathPopulatingManager {
@@ -7404,17 +7367,13 @@ impl PackageManager for PathPopulatingManager {
         Ok(HashSet::new())
     }
     fn install(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
-        let name = if cfg!(windows) {
-            format!("{}.exe", self.stem)
-        } else {
-            self.stem.clone()
-        };
-        let path = self.dir.join(name);
+        let path = self.binary();
         std::fs::write(&path, b"#!/bin/sh\nexit 0\n")?;
         crate::set_file_permissions(&path, 0o755)?;
         Ok(())
     }
     fn uninstall(&self, _packages: &[String], _: &PackageContext<'_>) -> Result<()> {
+        std::fs::remove_file(self.binary())?;
         Ok(())
     }
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
@@ -7442,12 +7401,10 @@ fn an_install_into_a_directory_already_on_path_retires_the_memoized_miss() {
 
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(PathPopulatingManager {
-            dir: dir.path().to_path_buf(),
-            stem: stem.to_string(),
-        }));
+    registry.add_package_manager(Box::new(PathPopulatingManager {
+        dir: dir.path().to_path_buf(),
+        stem: stem.to_string(),
+    }));
     // The action runs through `PackageExec` directly rather than through
     // `apply()`: the lane dispatcher refuses to run while this thread holds the
     // PATH mutation guard, and a worker's own read guard would deadlock behind
@@ -7465,6 +7422,60 @@ fn an_install_into_a_directory_already_on_path_retires_the_memoized_miss() {
     assert!(
         crate::command_available(stem),
         "a tool this run installed must be resolvable to the actions after it"
+    );
+}
+
+/// The mirror claim: an uninstall takes a binary off `PATH` with no directory
+/// change either, so a memoized HIT outlives the thing it describes unless the
+/// removal reports itself. Reachable as a daemon tick that removes a tool and a
+/// following tick that plans against `command_available` for it.
+#[test]
+#[serial_test::serial]
+fn an_uninstall_that_removes_a_binary_retires_the_memoized_hit() {
+    // Declared before the `EnvVarGuard` below so it drops last.
+    let _path_excl = crate::test_helpers::path_env_mutation_guard();
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    // The claim is that the UNINSTALL retires the entry; a TTL expiry between
+    // the two lookups would retire it for an unrelated reason and pass anyway.
+    let _ttl = crate::test_helpers::CommandPathMemoTtlGuard::never_expires();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _path = crate::test_helpers::EnvVarGuard::set("PATH", &dir.path().to_string_lossy());
+    let stem = "cfgd-probe-removed-by-apply";
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(PathPopulatingManager {
+        dir: dir.path().to_path_buf(),
+        stem: stem.to_string(),
+    }));
+    let (printer, _buf) = Printer::for_test();
+    let notes = crate::providers::NoteSink::discarded();
+    // Driven through `PackageExec` directly for the same reason the install
+    // sibling is: the lane dispatcher refuses to run while this thread holds the
+    // PATH mutation guard.
+    let exec = crate::reconciler::packages::PackageExec::new(&registry, &state, &printer, notes);
+    exec.apply_package_action(&PackageAction::Install {
+        manager: "writer".to_string(),
+        packages: vec!["tool".to_string()],
+        origin: "local".to_string(),
+    })
+    .expect("install");
+
+    assert!(
+        crate::command_available(stem),
+        "the tool is here — and this hit is what gets memoized"
+    );
+
+    exec.apply_package_action(&PackageAction::Uninstall {
+        manager: "writer".to_string(),
+        packages: vec!["tool".to_string()],
+        origin: "local".to_string(),
+    })
+    .expect("uninstall");
+
+    assert!(
+        !crate::command_available(stem),
+        "a tool this run removed must not still resolve for the actions after it"
     );
 }
 
@@ -8308,15 +8319,13 @@ fn apply_file_update_action_overwrites_target() {
 fn apply_system_set_value_calls_configurator() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
-            vec![crate::providers::SystemDrift {
-                key: "test.key".to_string(),
-                expected: "desired-val".to_string(),
-                actual: "current-val".to_string(),
-            }],
-        )));
+    registry.add_system_configurator(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
+        vec![crate::providers::SystemDrift {
+            key: "test.key".to_string(),
+            expected: "desired-val".to_string(),
+            actual: "current-val".to_string(),
+        }],
+    )));
 
     let reconciler = Reconciler::new(&registry, &state);
     let mut resolved = make_empty_resolved();
@@ -8377,15 +8386,13 @@ fn apply_system_set_value_applies_module_contributed_system() {
     // plans but the apply silently no-ops (no ~/.gitconfig write, etc.).
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
-            vec![crate::providers::SystemDrift {
-                key: "net.ipv4.ip_forward".to_string(),
-                expected: "1".to_string(),
-                actual: "0".to_string(),
-            }],
-        )));
+    registry.add_system_configurator(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
+        vec![crate::providers::SystemDrift {
+            key: "net.ipv4.ip_forward".to_string(),
+            expected: "1".to_string(),
+            actual: "0".to_string(),
+        }],
+    )));
 
     let reconciler = Reconciler::new(&registry, &state);
     // Profile carries NO system config — the setting exists only in the module.
@@ -8577,22 +8584,20 @@ fn plan_system_emits_set_value_actions_per_drift() {
     // each one becomes a SystemAction::SetValue with the drift fields.
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
-            vec![
-                crate::providers::SystemDrift {
-                    key: "net.ipv4.ip_forward".to_string(),
-                    expected: "1".to_string(),
-                    actual: "0".to_string(),
-                },
-                crate::providers::SystemDrift {
-                    key: "vm.swappiness".to_string(),
-                    expected: "10".to_string(),
-                    actual: "60".to_string(),
-                },
-            ],
-        )));
+    registry.add_system_configurator(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
+        vec![
+            crate::providers::SystemDrift {
+                key: "net.ipv4.ip_forward".to_string(),
+                expected: "1".to_string(),
+                actual: "0".to_string(),
+            },
+            crate::providers::SystemDrift {
+                key: "vm.swappiness".to_string(),
+                expected: "10".to_string(),
+                actual: "60".to_string(),
+            },
+        ],
+    )));
     let reconciler = Reconciler::new(&registry, &state);
 
     let mut profile = MergedProfile::default();
@@ -8660,7 +8665,7 @@ fn plan_system_skip_distinguishes_unavailable_from_unregistered() {
     // not masquerade as "no configurator registered".
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry.system_configurators.push(Box::new(
+    registry.add_system_configurator(Box::new(
         crate::test_helpers::MockSystemConfigurator::new("systemdUnits").unavailable(),
     ));
     let reconciler = Reconciler::new(&registry, &state);
@@ -8704,9 +8709,7 @@ fn plan_system_skip_distinguishes_unavailable_from_unregistered() {
 fn apply_module_install_packages_calls_manager() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::new("brew")));
+    registry.add_package_manager(Box::new(TrackingPackageManager::new("brew")));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -8791,7 +8794,7 @@ fn apply_module_install_packages_calls_manager() {
 
     // Verify install was called
     let cx = test_package_context(&printer, &state);
-    let installed = registry.package_managers[0]
+    let installed = registry.package_managers()[0]
         .installed_packages(&cx)
         .unwrap();
     assert!(installed.contains("neovim"));
@@ -9502,9 +9505,7 @@ fn apply_module_skip_reports_skipped() {
 fn apply_module_install_packages_provisions_manager_when_needed() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(BootstrappablePackageManager::new("brew")));
+    registry.add_package_manager(Box::new(BootstrappablePackageManager::new("brew")));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -9588,10 +9589,10 @@ fn apply_module_install_packages_provisions_manager_when_needed() {
     assert!(result.action_results.iter().all(|r| r.success));
 
     // Manager should have been provisioned and package installed
-    assert!(registry.package_managers[0].is_available());
+    assert!(registry.package_managers()[0].is_available());
     let cx = test_package_context(&printer, &state);
     assert!(
-        registry.package_managers[0]
+        registry.package_managers()[0]
             .installed_packages(&cx)
             .unwrap()
             .contains("jq")
@@ -10465,7 +10466,7 @@ fn verify_multiple_packages_mixed_status() {
     let mut registry = ProviderRegistry::new();
 
     // Only "git" installed, "tmux" missing
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         MockPackageManager::new("apt").with_installed(&["git"]),
     ));
 
@@ -11799,9 +11800,7 @@ fn verify_system_configurator_reports_drift() {
 
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(DriftingConfigurator));
+    registry.add_system_configurator(Box::new(DriftingConfigurator));
 
     let mut system = BTreeMap::new();
     system.insert(
@@ -11889,9 +11888,7 @@ fn verify_system_configurator_reports_healthy_when_no_drift() {
 
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(HealthyConfigurator));
+    registry.add_system_configurator(Box::new(HealthyConfigurator));
 
     let mut system = BTreeMap::new();
     system.insert(
@@ -11991,12 +11988,8 @@ mod bridge {
     fn run_mixed_apply_then_emit_summary() -> String {
         let state = test_state();
         let mut registry = ProviderRegistry::new();
-        registry
-            .package_managers
-            .push(Box::new(TrackingPackageManager::new("brew")));
-        registry
-            .package_managers
-            .push(Box::new(FailingPackageManager::new("apt")));
+        registry.add_package_manager(Box::new(TrackingPackageManager::new("brew")));
+        registry.add_package_manager(Box::new(FailingPackageManager::new("apt")));
 
         let reconciler = Reconciler::new(&registry, &state);
         let mut resolved = make_empty_resolved();
@@ -12957,7 +12950,7 @@ fn an_install_records_the_directories_it_created_with_no_provision_in_the_run() 
     let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         BootstrappingPackageManager::new("npm", &[])
             .already_available()
             .creating_on_install(&["/home/u/.npm-global/bin"]),
@@ -13008,7 +13001,7 @@ fn an_install_with_no_bootstrap_and_nothing_created_still_registers_its_path_dir
     let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         BootstrappingPackageManager::new("brew-like", &["/opt/brew-like/bin"]).already_available(),
     ));
     let reconciler = Reconciler::new(&registry, &state);
@@ -13055,7 +13048,7 @@ fn a_provision_records_the_directories_the_planned_method_names() {
     let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         BootstrappingPackageManager::new("pipx", &[]).path_dirs_per_method(),
     ));
     let reconciler = Reconciler::new(&registry, &state);
@@ -13097,7 +13090,7 @@ fn a_failed_install_still_records_the_directory_it_had_already_created() {
     let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         BootstrappingPackageManager::new("npm", &[])
             .already_available()
             .creating_on_install(&["/home/u/.npm-global/bin"])
@@ -13144,7 +13137,7 @@ fn an_install_that_created_one_directory_keeps_the_rest_of_the_recorded_row() {
     let state = test_state();
     record_brew_bootstrap(&state);
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         BootstrappingPackageManager::new("brew", &BREW_PATH_DIRS)
             .already_available()
             .creating_on_install(&[BREW_PATH_DIRS[0]]),
@@ -13188,7 +13181,7 @@ fn an_install_that_creates_nothing_leaves_an_earlier_provisions_record_intact() 
     let state = test_state();
     record_brew_bootstrap(&state);
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         BootstrappingPackageManager::new("brew", &BREW_PATH_DIRS).already_available(),
     ));
     let reconciler = Reconciler::new(&registry, &state);
@@ -13270,11 +13263,9 @@ fn run_brew_module_action(path_dirs: &[&str]) -> crate::state::StateStore {
     let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(BootstrappingPackageManager::new(
-            "brew", path_dirs,
-        )));
+    registry.add_package_manager(Box::new(BootstrappingPackageManager::new(
+        "brew", path_dirs,
+    )));
 
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
@@ -13317,12 +13308,10 @@ fn apply_module_install_packages_bootstraps_without_writing_env_out_of_band() {
 
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(BootstrappingPackageManager::new(
-            "brew",
-            &["/opt/homebrew/bin", "/opt/homebrew/sbin"],
-        )));
+    registry.add_package_manager(Box::new(BootstrappingPackageManager::new(
+        "brew",
+        &["/opt/homebrew/bin", "/opt/homebrew/sbin"],
+    )));
 
     let plan = prerequisites_phase(vec![provision_node("brew", "stub", &[])]);
     let (result, _text) = apply_manager_plan(&registry, &state, &plan);
@@ -13386,15 +13375,13 @@ fn apply_module_install_packages_leaves_existing_env_file_untouched() {
 /// something to work from.
 fn registry_with_bootstrappable_brew() -> ProviderRegistry {
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(BootstrappingPackageManager::new(
-            "brew",
-            &[
-                "/home/linuxbrew/.linuxbrew/bin",
-                "/home/linuxbrew/.linuxbrew/sbin",
-            ],
-        )));
+    registry.add_package_manager(Box::new(BootstrappingPackageManager::new(
+        "brew",
+        &[
+            "/home/linuxbrew/.linuxbrew/bin",
+            "/home/linuxbrew/.linuxbrew/sbin",
+        ],
+    )));
     registry
 }
 
@@ -13577,7 +13564,7 @@ fn plan_env_folds_in_a_to_be_provisioned_managers_declared_path_dirs() {
     // run and record it.
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         BootstrappingPackageManager::new("brew", &[]).declaring_path_dirs(&[
             "/home/linuxbrew/.linuxbrew/bin",
             "/home/linuxbrew/.linuxbrew/sbin",
@@ -13864,7 +13851,7 @@ fn apply_does_not_reorder_the_env_file_when_a_new_manager_joins_an_already_recor
     // regenerate": if the declared and recorded sets differed, this test
     // could not tell a real divergence apart from an ordering artifact.
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         BootstrappingPackageManager::new("brew", &BREW_PATH_DIRS)
             .declaring_path_dirs(&BREW_PATH_DIRS),
     ));
@@ -14974,12 +14961,8 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
     // apt = available → 0
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(MockPackageManager::new("apt")));
-    registry
-        .package_managers
-        .push(Box::new(BootstrappingPackageManager::new("brew", &[])));
+    registry.add_package_manager(Box::new(MockPackageManager::new("apt")));
+    registry.add_package_manager(Box::new(BootstrappingPackageManager::new("brew", &[])));
     let reconciler = Reconciler::new(&registry, &state);
 
     let module = ResolvedModule {
@@ -18188,9 +18171,7 @@ fn module_package_work_dispatches_before_profile_package_work() {
     let log = new_dispatch_log();
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(DispatchLogManager::new("brew", &log, true)));
+    registry.add_package_manager(Box::new(DispatchLogManager::new("brew", &log, true)));
     let reconciler = Reconciler::new(&registry, &state);
 
     let plan = packages_phase(vec![
@@ -18214,9 +18195,7 @@ fn apply_manager_provision_is_skipped_when_already_available() {
     let log = new_dispatch_log();
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(DispatchLogManager::new("brew", &log, true)));
+    registry.add_package_manager(Box::new(DispatchLogManager::new("brew", &log, true)));
 
     let plan = Plan {
         phases: vec![Phase::from_actions(
@@ -18248,9 +18227,7 @@ fn action_index_is_the_plan_position_not_the_dispatch_counter() {
     let log = new_dispatch_log();
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
+    registry.add_package_manager(Box::new(DispatchLogManager::new("brew", &log, false)));
     let reconciler = Reconciler::new(&registry, &state);
 
     let build_plan = || Plan {
@@ -18465,7 +18442,7 @@ impl ConcurrentApply {
 fn lane_registry(managers: Vec<DispatchLogManager>) -> ProviderRegistry {
     let mut registry = ProviderRegistry::new();
     for manager in managers {
-        registry.package_managers.push(Box::new(manager));
+        registry.add_package_manager(Box::new(manager));
     }
     registry
 }
@@ -19521,7 +19498,7 @@ fn phase_index(plan: &Plan, name: PhaseName) -> usize {
 fn profile_files_precede_system_phase() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry.system_configurators.push(Box::new(
+    registry.add_system_configurator(Box::new(
         MockSystemConfigurator::new("systemdUnits").with_drift(vec![
             crate::providers::SystemDrift {
                 key: "cfgd-agent.service".to_string(),
@@ -19569,7 +19546,7 @@ fn profile_files_precede_system_phase() {
 fn deployed_unit_file_precedes_systemd_enable() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry.system_configurators.push(Box::new(
+    registry.add_system_configurator(Box::new(
         MockSystemConfigurator::new("systemdUnits").with_drift(vec![
             crate::providers::SystemDrift {
                 key: "cfgd-agent.service".to_string(),
@@ -20384,9 +20361,7 @@ fn manager_action_renders_in_cfgd_managers_group() {
     let log = new_dispatch_log();
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
+    registry.add_package_manager(Box::new(DispatchLogManager::new("brew", &log, false)));
     let reconciler = Reconciler::new(&registry, &state);
 
     let plan = packages_phase(vec![
@@ -20431,9 +20406,7 @@ fn manager_action_group_is_display_only() {
     let log = new_dispatch_log();
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
+    registry.add_package_manager(Box::new(DispatchLogManager::new("brew", &log, false)));
     let reconciler = Reconciler::new(&registry, &state);
 
     let action = Action::Manager(ManagerAction::Provision {
@@ -20477,9 +20450,7 @@ fn the_prerequisites_serial_groups_render_below_the_managers_tree() {
     let log = new_dispatch_log();
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(DispatchLogManager::new("brew", &log, false)));
+    registry.add_package_manager(Box::new(DispatchLogManager::new("brew", &log, false)));
     let reconciler = Reconciler::new(&registry, &state);
 
     let plan = prerequisites_phase(vec![
@@ -20713,9 +20684,7 @@ fn packages_tree_renders_profile_first_while_modules_execute_first() {
     let log = new_dispatch_log();
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(DispatchLogManager::new("brew", &log, true)));
+    registry.add_package_manager(Box::new(DispatchLogManager::new("brew", &log, true)));
     let reconciler = Reconciler::new(&registry, &state);
 
     let plan = packages_phase(vec![
@@ -20750,9 +20719,7 @@ fn packages_tree_renders_profile_first_while_modules_execute_first() {
 fn platform_skip_renders_as_header_annotation_not_a_phase() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::new("brew")));
+    registry.add_package_manager(Box::new(TrackingPackageManager::new("brew")));
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = resolved_for("work", &["ripgrep"]);
 
@@ -20891,9 +20858,7 @@ fn every_action_emits_exactly_one_line() {
     // more lines than actions.
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::new("brew")));
+    registry.add_package_manager(Box::new(TrackingPackageManager::new("brew")));
     registry.secret_backend = Some(Box::new(TestSecretBackend {
         decrypted_value: "my-secret-token".to_string(),
     }));
@@ -21067,9 +21032,7 @@ fn a_script_phase_emits_one_line_per_script_not_two() {
 fn failure_renders_inside_its_owner_group() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(FailingPackageManager::new("brew")));
+    registry.add_package_manager(Box::new(FailingPackageManager::new("brew")));
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = make_empty_resolved();
 
@@ -21156,9 +21119,7 @@ fn streaming_phase_lines_appear_as_work_completes() {
 fn action_notes_collect_into_the_run_wide_caveats_group() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(NotePushingManager::new("brew")));
+    registry.add_package_manager(Box::new(NotePushingManager::new("brew")));
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = resolved_for("work", &["neovim"]);
 
@@ -21194,9 +21155,7 @@ fn action_notes_collect_into_the_run_wide_caveats_group() {
 fn an_empty_note_drain_emits_nothing() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .package_managers
-        .push(Box::new(TrackingPackageManager::new("brew")));
+    registry.add_package_manager(Box::new(TrackingPackageManager::new("brew")));
     let reconciler = Reconciler::new(&registry, &state);
     let resolved = resolved_for("work", &["neovim"]);
 
@@ -21321,9 +21280,7 @@ fn resolved_with_sysctl_key() -> crate::config::ResolvedProfile {
 fn configurator_narration_collects_into_the_run_wide_caveats_group() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry
-        .system_configurators
-        .push(Box::new(NarratingConfigurator));
+    registry.add_system_configurator(Box::new(NarratingConfigurator));
     let reconciler = Reconciler::new(&registry, &state);
 
     let (result, out) = apply_transcript(
@@ -21440,7 +21397,7 @@ fn a_provisions_planned_via_reaches_the_bootstrap_that_executes_it() {
     let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
     let state = test_state();
     let mut registry = ProviderRegistry::new();
-    registry.package_managers.push(Box::new(
+    registry.add_package_manager(Box::new(
         DispatchLogManager::new("npm", &log, false).recording_provision_via(&seen),
     ));
     let reconciler = Reconciler::new(&registry, &state);

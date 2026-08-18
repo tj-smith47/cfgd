@@ -1393,7 +1393,10 @@ fn a_script_that_installs_a_tool_retires_the_memoized_miss() {
         workdir: None,
         run: format!(
             "printf '#!/bin/sh\\nexit 0\\n' > {p} && chmod 755 {p}",
-            p = installer.display()
+            // Quoted through the crate's own helper rather than spliced bare:
+            // a path interpolated into a shell command is the shape those
+            // helpers exist to make unwriteable, example code included.
+            p = crate::posix_single_quoted(&installer.to_string_lossy())
         ),
         timeout: None,
         idle_timeout: None,
