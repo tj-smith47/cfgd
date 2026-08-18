@@ -308,7 +308,7 @@ cfgd profile create work-linux \
 ### Updating Profiles via CLI
 
 ![authoring a profile from the CLI](../demo/cfgd-author.gif)
-*Explain a field, add a package and an alias, preview, then converge — no editor.*
+*Explain a field, add a package and an alias, preview, then converge: no editor needed.*
 
 ```sh
 cfgd profile update work \

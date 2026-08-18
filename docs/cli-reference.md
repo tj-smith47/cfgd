@@ -962,7 +962,7 @@ cfgd profile create work-linux \
 Modify an existing profile. When no name is given, defaults to the active profile. Prefix a value with `-` to remove it.
 
 ![authoring a profile from the CLI](../demo/cfgd-author.gif)
-*Explain a field, add a package and an alias, preview, then converge — no editor.*
+*Explain a field, add a package and an alias, preview, then converge: no editor needed.*
 
 ```sh
 cfgd profile update --package brew:jq
