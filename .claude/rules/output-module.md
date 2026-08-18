@@ -205,10 +205,11 @@ Both live in `output/`; nothing outside it may reach for either.
   printer with no live region, writes plain stderr. Never wire a subscriber to
   `std::io::stderr` in the cfgd binary again.
 - **`main.rs::tracing_filter_for(quiet, verbose, daemon)`** — the default filter.
-  A command defaults to `warn` and each `-v` opens one level (`info`, `debug`,
-  `trace`); `--quiet` is `error`. `cfgd daemon` keeps `info` as its floor,
-  because there the log IS the output — a service prints its ticks to journald
-  through this channel and no other. `RUST_LOG` outranks all of it.
+  A command defaults to `warn`; the flags keep the meanings they document
+  (`-v` = `debug`, `-vv` = `trace`) and `--quiet` is `error`, so only the
+  no-flag default moved. `cfgd daemon` keeps `info` as its floor, because there
+  the log IS the output — a service prints its ticks to journald through this
+  channel and no other. `RUST_LOG` outranks all of it.
 
 ## `LiveBarState` is shared by every renderer writing one live region
 

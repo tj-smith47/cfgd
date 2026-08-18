@@ -54,7 +54,7 @@ fn normalize_boolish_env(var: &str) {
 /// integers but rejects boolish spellings. Map boolish ON (`y`/`yes`/`on`/…) to
 /// `1` and boolish OFF (`n`/`no`/`off`/…) to `0`; leave bare integers untouched
 /// (`canonical_bool_str` returns `None` for `2`, so `CFGD_VERBOSE=2` still means
-/// what `-vv` means) and leave unrecognized values for clap to reject.
+/// trace) and leave unrecognized values for clap to reject.
 fn normalize_cfgd_verbose_env() {
     if let Ok(raw) = std::env::var("CFGD_VERBOSE")
         && let Some(canonical) = canonical_bool_str(&raw)
@@ -67,15 +67,15 @@ fn normalize_cfgd_verbose_env() {
     }
 }
 
-/// The `RUST_LOG`-style default the CLI's own flags ask for, one level per
-/// `-v`.
+/// The `RUST_LOG`-style default the CLI's own flags ask for.
 ///
 /// A command's default is `warn`, not `info`: an `info!` is cfgd narrating
 /// itself, and every user-facing thing it has to say is already a `Printer`
 /// line. What the tracing channel adds at that level is a second copy of the
 /// same sentence, written to a stream the live region repaints — the strand
-/// this and `LiveTracingWriter` close from opposite ends. `-v` restores `info`
-/// for anyone who wants the narration back.
+/// this and `LiveTracingWriter` close from opposite ends. The flags keep the
+/// meanings they document: `-v` is `debug` (which carries `info` with it) and
+/// `-vv` is `trace`, so only the no-flag default moves.
 ///
 /// `cfgd daemon` keeps `info` as its floor, because there the log IS the
 /// output: a service under systemd or launchd prints its reconcile ticks,
@@ -92,8 +92,7 @@ fn tracing_filter_for(quiet: bool, verbose: u8, daemon: bool) -> &'static str {
     match verbose {
         0 if daemon => "info",
         0 => "warn",
-        1 => "info",
-        2 => "debug",
+        1 => "debug",
         _ => "trace",
     }
 }
@@ -369,20 +368,20 @@ mod tests {
     /// `info` used to be the default, which put a second copy of lines the
     /// Printer already prints onto the stream the live region repaints.
     #[test]
-    fn tracing_filter_opens_one_level_per_verbose_flag() {
+    fn a_command_defaults_to_warn_and_keeps_the_documented_flag_levels() {
         assert_eq!(tracing_filter_for(false, 0, false), "warn");
-        assert_eq!(tracing_filter_for(false, 1, false), "info");
-        assert_eq!(tracing_filter_for(false, 2, false), "debug");
+        assert_eq!(tracing_filter_for(false, 1, false), "debug");
+        assert_eq!(tracing_filter_for(false, 2, false), "trace");
         assert_eq!(tracing_filter_for(false, 9, false), "trace");
     }
 
     /// The daemon's log is its only output, so its floor stays `info` — and
-    /// `-v` still opens the levels above it.
+    /// the flags still open the levels above it.
     #[test]
     fn the_daemon_keeps_info_as_its_floor() {
         assert_eq!(tracing_filter_for(false, 0, true), "info");
-        assert_eq!(tracing_filter_for(false, 1, true), "info");
-        assert_eq!(tracing_filter_for(false, 2, true), "debug");
+        assert_eq!(tracing_filter_for(false, 1, true), "debug");
+        assert_eq!(tracing_filter_for(false, 2, true), "trace");
     }
 
     /// `--quiet` outranks any `-v` count clap collected alongside it, and the
