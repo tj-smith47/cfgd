@@ -160,7 +160,7 @@ fn collect_doctor_output(
     } else {
         build_registry()
     };
-    let all_managers = &registry.package_managers();
+    let all_managers = registry.package_managers();
 
     let declared_managers: Vec<String> = if let Some(ref pkgs) = resolved_packages {
         let mut declared = Vec::new();

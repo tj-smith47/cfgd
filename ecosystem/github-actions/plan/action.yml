@@ -199,10 +199,12 @@ runs:
 
         # Update the existing plan comment in place instead of stacking a new one per push.
         # `--jq` runs per PAGE, so `[…][0]` yields one id per page that holds a
-        # match; `head -n1` keeps the capture a single id, which is all the
-        # PATCH below can name.
+        # match; the fold below keeps the capture a single id, which is all the
+        # PATCH can name. Folded on the variable, not in a pipe: under pipefail
+        # an early-exiting `head` would turn gh's SIGPIPE into a step failure.
         EXISTING=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
-          --jq "[.[] | select(.body | startswith(\"$MARKER\"))][0].id // empty" | head -n1)
+          --jq "[.[] | select(.body | startswith(\"$MARKER\"))][0].id // empty")
+        EXISTING=${EXISTING%%$'\n'*}
         if [ -n "$EXISTING" ]; then
           gh api -X PATCH "repos/$REPO/issues/comments/$EXISTING" -F "body=@$BODY" >/dev/null
         else
