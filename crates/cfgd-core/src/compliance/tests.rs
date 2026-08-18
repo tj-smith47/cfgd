@@ -896,6 +896,131 @@ fn collect_system_checks_multiple_drifts_multiple_violations() {
     );
 }
 
+/// A configurator that answers like [`InlineSystemMock`] and counts how many
+/// times it was asked. The count IS the claim of the two tests below: a checkin
+/// diffs the machine for its compliance snapshot and again for its drift
+/// report, and every ask is whatever the real configurator spawns.
+struct CountingConfigurator {
+    diffs: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl crate::providers::SystemConfigurator for CountingConfigurator {
+    fn name(&self) -> &str {
+        "mock"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn current_state(&self) -> crate::errors::Result<serde_yaml::Value> {
+        Ok(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+    }
+    fn diff(
+        &self,
+        _desired: &serde_yaml::Value,
+    ) -> crate::errors::Result<Vec<crate::providers::SystemDrift>> {
+        self.diffs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(vec![crate::providers::SystemDrift {
+            key: "net.ipv4.ip_forward".into(),
+            expected: "1".into(),
+            actual: "0".into(),
+        }])
+    }
+    fn apply(
+        &self,
+        _desired: &serde_yaml::Value,
+        _cx: &crate::providers::SystemContext<'_>,
+    ) -> crate::errors::Result<()> {
+        Ok(())
+    }
+}
+
+fn counting_registry() -> (
+    ProviderRegistry,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    let diffs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut registry = ProviderRegistry::new();
+    registry.add_system_configurator(Box::new(CountingConfigurator {
+        diffs: std::sync::Arc::clone(&diffs),
+    }));
+    (registry, diffs)
+}
+
+fn counting_profile() -> crate::config::MergedProfile {
+    let mut profile = crate::config::MergedProfile::default();
+    profile.system.insert(
+        "mock".to_string(),
+        serde_yaml::Value::String("desired".into()),
+    );
+    profile
+}
+
+#[test]
+fn a_snapshot_handed_collected_diffs_asks_no_configurator_again() {
+    let (registry, diffs) = counting_registry();
+    let profile = counting_profile();
+    let dir = tempfile::tempdir().unwrap();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+
+    let collected = collect_system_diffs(&profile, &[], &registry);
+    assert_eq!(diffs.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    let snapshot = collect_snapshot(
+        "default",
+        &profile,
+        &[],
+        dir.path(),
+        &registry,
+        &ComplianceScope::default(),
+        &[],
+        &printer,
+        &state,
+        Some(&collected),
+    )
+    .unwrap();
+
+    assert_eq!(
+        diffs.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the snapshot re-diffed a machine it was handed the answers for"
+    );
+    // And the drift report derived from the same answers names the same drift.
+    let drifts = system_drifts(&collected);
+    assert_eq!(drifts.len(), 1);
+    assert_eq!(drifts[0].key, "net.ipv4.ip_forward");
+    assert_eq!(diffs.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // The check it renders is the one the un-handed path renders.
+    let system_checks: Vec<_> = snapshot
+        .checks
+        .iter()
+        .filter(|c| c.category == "system")
+        .collect();
+    assert_eq!(system_checks.len(), 1);
+    assert_eq!(system_checks[0].status, ComplianceStatus::Violation);
+    assert_eq!(
+        system_checks[0].key.as_deref(),
+        Some("mock.net.ipv4.ip_forward")
+    );
+}
+
+#[test]
+fn collected_diffs_render_exactly_what_collecting_inside_the_snapshot_renders() {
+    let (registry, diffs) = counting_registry();
+    let profile = counting_profile();
+
+    let from_collected = system_checks_from_diffs(&collect_system_diffs(&profile, &[], &registry));
+    let inline = collect_system_checks(&profile, &[], &registry).unwrap();
+
+    assert_eq!(diffs.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(
+        serde_json::to_value(&from_collected).unwrap(),
+        serde_json::to_value(&inline).unwrap(),
+        "reusing collected diffs must not change a single stored check"
+    );
+}
+
 #[test]
 fn watch_path_directory() {
     let dir = tempfile::tempdir().unwrap();
@@ -1535,6 +1660,7 @@ fn collect_snapshot_includes_module_resources_and_content_check() {
         &["local".to_string()],
         &printer,
         &state,
+        None,
     )
     .unwrap();
 

@@ -56,6 +56,14 @@ pub fn cmd_checkin(
         serde_yaml::to_string(&system).context("failed to serialize system config")?;
     let config_hash = cfgd_core::sha256_hex(config_yaml.as_bytes());
 
+    // The machine is diffed ONCE per checkin. Both consumers read from this:
+    // the compliance snapshot's system checks below, and the drift report sent
+    // after the gateway answers. Collecting it here also fixes the order the
+    // two used to disagree on — every drift is now in effective-system-map
+    // order, the same order compliance records it in.
+    let system_diffs =
+        cfgd_core::compliance::collect_system_diffs(&resolved.merged, &resolved_modules, &registry);
+
     let compliance_summary = if let Some(ref compliance_cfg) = cfg.spec.compliance {
         if compliance_cfg.enabled {
             let profile_name = cfg.active_profile().unwrap_or("unknown");
@@ -70,6 +78,7 @@ pub fn cmd_checkin(
                 &[],
                 printer,
                 checkin_state,
+                Some(&system_diffs),
             ) {
                 Ok(snapshot) => {
                     printer.kv(
@@ -132,18 +141,7 @@ pub fn cmd_checkin(
         }
     }
 
-    let mut all_drifts = Vec::new();
-    let available = registry.available_system_configurators();
-    for configurator in &available {
-        let key = configurator.name();
-        let desired = match system.get(key) {
-            Some(v) => v,
-            None => continue,
-        };
-        if let Ok(drifts) = configurator.diff(desired) {
-            all_drifts.extend(drifts);
-        }
-    }
+    let all_drifts = cfgd_core::compliance::system_drifts(&system_diffs);
 
     let drift_status = if !all_drifts.is_empty() {
         let sp = printer.spinner("Reporting drift");
@@ -431,6 +429,88 @@ spec: {}
             scope_arg: crate::cli::ScopeArg::User,
             command: None,
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn checkin_diffs_the_machine_once_for_both_its_compliance_snapshot_and_its_drift_report() {
+        // `gsettings` stands in for every keyed configurator: the seam makes it
+        // available and answers its bulk read, so the shim's log is the count
+        // of times checkin asked the machine anything at all.
+        let shim = cfgd_core::test_helpers::ToolShim::install(
+            "CFGD_GSETTINGS_BIN",
+            0,
+            "org.gnome.cfgd-checkin color-scheme 'default'\n",
+            "",
+        );
+        let config_dir = make_test_config_dir();
+        std::fs::write(
+            config_dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+             profile: default\n  compliance:\n    enabled: true\n",
+        )
+        .unwrap();
+        std::fs::write(
+            config_dir.path().join("profiles").join("default.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  system:
+    gsettings:
+      org.gnome.cfgd-checkin:
+        color-scheme: prefer-dark
+"#,
+        )
+        .unwrap();
+
+        let state_dir = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(config_dir.path());
+        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+
+        let mut server = mockito::Server::new();
+        let checkin = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+        // The declared value differs from what the shim reports, so the drift
+        // report is REQUIRED — both consumers of the diff run in this test.
+        let drift = server
+            .mock(
+                "POST",
+                mockito::Matcher::Regex(r"/api/v1/devices/.*/drift".to_string()),
+            )
+            .with_status(200)
+            .with_body("{}")
+            .create();
+
+        let cli = test_cli_for(config_dir.path(), state_dir.path());
+        let (printer, cap) = Printer::for_test_doc();
+        let result = cmd_checkin(
+            &cli,
+            &printer,
+            &server.url(),
+            Some("test-key"),
+            Some("dev-1"),
+        );
+        drop(printer);
+
+        assert!(result.is_ok(), "cmd_checkin should succeed: {result:?}");
+        checkin.assert();
+        drift.assert();
+        assert_eq!(
+            cap.json().expect("should emit structured Doc")["driftCount"].as_u64(),
+            Some(1),
+            "the drift report must carry the drift the compliance scan found"
+        );
+        assert_eq!(
+            shim.argv_lines_naming("org.gnome.cfgd-checkin"),
+            vec!["list-recursively org.gnome.cfgd-checkin"],
+            "the compliance snapshot and the drift report share one diff pass"
+        );
     }
 
     #[test]

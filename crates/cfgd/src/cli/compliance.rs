@@ -69,6 +69,7 @@ pub(super) fn collect_and_store_compliance_snapshot<'a>(
         &sources,
         &quiet_printer,
         state,
+        None,
     )?;
 
     // Fold the Report-mode source-constraint violations into the snapshot as

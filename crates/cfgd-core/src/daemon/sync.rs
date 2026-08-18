@@ -471,6 +471,7 @@ pub(crate) fn handle_compliance_snapshot(
         &source_names,
         &printer,
         &store,
+        None,
     ) {
         Ok(s) => s,
         Err(e) => {

@@ -10,7 +10,7 @@ use crate::errors::Result;
 use crate::modules::ResolvedModule;
 use crate::output::Printer;
 use crate::platform::Platform;
-use crate::providers::{PackageContext, ProviderRegistry};
+use crate::providers::{PackageContext, ProviderRegistry, SystemDrift};
 use crate::state::StateStore;
 use crate::to_posix_string;
 
@@ -90,6 +90,11 @@ pub struct ComplianceSummary {
 /// file present on disk but whose bytes drifted from its rendered source is a
 /// violation, matching the live drift paths. When no file manager is wired, file
 /// checks degrade to existence + permissions only.
+///
+/// `system_diffs` is for a caller that already asked every configurator for its
+/// drift and needs the answers for something else too — `cfgd checkin` reports
+/// them to the gateway — so the machine is diffed once per command rather than
+/// once per consumer. `None` collects them here.
 #[allow(clippy::too_many_arguments)]
 pub fn collect_snapshot(
     profile_name: &str,
@@ -101,6 +106,7 @@ pub fn collect_snapshot(
     sources: &[String],
     printer: &Printer,
     state: &StateStore,
+    system_diffs: Option<&[SystemDiff]>,
 ) -> Result<ComplianceSnapshot> {
     let platform = Platform::current();
     let hostname = crate::hostname_string();
@@ -128,7 +134,10 @@ pub fn collect_snapshot(
         checks.extend(collect_package_checks(profile, modules, registry, &cx)?);
     }
     if scope.system {
-        checks.extend(collect_system_checks(profile, modules, registry)?);
+        match system_diffs {
+            Some(collected) => checks.extend(system_checks_from_diffs(collected)),
+            None => checks.extend(collect_system_checks(profile, modules, registry)?),
+        }
     }
     if scope.secrets {
         checks.extend(collect_secret_checks(profile));
@@ -574,71 +583,131 @@ pub fn collect_package_checks(
 // System checks
 // ---------------------------------------------------------------------------
 
-/// Check system configurator state for drift across the effective desired state
-/// (profile system settings deep-merged with every module's), so module system
-/// tweaks surface in compliance exactly as they do on the write path.
-pub fn collect_system_checks(
+/// One configurator's answer for the effective system map.
+///
+/// The system diff is asked for TWICE in one `cfgd checkin` — once to fill the
+/// compliance snapshot's system checks and once to build the drift report — and
+/// each ask spawns whatever the configurator spawns. Collecting it once and
+/// deriving both from the result is what keeps a checkin from diffing the whole
+/// machine twice.
+pub struct SystemDiff {
+    /// The configurator's registered name, as `system_resource_key` composes it.
+    pub configurator: String,
+    pub outcome: SystemDiffOutcome,
+}
+
+/// What asking one configurator for its drift produced.
+pub enum SystemDiffOutcome {
+    /// The profile declares settings for a configurator the registry has none
+    /// available for.
+    Unavailable,
+    /// The configurator answered; the vec is empty when nothing has drifted.
+    Drifts(Vec<SystemDrift>),
+    /// The configurator failed to answer, with its already-rendered reason.
+    Failed(String),
+}
+
+/// Ask every configurator named by the effective desired state (profile system
+/// settings deep-merged with every module's, so module system tweaks surface
+/// exactly as they do on the write path) for its drift, ONCE.
+pub fn collect_system_diffs(
     profile: &MergedProfile,
     modules: &[ResolvedModule],
     registry: &ProviderRegistry,
-) -> Result<Vec<ComplianceCheck>> {
-    let mut checks = Vec::new();
+) -> Vec<SystemDiff> {
     let available = registry.available_system_configurators();
     let system = crate::effective::effective_system_map(profile, modules);
 
-    for (key, desired) in &system {
-        let configurator = available.iter().find(|c| c.name() == key);
+    system
+        .iter()
+        .map(|(key, desired)| {
+            let outcome = match available.iter().find(|c| c.name() == key) {
+                None => SystemDiffOutcome::Unavailable,
+                Some(configurator) => match configurator.diff(desired) {
+                    Ok(drifts) => SystemDiffOutcome::Drifts(drifts),
+                    Err(e) => SystemDiffOutcome::Failed(e.to_string()),
+                },
+            };
+            SystemDiff {
+                configurator: key.clone(),
+                outcome,
+            }
+        })
+        .collect()
+}
 
-        let Some(configurator) = configurator else {
-            checks.push(ComplianceCheck {
+/// Every drift the collected answers carry, in the order they were collected.
+pub fn system_drifts(diffs: &[SystemDiff]) -> Vec<SystemDrift> {
+    diffs
+        .iter()
+        .filter_map(|d| match &d.outcome {
+            SystemDiffOutcome::Drifts(drifts) => Some(drifts.iter().cloned()),
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// Render collected answers as compliance checks.
+pub fn system_checks_from_diffs(diffs: &[SystemDiff]) -> Vec<ComplianceCheck> {
+    let mut checks = Vec::new();
+
+    for diff in diffs {
+        let key = &diff.configurator;
+        match &diff.outcome {
+            SystemDiffOutcome::Unavailable => checks.push(ComplianceCheck {
                 category: "system".into(),
                 key: Some(key.clone()),
                 status: ComplianceStatus::Warning,
                 detail: Some(format!("no configurator available for '{}'", key)),
                 ..Default::default()
-            });
-            continue;
-        };
-
-        match configurator.diff(desired) {
-            Ok(drifts) => {
-                if drifts.is_empty() {
-                    checks.push(ComplianceCheck {
-                        category: "system".into(),
-                        key: Some(key.clone()),
-                        status: ComplianceStatus::Compliant,
-                        detail: Some("no drift".into()),
-                        ..Default::default()
-                    });
-                } else {
-                    for drift in &drifts {
-                        checks.push(ComplianceCheck {
-                            category: "system".into(),
-                            key: Some(crate::reconciler::system_resource_key(key, &drift.key)),
-                            status: ComplianceStatus::Violation,
-                            detail: Some(format!(
-                                "expected {}, actual {}",
-                                drift.expected, drift.actual
-                            )),
-                            value: Some(drift.actual.clone()),
-                            ..Default::default()
-                        });
-                    }
-                }
-            }
-            Err(e) => {
+            }),
+            SystemDiffOutcome::Drifts(drifts) if drifts.is_empty() => {
                 checks.push(ComplianceCheck {
                     category: "system".into(),
                     key: Some(key.clone()),
-                    status: ComplianceStatus::Warning,
-                    detail: Some(format!("diff failed: {}", e)),
+                    status: ComplianceStatus::Compliant,
+                    detail: Some("no drift".into()),
                     ..Default::default()
-                });
+                })
             }
+            SystemDiffOutcome::Drifts(drifts) => {
+                for drift in drifts {
+                    checks.push(ComplianceCheck {
+                        category: "system".into(),
+                        key: Some(crate::reconciler::system_resource_key(key, &drift.key)),
+                        status: ComplianceStatus::Violation,
+                        detail: Some(format!(
+                            "expected {}, actual {}",
+                            drift.expected, drift.actual
+                        )),
+                        value: Some(drift.actual.clone()),
+                        ..Default::default()
+                    });
+                }
+            }
+            SystemDiffOutcome::Failed(reason) => checks.push(ComplianceCheck {
+                category: "system".into(),
+                key: Some(key.clone()),
+                status: ComplianceStatus::Warning,
+                detail: Some(format!("diff failed: {}", reason)),
+                ..Default::default()
+            }),
         }
     }
 
-    Ok(checks)
+    checks
+}
+
+/// Check system configurator state for drift, collecting the answers first.
+pub fn collect_system_checks(
+    profile: &MergedProfile,
+    modules: &[ResolvedModule],
+    registry: &ProviderRegistry,
+) -> Result<Vec<ComplianceCheck>> {
+    Ok(system_checks_from_diffs(&collect_system_diffs(
+        profile, modules, registry,
+    )))
 }
 
 // ---------------------------------------------------------------------------

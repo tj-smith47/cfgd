@@ -2500,6 +2500,7 @@ fn unchanged_machine_collected_twice_hashes_equal_and_the_daemon_skips_the_secon
             &["local".to_string()],
             &printer,
             &store,
+            None,
         )
         .unwrap()
     };
