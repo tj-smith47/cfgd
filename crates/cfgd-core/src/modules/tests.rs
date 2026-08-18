@@ -5402,30 +5402,6 @@ mod git_fixture_tests {
         assert_eq!(status, TagSignatureStatus::SignaturePresent);
     }
 
-    #[test]
-    fn checkout_ref_via_fetch_git_source_with_no_tag_or_ref_is_noop() {
-        // checkout_ref is private; we exercise its public-facing path via
-        // a GitSource that intentionally has no tag/ref → the "stay on
-        // default branch" early-return. HEAD must equal the initial commit
-        // and the working tree must still contain the file.
-        let dir = tempfile::tempdir().unwrap();
-        let (_repo, commit_id) = init_repo_with_commit(dir.path());
-
-        // Re-open and verify HEAD unchanged after a no-op checkout.
-        let _src = GitSource {
-            repo_url: dir.path().display().to_string(),
-            tag: None,
-            git_ref: None,
-            subdir: None,
-        };
-        // checkout_ref is pub(super); we exercise its no-op early return
-        // by computing the HEAD SHA before+after a controlled call path
-        // (fetch_git_source would also clone; just assert HEAD stable).
-        let head_after = get_head_commit_sha(dir.path()).unwrap();
-        assert_eq!(head_after, commit_id.to_string());
-        assert!(dir.path().join("README.md").exists());
-    }
-
     // ========================================================================
     // fetch_git_source — local file:// fixture
     //

@@ -2277,7 +2277,7 @@ impl Drop for GitRefreshWindowGuard {
 // ---------------------------------------------------------------------------
 // Env-var test guards — replace per-file `struct EnvVarGuard` / `fn with_env`
 // duplicates. Pair with `serial_test::serial` because env-var mutation is
-// process-global. The pattern mirrors `cfgd-core/src/util/git.rs:190`.
+// process-global.
 // ---------------------------------------------------------------------------
 
 /// RAII guard that captures the prior value of an env var and restores it on

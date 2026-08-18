@@ -432,8 +432,19 @@ fn repo_refreshed_recently(repo_url: &str) -> bool {
 /// cap is the backstop for the one shape pruning does not cover: a process that
 /// keeps fetching new repositories faster than the window retires the old ones.
 fn record_repo_refresh(repo_url: &str) {
+    record_repo_refresh_locked(&mut repo_refreshes(), repo_url);
+}
+
+/// The body of [`record_repo_refresh`], operating on an already-held lock so a
+/// test can record and observe inside ONE critical section — the map is
+/// process-global, and any concurrent unpinned fetch prunes under this test's
+/// own zero-TTL pin, so an assertion made after the lock is released is a claim
+/// about scheduling rather than about the prune.
+fn record_repo_refresh_locked(
+    map: &mut std::collections::HashMap<String, std::time::Instant>,
+    repo_url: &str,
+) {
     let ttl = repo_refresh_ttl();
-    let mut map = repo_refreshes();
     map.retain(|_, at| at.elapsed() < ttl);
     if map.len() >= REPO_REFRESH_MEMO_CAP {
         map.clear();
@@ -1745,9 +1756,13 @@ mod tests {
         let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
         let stale = "https://example.invalid/forgets-stale.git";
         let fresh = "https://example.invalid/forgets-fresh.git";
-        record_repo_refresh(stale);
-        record_repo_refresh(fresh);
-        let map = repo_refreshes();
+        // One critical section: under this test's own zero-TTL pin, any
+        // concurrent unpinned fetch's record would prune `fresh` the moment
+        // the lock was released, so both records and both reads happen under
+        // a single hold.
+        let mut map = repo_refreshes();
+        record_repo_refresh_locked(&mut map, stale);
+        record_repo_refresh_locked(&mut map, fresh);
         assert!(
             !map.contains_key(stale),
             "an expired entry must be dropped, not carried"
