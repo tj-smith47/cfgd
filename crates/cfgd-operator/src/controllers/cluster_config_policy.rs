@@ -21,7 +21,10 @@ use super::{
 // No cleanup finalizer here, unlike ConfigPolicy: this controller writes nothing
 // onto the machines it evaluates. Its verdict lives entirely in its own status,
 // which the API server removes with the object, so deletion leaves nothing behind
-// for another controller to keep reporting.
+// for another controller to keep reporting. The one exception is its
+// `devices_compliant` series: with no finalizer there is no final reconcile to
+// remove it from, so a deleted ClusterConfigPolicy exports its last count until
+// the process restarts.
 pub(super) async fn reconcile_cluster_config_policy(
     obj: Arc<ClusterConfigPolicy>,
     ctx: Arc<ControllerContext>,

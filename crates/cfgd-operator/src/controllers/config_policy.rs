@@ -55,9 +55,17 @@ pub(super) async fn reconcile_config_policy(
     if obj.metadata.deletion_timestamp.is_some() {
         if has_finalizer {
             info!(name = %name, "configPolicy being deleted, clearing its verdicts");
-            clear_compliant_verdicts(&machines, &targeted_mcs).await;
+            clear_compliant_verdicts(&machines, &deletion_clear_targets(&obj, &targeted_mcs)).await;
+            // The gauge loses its only writer with this reconcile, so an
+            // unremoved series would export the deleted policy's last count
+            // for the life of the process.
+            ctx.metrics.devices_compliant.remove(&PolicyLabels {
+                policy: name.clone(),
+                namespace: namespace.clone(),
+            });
             remove_finalizer(&policies, &name, finalizers).await?;
         }
+        record_reconcile_success(&ctx, "config_policy", start);
         return Ok(Action::await_change());
     }
 
@@ -274,6 +282,32 @@ pub(super) fn validate_policy_compliance(
     }
     true
 }
+/// The machines whose verdict a deleted policy must retire: the selector match
+/// at deletion time, plus every machine the policy's own status remembers as
+/// non-compliant. The memory half covers a machine relabelled out of the
+/// selector (or dropped by a `targetSelector` edit) after being judged, whose
+/// stale `Compliant=False` nothing else would ever clear. A compliant machine
+/// relabelled away is not in that memory and keeps its verdict until any policy
+/// next evaluates it: the condition records no owner, so the full set of
+/// machines ever judged is not derivable.
+fn deletion_clear_targets(policy: &ConfigPolicy, targeted: &[Arc<MachineConfig>]) -> Vec<String> {
+    let mut names: Vec<String> = targeted.iter().map(|mc| mc.name_any()).collect();
+    let remembered = policy
+        .status
+        .as_ref()
+        .map(|s| s.non_compliant_machines.as_slice())
+        .unwrap_or(&[]);
+    for key in remembered {
+        // Keys are `namespace/name` (see `machine_key`); the Api is already
+        // namespaced, so only the name half addresses the machine.
+        let mc_name = key.split_once('/').map_or(key.as_str(), |(_, n)| n);
+        if !names.iter().any(|n| n == mc_name) {
+            names.push(mc_name.to_string());
+        }
+    }
+    names
+}
+
 /// Reset the `Compliant` condition on every machine this policy had judged.
 ///
 /// The policy controller owns that condition, so its deletion is the only event
@@ -286,10 +320,23 @@ pub(super) fn validate_policy_compliance(
 ///
 /// Best effort per machine: a failure here must not block the finalizer, or a
 /// deleted policy is stuck forever on one unreachable machine.
-async fn clear_compliant_verdicts(machines: &Api<MachineConfig>, targeted: &[Arc<MachineConfig>]) {
+async fn clear_compliant_verdicts(machines: &Api<MachineConfig>, names: &[String]) {
     let now = cfgd_core::utc_now_iso8601();
-    for mc in targeted {
-        let existing = mc
+    for mc_name in names {
+        // The patch below replaces the whole conditions array, so it must be
+        // built from the live object: a watch-cache copy can predate a
+        // condition the machine controller wrote concurrently, and a merge
+        // built from it would silently revert that write.
+        let live = match machines.get_opt(mc_name).await {
+            Ok(Some(mc)) => mc,
+            // Already gone; there is no verdict left to retire.
+            Ok(None) => continue,
+            Err(e) => {
+                warn!(name = %mc_name, error = %e, "failed to read MachineConfig before clearing its Compliant condition");
+                continue;
+            }
+        };
+        let existing = live
             .status
             .as_ref()
             .map(|s| s.conditions.as_slice())
@@ -306,18 +353,17 @@ async fn clear_compliant_verdicts(machines: &Api<MachineConfig>, targeted: &[Arc
             "NotEvaluated",
             "Awaiting policy evaluation",
             &now,
-            mc.meta().generation,
+            live.meta().generation,
         );
         if existing.contains(&cleared) {
             continue;
         }
-        let mc_name = mc.name_any();
         let patch = serde_json::json!({
             "status": { "conditions": upsert_condition(existing, cleared) }
         });
         if let Err(e) = machines
             .patch_status(
-                &mc_name,
+                mc_name,
                 &PatchParams::apply(FIELD_MANAGER_STATUS),
                 &Patch::Merge(patch),
             )

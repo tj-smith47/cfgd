@@ -930,13 +930,30 @@ async fn reconcile_config_policy_clears_its_verdict_from_machines_on_deletion() 
     // A machine no policy ever judged has nothing to retire, so it is not written to.
     let untouched = machine_config("mc-unjudged", NS);
 
+    // What the API server holds NOW: the cache copy plus a DriftDetected the
+    // machine controller wrote after the cache was populated. The reset is
+    // built from this read, so the concurrent write survives it.
+    let mut judged_live = judged.clone();
+    if let Some(status) = judged_live.status.as_mut() {
+        status.conditions.push(Condition {
+            condition_type: "DriftDetected".to_string(),
+            status: "True".to_string(),
+            reason: "DriftAlertsActive".to_string(),
+            message: "1 active drift alert(s)".to_string(),
+            last_transition_time: "2026-01-02T00:00:00Z".to_string(),
+            observed_generation: Some(1),
+        });
+    }
+
     let (ctx, _registry, harness) = MockKubeHarness::with_stores(
         vec![
+            ExpectedCall::get(machine_config_path(NS, "mc-judged")).returning_json(&judged_live),
             ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-judged")))
-                .returning_json(&judged),
+                .returning_json(&judged_live),
+            ExpectedCall::get(machine_config_path(NS, "mc-unjudged")).returning_json(&untouched),
             ExpectedCall::patch(config_policy_path("doomed-policy")).returning_json(&policy),
         ],
-        stores_with(vec![judged.clone(), untouched]),
+        stores_with(vec![judged.clone(), untouched.clone()]),
     );
 
     let action = reconcile_config_policy(Arc::new(policy), ctx)
@@ -947,11 +964,14 @@ async fn reconcile_config_policy_clears_its_verdict_from_machines_on_deletion() 
     let report = harness.finish().await;
     assert_eq!(
         report.captured.len(),
-        2,
+        4,
         "only the judged machine is written to, then the finalizer is dropped"
     );
 
-    let conditions = report.captured[0].body_json()["status"]["conditions"]
+    let conditions = report
+        .find(Method::PATCH, "/machineconfigs/mc-judged/status")
+        .expect("mc-judged reset")
+        .body_json()["status"]["conditions"]
         .as_array()
         .expect("conditions array")
         .clone();
@@ -969,12 +989,268 @@ async fn reconcile_config_policy_clears_its_verdict_from_machines_on_deletion() 
         conditions.iter().any(|c| c["type"] == "Reconciled"),
         "the machine's other conditions must survive the reset"
     );
+    assert!(
+        conditions.iter().any(|c| c["type"] == "DriftDetected"),
+        "a condition present only on the live object must survive: the reset is \
+         built from the API server's copy, not the watch cache's"
+    );
 
     assert_eq!(
-        report.captured[1].body_json()["metadata"]["finalizers"],
+        report.captured[3].body_json()["metadata"]["finalizers"],
         serde_json::json!([]),
         "the finalizer is dropped only after the verdicts are cleared"
     );
+}
+
+/// A machine relabelled out of the selector after being judged non-compliant is
+/// no longer in the selector match at deletion time, but the policy's own
+/// `status.nonCompliantMachines` still remembers it: the clear covers the union
+/// of both, so the stale `Compliant=False` is retired anyway. A remembered
+/// machine that no longer exists is skipped without failing the deletion.
+#[tokio::test]
+async fn deleting_a_policy_clears_a_remembered_machine_the_selector_no_longer_matches() {
+    let mut policy = config_policy("recall-policy", NS);
+    let mut match_labels = std::collections::BTreeMap::new();
+    match_labels.insert("env".to_string(), "prod".to_string());
+    policy.spec.target_selector = LabelSelector {
+        match_labels,
+        match_expressions: vec![],
+    };
+    policy.status = Some(crate::crds::ConfigPolicyStatus {
+        compliant_count: 0,
+        non_compliant_count: 2,
+        non_compliant_machines: vec![format!("{NS}/mc-gone"), format!("{NS}/mc-relabelled")],
+        conditions: vec![],
+    });
+    policy.metadata.deletion_timestamp = Some(
+        k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(k8s_openapi::jiff::Timestamp::now()),
+    );
+
+    // Judged while it carried env=prod, then relabelled: the selector no longer
+    // matches it, so only the status memory can name it.
+    let mut relabelled = machine_config("mc-relabelled", NS);
+    relabelled.metadata.labels = Some({
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("env".to_string(), "dev".to_string());
+        m
+    });
+    relabelled.status = Some(crate::crds::MachineConfigStatus {
+        last_reconciled: None,
+        observed_generation: Some(1),
+        conditions: vec![compliant_condition("False", "recall-policy")],
+        package_versions: Default::default(),
+    });
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::get(machine_config_path(NS, "mc-gone")).returning_404("mc-gone"),
+            ExpectedCall::get(machine_config_path(NS, "mc-relabelled")).returning_json(&relabelled),
+            ExpectedCall::patch_status(format!(
+                "{}/status",
+                machine_config_path(NS, "mc-relabelled")
+            ))
+            .returning_json(&relabelled),
+            ExpectedCall::patch(config_policy_path("recall-policy")).returning_json(&policy),
+        ],
+        stores_with(vec![relabelled.clone()]),
+    );
+
+    reconcile_config_policy(Arc::new(policy), ctx)
+        .await
+        .unwrap();
+
+    let report = harness.finish().await;
+    assert_eq!(report.captured.len(), 4);
+    let compliant = report
+        .find(Method::PATCH, "/machineconfigs/mc-relabelled/status")
+        .expect("the remembered machine must be reset")
+        .body_json()["status"]["conditions"][0]
+        .clone();
+    assert_eq!(compliant["type"], "Compliant");
+    assert_eq!(compliant["status"], "Unknown");
+    assert_eq!(compliant["reason"], "NotEvaluated");
+    assert_eq!(
+        report.captured[3].body_json()["metadata"]["finalizers"],
+        serde_json::json!([])
+    );
+}
+
+/// One machine the API server refuses cannot strand the deleted policy: the
+/// clear is best effort per machine, so the next machine is still reset and the
+/// finalizer still comes off.
+#[tokio::test]
+async fn a_machine_the_api_server_refuses_does_not_strand_the_deleted_policy() {
+    let mut policy = config_policy("refused-policy", NS);
+    policy.metadata.deletion_timestamp = Some(
+        k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(k8s_openapi::jiff::Timestamp::now()),
+    );
+
+    let judged = |name: &str| {
+        let mut mc = machine_config(name, NS);
+        mc.status = Some(crate::crds::MachineConfigStatus {
+            last_reconciled: None,
+            observed_generation: Some(1),
+            conditions: vec![compliant_condition("False", "refused-policy")],
+            package_versions: Default::default(),
+        });
+        mc
+    };
+    let mc_a = judged("mc-a");
+    let mc_b = judged("mc-b");
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::get(machine_config_path(NS, "mc-a")).returning_json(&mc_a),
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-a")))
+                .returning_server_error(500, "etcd melted"),
+            ExpectedCall::get(machine_config_path(NS, "mc-b")).returning_json(&mc_b),
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-b")))
+                .returning_json(&mc_b),
+            ExpectedCall::patch(config_policy_path("refused-policy")).returning_json(&policy),
+        ],
+        stores_with(vec![mc_a.clone(), mc_b.clone()]),
+    );
+
+    let action = reconcile_config_policy(Arc::new(policy), ctx)
+        .await
+        .unwrap();
+    assert_eq!(action, Action::await_change());
+
+    let report = harness.finish().await;
+    assert_eq!(report.captured.len(), 5);
+    let reset = report
+        .find(Method::PATCH, "/machineconfigs/mc-b/status")
+        .expect("the machine after the refused one must still be reset")
+        .body_json();
+    assert_eq!(reset["status"]["conditions"][0]["status"], "Unknown");
+    assert_eq!(
+        report.captured[4].body_json()["metadata"]["finalizers"],
+        serde_json::json!([]),
+        "the finalizer must come off despite the refused machine"
+    );
+}
+
+/// A repeat deletion reconcile (the finalizer removal failed last time) finds
+/// the verdict already reset and writes nothing to the machine: the cleared
+/// triple is a steady state, not a new thing to patch.
+#[tokio::test]
+async fn a_repeat_deletion_reconcile_does_not_rewrite_an_already_cleared_verdict() {
+    let mut policy = config_policy("repeat-policy", NS);
+    policy.metadata.deletion_timestamp = Some(
+        k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(k8s_openapi::jiff::Timestamp::now()),
+    );
+
+    let mut cleared = machine_config("mc-cleared", NS);
+    cleared.status = Some(crate::crds::MachineConfigStatus {
+        last_reconciled: None,
+        observed_generation: Some(1),
+        conditions: vec![Condition {
+            condition_type: "Compliant".to_string(),
+            status: "Unknown".to_string(),
+            reason: "NotEvaluated".to_string(),
+            message: "Awaiting policy evaluation".to_string(),
+            last_transition_time: "2026-01-01T00:00:00Z".to_string(),
+            observed_generation: Some(1),
+        }],
+        package_versions: Default::default(),
+    });
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::get(machine_config_path(NS, "mc-cleared")).returning_json(&cleared),
+            ExpectedCall::patch(config_policy_path("repeat-policy")).returning_json(&policy),
+        ],
+        stores_with(vec![cleared.clone()]),
+    );
+
+    reconcile_config_policy(Arc::new(policy), ctx)
+        .await
+        .unwrap();
+
+    let report = harness.finish().await;
+    assert_eq!(
+        report.captured.len(),
+        2,
+        "an already-cleared verdict must not be rewritten: {:?}",
+        report
+            .captured
+            .iter()
+            .map(|c| format!("{} {}", c.method, c.path))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        report
+            .find(Method::PATCH, "/machineconfigs/mc-cleared/status")
+            .is_none()
+    );
+}
+
+/// Deleting a policy retires its gauge series along with its verdicts: nothing
+/// re-sets a deleted policy's `devices_compliant`, so an unremoved series would
+/// export the last count for the life of the process. The deletion pass also
+/// counts as a reconciliation, so a deletion-heavy period does not read as a
+/// dead controller on the liveness metric.
+#[tokio::test]
+async fn deleting_a_policy_removes_its_gauge_series_and_records_the_reconcile() {
+    let mut policy = config_policy("metrics-doomed", NS);
+    policy.metadata.deletion_timestamp = Some(
+        k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(k8s_openapi::jiff::Timestamp::now()),
+    );
+
+    let (ctx, registry, harness) = MockKubeHarness::with_stores(
+        vec![ExpectedCall::patch(config_policy_path("metrics-doomed")).returning_json(&policy)],
+        stores_with(vec![]),
+    );
+
+    // The series as a prior successful reconcile left it, plus a sibling
+    // policy's series that must survive the targeted removal.
+    ctx.metrics
+        .devices_compliant
+        .get_or_create(&PolicyLabels {
+            policy: "metrics-doomed".to_string(),
+            namespace: NS.to_string(),
+        })
+        .set(12);
+    ctx.metrics
+        .devices_compliant
+        .get_or_create(&PolicyLabels {
+            policy: "metrics-survivor".to_string(),
+            namespace: NS.to_string(),
+        })
+        .set(3);
+
+    let mut before = String::new();
+    prometheus_client::encoding::text::encode(&mut before, &registry).expect("encode");
+    assert!(
+        before.contains("metrics-doomed"),
+        "precondition: the series must exist before the deletion reconcile"
+    );
+
+    reconcile_config_policy(Arc::new(policy), ctx.clone())
+        .await
+        .unwrap();
+    let _ = harness.finish().await;
+
+    let mut after = String::new();
+    prometheus_client::encoding::text::encode(&mut after, &registry).expect("encode");
+    assert!(
+        !after.contains("metrics-doomed"),
+        "the deleted policy's series must be removed: {after}"
+    );
+    assert!(
+        after.contains("metrics-survivor"),
+        "another policy's series must survive the removal: {after}"
+    );
+
+    let success = ctx
+        .metrics
+        .reconciliations_total
+        .get_or_create(&ReconcileLabels {
+            controller: "config_policy".to_string(),
+            result: "success".to_string(),
+        })
+        .get();
+    assert_eq!(success, 1, "a deletion pass is a successful reconciliation");
 }
 
 /// The reset is the machine controller's own never-evaluated triple, so the two

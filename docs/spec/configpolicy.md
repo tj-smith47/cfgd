@@ -147,12 +147,24 @@ targets (the `Compliant` condition of each matched `MachineConfig`), so deleting
 the policy without clearing that verdict would leave every machine reporting a
 judgement no policy makes any more.
 
-On deletion the operator resets `Compliant` on each targeted machine to
-`Unknown` / `NotEvaluated` / "Awaiting policy evaluation", then removes its
-finalizer. A machine still targeted by another policy is re-evaluated by that
-policy on its next pass. Clearing is best effort per machine: a machine the API
-server refuses is logged and skipped, so one unreachable object cannot strand
-the deleted policy.
+On deletion the operator resets `Compliant` to `Unknown` / `NotEvaluated` /
+"Awaiting policy evaluation" on the union of the machines the selector matches
+at deletion time and the machines named in the policy's
+`status.nonCompliantMachines`, then removes its finalizer. The memory half of
+that union retires the stale `Compliant=False` on a machine that was relabelled
+out of the selector after being judged. The reset cannot reach every machine the
+policy ever judged: a compliant machine relabelled away is in neither set, so it
+keeps its stale `Compliant=True` until any policy next evaluates it. Each
+machine is re-read from the API server immediately before the write, so the
+reset does not revert a condition another controller wrote after the operator's
+cache was populated. A machine still targeted by another policy is re-evaluated
+by that policy on its next pass. Clearing is best effort per machine: a machine
+the API server refuses is logged and skipped, so one unreachable object cannot
+strand the deleted policy.
+
+The deletion reconcile also removes the policy's
+`cfgd_operator_devices_compliant` series, so a deleted policy stops exporting a
+compliant count.
 
 ---
 
