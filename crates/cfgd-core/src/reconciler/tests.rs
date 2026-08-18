@@ -481,71 +481,86 @@ fn verify_returns_results() {
 
 #[test]
 fn verify_asks_each_manager_once_however_many_packages_are_declared() {
-    let state = test_state();
-    let mut registry = ProviderRegistry::new();
-    let mgr = crate::test_helpers::MockPackageManager::new("cargo").with_installed(&["ripgrep"]);
-    let enumerations = mgr.enumeration_counter();
-    registry.add_package_manager(Box::new(mgr));
+    // Measured in a stable generation: anything in this binary that installs
+    // something retires the memo, and the second package's read would then
+    // legitimately re-enumerate.
+    let (package_results, enumerations) =
+        crate::test_helpers::measured_in_a_stable_generation(|| {
+            let state = test_state();
+            let mut registry = ProviderRegistry::new();
+            let mgr =
+                crate::test_helpers::MockPackageManager::new("cargo").with_installed(&["ripgrep"]);
+            let enumerations = mgr.enumeration_counter();
+            registry.add_package_manager(Box::new(mgr));
 
-    let mut resolved = make_empty_resolved();
-    resolved.merged.packages.cargo = Some(crate::config::CargoSpec {
-        file: None,
-        packages: vec![
-            "ripgrep".to_string(),
-            "bat".to_string(),
-            "fd".to_string(),
-            "jq".to_string(),
-        ],
-    });
+            let mut resolved = make_empty_resolved();
+            resolved.merged.packages.cargo = Some(crate::config::CargoSpec {
+                file: None,
+                packages: vec![
+                    "ripgrep".to_string(),
+                    "bat".to_string(),
+                    "fd".to_string(),
+                    "jq".to_string(),
+                ],
+            });
 
-    let printer = test_printer();
-    let cx = crate::providers::PackageContext::new(&printer, &state);
-    let results = verify(&resolved, &registry, &state, &[], &cx).unwrap();
+            let printer = test_printer();
+            let cx = crate::providers::PackageContext::new(&printer, &state);
+            let results = verify(&resolved, &registry, &state, &[], &cx).unwrap();
 
+            (
+                results
+                    .iter()
+                    .filter(|r| r.resource_type == "package")
+                    .count(),
+                enumerations.load(std::sync::atomic::Ordering::SeqCst),
+            )
+        });
+
+    assert_eq!(package_results, 4);
     assert_eq!(
-        results
-            .iter()
-            .filter(|r| r.resource_type == "package")
-            .count(),
-        4
-    );
-    assert_eq!(
-        enumerations.load(std::sync::atomic::Ordering::SeqCst),
-        1,
+        enumerations, 1,
         "four declared packages under one manager is one question"
     );
 }
 
 #[test]
 fn one_context_spans_the_verify_walk_and_the_tracking_gc_with_one_enumeration() {
-    let state = test_state();
-    let mut registry = ProviderRegistry::new();
-    let mgr = crate::test_helpers::MockPackageManager::new("cargo").with_installed(&["ripgrep"]);
-    let enumerations = mgr.enumeration_counter();
-    registry.add_package_manager(Box::new(mgr));
+    let (stale, enumerations) = crate::test_helpers::measured_in_a_stable_generation(|| {
+        let state = test_state();
+        let mut registry = ProviderRegistry::new();
+        let mgr =
+            crate::test_helpers::MockPackageManager::new("cargo").with_installed(&["ripgrep"]);
+        let enumerations = mgr.enumeration_counter();
+        registry.add_package_manager(Box::new(mgr));
 
-    let mut resolved = make_empty_resolved();
-    resolved.merged.packages.cargo = Some(crate::config::CargoSpec {
-        file: None,
-        packages: vec!["ripgrep".to_string()],
+        let mut resolved = make_empty_resolved();
+        resolved.merged.packages.cargo = Some(crate::config::CargoSpec {
+            file: None,
+            packages: vec!["ripgrep".to_string()],
+        });
+
+        let printer = test_printer();
+        let cx = crate::providers::PackageContext::new(&printer, &state);
+        verify(&resolved, &registry, &state, &[], &cx).unwrap();
+
+        // What `cfgd verify` and `cfgd apply` both do next: diff the tracking
+        // table against the same installed state, with nothing in between that
+        // could have changed it.
+        let managers = registry.available_package_managers();
+        let tracked: std::collections::HashSet<String> =
+            ["cargo/ripgrep".to_string(), "cargo/gone".to_string()].into();
+        let stale = crate::reconciler::stale_tracked_packages(&managers, &tracked, &cx).unwrap();
+
+        (
+            stale,
+            enumerations.load(std::sync::atomic::Ordering::SeqCst),
+        )
     });
-
-    let printer = test_printer();
-    let cx = crate::providers::PackageContext::new(&printer, &state);
-    verify(&resolved, &registry, &state, &[], &cx).unwrap();
-
-    // What `cfgd verify` and `cfgd apply` both do next: diff the tracking table
-    // against the same installed state, with nothing in between that could have
-    // changed it.
-    let managers = registry.available_package_managers();
-    let tracked: std::collections::HashSet<String> =
-        ["cargo/ripgrep".to_string(), "cargo/gone".to_string()].into();
-    let stale = crate::reconciler::stale_tracked_packages(&managers, &tracked, &cx).unwrap();
 
     assert_eq!(stale, vec![("cargo".to_string(), "gone".to_string())]);
     assert_eq!(
-        enumerations.load(std::sync::atomic::Ordering::SeqCst),
-        1,
+        enumerations, 1,
         "two phases of one run sharing a context is one question per manager"
     );
 }

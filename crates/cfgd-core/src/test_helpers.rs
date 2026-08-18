@@ -2479,6 +2479,9 @@ pub struct MockPackageManager {
     /// per package" claim — a count, never a duration — and shared, because a
     /// `Box<dyn PackageManager>` in a registry cannot be read back for it.
     enumerations: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Whether declared and listed names fold to lowercase, the way a
+    /// case-insensitive manager's identity space does.
+    folds_case: bool,
 }
 
 impl MockPackageManager {
@@ -2503,7 +2506,15 @@ impl MockPackageManager {
             raises: None,
             install_log: None,
             enumerations: std::sync::Arc::default(),
+            folds_case: false,
         }
+    }
+
+    /// The chocolatey/scoop/winget shape: the identity space is lowercase, so
+    /// a module declaring `Wget` must match a listing of `wget`.
+    pub fn case_insensitive(mut self) -> Self {
+        self.folds_case = true;
+        self
     }
 
     /// The shared counter of this manager's enumerations, taken BEFORE the
@@ -2701,6 +2712,22 @@ impl crate::providers::PackageManager for MockPackageManager {
         self.enumerations
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(self.installed.clone())
+    }
+
+    fn package_identity(&self, entry: &str) -> String {
+        if self.folds_case {
+            entry.to_lowercase()
+        } else {
+            entry.to_string()
+        }
+    }
+
+    fn listed_identity(&self, listed_name: &str) -> String {
+        if self.folds_case {
+            listed_name.to_lowercase()
+        } else {
+            listed_name.to_string()
+        }
     }
 
     fn install(

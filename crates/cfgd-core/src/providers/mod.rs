@@ -102,10 +102,12 @@ pub struct PackageContext<'a> {
     /// What each manager reported installed, memoized for this context — see
     /// [`PackageContext::installed_for`].
     ///
-    /// Behind an `Arc` because the memo is shared across the lanes a concurrent
-    /// dispatch runs a context through; each context starts an empty memo of
-    /// its own, so no read leaks into a command that did not take it.
-    enumerations: Arc<installed::InstalledEnumerations>,
+    /// The memo is per-context and no production path shares one: a context is
+    /// moved, never cloned, and each lane worker mints its own through
+    /// `PackageExec::cx`. What the per-slot locking buys is that sharing one
+    /// would be SAFE and would still serialize nothing but a single manager
+    /// against itself — not that anything shares one today.
+    enumerations: installed::InstalledEnumerations,
 }
 
 impl<'a> PackageContext<'a> {
@@ -120,7 +122,7 @@ impl<'a> PackageContext<'a> {
             caller_owns_status: false,
             lane: None,
             provision_via: None,
-            enumerations: Arc::default(),
+            enumerations: installed::InstalledEnumerations::default(),
         }
     }
 
@@ -138,7 +140,7 @@ impl<'a> PackageContext<'a> {
             caller_owns_status: false,
             lane: None,
             provision_via: None,
-            enumerations: Arc::default(),
+            enumerations: installed::InstalledEnumerations::default(),
         }
     }
 
@@ -216,26 +218,23 @@ impl<'a> PackageContext<'a> {
     /// An error is NOT memoized — a manager that could not be queried is asked
     /// again by the next caller, which is what every call site did before.
     ///
+    /// One enumeration means one COMMAND per manager, and for `dnf`/`yum` that
+    /// is `rpm --query --all` rather than `dnf list --installed`: the two read
+    /// the same rpm database and `%{NAME}` carries no `.arch` for
+    /// `parse_dnf_lines` to strip, so the populations and folded names are
+    /// equal and the rpm query is the cheaper of the two. Two second-order
+    /// effects follow — a failure detail on a read path now names the rpm
+    /// invocation, and a test shimming `CFGD_DNF_BIN` no longer redirects a
+    /// read path (they resolve `RPM_BIN_ENV`).
+    ///
     /// A `PackageManager` implementation must not call this from inside its own
     /// enumeration: the slot's lock is held across the call, so asking about
     /// itself would deadlock.
     pub fn installed_for(&self, manager: &dyn PackageManager) -> Result<Arc<InstalledPackages>> {
-        let slot = self.enumerations.slot(manager.name());
-        let mut cached = slot.lock().unwrap_or_else(|e| e.into_inner());
-        // Read under the slot lock, so a mutation that landed while this thread
-        // waited for a sibling's enumeration voids that sibling's answer here
-        // rather than being served it.
-        let generation = crate::command_resolution_generation();
-        if let Some(hit) = cached.as_ref().filter(|c| c.generation == generation) {
-            return Ok(Arc::clone(&hit.packages));
-        }
-        let listed = manager.installed_packages_with_versions(self)?;
-        let packages = Arc::new(InstalledPackages::from_listing(manager, listed));
-        *cached = Some(installed::CachedEnumeration {
-            generation,
-            packages: Arc::clone(&packages),
-        });
-        Ok(packages)
+        self.enumerations.get_or_enumerate(manager.name(), || {
+            let listed = manager.installed_packages_with_versions(self)?;
+            Ok(InstalledPackages::from_listing(manager, listed))
+        })
     }
 
     /// Report something that is NOT this action's status line — work done on
@@ -1544,39 +1543,46 @@ mod tests {
 
     #[test]
     fn installed_for_asks_one_manager_once_however_many_packages_are_checked() {
-        let (printer, _cap) = Printer::for_test();
-        let state = StateStore::open_in_memory().expect("store");
-        let cx = test_cx(&printer, &state);
-        let mgr = EnumeratingManager::new("apt", &["ripgrep", "fd", "bat"]);
-        let counter = mgr.counter();
+        // A memo-hit count is only measurable while the resolution generation
+        // holds still — any test in this binary that installs something retires
+        // every entry, and the second read would legitimately re-enumerate.
+        let asked = crate::test_helpers::measured_in_a_stable_generation(|| {
+            let (printer, _cap) = Printer::for_test();
+            let state = StateStore::open_in_memory().expect("store");
+            let cx = test_cx(&printer, &state);
+            let mgr = EnumeratingManager::new("apt", &["ripgrep", "fd", "bat"]);
+            let counter = mgr.counter();
 
-        for name in ["ripgrep", "fd", "bat", "jq", "curl"] {
-            let installed = cx.installed_for(&mgr).expect("enumeration");
-            assert_eq!(installed.contains(name), mgr.installed.contains(name));
-        }
+            for name in ["ripgrep", "fd", "bat", "jq", "curl"] {
+                let installed = cx.installed_for(&mgr).expect("enumeration");
+                assert_eq!(installed.contains(name), mgr.installed.contains(name));
+            }
 
-        assert_eq!(
-            asked_count(&counter),
-            1,
-            "five package questions must cost one enumeration"
-        );
+            asked_count(&counter)
+        });
+
+        assert_eq!(asked, 1, "five package questions must cost one enumeration");
     }
 
     #[test]
     fn installed_for_keeps_one_managers_answer_out_of_anothers() {
-        let (printer, _cap) = Printer::for_test();
-        let state = StateStore::open_in_memory().expect("store");
-        let cx = test_cx(&printer, &state);
-        let apt = EnumeratingManager::new("apt", &["ripgrep"]);
-        let npm = EnumeratingManager::new("npm", &["typescript"]);
-        let (apt_count, npm_count) = (apt.counter(), npm.counter());
+        let (apt_asked, npm_asked) = crate::test_helpers::measured_in_a_stable_generation(|| {
+            let (printer, _cap) = Printer::for_test();
+            let state = StateStore::open_in_memory().expect("store");
+            let cx = test_cx(&printer, &state);
+            let apt = EnumeratingManager::new("apt", &["ripgrep"]);
+            let npm = EnumeratingManager::new("npm", &["typescript"]);
+            let (apt_count, npm_count) = (apt.counter(), npm.counter());
 
-        assert!(cx.installed_for(&apt).expect("apt").contains("ripgrep"));
-        assert!(!cx.installed_for(&npm).expect("npm").contains("ripgrep"));
-        assert!(cx.installed_for(&npm).expect("npm").contains("typescript"));
+            assert!(cx.installed_for(&apt).expect("apt").contains("ripgrep"));
+            assert!(!cx.installed_for(&npm).expect("npm").contains("ripgrep"));
+            assert!(cx.installed_for(&npm).expect("npm").contains("typescript"));
 
-        assert_eq!(asked_count(&apt_count), 1);
-        assert_eq!(asked_count(&npm_count), 1);
+            (asked_count(&apt_count), asked_count(&npm_count))
+        });
+
+        assert_eq!(apt_asked, 1);
+        assert_eq!(npm_asked, 1);
     }
 
     #[test]
