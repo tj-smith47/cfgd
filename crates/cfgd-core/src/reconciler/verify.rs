@@ -1,12 +1,9 @@
-use std::collections::{HashMap, HashSet};
-
 use serde::Serialize;
 
 use crate::config::{EnvScope, LOCAL_LAYER, ResolvedProfile};
 use crate::errors::Result;
 use crate::expand_tilde;
 use crate::modules::ResolvedModule;
-use crate::output::Printer;
 use crate::providers::ProviderRegistry;
 use crate::state::StateStore;
 use crate::to_posix_string;
@@ -35,22 +32,24 @@ pub(super) fn record_drift_or_warn(
 }
 
 /// Verify all managed resources match their desired state.
+///
+/// `cx` is the caller's package context rather than one built here, so the
+/// manager half of `cfgd verify` — planned separately, in the CLI — reads the
+/// same enumeration this function does instead of walking every manager a
+/// second time.
 pub fn verify(
     resolved: &ResolvedProfile,
     registry: &ProviderRegistry,
     state: &StateStore,
-    printer: &Printer,
     modules: &[ResolvedModule],
+    cx: &crate::providers::PackageContext<'_>,
 ) -> Result<Vec<VerifyResult>> {
     let mut results = Vec::new();
-    let cx = crate::providers::PackageContext::new(printer, state);
 
     // Verify packages — profile and module packages share one effective desired
     // set so a `(manager, name)` declared in both is checked once, and the
-    // module-vs-profile attribution drives the result shape. The per-manager
-    // installed set is cached to avoid N+1 queries.
+    // module-vs-profile attribution drives the result shape.
     let available_managers = registry.available_package_managers();
-    let mut installed_cache: HashMap<String, HashSet<String>> = HashMap::new();
     for ep in crate::effective::effective_desired_packages(&resolved.merged, modules) {
         // A `prefer: [script]` package has no queryable installed-state: a custom
         // install script can put anything anywhere, so there is no
@@ -72,14 +71,12 @@ pub fn verify(
             continue;
         };
 
-        if !installed_cache.contains_key(&ep.manager) {
-            installed_cache.insert(ep.manager.clone(), mgr.installed_packages(&cx)?);
-        }
-        let installed = &installed_cache[&ep.manager];
         // Compare through package_identity so case-insensitive managers (choco/scoop/
         // winget: `wget` vs installed `Wget`) and name-remapping managers (go: module
         // path vs binary) match like with like.
-        let ok = installed.contains(&mgr.package_identity(&ep.name));
+        let ok = cx
+            .installed_for(*mgr)?
+            .contains(&mgr.package_identity(&ep.name));
 
         // Preserve each origin's resource conventions: module packages report as
         // `module` / `<module>/<name>`; profile packages as `package` /

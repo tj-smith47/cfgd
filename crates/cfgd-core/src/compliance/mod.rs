@@ -526,7 +526,7 @@ pub fn collect_package_checks(
             continue;
         }
 
-        let installed = match pm.installed_packages(cx) {
+        let installed = match cx.installed_for(pm) {
             Ok(set) => set,
             Err(e) => {
                 // Cannot query this manager — report as warning
@@ -760,7 +760,10 @@ fn collect_watched_package_manager_checks(
         }]);
     };
 
-    let installed = match pm.installed_packages(cx) {
+    // The same context the declared-package checks above read, so a snapshot
+    // that both watches a manager and declares packages under it enumerates it
+    // once rather than once per section.
+    let installed = match cx.installed_for(pm) {
         Ok(set) => set,
         Err(e) => {
             return Ok(vec![ComplianceCheck {
@@ -774,10 +777,11 @@ fn collect_watched_package_manager_checks(
     };
 
     let mut checks: Vec<ComplianceCheck> = installed
-        .into_iter()
+        .identities()
+        .iter()
         .map(|pkg| ComplianceCheck {
             category: "watchPackage".into(),
-            name: Some(pkg),
+            name: Some(pkg.clone()),
             manager: Some(manager_name.to_owned()),
             status: ComplianceStatus::Compliant,
             detail: Some("installed".into()),

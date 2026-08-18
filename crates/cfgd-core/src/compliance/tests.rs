@@ -486,6 +486,36 @@ fn export_snapshot_to_file_yaml() {
 // collect_package_checks
 // -----------------------------------------------------------------------
 
+// A snapshot that both declares packages under a manager and watches that same
+// manager used to enumerate it once per section. One context makes the two
+// sections read one listing.
+#[test]
+fn a_declared_and_watched_manager_is_enumerated_once_per_snapshot() {
+    use crate::config::MergedProfile;
+
+    let mgr =
+        crate::test_helpers::MockPackageManager::new("pipx").with_installed(&["ripgrep", "fd"]);
+    let enumerations = mgr.enumeration_counter();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(mgr));
+
+    let mut profile = MergedProfile::default();
+    profile.packages.pipx = vec!["ripgrep".into(), "fd".into()];
+
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let cx = crate::providers::PackageContext::new(&printer, &state);
+
+    collect_package_checks(&profile, &[], &registry, &cx).unwrap();
+    collect_watched_package_manager_checks("pipx", &registry, &cx).unwrap();
+
+    assert_eq!(
+        enumerations.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the declared and watched sections must share one enumeration"
+    );
+}
+
 #[test]
 fn collect_package_checks_installed_package_compliant() {
     use crate::config::MergedProfile;

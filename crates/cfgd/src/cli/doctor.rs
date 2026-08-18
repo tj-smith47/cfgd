@@ -284,12 +284,17 @@ fn collect_doctor_output(
                     .map(|entry| {
                         match modules::resolve_package(entry, mod_name, &platform, &mgr_map) {
                             Ok(Some(resolved)) => {
+                                // One enumeration per manager for the whole
+                                // walk: `doctor` asks about every package of
+                                // every module, and the memo behind the
+                                // context is what keeps that one question per
+                                // manager instead of one per entry.
                                 let installed = doctor_cx
                                     .as_ref()
                                     .and_then(|cx| {
                                         mgr_map
                                             .get(&resolved.manager)
-                                            .and_then(|m| m.installed_packages(cx).ok())
+                                            .and_then(|m| cx.installed_for(*m).ok())
                                     })
                                     .map(|pkgs| pkgs.contains(&resolved.resolved_name))
                                     .unwrap_or(false);

@@ -456,7 +456,14 @@ fn verify_returns_results() {
     });
 
     let printer = test_printer();
-    let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
+    let results = verify(
+        &resolved,
+        &registry,
+        &state,
+        &[],
+        &crate::providers::PackageContext::new(&printer, &state),
+    )
+    .unwrap();
 
     // ripgrep should be present, bat should be missing
     let rg = results
@@ -470,6 +477,102 @@ fn verify_returns_results() {
         .find(|r| r.resource_id == "cargo:bat")
         .unwrap();
     assert!(!bat.matches);
+}
+
+#[test]
+fn verify_asks_each_manager_once_however_many_packages_are_declared() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    let mgr = crate::test_helpers::MockPackageManager::new("cargo").with_installed(&["ripgrep"]);
+    let enumerations = mgr.enumeration_counter();
+    registry.add_package_manager(Box::new(mgr));
+
+    let mut resolved = make_empty_resolved();
+    resolved.merged.packages.cargo = Some(crate::config::CargoSpec {
+        file: None,
+        packages: vec![
+            "ripgrep".to_string(),
+            "bat".to_string(),
+            "fd".to_string(),
+            "jq".to_string(),
+        ],
+    });
+
+    let printer = test_printer();
+    let cx = crate::providers::PackageContext::new(&printer, &state);
+    let results = verify(&resolved, &registry, &state, &[], &cx).unwrap();
+
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| r.resource_type == "package")
+            .count(),
+        4
+    );
+    assert_eq!(
+        enumerations.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "four declared packages under one manager is one question"
+    );
+}
+
+#[test]
+fn one_context_spans_the_verify_walk_and_the_tracking_gc_with_one_enumeration() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    let mgr = crate::test_helpers::MockPackageManager::new("cargo").with_installed(&["ripgrep"]);
+    let enumerations = mgr.enumeration_counter();
+    registry.add_package_manager(Box::new(mgr));
+
+    let mut resolved = make_empty_resolved();
+    resolved.merged.packages.cargo = Some(crate::config::CargoSpec {
+        file: None,
+        packages: vec!["ripgrep".to_string()],
+    });
+
+    let printer = test_printer();
+    let cx = crate::providers::PackageContext::new(&printer, &state);
+    verify(&resolved, &registry, &state, &[], &cx).unwrap();
+
+    // What `cfgd verify` and `cfgd apply` both do next: diff the tracking table
+    // against the same installed state, with nothing in between that could have
+    // changed it.
+    let managers = registry.available_package_managers();
+    let tracked: std::collections::HashSet<String> =
+        ["cargo/ripgrep".to_string(), "cargo/gone".to_string()].into();
+    let stale = crate::reconciler::stale_tracked_packages(&managers, &tracked, &cx).unwrap();
+
+    assert_eq!(stale, vec![("cargo".to_string(), "gone".to_string())]);
+    assert_eq!(
+        enumerations.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "two phases of one run sharing a context is one question per manager"
+    );
+}
+
+#[test]
+fn the_tracking_gc_re_enumerates_once_the_run_has_installed_something() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    let mgr = crate::test_helpers::MockPackageManager::new("cargo").with_installed(&["ripgrep"]);
+    let enumerations = mgr.enumeration_counter();
+    registry.add_package_manager(Box::new(mgr));
+
+    let printer = test_printer();
+    let cx = crate::providers::PackageContext::new(&printer, &state);
+    let managers = registry.available_package_managers();
+    let tracked: std::collections::HashSet<String> = ["cargo/ripgrep".to_string()].into();
+
+    crate::reconciler::stale_tracked_packages(&managers, &tracked, &cx).unwrap();
+    // The exec path's own signal that the machine moved under the run.
+    crate::invalidate_command_resolution();
+    crate::reconciler::stale_tracked_packages(&managers, &tracked, &cx).unwrap();
+
+    assert_eq!(
+        enumerations.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "a GC that ran after an install must read the machine as the install left it"
+    );
 }
 
 #[test]
@@ -1327,7 +1430,14 @@ fn verify_module_drift_packages() {
     let printer = test_printer();
 
     let modules = vec![make_resolved_module("nvim")];
-    let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
+    let results = verify(
+        &resolved,
+        &registry,
+        &state,
+        &modules,
+        &crate::providers::PackageContext::new(&printer, &state),
+    )
+    .unwrap();
 
     // Should have a drift result for ripgrep
     let drift = results
@@ -1410,7 +1520,14 @@ fn verify_module_all_installed_emits_per_package_pass_rows() {
     let printer = test_printer();
 
     let modules = vec![make_resolved_module("nvim")];
-    let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
+    let results = verify(
+        &resolved,
+        &registry,
+        &state,
+        &modules,
+        &crate::providers::PackageContext::new(&printer, &state),
+    )
+    .unwrap();
 
     // All packages installed → a passing per-package row each (no blanket
     // "module healthy" row, which would contradict folded-in file-drift rows).
@@ -1484,7 +1601,14 @@ fn verify_routes_through_package_identity_for_name_remapping_manager() {
         platform_skip_reason: None,
     }];
 
-    let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
+    let results = verify(
+        &resolved,
+        &registry,
+        &state,
+        &modules,
+        &crate::providers::PackageContext::new(&printer, &state),
+    )
+    .unwrap();
     let row = results
         .iter()
         .find(|r| r.resource_type == "module" && r.resource_id == "gotools/rsc.io/2fa")
@@ -1534,7 +1658,14 @@ fn verify_module_script_packages_not_false_drift() {
         platform_skip_reason: None,
     }];
 
-    let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
+    let results = verify(
+        &resolved,
+        &registry,
+        &state,
+        &modules,
+        &crate::providers::PackageContext::new(&printer, &state),
+    )
+    .unwrap();
 
     // Script packages are skipped in verification — they produce no row at all
     // (neither pass nor drift), so a script-only module yields no module rows.
@@ -1578,7 +1709,14 @@ fn verify_module_package_not_installed_is_module_drift() {
     let printer = test_printer();
     let modules = vec![module_one_pkg("dev", "brew", "ripgrep")];
 
-    let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
+    let results = verify(
+        &resolved,
+        &registry,
+        &state,
+        &modules,
+        &crate::providers::PackageContext::new(&printer, &state),
+    )
+    .unwrap();
 
     let row = results
         .iter()
@@ -1614,7 +1752,14 @@ fn verify_package_in_profile_and_module_appears_once() {
     let printer = test_printer();
     let modules = vec![module_one_pkg("dev", "brew", "ripgrep")];
 
-    let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
+    let results = verify(
+        &resolved,
+        &registry,
+        &state,
+        &modules,
+        &crate::providers::PackageContext::new(&printer, &state),
+    )
+    .unwrap();
 
     let rows: Vec<_> = results
         .iter()
@@ -1647,7 +1792,14 @@ fn verify_module_package_on_unavailable_manager_is_skipped() {
     let printer = test_printer();
     let modules = vec![module_one_pkg("dev", "brew", "ripgrep")];
 
-    let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
+    let results = verify(
+        &resolved,
+        &registry,
+        &state,
+        &modules,
+        &crate::providers::PackageContext::new(&printer, &state),
+    )
+    .unwrap();
 
     assert!(
         !results
@@ -1675,7 +1827,14 @@ fn verify_profile_package_on_unavailable_manager_is_skipped() {
     });
     let printer = test_printer();
 
-    let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
+    let results = verify(
+        &resolved,
+        &registry,
+        &state,
+        &[],
+        &crate::providers::PackageContext::new(&printer, &state),
+    )
+    .unwrap();
 
     assert!(
         !results
@@ -1710,7 +1869,14 @@ fn verify_module_system_tweak_surfaces_as_system_drift() {
         serde_yaml::to_value(serde_yaml::Mapping::new()).unwrap(),
     );
 
-    let results = verify(&resolved, &registry, &state, &printer, &[module]).unwrap();
+    let results = verify(
+        &resolved,
+        &registry,
+        &state,
+        &[module],
+        &crate::providers::PackageContext::new(&printer, &state),
+    )
+    .unwrap();
 
     let row = results
         .iter()
@@ -10393,7 +10559,14 @@ fn verify_empty_profile_returns_no_results() {
     let resolved = make_empty_resolved();
     let printer = test_printer();
 
-    let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
+    let results = verify(
+        &resolved,
+        &registry,
+        &state,
+        &[],
+        &crate::providers::PackageContext::new(&printer, &state),
+    )
+    .unwrap();
     assert!(
         results.is_empty(),
         "empty profile with no modules should produce no verify results, got: {:?}",
@@ -10446,7 +10619,14 @@ fn verify_module_files_produce_no_reconciler_rows() {
         platform_skip_reason: None,
     }];
 
-    let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
+    let results = verify(
+        &resolved,
+        &registry,
+        &state,
+        &modules,
+        &crate::providers::PackageContext::new(&printer, &state),
+    )
+    .unwrap();
 
     // No module rows: the module has no packages (the only thing the reconciler
     // now checks for modules) and module files are not its responsibility.
@@ -10477,7 +10657,14 @@ fn verify_multiple_packages_mixed_status() {
     });
 
     let printer = test_printer();
-    let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
+    let results = verify(
+        &resolved,
+        &registry,
+        &state,
+        &[],
+        &crate::providers::PackageContext::new(&printer, &state),
+    )
+    .unwrap();
 
     let git_result = results
         .iter()
@@ -11823,7 +12010,14 @@ fn verify_system_configurator_reports_drift() {
     };
 
     let printer = test_printer();
-    let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
+    let results = verify(
+        &resolved,
+        &registry,
+        &state,
+        &[],
+        &crate::providers::PackageContext::new(&printer, &state),
+    )
+    .unwrap();
 
     // Should have per-key drift entries with resource_type "system"
     let drift_results: Vec<_> = results
@@ -11911,7 +12105,14 @@ fn verify_system_configurator_reports_healthy_when_no_drift() {
     };
 
     let printer = test_printer();
-    let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
+    let results = verify(
+        &resolved,
+        &registry,
+        &state,
+        &[],
+        &crate::providers::PackageContext::new(&printer, &state),
+    )
+    .unwrap();
 
     let sysctl_results: Vec<_> = results
         .iter()

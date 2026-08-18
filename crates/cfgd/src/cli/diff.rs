@@ -406,6 +406,10 @@ pub(super) fn package_resource_id(manager: &str, packages: &[String]) -> String 
 /// (choco/scoop/winget) and name-remapping ones (go) match installed state like
 /// with like — a raw name compare re-reports installed packages as missing on
 /// every `cfgd diff --module`.
+///
+/// Called once per declared package by both `cfgd diff --module` and `cfgd
+/// status --module -e`, so the installed set comes from `cx`'s memo: a module
+/// with N packages on one manager asks that manager once, not N times.
 pub(super) fn package_missing_drift(
     pkg: &modules::ResolvedPackage,
     mgr_map: &std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager>,
@@ -415,8 +419,10 @@ pub(super) fn package_missing_drift(
         return None;
     }
     let mgr = mgr_map.get(pkg.manager.as_str())?;
-    let installed = mgr.installed_packages(cx).unwrap_or_default();
-    if installed.contains(&mgr.package_identity(&pkg.resolved_name)) {
+    // A manager that cannot be queried leaves the package reported missing,
+    // exactly as an empty enumeration did.
+    let installed = cx.installed_for(*mgr).ok();
+    if installed.is_some_and(|set| set.contains(&mgr.package_identity(&pkg.resolved_name))) {
         return None;
     }
     Some(PackageDrift {
@@ -1002,6 +1008,38 @@ mod tests {
             only_if: None,
             unless: None,
         }
+    }
+
+    // Both per-package drift walks — `cfgd diff` and `cfgd status` — call
+    // `package_missing_drift` once per declared package. Without the memo each
+    // call re-ran the manager's listing, which is the ~13s scan; with it the
+    // manager answers once however many packages are checked.
+    #[test]
+    fn package_missing_drift_asks_a_manager_once_for_every_package_it_owns() {
+        let mgr = cfgd_core::test_helpers::MockPackageManager::new("npm")
+            .with_installed(&["left-pad", "chalk"]);
+        let enumerations = mgr.enumeration_counter();
+        let mgr_map: std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> =
+            [(
+                "npm".to_string(),
+                &mgr as &dyn cfgd_core::providers::PackageManager,
+            )]
+            .into_iter()
+            .collect();
+
+        let (printer, _cap) = Printer::for_test_doc();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+
+        for name in ["left-pad", "chalk", "rimraf", "eslint", "prettier"] {
+            package_missing_drift(&resolved_pkg("npm", name), &mgr_map, &cx);
+        }
+
+        assert_eq!(
+            enumerations.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "five packages on one manager must cost one enumeration"
+        );
     }
 
     #[test]

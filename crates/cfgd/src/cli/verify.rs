@@ -57,7 +57,12 @@ pub fn cmd_verify(
     };
     registry.set_system_config_dir(&config_dir);
 
-    let mut results = reconciler::verify(&resolved, &registry, &state, printer, &resolved_modules)?;
+    // ONE context for both halves of the run: the reconciler's package check
+    // and the manager-drift plan below both diff against installed state, and
+    // sharing the context is what makes that one enumeration per manager for
+    // the whole command instead of one per half.
+    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
+    let mut results = reconciler::verify(&resolved, &registry, &state, &resolved_modules, &pkg_cx)?;
     // The reconciler cannot reach the file manager (crate boundary), so it no
     // longer checks managed files. Fold in content-aware file results here so a
     // file whose bytes drifted out-of-band fails verification and drives
@@ -81,7 +86,6 @@ pub fn cmd_verify(
     // close via `plan_managers`. Fold that half in here too, so `verify -e`
     // cannot report clean on a host `diff`/`status -e` both flag as drifted.
     let cfgd_installed = cfgd_installed_packages(&state)?;
-    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
     results.extend(super::live_drift::manager_verify_results(
         &resolved,
         &registry,

@@ -248,6 +248,13 @@ pub fn run_apply(
         phase_filter.is_some() || !skip.is_empty() || !only.is_empty() || args.skip_scripts;
     let prune_eligible = !module_only && !scope_restricted;
 
+    // Declared here rather than inside the planning block below because the
+    // tracking-table GC further down diffs against the same installed state:
+    // both run before a single action executes, so one enumeration per manager
+    // answers both. Anything the apply itself installs or removes retires the
+    // memo, so nothing downstream of an action can read a stale set.
+    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
+
     // In dry-run mode we don't need secret providers wired up — just plan files for display.
     // In apply mode we wire up the full file manager with secret providers.
     let (pkg_actions, file_actions, dry_run_fm, actual_packages) = if module_only {
@@ -271,7 +278,6 @@ pub fn run_apply(
         // Profile-scoped: module packages are added separately by
         // `reconciler.plan` as `Action::Module`, so this planner must stay
         // profile-only to avoid double-handling them.
-        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
         let (pkg, actual) = packages::plan_packages_observed(
             &effective_resolved.merged,
             &[],
@@ -466,7 +472,7 @@ pub fn run_apply(
             .iter()
             .map(|m| m.as_ref())
             .collect();
-        gc_stale_package_tracking(&state, &all_managers, printer);
+        gc_stale_package_tracking(&state, &all_managers, &pkg_cx);
         gc_orphaned_custom_packages(&state, &registry, printer);
     }
 
@@ -744,7 +750,7 @@ fn register_abort_handlers(_abort: &cfgd_core::AbortFlag) {
 fn gc_stale_package_tracking(
     state: &cfgd_core::state::StateStore,
     managers: &[&dyn cfgd_core::providers::PackageManager],
-    printer: &cfgd_core::output::Printer,
+    cx: &cfgd_core::providers::PackageContext<'_>,
 ) {
     let tracked = match cfgd_installed_packages(state) {
         Ok(t) => t,
@@ -753,8 +759,7 @@ fn gc_stale_package_tracking(
             return;
         }
     };
-    let cx = cfgd_core::providers::PackageContext::new(printer, state);
-    match cfgd_core::reconciler::stale_tracked_packages(managers, &tracked, &cx) {
+    match cfgd_core::reconciler::stale_tracked_packages(managers, &tracked, cx) {
         Ok(stale) => {
             for (mgr, id) in stale {
                 let rid = format!("{mgr}/{id}");

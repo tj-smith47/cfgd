@@ -25,6 +25,11 @@ use super::types::{ManagerAction, ModuleAction, ModuleActionKind, ReconcileConte
 /// Only available managers are inspected — an unavailable one cannot confirm
 /// absence, so its rows are left intact. Run only on a FULL unscoped apply.
 ///
+/// The enumeration comes from `cx`, so a caller whose planner already read the
+/// same managers through the same context pays for no second walk — and one
+/// that ran an install or an uninstall in between is re-read, because that
+/// moves the resolution generation every memo entry is stamped with.
+///
 /// `cfgd_installed` holds `"<manager>/<identity>"` entries.
 pub fn stale_tracked_packages(
     managers: &[&dyn PackageManager],
@@ -44,7 +49,7 @@ pub fn stale_tracked_packages(
         if tracked.is_empty() {
             continue;
         }
-        let installed = manager.installed_packages(cx)?;
+        let installed = cx.installed_for(*manager)?;
         for id in tracked {
             if !installed.contains(id) {
                 stale.push((manager.name().to_string(), id.to_string()));

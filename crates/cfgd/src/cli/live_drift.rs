@@ -839,6 +839,45 @@ mod tests {
     // pinning `matches: false` and the row shape here pins what `verify -e`
     // would exit with and what `verify -o json` would print, without needing
     // to trigger the real `ExitCode::exit()` (`-> !`) inside a test process.
+    // `cfgd verify` asks the resource half (`reconciler::verify`) and the manager
+    // half (`manager_verify_results`, which plans packages) about the same
+    // machine. Given one context, one manager answers once for both halves and
+    // for every package in them; given a context per half — which is what
+    // `cmd_verify` built before — the same manager is enumerated twice.
+    #[test]
+    fn both_halves_of_verify_share_one_enumeration_per_manager() {
+        let mgr = cfgd_core::test_helpers::MockPackageManager::new("npm")
+            .with_installed(&["left-pad", "chalk"]);
+        let enumerations = mgr.enumeration_counter();
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(mgr));
+
+        let resolved = resolved_no_files();
+        let modules = vec![
+            module_with_package("dev", "npm", "left-pad"),
+            module_with_package("web", "npm", "chalk"),
+        ];
+        let (printer, _cap) = Printer::for_test_doc();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+
+        cfgd_core::reconciler::verify(&resolved, &registry, &state, &modules, &cx).unwrap();
+        manager_verify_results(
+            &resolved,
+            &registry,
+            &modules,
+            &std::collections::HashSet::new(),
+            &cx,
+        )
+        .unwrap();
+
+        assert_eq!(
+            enumerations.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "both verify halves must read one enumeration per manager"
+        );
+    }
+
     #[test]
     fn manager_verify_results_flags_a_provisionable_manager_as_drift() {
         let resolved = resolved_no_files();

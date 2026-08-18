@@ -14,7 +14,7 @@
 //!   and `resolve_manifest_packages`.
 //! - The provider registry (`all_package_managers`).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use cfgd_core::PathDisplayExt;
@@ -160,12 +160,22 @@ pub fn plan_packages_observed(
     // With `modules` empty this equals the profile's own desired packages, so
     // the profile-scoped write path is unchanged.
     let effective = effective_desired_packages(profile, modules);
+    // Grouped once, ahead of both passes: each pass asks every manager what it
+    // wants, and a per-manager filter over the whole effective list walks it
+    // twice per manager — quadratic in a config whose modules declare a few
+    // hundred packages across a dozen managers.
+    let mut desired_by_manager: HashMap<&str, Vec<String>> = HashMap::new();
+    for pkg in &effective {
+        desired_by_manager
+            .entry(pkg.manager.as_str())
+            .or_default()
+            .push(pkg.name.clone());
+    }
     let desired_for = |manager_name: &str| -> Vec<String> {
-        effective
-            .iter()
-            .filter(|p| p.manager == manager_name)
-            .map(|p| p.name.clone())
-            .collect()
+        desired_by_manager
+            .get(manager_name)
+            .cloned()
+            .unwrap_or_default()
     };
 
     // Asked once per manager, ahead of both passes: `is_available()` is a PATH
@@ -177,8 +187,7 @@ pub fn plan_packages_observed(
     // Pass 1: determine which managers will be bootstrapped
     let mut bootstrapping: HashSet<String> = HashSet::new();
     for (manager, available) in managers.iter().zip(&availability) {
-        let desired = desired_for(manager.name());
-        if desired.is_empty() {
+        if !desired_by_manager.contains_key(manager.name()) {
             continue;
         }
         if !available && manager.can_bootstrap() {
@@ -210,26 +219,24 @@ pub fn plan_packages_observed(
         // package is still present before pruning.
         if *available {
             // ONE enumeration serves both the install/prune diff and the
-            // source-decision observation: `installed_packages_with_versions`
-            // reads the same manager database as `installed_packages` and
-            // additionally carries the version the satisfies-gate judges a
-            // pinned source item against. Listed names fold through
-            // `listed_identity` — NOT `package_identity`, which maps declared
-            // entries and need not be a fixed point over listed names — so
-            // the diff below still compares the exact identity space it
-            // always has (a case-insensitive manager's display-case listing
-            // folds to its lowercase identity form; everyone else's listing
-            // already reports identities and passes through untouched).
-            // Managers whose enumeration reports no version record `None`,
-            // and a pinned item under them stays pending (fail-closed).
-            let listed = manager.installed_packages_with_versions(cx)?;
-            let installed: HashSet<String> = listed
-                .iter()
-                .map(|pkg| manager.listed_identity(&pkg.name))
-                .collect();
+            // source-decision observation, and the context's memo is what
+            // makes it one for the whole command: the version half the
+            // satisfies-gate judges a pinned source item against comes from
+            // the same read the diff below compares against. Listed names fold
+            // through `listed_identity` — NOT `package_identity`, which maps
+            // declared entries and need not be a fixed point over listed names
+            // — so the diff still compares the exact identity space it always
+            // has (a case-insensitive manager's display-case listing folds to
+            // its lowercase identity form; everyone else's listing already
+            // reports identities and passes through untouched). Managers whose
+            // enumeration reports no version record `None`, and a pinned item
+            // under them stays pending (fail-closed).
+            let enumerated = cx.installed_for(*manager)?;
+            let installed = enumerated.identities();
             actual.record_enumeration(
                 manager.name(),
-                listed
+                enumerated
+                    .listed()
                     .iter()
                     .map(|pkg| (manager.listed_identity(&pkg.name), known_version(pkg))),
             );
@@ -265,8 +272,7 @@ pub fn plan_packages_observed(
                 });
             }
 
-            let to_uninstall =
-                uninstall_for_manager(*manager, &desired, &installed, cfgd_installed);
+            let to_uninstall = uninstall_for_manager(*manager, &desired, installed, cfgd_installed);
             if !to_uninstall.is_empty() {
                 actions.push(PackageAction::Uninstall {
                     manager: manager.name().to_string(),
@@ -599,7 +605,13 @@ pub fn prune_orphaned_packages(
 
     for ((manager, uninstall_cmd), packages) in groups {
         let mgr = ScriptedManager::from_uninstall_only(&manager, uninstall_cmd);
-        match mgr.uninstall(&packages, cx) {
+        let outcome = mgr.uninstall(&packages, cx);
+        // A persisted uninstall script takes binaries off the machine exactly
+        // as a manager's own uninstall does, and a partial failure has already
+        // removed whatever it removed — so the memos describing what resolves
+        // and what is installed are retired either way.
+        cfgd_core::invalidate_command_resolution();
+        match outcome {
             Ok(()) => {
                 for pkg in packages {
                     removed.push((manager.clone(), pkg));
