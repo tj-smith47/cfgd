@@ -1226,6 +1226,74 @@ fn resolve_desired_state_no_sources_resolves_local_only() {
     );
 }
 
+/// A registry build constructs every package manager and every configurator
+/// this host supports. A resolution that walks no modules needs none of them,
+/// so the cell it hands back must still be empty — and a caller that does ask
+/// must still get a working registry out of it.
+#[test]
+#[serial]
+fn a_module_free_resolution_builds_no_registry_until_one_is_asked_for() {
+    let tmp = tempdir().unwrap();
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(&config_path, CONFIG_YAML).unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("default.yaml"), PROFILE_YAML).unwrap();
+
+    let cli = make_cli(config_path.clone());
+    let cfg = config::load_config(&config_path).unwrap();
+    let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
+
+    let no_modules = ResolvedProfile {
+        layers: Vec::new(),
+        merged: MergedProfile::default(),
+    };
+    let mut desired = resolve_desired_state(
+        &ctx,
+        &cfg,
+        &no_modules,
+        None,
+        &printer,
+        false,
+        composition::ConstraintMode::Report,
+    )
+    .unwrap();
+    assert!(
+        !desired.registry_built(),
+        "a resolution that walks no modules must build no registry"
+    );
+    assert!(
+        !desired.take_registry(&cfg).package_managers().is_empty(),
+        "the caller that does ask must still get a populated registry"
+    );
+
+    // The same resolution over a profile that names a module has to map its
+    // packages onto managers, so that one really does build the registry.
+    let module_dir = tmp.path().join("modules").join("my-module");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: my-module\nspec:\n  packages:\n    - name: module-pkg\n      prefer: [cargo]\n",
+    )
+    .unwrap();
+    let with_module = empty_resolved_profile("my-module", "work");
+    let desired = resolve_desired_state(
+        &ctx,
+        &cfg,
+        &with_module,
+        None,
+        &printer,
+        false,
+        composition::ConstraintMode::Report,
+    )
+    .unwrap();
+    assert!(
+        desired.registry_built(),
+        "a resolution that walks modules must build the registry it maps with"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // sign_and_attest
 // ---------------------------------------------------------------------------
@@ -1456,7 +1524,7 @@ fn the_desired_state_registers_each_custom_manager_exactly_once() {
         packages: vec!["node".to_string()],
     }];
 
-    let desired = resolve_desired_state(
+    let mut desired = resolve_desired_state(
         &ctx,
         &cfg,
         &local,
@@ -1473,7 +1541,7 @@ fn the_desired_state_registers_each_custom_manager_exactly_once() {
     // stranded-install warning, the concurrency lane keyed on the name — sees
     // a manager that does not exist.
     let mise = desired
-        .registry
+        .take_registry(&cfg)
         .package_managers()
         .iter()
         .filter(|m| m.name() == "mise")

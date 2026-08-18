@@ -41,7 +41,7 @@ pub fn cmd_verify(
         // Compose with sources (cache-only — read paths stay offline) and resolve
         // the effective module set through the one shared resolver, so `verify`
         // checks the same source-composed desired state that `apply` writes.
-        let desired = resolve_desired_state(
+        let mut desired = resolve_desired_state(
             &ctx,
             cfg,
             local_resolved,
@@ -50,9 +50,11 @@ pub fn cmd_verify(
             false,
             composition::ConstraintMode::Report,
         )?;
+        // Taken before the other fields, because a partial move out of
+        // `desired` would block the `&mut self` this accessor needs.
+        let registry = desired.take_registry(cfg);
         let mut resolved = desired.resolved;
         let mods = desired.modules;
-        let registry = desired.registry;
         ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
         (resolved, mods, registry)
     };

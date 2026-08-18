@@ -283,8 +283,15 @@ fn collect_doctor_output(
 
     // Per-module package detail: resolve each declared package against the
     // platform's manager and query installed_packages to know whether the
-    // declared state is realized. The "modules-only" registry mirrors what
-    // `cfgd apply` would use for the install path.
+    // declared state is realized.
+    //
+    // Deliberately the config-FREE registry, and the one place in the run that
+    // wants a second one: the package report above builds a config-aware
+    // registry from the resolved profile, which registers the profile's
+    // `packages.custom` managers. A MODULE cannot reach those — it resolves
+    // against the managers it declares — so resolving the module report through
+    // the profile's registry would report a module package as resolvable by a
+    // manager the module cannot use.
     let modules_registry = ctx.base_registry();
     let mgr_map = managers_map(modules_registry);
     let platform = Platform::current();
@@ -373,8 +380,11 @@ fn collect_doctor_output(
 
     // Probe the store THIS run's `--state-dir`/`--scope` would open, not the
     // per-user default — a `--scope system` doctor reporting the user store
-    // accessible would be diagnosing a store the run never uses.
-    let state_store = match super::open_state_store(cli.state_dir.as_deref(), cli.scope()) {
+    // accessible would be diagnosing a store the run never uses. Asked through
+    // the run's context, which opens that exact store and does NOT memoize a
+    // failure, so a refused open is still re-attempted and still reported here
+    // rather than being answered from a cached error.
+    let state_store = match ctx.state() {
         Ok(_) => DoctorStateStore {
             accessible: true,
             message: None,

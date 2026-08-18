@@ -21,7 +21,7 @@ pub(super) fn collect_and_store_compliance_snapshot<'a>(
     // Report mode: a source security-constraint violation surfaces as a compliance
     // check rather than aborting (exit 4). `compliance` reports state; it does not
     // gate on it — unlike apply/plan/daemon which compose in Enforce mode.
-    let desired = resolve_desired_state(
+    let mut desired = resolve_desired_state(
         ctx,
         cfg,
         local_resolved,
@@ -30,12 +30,14 @@ pub(super) fn collect_and_store_compliance_snapshot<'a>(
         false,
         composition::ConstraintMode::Report,
     )?;
+    // Taken before the other fields, because a partial move out of `desired`
+    // would block the `&mut self` this accessor needs.
+    let mut registry = desired.take_registry(cfg);
     let constraint_violations = desired.constraint_violations;
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
 
     ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
-    let mut registry = desired.registry;
     registry.file_manager = Some(Box::new(build_compliance_file_manager(
         config_dir,
         &resolved,

@@ -858,18 +858,42 @@ pub(in crate::cli) fn set_nested_yaml_value(
 pub(in crate::cli) struct DesiredState {
     pub resolved: ResolvedProfile,
     pub modules: Vec<cfgd_core::modules::ResolvedModule>,
-    /// The config-aware provider registry the resolution built to map module
-    /// packages onto managers — the ONE registry a composing run needs, handed
-    /// back rather than rebuilt by the caller. `set_system_config_dir` is the
-    /// caller's to apply: the read paths that never set it must keep not
-    /// setting it.
-    pub registry: ProviderRegistry,
+    /// The config-aware provider registry that maps module packages onto
+    /// managers — the ONE registry a composing run needs, handed back rather
+    /// than rebuilt by the caller. Reached through [`Self::take_registry`],
+    /// which builds it if the resolution did not already need it, so a command
+    /// that never asks (`decide` classifies sources and reads no manager) pays
+    /// nothing. `set_system_config_dir` is the caller's to apply: the read paths
+    /// that never set it must keep not setting it.
+    registry: std::cell::OnceCell<ProviderRegistry>,
     pub source_env: std::collections::HashMap<String, Vec<cfgd_core::config::EnvVar>>,
     pub source_commits: std::collections::HashMap<String, String>,
     /// Source security-constraint violations surfaced when the caller composed in
     /// [`ConstraintMode::Report`] (read paths). Empty for `Enforce` callers
     /// (apply/plan), which abort on the first violation instead.
     pub constraint_violations: Vec<cfgd_core::composition::ConstraintViolation>,
+}
+
+impl DesiredState {
+    /// Take the run's config-aware registry, building it on first ask.
+    ///
+    /// `cfg` is a parameter rather than a field because the registry's other
+    /// input is `self.resolved.merged.packages` — a sibling field, which no
+    /// `OnceCell` initializer stored beside it could borrow. Owned, because
+    /// every caller mutates what it gets (`set_system_config_dir`) or hands it
+    /// to a `Reconciler` that wants it by value.
+    /// Whether the resolution itself needed the registry, for the test that
+    /// pins the laziness — an eager build makes both halves answer `true`.
+    #[cfg(test)]
+    pub(in crate::cli) fn registry_built(&self) -> bool {
+        self.registry.get().is_some()
+    }
+
+    pub(in crate::cli) fn take_registry(&mut self, cfg: &config::CfgdConfig) -> ProviderRegistry {
+        self.registry.take().unwrap_or_else(|| {
+            build_registry_with_config_and_packages(Some(cfg), Some(&self.resolved.merged.packages))
+        })
+    }
 }
 
 /// Compose the local profile with configured sources into an effective profile.
@@ -1067,24 +1091,25 @@ pub(in crate::cli) fn resolve_desired_state(
 
     // Config-aware registry so a module that references a custom package manager
     // (declared in cfg / composed packages) resolves identically on every
-    // command — matching the apply path's registry. Built HERE and handed back
-    // on `DesiredState` so the caller reuses it: every command that composes a
-    // desired state then built a second, identical registry of its own, and a
-    // registry build constructs every package manager and every configurator
-    // this host supports.
+    // command — matching the apply path's registry. Filled HERE when the module
+    // walk needs it and handed back on `DesiredState` either way, so the caller
+    // reuses it: every command that composes a desired state then built a
+    // second, identical registry of its own, and a registry build constructs
+    // every package manager and every configurator this host supports.
     //
     // `build_registry_with_config_and_packages` already registers the spec's
     // custom managers; the second `extend_package_managers` this replaced added
     // each of them a SECOND time, so `package_managers()` answered with two
     // entries per custom manager.
-    let registry =
-        build_registry_with_config_and_packages(Some(cfg), Some(&resolved.merged.packages));
+    let registry: std::cell::OnceCell<ProviderRegistry> = std::cell::OnceCell::new();
 
     let modules = if module_names.is_empty() {
         Vec::new()
     } else {
         let platform = Platform::current();
-        let mgr_map = managers_map(&registry);
+        let mgr_map = managers_map(registry.get_or_init(|| {
+            build_registry_with_config_and_packages(Some(cfg), Some(&resolved.merged.packages))
+        }));
         let cache_base = module_cache_dir(cli)?;
         match modules::resolve_modules(
             &module_names,

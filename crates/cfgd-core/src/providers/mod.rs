@@ -3,6 +3,8 @@
 mod installed;
 pub mod skill;
 
+#[cfg(any(test, feature = "test-helpers"))]
+pub(crate) use installed::set_enumeration_memo_ttl_override;
 pub use installed::{InstalledEnumerations, InstalledPackages};
 
 use std::collections::HashSet;
@@ -109,9 +111,13 @@ pub struct PackageContext<'a> {
     /// otherwise re-enumerate every manager on every call — which owns the memo
     /// itself and lends it through
     /// [`PackageContext::with_shared_enumerations`]. Lending is safe because
-    /// each slot has its own lock and every entry is keyed by
-    /// [`crate::command_resolution_generation`], so an install performed
-    /// between two borrows voids the answer rather than being served over it.
+    /// each slot has its own lock and every entry is bounded twice: by
+    /// [`crate::command_resolution_generation`], which voids it the moment cfgd
+    /// installs, uninstalls or provisions anything, and by an age ceiling,
+    /// which voids it after 30 seconds so a package a HUMAN installed beside a
+    /// long-lived holder is not answered around. Neither bound alone is enough
+    /// for a holder that outlives one unit of work — no MCP tool call installs
+    /// anything, so on that host the generation never moves.
     enumerations: EnumerationMemo<'a>,
 }
 
@@ -1590,10 +1596,15 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(enumeration_memo)]
     fn installed_for_asks_one_manager_once_however_many_packages_are_checked() {
         // A memo-hit count is only measurable while the resolution generation
         // holds still — any test in this binary that installs something retires
-        // every entry, and the second read would legitimately re-enumerate.
+        // every entry, and the second read would legitimately re-enumerate. The
+        // age ceiling is the memo's other bound, and pinning it is what keeps
+        // the claim about the mechanism rather than about how long five
+        // adjacent statements took.
+        let _ttl = crate::test_helpers::EnumerationMemoTtlGuard::never_expires();
         let asked = crate::test_helpers::measured_in_a_stable_generation(|| {
             let (printer, _cap) = Printer::for_test();
             let state = StateStore::open_in_memory().expect("store");
@@ -1613,10 +1624,12 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(enumeration_memo)]
     fn a_lent_memo_survives_the_context_that_borrowed_it() {
         // The MCP server answers one tool call per context but lives for the
         // whole session. Lending it the memo is what stops every call from
         // re-enumerating every manager.
+        let _ttl = crate::test_helpers::EnumerationMemoTtlGuard::never_expires();
         let (shared_asked, owned_asked) =
             crate::test_helpers::measured_in_a_stable_generation(|| {
                 let (printer, _cap) = Printer::for_test();
@@ -1660,7 +1673,40 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(enumeration_memo)]
+    fn a_lent_memo_is_retired_once_it_is_older_than_the_ceiling() {
+        // Nothing an MCP tool call does bumps the resolution generation — none
+        // of them installs anything — so the age ceiling is the ONLY thing
+        // standing between a session-long holder and an inventory taken at the
+        // first call. Pinned to zero, every entry is expired the moment it is
+        // stored.
+        let _ttl = crate::test_helpers::EnumerationMemoTtlGuard::always_expired();
+        let (printer, _cap) = Printer::for_test();
+        let state = StateStore::open_in_memory().expect("store");
+        let mgr = EnumeratingManager::new("apt", &["ripgrep"]);
+        let counter = mgr.counter();
+
+        let enumerations = InstalledEnumerations::default();
+        for _ in 0..3 {
+            let cx = PackageContext::with_shared_enumerations(&printer, &state, &enumerations);
+            assert!(
+                cx.installed_for(&mgr)
+                    .expect("enumeration")
+                    .contains("ripgrep")
+            );
+        }
+
+        assert_eq!(
+            asked_count(&counter),
+            3,
+            "an aged-out enumeration must be asked again"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(enumeration_memo)]
     fn installed_for_keeps_one_managers_answer_out_of_anothers() {
+        let _ttl = crate::test_helpers::EnumerationMemoTtlGuard::never_expires();
         let (apt_asked, npm_asked) = crate::test_helpers::measured_in_a_stable_generation(|| {
             let (printer, _cap) = Printer::for_test();
             let state = StateStore::open_in_memory().expect("store");
@@ -1681,6 +1727,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(enumeration_memo)]
     fn installed_for_re_enumerates_once_a_run_changes_what_is_installed() {
         let (printer, _cap) = Printer::for_test();
         let state = StateStore::open_in_memory().expect("store");

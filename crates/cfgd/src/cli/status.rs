@@ -341,7 +341,7 @@ pub(super) fn cmd_status(
     // Compose with sources (cache-only — read paths stay offline) and resolve the
     // effective module set once, so the module dashboard and the `-e` live scan
     // both reflect the same source-composed desired state that `apply` writes.
-    let desired = resolve_desired_state(
+    let mut desired = resolve_desired_state(
         &ctx,
         cfg,
         local_resolved,
@@ -350,12 +350,14 @@ pub(super) fn cmd_status(
         false,
         composition::ConstraintMode::Report,
     )?;
+    // Kept for the `-e` live scan below, which is the only half that needs a
+    // registry — a resolution that walked modules built one already, so this
+    // reuses it instead of building a second. Taken before the other fields,
+    // because a partial move out of `desired` would block the `&mut self` this
+    // accessor needs.
+    let mut registry = desired.take_registry(cfg);
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
-    // Kept for the `-e` live scan below, which is the only half that needs a
-    // registry — the resolver built one for module resolution either way, so
-    // this reuses it instead of building a second.
-    let mut registry = desired.registry;
 
     // The plan withholds items no run has recorded a row for yet; a dashboard
     // that hides them contradicts the plan it summarizes. Same classification

@@ -1368,14 +1368,22 @@ impl<'a> super::Reconciler<'a> {
             "failed": failed,
         })
         .to_string();
-        self.state
-            .update_apply_status(apply_id, status.clone(), Some(&summary))?;
-
         // One transaction for the whole bookkeeping tail. Every write below is a
         // per-row insert in a loop over the run's results, its modules and its
         // touched files; individually committed, a large apply paid one WAL
         // commit per row for work that is only meaningful as a whole.
+        //
+        // The status update belongs INSIDE it, not before it: the apply row's
+        // verdict and the ownership rows describing what the run now owns are
+        // one fact. Committed separately, a tail that fails after packages were
+        // installed leaves a row reading `Success` beside no `managed_resources`
+        // rows at all — the next run's declarative prune cannot reach packages
+        // this one installed, because nothing records that cfgd owns them.
+        // Rolled back together, the row stays at its `in-progress` placeholder,
+        // which is what a run that did not finish its bookkeeping actually is.
         self.state.in_transaction(|| {
+            self.state
+                .update_apply_status(apply_id, status.clone(), Some(&summary))?;
             self.record_managed_resources(apply_id, &results)?;
             // Update module state and file manifests for successfully applied modules
             self.update_module_state(module_actions, apply_id, &results)?;

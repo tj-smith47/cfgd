@@ -21,7 +21,7 @@ pub fn cmd_checkin(
     // Compose with sources (cache-only — read paths stay offline) and resolve the
     // effective module set through the one shared resolver, so the checkin
     // payload reflects the same source-composed desired state that `apply` writes.
-    let desired = resolve_desired_state(
+    let mut desired = resolve_desired_state(
         &ctx,
         cfg,
         local_resolved,
@@ -30,10 +30,12 @@ pub fn cmd_checkin(
         false,
         composition::ConstraintMode::Report,
     )?;
+    // Taken before the other fields, because a partial move out of `desired`
+    // would block the `&mut self` this accessor needs.
+    let mut registry = desired.take_registry(cfg);
     let resolved = desired.resolved;
     let resolved_modules = desired.modules;
 
-    let mut registry = desired.registry;
     registry.file_manager = Some(Box::new(build_compliance_file_manager(
         config_dir,
         &resolved,

@@ -2047,6 +2047,50 @@ impl Drop for CommandPathMemoTtlGuard {
     }
 }
 
+/// RAII pin of the installed-package enumeration memo's TTL, restoring the
+/// prior setting on drop. The sibling of [`CommandPathMemoTtlGuard`], for the
+/// same reason and with the same three constructors: the enumeration memo also
+/// carries a 30-second ceiling, so a holder that outlives one unit of work
+/// (the MCP server) re-asks after a human installs something cfgd did not.
+///
+/// Unlike its sibling, pinning this one DOES need serialization: every test
+/// that reads the enumeration memo asserts on the COUNT of enumerations rather
+/// than on the answer, so a concurrent zero pin makes another test's memoized
+/// listing recompute and changes exactly what that test measures. Pair every
+/// use with `#[serial_test::serial(enumeration_memo)]`, the named group the
+/// enumeration-count tests share — named, so nothing outside them is held up.
+pub struct EnumerationMemoTtlGuard {
+    prior: Option<u64>,
+}
+
+impl EnumerationMemoTtlGuard {
+    /// Pin the TTL to `ttl`, saturating at the millisecond range.
+    pub fn pinned(ttl: std::time::Duration) -> Self {
+        let millis = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX - 1);
+        Self {
+            prior: crate::providers::set_enumeration_memo_ttl_override(Some(millis)),
+        }
+    }
+
+    /// Pin the TTL beyond any test's lifetime, so no memoized enumeration can
+    /// expire mid-test. For a test whose claim is that an answer still stands.
+    pub fn never_expires() -> Self {
+        Self::pinned(std::time::Duration::from_millis(u64::MAX - 1))
+    }
+
+    /// Pin the TTL to zero, so every enumeration is expired the moment it is
+    /// stored. For a test whose claim is that expiry retires one.
+    pub fn always_expired() -> Self {
+        Self::pinned(std::time::Duration::ZERO)
+    }
+}
+
+impl Drop for EnumerationMemoTtlGuard {
+    fn drop(&mut self) {
+        crate::providers::set_enumeration_memo_ttl_override(self.prior);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Env-var test guards — replace per-file `struct EnvVarGuard` / `fn with_env`
 // duplicates. Pair with `serial_test::serial` because env-var mutation is

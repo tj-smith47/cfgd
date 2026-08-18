@@ -204,7 +204,7 @@ pub fn run_apply(
     // Compose with sources (network refresh) and resolve modules through the one
     // desired-state resolver every command shares, so apply and the read paths
     // compute an identical effective module set for the same config.
-    let desired = resolve_desired_state(
+    let mut desired = resolve_desired_state(
         &ctx,
         &cfg,
         &resolved,
@@ -213,13 +213,15 @@ pub fn run_apply(
         true,
         composition::ConstraintMode::Enforce,
     )?;
+    // Taken before the other fields, because a partial move out of `desired`
+    // would block the `&mut self` this accessor needs.
+    // Built from the same config and composed packages this path would have
+    // used, custom managers included.
+    let mut registry = desired.take_registry(&cfg);
     let source_env = desired.source_env;
     let source_commits = desired.source_commits;
     let resolved_modules = desired.modules;
     let mut effective_resolved = desired.resolved;
-    // The resolver built this from the same config and composed packages this
-    // path would have used, custom managers included.
-    let mut registry = desired.registry;
     registry.set_system_config_dir(&config_dir);
 
     // Resolve manifest files (Brewfile, package.json, etc.) into package lists

@@ -74,9 +74,14 @@ pub struct McpServer {
     /// What each manager reported installed, kept for the server's life rather
     /// than for one tool call's. A context is short-lived here — it borrows
     /// `printer` and `state`, so it cannot be a field beside them — and without
-    /// this every tool call re-ran `brew list`, `npm ls -g` and the rest. An
-    /// install performed by a tool call bumps the resolution generation, which
-    /// voids the memo, so a later call still sees what that install did.
+    /// this every tool call re-ran `brew list`, `npm ls -g` and the rest.
+    ///
+    /// What bounds the staleness here is the memo's AGE ceiling, not the
+    /// resolution generation: no MCP tool installs or uninstalls anything, so
+    /// nothing a session does can move the generation, and the change this host
+    /// actually has to notice is the user installing a package in another
+    /// terminal between two `scan_installed_packages` calls. That is exactly
+    /// what the ceiling is for.
     enumerations: cfgd_core::providers::InstalledEnumerations,
 }
 

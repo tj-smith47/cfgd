@@ -71,6 +71,18 @@ pub fn http_agent(timeout: Duration) -> ureq::Agent {
         .clone()
 }
 
+/// One agent per timeout also means one COOKIE JAR per timeout: ureq's
+/// `cookies` feature is on (it is a default of the version this workspace
+/// pins), and an `Agent` stores what a response sets. Sharing it is fine here
+/// and stays fine only while both of these hold — a call site that breaks
+/// either builds its own agent rather than widening this one:
+///
+/// - cfgd never authenticates with a cookie. Registry, gateway and GitHub
+///   credentials all travel as a per-request `Authorization` header, so no
+///   caller's identity can leak into another's request through the jar.
+/// - the jar is scoped by domain and path by ureq itself, so an OCI registry
+///   cannot read a cookie the device gateway set even though both may share
+///   the 300s and 30s agents respectively.
 fn build_agent(timeout: Duration) -> ureq::Agent {
     #[cfg(test)]
     record_build(timeout);

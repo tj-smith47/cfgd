@@ -3451,6 +3451,31 @@ fn in_transaction_rolls_back_when_the_batch_fails() {
     assert_eq!(store.managed_resources().unwrap().len(), 1);
 }
 
+/// The apply row's verdict is written inside the bookkeeping batch, so a tail
+/// that fails cannot leave a run reading `Success` beside no ownership rows —
+/// the next run's declarative prune reads those rows to know what cfgd owns.
+#[test]
+fn a_failed_bookkeeping_batch_leaves_the_apply_row_in_progress() {
+    let store = StateStore::open_in_memory().unwrap();
+    let apply_id = store
+        .record_apply("work", "hash", ApplyStatus::InProgress, None)
+        .unwrap();
+
+    let err: Result<()> = store.in_transaction(|| {
+        store.update_apply_status(apply_id, ApplyStatus::Success, Some("{}"))?;
+        store.upsert_managed_resource("file", "~/.a", "profile:work", None, None)?;
+        Err(crate::errors::StateError::MigrationFailed {
+            message: "tail aborted".to_string(),
+        }
+        .into())
+    });
+    assert!(err.is_err());
+
+    let record = store.get_apply(apply_id).unwrap().expect("apply row");
+    assert_eq!(record.status, ApplyStatus::InProgress);
+    assert!(store.managed_resources().unwrap().is_empty());
+}
+
 #[test]
 fn in_transaction_rolls_back_when_the_batch_panics() {
     let store = StateStore::open_in_memory().unwrap();

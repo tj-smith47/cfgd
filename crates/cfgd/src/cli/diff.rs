@@ -92,7 +92,7 @@ pub fn cmd_diff(
     // Compose with sources (cache-only — read paths stay offline) and resolve the
     // effective module set through the one shared resolver, so `diff` sees the
     // same source-composed desired state that `apply` writes.
-    let desired = resolve_desired_state(
+    let mut desired = resolve_desired_state(
         &ctx,
         cfg,
         local_resolved,
@@ -101,13 +101,15 @@ pub fn cmd_diff(
         false,
         composition::ConstraintMode::Report,
     )?;
+    // The registry built from this config and these composed packages, taken
+    // before the other fields because a partial move out of `desired` would
+    // block the `&mut self` this accessor needs. Its only difference from a
+    // `build_registry_with_profile` of the same spec is the config-derived
+    // secret backend and default file strategy, neither of which any check
+    // below reads.
+    let registry = desired.take_registry(cfg);
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
-    // The registry the resolver already built from this config and these
-    // composed packages. Its only difference from a `build_registry_with_profile`
-    // of the same spec is the config-derived secret backend and default file
-    // strategy, neither of which any check below reads.
-    let registry = desired.registry;
 
     ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
 

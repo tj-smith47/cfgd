@@ -34,7 +34,8 @@ pub fn cmd_plan(
     }
 
     let config_dir = config_dir(cli);
-    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+    let ctx = RunContext::new(cli, printer);
+    let state = ctx.state()?;
     let module_filter = args.module.as_deref();
 
     // Load config and profile — same pattern as cmd_apply. The header these
@@ -44,11 +45,9 @@ pub fn cmd_plan(
     let (cfg, resolved, profile_label, config_parsed) =
         load_config_and_profile_module_scoped(cli, printer, module_filter)?;
 
-    let ctx = RunContext::new(cli, printer);
-
     // Compose with sources (network refresh) and resolve modules through the one
     // shared desired-state resolver — same path apply takes.
-    let desired = resolve_desired_state(
+    let mut desired = resolve_desired_state(
         &ctx,
         &cfg,
         &resolved,
@@ -57,12 +56,14 @@ pub fn cmd_plan(
         true,
         composition::ConstraintMode::Enforce,
     )?;
+    // Taken before the other fields, because a partial move out of `desired`
+    // would block the `&mut self` this accessor needs.
+    // Built from the same config and composed packages this path would have
+    // used, custom managers included.
+    let mut registry = desired.take_registry(&cfg);
     let source_env = desired.source_env;
     let resolved_modules = desired.modules;
     let mut effective_resolved = desired.resolved;
-    // The resolver built this from the same config and composed packages this
-    // path would have used, custom managers included.
-    let mut registry = desired.registry;
     registry.set_system_config_dir(&config_dir);
 
     // Resolve manifest files (Brewfile, package.json, etc.) into package lists
@@ -108,12 +109,12 @@ pub fn cmd_plan(
         let cfgd_installed = if scope_restricted {
             std::collections::HashSet::new()
         } else {
-            cfgd_installed_packages(&state)?
+            cfgd_installed_packages(state)?
         };
         // Profile-scoped: module packages are added separately by
         // `reconciler.plan` as `Action::Module`, so this planner must stay
         // profile-only to avoid double-handling them.
-        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &state);
+        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
         let (pkg, actual) = packages::plan_packages_observed(
             &effective_resolved.merged,
             &[],
@@ -134,7 +135,7 @@ pub fn cmd_plan(
 
     let module_names: Vec<String> = resolved_modules.iter().map(|m| m.name.clone()).collect();
 
-    let reconciler = Reconciler::new(&registry, &state);
+    let reconciler = Reconciler::new(&registry, state);
     let mut plan = reconciler.plan(
         &effective_resolved,
         file_actions,
@@ -152,7 +153,7 @@ pub fn cmd_plan(
     // decide` answers it, or once an apply/tick proceeds.
     let (withheld, _review) = plan_ops::withheld_for_run(
         &ctx,
-        &state,
+        state,
         &cfg,
         &effective_resolved,
         config_parsed,

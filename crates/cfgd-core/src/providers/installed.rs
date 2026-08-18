@@ -75,7 +75,60 @@ pub struct InstalledEnumerations {
 
 pub(super) struct CachedEnumeration {
     pub(super) generation: u64,
+    pub(super) computed: std::time::Instant,
     pub(super) packages: Arc<InstalledPackages>,
+}
+
+/// How long an enumeration stands before it is asked again, bounding the
+/// staleness cfgd cannot see coming.
+///
+/// The generation counter covers every install, uninstall, provision and
+/// lifecycle script cfgd performs itself, and for a memo that dies with its
+/// context that is the whole space of events. It is NOT the whole space for a
+/// holder that outlives one unit of work: the MCP server answers tool calls for
+/// as long as its client is connected and none of them installs anything, so
+/// the only thing that can change what `brew list` would say is a human
+/// installing a package in another terminal — which bumps nothing. Without a
+/// ceiling, the second `scan_installed_packages` of such a session would report
+/// the inventory taken at the first, for the life of the server.
+///
+/// Thirty seconds, the same ceiling [`crate::command_path`]'s memo carries and
+/// for the same reason: long enough that a burst of questions inside one
+/// operation costs one listing, short enough that a session held open across a
+/// human's install re-asks.
+const ENUMERATION_MEMO_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Millisecond override of [`ENUMERATION_MEMO_TTL`], or [`u64::MAX`] for "no
+/// override". It exists so a test never depends on wall time: a test asserting
+/// that a memoized enumeration STANDS pins the TTL out of reach, and one
+/// asserting that it expires pins it to zero.
+#[cfg(any(test, feature = "test-helpers"))]
+static ENUMERATION_MEMO_TTL_OVERRIDE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// How long an enumeration stands, honouring the test override.
+fn enumeration_memo_ttl() -> std::time::Duration {
+    #[cfg(any(test, feature = "test-helpers"))]
+    {
+        let millis = ENUMERATION_MEMO_TTL_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+        if millis != u64::MAX {
+            return std::time::Duration::from_millis(millis);
+        }
+    }
+    ENUMERATION_MEMO_TTL
+}
+
+/// Pin the enumeration TTL, or hand back the default with `None`. Returns what
+/// was pinned before, so a guard can put it back.
+///
+/// Reach for it through `test_helpers::EnumerationMemoTtlGuard`, never directly.
+#[cfg(any(test, feature = "test-helpers"))]
+pub(crate) fn set_enumeration_memo_ttl_override(millis: Option<u64>) -> Option<u64> {
+    let prior = ENUMERATION_MEMO_TTL_OVERRIDE.swap(
+        millis.unwrap_or(u64::MAX),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    (prior != u64::MAX).then_some(prior)
 }
 
 impl InstalledEnumerations {
@@ -87,6 +140,10 @@ impl InstalledEnumerations {
     /// instead of spawning a second listing, while a caller asking about any
     /// other manager is not held up at all. An error is not recorded — the next
     /// caller asks again.
+    ///
+    /// An entry stands only while BOTH keys hold: the resolution generation it
+    /// was taken under (every change cfgd itself makes) and
+    /// [`ENUMERATION_MEMO_TTL`] (the ceiling on a change cfgd cannot see).
     pub(super) fn get_or_enumerate(
         &self,
         manager: &str,
@@ -98,12 +155,17 @@ impl InstalledEnumerations {
         // waited for another's enumeration voids that answer here rather than
         // being served it.
         let generation = crate::command_resolution_generation();
-        if let Some(hit) = cached.as_ref().filter(|c| c.generation == generation) {
+        let ttl = enumeration_memo_ttl();
+        if let Some(hit) = cached
+            .as_ref()
+            .filter(|c| c.generation == generation && c.computed.elapsed() < ttl)
+        {
             return Ok(Arc::clone(&hit.packages));
         }
         let packages = Arc::new(enumerate()?);
         *cached = Some(CachedEnumeration {
             generation,
+            computed: std::time::Instant::now(),
             packages: Arc::clone(&packages),
         });
         Ok(packages)
@@ -200,11 +262,16 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(enumeration_memo)]
     fn two_callers_racing_for_one_manager_enumerate_it_once() {
         // A generation bump from any other test in this binary legitimately
         // retires the first caller's entry, which would make the second
         // re-enumerate — so the count is only measurable while the generation
         // holds still.
+        // "Enumerated once" is also a claim that the first answer had not
+        // aged out by the time the second caller read it, so the ceiling is
+        // pinned out of reach rather than trusted to be longer than the gate.
+        let _ttl = crate::test_helpers::EnumerationMemoTtlGuard::never_expires();
         let enumerations = crate::test_helpers::measured_in_a_stable_generation(|| {
             let memo = Arc::new(InstalledEnumerations::default());
             let gate = Arc::new(Gate::default());

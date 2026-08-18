@@ -45,9 +45,16 @@ fn find_backup_spec<'a>(
 
 /// The three values every unit-constructing surface needs: where config lives,
 /// the run-history store, and the state dir a `BackupUnit` anchors to.
-fn unit_context(cli: &Cli) -> anyhow::Result<(PathBuf, cfgd_core::state::StateStore, PathBuf)> {
+///
+/// The store is the RUN's, borrowed rather than opened here: every caller has
+/// already built a context to resolve its config through, and a second open of
+/// the same DB in the same command is exactly what that context exists to stop.
+fn unit_context<'a>(
+    ctx: &'a RunContext<'_>,
+) -> anyhow::Result<(PathBuf, &'a cfgd_core::state::StateStore, PathBuf)> {
+    let cli = ctx.cli();
     let config_dir = config_dir(cli);
-    let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+    let state = ctx.state()?;
     let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())?;
     Ok((config_dir, state, state_dir))
 }
@@ -181,7 +188,7 @@ pub fn cmd_backup_list(
         Some(n) => {
             let spec = find_backup_spec(&backups, n)?;
             if snapshots {
-                return list_unit_snapshots(cli, printer, spec, profile_name);
+                return list_unit_snapshots(&ctx, spec, profile_name);
             }
             vec![spec]
         }
@@ -198,7 +205,7 @@ pub fn cmd_backup_list(
     // "never" with a warning keeps the config half of the command useful when
     // `state.db` is unreadable, matching how `resolve_backup_tasks` treats the
     // same failure.
-    let state = match open_state_store(cli.state_dir.as_deref(), cli.scope()) {
+    let state = match ctx.state() {
         Ok(state) => Some(state),
         Err(e) => {
             printer
@@ -210,9 +217,7 @@ pub fn cmd_backup_list(
     let entries: Vec<BackupListEntry> = selected
         .iter()
         .map(|spec| {
-            let last = state
-                .as_ref()
-                .and_then(|state| state.latest_backup_run(&spec.name).ok().flatten());
+            let last = state.and_then(|state| state.latest_backup_run(&spec.name).ok().flatten());
             BackupListEntry {
                 name: spec.name.clone(),
                 source: spec.source.posix().to_string(),
@@ -247,20 +252,20 @@ pub fn cmd_backup_list(
 /// unreadable: the run records ARE the snapshot list — there is no config half
 /// left to render — so a store failure is the command's failure.
 fn list_unit_snapshots(
-    cli: &Cli,
-    printer: &Printer,
+    ctx: &RunContext<'_>,
     spec: &config::BackupSpec,
     profile_name: &str,
 ) -> anyhow::Result<()> {
-    let (config_dir, state, state_dir) = unit_context(cli)?;
+    let (config_dir, state, state_dir) = unit_context(ctx)?;
     let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
 
-    let entries: Vec<BackupSnapshotEntry> = cfgd_core::backup::list_snapshots(&unit, &state)?
+    let entries: Vec<BackupSnapshotEntry> = cfgd_core::backup::list_snapshots(&unit, state)?
         .iter()
         .map(BackupSnapshotEntry::from)
         .collect();
 
-    printer.emit(build_backup_snapshot_list_doc(&spec.name, &entries));
+    ctx.printer()
+        .emit(build_backup_snapshot_list_doc(&spec.name, &entries));
     Ok(())
 }
 
@@ -351,10 +356,10 @@ pub fn run_backup_restore(
 
     let spec = find_backup_spec(&backups, args.name)?;
 
-    let (config_dir, state, state_dir) = unit_context(cli)?;
+    let (config_dir, state, state_dir) = unit_context(&ctx)?;
     let unit = BackupUnit::new(spec, &config_dir, profile_name, &state_dir);
 
-    let snapshots = cfgd_core::backup::list_snapshots(&unit, &state)?;
+    let snapshots = cfgd_core::backup::list_snapshots(&unit, state)?;
     let selected: &SnapshotInfo =
         cfgd_core::backup::select_snapshot(args.name, &snapshots, args.at)
             .map_err(|e| snapshot_selection_error(args.name, e))?;
@@ -374,7 +379,7 @@ pub fn run_backup_restore(
         return Ok(None);
     }
 
-    let outcome = cfgd_core::backup::restore_backup(&unit, &state, printer, selected, args.to)?;
+    let outcome = cfgd_core::backup::restore_backup(&unit, state, printer, selected, args.to)?;
 
     // The same three-way split `backup run` renders: a clean restore is Ok, a
     // completed restore whose hooks failed is Warn (the data is back, but
@@ -545,21 +550,24 @@ pub fn run_backup_run(
         return Ok(BackupRunOutcome::default());
     }
 
-    let (config_dir, state, state_dir) = unit_context(cli)?;
+    let (config_dir, state, state_dir) = unit_context(&ctx)?;
     let units: Vec<BackupUnit<'_>> = targets
         .iter()
         .map(|spec| BackupUnit::new(spec, &config_dir, profile_name, &state_dir))
         .collect();
 
-    let ctx = cfgd_core::reconciler::RunContext {
+    // `run_ctx`, not a second `ctx`: `cli::RunContext` (bound above) and
+    // `reconciler::RunContext` are both in scope in this module, and one name
+    // for both makes the reader check which is which at every use.
+    let run_ctx = cfgd_core::reconciler::RunContext {
         title: cfgd_core::reconciler::RunTitle::Backup,
         config_path: Some(cli.config.as_path()),
         profile: Some(profile_name),
         modules: &[],
         trigger: None,
     };
-    let (_status, reports) =
-        cfgd_core::reconciler::ApplyRun::backups(ctx, &units, &state).execute_backups(printer)?;
+    let (_status, reports) = cfgd_core::reconciler::ApplyRun::backups(run_ctx, &units, state)
+        .execute_backups(printer)?;
 
     // One report per unit, in unit order — `render_backups` pushes them as it
     // walks the same slice. A silent `zip` truncation here would drop payload

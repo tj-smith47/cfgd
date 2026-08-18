@@ -83,6 +83,13 @@ impl TemplateEngine {
 /// function exactly once for the manager's whole life and make the sandbox a
 /// property of which engine a template lands in rather than of what the last
 /// caller happened to install.
+///
+/// The split is also the reach boundary for Tera's own `include` / `extends`:
+/// a template resolves only names registered in the SAME engine, so a local
+/// template cannot pull in a source-delivered one, or the reverse. That is the
+/// intended shape — a source-delivered template inheriting from a local one
+/// would render sandboxed content through an unsandboxed parent — but it means
+/// a cross-origin reference is unrepresentable rather than merely denied.
 pub(super) struct TemplateEngines {
     local: TemplateEngine,
     sandboxed: TemplateEngine,
