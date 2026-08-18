@@ -15,6 +15,8 @@
 
 pub mod snapshot;
 
+use std::collections::HashMap;
+
 use schemars::{Schema, schema_for};
 use serde_json::Value;
 
@@ -99,6 +101,11 @@ pub struct KindEntry {
     pub validate_fn: fn(&str) -> Result<(), Vec<String>>,
 }
 
+/// Per-kind memo of [`KindEntry::canonical_schema_value`], keyed by the pair
+/// that identifies a registry entry: the CRD `Module` shares its `kind` string
+/// with the local one.
+type CanonicalSchemaCache = std::sync::Mutex<HashMap<(&'static str, bool), std::sync::Arc<Value>>>;
+
 impl KindEntry {
     /// Resolve this kind's schema into a [`FieldNode`] tree (top-level `spec`
     /// fields, with nested object fields recursed).
@@ -119,7 +126,7 @@ impl KindEntry {
     /// schema stays consistent with the published draft-07 editor schemas and
     /// carries the same single-line descriptions the `explain` walk shows.
     pub fn json_schema(&self) -> String {
-        serde_json::to_string(&self.canonical_schema_value()).unwrap_or_default()
+        serde_json::to_string(self.canonical_schema_value().as_ref()).unwrap_or_default()
     }
 
     /// Serialize this kind's schema as a pretty-printed JSON string. Empty on
@@ -131,18 +138,40 @@ impl KindEntry {
     /// the output is stable across runs. This is the form the committed golden
     /// snapshots use, so a CI diff pinpoints exactly which schema field changed.
     pub fn pretty_schema(&self) -> String {
-        serde_json::to_string_pretty(&self.canonical_schema_value()).unwrap_or_default()
+        serde_json::to_string_pretty(self.canonical_schema_value().as_ref()).unwrap_or_default()
     }
 
     /// Schema as a `Value` in cfgd's canonical published form: draft-07 dialect
     /// and definition idiom with whitespace-collapsed descriptions. The single
     /// transform behind both [`KindEntry::json_schema`] and
     /// [`KindEntry::pretty_schema`].
-    fn canonical_schema_value(&self) -> Value {
+    ///
+    /// Derived at most once per kind per process. `schema_fn` re-runs
+    /// `schemars::schema_for!` and the two normalizers then walk the whole
+    /// document, so a caller asking for both the compact and the pretty form of
+    /// one kind paid for that walk twice. Only the serialization is still per
+    /// call, which is what keeps the compact caller from paying to pretty-print.
+    /// The `Value` is a function of Rust types compiled into this binary, so it
+    /// has no invalidation counterpart.
+    fn canonical_schema_value(&self) -> std::sync::Arc<Value> {
+        static CANONICAL: std::sync::OnceLock<CanonicalSchemaCache> = std::sync::OnceLock::new();
+        let cache = CANONICAL.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+        // A poisoned lock means another thread panicked mid-derivation; the map
+        // holds only pure derived values, so reusing it is safe and refusing to
+        // would turn a schema panic into a second, unrelated one.
+        if let Ok(map) = cache.lock()
+            && let Some(hit) = map.get(&(self.kind, self.crd))
+        {
+            return hit.clone();
+        }
         let mut value =
             serde_json::to_value((self.schema_fn)()).unwrap_or(Value::Object(Default::default()));
         normalize_descriptions(&mut value);
         migrate_to_draft_07(&mut value);
+        let value = std::sync::Arc::new(value);
+        if let Ok(mut map) = cache.lock() {
+            map.insert((self.kind, self.crd), value.clone());
+        }
         value
     }
 }

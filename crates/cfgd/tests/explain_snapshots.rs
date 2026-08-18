@@ -47,7 +47,7 @@ fn explain_index_json() {
 fn explain_module_human() {
     let schema = find_schema("module").expect("module schema is registered");
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_explain_schema_doc(&schema, false));
+    printer.emit(build_explain_schema_doc(schema, false));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/module.txt");
 }
@@ -56,7 +56,7 @@ fn explain_module_human() {
 fn explain_module_json() {
     let schema = find_schema("module").expect("module schema is registered");
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_explain_schema_doc(&schema, false));
+    printer.emit(build_explain_schema_doc(schema, false));
     drop(printer);
     let actual = cap.json().expect("doc captured json");
     assert!(
@@ -78,7 +78,7 @@ fn explain_recursive_drops_plus_marker() {
     // shape.
     let schema = find_schema("profile").expect("profile schema is registered");
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_explain_schema_doc(&schema, true));
+    printer.emit(build_explain_schema_doc(schema, true));
     drop(printer);
     let human = cap.human();
     assert!(
@@ -98,7 +98,7 @@ fn explain_recursive_tree_human() {
     // deterministic.
     let schema = find_schema("profile").expect("profile schema is registered");
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_explain_schema_doc(&schema, true));
+    printer.emit(build_explain_schema_doc(schema, true));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/profile-recursive.txt");
 }
@@ -107,7 +107,7 @@ fn explain_recursive_tree_human() {
 fn explain_recursive_tree_json() {
     let schema = find_schema("profile").expect("profile schema is registered");
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_explain_schema_doc(&schema, true));
+    printer.emit(build_explain_schema_doc(schema, true));
     drop(printer);
     let actual = cap.json().expect("doc captured json");
     assert_eq!(

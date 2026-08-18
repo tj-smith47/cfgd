@@ -14,8 +14,9 @@ use cfgd_core::schema::{FieldNode, KIND_REGISTRY};
 
 /// A top-level resource type, as `explain` presents it.
 ///
-/// Owned (built per invocation from the registry), so its `fields` are the
-/// schemars-derived [`FieldNode`] tree rather than a hand-maintained static.
+/// Owned (built from the registry the first time `explain` asks), so its
+/// `fields` are the schemars-derived [`FieldNode`] tree rather than a
+/// hand-maintained static.
 pub struct ResourceSchema {
     /// Display name (the `kind`, except the CRD `Module` shown as `Module (CRD)`).
     pub name: String,
@@ -113,7 +114,19 @@ fn teamconfig_schema() -> ResourceSchema {
 /// [`KIND_REGISTRY`] entry plus the hand-authored TeamConfig. The CRD `Module`
 /// (which shares the kind string `"Module"` with the local one) is disambiguated
 /// with the display name `"Module (CRD)"`.
-fn all_schemas() -> Vec<ResourceSchema> {
+///
+/// Reflected at most once per process. Every entry's `field_tree()` re-runs
+/// `schemars::schema_for!` over the kind's Rust type and then walks the whole
+/// resulting document, and a single `cfgd explain <typo>` used to pay for all
+/// nine kinds twice — once for the lookup that misses, once to list the
+/// available names in the error. The trees are derived from Rust types compiled
+/// into this binary, so nothing a run does can change them.
+fn all_schemas() -> &'static [ResourceSchema] {
+    static SCHEMAS: std::sync::OnceLock<Vec<ResourceSchema>> = std::sync::OnceLock::new();
+    SCHEMAS.get_or_init(build_all_schemas)
+}
+
+fn build_all_schemas() -> Vec<ResourceSchema> {
     let mut schemas: Vec<ResourceSchema> = KIND_REGISTRY
         .iter()
         .map(|e| {
@@ -141,15 +154,15 @@ fn all_schemas() -> Vec<ResourceSchema> {
 /// A bare `Module`/`module` query always resolves the LOCAL module (`!crd`);
 /// the `module-crd` token selects the cluster-side `Module` CRD. The
 /// `source`/`cfgd-source` aliases resolve to `ConfigSource`.
-pub fn find_schema(name: &str) -> Option<ResourceSchema> {
+pub fn find_schema(name: &str) -> Option<&'static ResourceSchema> {
     let lower = name.to_lowercase();
     // The CRD Module is selectable only via the explicit `module-crd` token, so
     // it must be matched before the generic name/kind pass (which would
     // otherwise return whichever Module is iterated first for a bare query).
     if lower == "module-crd" || lower == "module (crd)" {
-        return all_schemas().into_iter().find(|s| s.name == "Module (CRD)");
+        return all_schemas().iter().find(|s| s.name == "Module (CRD)");
     }
-    all_schemas().into_iter().find(|s| {
+    all_schemas().iter().find(|s| {
         // Never let a bare Module query match the CRD variant.
         if s.name == "Module (CRD)" {
             return false;
@@ -297,7 +310,7 @@ pub fn build_explain_index_doc() -> Doc {
     let schemas = all_schemas();
     let outputs: Vec<ExplainOutput> = schemas.iter().map(schema_to_output).collect();
     let mut table = Table::new(["NAME", "API/KIND", "LOCATION"]);
-    for s in &schemas {
+    for s in schemas {
         table = table.row([
             s.name.clone(),
             format!("{}/{}", s.api_version, s.kind),
@@ -416,7 +429,7 @@ pub(super) fn cmd_explain(
     let schema = match find_schema(resource_name) {
         Some(s) => s,
         None => {
-            let available: Vec<String> = all_schemas().into_iter().map(|s| s.name).collect();
+            let available: Vec<String> = all_schemas().iter().map(|s| s.name.clone()).collect();
             return Err(build_explain_not_found_error(resource_name, &available));
         }
     };
@@ -430,7 +443,7 @@ pub(super) fn cmd_explain(
     };
 
     let doc = if field_path.is_empty() {
-        build_explain_schema_doc(&schema, recursive)
+        build_explain_schema_doc(schema, recursive)
     } else {
         let fields = resolve_field_path(&schema.fields, field_path).ok_or_else(|| {
             anyhow::anyhow!(
@@ -440,7 +453,7 @@ pub(super) fn cmd_explain(
                 resource_name,
             )
         })?;
-        build_explain_drilldown_doc(&schema, field_path, fields, recursive)
+        build_explain_drilldown_doc(schema, field_path, fields, recursive)
     };
     printer.emit(doc);
     Ok(())
