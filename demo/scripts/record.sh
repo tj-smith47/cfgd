@@ -55,8 +55,16 @@ fi
 
 # `wc -c`, not `stat`: the two platforms this repo is developed on spell stat's
 # size flag differently (`-c %s` GNU, `-f %z` BSD/macOS).
+#
+# The floor is calibrated off a genuine early death, not off any particular
+# tape's expected length: a take that dies at its first `Wait` leaves only a
+# few tens of KB, however long or short the tape that was recording claims to
+# run. A complete but SHORT, all-text, low-motion tape (backup.tape's ~18s
+# take, all five beats near-instant) still lands at 182KB — real content, not
+# a truncated file — so a 1MB floor tuned to a scrolling multi-minute install
+# take rejects a perfectly good short recording as if it had aborted.
 size=$(wc -c <"$RAW")
-if [ "$size" -lt 1000000 ]; then
+if [ "$size" -lt 100000 ]; then
     echo "$RAW is only ${size} bytes — the take aborted early." >&2
     exit 1
 fi
