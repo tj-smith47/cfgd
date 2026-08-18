@@ -107,9 +107,21 @@ Written by the operator after each evaluation pass. Do not set manually.
 | Field | Type | Description |
 |-------|------|-------------|
 | `compliantCount` | uint | Number of matched `MachineConfig` resources that satisfy all requirements. |
-| `nonCompliantCount` | uint | Number of matched `MachineConfig` resources that violate one or more requirements. |
-| `nonCompliantMachines` | list | `namespace/name` of every violating `MachineConfig`, sorted. The operator emits a `PolicyViolation` event when a machine enters this list, not once per evaluation. |
+| `nonCompliantCount` | uint | Number of matched `MachineConfig` resources that violate one or more requirements. Always the exact total, never capped. |
+| `nonCompliantMachines` | list | `namespace/name` of violating `MachineConfig` resources, sorted, capped at 500 entries. The operator emits a `PolicyViolation` event when a machine enters this list, not once per evaluation. |
 | `conditions` | list | Standard Kubernetes condition list. See [status.conditions[]](#statusconditions). |
+
+The 500-entry cap keeps a status object every operator replica watches inside
+etcd's object size limit. The cap applies to the list only: `nonCompliantCount`
+stays exact, so the number is right even when the enumeration is short. Sorting
+happens before the truncation, so which machines fall outside the list is
+deterministic rather than arbitrary per evaluation.
+
+A machine past the cap is absent from the list the operator uses as its
+transition memory, so it re-fires its `PolicyViolation` event on every evaluation
+instead of once. That is the documented behaviour above 500 violators: the count
+tells you the real scale, and the event stream is noisy until the fleet drops
+back under the cap.
 
 ---
 

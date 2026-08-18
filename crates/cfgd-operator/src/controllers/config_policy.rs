@@ -241,9 +241,13 @@ pub(super) fn validate_policy_compliance(
 /// Outcome of evaluating one policy against its targeted machines.
 pub(super) struct ComplianceTally {
     pub(super) compliant_count: u32,
+    /// The exact number of machines that failed, taken before the list beside it
+    /// is capped. A caller aggregating several tallies accumulates THIS rather
+    /// than counting the concatenated lists, which are already truncated.
     pub(super) non_compliant_count: u32,
-    /// `namespace/name` of every machine that failed, sorted — the value
-    /// persisted as `status.nonCompliantMachines`.
+    /// `namespace/name` of each machine that failed, sorted and then capped at
+    /// [`crate::crds::MAX_NON_COMPLIANT_MACHINES`] — the value persisted as
+    /// `status.nonCompliantMachines`.
     pub(super) non_compliant_machines: Vec<String>,
 }
 

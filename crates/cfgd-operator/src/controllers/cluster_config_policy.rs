@@ -49,6 +49,11 @@ pub(super) async fn reconcile_cluster_config_policy(
         .unwrap_or(&[]);
 
     let mut compliant_count: u32 = 0;
+    // Accumulated from each namespace's own exact tally, never re-derived from
+    // the concatenated list: every per-namespace list arrives already capped, so
+    // counting the concatenation would understate a cluster whose violators
+    // exceed the cap and contradict the exactness the CRD schema promises.
+    let mut non_compliant_count: u32 = 0;
     let mut non_compliant_machines: Vec<String> = Vec::new();
 
     for ns_name in &matching_namespaces {
@@ -76,12 +81,16 @@ pub(super) async fn reconcile_cluster_config_policy(
             .collect();
 
         let tally = evaluate_policy_compliance(&ctx, &verdicts, &name, already_reported).await;
-        compliant_count += tally.compliant_count;
+        compliant_count = compliant_count.saturating_add(tally.compliant_count);
+        non_compliant_count = non_compliant_count.saturating_add(tally.non_compliant_count);
         non_compliant_machines.extend(tally.non_compliant_machines);
     }
 
-    // Exact total first; only the enumerated list beside it is bounded.
-    let non_compliant_count = u32::try_from(non_compliant_machines.len()).unwrap_or(u32::MAX);
+    // Only the enumerated list is bounded; the count above is the exact total.
+    // Capping again after the concatenation loses nothing a global cap would
+    // have kept: a key is `namespace/name`, so one namespace's entries are
+    // contiguous in the sorted union and its own smallest 500 are the only ones
+    // that could fall inside a cluster-wide first 500.
     sort_and_cap_machines(&mut non_compliant_machines);
 
     let now = cfgd_core::utc_now_iso8601();

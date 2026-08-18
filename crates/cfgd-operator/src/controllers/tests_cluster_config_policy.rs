@@ -15,7 +15,7 @@ use super::test_fixtures::{cluster_config_policy_with_spec, config_policy, machi
 use super::test_kube_harness::{
     ExpectedCall, MockKubeHarness, empty_stores, expect_event_post, seeded_store, unready_store,
 };
-use crate::crds::{ConfigPolicy, MachineConfig, ModuleRef};
+use crate::crds::{ConfigPolicy, MAX_NON_COMPLIANT_MACHINES, MachineConfig, ModuleRef};
 use crate::metrics::PolicyLabels;
 
 const NS_A: &str = "team-a";
@@ -274,6 +274,78 @@ async fn reconcile_cluster_config_policy_filters_namespaces_by_namespace_selecto
         "the machine in the unselected namespace must not be counted"
     );
     assert_eq!(ccp_status["status"]["nonCompliantCount"], 0);
+}
+
+/// The cluster policy aggregates one tally per namespace, and each of those
+/// tallies arrives with its list already capped. Counting the concatenation
+/// would therefore report the cap rather than the total, so the exact count is
+/// accumulated from the tallies themselves.
+#[tokio::test]
+async fn reconcile_cluster_config_policy_counts_every_violator_above_the_cap() {
+    let over_cap = MAX_NON_COMPLIANT_MACHINES + 1;
+    let ccp_spec = crate::crds::ClusterConfigPolicySpec {
+        required_modules: vec![ModuleRef {
+            name: "kubectl".to_string(),
+            required: true,
+        }],
+        ..Default::default()
+    };
+    let mut ccp = cluster_config_policy_with_spec("ccp-cap", ccp_spec);
+
+    // Every machine in one namespace violates, so a single per-namespace tally
+    // is the one that overflows the cap.
+    let machines: Vec<MachineConfig> = (0..over_cap)
+        .map(|i| machine_config(&format!("mc-{i:04}"), NS_A))
+        .collect();
+
+    // Already reported, so no machine transitions and no violation event fires.
+    let mut reported: Vec<String> = machines
+        .iter()
+        .map(|mc| format!("{NS_A}/{}", mc.metadata.name.clone().unwrap_or_default()))
+        .collect();
+    reported.sort();
+    ccp.status = Some(crate::crds::ClusterConfigPolicyStatus {
+        compliant_count: 0,
+        non_compliant_count: 0,
+        non_compliant_machines: reported,
+        conditions: vec![],
+    });
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", cluster_policy_path("ccp-cap")))
+                .returning_json(&ccp),
+            expect_event_post("default"), // Evaluated
+            expect_event_post("default"), // NonCompliantTargets
+        ],
+        stores_with(&[NS_A], machines, vec![]),
+    );
+
+    reconcile_cluster_config_policy(Arc::new(ccp), ctx)
+        .await
+        .unwrap();
+
+    let report = harness.finish().await;
+    let status = report.captured[0].body_json()["status"].clone();
+
+    assert_eq!(
+        status["nonCompliantCount"],
+        serde_json::json!(over_cap),
+        "the count must be the exact total even when a namespace exceeds the cap"
+    );
+    let listed = status["nonCompliantMachines"]
+        .as_array()
+        .expect("nonCompliantMachines array");
+    assert_eq!(
+        listed.len(),
+        MAX_NON_COMPLIANT_MACHINES,
+        "the enumeration is bounded at the cap"
+    );
+    assert_eq!(
+        listed[0],
+        format!("{NS_A}/mc-0000"),
+        "truncation follows the sort, so which machines fall outside is deterministic"
+    );
 }
 
 // -----------------------------------------------------------------------
