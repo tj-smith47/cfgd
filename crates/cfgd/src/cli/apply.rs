@@ -594,7 +594,7 @@ pub fn run_apply(
         }));
         // An aborted run can still have completed the Env phase, so the user's
         // shell is just as stale as after a full apply.
-        print_shell_env_reminder(&result, printer);
+        print_caveats(&result, printer);
         return Ok(ApplyOutcome {
             status: result.status,
             aborted_code: Some(code),
@@ -602,7 +602,7 @@ pub fn run_apply(
     }
 
     let mut status = result.status.clone();
-    print_shell_env_reminder(&result, printer);
+    print_caveats(&result, printer);
 
     // Link source commits to this apply for provenance tracking
     if !source_commits.is_empty() {
@@ -841,7 +841,7 @@ pub fn build_apply_doc(output: &ApplyOutput) -> Doc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cfgd_core::output::{Printer, Verbosity, strip_ansi};
+    use cfgd_core::output::{Printer, Verbosity};
 
     #[test]
     fn preview_orphaned_custom_packages_pins_both_contract_strings_and_executes_nothing() {
@@ -878,7 +878,7 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         preview_orphaned_custom_packages(&state, &registry, &printer);
         drop(printer);
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = cfgd_core::test_helpers::captured_text(&buf);
 
         assert!(
             out.contains("would uninstall orphaned widgetmgr/widget via persisted script"),

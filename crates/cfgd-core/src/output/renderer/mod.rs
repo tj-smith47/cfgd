@@ -107,6 +107,32 @@ impl RenderState {
         }
     }
 
+    /// Seed a fresh top-level state that continues a PRIOR renderer's
+    /// blank-line bookkeeping, for a derived `Printer` that shares the same
+    /// underlying sink (`Printer::rethemed`, `Printer::at_verbosity`).
+    ///
+    /// `Printer::build_derived` mints a brand-new `Renderer`, and a bare
+    /// `RenderState::new()` there defaults `leading: true` — which reads as
+    /// "nothing has been written to this sink yet" even when the parent
+    /// renderer just wrote a section and owes the next heading a blank line.
+    /// `cfgd init --theme <t>` hits exactly this: `cmd_init` closes its
+    /// "Initialize cfgd" section (arming `blank_pending` on the OLD renderer)
+    /// and then re-themes, which swaps in a renderer that has never heard of
+    /// that close and drops the blank line ahead of `Apply`. Structural state
+    /// — indent depth, the section stack, the buffered kvs — does NOT carry
+    /// over: the derived renderer starts at a genuine fresh top level, which
+    /// is what every `build_derived` caller intends.
+    pub(crate) fn continued_from(prior: &RenderState) -> Self {
+        Self {
+            blank_pending: prior.blank_pending,
+            leading: prior.leading,
+            last_top_group: prior.last_top_group,
+            last_was_top_heading: prior.last_was_top_heading,
+            last_top_in_doc: prior.last_top_in_doc,
+            ..Self::new()
+        }
+    }
+
     pub(crate) fn depth(&self) -> usize {
         self.indent_depth
     }
@@ -223,6 +249,34 @@ impl Renderer {
             bars: Some(bars),
             ..Self::new(theme, verbosity)
         }
+    }
+
+    /// Same wiring as [`Self::with_bars`], but the fresh renderer's blank-line
+    /// bookkeeping continues `seed` — a snapshot taken via
+    /// [`Self::continuation_seed`] from the renderer this one replaces —
+    /// instead of starting blank. The two renderers write the SAME sink
+    /// (`Printer::build_derived` clones `sink_stderr`/`sink_stdout` rather
+    /// than opening new ones), so the derived renderer's first heading must
+    /// still see whatever blank-line debt the replaced renderer owed it.
+    pub(crate) fn with_bars_continued(
+        theme: Theme,
+        verbosity: Verbosity,
+        bars: indicatif::MultiProgress,
+        seed: RenderState,
+    ) -> Self {
+        Self {
+            bars: Some(bars),
+            state: Mutex::new(seed),
+            ..Self::new(theme, verbosity)
+        }
+    }
+
+    /// Snapshot the blank-line bookkeeping a derived renderer needs from this
+    /// one — see [`RenderState::continued_from`] for why structural state
+    /// (indent depth, section stack, buffered kvs) is deliberately left out.
+    pub(crate) fn continuation_seed(&self) -> RenderState {
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        RenderState::continued_from(&s)
     }
 
     /// Build the indent prefix for the current depth.
@@ -374,6 +428,21 @@ impl Emitting<'_> {
     /// Drains any pending kvs first — otherwise buffered kvs would render
     /// *after* this non-kv line, inverting the call order.
     pub(crate) fn push_line(&mut self, depth: usize, body: &str) {
+        self.push_line_with_trailer(depth, body, None);
+    }
+
+    /// Same as [`Self::push_line`], but with `trailer` — a status line's
+    /// duration suffix — anchored to the shared duration column on the LAST
+    /// physical line a wrap produces (`wrap::wrap_body_with_trailer`)
+    /// instead of flowing inline with the rest of the wrapped body, where a
+    /// long enough subject strands it off the column every other row in the
+    /// section pads its own duration to.
+    pub(crate) fn push_line_with_trailer(
+        &mut self,
+        depth: usize,
+        body: &str,
+        trailer: Option<&str>,
+    ) {
         self.drain_kv_buffer();
         // The sink appends its own trailing newline per line, so a trailing
         // newline already in `body` would smuggle a physical line break past
@@ -395,7 +464,7 @@ impl Emitting<'_> {
         // sets the flag back true after this call returns.
         self.state.last_was_top_heading = false;
         let prefix = "  ".repeat(depth);
-        for physical in wrap::wrap_body(trimmed, &prefix, self.wrap_cols) {
+        for physical in wrap::wrap_body_with_trailer(trimmed, &prefix, self.wrap_cols, trailer) {
             self.out.push(physical);
         }
     }
@@ -721,6 +790,7 @@ mod tests {
                 Verbosity::Verbose,
             );
             emit(&r, &sink);
+            // raw-capture-ok: asserting a free-text emitter's raw output carries ANSI at all — captured_text would strip the escapes this test exists to check
             let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
             assert!(
                 out.contains('\u{1b}'),
@@ -780,7 +850,7 @@ mod tests {
         r.render_stream_line(&sink, 1, "second line of output");
         r.render_status(&sink, 0, &status(Role::Ok, "running a script"));
 
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             !out.contains("\n\n"),
             "blank line inside a streamed block: {out:?}"
@@ -792,8 +862,8 @@ mod tests {
         let (r, sink, buf) = capture();
         r.mark_blank_pending(); // even if requested before first emit
         r.write_line(&sink, 0, "first");
-        let s = buf.lock().unwrap();
-        assert_eq!(*s, "first\n");
+        let s = crate::test_helpers::captured_text(&buf);
+        assert_eq!(s, "first\n");
     }
 
     #[test]
@@ -803,8 +873,8 @@ mod tests {
         r.mark_blank_pending();
         r.mark_blank_pending(); // duplicate marks coalesce
         r.write_line(&sink, 0, "B");
-        let s = buf.lock().unwrap();
-        assert_eq!(*s, "A\n\nB\n");
+        let s = crate::test_helpers::captured_text(&buf);
+        assert_eq!(s, "A\n\nB\n");
     }
 
     #[test]
@@ -813,15 +883,15 @@ mod tests {
         r.write_line(&sink, 0, "root");
         r.write_line(&sink, 1, "child");
         r.write_line(&sink, 2, "grand");
-        let s = buf.lock().unwrap();
-        assert_eq!(*s, "root\n  child\n    grand\n");
+        let s = crate::test_helpers::captured_text(&buf);
+        assert_eq!(s, "root\n  child\n    grand\n");
     }
 
     #[test]
     fn heading_renders_at_depth_zero() {
         let (r, sink, buf) = capture();
         r.render_heading(&sink, "Status");
-        let s = buf.lock().unwrap();
+        let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("Status"));
         // No `=== ===` decoration.
         assert!(!s.contains("==="));
@@ -835,14 +905,14 @@ mod tests {
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Quiet);
         r.render_heading(&sink, "Status");
-        assert!(buf.lock().unwrap().is_empty());
+        assert!(crate::test_helpers::captured_text(&buf).is_empty());
     }
 
     #[test]
     fn bullet_uses_dash_glyph() {
         let (r, sink, buf) = capture();
         r.render_bullet(&sink, 1, "foo");
-        let s = strip_ansi(&buf.lock().unwrap());
+        let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("  - foo"), "got: {s:?}");
     }
 
@@ -852,14 +922,14 @@ mod tests {
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Quiet);
         r.render_bullet(&sink, 1, "foo");
-        assert!(buf.lock().unwrap().is_empty());
+        assert!(crate::test_helpers::captured_text(&buf).is_empty());
     }
 
     #[test]
     fn hint_uses_arrow_glyph() {
         let (r, sink, buf) = capture();
         r.render_hint(&sink, 0, "run cfgd apply");
-        let s = buf.lock().unwrap();
+        let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("→"), "got: {s:?}");
         assert!(s.contains("run cfgd apply"));
     }
@@ -876,7 +946,7 @@ mod tests {
                 "    - name: acme".to_string(),
             ],
         );
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         // Every YAML row present, verbatim, no `→` glyph.
         assert!(out.contains("spec:"), "got: {out:?}");
         assert!(out.contains("  sources:"), "got: {out:?}");
@@ -898,7 +968,7 @@ mod tests {
         let (r, sink, buf) = capture();
         r.render_code_block(&sink, 0, &["line".to_string()]);
         assert!(
-            !buf.lock().unwrap().is_empty(),
+            !crate::test_helpers::captured_text(&buf).is_empty(),
             "code block visible at Normal"
         );
     }
@@ -909,7 +979,7 @@ mod tests {
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Quiet);
         r.render_code_block(&sink, 0, &["line".to_string()]);
-        assert!(buf.lock().unwrap().is_empty());
+        assert!(crate::test_helpers::captured_text(&buf).is_empty());
     }
 
     #[test]
@@ -918,7 +988,7 @@ mod tests {
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Normal);
         r.render_note(&sink, 0, "long prose");
-        assert!(buf.lock().unwrap().is_empty());
+        assert!(crate::test_helpers::captured_text(&buf).is_empty());
     }
 
     #[test]
@@ -927,7 +997,7 @@ mod tests {
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Verbose);
         r.render_note(&sink, 0, "line1\nline2");
-        let s = buf.lock().unwrap();
+        let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("line1"));
         assert!(s.contains("line2"));
     }
@@ -1052,7 +1122,7 @@ mod tests {
         }
 
         fn sunk(&self) -> String {
-            strip_ansi(&self.sink_buf.lock().unwrap_or_else(|e| e.into_inner()))
+            crate::test_helpers::captured_text(&self.sink_buf)
         }
 
         fn cycles(&self) -> usize {
@@ -1081,7 +1151,7 @@ mod tests {
         // No MultiProgress at all: the sink is the only path.
         let (r, sink, buf) = capture();
         r.write_line(&sink, 0, "plain");
-        assert_eq!(*buf.lock().unwrap(), "plain\n");
+        assert_eq!(crate::test_helpers::captured_text(&buf), "plain\n");
 
         // A MultiProgress with no LIVE bar is the same case — nothing is
         // drawn over, so there is nothing to redraw around.
@@ -1236,7 +1306,7 @@ mod tests {
         r.render_bullet(&sink, 1, "child");
         r.render_section_close(&sink);
 
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
         // Byte-identical to the sequence the scoped acquisitions produced: the
         // drain at the top of `push_line` renders the pending block before the

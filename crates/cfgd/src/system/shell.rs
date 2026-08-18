@@ -289,7 +289,7 @@ mod tests {
         )
         .expect("apply should succeed when chsh exits 0");
 
-        let captured = buf.lock().unwrap().clone();
+        let captured = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             captured.contains("/usr/bin/zsh"),
             "printer should mention the target shell, got: {captured:?}"
@@ -312,7 +312,7 @@ mod tests {
         )
         .expect("apply should return Ok even when chsh fails");
 
-        let captured = buf.lock().unwrap().clone();
+        let captured = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             captured.contains("chsh failed"),
             "printer should emit chsh failure warning, got: {captured:?}"

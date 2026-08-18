@@ -326,7 +326,7 @@ pub fn cmd_module_create(
                     // A module whose packages come from a manager this apply
                     // bootstrapped leaves the invoking shell one `source` away
                     // from reaching them.
-                    crate::cli::plan_ops::print_shell_env_reminder(&result, printer);
+                    crate::cli::plan_ops::print_caveats(&result, printer);
                     applied = true;
                 }
                 cfgd_core::reconciler::RunDisposition::Declined => {

@@ -525,6 +525,16 @@ pub enum StateError {
     #[error("apply lock held by another process: {holder}")]
     ApplyLockHeld { holder: String },
 
+    // The lock-acquire identity re-check spent its budget without ever
+    // confirming the locked file was still the one the path names. Nobody is
+    // known to hold anything, so this deliberately names the file rather than
+    // a holder: sending the operator after a PID would be a lie, and the
+    // source-lock path must not read the failure as contention.
+    #[error(
+        "could not safely acquire the lock at {path}: the lock file kept changing underneath the acquire"
+    )]
+    LockFileUnstable { path: PathBuf },
+
     // Every SQLite access from a concurrent install lane is a message to the
     // coordinator, which owns the one connection; this is that message failing
     // to make the round trip.

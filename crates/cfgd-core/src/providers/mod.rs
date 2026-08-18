@@ -908,11 +908,21 @@ pub trait FileManager: Send + Sync {
     /// [`FileDriftResult`]. A missing source or missing target yields a
     /// non-matching result (`matches: false`) rather than an error, so a single
     /// unresolvable entry cannot mask drift elsewhere.
+    ///
+    /// `strategy` is the file's per-entry deployment strategy override (`None`
+    /// defers to whatever default the implementor resolves) — required so a
+    /// directory-shaped source/target pair is judged the right way: link
+    /// identity for Symlink/Hardlink, a recursive content comparison for
+    /// Copy/Template. Without it, a directory deployed by `strategy: copy`
+    /// (the usual Windows choice when Developer Mode is off) has no symlink and
+    /// no shared inode to find, so a caller that always checked link identity
+    /// reported it permanently drifted on a machine that had just converged.
     fn content_drift(
         &self,
         source: &Path,
         target: &Path,
         origin: Option<&str>,
+        strategy: Option<crate::config::FileStrategy>,
     ) -> Result<FileDriftResult>;
 }
 

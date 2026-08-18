@@ -238,6 +238,54 @@ _strip_test_blocks_uncached() {
     ' "$filepath"
 }
 
+# --- Extract test blocks from a file (the inverse of strip) ---
+# The test-hygiene gates (sleep-ok, raw-capture-ok, path-guard-ok) anchor to
+# TEST code only — a raw sleep or a raw capture-buffer read is a production
+# concern nowhere else. A whole-file test module (the same naming convention
+# `strip_test_blocks_from_file`'s callers exclude) is entirely in scope; an
+# inline `#[cfg(test)] mod tests { … }` block within a production file
+# contributes only its own span, tracked the same brace-depth way the strip
+# does. Cached per file for the run, same as the strip.
+extract_test_blocks_from_file() {
+    local filepath="$1"
+    local cached="$STRIP_CACHE_DIR/${filepath//\//__}.testonly"
+    if [[ -f "$cached" ]]; then
+        cat "$cached"
+        return 0
+    fi
+    _extract_test_blocks_uncached "$filepath" | tee "$cached"
+}
+
+_extract_test_blocks_uncached() {
+    local filepath="$1"
+    case "$filepath" in
+        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/tests/*)
+            awk -v filepath="$filepath" '{ print filepath ":" NR ":" $0 }' "$filepath"
+            return 0
+            ;;
+    esac
+    awk -v filepath="$filepath" "$AWK_LIB"'
+    BEGIN { in_test = 0; test_depth = 0 }
+    { code = code_only($0) }
+    /^[[:space:]]*#\[cfg\(test\)\]/ {
+        in_test = 1
+        test_depth = 0
+        next
+    }
+    in_test {
+        opens = gsub(/{/, "{", code)
+        closes = gsub(/}/, "}", code)
+        test_depth += opens - closes
+        print filepath ":" NR ":" $0
+        if (test_depth <= 0 && opens + closes > 0) {
+            in_test = 0
+            test_depth = 0
+        }
+        next
+    }
+    ' "$filepath"
+}
+
 # --- Core check function ---
 # Usage: check_pattern <severity> <label> <pattern> <exclude_pattern>
 #   Searches ALL .rs files across all workspace crates (excluding test blocks).
@@ -635,6 +683,7 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "new" && $2 != "default" && $2 != "from" && $2 != "fmt" && $2 != "drop" && \
         $2 != "name" && $2 != "is_available" && $2 != "bootstrap_plan" && $2 != "bootstrap" && \
         $2 != "installed_packages" && $2 != "install" && $2 != "uninstall" && \
+        $2 != "mediated_packages" && \
         $2 != "refresh_index" && $2 != "has_index" && $2 != "listed_identity" && \
         $2 != "plan_packages_observed" && \
         $2 != "diff" && $2 != "apply" && $2 != "current_state" && \
@@ -1033,6 +1082,138 @@ if [[ -n "$raw_spawns" ]]; then
     echo "$raw_spawns" | head -10
 else
     log_ok "No raw spawn_blocking in workspace production code"
+fi
+
+log_section "Sleep-as-synchronization in test code (sleep-ok:)"
+# `thread::sleep`/`tokio::time::sleep` used as a guess at how long some other
+# thread needs is the flaky-timing-assertion shape (a 408.9ms-vs-400ms
+# concurrency failure under a loaded suite). Reach for the observables
+# catalogued in shared-utils.md instead: ConcurrencyWitness, a channel/oneshot
+# handshake, await_queued_path_writer, await_blocking_source_acquire, or a
+# bounded deadline-poll on the thing that actually changed. Escape hatch for
+# a genuinely real-time subject (a token-bucket refill, a deliberate timeout
+# exercise): the call line or the line directly above it, single-line —
+#   // sleep-ok: <why no observable exists>
+# Anchored to TEST CODE ONLY via extract_test_blocks_from_file — a sleep in
+# production is a different concern (and none exist outside a controlled
+# retry/backoff loop already reviewed elsewhere).
+sleep_violations=$(while IFS= read -r -d '' rsfile; do
+    extract_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
+        { code = code_only($0); comment = LAST_COMMENT }
+        code ~ /thread::sleep\(|tokio::time::sleep\(/ &&
+        !is_comment_line($0) &&
+        !marker_applies(comment, prev, prev_comment, "sleep-ok:") { print }
+        { prev = $0; prev_comment = comment }
+    '
+done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null) | sed '/^$/d')
+if [[ -n "$sleep_violations" ]]; then
+    log_error "thread::sleep/tokio::time::sleep in test code (flaky timing sync — use the observables catalogued in shared-utils.md: ConcurrencyWitness, a channel/oneshot handshake, await_queued_path_writer, await_blocking_source_acquire, a bounded deadline-poll — or annotate // sleep-ok: <why no observable exists>):"
+    echo "$sleep_violations" | head -20
+else
+    log_ok "No unguarded sleep-as-synchronization in test code"
+fi
+
+log_section "Raw Printer capture-buffer reads in test code (raw-capture-ok:)"
+# A test's Printer::for_test* capture buffer (conventionally named `buf`) is
+# an Arc<Mutex<String>> the printer writes into; reading it any way OTHER than
+# cfgd_core::test_helpers::captured_text(&buf) bypasses its ANSI-stripping and
+# poison-recovery, which is exactly the raw-lock idiom this gate rejects:
+# `<recv>.lock().unwrap()` / `.expect("...")` / `.unwrap_or_else(...)`, where
+# <recv>'s own name contains "buf" (the codebase-wide convention for a
+# Printer capture handle — see shared-utils.md's Test guards section).
+# `.clear()` is a WRITE (resetting the buffer for reuse), not a read, and is
+# not gated. Escape hatch, single-line, on the call line or directly above:
+#   // raw-capture-ok: <asserting ON the escapes>
+# — for a test whose subject IS the raw ANSI bytes (captured_text would strip
+# the very thing being asserted on), or a buffer that is provably not a
+# Printer text capture (e.g. an Arc<Mutex<Vec<u8>>> tracing-log sink, which
+# captured_text does not even type-check against).
+# test_helpers.rs is excluded: it is captured_text's own implementation, the
+# one legitimate raw read the helper itself performs.
+raw_capture_violations=$(while IFS= read -r -d '' rsfile; do
+    case "$rsfile" in
+        */test_helpers.rs) continue ;;
+    esac
+    extract_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
+        { code = code_only($0); comment = LAST_COMMENT }
+        code ~ /([A-Za-z_][A-Za-z0-9_.]*)?[Bb]uf[A-Za-z0-9_]*\.lock\(\)\.(unwrap\(\)|unwrap_or_else\(|expect\()/ &&
+        code !~ /\.clear\(\)/ &&
+        !is_comment_line($0) &&
+        !marker_applies(comment, prev, prev_comment, "raw-capture-ok:") { print }
+        { prev = $0; prev_comment = comment }
+    '
+done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null) | sed '/^$/d')
+if [[ -n "$raw_capture_violations" ]]; then
+    log_error "Raw Printer capture-buffer read in test code (use cfgd_core::test_helpers::captured_text(&buf), or annotate // raw-capture-ok: <why>):"
+    echo "$raw_capture_violations" | head -20
+else
+    log_ok "No raw Printer capture-buffer reads in test code"
+fi
+
+log_section "PATH-guarded resolution asserts in test code (path-guard-ok:)"
+# A test asserting a SUCCESSFUL command_path/command_available/require_tool
+# resolution reads the process-global PATH; without path_env_read_guard() (or
+# the mutation guard) a concurrent test emptying PATH to drive a
+# command-not-found branch can land between the read and the assertion and
+# flip a should-pass resolution to a false negative. A test asserting FAILURE
+# needs no guard — an empty PATH cannot turn a miss into a hit.
+#
+# Function-scoped: walks each #[test] fn's body (brace-depth tracked) inside
+# the test-only corpus, and flags it only if a positive-assertion shape
+# appears WITHOUT a guard call anywhere in the same function body. Escape
+# hatch, on the assertion line or directly above:
+#   // path-guard-ok: <negative assertion / guard held by harness>
+path_guard_violations=$(while IFS= read -r -d '' rsfile; do
+    extract_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
+        function reset_fn() {
+            in_fn = 0; depth = 0; has_positive = 0; has_guard = 0
+            delete positive_lines; positive_lines_n = 0
+            delete positive_marked; fn_start_prev = ""; fn_start_prev_comment = ""
+        }
+        function flush_fn() {
+            if (in_fn && has_positive && !has_guard) {
+                for (k = 1; k <= positive_lines_n; k++) {
+                    if (!positive_marked[k]) print positive_lines[k]
+                }
+            }
+            reset_fn()
+        }
+        BEGIN { reset_fn() }
+        {
+            code = code_only($0); comment = LAST_COMMENT
+            is_fn_start = (code ~ /^[^:]*:[0-9]+:[[:space:]]*(pub[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(/)
+            if (!in_fn && is_fn_start) {
+                in_fn = 1; depth = 0
+            }
+            if (in_fn) {
+                is_positive = (code ~ /assert!\([^!]*(cfgd_core::|crate::)?command_available\(/) || \
+                    (code ~ /assert!\([^!]*(cfgd_core::|crate::)?command_path\([^)]*\)\.is_some\(\)/) || \
+                    (code ~ /assert!\([^!]*(cfgd_core::|crate::)?require_tool\([^)]*\)\.is_ok\(\)/) || \
+                    (code ~ /assert_eq!\(.*(cfgd_core::|crate::)?command_available\(/) || \
+                    (code ~ /(cfgd_core::|crate::)?command_path\([^)]*\)\.(expect|unwrap)\(/) || \
+                    (code ~ /(cfgd_core::|crate::)?require_tool\([^)]*\)\.(expect|unwrap|is_ok)\(/)
+                if (is_positive) {
+                    positive_lines_n++
+                    positive_lines[positive_lines_n] = $0
+                    positive_marked[positive_lines_n] = marker_applies(comment, prev, prev_comment, "path-guard-ok:")
+                    has_positive = 1
+                }
+                if (code ~ /path_env_read_guard\(\)|path_env_mutation_guard\(\)/) has_guard = 1
+                opens = gsub(/{/, "{", code)
+                closes = gsub(/}/, "}", code)
+                depth += opens - closes
+                if (depth <= 0 && opens + closes > 0) flush_fn()
+            }
+            prev = $0; prev_comment = comment
+        }
+        END { flush_fn() }
+    '
+done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null) | sed '/^$/d')
+if [[ -n "$path_guard_violations" ]]; then
+    log_error "Test asserts a successful command_path/command_available/require_tool resolution without path_env_read_guard()/path_env_mutation_guard() (races a concurrent test's PATH mutation — see shared-utils.md's ProbePath section, or annotate // path-guard-ok: <why>):"
+    echo "$path_guard_violations" | head -20
+else
+    log_ok "Every positive command_path/command_available/require_tool assertion is PATH-guarded"
 fi
 
 cli_mod="crates/cfgd/src/cli/mod.rs"

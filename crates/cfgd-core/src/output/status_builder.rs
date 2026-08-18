@@ -209,7 +209,7 @@ mod tests {
         let (r, buf) = build();
         let sink = sink_for(&buf);
         StatusBuilder::new(r, sink, 0, Role::Ok, "done"); // drops here
-        let s = strip_ansi(&buf.lock().unwrap());
+        let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("✓ done"), "got: {s:?}");
     }
 
@@ -221,7 +221,7 @@ mod tests {
             .detail("permission denied")
             .duration(std::time::Duration::from_millis(2500));
         drop(b);
-        let s = strip_ansi(&buf.lock().unwrap());
+        let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("✗ /tmp/foo — permission denied"), "got: {s:?}");
         assert!(s.contains("(2.5s)"), "got: {s:?}");
     }
@@ -237,7 +237,8 @@ mod tests {
         let b = StatusBuilder::new(r, sink, 0, Role::Warn, "subject text")
             .label(Role::Secondary, "[meta]");
         drop(b);
-        let raw = buf.lock().unwrap().clone();
+        // raw-capture-ok: the reset-boundary contract below is checked against the raw SGR bytes — captured_text would strip the escapes this test exists to check
+        let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let s = strip_ansi(&raw);
         assert!(
             s.contains("⚠ subject text [meta]"),
@@ -337,6 +338,7 @@ mod tests {
             } else {
                 b.detail("unchanged")
             });
+            // raw-capture-ok: the split-half byte-identity check below compares raw SGR runs — captured_text would strip the escapes this test exists to check
             buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
         };
 

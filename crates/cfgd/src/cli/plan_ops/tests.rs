@@ -1896,7 +1896,7 @@ fn render_plan_tree_populated_plan_shows_phase_header() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     reconciler::render_plan_tree(&plan, None, &printer);
 
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("Files"),
         "expected phase header in output, got: {out}"
@@ -1919,7 +1919,7 @@ fn render_plan_tree_condenses_multiline_script_bullet() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     reconciler::render_plan_tree(&plan, None, &printer);
 
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !out.contains("line-three"),
         "human bullet must condense away subsequent lines, got: {out}"
@@ -1944,7 +1944,7 @@ fn render_plan_tree_unknown_system_key_renders_warn() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     reconciler::render_plan_tree(&plan, None, &printer);
 
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains('\u{26A0}'),
         "unknown system key must warn (⚠) at plan time, got: {out}"
@@ -1963,7 +1963,7 @@ fn render_plan_tree_unavailable_system_key_renders_neutral() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     reconciler::render_plan_tree(&plan, None, &printer);
 
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !out.contains('\u{26A0}'),
         "expected platform skip must not warn (⚠), got: {out}"
@@ -2043,7 +2043,7 @@ fn backup_file_copies_to_cfgd_backup_suffix_and_leaves_the_original() {
         "the original content must be untouched by the backup"
     );
 
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("Backed up to"),
         "expected backup confirmation in output, got: {out}"
@@ -2137,7 +2137,7 @@ fn backup_file_reuses_a_sidecar_that_already_holds_the_same_bytes() {
         .filter_map(|e| e.ok())
         .collect();
     assert_eq!(entries.len(), 2, "no second sidecar should be created");
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("Already backed up at"),
         "a reused sidecar says so, got: {out}"
@@ -2710,6 +2710,7 @@ fn env_apply_result(descriptions: &[&str]) -> ApplyResult {
         apply_id: 0,
         aborted: None,
         planned_total: descriptions.len(),
+        caveats: Vec::new(),
     }
 }
 
@@ -2721,9 +2722,9 @@ fn shell_env_reminder_silent_when_all_env_actions_skipped() {
         "env:session:refresh:skipped",
     ]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    print_shell_env_reminder(&result, &printer);
+    print_caveats(&result, &printer);
 
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.is_empty(),
         "an apply that changed no env surface must not nag: {out}"
@@ -2847,7 +2848,7 @@ fn a_module_target_already_holding_the_desired_bytes_is_never_backed_up() {
         !tmp.path().join("live.conf.cfgd-backup").exists(),
         "a converged target is not a conflict and needs no sidecar"
     );
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !out.contains("unmanaged file"),
         "a converged target must not be announced as a conflict, got: {out}"
@@ -3022,7 +3023,7 @@ fn a_profile_target_already_holding_the_planned_content_is_left_alone() {
         !tmp.path().join("zshrc.cfgd-backup").exists(),
         "a converged profile target must not be copied aside"
     );
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !out.contains("unmanaged file"),
         "a converged profile target is not announced as a conflict, got: {out}"
@@ -3097,8 +3098,8 @@ fn shell_env_reminder_names_the_written_env_file() {
             "env:inject:/home/u/.bashrc:skipped",
         ]);
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        print_shell_env_reminder(&result, &printer);
-        let out = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+        print_caveats(&result, &printer);
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         (out, home)
     });
 
@@ -3107,8 +3108,12 @@ fn shell_env_reminder_names_the_written_env_file() {
         "the test home must resolve to a real sandbox path, got: {home}"
     );
     assert!(
-        out.contains("Shell environment changed"),
-        "expected reminder heading, got: {out}"
+        out.contains("Caveats"),
+        "expected Caveats heading, got: {out}"
+    );
+    assert!(
+        out.contains("cfgd:env"),
+        "expected the cfgd:env owner group, got: {out}"
     );
     assert!(
         out.contains("run `source ~/.cfgd.env`"),
@@ -3136,8 +3141,8 @@ fn shell_env_reminder_picks_the_env_file_by_shell_not_by_emission_order() {
             "env:write:/home/u/.cfgd.env",
         ]);
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        print_shell_env_reminder(&result, &printer);
-        cfgd_core::output::strip_ansi(&buf.lock().unwrap())
+        print_caveats(&result, &printer);
+        cfgd_core::test_helpers::captured_text(&buf)
     });
 
     assert!(
@@ -3186,11 +3191,11 @@ fn shell_env_reminder_fires_for_source_line_injection_alone() {
         "env:inject:/home/u/.bashrc",
     ]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    print_shell_env_reminder(&result, &printer);
+    print_caveats(&result, &printer);
 
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        out.contains("Shell environment changed"),
+        out.contains("Caveats") && out.contains("cfgd:env"),
         "an rc file that only just learned to source the env file still leaves \
          the running shell stale: {out}"
     );
@@ -3200,9 +3205,9 @@ fn shell_env_reminder_fires_for_source_line_injection_alone() {
 fn shell_env_reminder_absent_under_structured_output() {
     let result = env_apply_result(&["env:write:/home/u/.cfgd.env"]);
     let (printer, buf) = Printer::for_test_at(Verbosity::Quiet);
-    print_shell_env_reminder(&result, &printer);
+    print_caveats(&result, &printer);
 
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.is_empty(),
         "structured output auto-quiets; the reminder must not corrupt it: {out}"
@@ -3452,7 +3457,7 @@ fn legacy_modules_pattern_still_skips_and_says_so() {
         &ProviderRegistry::new(),
     );
     printer.flush();
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
 
     let owners: Vec<String> = plan
         .phases
@@ -3529,7 +3534,7 @@ fn skip_cfgd_managers_warns_once_about_stranded_installs() {
         &ProviderRegistry::new(),
     );
     printer.flush();
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         !plan
@@ -3570,7 +3575,7 @@ fn skip_packages_brew_leaves_the_sub_manager_it_does_not_cover_untouched() {
         &ProviderRegistry::new(),
     );
     printer.flush();
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         plan.phases
@@ -3627,7 +3632,7 @@ fn stranded_warning_counts_actions_not_distinct_managers() {
         &ProviderRegistry::new(),
     );
     printer.flush();
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         out.contains("2 package actions"),
@@ -3660,7 +3665,7 @@ fn no_stranded_warning_when_every_manager_is_available() {
         &registry,
     );
     printer.flush();
-    let out = buf.lock().unwrap().clone();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         !out.contains("still name") && !out.contains("still names"),

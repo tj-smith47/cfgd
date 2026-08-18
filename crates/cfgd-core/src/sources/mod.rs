@@ -206,7 +206,7 @@ impl SourceManager {
             printer.status_simple(
                 Role::Warn,
                 format!(
-                    "Source '{}': cached checkout was cloned from a different origin — run 'cfgd sync' to re-fetch it; using local state only",
+                    "Source '{}': cached checkout was cloned from a different origin — run 'cfgd sync' to re-fetch it; skipped without verifying its signature, using local state only",
                     spec.name
                 ),
             );
@@ -217,7 +217,7 @@ impl SourceManager {
 
         // A cached source still gets its signature verified — a tampered cache
         // must not silently feed a read path.
-        self.verify_commit_signature(&spec.name, &source_dir, &manifest.spec.policy.constraints)?;
+        self.verify_commit_signature(spec, &source_dir, &manifest.spec.policy.constraints)?;
 
         let last_commit = Self::head_commit(&source_dir);
 
@@ -278,6 +278,56 @@ impl SourceManager {
             .into());
         }
 
+        // The cache root is a precondition of everything below, the lock file
+        // included, so it is created here with the wording a caller who cannot
+        // create it needs — before the lock's own silent `create_dir_all` would
+        // report the same failure as a bare io error. A root cfgd creates is
+        // owner-only; one the operator already made keeps the mode they gave
+        // it, because a cache directory can be deliberately shared and
+        // re-tightening it on every load would take that choice away.
+        //
+        // A load that then FAILS leaves the root and its lock file standing.
+        // Taking them back would mean deleting a lock file this process holds,
+        // which is precisely what strands a contender already blocked on it, so
+        // an empty cache root and a zero-byte `cache.lock` are the deliberate
+        // residue: the next load reuses both, and neither says anything untrue
+        // about the machine.
+        let created_cache_root = !self.cache_dir.exists();
+        std::fs::create_dir_all(&self.cache_dir).map_err(|e| SourceError::CacheError {
+            message: format!("cannot create cache dir: {e}"),
+        })?;
+        if created_cache_root {
+            let _ = crate::set_file_permissions(&self.cache_dir, 0o700);
+        }
+
+        self.load_source_locked(spec, printer)
+    }
+
+    /// Take the source-cache lock and run the load under it.
+    fn load_source_locked(&mut self, spec: &SourceSpec, printer: &Printer) -> Result<()> {
+        // Everything from here to the end of the load is a check-then-act over
+        // a directory two cfgd processes can be told to own: the origin check
+        // reads `.git/config`, the discard removes the tree, and the clone or
+        // fetch rebuilds it. Unserialized, a second process's fetch resolves
+        // `origin` after this one re-pointed it, or clones into a tree this one
+        // is still removing.
+        //
+        // The notice goes through `alert`, not `status_simple`: the wait is
+        // unbounded and can cover another process's network clone, and the
+        // command most likely to contend (`cfgd sync`) hands `load_source` a
+        // Quiet printer that swallows every role but `Fail`. An advisory about
+        // what this run is actually doing has to survive that, so it takes the
+        // always-visible stderr channel `alert` and `deprecation` share.
+        let _cache_lock = crate::acquire_source_lock(&self.cache_dir, || {
+            printer.alert(cache_wait_notice(&spec.name));
+        })?;
+
+        self.load_source_guarded(spec, printer)
+    }
+
+    /// The body of [`Self::load_source`] that runs under the source-cache lock,
+    /// from the origin check through the completed clone or fetch.
+    fn load_source_guarded(&mut self, spec: &SourceSpec, printer: &Printer) -> Result<()> {
         let source_dir = self.cache_dir.join(&spec.name);
 
         // The cache is keyed by the source NAME alone, so nothing else ties an
@@ -359,7 +409,7 @@ impl SourceManager {
         let manifest = self.parse_manifest(&spec.name, &source_dir)?;
 
         // Signature verification: if the source requires signed commits, verify HEAD
-        self.verify_commit_signature(&spec.name, &source_dir, &manifest.spec.policy.constraints)?;
+        self.verify_commit_signature(spec, &source_dir, &manifest.spec.policy.constraints)?;
 
         let last_commit = Self::head_commit(&source_dir);
 
@@ -391,7 +441,7 @@ impl SourceManager {
     /// routes here.
     fn load_from_existing_cache(&mut self, spec: &SourceSpec, source_dir: &Path) -> Result<()> {
         let manifest = self.parse_manifest(&spec.name, source_dir)?;
-        self.verify_commit_signature(&spec.name, source_dir, &manifest.spec.policy.constraints)?;
+        self.verify_commit_signature(spec, source_dir, &manifest.spec.policy.constraints)?;
 
         let last_commit = Self::head_commit(source_dir);
 
@@ -685,18 +735,25 @@ impl SourceManager {
     }
 
     /// Verify the HEAD commit of a source repo has a valid GPG or SSH signature.
-    /// Checks `allow_unsigned` on this SourceManager and `require_signed_commits`
-    /// on the constraints before delegating to `verify_head_signature`.
+    ///
+    /// The requirement is [`SourceSpec::requires_signed_commits`]: the
+    /// subscriber's `subscription.requireSignedCommits` ORed with the manifest's
+    /// `constraints.requireSignedCommits`. It takes the SPEC rather than a name
+    /// precisely so the subscriber's half cannot be forgotten here — the
+    /// manifest half arrives from inside the cached clone, which is the one
+    /// thing a planted cache controls. `allow_unsigned` on this SourceManager
+    /// still bypasses both.
     pub fn verify_commit_signature(
         &self,
-        name: &str,
+        spec: &SourceSpec,
         source_dir: &Path,
         constraints: &crate::config::SourceConstraints,
     ) -> Result<()> {
-        if !constraints.require_signed_commits {
+        if !spec.requires_signed_commits(constraints.require_signed_commits) {
             return Ok(());
         }
 
+        let name = spec.name.as_str();
         if self.allow_unsigned {
             tracing::info!(
                 source = %name,
@@ -968,21 +1025,14 @@ impl SourceManager {
     }
 
     /// Remove a source from cache.
-    pub fn remove_source(&mut self, name: &str) -> Result<()> {
-        let cached = self
-            .sources
+    pub fn remove_source(&mut self, name: &str, printer: &Printer) -> Result<()> {
+        self.sources
             .remove(name)
             .ok_or_else(|| SourceError::NotFound {
                 name: name.to_string(),
             })?;
 
-        if cached.local_path.exists() {
-            std::fs::remove_dir_all(&cached.local_path).map_err(|e| SourceError::CacheError {
-                message: format!("failed to remove cache for '{}': {}", name, e),
-            })?;
-        }
-
-        Ok(())
+        discard_cached_checkout(&self.cache_dir, name, printer)
     }
 
     /// Compose this manager's already-loaded sources with a local resolved
@@ -1124,6 +1174,46 @@ impl SourceManager {
     }
 }
 
+/// The advisory a contended source-cache acquire announces, so the two callers
+/// that can wait on it cannot describe the same wait two ways.
+fn cache_wait_notice(name: &str) -> String {
+    format!("Source '{name}': waiting for another cfgd process to finish updating the source cache")
+}
+
+/// Remove the cached checkout of `name` under `cache_dir`, holding the
+/// source-cache lock across the removal.
+///
+/// The ONE deletion of a source's checkout, and why it is not an inline
+/// `remove_dir_all` at either caller: unserialized, `cfgd source remove` deletes
+/// the tree a concurrent `cfgd sync` is cloning into, which is the same
+/// interleaving the lock exists to close on the load side. `cfgd source remove`
+/// reaches it directly rather than through
+/// [`SourceManager::remove_source`], because that command never populates the
+/// in-memory `sources` map its `NotFound` is judged against.
+///
+/// A checkout that is already gone is not an error: the caller asked for its
+/// absence, and another process winning the race delivered exactly that.
+pub fn discard_cached_checkout(cache_dir: &Path, name: &str, printer: &Printer) -> Result<()> {
+    validate_source_name(name)?;
+    let checkout = cache_dir.join(name);
+    // Judged before the lock so a removal with no cache at all neither creates
+    // the cache root nor leaves a lock file in one.
+    if !checkout.exists() {
+        return Ok(());
+    }
+    let _cache_lock = crate::acquire_source_lock(cache_dir, || {
+        printer.alert(cache_wait_notice(name));
+    })?;
+    match std::fs::remove_dir_all(&checkout) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(SourceError::CacheError {
+            message: format!("failed to remove cache for '{name}': {e}"),
+        }
+        .into()),
+    }
+}
+
 /// Reject a source name that cannot serve as a cache directory of its own.
 ///
 /// The name is the only thing separating one source's cache from another's, and
@@ -1134,6 +1224,23 @@ fn validate_source_name(name: &str) -> Result<()> {
         name: name.to_string(),
         message: format!("invalid source name: {e}"),
     })?;
+    // A source's checkout is `<cache_dir>/<name>`, and the cache lock is a file
+    // at `<cache_dir>/cache.lock`. A source claiming that name would put a
+    // directory where the lock file goes, so neither could be opened.
+    if name
+        .split(['/', '\\'])
+        .next()
+        .is_some_and(|first| first.eq_ignore_ascii_case(crate::SOURCE_CACHE_LOCK_FILENAME))
+    {
+        return Err(SourceError::GitError {
+            name: name.to_string(),
+            message: format!(
+                "invalid source name: '{}' is reserved for the source-cache lock",
+                crate::SOURCE_CACHE_LOCK_FILENAME
+            ),
+        }
+        .into());
+    }
     Ok(())
 }
 

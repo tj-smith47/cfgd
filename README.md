@@ -54,6 +54,8 @@ Most dotfile managers track files. `cfgd` enables you to manage your entire mach
 
 **Reconciliation** continuously ensures machines match their declared state. Drift is detected, reported, and optionally auto-corrected. Failed actions don't abort; they're logged and skipped. See [docs/reconciliation.md](docs/reconciliation.md).
 
+<img src="demo/cfgd-drift.gif" width="1320" alt="cfgd catching a sabotaged file with cfgd status, explaining it with cfgd diff, and healing it with cfgd apply">
+
 ## Quick Start
 
 ```sh

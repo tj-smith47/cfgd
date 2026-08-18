@@ -746,7 +746,7 @@ mod tests {
         )]);
         la.apply(&yaml, &cfgd_core::providers::SystemContext::new(&printer))
             .unwrap();
-        let captured = buf.lock().unwrap().clone();
+        let captured = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             captured.contains("Writing launch agent"),
             "printer should announce plist write, got: {captured}"
@@ -783,7 +783,7 @@ mod tests {
                 .join("Library/LaunchAgents/com.cfgd.load.fail.plist")
                 .exists()
         );
-        let captured = buf.lock().unwrap().clone();
+        let captured = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             captured.contains("launchctl load failed"),
             "warning should surface launchctl failure, got: {captured}"

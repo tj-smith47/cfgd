@@ -591,6 +591,96 @@ fn verify_full_path_resolves_modules_and_catches_module_file_drift() {
     );
 }
 
+/// `cfgd status --module <name>` is a fast recorded-only dashboard by
+/// design (mirrors the profile-wide `status` command), so it must NOT catch
+/// this drift without `--exit-code`. `--exit-code` runs the same live scan
+/// `diff --module`/`verify` do, so a module's own status surface catches
+/// content drift the "Deployed Files" presence check alone would miss (the
+/// target still exists, just with the wrong bytes) and exits 5 to match.
+#[test]
+fn status_module_exit_code_catches_module_file_drift() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let module_dir = dir.path().join("modules").join("accmod");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(module_dir.join("conf"), "desired\n").unwrap();
+    let module_target = dir.path().join("mod-out").join("conf");
+    std::fs::create_dir_all(module_target.parent().unwrap()).unwrap();
+    std::fs::write(&module_target, "tampered\n").unwrap();
+
+    let module_yaml = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: accmod\nspec:\n  packages: []\n  files:\n    - source: conf\n      target: {}\n",
+        module_target.display()
+    );
+    std::fs::write(module_dir.join("module.yaml"), module_yaml).unwrap();
+
+    std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
+    std::fs::write(
+        dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: base\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("profiles/base.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  modules:\n    - accmod\n",
+    )
+    .unwrap();
+
+    // Without --exit-code: fast dashboard, exit 0, no drift claimed even
+    // though the target's content is wrong. Read `-o json` rather than
+    // grepping human text — `!A || B` against a fixed "No drift" substring
+    // passed even when the drifted pair leaked in, since the fixture's
+    // human render always carries a "No drift"-shaped line somewhere.
+    let quiet = Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("status")
+        .arg("--module")
+        .arg("accmod")
+        .arg("--no-color")
+        .arg("-o")
+        .arg("json")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .success();
+    let quiet_stdout = String::from_utf8_lossy(&quiet.get_output().stdout).to_string();
+    let quiet_json: serde_json::Value =
+        serde_json::from_str(quiet_stdout.trim()).expect("status -o json is one JSON value");
+    assert_eq!(
+        quiet_json["driftCheckedLive"], false,
+        "status without --exit-code must not have run the live scan, got: {quiet_json}"
+    );
+    assert_eq!(
+        quiet_json["drift"],
+        serde_json::json!([]),
+        "status without --exit-code must not claim live drift, got: {quiet_json}"
+    );
+
+    // With --exit-code: the live scan runs, catches the drift, and exits 5 —
+    // the same code `verify --exit-code` returns for the identical fixture.
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("status")
+        .arg("--module")
+        .arg("accmod")
+        .arg("--exit-code")
+        .arg("--no-color")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(5);
+    let out = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        out.contains("conf") && out.contains("want:") && out.contains("have:"),
+        "drifted module file must surface in the Drift section, got:\n{out}"
+    );
+}
+
 // --- diff with valid config ---
 
 #[test]

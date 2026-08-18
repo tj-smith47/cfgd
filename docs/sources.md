@@ -770,6 +770,29 @@ CFGD_ALLOW_LOCAL_SOURCES=1 cfgd plan    # verify the composed result
 | Version pinning bypass | `pinVersion` resolved against git tags/refs, not the source's self-reported `metadata.version` — a source cannot edit its manifest to escape the pin, and a tag outside `~2` is never checked out |
 | Privilege escalation | Sources cannot set `shell:` or install launchAgents/systemdUnits without `allowSystemChanges: true` |
 | Recursive trust | A ConfigSource cannot itself subscribe to other ConfigSources |
-| Cache substitution | Every sync compares the cached clone's recorded `origin` against the declared URL and discards and re-clones on mismatch, so a stale or planted clone never serves under this source's name. Offline reads warn and skip a mismatched cache |
+| Cache substitution | Every sync compares the cached clone's recorded `origin` against the declared URL and discards and re-clones on mismatch, so a stale clone, or one left behind by a renamed origin, never serves under this source's name. That check reads the cache's own `.git/config`, so it is a consistency check, not authentication: a planted clone that records the declared URL passes it and serves. What keeps another account from planting one is the cache directory's own permissions, not the checkout's. cfgd creates the cache root owner-only (`0700`) when it is the one creating it, and creates each checkout the same way. Both are Unix-only and best effort: the mode is a no-op on Windows, and a mode that cannot be set does not fail the load. A cache root that already existed keeps whatever mode you gave it, so check it yourself if it lives on a shared path. The manifest's `spec.policy.constraints.requireSignedCommits` verifies HEAD's signature on top of that, but the flag itself is read from the cached manifest, so it is not on its own a defense against a writable cache. Set `subscription.requireSignedCommits: true` to close that gap: the flag then comes from your own config, which the cache cannot reach, and a planted checkout is rejected on its unsigned HEAD. Offline reads warn and skip a mismatched cache, and skip its signature check with it |
+
+### Demanding signed commits
+
+The manifest can ask for signature verification. Your subscription can demand it:
+
+![unsigned source refused, signed accepted](../demo/cfgd-source-trust.gif)
+*A subscription demanding signed commits refuses an unsigned source and syncs clean once the history is signed.*
+
+```yaml
+spec:
+  sources:
+    - name: acme
+      origin:
+        type: Git
+        url: git@github.com:acme/config.git
+        branch: main
+      subscription:
+        requireSignedCommits: true
+```
+
+The two flags are ORed. Either one asking is enough, and neither turns the other off. The subscriber flag is the trust anchor, because the manifest's copy lives inside the cached clone.
+
+`spec.security.allowUnsigned` still bypasses both. Set it only where signatures are unavailable.
 
 Every new capability requested by a source update requires interactive confirmation. The daemon never auto-applies permission-expanding changes.

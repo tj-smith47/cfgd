@@ -728,7 +728,7 @@ spec:
 
         cmd_config_show(&cli, &printer).unwrap();
 
-        let captured = buf.lock().unwrap().clone();
+        let captured = cfgd_core::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())
             .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {captured}"));
         assert_eq!(parsed["apiVersion"], "cfgd.io/v1alpha1");

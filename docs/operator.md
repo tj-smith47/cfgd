@@ -170,6 +170,78 @@ The operator runs [kube-rs](https://kube.rs/) controllers that watch and reconci
 
 Validates CRD specs on create/update. Catches invalid configurations (missing required fields, malformed selectors) before they're persisted to etcd.
 
+## Pod Module Injection
+
+A module published as an OCI artifact can be mounted into a pod. A pod asks for it with one annotation. The mutating webhook rewrites the pod on admission, and the CSI node plugin pulls the artifact and bind-mounts it read-only before the container starts.
+
+![module to cluster to pod](../demo/cfgd-k8s.gif)
+*Pushing a module, registering it as a `Module`, and reading it back from inside a pod that only asked for it by name.*
+
+Three pieces have to be enabled in the chart:
+
+```yaml
+operator:
+  enabled: true
+csiDriver:
+  enabled: true
+mutatingWebhook:
+  enabled: true
+  failurePolicy: Fail   # default is Ignore, which skips injection silently
+```
+
+Publish the module, then register it:
+
+```sh
+cfgd module push ./tools --artifact ghcr.io/acme/tools:v1
+```
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: tools
+spec:
+  ociArtifact: "ghcr.io/acme/tools:v1"
+  mountPolicy: Always
+```
+
+`Module` is cluster-scoped, so one registration serves every namespace. `mountPolicy: Always` mounts the module into every declared container. `mountPolicy: Debug` stages the volume on the pod without mounting it, so only an ephemeral debug container sees it.
+
+Injection is opt-in per namespace, then per pod:
+
+```sh
+kubectl label namespace demo cfgd.io/inject-modules=true
+```
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: demo-pod
+  annotations:
+    cfgd.io/modules: "tools:v1"
+spec:
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["sleep", "3600"]
+```
+
+The annotation takes a comma-separated list of `name:version` entries. Each one lands at `/cfgd-modules/<module>`, read-only:
+
+```sh
+kubectl exec demo-pod -- sh /cfgd-modules/tools/bin/hello.sh
+```
+
+A `ConfigPolicy` or `ClusterConfigPolicy` can add modules the pod never asked for, through `requiredModules` (mounted) and `debugModules` (staged only). Label a pod `cfgd.io/skip-injection` to exempt it.
+
+Two settings matter in production:
+
+- `CFGD_CSI_ALLOWED_REGISTRIES` on the CSI driver restricts which registries a pod's `ociRef` may pull from. Unset means any registry is accepted, which the driver warns about at startup.
+- `spec.security` on a `ClusterConfigPolicy` gates which modules may be admitted at all. `trustedRegistries` is a list of registry prefixes (a trailing `*` or `/` widens the match), and `allowUnsigned` decides whether a `Module` may carry an `ociArtifact` with no cosign signature. Both default to the strict answer: `allowUnsigned` is `false`, so creating any `ClusterConfigPolicy` at all starts rejecting unsigned modules. A cluster with no `ClusterConfigPolicy` enforces neither. See [OCI Artifact Signing](modules.md#oci-artifact-signing-cosign).
+
+`kubectl cfgd status` lists the registered modules and whether each one verified.
+
 ## Device Gateway
 
 Optional component, toggled via Helm values (`deviceGateway.enabled: true`). Provides the bridge between the cluster control plane and managed devices.
@@ -281,11 +353,17 @@ Reports status to the device gateway via checkin API. Managed by the cluster, no
 
 ## Helm Chart
 
-The operator Helm chart lives at `crates/cfgd-operator/chart/cfgd-operator/`. Components are toggled via values:
+One chart at `chart/cfgd/` ships the operator, the agent DaemonSet and the CSI driver. Components are toggled via values:
 
 ```yaml
+operator:
+  enabled: true
 webhook:
   enabled: true
+csiDriver:
+  enabled: false
+agent:
+  enabled: false
 deviceGateway:
   enabled: false
 ```
@@ -293,6 +371,6 @@ deviceGateway:
 Install:
 
 ```sh
-helm install cfgd-operator ./crates/cfgd-operator/chart/cfgd-operator \
+helm install cfgd ./chart/cfgd \
   --set deviceGateway.enabled=true
 ```

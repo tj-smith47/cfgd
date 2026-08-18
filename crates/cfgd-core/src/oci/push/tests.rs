@@ -308,7 +308,7 @@ fn push_module_registry_failure_finishes_spinner_as_fail() {
     assert!(result.is_err(), "500 from registry must surface as Err");
     printer.flush();
 
-    let rendered = buf.lock().unwrap().clone();
+    let rendered = crate::test_helpers::captured_text(&buf);
     assert!(
         rendered.contains("Failed to push module"),
         "spinner must finish_fail with a push-failure subject, got: {rendered}"
@@ -457,7 +457,7 @@ fn push_module_multiplatform_index_failure_finishes_spinner_as_fail() {
     assert!(result.is_err(), "index 500 must surface as Err");
     printer.flush();
 
-    let rendered = buf.lock().unwrap().clone();
+    let rendered = crate::test_helpers::captured_text(&buf);
     assert!(
         rendered.contains("Failed to push multi-platform module"),
         "spinner must finish_fail with a push-failure subject, got: {rendered}"

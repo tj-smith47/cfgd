@@ -298,7 +298,7 @@ mod tests {
             .unwrap();
             assert!(out.status.success());
             assert_eq!(out.stdout, "hello\nworld");
-            let captured = crate::output::strip_ansi(&buf.lock().unwrap());
+            let captured = crate::test_helpers::captured_text(&buf);
             assert!(captured.contains("say hi"), "got: {captured:?}");
         });
     }
@@ -340,7 +340,7 @@ mod tests {
             assert_eq!(out.status.code(), Some(7));
             assert_eq!(out.stdout, "partial");
 
-            let captured = crate::output::strip_ansi(&buf.lock().unwrap());
+            let captured = crate::test_helpers::captured_text(&buf);
             assert!(
                 captured.contains("✗") || captured.contains("fail-job"),
                 "fail status must surface in sink; got: {captured:?}"
@@ -368,7 +368,7 @@ mod tests {
             assert_eq!(out.status.code(), Some(9));
             assert_eq!(out.stderr, "boom-1\nboom-2");
 
-            let captured = crate::output::strip_ansi(&buf.lock().unwrap());
+            let captured = crate::test_helpers::captured_text(&buf);
             assert!(captured.contains("spin-fail"), "got: {captured:?}");
             assert!(captured.contains("boom-1"), "got: {captured:?}");
             assert!(captured.contains("boom-2"), "got: {captured:?}");
@@ -396,7 +396,7 @@ mod tests {
             assert!(!out.status.success());
             assert_eq!(out.status.code(), Some(3));
 
-            let captured = crate::output::strip_ansi(&buf.lock().unwrap());
+            let captured = crate::test_helpers::captured_text(&buf);
             assert_eq!(
                 captured.matches("MARKER-LINE").count(),
                 1,
@@ -422,7 +422,7 @@ mod tests {
             assert!(!out.status.success());
             assert_eq!(out.status.code(), Some(42));
 
-            let captured = crate::output::strip_ansi(&buf.lock().unwrap());
+            let captured = crate::test_helpers::captured_text(&buf);
             assert!(
                 captured.contains("exit 42"),
                 "failure detail must carry the exit code; got: {captured:?}"
@@ -448,7 +448,7 @@ mod tests {
             // Capture is independent of verbosity — the caller still sees both lines.
             assert_eq!(out.stdout, "q1\nq2");
 
-            let captured = crate::output::strip_ansi(&buf.lock().unwrap());
+            let captured = crate::test_helpers::captured_text(&buf);
             assert!(
                 !captured.contains("q1"),
                 "quiet leaked stdout: {captured:?}"
@@ -520,7 +520,7 @@ mod tests {
             )
             .unwrap();
             assert!(out.status.success());
-            let raw = buf.lock().unwrap();
+            let raw = crate::test_helpers::captured_text(&buf);
             assert!(
                 !raw.contains("\x1b[31m"),
                 "foreign red SGR reached the sink; got: {raw:?}"

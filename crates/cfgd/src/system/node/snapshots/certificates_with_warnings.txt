@@ -1,7 +1,10 @@
 Phase: System
   profile:snapshot
     ✓ set certificates.cert.kubelet-client.key: missing → present
-      ⊙ Setting permissions 0600 on <TMPDIR>/pki/kubelet-client.crt (kubelet-client)
-      ⚠ Certificate file missing: <TMPDIR>/pki/kubelet-client.key (kubelet-client)
 
 ⚠ certificates apply completed with warnings
+
+Caveats
+  profile:snapshot
+    ⚠ Certificate file missing: <TMPDIR>/pki/kubelet-client.key (kubelet-client)
+    ⊙ Setting permissions 0600 on <TMPDIR>/pki/kubelet-client.crt (kubelet-client)

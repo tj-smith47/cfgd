@@ -316,11 +316,20 @@ impl Printer {
         // re-resolving: re-reading the terminal would let the two disagree
         // mid-run, which is the whole class of bug the field exists to close.
         let theme = theme.with_colors(self.colors);
+        // The derived renderer writes the SAME sink as `self.renderer` (both
+        // clone `sink_stderr`/`sink_stdout` below rather than opening new
+        // ones), so it has to continue `self`'s blank-line bookkeeping rather
+        // than starting fresh — a bare `Renderer::with_bars` here defaults
+        // `leading: true`, which reads as "nothing has been written yet" even
+        // when `self` just closed a section that owes the next heading a
+        // blank line. See `RenderState::continued_from`.
+        let seed = self.renderer.continuation_seed();
         Self {
-            renderer: Arc::new(Renderer::with_bars(
+            renderer: Arc::new(Renderer::with_bars_continued(
                 theme,
                 verbosity,
                 self.multi_progress.clone(),
+                seed,
             )),
             output_format,
             sink_stderr: self.sink_stderr.clone(),
@@ -720,6 +729,40 @@ impl Printer {
         }
     }
 
+    /// Open the run's closing `Caveats` section — provider narration
+    /// collected during the run, grouped under the owner that produced it and
+    /// rendered once at the very end instead of inline under each action.
+    ///
+    /// `theme.accent`, bold: Caveats is a phase-class heading meant to draw
+    /// the eye, and `accent` is the slot phase names draw attention with — so
+    /// it reads apart from every ordinary `theme.header` section title while
+    /// still reading as part of the run's phase structure. Bold keeps it
+    /// distinct under `--no-color` / `minimal`, where the accent colour drops
+    /// out but the attribute survives (per no-color.org) — the same rule
+    /// every other heading renders by.
+    #[must_use = "section closes when SectionGuard is dropped; bind it"]
+    pub fn section_caveats(&self) -> super::section_guard::SectionGuard<'_> {
+        let styled = self
+            .renderer
+            .theme
+            .accent
+            .clone()
+            .bold()
+            .apply_to("Caveats")
+            .to_string();
+        self.renderer.render_section_open_styled(
+            "Caveats",
+            Some(styled),
+            /*keep_when_empty=*/ true,
+        );
+        super::section_guard::SectionGuard {
+            printer: self,
+            renderer: self.renderer.clone(),
+            sink: self.sink_stderr.clone(),
+            depth: 1,
+        }
+    }
+
     #[must_use = "section closes when SectionGuard is dropped; bind it"]
     pub fn section_or_collapse(
         &self,
@@ -781,8 +824,7 @@ impl Drop for ColorGlobalOn {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "test-helpers")]
-    use crate::output::strip_ansi;
+
     use crate::test_helpers::EnvVarGuard;
     use serial_test::serial;
 
@@ -1069,7 +1111,7 @@ mod tests {
         p.deprecation("--jsonpath is deprecated");
         p.flush();
 
-        let out = strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             !out.contains("ordinary warning"),
             "Role::Warn must stay suppressed under structured/Quiet; got: {out:?}"
@@ -1093,7 +1135,7 @@ mod tests {
         p.alert("2 package actions will not apply");
         p.flush();
 
-        let out = strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             !out.contains("ordinary warning"),
             "Role::Warn must stay suppressed under structured/Quiet; got: {out:?}"
@@ -1134,7 +1176,7 @@ mod tests {
         let (p, buf) = Printer::for_test_with_format(OutputFormat::Json);
         let p = p.with_list_envelope(true);
         p.emit(super::super::doc::Doc::new().with_data(payload.clone()));
-        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let out = crate::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["apiVersion"], "cfgd.io/v1alpha1");
         assert_eq!(parsed["kind"], "List");
@@ -1147,7 +1189,7 @@ mod tests {
         let payload = serde_json::json!([{"name": "alpha"}]);
         let (p, buf) = Printer::for_test_with_format(OutputFormat::Json);
         p.emit(super::super::doc::Doc::new().with_data(payload.clone()));
-        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let out = crate::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed, payload, "default emit must keep the bare array");
     }
@@ -1162,7 +1204,7 @@ mod tests {
             s.bullet("bar.txt");
         } // section closes
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Files\n"), "got: {out:?}");
         assert!(out.contains("\n  - foo.txt\n"), "got: {out:?}");
         assert!(out.contains("\n  - bar.txt\n"), "got: {out:?}");
@@ -1176,7 +1218,7 @@ mod tests {
             let _s = p.section_or_collapse("Empty");
         }
         p.flush();
-        assert!(buf.lock().unwrap().trim().is_empty());
+        assert!(crate::test_helpers::captured_text(&buf).trim().is_empty());
     }
 
     #[cfg(feature = "test-helpers")]
@@ -1191,7 +1233,7 @@ mod tests {
             }
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Outer\n"));
         assert!(out.contains("\n  Inner\n"));
         assert!(out.contains("\n    - deep\n"));
@@ -1207,7 +1249,7 @@ mod tests {
             s.kv("Version", "0.3.5");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Details\n"), "got: {out:?}");
         assert!(out.contains("Name"), "got: {out:?}");
         assert!(out.contains("cfgd"), "got: {out:?}");
@@ -1222,7 +1264,7 @@ mod tests {
             s.kv_block([("Profile", "default"), ("Source", "local")]);
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Config\n"), "got: {out:?}");
         assert!(out.contains("Profile"), "got: {out:?}");
         assert!(out.contains("default"), "got: {out:?}");
@@ -1238,7 +1280,7 @@ mod tests {
             s.hint("Run cfgd init first");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Setup\n"), "got: {out:?}");
         assert!(out.contains("cfgd init"), "got: {out:?}");
     }
@@ -1252,7 +1294,7 @@ mod tests {
             s.note("All modules up to date");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Status\n"), "got: {out:?}");
         assert!(out.contains("up to date"), "got: {out:?}");
     }
@@ -1268,7 +1310,7 @@ mod tests {
             s.table(table);
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Packages\n"), "got: {out:?}");
         assert!(out.contains("curl"), "got: {out:?}");
     }
@@ -1283,7 +1325,7 @@ mod tests {
             s.status_simple(Role::Fail, "file copy failed");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Apply\n"), "got: {out:?}");
         assert!(out.contains("package installed"), "got: {out:?}");
         assert!(out.contains("file copy failed"), "got: {out:?}");
@@ -1299,7 +1341,7 @@ mod tests {
                 .detail("already installed");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("brew install curl"), "got: {out:?}");
         assert!(out.contains("already installed"), "got: {out:?}");
     }
@@ -1313,7 +1355,7 @@ mod tests {
             s.empty_state("no modules configured");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Modules\n"), "got: {out:?}");
         assert!(out.contains("no modules configured"), "got: {out:?}");
     }
@@ -1327,7 +1369,7 @@ mod tests {
             s.bullet("present");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Optional\n"), "got: {out:?}");
         assert!(out.contains("present"), "got: {out:?}");
     }
@@ -1342,7 +1384,7 @@ mod tests {
             s.close();
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Closing\n"), "got: {out:?}");
         assert!(out.contains("item"), "got: {out:?}");
     }
@@ -1359,7 +1401,7 @@ mod tests {
             }
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Outer\n"), "got: {out:?}");
         assert!(out.contains("Inner\n"), "got: {out:?}");
         assert!(out.contains("done"), "got: {out:?}");
@@ -1376,7 +1418,7 @@ mod tests {
             .section("Files", |s| s.bullet("foo.txt").bullet("bar.txt"));
         p.render(doc);
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Status\n"));
         assert!(out.contains("Profile  dev"));
         assert!(out.contains("Files\n"));
@@ -1393,7 +1435,7 @@ mod tests {
             .section_or_collapse::<_>("Empty", |s| s);
         p.render(doc);
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Status"));
         assert!(!out.contains("Empty"), "got: {out:?}");
     }
@@ -1409,7 +1451,7 @@ mod tests {
         let (p, buf) = Printer::for_test_with_format(OutputFormat::Json);
         let doc = Doc::new().heading("S").with_data(P { foo: 7 });
         p.emit(doc);
-        let out = buf.lock().unwrap();
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("\"foo\": 7"), "got: {out:?}");
     }
 
@@ -1421,7 +1463,7 @@ mod tests {
         let doc = Doc::new().heading("Title").kv("k", "v");
         p.emit(doc);
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Title"));
         assert!(out.contains("k  v"));
     }
@@ -1451,7 +1493,7 @@ mod tests {
             .hint("Run cfgd init to get started");
         p.render(doc);
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Setup"), "got: {out:?}");
         assert!(out.contains("cfgd init"), "got: {out:?}");
     }
@@ -1464,7 +1506,7 @@ mod tests {
         let doc = Doc::new().heading("Info").note("This is supplementary");
         p.render(doc);
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Info"), "got: {out:?}");
         assert!(out.contains("supplementary"), "got: {out:?}");
     }
@@ -1483,7 +1525,7 @@ mod tests {
             });
         p.render(doc);
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("brew install curl"), "got: {out:?}");
         assert!(out.contains("already installed"), "got: {out:?}");
     }
@@ -1498,7 +1540,7 @@ mod tests {
             .section("Installed", |s| s.empty_state("no modules found"));
         p.render(doc);
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Modules"), "got: {out:?}");
         assert!(out.contains("Installed"), "got: {out:?}");
         assert!(out.contains("no modules found"), "got: {out:?}");
@@ -1514,7 +1556,7 @@ mod tests {
             .kv_block([("Profile", "dev"), ("Source", "local")]);
         p.render(doc);
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Config"), "got: {out:?}");
         assert!(out.contains("Profile"), "got: {out:?}");
         assert!(out.contains("dev"), "got: {out:?}");
@@ -1526,7 +1568,7 @@ mod tests {
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         p.status(Role::Ok, "package check").detail_opt(None);
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("package check"), "got: {out:?}");
     }
 
@@ -1536,7 +1578,7 @@ mod tests {
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         p.status(Role::Ok, "installed").detail_opt(Some("v1.2.3"));
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("installed"), "got: {out:?}");
         assert!(out.contains("v1.2.3"), "got: {out:?}");
     }
@@ -1548,7 +1590,7 @@ mod tests {
         p.status(Role::Ok, "file deployed")
             .target(std::path::Path::new("/home/user/.zshrc"));
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("file deployed"), "got: {out:?}");
     }
 
@@ -1559,7 +1601,7 @@ mod tests {
         p.status(Role::Ok, "brew install curl")
             .duration(std::time::Duration::from_secs(3));
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("brew install curl"), "got: {out:?}");
     }
 
@@ -1590,7 +1632,7 @@ mod tests {
             p.heading("MidSection"); // would assert in debug; reroutes in release
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         // The heading rendered at depth 1 (inside the section), not column 0.
         assert!(
             out.contains("\n  MidSection\n"),
@@ -1616,7 +1658,7 @@ mod tests {
             p.status_simple(Role::Ok, "wrote init.lua");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.contains("\n    ✓ wrote init.lua\n"),
             "expected depth 2; got: {out:?}"
@@ -1672,7 +1714,7 @@ mod tests {
             .expect("echo must succeed");
         assert!(out.status.success());
         p.flush();
-        let rendered = strip_ansi(&buf.lock().unwrap());
+        let rendered = crate::test_helpers::captured_text(&buf);
         let line = rendered
             .lines()
             .find(|l| l.contains("echo step"))
@@ -1695,7 +1737,7 @@ mod tests {
             owner.bullet("installed ripgrep");
         }
         p.flush();
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.starts_with("profile:work\n"), "got: {out:?}");
         assert!(out.contains("\n  - installed ripgrep\n"), "got: {out:?}");
     }

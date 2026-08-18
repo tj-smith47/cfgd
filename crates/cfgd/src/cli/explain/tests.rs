@@ -128,7 +128,7 @@ fn explain_cmd_no_args_lists_types() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer, None, false).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Available resource types"),
         "expected header listing resource types, got: {output}"
@@ -152,7 +152,7 @@ fn explain_cmd_known_resource() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer, Some("module"), false).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Module"),
         "expected Module name in output, got: {output}"
@@ -172,7 +172,7 @@ fn explain_cmd_field_path() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer, Some("module.packages"), false).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("module.spec.packages"),
         "expected field path header, got: {output}"
@@ -190,12 +190,12 @@ fn explain_cmd_spec_prefix_stripped() {
     let (printer_a, buf_a) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer_a, Some("module.packages"), false).unwrap();
     printer_a.flush();
-    let output_a = buf_a.lock().unwrap().clone();
+    let output_a = cfgd_core::test_helpers::captured_text(&buf_a);
 
     let (printer_b, buf_b) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer_b, Some("module.spec.packages"), false).unwrap();
     printer_b.flush();
-    let output_b = buf_b.lock().unwrap().clone();
+    let output_b = cfgd_core::test_helpers::captured_text(&buf_b);
 
     assert_eq!(
         output_a, output_b,
@@ -212,7 +212,7 @@ fn explain_cmd_recursive() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer, Some("profile"), true).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Profile"),
         "expected Profile resource name, got: {output}"
@@ -340,7 +340,7 @@ fn explain_cmd_field_path_oneof_shows_both_variants() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer, Some("profile.scripts.preApply"), false).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Variants"),
         "expected a Variants section, got: {output}"
@@ -366,7 +366,7 @@ fn explain_cmd_field_path_oneof_recursive_expands_object_variant() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer, Some("profile.scripts.preApply"), true).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !output.contains("[+]"),
         "recursive drilldown should have no unexpanded markers, got: {output}"
@@ -459,7 +459,7 @@ fn explain_cmd_field_path_past_variant_boundary_human_and_error() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer, Some("profile.scripts.preApply.run"), false).unwrap();
     printer.flush();
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("run"),
         "expected the run field past the variant boundary, got: {output}"

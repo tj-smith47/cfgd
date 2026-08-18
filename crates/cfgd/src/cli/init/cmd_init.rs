@@ -38,7 +38,19 @@ pub(crate) struct InitOutput {
 
 /// Scaffold a new cfgd configuration repository.
 pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
-    printer.heading("Initialize cfgd");
+    // `section` (not `heading`) so every line this phase prints — the
+    // prerequisite check, the clone/scaffold narration, the final
+    // "Initialized at" — indents under it like every other phase heading.
+    // `depth_inheritance` covers the helpers below (`check_prerequisites`,
+    // `resolve_from`/`clone_into`, `scaffold`) that keep their `&Printer`
+    // signature and call `printer.status_simple`/`hint` directly rather than
+    // through a bound `SectionGuard`.
+    let init_section = printer.section("Initialize cfgd");
+    // The clone below runs inside a live output window, which paints beneath
+    // the last committed line — a heading still deferred to its first status
+    // would be written after the output it introduces.
+    init_section.commit_header();
+    let init_depth = printer.depth_inheritance();
 
     if !check_prerequisites(printer) {
         // git is a hard prerequisite: without it init scaffolds nothing, so it must exit
@@ -142,6 +154,15 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     }
 
     printer.status_simple(Role::Ok, format!("Initialized at {}", target_dir.posix()));
+
+    // Close the section explicitly, here, rather than letting it fall out of
+    // scope at function end: the phases that follow (`Apply` / `Plan` /
+    // "Next steps") render through the SAME renderer and need this section's
+    // close to mark the blank line ahead of them, before any of that output
+    // — including a `--theme` re-theme, which mints an entirely separate
+    // renderer this guard cannot reach — has a chance to print.
+    drop(init_depth);
+    drop(init_section);
 
     // The process printer was built from the config that existed at startup —
     // on a fresh machine, none. Adopt the theme just written so the rest of this
@@ -612,7 +633,7 @@ pub(super) fn apply_plan(
             // hardest: this apply may have installed the first package manager
             // on the box, and the invoking shell predates the env file naming
             // its PATH entries.
-            crate::cli::plan_ops::print_shell_env_reminder(&result, printer);
+            crate::cli::plan_ops::print_caveats(&result, printer);
             Ok(result.status)
         }
         cfgd_core::reconciler::RunDisposition::Declined => {

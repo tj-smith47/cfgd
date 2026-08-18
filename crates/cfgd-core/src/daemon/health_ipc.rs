@@ -464,6 +464,7 @@ mod tests {
         };
         let mut waited = 0;
         while socket_mode(&sock) != Some(0o600) && waited < 200 {
+            // sleep-ok: bounded poll on a filesystem permission side effect, not a fixed-duration guess
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             waited += 1;
         }
@@ -535,6 +536,7 @@ mod tests {
         // stale file was removed and a fresh listener bound in its place.
         let mut got_response = None;
         for _ in 0..50 {
+            // sleep-ok: bounded retry loop on the socket's own connect result, not a fixed-duration guess
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             let Ok(mut client) = UnixStream::connect(&sock).await else {
                 continue;

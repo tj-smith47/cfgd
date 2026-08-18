@@ -632,7 +632,7 @@ tasks:
       - docker build -f demo/Dockerfile -t cfgd-demo:latest .
 
   demo:record:
-    desc: Run the VHS tape, producing demo/.out/raw.mp4.
+    desc: Run demo/init.tape, producing whatever its Output line names (demo/.out/raw.mp4).
     preconditions:
       # LazyVim's tree, tabline and statusline are Nerd Font glyphs; without the
       # font VHS still exits 0 and records a take full of tofu boxes. The font
@@ -656,6 +656,103 @@ tasks:
     desc: Ramp the raw take into the README GIF (1:1 at both ends, fast in the middle).
     cmds:
       - bash demo/scripts/make-gif.sh
+
+  demo:drift:
+    desc: Record the drift-heal demo end to end (image, VHS take, flat GIF).
+    preconditions:
+      # Same font gate as demo:record, pointed at demo/drift.tape — see that
+      # target's comment for why both checks read the tape rather than a
+      # separately maintained value.
+      - sh: >-
+          [ -n "$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/drift.tape | head -1)" ]
+        msg: "demo/drift.tape declares no parseable `Set FontFamily \"…\"` line — the gate cannot know which font VHS will render."
+      - sh: >-
+          font="$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/drift.tape | head -1)";
+          [ -n "$font" ] && fc-list : family | grep -qF "$font"
+        msg: "The font demo/drift.tape asks for is not installed — the take would record tofu boxes instead of LazyVim's glyphs. Check `Set FontFamily` in the tape against `fc-list : family`."
+    cmds:
+      - task: demo:image
+      - bash demo/scripts/chromium-no-sandbox.sh
+      - bash demo/scripts/record.sh drift
+      - bash demo/scripts/make-gif-flat.sh drift
+
+  demo:author:
+    desc: Record the CLI-authoring demo end to end (image, VHS take, flat GIF).
+    preconditions:
+      # Same font gate as demo:record/demo:drift, pointed at demo/author.tape
+      # — see demo:record's comment for why both checks read the tape rather
+      # than a separately maintained value.
+      - sh: >-
+          [ -n "$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/author.tape | head -1)" ]
+        msg: "demo/author.tape declares no parseable `Set FontFamily \"…\"` line — the gate cannot know which font VHS will render."
+      - sh: >-
+          font="$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/author.tape | head -1)";
+          [ -n "$font" ] && fc-list : family | grep -qF "$font"
+        msg: "The font demo/author.tape asks for is not installed — the take would record tofu boxes instead of LazyVim's glyphs. Check `Set FontFamily` in the tape against `fc-list : family`."
+    cmds:
+      - task: demo:image
+      - bash demo/scripts/chromium-no-sandbox.sh
+      - bash demo/scripts/record.sh author
+      - bash demo/scripts/make-gif-flat.sh author
+
+  demo:backup:
+    desc: Record the backup-restore demo end to end (image, VHS take, flat GIF).
+    preconditions:
+      # Same font gate as demo:record/demo:drift/demo:author, pointed at
+      # demo/backup.tape — see demo:record's comment for why both checks read
+      # the tape rather than a separately maintained value.
+      - sh: >-
+          [ -n "$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/backup.tape | head -1)" ]
+        msg: "demo/backup.tape declares no parseable `Set FontFamily \"…\"` line — the gate cannot know which font VHS will render."
+      - sh: >-
+          font="$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/backup.tape | head -1)";
+          [ -n "$font" ] && fc-list : family | grep -qF "$font"
+        msg: "The font demo/backup.tape asks for is not installed — the take would record tofu boxes instead of the real glyphs. Check `Set FontFamily` in the tape against `fc-list : family`."
+    cmds:
+      - task: demo:image
+      - bash demo/scripts/chromium-no-sandbox.sh
+      - bash demo/scripts/record.sh backup
+      - bash demo/scripts/make-gif-flat.sh backup
+
+  demo:source-trust:
+    desc: Record the source-trust demo end to end (image, VHS take, flat GIF).
+    preconditions:
+      # Same font gate as demo:record/demo:drift/demo:author/demo:backup,
+      # pointed at demo/source-trust.tape — see demo:record's comment for
+      # why both checks read the tape rather than a separately maintained
+      # value.
+      - sh: >-
+          [ -n "$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/source-trust.tape | head -1)" ]
+        msg: "demo/source-trust.tape declares no parseable `Set FontFamily \"…\"` line — the gate cannot know which font VHS will render."
+      - sh: >-
+          font="$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/source-trust.tape | head -1)";
+          [ -n "$font" ] && fc-list : family | grep -qF "$font"
+        msg: "The font demo/source-trust.tape asks for is not installed — the take would record tofu boxes instead of the real glyphs. Check `Set FontFamily` in the tape against `fc-list : family`."
+    cmds:
+      - task: demo:image
+      - bash demo/scripts/chromium-no-sandbox.sh
+      - bash demo/scripts/record.sh source-trust
+      - bash demo/scripts/make-gif-flat.sh source-trust
+
+  demo:k8s:
+    desc: Record the k8s module-injection demo end to end (kind cluster, VHS take, flat GIF).
+    preconditions:
+      # Same font gate as every other per-surface target, pointed at
+      # demo/k8s.tape — see demo:record's comment for why both checks read the
+      # tape rather than a separately maintained value.
+      - sh: >-
+          [ -n "$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/k8s.tape | head -1)" ]
+        msg: "demo/k8s.tape declares no parseable `Set FontFamily \"…\"` line — the gate cannot know which font VHS will render."
+      - sh: >-
+          font="$(sed -n 's/^Set FontFamily "\(.*\)"$/\1/p' demo/k8s.tape | head -1)";
+          [ -n "$font" ] && fc-list : family | grep -qF "$font"
+        msg: "The font demo/k8s.tape asks for is not installed — the take would record tofu boxes instead of the real glyphs. Check `Set FontFamily` in the tape against `fc-list : family`."
+    cmds:
+      - defer: bash demo/scripts/setup-k8s-demo.sh down
+      - bash demo/scripts/setup-k8s-demo.sh up
+      - bash demo/scripts/chromium-no-sandbox.sh
+      - bash demo/scripts/record.sh k8s
+      - bash demo/scripts/make-gif-flat.sh k8s
 
   # --- Deploy ---
 

@@ -507,12 +507,23 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn add_hands_the_expanded_shorthand_to_the_source_load() {
         // The shorthand has to be expanded before `build_source_spec`, or the
         // subscription is recorded against a string git cannot clone. The
         // `load_failed` payload reports the URL that reached the load, so
         // dropping the expansion flips this assertion.
+        //
+        // `acme/dev` is resolved against the process CWD, which is global and
+        // which its negative sibling below moves into a directory holding a
+        // real `acme/dev`. Unserialized, the two overlap and this test reads
+        // the other one's world: the shorthand resolves to a local path, no
+        // expansion happens, and a correct build goes red. Both the guard and
+        // the `serial` are the fix — a guard alone only excludes other serial
+        // tests, and `serial` alone leaves the answer to whatever the suite was
+        // started from.
         let dir = tempfile::tempdir().expect("tempdir");
+        let _cwd = cfgd_core::test_helpers::CwdGuard::set(dir.path()).expect("cwd guard");
         let cli = cli_with_unusable_cache(dir.path(), dir.path().join("cfgd.yaml"));
         let (printer, _cap) = Printer::for_test_doc();
 

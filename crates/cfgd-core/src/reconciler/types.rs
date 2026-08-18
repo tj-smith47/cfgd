@@ -3,7 +3,7 @@ use std::str::FromStr;
 use serde::Serialize;
 
 use crate::config::ScriptEntry;
-use crate::providers::{FileAction, PackageAction, SecretAction};
+use crate::providers::{ActionNote, FileAction, PackageAction, SecretAction};
 use crate::state::ApplyStatus;
 use crate::to_posix_string;
 
@@ -980,6 +980,14 @@ pub struct ApplyResult {
     /// "{applied} of {planned_total}" rather than counting phases that were
     /// never in scope.
     pub planned_total: usize,
+    /// Provider narration collected during the run, grouped by the owner
+    /// (`kind:name`) that produced it — a package-manager caveat, a
+    /// system-configurator warning. Rendered once as the run's closing
+    /// `Caveats` section (see `render_caveats`) instead of inline under each
+    /// action. Never serialized: a caveat is a display artifact, not part of
+    /// the apply's persisted or `-o json` shape.
+    #[serde(skip)]
+    pub caveats: Vec<(Owner, Vec<ActionNote>)>,
 }
 
 /// Result of a rollback operation.

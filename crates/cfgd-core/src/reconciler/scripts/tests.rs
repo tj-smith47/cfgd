@@ -442,7 +442,7 @@ fn hook_status_line_matches_the_precomputed_hook_subject() {
     .expect("`echo` must succeed on every shell ScriptShell::Auto dispatches to");
     drop(printer);
 
-    let out = crate::output::strip_ansi(&buf.lock().unwrap());
+    let out = crate::test_helpers::captured_text(&buf);
     let expected = crate::reconciler::hook_script_subject("onDrift", &body).to_string();
     assert!(
         out.contains(&expected),
@@ -1358,7 +1358,7 @@ fn interactive_script_without_tty_skips_with_warn() {
         !sentinel.exists(),
         "body must not run when an interactive script is skipped"
     );
-    let out = crate::output::strip_ansi(&buf.lock().unwrap());
+    let out = crate::test_helpers::captured_text(&buf);
     assert!(
         out.contains("interactive script skipped") && out.contains("no TTY"),
         "skip line should name the missing-TTY reason: {out:?}"
@@ -1386,7 +1386,7 @@ fn guard_skip_emits_skipped_status_line() {
     .expect("skip must not error");
     printer.flush();
     assert!(!changed);
-    let out = crate::output::strip_ansi(&buf.lock().unwrap());
+    let out = crate::test_helpers::captured_text(&buf);
     assert!(
         out.contains("unless condition already holds"),
         "skip line should name the unless guard and reason: {out:?}"
@@ -2102,7 +2102,7 @@ fn multi_line_inline_script_never_reaches_status_subject_with_newline() {
         "the persisted description must stay the raw multi-line body for state-matching: {desc:?}"
     );
 
-    let rendered = buf.lock().unwrap().clone();
+    let rendered = crate::test_helpers::captured_text(&buf);
     assert!(
         rendered.contains("echo one"),
         "the first line must still reach the rendered skip subject: {rendered:?}"

@@ -369,7 +369,7 @@ mod tests {
         assert!(row.bar.is_hidden(), "a row has no non-TTY form");
         row.retire();
         assert!(
-            buf.lock().unwrap_or_else(|e| e.into_inner()).is_empty(),
+            crate::test_helpers::captured_text(&buf).is_empty(),
             "a hidden row writes nothing, on any call and on retire"
         );
     }
@@ -444,7 +444,7 @@ mod tests {
             "the abandoned window retired the row's bar"
         );
         assert_eq!(row.text(), "  ✓ pipx install pynvim");
-        let drawn = super::super::strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        let drawn = crate::test_helpers::captured_text(&buf);
         assert!(
             !drawn.contains('⊙'),
             "the abandoned window left a record of its own: {drawn:?}"
@@ -464,7 +464,7 @@ mod tests {
         first.set_status(&fields(Role::Ok, "first"), 0);
         middle.set_status(&fields(Role::Ok, "middle"), 0);
         last.set_status(&fields(Role::Ok, "last"), 0);
-        let drawn = super::super::strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        let drawn = crate::test_helpers::captured_text(&buf);
         // The last paint of each row, since every redraw appends the whole
         // region to the recording again.
         let positions: Vec<usize> = ["first", "middle", "last"]

@@ -79,7 +79,9 @@ fn build_source_spec_no_profile() {
 fn remove_nonexistent_source() {
     let dir = tempfile::tempdir().unwrap();
     let mut mgr = SourceManager::new(dir.path());
-    let err = mgr.remove_source("nonexistent").unwrap_err();
+    let err = mgr
+        .remove_source("nonexistent", &test_printer())
+        .unwrap_err();
     assert!(
         err.to_string().contains("not found"),
         "expected 'not found' error, got: {err}"
@@ -326,7 +328,8 @@ fn verify_signature_skipped_when_not_required() {
         "default should be false"
     );
     // require_signed_commits defaults to false — should return Ok(()) without any repo
-    let result = mgr.verify_commit_signature("test", dir.path(), &constraints);
+    let spec = source_spec_named("test");
+    let result = mgr.verify_commit_signature(&spec, dir.path(), &constraints);
     assert_eq!(
         result.unwrap(),
         (),
@@ -349,7 +352,8 @@ fn verify_signature_skipped_when_allow_unsigned() {
         "require_signed_commits should be true"
     );
     // Even though require_signed_commits is true, allow_unsigned bypasses it
-    let result = mgr.verify_commit_signature("test", dir.path(), &constraints);
+    let spec = source_spec_named("test");
+    let result = mgr.verify_commit_signature(&spec, dir.path(), &constraints);
     assert_eq!(
         result.unwrap(),
         (),
@@ -374,7 +378,8 @@ fn verify_signature_fails_on_unsigned_commit() {
         ..Default::default()
     };
 
-    let result = mgr.verify_commit_signature("test-source", dir.path(), &constraints);
+    let spec = source_spec_named("test-source");
+    let result = mgr.verify_commit_signature(&spec, dir.path(), &constraints);
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
     assert!(
@@ -382,6 +387,50 @@ fn verify_signature_fails_on_unsigned_commit() {
         "expected 'not signed' in error, got: {}",
         err_msg
     );
+}
+
+#[test]
+fn verify_signature_runs_when_only_the_subscriber_demands_it() {
+    // The manifest is read from inside the cache, so an attacker who plants the
+    // cache writes `requireSignedCommits: false`. The subscription flag is read
+    // from the user's own config and still forces the check.
+    let dir = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(dir.path()).unwrap();
+    let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+    let tree_id = repo.index().unwrap().write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "unsigned commit", &tree, &[])
+        .unwrap();
+
+    let mgr = SourceManager::new(dir.path());
+    let constraints = crate::config::SourceConstraints {
+        require_signed_commits: false,
+        ..Default::default()
+    };
+    let mut spec = source_spec_named("planted");
+    spec.subscription.require_signed_commits = true;
+
+    let err = mgr
+        .verify_commit_signature(&spec, dir.path(), &constraints)
+        .expect_err("subscriber demand must force verification of an unsigned HEAD");
+    assert!(
+        err.to_string().contains("not signed"),
+        "expected 'not signed' in error, got: {err}"
+    );
+}
+
+#[test]
+fn verify_signature_still_skipped_when_neither_side_demands_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = SourceManager::new(dir.path());
+    let constraints = crate::config::SourceConstraints {
+        require_signed_commits: false,
+        ..Default::default()
+    };
+    let spec = source_spec_named("quiet");
+    assert!(!spec.subscription.require_signed_commits);
+    mgr.verify_commit_signature(&spec, dir.path(), &constraints)
+        .expect("no demand from either side leaves the repo untouched");
 }
 
 #[test]
@@ -710,6 +759,7 @@ fn subscription_config_from_spec() {
             accept_recommended: true,
             opt_in: vec!["extra".into()],
             allow_scripts: false,
+            require_signed_commits: false,
             overrides: serde_yaml::Value::Null,
             reject: serde_yaml::Value::Null,
         },
@@ -871,7 +921,7 @@ fn remove_source_success() {
     assert!(mgr.get("test-source").is_some());
 
     // Remove the source
-    mgr.remove_source("test-source")
+    mgr.remove_source("test-source", &test_printer())
         .expect("remove_source should succeed for existing cached source");
 
     // Verify it was removed from the map
@@ -1436,7 +1486,7 @@ fn remove_source_cleans_up_directory() {
         "source should be in cache before removal"
     );
 
-    mgr.remove_source("removable")
+    mgr.remove_source("removable", &test_printer())
         .expect("remove_source should succeed for existing cached source");
 
     // Post-conditions: both directory and cache entry are gone
@@ -1956,7 +2006,7 @@ fn remove_source_missing_directory_still_removes_cache_entry() {
     insert_fake_source(&mut mgr, "already-gone", missing_path.clone());
 
     // Should succeed even though directory doesn't exist
-    mgr.remove_source("already-gone")
+    mgr.remove_source("already-gone", &test_printer())
         .expect("remove should succeed when directory is already gone");
     assert!(mgr.get("already-gone").is_none());
 }
@@ -2011,7 +2061,8 @@ fn verify_signature_required_but_allow_unsigned_skips() {
 
     // Even though require_signed_commits is true, allow_unsigned bypasses it
     // This should succeed without even checking the repo
-    let result = mgr.verify_commit_signature("test", dir.path(), &constraints);
+    let spec = source_spec_named("test");
+    let result = mgr.verify_commit_signature(&spec, dir.path(), &constraints);
     assert!(result.is_ok());
 }
 
@@ -2821,7 +2872,7 @@ mod local_source_fixture {
             mgr.load_source(&spec, &printer).unwrap();
             assert!(mgr.get("ts6").is_some());
             assert!(cache_dir.join("ts6").exists());
-            mgr.remove_source("ts6").unwrap();
+            mgr.remove_source("ts6", &test_printer()).unwrap();
             assert!(mgr.get("ts6").is_none());
             assert!(!cache_dir.join("ts6").exists());
         });
@@ -3081,6 +3132,344 @@ mod local_source_fixture {
                 .expect_err("a corrupt cached manifest is a hard error, never a silent skip");
         });
     }
+
+    #[test]
+    #[serial]
+    fn a_subscriber_demand_verifies_head_before_the_cached_manifest_is_composed() {
+        // The manifest these fixtures write carries no constraints block, so it
+        // answers `requireSignedCommits: false` — the answer a planted cache
+        // would give. The subscription flag comes from the user's own config,
+        // so the unsigned HEAD is still rejected and nothing is composed.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "anchored", None, &[]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let mut spec = build_spec(
+                "anchored",
+                &crate::test_helpers::file_url(&bare),
+                &detect_branch(&bare),
+            );
+            spec.subscription.require_signed_commits = true;
+
+            let err = mgr
+                .load_source(&spec, &test_printer())
+                .expect_err("an unsigned HEAD must fail the subscriber's demand");
+            // Pin the premise: were the shared fixture to start declaring
+            // constraints, this test would silently prove the manifest path.
+            assert!(
+                !mgr.parse_manifest("anchored", &cache_dir.join("anchored"))
+                    .expect("the clone left a parseable manifest")
+                    .spec
+                    .policy
+                    .constraints
+                    .require_signed_commits,
+                "the fixture manifest must ask for nothing, or the subscriber flag proves nothing"
+            );
+            assert!(
+                err.to_string().contains("not signed"),
+                "expected a signature failure, got: {err}"
+            );
+            assert!(
+                mgr.get("anchored").is_none(),
+                "a source that failed verification must not be composed"
+            );
+
+            // The clone left a populated cache. The read path re-verifies it
+            // against the same subscriber demand rather than trusting the
+            // manifest sitting inside it.
+            let err = mgr
+                .load_source_cached(&spec, &test_printer())
+                .expect_err("the read path re-verifies the cached checkout");
+            assert!(err.to_string().contains("not signed"), "got: {err}");
+            assert!(mgr.get("anchored").is_none());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_serializes_on_a_lock_file_in_the_cache_dir() {
+        // The origin check, the discard and the clone are one critical section
+        // held under `<cache_dir>/cache.lock`. The lock is released with the
+        // load, so the second load of the same name takes it again: were the
+        // guard held past the first return, this test would never finish.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "locked-src", None, &[]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = build_spec(
+                "locked-src",
+                &crate::test_helpers::file_url(&bare),
+                &detect_branch(&bare),
+            );
+
+            mgr.load_source(&spec, &test_printer())
+                .expect("the first load clones under the lock");
+            let lock_path = cache_dir.join(crate::SOURCE_CACHE_LOCK_FILENAME);
+            assert!(
+                lock_path.is_file(),
+                "the lock lives beside the checkouts it guards: {:?}",
+                std::fs::read_dir(&cache_dir).map(|d| d
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .collect::<Vec<_>>())
+            );
+
+            mgr.load_source(&spec, &test_printer())
+                .expect("the second load re-takes the released lock and fetches");
+            assert!(
+                mgr.get("locked-src").is_some(),
+                "both loads compose the source"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn removing_a_checkout_waits_for_whoever_holds_the_cache_lock() {
+        // `cfgd source remove` deleting the tree a concurrent `cfgd sync` is
+        // cloning into is the same interleaving the load path serializes, so
+        // the removal takes the same lock. Driven with the acquire's own
+        // witness rather than a clock: while the guard below is alive, a
+        // checkout that still exists is proof the delete waited.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let checkout = cache_dir.join("held");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::write(checkout.join("cfgd.yaml"), "kind: ConfigSource\n").unwrap();
+
+        let guard = crate::acquire_source_lock(&cache_dir, || panic!("nothing holds it yet"))
+            .expect("the holder takes a free lock");
+
+        let remover_cache = cache_dir.clone();
+        let (removed_tx, removed_rx) = std::sync::mpsc::channel::<()>();
+        let remover = std::thread::spawn(move || {
+            discard_cached_checkout(&remover_cache, "held", &test_printer())
+                .expect("the removal completes once the holder releases");
+            let _ = removed_tx.send(());
+        });
+
+        assert!(
+            crate::await_blocking_source_acquire(std::time::Duration::from_secs(10)),
+            "the removal must wait on the cache lock, not delete around it"
+        );
+        assert!(
+            checkout.exists(),
+            "the lock is still held, so the checkout must be untouched"
+        );
+
+        drop(guard);
+        removed_rx
+            .recv()
+            .expect("the removal proceeds when the lock is free");
+        remover.join().expect("the removing thread finishes");
+        assert!(
+            !checkout.exists(),
+            "the checkout is gone once the lock frees"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_contended_load_announces_the_wait_through_a_quiet_printer() {
+        // `cfgd sync` hands `load_source` a printer derived at Quiet, which
+        // drops every status role but `Fail`. The wait is unbounded and can
+        // cover another process's network clone, so an ordinary status line
+        // would leave the command animating a spinner and saying nothing.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_manifest(&tmp, "quiet-wait", None, &[]);
+            let cache_dir = tmp.path().join("cache");
+            let spec = build_spec(
+                "quiet-wait",
+                &crate::test_helpers::file_url(&bare),
+                &detect_branch(&bare),
+            );
+
+            let guard = crate::acquire_source_lock(&cache_dir, || panic!("nothing holds it yet"))
+                .expect("the holder takes a free lock");
+
+            let (printer, buf) =
+                crate::output::Printer::for_test_at(crate::output::Verbosity::Quiet);
+            let loader_cache = cache_dir.clone();
+            let loader = std::thread::spawn(move || {
+                let mut mgr = SourceManager::new(&loader_cache);
+                mgr.load_source(&spec, &printer)
+                    .expect("the load completes once the lock frees");
+            });
+
+            assert!(
+                crate::await_blocking_source_acquire(std::time::Duration::from_secs(10)),
+                "the second load must wait on the holder"
+            );
+            drop(guard);
+            loader.join().expect("the loading thread finishes");
+
+            let out = crate::test_helpers::captured_text(&buf);
+            assert!(
+                out.contains("waiting for another cfgd process"),
+                "a Quiet printer must still be told why the run is stalled, got: {out:?}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn a_load_that_fails_leaves_a_concurrent_load_of_another_source_intact() {
+        // The interleaving M3 and its follow-ups are all about: two processes
+        // in one cache root, one of them failing. Both contenders are put in
+        // the SAME window before the holder releases — that is what the
+        // counting witness is for, since releasing on the first waiter's signal
+        // lets the second one arrive afterwards and the two never overlap.
+        //
+        // The failing load must take nothing with it on the way out. It once
+        // would have: a cleanup that ran after its own lock released could
+        // delete the cache root while the other load was cloning into it.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let (doomed_bare, _) = make_bare_with_tags(&tmp, "doomed", &["v1.0.0"]);
+            let good_bare = make_bare_with_manifest(&tmp, "survivor", None, &[]);
+            let cache_dir = tmp.path().join("cache");
+            let doomed = pinned_spec("doomed", &doomed_bare, "~9");
+            let good = build_spec(
+                "survivor",
+                &crate::test_helpers::file_url(&good_bare),
+                &detect_branch(&good_bare),
+            );
+
+            let gate = crate::acquire_source_lock(&cache_dir, || panic!("the gate never waits"))
+                .expect("the gate holds the cache while both loads queue");
+
+            let doomed_cache = cache_dir.clone();
+            let doomed_run = std::thread::spawn(move || {
+                let mut mgr = SourceManager::new(&doomed_cache);
+                mgr.load_source(&doomed, &test_printer())
+            });
+            let good_cache = cache_dir.clone();
+            let good_run = std::thread::spawn(move || {
+                let mut mgr = SourceManager::new(&good_cache);
+                mgr.load_source(&good, &test_printer())
+                    .expect("a healthy load must not be collateral of a failing one");
+                mgr.get("survivor").is_some()
+            });
+
+            assert!(
+                crate::await_blocking_source_acquires(2, std::time::Duration::from_secs(30)),
+                "both loads must be queued on the lock before it frees"
+            );
+            drop(gate);
+
+            let failure = doomed_run
+                .join()
+                .expect("the failing thread finishes")
+                .expect_err("a pin matching no tag fails");
+            assert!(
+                matches!(
+                    failure,
+                    crate::errors::CfgdError::Source(SourceError::PinRefNotFound { .. })
+                ),
+                "the failure is the pin, not the concurrency: {failure}"
+            );
+            assert!(
+                good_run.join().expect("the healthy thread finishes"),
+                "the healthy load composes its source"
+            );
+            assert!(
+                cache_dir.join("survivor").join(".git").is_dir(),
+                "the healthy checkout survives the failing load"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn a_failed_first_load_leaves_the_cache_root_and_its_lock_and_nothing_else() {
+        // The lock lives in the cache root, so the root exists before anything
+        // can fail. Taking it back would mean deleting a lock file this process
+        // holds, which strands a contender already blocked on it, so the empty
+        // root and its zero-byte lock stay: the deliberate residue, and NOTHING
+        // else. A half-made checkout left beside them would be served by the
+        // next load.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let (bare, _) = make_bare_with_tags(&tmp, "litter", &["v1.0.0"]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = pinned_spec("litter", &bare, "~9");
+
+            mgr.load_source(&spec, &test_printer())
+                .expect_err("a pin matching no tag fails the first-ever load");
+            let left: Vec<_> = std::fs::read_dir(&cache_dir)
+                .expect("the cache root stays")
+                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .collect();
+            assert_eq!(
+                left,
+                vec![std::ffi::OsString::from(crate::SOURCE_CACHE_LOCK_FILENAME)],
+                "only the lock file may survive a failed first-ever load"
+            );
+            assert!(
+                !cache_dir.join("litter").exists(),
+                "a failed load must not leave a checkout the next load would serve"
+            );
+
+            // Pin the lock FILE's identity across the next failing load, not
+            // just its presence: a rewrite that replaced the lock by
+            // temp+rename would keep the name while orphaning the inode a
+            // blocked contender holds, which is a deletion in every way that
+            // matters to that contender. The hard link is the witness — it
+            // names the file the first load created, so `is_same_inode`
+            // answers whether the path still does too.
+            let lock_path = cache_dir.join(crate::SOURCE_CACHE_LOCK_FILENAME);
+            let witness = tmp.path().join("lock-identity-witness");
+            std::fs::hard_link(&lock_path, &witness)
+                .expect("the surviving lock file can be hard-linked as an identity witness");
+            mgr.load_source(&spec, &test_printer())
+                .expect_err("the pin still matches no tag on the next load");
+            assert!(
+                crate::is_same_inode(&lock_path, &witness),
+                "a failed load must reuse the standing lock file, never replace it"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn a_failed_load_disturbs_nothing_already_in_the_cache_root() {
+        // A failed load removes nothing at all, so another source's checkout
+        // beside it is untouched.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let (bare, _) = make_bare_with_tags(&tmp, "keeper", &["v1.0.0"]);
+            let cache_dir = tmp.path().join("cache");
+            std::fs::create_dir_all(cache_dir.join("other")).unwrap();
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = pinned_spec("keeper", &bare, "~9");
+
+            mgr.load_source(&spec, &test_printer())
+                .expect_err("a pin matching no tag fails the first-ever load");
+            assert!(cache_dir.exists(), "a pre-existing cache root is not ours");
+            assert!(
+                cache_dir.join("other").exists(),
+                "another source's checkout is never in the blast radius"
+            );
+        });
+    }
+
+    #[test]
+    fn a_source_may_not_claim_the_cache_lock_filename() {
+        // The lock is a FILE at `<cache_dir>/cache.lock` and a checkout is a
+        // DIRECTORY at `<cache_dir>/<name>`. A source claiming that name would
+        // put one where the other goes, so the name is refused up front rather
+        // than failing later as an unopenable path.
+        let err = validate_source_name(crate::SOURCE_CACHE_LOCK_FILENAME)
+            .expect_err("the lock filename is not an available source name");
+        assert!(
+            err.to_string().contains("reserved"),
+            "the refusal must say why: {err}"
+        );
+        validate_source_name("cache.lock.d").expect("only the exact reserved name is refused");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3124,10 +3513,13 @@ fn clone_source_returns_cache_error_when_parent_is_regular_file() {
 
 #[test]
 fn remove_source_surfaces_cache_error_when_remove_dir_all_fails() {
-    // Stand up a cached entry whose local_path points at a regular file
-    // (not a directory). remove_dir_all on a regular file fails with
+    // Stand up a cached entry whose checkout path holds a regular file rather
+    // than a directory. remove_dir_all on a regular file fails with
     // NotADirectory on Linux. remove_source must wrap that as a
-    // CacheError carrying the source name + the underlying message.
+    // CacheError carrying the source name + the underlying message. The entry
+    // is named for its own path, the way every loaded source is: the checkout
+    // is `<cache_dir>/<name>` at every write site, so a fixture pointing
+    // `local_path` somewhere else would be testing a shape nothing mints.
     let tmp = tempfile::tempdir().unwrap();
     let cache_dir = tmp.path().join("cache");
     std::fs::create_dir_all(&cache_dir).unwrap();
@@ -3136,7 +3528,7 @@ fn remove_source_surfaces_cache_error_when_remove_dir_all_fails() {
 
     let mut mgr = SourceManager::new(&cache_dir);
     let cached = CachedSource {
-        name: "bad".to_string(),
+        name: "not-a-dir".to_string(),
         origin_url: "https://example.com/x.git".to_string(),
         origin_branch: "main".to_string(),
         local_path: target.clone(),
@@ -3144,7 +3536,7 @@ fn remove_source_surfaces_cache_error_when_remove_dir_all_fails() {
             api_version: crate::API_VERSION.into(),
             kind: "ConfigSource".into(),
             metadata: crate::config::ConfigSourceMetadata {
-                name: "bad".into(),
+                name: "not-a-dir".into(),
                 version: None,
                 description: None,
             },
@@ -3157,17 +3549,17 @@ fn remove_source_surfaces_cache_error_when_remove_dir_all_fails() {
         last_fetched: None,
         resolved_ref: None,
     };
-    mgr.sources.insert("bad".to_string(), cached);
+    mgr.sources.insert("not-a-dir".to_string(), cached);
 
-    let err = mgr.remove_source("bad").unwrap_err();
+    let err = mgr.remove_source("not-a-dir", &test_printer()).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("failed to remove cache"),
         "error must surface 'failed to remove cache': {msg}"
     );
     assert!(
-        msg.contains("bad"),
-        "error must include the source name 'bad': {msg}"
+        msg.contains("not-a-dir"),
+        "error must include the source name 'not-a-dir': {msg}"
     );
 }
 
@@ -3323,7 +3715,9 @@ fn classify_signature_status_unknown_status_rejected() {
 fn source_manager_remove_source_returns_err_when_not_present() {
     let tmp = tempfile::tempdir().unwrap();
     let mut mgr = SourceManager::new(tmp.path());
-    let err = mgr.remove_source("does-not-exist").unwrap_err();
+    let err = mgr
+        .remove_source("does-not-exist", &test_printer())
+        .unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("does-not-exist") || msg.contains("not found"),
@@ -3722,7 +4116,8 @@ fn verify_commit_signature_returns_ok_when_constraints_disabled_even_with_no_rep
     // Repo path doesn't exist — but require_signed_commits=false means we
     // return Ok(()) without ever invoking git or git2.
     let nonexistent = tmp.path().join("does-not-exist");
-    let result = mgr.verify_commit_signature("test", &nonexistent, &constraints);
+    let spec = source_spec_named("test");
+    let result = mgr.verify_commit_signature(&spec, &nonexistent, &constraints);
     result.expect("constraint disabled → Ok regardless of repo state");
 }
 
@@ -3857,7 +4252,7 @@ mod bare_repo_load {
                 ..Default::default()
             };
             let err = mgr
-                .verify_commit_signature("signed1", &source_dir, &constraints)
+                .verify_commit_signature(&spec, &source_dir, &constraints)
                 .expect_err("unsigned commit must fail verification");
             let msg = err.to_string();
             assert!(

@@ -104,6 +104,7 @@ impl crate::providers::FileManager for MockFileManager {
         source: &Path,
         target: &Path,
         _origin: Option<&str>,
+        _strategy: Option<crate::config::FileStrategy>,
     ) -> crate::errors::Result<FileDriftResult> {
         self.content_drift_calls
             .lock()
@@ -2622,6 +2623,7 @@ impl crate::providers::PackageManager for MockPackageManager {
     ) -> crate::errors::Result<()> {
         let _in_flight = self.witness.as_ref().map(|w| w.enter());
         if let Some(delay) = self.install_delay {
+            // sleep-ok: simulates a slow install to widen the overlap window a ConcurrencyWitness observes — the witness peak is the actual assertion, not this duration
             std::thread::sleep(delay);
         }
         self.install_calls.lock().unwrap().push(packages.to_vec());
@@ -3054,16 +3056,16 @@ mod tests {
 
         let fm = MockFileManager::new();
 
-        let ok = fm.content_drift(&source, &matching, None).unwrap();
+        let ok = fm.content_drift(&source, &matching, None, None).unwrap();
         assert!(ok.matches);
         assert_eq!(ok.actual, "content matches source");
 
-        let bad = fm.content_drift(&source, &drifted, None).unwrap();
+        let bad = fm.content_drift(&source, &drifted, None, None).unwrap();
         assert!(!bad.matches);
         assert!(bad.actual.contains("differs"));
 
         let missing = fm
-            .content_drift(&source, &dir.path().join("nope.txt"), None)
+            .content_drift(&source, &dir.path().join("nope.txt"), None, None)
             .unwrap();
         assert!(!missing.matches);
         assert_eq!(missing.actual, "missing");
@@ -3086,6 +3088,7 @@ mod tests {
                 Path::new("/does/not/exist"),
                 Path::new("/also/missing"),
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(result.target, "~/.bashrc");
@@ -3101,7 +3104,7 @@ mod tests {
 
         let fm = MockFileManager::new();
         let result = fm
-            .content_drift(&dir.path().join("absent-source.txt"), &target, None)
+            .content_drift(&dir.path().join("absent-source.txt"), &target, None, None)
             .unwrap();
 
         assert!(!result.matches, "absent managed source must report drift");

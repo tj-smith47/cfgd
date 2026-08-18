@@ -423,7 +423,7 @@ fn pick_profile_divergent_metadata_name_yields_resolvable_stem() {
         result, "work",
         "picker must yield the stem find_profile_path resolves, not metadata.name"
     );
-    let out = buf.lock().unwrap();
+    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         out.contains("metadata.name 'other'") && out.contains("using 'work'"),
         "picker path must surface the divergence warn; got: {out:?}"
@@ -2514,7 +2514,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
         result.err()
     );
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         !output.contains("Skipped"),
         "Skipped must NOT fire when prompt is confirmed: {output}"
@@ -2678,7 +2678,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
         result.err()
     );
     drop(printer);
-    let output = buf.lock().unwrap();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
         output.contains("Skipped"),
         "Skipped notice must fire when prompt is declined: {output}"
@@ -2804,6 +2804,75 @@ fn cmd_init_from_git_source_with_explicit_target() {
     assert!(
         target.join("cfgd.yaml").exists(),
         "should clone to target dir"
+    );
+}
+
+#[test]
+fn init_heading_commits_before_the_clone_window_paints() {
+    // The clone runs inside a live output window, which paints beneath the
+    // last committed line. A heading still deferred to its first status is
+    // therefore written AFTER the clone output it introduces: the reader
+    // watches the clone spin under no heading, and "Initialize cfgd" appears
+    // only once the work is already done. The live-bars capture records every
+    // paint in order, so the assertion is on what the terminal showed first.
+    let dir = tempfile::tempdir().unwrap();
+
+    let origin = dir.path().join("origin");
+    let repo = git2::Repository::init(&origin).unwrap();
+    let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+    std::fs::write(
+        origin.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: origin-cfg\nspec: {}\n",
+    )
+    .unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(std::path::Path::new("cfgd.yaml")).unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+        .unwrap();
+
+    let target = dir.path().join("my-target");
+    let (printer, buf) = Printer::for_test_with_live_bars();
+    let origin_str = origin.display().to_string();
+    let target_str = target.display().to_string();
+    let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        path: Some(&target_str),
+        from: Some(&origin_str),
+        branch: "master",
+        name: None,
+        apply: false,
+        dry_run: false,
+        yes: false,
+        install_daemon: false,
+        theme: None,
+        apply_profile: None,
+        apply_modules: &[],
+        cache_dir: None,
+        state_dir: None,
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+
+    let result = cmd_init_guarded(&printer, &args);
+    assert!(
+        result.is_ok(),
+        "cmd_init with --from git should succeed: {:?}",
+        result.err()
+    );
+
+    let text = cfgd_core::test_helpers::captured_text(&buf);
+    let heading = text
+        .find("Initialize cfgd")
+        .expect("the section heading must render");
+    let clone = text
+        .find("Cloning")
+        .expect("the clone window must paint its label");
+    assert!(
+        heading < clone,
+        "the heading must be on screen before the clone window paints, got:\n{text}"
     );
 }
 

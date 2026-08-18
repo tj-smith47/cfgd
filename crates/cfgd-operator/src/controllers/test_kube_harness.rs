@@ -153,6 +153,10 @@ impl ExpectedCall {
 pub(crate) struct CapturedRequest {
     pub method: Method,
     pub path: String,
+    /// The raw query string, so a test can assert a parameter is ABSENT.
+    /// `ExpectedCall::with_query_contains` only proves presence, which cannot
+    /// state a claim like "this apply must not be forced".
+    pub query: String,
     pub body: Vec<u8>,
 }
 
@@ -271,10 +275,10 @@ impl MockKubeHarness {
                     ),
                 };
 
-                let _ = actual_query;
                 captured.push(CapturedRequest {
                     method: actual_method,
                     path: actual_path,
+                    query: actual_query,
                     body: body_bytes,
                 });
 

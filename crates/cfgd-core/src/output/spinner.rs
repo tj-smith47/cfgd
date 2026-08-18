@@ -378,7 +378,6 @@ mod tests {
     use super::super::renderer::{Renderer, StringSink};
     use super::super::{Theme, Verbosity};
     use super::*;
-    use crate::output::strip_ansi;
 
     fn renderer() -> Arc<Renderer> {
         Arc::new(Renderer::new(Theme::default(), Verbosity::Normal))
@@ -427,7 +426,7 @@ mod tests {
         };
         let _ = sp.finish_ok("done");
         // _ drops here → Status committed
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("  ✓ done"), "got: {out:?}");
     }
 
@@ -449,7 +448,7 @@ mod tests {
                 _phantom: std::marker::PhantomData,
             };
         }
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         // Info role has no icon; subject text appears.
         assert!(out.contains("abandoned"), "got: {out:?}");
     }
@@ -565,10 +564,20 @@ mod tests {
         let (printer, screen) = super::super::Printer::for_test_live_terminal(24, 100);
         let section = printer.section("Packages");
         let sp = section.spinner("brew install fd");
+        // `sp`'s steady tick (see `SPINNER_TICK`) redraws from a background
+        // thread; left running, its redraw can interleave with this thread's
+        // own draws below and corrupt the emulated terminal's cursor-move/clear
+        // sequences — which is what left the screen blank in CI, not a slow
+        // paint. `disable_steady_tick` joins that thread before returning, and
+        // the ticker's loop body always ticks at least once before it can ever
+        // observe the stop signal, so this guarantees `sp` has painted a frame
+        // with no wall-clock wait and no second writer left to race.
+        sp.bar.disable_steady_tick();
         let pb = section.progress_bar(4, "downloading");
+        // `set_prefix` / `set_message` / `set_position` all draw synchronously
+        // on this thread, so by the time this call returns both bars are
+        // already on screen — no sleep or poll needed.
         pb.set_position(2);
-        // A tick each, so both have painted a frame rather than only a message.
-        std::thread::sleep(std::time::Duration::from_millis(120));
         let held = screen.contents();
         sp.finish_silent();
         pb.finish();

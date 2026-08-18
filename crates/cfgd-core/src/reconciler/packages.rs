@@ -207,6 +207,38 @@ impl<'x> PackageExec<'x> {
         self.record_path_dirs(pm.name(), dirs, PathDirRecord::Created);
     }
 
+    /// Make an install's resolvable directories reachable to the REST OF THIS
+    /// PROCESS, without persisting anything.
+    ///
+    /// [`PackageManager::path_dirs`] answers where a manager's binaries live
+    /// however they got there, and normally only reaches the process registry
+    /// through [`Self::record_bootstrap`], which fires when the manager's OWN
+    /// bootstrap runs THIS run. A manager already available on a prior run, or
+    /// baked into an image, never bootstraps — so a binary this run's install
+    /// just landed in that directory (pipx, nvim, ...) is still unresolvable to
+    /// the very next action or postApply script naming it, even though the
+    /// manager reported the install successful seconds earlier.
+    ///
+    /// This closes that gap at the PROCESS level only: it registers the
+    /// directories for [`crate::command_path`] resolution and deliberately
+    /// mints no [`BootstrapRecord`] — the directory is the manager's own to
+    /// have always had, not something cfgd created, so nothing about it
+    /// belongs in the generated env file. [`Self::record_created_path_dirs`]
+    /// (`PackageManager::created_path_dirs`) is the only path to that surface,
+    /// and answers separately for whatever a manager genuinely made itself.
+    fn register_install_path_dirs(&self, pm: &dyn PackageManager) {
+        let cx = self.cx();
+        let dirs: Vec<String> = pm
+            .path_dirs(&cx)
+            .iter()
+            .map(|dir| crate::to_posix_string(std::path::Path::new(dir)))
+            .collect();
+        if dirs.is_empty() {
+            return;
+        }
+        crate::register_bootstrapped_path_dirs(&dirs);
+    }
+
     /// Install through `pm` and record whatever that install created, whichever
     /// way it went.
     ///
@@ -223,6 +255,7 @@ impl<'x> PackageExec<'x> {
         cx: &PackageContext<'_>,
     ) -> Result<()> {
         let result = pm.install(packages, cx);
+        self.register_install_path_dirs(pm);
         self.record_created_path_dirs(pm);
         result
     }

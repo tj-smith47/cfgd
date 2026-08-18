@@ -31,7 +31,7 @@ mod verify;
 #[cfg(test)]
 mod tests;
 
-pub use apply::{action_matches_phase_filter, emit_action_notes};
+pub use apply::{action_matches_phase_filter, render_caveats};
 pub use env_engine::launchd_env_plist;
 #[cfg(any(test, feature = "test-helpers"))]
 pub use env_engine::{

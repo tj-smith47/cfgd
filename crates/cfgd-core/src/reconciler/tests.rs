@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use crate::PathDisplayExt;
 use crate::config::*;
-use crate::providers::{PackageContext, PackageManager};
+use crate::providers::{ActionNote, PackageContext, PackageManager};
 
 use crate::providers::StubPackageManager as MockPackageManager;
 use crate::test_helpers::{
@@ -518,6 +518,7 @@ fn apply_result_counts() {
         apply_id: 0,
         aborted: None,
         planned_total: 2,
+        caveats: Vec::new(),
     };
 
     assert_eq!(result.succeeded(), 1);
@@ -5481,7 +5482,7 @@ fn apply_continue_on_error_multiline_script_condenses_display_keeps_raw_descript
         failed.description
     );
 
-    let output = buf.lock().unwrap();
+    let output = crate::test_helpers::captured_text(&buf);
     assert!(
         !output.contains("raw-body-second-line-marker"),
         "display status subject must condense away subsequent lines, got: {output}"
@@ -12857,6 +12858,59 @@ fn an_install_records_the_directories_it_created_with_no_provision_in_the_run() 
     );
 }
 
+/// The install-time PATH gap this closes: a manager already available before
+/// this run does anything (baked into an image, or bootstrapped on a prior
+/// run) never bootstraps, so `path_dirs()` never reaches
+/// `record_bootstrap`. Its `created_path_dirs()` also answers empty (this
+/// manager creates nothing of its own — the brew shape), so nothing about it
+/// is cfgd's to persist either. Yet the very next action in this same run
+/// needs to resolve a binary this install just landed in that directory, so
+/// `register_install_path_dirs` registers it into the PROCESS-level registry
+/// regardless — proven by reading `bootstrapped_path_dirs()` directly rather
+/// than the state store, and proven NOT persisted by asserting the state
+/// store recorded nothing for this manager at all.
+#[test]
+#[serial_test::serial]
+fn an_install_with_no_bootstrap_and_nothing_created_still_registers_its_path_dirs_in_process() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        BootstrappingPackageManager::new("brew-like", &["/opt/brew-like/bin"]).already_available(),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+
+    reconciler
+        .apply(
+            &install_only_plan("brew-like", "some-formula"),
+            &make_empty_resolved(),
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    assert!(
+        crate::bootstrapped_path_dirs()
+            .iter()
+            .any(|d| d.to_string_lossy() == "/opt/brew-like/bin"),
+        "the install-time directory must be resolvable to the rest of this process"
+    );
+    assert!(
+        state.bootstrapped_managers().unwrap().is_empty(),
+        "a manager that created nothing must earn no persisted row — its \
+         directory is not cfgd's to publish into the generated env file"
+    );
+}
+
 /// The record a provision writes comes from the method the plan named, so a
 /// manager whose directories depend on its mediator records what the plan
 /// promised. The bootstrap itself changes what a live probe sees, so a record
@@ -18231,7 +18285,7 @@ impl ConcurrentApply {
     fn run_live(self, drive: impl FnOnce()) -> ConcurrentOutcome {
         let (printer, buf) = crate::output::Printer::for_test_live_scrollback();
         let (result, state) = self.run_on(printer, drive);
-        let transcript = crate::output::strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        let transcript = crate::test_helpers::captured_text(&buf);
         ConcurrentOutcome {
             result,
             state,
@@ -18668,6 +18722,7 @@ fn a_lane_worker_blocks_behind_an_exclusively_held_path_lock() {
     let outcome = ConcurrentApply::new(registry, plan)
         .with_modules(modules)
         .run(move || {
+            // sleep-ok: correctness here comes from the still-held write guard, not the duration — this only gives a correctly-guarded worker room to reach and block on it
             std::thread::sleep(std::time::Duration::from_millis(150));
             assert!(
                 dispatch_log(&drive_log).is_empty(),
@@ -20426,6 +20481,102 @@ fn metadata_detail_is_muted_and_error_detail_is_not() {
     );
 }
 
+/// A live-session refresh that cannot reach any session manager must say so —
+/// never render as "unchanged", which claims the surface was already correct
+/// rather than never reachable. Guards the fix for the defect where an
+/// unprovisioned Linux host (no systemd user manager) lied about `cfgd:session`.
+///
+/// Gated to the systemd dispatch branch: `refresh_session_env`'s
+/// `cfg!(target_os)` arms are compile-time constants fixed to the build
+/// target, so this gate mirrors them explicitly — a macOS build compiles the
+/// `launchctl` branch instead and would hit `refuse_unseamed_session_write`
+/// for a seam this test never points anywhere (see `env_session.rs`'s
+/// Linux/BSD-gated unit test for the same reasoning).
+#[cfg(all(unix, not(target_os = "macos")))]
+#[test]
+#[serial_test::serial]
+fn refresh_live_session_reports_no_session_manager_when_unavailable() {
+    // A missing path: `command_available_with_seam` reads it as "not
+    // available" regardless of what the host running this test actually has,
+    // so the test is deterministic on a workstation carrying a real systemd
+    // user manager just as on a container that has none.
+    let _seam =
+        crate::test_helpers::EnvVarGuard::set(crate::SYSTEMCTL_BIN_ENV, "/no/such/systemctl");
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::cfgd("session"),
+            vec![Action::Env(EnvAction::RefreshLiveSession {
+                vars: vec![("EDITOR".to_string(), "nvim".to_string())],
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply must succeed even when the session manager is unavailable");
+    let raw = cap.human();
+
+    assert!(
+        raw.contains("no session manager"),
+        "the skipped line must say why, not just that nothing changed: {raw}"
+    );
+    assert!(
+        !raw.contains("publish 1 var to the session manager \u{2014} unchanged"),
+        "the unavailable case must not render as the generic unchanged detail: {raw}"
+    );
+
+    // The result carries the new suffix the same way the pre-existing
+    // `:skipped` suffix already rides on `ActionResult.description` (see
+    // `env:write:` results elsewhere in this file) — a display-adjacent
+    // annotation on the in-memory result, not on the persisted id. What must
+    // stay byte-identical is what `parse_resource_from_description` derives
+    // from it once the suffix is stripped, which `managed_resources`/journal
+    // rows are keyed on; `parse_resource_from_description_cases` above pins
+    // that derivation for the bare `LIVE_SESSION_RESOURCE_ID` already.
+    assert_eq!(
+        result.action_results.len(),
+        1,
+        "one action, one result: {:?}",
+        result.action_results
+    );
+    assert_eq!(
+        result.action_results[0]
+            .description
+            .strip_suffix(super::apply::ENV_NO_SESSION_MANAGER_SUFFIX)
+            .unwrap_or(&result.action_results[0].description),
+        super::format::LIVE_SESSION_RESOURCE_ID,
+        "the description strips back to the same resource id every other run uses"
+    );
+    assert!(
+        !result.action_results[0].changed,
+        "nothing was actually applied to the session"
+    );
+    assert!(
+        result.action_results[0].success,
+        "an absent session manager is not a failure"
+    );
+}
+
 #[test]
 fn packages_tree_renders_profile_first_while_modules_execute_first() {
     let log = new_dispatch_log();
@@ -20871,7 +21022,7 @@ fn streaming_phase_lines_appear_as_work_completes() {
 }
 
 #[test]
-fn action_notes_render_under_the_status_they_belong_to() {
+fn action_notes_collect_into_the_run_wide_caveats_group() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry
@@ -20881,28 +21032,30 @@ fn action_notes_render_under_the_status_they_belong_to() {
     let resolved = resolved_for("work", &["neovim"]);
 
     let plan = packages_phase(vec![install_action("brew", &["neovim"])]);
-    let (_, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
-    let lines = transcript_lines(&out);
+    let (result, out) = apply_transcript(&reconciler, &plan, &resolved, &[]);
 
-    // Targets the install action's own status rather than the first checkmark
-    // seen: other lines in the transcript carry the same marker.
-    let status = lines
-        .iter()
-        .position(|l| l.contains("brew install neovim"))
-        .expect("the action's status");
-    assert_eq!(
-        lines[status + 1].trim(),
-        "\u{26A0} [brew] add /opt/brew/bin to PATH",
-        "one warn line per note, in order, under the status: {out}"
-    );
-    assert_eq!(
-        lines[status + 2].trim(),
-        "\u{26A0} [brew] restart your shell",
-        "in order: {out}"
-    );
+    // `apply()` no longer attaches a package manager's notes under the action
+    // line itself — they ride in `ApplyResult.caveats`, grouped by owner, for
+    // a caller to render once as the run's closing `Caveats` section.
     assert!(
-        !out.contains("Post-install notes"),
-        "the sub-header is gone with print_caveats: {out}"
+        !out.contains('\u{26A0}'),
+        "apply()'s own transcript carries no attached notes: {out}"
+    );
+    assert_eq!(
+        result.caveats.len(),
+        1,
+        "one owner group for the one action that reported: {:?}",
+        result.caveats
+    );
+    let (owner, notes) = &result.caveats[0];
+    assert_eq!(*owner, Owner::profile("work"));
+    assert_eq!(
+        notes.iter().map(ActionNote::body).collect::<Vec<_>>(),
+        vec![
+            "[brew] add /opt/brew/bin to PATH".to_string(),
+            "[brew] restart your shell".to_string(),
+        ],
+        "one note per push, in order, under the action's owner: {notes:?}"
     );
 }
 
@@ -21034,7 +21187,7 @@ fn resolved_with_sysctl_key() -> crate::config::ResolvedProfile {
 }
 
 #[test]
-fn configurator_narration_renders_attached_under_its_system_action_line() {
+fn configurator_narration_collects_into_the_run_wide_caveats_group() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
     registry
@@ -21042,7 +21195,7 @@ fn configurator_narration_renders_attached_under_its_system_action_line() {
         .push(Box::new(NarratingConfigurator));
     let reconciler = Reconciler::new(&registry, &state);
 
-    let (_, out) = apply_transcript(
+    let (result, out) = apply_transcript(
         &reconciler,
         &sysctl_set_value_plan(),
         &resolved_with_sysctl_key(),
@@ -21058,22 +21211,29 @@ fn configurator_narration_renders_attached_under_its_system_action_line() {
         lines[status].trim_start().starts_with('\u{2713}'),
         "the action settles its own line first: {out}"
     );
-    // Untagged: the line above already says which configurator spoke.
-    assert_eq!(
-        lines[status + 1].trim(),
-        "\u{2299} sysctl -w net.ipv4.ip_forward=1",
-        "narration attaches under the action, keeping its Info role: {out}"
-    );
-    assert_eq!(
-        lines[status + 2].trim(),
-        "\u{26A0} reload deferred: /proc is read-only",
-        "and the Warn role survives the trip through the sink: {out}"
-    );
-    let attached_indent = lines[status + 1].len() - lines[status + 1].trim_start().len();
-    let status_indent = lines[status].len() - lines[status].trim_start().len();
+    // `apply()` no longer attaches a configurator's narration under the
+    // action line — it rides in `ApplyResult.caveats` for a caller to render
+    // once as the run's closing `Caveats` section.
     assert!(
-        attached_indent > status_indent,
-        "an attached note sits one level deeper than the line it belongs to: {out}"
+        status + 1 >= lines.len() || !lines[status + 1].trim_start().starts_with('\u{2299}'),
+        "apply()'s own transcript carries no attached narration: {out}"
+    );
+    assert_eq!(
+        result.caveats.len(),
+        1,
+        "one owner group for the one action that reported: {:?}",
+        result.caveats
+    );
+    let (owner, notes) = &result.caveats[0];
+    assert_eq!(*owner, Owner::profile("work"));
+    // Untagged: the action line already says which configurator spoke.
+    assert_eq!(
+        notes.iter().map(ActionNote::body).collect::<Vec<_>>(),
+        vec![
+            "sysctl -w net.ipv4.ip_forward=1".to_string(),
+            "reload deferred: /proc is read-only".to_string(),
+        ],
+        "narration collects in order, keeping its role: {notes:?}"
     );
 }
 

@@ -1847,7 +1847,7 @@ mod tests {
                  not merely equal to itself"
             );
 
-            let captured = buf.lock().unwrap().clone();
+            let captured = cfgd_core::test_helpers::captured_text(&buf);
             assert!(
                 captured.contains("npm has no writable global prefix"),
                 "install()'s fallback-notice branch must have executed: {captured}"

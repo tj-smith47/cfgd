@@ -60,22 +60,39 @@ cx.report(Role::Warn, self.name(), "brew: run `brew link --force`");
 cx.report(Role::Info, format!("systemctl {action} {name}"));
 ```
 
+Every note reported this way collects into the run's `ApplyResult.caveats` — grouped by
+the `kind:name` owner that produced it — and renders exactly once, as a single closing
+`Caveats` section printed after the run's summary line, instead of attached under the
+action that produced it:
+
 ```
 ✓ set sysctl.net.ipv4.ip_forward: 0 → 1     ← the reconciler's line, from the plan
-  ⊙ sysctl -w net.ipv4.ip_forward=1         ← cx.report, attached one level deeper
-  ⚠ reload deferred: /proc is read-only
+
+✓ Apply complete — 1 action succeeded (0.1s)
+
+Caveats
+  profile:work
+    ⚠ reload deferred: /proc is read-only     ← Warn renders before Info within a group
+    ⊙ sysctl -w net.ipv4.ip_forward=1
 ```
 
-Both land in one `NoteSink` and route through one rule (`NoteSink::report_tagged`) and
-render through one path (`cfgd_core::reconciler::emit_action_notes` →
-`SectionGuard::attached_status`) — never grow a second drain. A context nobody drains
-(`SystemContext::new`, `PackageContext::new`, `NoteSink::discarded()`) settles the report
-on the printer instead, so a standalone caller loses nothing.
+Both land in one `NoteSink` and route through one rule (`NoteSink::report_tagged`), then
+through one collection point — `Reconciler::settle_action`, called from both the
+concurrent-lane dispatch and the serial dispatch loop, is the ONE place a settled action's
+notes are folded into the run's `caveats` collector via `collect_caveats` — and one render
+path, `cfgd_core::reconciler::render_caveats` (opened through `Printer::section_caveats`,
+the "Caveats" heading painted `theme.accent` + bold — the phase-name slot, because the
+heading is a phase-class title meant to draw the eye). `cli::plan_ops::print_caveats` is the one assembler for a real `cfgd apply`
+(it also folds the `cfgd:env` re-source reminder into that owner's group, always last); a
+per-configurator snapshot bridge is the only other caller. Never grow a second drain or a
+second render path. A context nobody drains (`SystemContext::new`, `PackageContext::new`,
+`NoteSink::discarded()`) settles the report on the printer instead, so a standalone caller
+loses nothing.
 
 `SystemContext`'s fields are private: `report` and `run_silent` are the whole surface, so
 `cx.printer.status_simple` is not expressible rather than merely discouraged. Never add a
 `printer()` accessor. A snapshot bridge that drives a configurator directly renders through
-`emit_action_notes` under a real `section_owner`, so its golden pins the attached shape
+`render_caveats` after its own closing summary, so its golden pins the real run-wide shape
 production emits rather than one the test assembled.
 
 ## Source-constraint mode (every `compose_with_sources` call site)

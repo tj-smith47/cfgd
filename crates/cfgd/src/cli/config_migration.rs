@@ -517,7 +517,7 @@ mod tests {
             "legacy dir must no longer exist after move"
         );
 
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             out.lines().any(|l| l.contains("Moved config to")),
             "output must contain 'Moved config to', got:\n{out}"
@@ -541,7 +541,7 @@ mod tests {
         let result = migrate_move(&printer, &legacy, &native);
 
         assert_eq!(result, None, "must return None on failure");
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             out.lines().any(|l| l.contains("Could not move config")),
             "output must contain 'Could not move config', got:\n{out}"
@@ -612,7 +612,7 @@ mod tests {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         migrate_legacy_data_dirs(&printer);
 
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
         // No "Migrated" lines should appear — the outer resolver early-returned.
         assert!(
             !out.contains("Migrated"),

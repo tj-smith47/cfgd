@@ -13,6 +13,10 @@ touch it" surface — distinct from the automatic pre-overwrite `file_backups` t
 | Retained | newest `retention` per backup | last 10 applies |
 | Restored by | `cfgd backup restore` | `cfgd rollback` |
 
+![declare, snapshot, tamper, restore](../demo/cfgd-backup.gif)
+A snapshot taken with `cfgd backup run`, a file broken from outside cfgd, and `cfgd backup
+restore` putting it back.
+
 ## Quick Start
 
 ```yaml

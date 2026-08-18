@@ -151,7 +151,8 @@ mod row_roles_round_trip_tests {
         let doc = Doc::new().table(t);
         render_doc(&renderer, &sink, &doc);
 
-        let out = buf.lock().unwrap().clone();
+        // raw-capture-ok: asserting on the raw truecolor SGR bytes themselves — captured_text would strip the ANSI this test exists to check
+        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let dracula_pink = "\x1b[38;2;255;121;198m";
         let dracula_orange = "\x1b[38;2;255;184;108m";
         assert!(

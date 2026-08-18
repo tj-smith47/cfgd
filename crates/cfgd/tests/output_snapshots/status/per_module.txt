@@ -5,6 +5,9 @@ Status: dev-tools
   Status        installed
   Last applied  2026-05-14T10:00:00Z
 
+Drift
+  ✓ No drift recorded — `cfgd diff` checks the live machine
+
 Deployed Files
   ✓ /home/user/.config/nvim/init.lua
   ✗ /home/user/.gitconfig (missing)

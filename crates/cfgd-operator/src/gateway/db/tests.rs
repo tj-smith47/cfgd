@@ -890,7 +890,7 @@ async fn concurrent_readers_do_not_block_writer() {
         }));
     }
 
-    // Give readers a moment to saturate the reader pool.
+    // sleep-ok: this is a scheduling-latency test — the sleep widens the contention window, and the assertion's 10x/50ms slack already tolerates its imprecision; no exposed observable for "reader pool is saturated" exists
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
     // Time a writer while readers are active.
@@ -973,18 +973,24 @@ async fn pool_timeout_surfaces_as_pool_exhausted() {
         .expect("register");
 
     // Hold the single reader in a blocking sleep inside a read tx.
+    let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel();
     let db_hold = db.clone();
     let hold = tokio::spawn(async move {
         db_hold
-            .with_read_tx(|_tx| {
+            .with_read_tx(move |_tx| {
+                let _ = acquired_tx.send(());
+                // sleep-ok: deliberately holds the reader past the pool's timeout to exercise the PoolExhausted path — the hold duration is the subject under test
                 std::thread::sleep(std::time::Duration::from_millis(400));
                 Ok(())
             })
             .await
     });
 
-    // Give the holder time to acquire.
-    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    // Wait for the holder to actually acquire the reader connection before
+    // racing the second reader against it — no fixed-duration guess.
+    acquired_rx
+        .await
+        .expect("holder signals after acquiring the reader");
 
     // Second reader must time out on pool acquisition.
     let r = db.get_device("d").await;
@@ -1041,6 +1047,7 @@ fn capture_warn_logs<F: FnOnce()>(f: F) -> String {
         .with_max_level(tracing::Level::WARN) // WARN+ only; DEBUG is filtered out
         .finish();
     tracing::subscriber::with_default(subscriber, f);
+    // raw-capture-ok: this buf is a tracing-log Arc<Mutex<Vec<u8>>>, not a Printer::for_test* text capture — captured_text doesn't type-check against it
     let bytes = buf.lock().expect("lock").clone();
     String::from_utf8(bytes).expect("utf8 logs")
 }

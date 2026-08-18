@@ -18,6 +18,122 @@ use cfgd_core::reconciler::{
 use super::is_file_encrypted;
 use super::template::is_tera_template;
 
+/// Whether `target_path` is linked to `source_path` under `strategy` —
+/// symlink identity for [`FileStrategy::Symlink`], same inode for
+/// [`FileStrategy::Hardlink`], `false` for anything else (Copy/Template
+/// convergence is a content question — see [`directories_content_equal`]).
+///
+/// The single home for this check: `plan()` used to branch on the same two
+/// predicates directly, once per strategy, and the diff-side directory guard
+/// duplicated the pair again to cover the case `plan()` never reaches (a
+/// directory-shaped SOURCE — never true of a profile file, which
+/// `scan_directory` expands one file at a time, but routine for a module
+/// file: a whole `lua/`/`after/` tree deployed by symlink).
+///
+/// `is_same_inode` follows symlinks (`std::fs::metadata`), so on Unix a
+/// RELATIVE directory symlink resolves to the source's inode and this arm
+/// correctly reports it converged even though `read_link() == source_path`
+/// just rejected the relative target string — it is not dead weight next to
+/// the symlink check, it is what rescues that case (and bind mounts). On
+/// Windows the inode arm is inert for a directory: opening one without
+/// `FILE_FLAG_BACKUP_SEMANTICS` fails, so a relative directory symlink there
+/// reports false drift and only an absolute link converges.
+fn is_linked_to(source_path: &Path, target_path: &Path, strategy: FileStrategy) -> bool {
+    match strategy {
+        FileStrategy::Symlink => target_path
+            .read_link()
+            .map(|link| link == source_path)
+            .unwrap_or(false),
+        FileStrategy::Hardlink => cfgd_core::is_same_inode(source_path, target_path),
+        _ => false,
+    }
+}
+
+/// Describe why a directory-shaped target is not linked to its source
+/// (Symlink/Hardlink strategy), for the `actual` field of a drifted
+/// [`FileDriftResult`] (and the matching status line `diff_one` prints).
+/// Never reads either side's content.
+fn describe_unlinked(target_path: &Path) -> String {
+    if target_path.symlink_metadata().is_err() {
+        "missing".to_string()
+    } else if target_path.is_symlink() {
+        "symlink points elsewhere".to_string()
+    } else {
+        "present but not linked to managed source".to_string()
+    }
+}
+
+/// [`describe_unlinked`]'s counterpart for a Copy/Template directory: the
+/// target is never expected to BE a link, so "not linked" would misdescribe
+/// what actually differs.
+fn describe_directory_unequal(target_path: &Path) -> String {
+    if target_path.symlink_metadata().is_err() {
+        "missing".to_string()
+    } else if !target_path.is_dir() {
+        "present but not a directory".to_string()
+    } else {
+        "directory content differs from source".to_string()
+    }
+}
+
+/// Whether `target_dir` holds a byte-identical copy of every file under
+/// `source_dir` — the Copy/Template counterpart to [`is_linked_to`], for a
+/// directory-shaped managed entry deployed by `copy_dir_recursive` rather
+/// than symlinked (the usual Windows choice when Developer Mode is off, and
+/// any profile with `files.strategy: copy` globally). Recurses into
+/// subdirectories; skips symlinks on the SOURCE side, mirroring
+/// `copy_dir_recursive` itself, which never follows one out of the source
+/// tree — a symlinked source entry is never something a copy claims to have
+/// written, so it is not something convergence checks either. A target entry
+/// with no counterpart in `source_dir` is NOT drift: a recursive copy never
+/// removes what it did not put there, so this only requires that everything
+/// `source_dir` names is present in `target_dir` with matching bytes, not
+/// that the two trees are identically shaped.
+///
+/// Errors on the SOURCE side propagate — cfgd owns that tree, so an I/O
+/// failure reading it is a real problem, not a convergence answer. A missing
+/// or unreadable TARGET entry is reported as `false` (drift), matching every
+/// other missing-target case in this file.
+fn directories_content_equal(source_dir: &Path, target_dir: &Path) -> Result<bool> {
+    for entry in fs::read_dir(source_dir).map_err(|e| FileError::Io {
+        path: source_dir.to_path_buf(),
+        source: e,
+    })? {
+        let entry = entry.map_err(|e| FileError::Io {
+            path: source_dir.to_path_buf(),
+            source: e,
+        })?;
+        let file_type = entry.file_type().map_err(|e| FileError::Io {
+            path: entry.path(),
+            source: e,
+        })?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let target_entry = target_dir.join(entry.file_name());
+        if file_type.is_dir() {
+            if !target_entry.is_dir() {
+                return Ok(false);
+            }
+            if !directories_content_equal(&entry.path(), &target_entry)? {
+                return Ok(false);
+            }
+        } else {
+            let source_bytes = fs::read(entry.path()).map_err(|e| FileError::Io {
+                path: entry.path(),
+                source: e,
+            })?;
+            let Ok(target_bytes) = fs::read(&target_entry) else {
+                return Ok(false);
+            };
+            if source_bytes != target_bytes {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
 impl super::CfgdFileManager {
     /// Resolve the effective strategy for a managed file.
     /// Template files always use Copy (can't symlink unrendered templates).
@@ -185,14 +301,7 @@ impl super::CfgdFileManager {
 
             // For symlink/hardlink: check if the target is already the correct link
             if matches!(strategy, FileStrategy::Symlink | FileStrategy::Hardlink) {
-                let is_current = match strategy {
-                    FileStrategy::Symlink => target_path
-                        .read_link()
-                        .map(|link| link == source_path)
-                        .unwrap_or(false),
-                    FileStrategy::Hardlink => cfgd_core::is_same_inode(&source_path, &target_path),
-                    _ => false,
-                };
+                let is_current = is_linked_to(&source_path, &target_path, strategy);
 
                 if is_current {
                     if let Some(action) = self.check_permissions(&target_path, managed, profile)? {
@@ -308,6 +417,7 @@ impl super::CfgdFileManager {
                 &source_path,
                 &managed.target,
                 managed.origin.as_deref(),
+                managed.strategy,
                 printer,
             )?);
         }
@@ -322,11 +432,17 @@ impl super::CfgdFileManager {
     /// source emits a warning and reports a non-matching record naming it. The
     /// record shape matches [`Self::file_drift_one`]. Shared by the profile-file path
     /// ([`Self::diff`]) and the module-file path so both render identically.
+    ///
+    /// `per_file_strategy` is the entry's own strategy override, if any — it is
+    /// resolved to an effective [`FileStrategy`] internally via
+    /// [`Self::effective_strategy`], the same resolution `plan()` performs, so
+    /// this and the plan agree on what "converged" means for the same entry.
     pub fn diff_one(
         &self,
         source_path: &Path,
         target: &Path,
         origin: Option<&str>,
+        per_file_strategy: Option<FileStrategy>,
         printer: &Printer,
     ) -> Result<FileDriftResult> {
         let target_path = expand_tilde(target);
@@ -344,6 +460,49 @@ impl super::CfgdFileManager {
                 matches: false,
                 expected: "managed source present".to_string(),
                 actual: format!("source not found: {}", source_path.posix()),
+            });
+        }
+
+        // A directory-shaped managed entry (a module's whole `lua/` tree
+        // deployed by symlink OR copy) has no single-file content to render —
+        // the `fs::read_to_string` calls below error "Is a directory" the
+        // instant either side is one. Content equality is also the wrong
+        // question for a Symlink/Hardlink strategy: convergence there is link
+        // identity. For Copy/Template it genuinely IS a content question, just
+        // over every file in the tree rather than one — `directories_content_equal`
+        // answers that. Branching on the entry's OWN resolved strategy (not a
+        // blanket link-identity check) is what keeps a `files.strategy: copy`
+        // profile — the usual Windows choice when Developer Mode is off — from
+        // reporting a converged directory permanently drifted.
+        if source_path.is_dir() || target_path.is_dir() {
+            let strategy = self.effective_strategy(source_path, per_file_strategy);
+            let uses_link_identity =
+                matches!(strategy, FileStrategy::Symlink | FileStrategy::Hardlink);
+            let matches = if uses_link_identity {
+                is_linked_to(source_path, &target_path, strategy)
+            } else {
+                directories_content_equal(source_path, &target_path)?
+            };
+            let expected = if uses_link_identity {
+                "linked to managed source"
+            } else {
+                "directory content matches source"
+            };
+            let actual = if matches {
+                expected.to_string()
+            } else if uses_link_identity {
+                describe_unlinked(&target_path)
+            } else {
+                describe_directory_unequal(&target_path)
+            };
+            if !matches {
+                printer.status_simple(Role::Info, format!("{} ({})", target_path.posix(), actual));
+            }
+            return Ok(FileDriftResult {
+                target: target_id,
+                matches,
+                expected: expected.to_string(),
+                actual,
             });
         }
 
@@ -417,6 +576,7 @@ impl super::CfgdFileManager {
                 &self.resolve_source_path(&managed.source)?,
                 &managed.target,
                 managed.origin.as_deref(),
+                managed.strategy,
             )?);
         }
 
@@ -434,11 +594,15 @@ impl super::CfgdFileManager {
     /// bad entry can't mask drift elsewhere. Shared by both the profile-file path
     /// ([`Self::file_drift_results`]) and the module-file path so every managed
     /// file is content-aware, not presence-only.
+    ///
+    /// `per_file_strategy` — see [`Self::diff_one`]'s doc; same resolution, same
+    /// reason.
     pub(crate) fn file_drift_one(
         &self,
         source_path: &Path,
         target: &Path,
         origin: Option<&str>,
+        per_file_strategy: Option<FileStrategy>,
     ) -> Result<FileDriftResult> {
         let target_path = expand_tilde(target);
         let target_id = target_path.display_posix();
@@ -449,6 +613,40 @@ impl super::CfgdFileManager {
                 matches: false,
                 expected: "managed source present".to_string(),
                 actual: format!("source not found: {}", source_path.posix()),
+            });
+        }
+
+        // Same directory guard as `diff_one` — see its comment. `verify`,
+        // `status --exit-code` and compliance all resolve through this
+        // function, so a module's directory-strategy files (a whole `lua/`
+        // tree deployed by symlink OR copy) would otherwise crash every one of
+        // them with "Is a directory" the instant either side is one.
+        if source_path.is_dir() || target_path.is_dir() {
+            let strategy = self.effective_strategy(source_path, per_file_strategy);
+            let uses_link_identity =
+                matches!(strategy, FileStrategy::Symlink | FileStrategy::Hardlink);
+            let matches = if uses_link_identity {
+                is_linked_to(source_path, &target_path, strategy)
+            } else {
+                directories_content_equal(source_path, &target_path)?
+            };
+            let expected = if uses_link_identity {
+                "linked to managed source"
+            } else {
+                "directory content matches source"
+            };
+            let actual = if matches {
+                expected.to_string()
+            } else if uses_link_identity {
+                describe_unlinked(&target_path)
+            } else {
+                describe_directory_unequal(&target_path)
+            };
+            return Ok(FileDriftResult {
+                target: target_id,
+                matches,
+                expected: expected.to_string(),
+                actual,
             });
         }
 
@@ -751,7 +949,7 @@ mod tests {
         fs::write(&target, "hello world").unwrap();
 
         let fm = make_manager(config_dir);
-        let result = FileManager::content_drift(&fm, &source, &target, None).unwrap();
+        let result = FileManager::content_drift(&fm, &source, &target, None, None).unwrap();
         assert!(result.matches);
         assert_eq!(result.actual, "content matches source");
     }
@@ -766,7 +964,7 @@ mod tests {
         fs::write(&target, "tampered").unwrap();
 
         let fm = make_manager(config_dir);
-        let result = FileManager::content_drift(&fm, &source, &target, None).unwrap();
+        let result = FileManager::content_drift(&fm, &source, &target, None, None).unwrap();
         assert!(!result.matches);
         assert!(
             result.actual.contains("differs"),
@@ -784,9 +982,149 @@ mod tests {
         fs::write(&source, "hello world").unwrap();
 
         let fm = make_manager(config_dir);
-        let result = FileManager::content_drift(&fm, &source, &target, None).unwrap();
+        let result = FileManager::content_drift(&fm, &source, &target, None, None).unwrap();
         assert!(!result.matches);
         assert_eq!(result.actual, "missing");
+    }
+
+    #[test]
+    fn content_drift_trait_symlinked_directory_reports_no_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let source = config_dir.join("src_dir");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("a.lua"), "return {}").unwrap();
+        let target = config_dir.join("target_dir");
+        cfgd_core::create_symlink(&source, &target).unwrap();
+
+        let fm = make_manager(config_dir);
+        let result = FileManager::content_drift(&fm, &source, &target, None, None).unwrap();
+        assert!(
+            result.matches,
+            "a directory correctly symlinked to its source must report no drift, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn content_drift_trait_directory_target_not_a_symlink_reports_drift_without_crashing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let source = config_dir.join("src_dir");
+        fs::create_dir(&source).unwrap();
+        let target = config_dir.join("target_dir");
+        // A real directory, not a symlink — e.g. a Copy-strategy deployment,
+        // or a symlink someone replaced by hand. `fs::read_to_string` on
+        // either side of this pair is what used to error "Is a directory".
+        fs::create_dir(&target).unwrap();
+
+        let fm = make_manager(config_dir);
+        let result = FileManager::content_drift(&fm, &source, &target, None, None).unwrap();
+        assert!(!result.matches);
+        assert_eq!(result.actual, "present but not linked to managed source");
+    }
+
+    #[test]
+    fn content_drift_trait_directory_source_missing_target_reports_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let source = config_dir.join("src_dir");
+        fs::create_dir(&source).unwrap();
+        let target = config_dir.join("absent_dir");
+
+        let fm = make_manager(config_dir);
+        let result = FileManager::content_drift(&fm, &source, &target, None, None).unwrap();
+        assert!(!result.matches);
+        assert_eq!(result.actual, "missing");
+    }
+
+    #[test]
+    fn diff_one_symlinked_directory_reports_no_drift_and_does_not_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let source = config_dir.join("src_dir");
+        fs::create_dir(&source).unwrap();
+        let target = config_dir.join("target_dir");
+        cfgd_core::create_symlink(&source, &target).unwrap();
+
+        let fm = make_manager(config_dir);
+        let printer = Printer::for_test().0;
+        let result = fm.diff_one(&source, &target, None, None, &printer).unwrap();
+        assert!(result.matches);
+    }
+
+    #[test]
+    fn diff_one_directory_replaced_by_plain_directory_reports_drift_without_crashing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let source = config_dir.join("src_dir");
+        fs::create_dir(&source).unwrap();
+        let target = config_dir.join("target_dir");
+        fs::create_dir(&target).unwrap();
+
+        let fm = make_manager(config_dir);
+        let printer = Printer::for_test().0;
+        // The regression this guards: before the directory guard, this call
+        // returned `Err(FileError::Io { .. Is a directory .. })` instead of a
+        // drift record.
+        let result = fm.diff_one(&source, &target, None, None, &printer).unwrap();
+        assert!(!result.matches);
+    }
+
+    /// B3's real claim: a `strategy: copy` directory deployment — the usual
+    /// Windows choice when Developer Mode is off — has no symlink and no
+    /// shared inode by design, so a converged one must NOT report the
+    /// permanent false drift a link-identity-only guard produced.
+    #[test]
+    fn diff_one_copy_deployed_directory_reports_no_drift_when_converged() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let source = config_dir.join("src_dir");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("a.lua"), "return {}").unwrap();
+        fs::create_dir(source.join("sub")).unwrap();
+        fs::write(source.join("sub").join("b.lua"), "return 1").unwrap();
+        let target = config_dir.join("target_dir");
+        // The real deployment path for a Copy-strategy directory (see
+        // `reconciler/modules.rs`'s `_ => copy_dir_recursive(...)` arm), not a
+        // hand-rolled stand-in.
+        cfgd_core::copy_dir_recursive(&source, &target).unwrap();
+
+        let fm = make_manager(config_dir);
+        let printer = Printer::for_test().0;
+        let result = fm
+            .diff_one(&source, &target, None, Some(FileStrategy::Copy), &printer)
+            .unwrap();
+        assert!(
+            result.matches,
+            "a converged copy-deployed directory must report no drift, got: {result:?}"
+        );
+        assert_eq!(result.actual, "directory content matches source");
+    }
+
+    /// The other half of B3: a file tampered INSIDE a copy-deployed directory
+    /// must still be caught — the fix must not trade a false positive for a
+    /// false negative.
+    #[test]
+    fn diff_one_copy_deployed_directory_reports_drift_when_a_file_inside_is_tampered() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let source = config_dir.join("src_dir");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("a.lua"), "return {}").unwrap();
+        let target = config_dir.join("target_dir");
+        cfgd_core::copy_dir_recursive(&source, &target).unwrap();
+        fs::write(target.join("a.lua"), "# not mine").unwrap();
+
+        let fm = make_manager(config_dir);
+        let printer = Printer::for_test().0;
+        let result = fm
+            .diff_one(&source, &target, None, Some(FileStrategy::Copy), &printer)
+            .unwrap();
+        assert!(
+            !result.matches,
+            "a tampered file inside the deployed directory must be reported as drift"
+        );
+        assert_eq!(result.actual, "directory content differs from source");
     }
 
     #[test]
@@ -1251,7 +1589,7 @@ mod tests {
             records.iter().all(|r| !r.matches),
             "an unresolvable source is drift, matching what verify reports"
         );
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("Source not found") || output.contains("nonexistent"),
             "output should mention missing source, got: {output}"
@@ -1407,7 +1745,7 @@ mod tests {
                 .iter()
                 .any(|r| !r.matches)
         );
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("telemetry"),
             "diff must render the merged content, got: {output}"
@@ -1434,7 +1772,7 @@ mod tests {
                 .all(|r| r.matches)
         );
         assert!(
-            buf.lock().unwrap().is_empty(),
+            cfgd_core::test_helpers::captured_text(&buf).is_empty(),
             "a converged file prints nothing"
         );
     }
@@ -1527,7 +1865,7 @@ mod tests {
             records.iter().any(|r| !r.matches),
             "an unevaluable Patch file counts as drift"
         );
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("cannot evaluate patch spec"),
             "the reason is printed, got: {output}"

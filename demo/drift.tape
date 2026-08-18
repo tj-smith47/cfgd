@@ -1,0 +1,98 @@
+# Whole take plays at 1:1 (make-gif-flat.sh, no ramp) — this tape's claim is
+# the catch-and-heal loop itself, so nothing in it is worth compressing away.
+Output "demo/.out/drift.mp4"
+
+Require docker
+
+Set Shell "bash"
+# Same font as init.tape — no LazyVim glyphs on screen here, but the shell
+# prompt and cfgd's own output (icons, spinners) share the terminal.
+Set FontFamily "FiraCode Nerd Font Mono"
+Set FontSize 15
+Set Width 1320
+Set Height 1000
+Set TypingSpeed 50ms
+Set Padding 20
+Set Framerate 50
+
+# Everything up to the converged prompt is hidden: this tape's claim is drift
+# detection and healing, not the install that gets a machine to a starting
+# point — that is init.tape's job. Recording resumes on an already-converged
+# machine, with the nvim module already applied.
+Hide
+Type "clear"
+Enter
+
+Type "docker run --rm -it --hostname jarvispro cfgd-demo:latest bash -l"
+Enter
+Wait@2m /cfgd\$$/
+Sleep 1s
+
+Type "cfgd init --from tj-smith47/cfgd-config --apply-module nvim --theme dracula --yes"
+Enter
+# Same ceiling as init.tape's hidden install — see that tape's comment for
+# why 60m covers even a worst-case provision.
+Wait@60m /cfgd\$$/
+Type "source ~/.cfgd.env"
+Enter
+Wait@30s /cfgd\$$/
+Type "clear"
+Enter
+Sleep 500ms
+Show
+
+# Beat 1: a converged machine. `-e` runs the live scan (content + package),
+# not the fast recorded-only dashboard `status` gives by default — the same
+# distinction `cfgd diff`/`verify` already draw, and the only way this
+# command can claim "no drift" rather than just "nothing recorded yet". The
+# live scan genuinely walks 28 packages plus every deployed file, so it costs
+# real wall time (measured ~13s in the demo container) — every beat below
+# waits on the returning prompt rather than guessing a fixed Sleep, because a
+# flat Sleep shorter than that cost queues the NEXT beat's keystrokes into the
+# terminal before this one finishes, garbling the recording.
+Type "cfgd status --module nvim -e"
+Enter
+Wait@60s /cfgd\$$/
+Sleep 500ms
+
+# Beat 2: sabotage a real module-managed file from outside cfgd. `rm` first
+# because the file is deployed via Symlink — editing through the link in
+# place (`echo >>` alone) would edit cfgd's own cached source and leave
+# source and target trivially matching. Breaking the link first is what
+# turns this into genuine drift. No Wait here: both commands are local and
+# instant.
+Type "rm ~/.config/nvim/stylua.toml && echo '# not mine' > ~/.config/nvim/stylua.toml"
+Enter
+Sleep 1s
+
+# Beat 3: the same live scan now reports it.
+Type "cfgd status --module nvim -e"
+Enter
+Wait@60s /cfgd\$$/
+Sleep 500ms
+
+# Beat 4: the hunk. cfgd diff always runs the live scan — no -e needed.
+Type "cfgd diff --module nvim"
+Enter
+Wait@60s /cfgd\$$/
+Sleep 500ms
+
+# Beat 5: heal it. `--phase files` scopes to the phase that owns the drifted
+# file — the nvim module's postApply hooks (plugin sync, go tool installs)
+# run unconditionally on every apply and would otherwise bury the heal under
+# minutes of unrelated reinstall noise that has nothing to do with the file
+# this beat is about.
+Type "cfgd apply --module nvim --phase files --yes"
+Enter
+Wait@60s /cfgd\$$/
+Sleep 500ms
+
+# Beat 6: clean again.
+Type "cfgd status --module nvim -e"
+Enter
+Wait@60s /cfgd\$$/
+Sleep 500ms
+
+# Closing hold — breathing room before the loop snaps back to the opening
+# frame, matching init.tape's closing beat.
+Sleep 8s

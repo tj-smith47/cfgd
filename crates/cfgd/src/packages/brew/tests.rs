@@ -157,6 +157,22 @@ fn parse_brew_versions_single_package_no_trailing_newline() {
 }
 
 #[test]
+fn brew_manager_created_path_dirs_is_empty() {
+    // brew's prefix is never a directory cfgd itself created — Homebrew's own
+    // installer makes it, cfgd only ever runs that installer — so it must
+    // never reach the generated env file via `created_path_dirs` (the ONLY
+    // surface that publishes there), whatever `path_dirs` answers for
+    // in-process resolution. See `reconciler::packages::register_install_path_dirs`
+    // for where the install-time PATH-resolution gap is actually closed,
+    // at the process level only.
+    let mgr = BrewManager;
+    let printer = cfgd_core::test_helpers::test_printer();
+    let state = cfgd_core::test_helpers::test_state();
+    let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
+    assert!(mgr.created_path_dirs(&cx).is_empty());
+}
+
+#[test]
 fn brew_manager_path_dirs_non_empty_on_linux_macos() {
     // Homebrew exists only on Linux and macOS; brew_path_dirs() correctly
     // returns empty on other unices (e.g. FreeBSD), so scope the non-empty

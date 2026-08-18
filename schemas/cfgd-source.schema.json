@@ -950,7 +950,7 @@
         },
         "requireSignedCommits": {
           "default": false,
-          "description": "Require that the HEAD commit in this source's git repo has a valid\nGPG or SSH signature. Subscribers can bypass with `security.allow-unsigned`.",
+          "description": "Require that the HEAD commit in this source's git repo has a valid\nGPG or SSH signature. ORed with the subscriber's\n`subscription.requireSignedCommits`, so either side asking is enough.\nSubscribers can bypass both with `spec.security.allowUnsigned`.",
           "type": "boolean"
         }
       },

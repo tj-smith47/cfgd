@@ -408,6 +408,17 @@ impl PackageManager for BrewManager {
         brew_path_dirs()
     }
 
+    // `created_path_dirs` is deliberately NOT overridden: the default (empty)
+    // answer is correct here. brew's prefix is never a directory cfgd itself
+    // created — a fresh bootstrap installs brew there, but the prefix pre-dates
+    // that install (Homebrew's own installer creates it, cfgd only ever runs
+    // it), so it never belongs in the generated env file (see env.rs's
+    // ownership invariant). The install-time PATH-resolution gap this
+    // otherwise leaves — the next action can't resolve a binary brew's own
+    // install just populated — is closed at the process level only, in
+    // `reconciler::packages::register_install_path_dirs`, which never
+    // persists anything.
+
     fn installed_packages_with_versions(
         &self,
         _cx: &cfgd_core::providers::PackageContext<'_>,

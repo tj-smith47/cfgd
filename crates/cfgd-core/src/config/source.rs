@@ -40,6 +40,20 @@ pub struct SubscriptionSpec {
     /// the source's own `noScripts` constraint governs.
     #[serde(default)]
     pub allow_scripts: bool,
+    /// Subscriber-side demand that this source's HEAD commit carry a valid GPG
+    /// or SSH signature.
+    ///
+    /// The trust anchor for the check. `constraints.requireSignedCommits` says
+    /// the same thing, but it is read from the source's manifest INSIDE the
+    /// cached clone, so whoever can write the cache can also clear it. This
+    /// flag is read from the subscriber's own config, which the cache cannot
+    /// reach.
+    ///
+    /// ORed with the manifest's flag, so it only ever ADDS strictness: a
+    /// manifest `true` is never weakened by a subscriber `false`. Default
+    /// `false`. `spec.security.allowUnsigned` still bypasses both.
+    #[serde(default)]
+    pub require_signed_commits: bool,
     #[serde(default)]
     #[schemars(with = "serde_json::Value")]
     pub overrides: serde_yaml::Value,
@@ -56,9 +70,26 @@ impl Default for SubscriptionSpec {
             accept_recommended: false,
             opt_in: Vec::new(),
             allow_scripts: false,
+            require_signed_commits: false,
             overrides: serde_yaml::Value::Null,
             reject: serde_yaml::Value::Null,
         }
+    }
+}
+
+impl SourceSpec {
+    /// Whether this source's HEAD signature must be verified, given what its
+    /// manifest asks for.
+    ///
+    /// The ONE derivation of the effective flag, and what every enforcing site
+    /// reads: `SourceManager::verify_commit_signature` on the load paths and
+    /// `build_sync_tasks` for the daemon's per-source sync. Two sites deciding
+    /// this separately is how one of them ends up trusting only the manifest,
+    /// which is the file inside the cache an attacker who planted that cache
+    /// wrote. Strictness only accumulates: either side asking for signatures is
+    /// enough, and neither can turn the other off.
+    pub fn requires_signed_commits(&self, manifest_requires: bool) -> bool {
+        self.subscription.require_signed_commits || manifest_requires
     }
 }
 
@@ -288,7 +319,9 @@ pub struct SourceConstraints {
     #[serde(default)]
     pub allow_system_changes: bool,
     /// Require that the HEAD commit in this source's git repo has a valid
-    /// GPG or SSH signature. Subscribers can bypass with `security.allow-unsigned`.
+    /// GPG or SSH signature. ORed with the subscriber's
+    /// `subscription.requireSignedCommits`, so either side asking is enough.
+    /// Subscribers can bypass both with `spec.security.allowUnsigned`.
     #[serde(default)]
     pub require_signed_commits: bool,
     /// Encryption requirements imposed on files delivered by this source.
@@ -357,6 +390,49 @@ bogusField: 1
         let spec: SubscriptionSpec = serde_yaml::from_str(yaml).unwrap();
         assert!(!spec.allow_scripts);
         assert!(!SubscriptionSpec::default().allow_scripts);
+    }
+
+    #[test]
+    fn subscription_spec_parses_require_signed_commits() {
+        let yaml = "priority: 100\nrequireSignedCommits: true\n";
+        let spec: SubscriptionSpec = serde_yaml::from_str(yaml).unwrap();
+        assert!(spec.require_signed_commits);
+        assert_eq!(spec.priority, 100);
+
+        let round_tripped: SubscriptionSpec =
+            serde_yaml::from_str(&serde_yaml::to_string(&spec).unwrap()).unwrap();
+        assert!(round_tripped.require_signed_commits);
+    }
+
+    #[test]
+    fn subscription_spec_require_signed_commits_defaults_false() {
+        let yaml = "priority: 100\n";
+        let spec: SubscriptionSpec = serde_yaml::from_str(yaml).unwrap();
+        assert!(!spec.require_signed_commits);
+        assert!(!SubscriptionSpec::default().require_signed_commits);
+    }
+
+    #[test]
+    fn requires_signed_commits_ors_the_subscriber_flag_with_the_manifests() {
+        let yaml = r#"
+name: team
+origin:
+  type: Git
+  url: https://example.com/team.git
+  branch: main
+subscription:
+  requireSignedCommits: true
+"#;
+        let subscriber_demands: SourceSpec = serde_yaml::from_str(yaml).unwrap();
+        // A manifest inside a planted cache cannot clear the subscriber's demand.
+        assert!(subscriber_demands.requires_signed_commits(false));
+        assert!(subscriber_demands.requires_signed_commits(true));
+
+        let mut silent = subscriber_demands.clone();
+        silent.subscription.require_signed_commits = false;
+        // A subscriber that asks for nothing still honours the manifest.
+        assert!(!silent.requires_signed_commits(false));
+        assert!(silent.requires_signed_commits(true));
     }
 
     #[test]

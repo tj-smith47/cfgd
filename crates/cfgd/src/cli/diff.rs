@@ -30,7 +30,7 @@ fn diff_module_file(
             ))
         }
         // Module sources carry no tera origin, so pass None.
-        None => Ok(fm.diff_one(&file.source, &file.target, None, printer)?),
+        None => Ok(fm.diff_one(&file.source, &file.target, None, file.strategy, printer)?),
     }
 }
 
@@ -389,13 +389,24 @@ fn cmd_diff_module(
     Ok(())
 }
 
+/// The ONE grammar for a package drift's `resource_id`: `<manager>:<packages,
+/// comma-joined>`. Three call sites mint this string — `package_action_drift`
+/// and `resolve_module_files_and_packages` (both in `live_drift.rs`) and
+/// `cmd_status_module`'s missing-package branch (`status.rs`) — and a
+/// consumer diffing two `DriftEvent`/`VerifyResult` streams needs all three to
+/// agree on the separator. `/` collides with a package name that legitimately
+/// contains one (a scoped npm package, `@org/name`), which `:` cannot.
+pub(super) fn package_resource_id(manager: &str, packages: &[String]) -> String {
+    format!("{}:{}", manager, packages.join(", "))
+}
+
 /// Drift record for a module-declared package that is not installed, or `None`
 /// when it is installed, script-based, or its manager isn't registered.
 /// The comparison routes through `package_identity` so case-insensitive managers
 /// (choco/scoop/winget) and name-remapping ones (go) match installed state like
 /// with like — a raw name compare re-reports installed packages as missing on
 /// every `cfgd diff --module`.
-fn package_missing_drift(
+pub(super) fn package_missing_drift(
     pkg: &modules::ResolvedPackage,
     mgr_map: &std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager>,
     cx: &cfgd_core::providers::PackageContext<'_>,
@@ -661,7 +672,7 @@ mod tests {
             close_system_phase(&sec, false, 1);
         }
         drop(printer);
-        let human = strip_ansi(&buf.lock().expect("capture").clone());
+        let human = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             !human.contains("No system drift"),
             "a check that could not run is not a check that passed: {human}"
@@ -718,7 +729,7 @@ mod tests {
             close_system_phase(&sec, false, 0);
         }
         drop(printer);
-        let human = strip_ansi(&buf.lock().expect("capture").clone());
+        let human = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             human.contains("No system drift"),
             "an all-checks-ran, no-drift phase still says so"

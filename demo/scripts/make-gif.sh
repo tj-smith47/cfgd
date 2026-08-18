@@ -33,10 +33,10 @@ HEAD=22
 # The tail starts at the moment the install finishes, so the whole payoff plays
 # at 1:1: the 5s summary read, `source ~/.cfgd.env`, nvim's start, the 5s toast
 # settle, the 4s hero hold, `:qa`, the screen restore, and the version line with
-# its 5s hold — ~31s of scripted beats plus nvim's own variable start. 34 keeps
+# its 8s hold — ~34s of scripted beats plus nvim's own variable start. 37 keeps
 # margin over that. Too small and the summary or the hero hold falls into the
 # compressed middle, which is exactly the ramp-too-late this value fixes.
-TAIL=34
+TAIL=37
 # The install is the substance of the demo, not dead air to skip past: at 12s a
 # ~7m take ran ~32x and the package and bootstrap lines were unreadable smears.
 # 26s halves that to ~15x, which is fast enough to stay a montage and slow
@@ -57,21 +57,37 @@ if ! awk -v s="$speed" 'BEGIN { exit (s > 1) ? 0 : 1 }'; then
     exit 1
 fi
 
-# fps 10 divides 100 exactly, so every GIF frame delay is a whole centisecond
-# and playback does not drift against the recorded timing.
+# fps 50 divides 100 exactly, so every GIF frame delay is a whole 2-centisecond
+# delay and playback does not drift against the recorded timing.
 #
 # stats_mode=diff weights the palette toward the pixels that actually move, so
 # the long static editor holds stop spending colours the install log needs, and
 # diff_mode=rectangle lets each frame store only its changed bounding box — on
 # a terminal recording, where most of the screen is unchanged between frames,
 # the two together are what keep a 1320x1000 canvas to a README-sized file.
-ffmpeg -y -loglevel error -i "$RAW" -filter_complex "\
-[0:v]trim=0:${HEAD},setpts=PTS-STARTPTS[a];\
+#
+# Two ffmpeg passes, not one split+palettegen+paletteuse graph: paletteuse's
+# second input can't start consuming until palettegen has seen every frame, so
+# a single-graph split has to buffer the entire ramped clip (85s at 50fps and
+# 1320x1000 is thousands of full-resolution frames) while it waits — the
+# palette pass OOM-killed at ~8GB RSS with the framerate this ramp now records
+# at. Writing the palette to a file first lets pass two read it as a single
+# static frame, so the video side streams through without ever queuing more
+# than a few frames. Same stats_mode, same dither, same output — only the
+# memory shape changes.
+RAMP="[0:v]trim=0:${HEAD},setpts=PTS-STARTPTS[a];\
 [0:v]trim=${HEAD}:${mid_end},setpts=(PTS-STARTPTS)/${speed}[b];\
 [0:v]trim=${mid_end},setpts=PTS-STARTPTS[c];\
 [a][b][c]concat=n=3:v=1:a=0[v];\
-[v]fps=10,split[s0][s1];\
-[s0]palettegen=max_colors=128:stats_mode=diff[p];\
-[s1][p]paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle" "$OUT"
+[v]fps=50[vf]"
+
+PALETTE=demo/.out/palette.png
+trap 'rm -f "$PALETTE"' EXIT
+
+ffmpeg -y -loglevel error -i "$RAW" -filter_complex "\
+${RAMP};[vf]palettegen=max_colors=256:stats_mode=diff" "$PALETTE"
+
+ffmpeg -y -loglevel error -i "$RAW" -i "$PALETTE" -filter_complex "\
+${RAMP};[vf][1:v]paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle" "$OUT"
 
 echo "Wrote $OUT ($(du -h "$OUT" | cut -f1), ${dur}s take ramped ${speed}x in the middle)"

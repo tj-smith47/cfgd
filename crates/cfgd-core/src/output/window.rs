@@ -296,7 +296,6 @@ mod tests {
     use super::super::renderer::{Renderer, StringSink};
     use super::super::{Theme, Verbosity};
     use super::*;
-    use crate::output::strip_ansi;
 
     fn window(depth: usize, verbosity: Verbosity) -> (OutputWindow<'static>, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
@@ -370,7 +369,7 @@ mod tests {
         w.push_line("first");
         w.push_line("second");
         let _ = w.finish_ok("step done");
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("first"), "got: {out:?}");
         assert!(out.contains("second"), "got: {out:?}");
         assert!(out.contains("step done"), "got: {out:?}");
@@ -385,7 +384,7 @@ mod tests {
         let long = "x".repeat(200);
         w.push_line(&long);
         let _ = w.finish_ok("step done");
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains(&long), "long line was truncated: {out:?}");
     }
 
@@ -394,7 +393,7 @@ mod tests {
         let (mut w, buf) = window(0, Verbosity::Quiet);
         w.push_line("noise");
         let _ = w.finish_ok("step done");
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(!out.contains("noise"), "quiet leaked output: {out:?}");
     }
 
@@ -404,7 +403,7 @@ mod tests {
         w.push_line("   ");
         w.push_line("kept");
         let _ = w.finish_ok("done");
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         let body: Vec<&str> = out.lines().filter(|l| l.trim() == "kept").collect();
         assert_eq!(body.len(), 1, "got: {out:?}");
     }
@@ -456,7 +455,7 @@ mod tests {
         w.windowed = true;
         w.push_line("some noise nobody needs");
         let _ = w.finish_fail("step failed");
-        let out = strip_ansi(&buf.lock().unwrap());
+        let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("step failed"), "got: {out:?}");
         assert!(
             !out.contains("some noise nobody needs"),
@@ -491,7 +490,7 @@ mod tests {
         for (role, glyph) in [(Role::Warn, "⚠"), (Role::Fail, "✗"), (Role::Skipped, "—")] {
             let (w, buf) = window(0, Verbosity::Normal);
             let _ = w.finish_with(role, "script finished");
-            let out = strip_ansi(&buf.lock().unwrap());
+            let out = crate::test_helpers::captured_text(&buf);
             assert!(
                 out.contains(&format!("{glyph} script finished")),
                 "role {role:?} did not reach the status line: {out:?}"

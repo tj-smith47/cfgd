@@ -357,8 +357,9 @@ golden_doc!(regression, sync_per_source_owner_group, |p, cap| {
 // with what the run wrote, and a bullet would read as information rather than
 // something left to do.
 golden_doc!(regression, apply_shell_env_reminder, |p, cap| {
-    let s = p.section("Shell environment changed");
-    s.status_simple(Role::Warn, "run `source ~/.cfgd.env` — or open a new shell");
+    let s = p.section_caveats();
+    let owner = s.section_owner(&OwnerLabel::new("cfgd", "env"));
+    owner.status_simple(Role::Warn, "run `source ~/.cfgd.env` — or open a new shell");
 });
 
 // Same reminder in its real position: emitted after the apply summary line.
@@ -370,8 +371,9 @@ golden_doc!(
     |p, cap| {
         p.status(Role::Ok, "Applied 4 of 4 actions")
             .duration(Duration::from_millis(820));
-        let s = p.section("Shell environment changed");
-        s.status_simple(Role::Warn, "run `source ~/.cfgd.env` — or open a new shell");
+        let s = p.section_caveats();
+        let owner = s.section_owner(&OwnerLabel::new("cfgd", "env"));
+        owner.status_simple(Role::Warn, "run `source ~/.cfgd.env` — or open a new shell");
     }
 );
 

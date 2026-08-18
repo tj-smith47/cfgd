@@ -271,7 +271,7 @@ mod tests {
         );
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("linux/amd64"),
             "target must appear in header kv block: {output}"
@@ -334,7 +334,7 @@ mod tests {
         );
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("linux/amd64") || output.contains("linux/arm64"),
             "spinner output must mention at least one target: {output}"
@@ -421,7 +421,7 @@ mod tests {
         );
         drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
             output.contains("Build Module"),
             "heading must be emitted before the build fails: {output}"

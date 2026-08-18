@@ -1417,6 +1417,7 @@ fn a_concurrent_run_of_one_unit_is_refused_and_the_in_flight_snapshot_stays_whol
             std::time::Instant::now() < deadline,
             "the first run's preBackup hook never started"
         );
+        // sleep-ok: bounded deadline poll on a filesystem side effect, not a fixed-duration guess
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 
@@ -2580,7 +2581,7 @@ fn render_backup_run(h: &Harness, specs: &[&BackupSpec]) -> (String, crate::stat
         status
     });
     drop(printer);
-    let human = crate::output::strip_ansi(&buf.lock().expect("capture").clone());
+    let human = crate::test_helpers::captured_text(&buf);
     (human, status)
 }
 
