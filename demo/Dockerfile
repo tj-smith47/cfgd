@@ -17,10 +17,12 @@ RUN userdel -r ubuntu
 # None of this ships in a bare ubuntu:24.04, and each entry maps to one
 # requirement: sudo (cfgd's apt provider shells out to `sudo apt-get`),
 # git/curl/ca-certificates (the tape's HTTPS clone), build-essential/
-# procps/file (Homebrew's own documented Linux prerequisites). nvim is
-# deliberately absent — the demo's first beat is `nvim` failing with
-# "command not found" — and none of these packages pull in Ubuntu's
-# command-not-found handler, so that failure stays the plain bash message.
+# procps/file (Homebrew's own documented Linux prerequisites), gnupg (the
+# source-trust tape's `git log --format=%G?` signature check, and the key
+# generation + `git commit -S` that satisfies it). nvim is deliberately
+# absent — the demo's first beat is `nvim` failing with "command not
+# found" — and none of these packages pull in Ubuntu's command-not-found
+# handler, so that failure stays the plain bash message.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        sudo \
@@ -30,6 +32,7 @@ RUN apt-get update \
        build-essential \
        procps \
        file \
+       gnupg \
     && rm -rf /var/lib/apt/lists/*
 
 # glibc has shipped the portable `C.utf8` locale (no `locales` package or
