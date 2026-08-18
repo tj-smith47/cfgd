@@ -556,6 +556,7 @@ mod reconcile;
 mod runner;
 mod service;
 mod sync;
+mod tick_cache;
 
 #[cfg(test)]
 mod tests;
@@ -1097,6 +1098,7 @@ pub(super) async fn run_daemon_with(
         managed_paths: setup.managed_paths.clone(),
         scope: overrides.scope,
         cfgd_version: cfgd_version.to_string(),
+        tick_cache: Arc::new(tick_cache::TickCache::new()),
     };
 
     let loop_result = run_daemon_loop(

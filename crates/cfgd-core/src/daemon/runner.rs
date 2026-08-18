@@ -77,6 +77,10 @@ pub(super) struct DaemonLoopContext {
     /// passed in by the binary — the daemon's update check and skill-staleness
     /// probes compare against the *binary*, never cfgd-core's own version.
     pub cfgd_version: String,
+    /// What the daemon has already derived from its config files, shared by
+    /// every reconcile tick so an unchanged config is parsed, composed and
+    /// mapped to providers ONCE rather than once per tick. See `tick_cache.rs`.
+    pub tick_cache: Arc<super::tick_cache::TickCache>,
 }
 
 pub(super) struct DaemonTriggers {
@@ -223,6 +227,15 @@ pub(super) async fn handle_file_change_tick(
                 tracing::warn!(error = %e, "cannot open state store for drift recording");
             }
         }
+    } else {
+        // Not a managed target, so this is a write under the config directory:
+        // a desired-state UPDATE. The tick cache re-stats every file the last
+        // derivation read, which already covers each one it opened; dropping it
+        // here covers the writes that cannot be attributed to one of those
+        // reads — an editor's rename dance, a `git pull` landing a file the
+        // previous config never referenced — for the price of one re-derivation
+        // on the tick this event triggers.
+        ctx.tick_cache.invalidate();
     }
 
     if ctx.on_change_reconcile {
@@ -237,6 +250,7 @@ pub(super) async fn handle_file_change_tick(
         let printer = Arc::clone(&ctx.printer);
         let scope = ctx.scope;
         let abort = Arc::clone(&ctx.abort);
+        let cache = Arc::clone(&ctx.tick_cache);
         crate::spawn_blocking_with_test_home(move || {
             handle_reconcile(
                 &cp,
@@ -254,6 +268,7 @@ pub(super) async fn handle_file_change_tick(
                     drift_policy_override: None,
                     scope,
                     abort: &abort,
+                    cache: &cache,
                 },
             );
         })
@@ -295,6 +310,7 @@ pub(super) async fn handle_reconcile_tick(
             let printer = Arc::clone(&ctx.printer);
             let scope = ctx.scope;
             let abort = Arc::clone(&ctx.abort);
+            let cache = Arc::clone(&ctx.tick_cache);
             crate::spawn_blocking_with_test_home(move || {
                 handle_reconcile(
                     &cp,
@@ -312,6 +328,7 @@ pub(super) async fn handle_reconcile_tick(
                         drift_policy_override: None,
                         scope,
                         abort: &abort,
+                        cache: &cache,
                     },
                 );
             })
@@ -342,6 +359,7 @@ pub(super) async fn handle_reconcile_tick(
             let module_name = entity_name.clone();
             let scope = ctx.scope;
             let abort = Arc::clone(&ctx.abort);
+            let cache = Arc::clone(&ctx.tick_cache);
             crate::spawn_blocking_with_test_home(move || {
                 handle_reconcile(
                     &cp,
@@ -359,6 +377,7 @@ pub(super) async fn handle_reconcile_tick(
                         drift_policy_override: Some(task_drift_policy),
                         scope,
                         abort: &abort,
+                        cache: &cache,
                     },
                 );
             })
@@ -628,6 +647,11 @@ pub(super) fn apply_sighup_reload(
         Role::Info,
         "Reloading configuration (SIGHUP) — timer intervals and backup schedules only; other fields require restart",
     );
+    // A SIGHUP is the operator saying the config changed. The fingerprint would
+    // reach the same conclusion on the next tick, but only for the files the
+    // last derivation happened to read, and the whole point of the signal is
+    // that the operator knows something the daemon has not looked at yet.
+    ctx.tick_cache.invalidate();
     match config::load_config(&ctx.config_path) {
         Ok(mut new_cfg) => {
             // Operator-triggered, not timer-driven: a SIGHUP is a discrete

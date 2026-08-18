@@ -136,6 +136,23 @@ pub(crate) struct ReconcileCtx<'a> {
     /// so a `SIGTERM` arriving mid-auto-apply stops the pre/post scripts instead
     /// of waiting out `PROFILE_SCRIPT_TIMEOUT`.
     pub abort: &'a crate::AbortFlag,
+    /// What this daemon has already derived from its config files, so a tick
+    /// whose config has not moved re-parses nothing. See `tick_cache.rs`.
+    pub cache: &'a super::tick_cache::TickCache,
+}
+
+/// Why a tick has nothing to reconcile.
+///
+/// Carries no reason on purpose: every arm that raises it has already said what
+/// happened at the point it recognised it (a `tracing::error!`, and for a broken
+/// source cache a notification too), and a derivation that fails must not be
+/// cached, so the only thing the caller needs from it is "return".
+struct DerivationSkipped;
+
+impl From<crate::errors::CfgdError> for DerivationSkipped {
+    fn from(_: crate::errors::CfgdError) -> Self {
+        Self
+    }
 }
 
 /// The daemon's binding of the run skeleton to `Reconciler::apply`.
@@ -191,6 +208,7 @@ pub(crate) fn handle_reconcile(
         drift_policy_override,
         scope,
         abort,
+        cache,
     } = ctx;
     if let Some(name) = module_filter {
         tracing::info!(module = %name, "running per-module reconciliation check");
@@ -227,99 +245,113 @@ pub(crate) fn handle_reconcile(
         }
     };
 
-    let cfg = match config::load_config(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(error = %e, "reconcile: config load failed");
-            return;
-        }
-    };
-
     let config_dir = config_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
-    let profiles_dir = config_dir.join("profiles");
-    let profile_name = match profile_override.or(cfg.spec.profile.as_deref()) {
-        Some(p) => p,
-        None => {
-            tracing::error!("no profile configured — skipping reconciliation");
-            return;
-        }
-    };
 
-    let local_resolved = match config::resolve_profile(profile_name, &profiles_dir) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(error = %e, "reconcile: profile resolution failed");
-            return;
-        }
-    };
+    // Everything derived from the config FILES, reused for as long as none of
+    // the files the last derivation read has moved. Nothing in here observes the
+    // machine — the plan below still does that on every tick — so a hit cannot
+    // hide drift; it only skips re-parsing a config that is byte-for-byte the
+    // one this daemon already parsed. See `tick_cache.rs`.
+    let derived = cache.config_derivation(config_path, profile_override, || {
+        let cfg = config::load_config(config_path).inspect_err(|e| {
+            tracing::error!(error = %e, "reconcile: config load failed");
+        })?;
 
-    // Compose with sources CACHE-ONLY so reconcile sees the same source-composed
-    // desired state every other command does, without touching the network in the
-    // tight tick (the sync task owns fetch cadence). `resolved` is the effective
-    // (local ⊕ sources) profile used for package/file/module planning;
-    // `local_resolved` is kept for the source-decision workflow and profile-level
-    // onDrift scripts, which are local-config concerns.
-    //
-    // FAIL-CLOSED: on a real compose error (malformed/constraint-violating cached
-    // manifest, failed signature) we must SKIP this tick — never reconcile against
-    // a substituted local-only desired state, because this is a pruning reconcile
-    // and a dropped source-delivered package/module would be UNINSTALLED under
-    // autoApply. Mirror the `resolve_profile` failure above: error + alert +
-    // early-return, leaving the prior desired state (and last_reconcile) intact.
-    // A benign never-synced cache-miss is warn+skip inside the resolver, not an
-    // Err, so cache-miss still reconciles local-only.
-    let (resolved, source_module_roots) = match super::compose_daemon_desired_state(
-        &cfg,
-        &local_resolved,
-        printer,
-        scope,
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(
-                error = %e,
-                "reconcile: source composition failed — SKIPPING tick to avoid pruning source-delivered state against a degraded desired set"
-            );
-            notifier.notify(
-                    "cfgd: reconcile skipped — source composition failed",
-                    &format!(
-                        "A configured source's cached config is broken ({e}). Reconcile was skipped to avoid uninstalling source-delivered packages. Run `cfgd sync` then `cfgd status` to inspect."
-                    ),
-                );
-            return;
-        }
-    };
-
-    // Check for drift by generating a plan
-    let mut registry = hooks.build_registry(&cfg);
-    hooks.extend_registry_custom_managers(&mut registry, &resolved.merged.packages);
-    let store = match state_dir_override {
-        Some(d) => match StateStore::open_in_dir(d) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(error = %e, "reconcile: state store error");
-                return;
+        let profiles_dir = config_dir.join("profiles");
+        let profile_name = match profile_override.or(cfg.spec.profile.as_deref()) {
+            Some(p) => p.to_string(),
+            None => {
+                tracing::error!("no profile configured — skipping reconciliation");
+                return Err(DerivationSkipped);
             }
-        },
+        };
+
+        let local_resolved = config::resolve_profile(&profile_name, &profiles_dir).inspect_err(
+            |e| {
+                tracing::error!(error = %e, "reconcile: profile resolution failed");
+            },
+        )?;
+
+        // Compose with sources CACHE-ONLY so reconcile sees the same source-composed
+        // desired state every other command does, without touching the network in the
+        // tight tick (the sync task owns fetch cadence). `resolved` is the effective
+        // (local ⊕ sources) profile used for package/file/module planning;
+        // `local_resolved` is the local-config input it composes over.
+        //
+        // FAIL-CLOSED: on a real compose error (malformed/constraint-violating cached
+        // manifest, failed signature) we must SKIP this tick — never reconcile against
+        // a substituted local-only desired state, because this is a pruning reconcile
+        // and a dropped source-delivered package/module would be UNINSTALLED under
+        // autoApply. Mirror the `resolve_profile` failure above: error + alert +
+        // early-return, leaving the prior desired state (and last_reconcile) intact.
+        // A benign never-synced cache-miss is warn+skip inside the resolver, not an
+        // Err, so cache-miss still reconciles local-only.
+        let (resolved, source_module_roots) =
+            match super::compose_daemon_desired_state(&cfg, &local_resolved, printer, scope) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "reconcile: source composition failed — SKIPPING tick to avoid pruning source-delivered state against a degraded desired set"
+                    );
+                    notifier.notify(
+                        "cfgd: reconcile skipped — source composition failed",
+                        &format!(
+                            "A configured source's cached config is broken ({e}). Reconcile was skipped to avoid uninstalling source-delivered packages. Run `cfgd sync` then `cfgd status` to inspect."
+                        ),
+                    );
+                    return Err(DerivationSkipped);
+                }
+            };
+
+        let mut registry = hooks.build_registry(&cfg);
+        hooks.extend_registry_custom_managers(&mut registry, &resolved.merged.packages);
+
+        Ok(super::tick_cache::DerivedConfig {
+            cfg,
+            profile_name,
+            resolved,
+            source_module_roots,
+            registry,
+        })
+    });
+    let Ok(derived) = derived else {
+        return;
+    };
+    let cfg = &*derived.cfg;
+    let profile_name = derived.profile_name.as_str();
+    let resolved = &*derived.resolved;
+    let source_module_roots = &*derived.source_module_roots;
+    let registry = &*derived.registry;
+
+    // Opened on the first tick that wants one and held for the daemon's life: a
+    // connection describes the database rather than a snapshot of it, so nothing
+    // about it can go stale between ticks.
+    let held_store = match cache.store(|| match state_dir_override {
+        Some(d) => StateStore::open_in_dir(d),
         // Reachable only when startup's scope-default materialization failed
         // (`run_daemon_with` fills `state_dir_override` on every healthy
         // tick); re-derive from the SAME scope rather than the user default,
         // or a system-scope daemon would fall back to the per-user store.
-        None => match StateStore::open_default_for(scope) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(error = %e, "reconcile: state store error");
-                return;
-            }
-        },
+        None => StateStore::open_default_for(scope),
+    }) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "reconcile: state store error");
+            return;
+        }
+    };
+    let Some(store) = held_store.get() else {
+        tracing::error!("reconcile: state store unavailable");
+        return;
     };
 
     // Process auto-apply decisions for source items
     let auto_apply =
-        auto_apply_override.unwrap_or_else(|| crate::reconciler::configured_auto_apply(&cfg));
+        auto_apply_override.unwrap_or_else(|| crate::reconciler::configured_auto_apply(cfg));
 
     // Discard the decisions of a source the subscriber has dropped: source
     // gone, items gone. Outside every OTHER gate below, because the rows a
@@ -353,7 +385,14 @@ pub(crate) fn handle_reconcile(
         .into_iter()
         .map(|(mgr, pkg)| format!("{mgr}/{pkg}"))
         .collect();
-    let pkg_cx = crate::providers::PackageContext::new(printer, &store);
+    // The enumerations are LENT by the daemon rather than owned by the tick:
+    // asking every manager what it has installed is the tick's most expensive
+    // observation, and it is already double-bounded by the resolution
+    // generation and a 30s ceiling, so a tick faster than that reads the
+    // previous tick's answer and a slower one re-asks exactly as before.
+    let pkg_cx = crate::providers::PackageContext::with_shared_enumerations(printer, store, {
+        cache.enumerations()
+    });
     // Planned BEFORE the policy review because the classification consumes the
     // planner's own installed-state observation — one enumeration, threaded,
     // never a second shell-out. A planning failure therefore skips the tick
@@ -380,9 +419,9 @@ pub(crate) fn handle_reconcile(
     // below (the rows, the hashes) belong to the daemon.
     let review = if module_filter.is_none() {
         match crate::reconciler::review_source_policies(
-            &store,
-            &cfg,
-            &resolved,
+            store,
+            cfg,
+            resolved,
             auto_apply,
             &actual_packages,
         ) {
@@ -406,7 +445,7 @@ pub(crate) fn handle_reconcile(
     // else's store. The items are withheld from this tick either way — the
     // unrecorded mints ride `with_unrecorded` below.
     if owns_the_store {
-        mint_reviewed_decisions(&store, &review, notifier);
+        mint_reviewed_decisions(store, &review, notifier);
     }
 
     // The rows are read whatever the mode: minting a decision is an auto-apply
@@ -415,13 +454,13 @@ pub(crate) fn handle_reconcile(
     // hides, on the same machine and the same rows.
     let decision_scope = crate::reconciler::DecisionScope::new(
         subscribed,
-        &crate::reconciler::local_profile(&resolved),
+        &crate::reconciler::local_profile(resolved),
     );
     // `with_unrecorded` closes the write-failure window: a mint the store
     // rejected has no row for `read` to return, and the unattended tick is the
     // one path that would install it with nobody watching. For every row that
     // DID record, it is a no-op — `read` already returned it.
-    let withheld = match crate::reconciler::WithheldDecisions::read(&store, &decision_scope) {
+    let withheld = match crate::reconciler::WithheldDecisions::read(store, &decision_scope) {
         Ok(w) => w
             .with_policy_declined(review.declined)
             .with_unrecorded(&review.to_mint, &decision_scope)
@@ -444,10 +483,10 @@ pub(crate) fn handle_reconcile(
     // The env arm withholds the surface as a unit, and apply rebuilds that
     // surface after the phases run from the declared set rather than from the
     // plan — so the pruning below is only half the guarantee without this.
-    let reconciler = crate::reconciler::Reconciler::new(&registry, &store)
+    let reconciler = crate::reconciler::Reconciler::new(registry, store)
         .withholding_env_surface(pending_exclusions.withholds_env_surface());
 
-    let file_actions = match hooks.plan_files(&config_dir, &resolved) {
+    let file_actions = match hooks.plan_files(&config_dir, resolved) {
         Ok(a) => a,
         Err(e) => {
             tracing::error!(error = %e, "reconcile: file planning failed");
@@ -455,26 +494,34 @@ pub(crate) fn handle_reconcile(
         }
     };
 
-    // Resolve modules from profile + lockfile + source-delivered roots
-    let mut resolved_modules = super::resolve_daemon_modules(
-        &registry,
-        &resolved,
-        &config_dir,
-        &source_module_roots,
-        printer,
-        scope,
-    );
-    // The tick plans and (under auto-apply) applies, so its action descriptions
-    // and recorded packages hash carry the version the read paths never ask for.
-    // The compliance tick shares `resolve_daemon_modules` and deliberately does
-    // NOT fill: nothing it stores renders a version.
-    crate::modules::fill_module_available_versions(&mut resolved_modules, &registry.manager_map());
-    let resolved_modules_ref = resolved_modules.clone();
+    // Resolve modules from profile + lockfile + source-delivered roots, reusing
+    // the last resolution while its own inputs and its config derivation stand
+    // and its TTL has not run out (see `tick_cache.rs` for why this slot takes a
+    // ceiling the config slot does not).
+    let resolved_modules_ref = cache.modules(&derived, || {
+        let mut resolved_modules = super::resolve_daemon_modules(
+            registry,
+            resolved,
+            &config_dir,
+            source_module_roots,
+            printer,
+            scope,
+        );
+        // The tick plans and (under auto-apply) applies, so its action descriptions
+        // and recorded packages hash carry the version the read paths never ask for.
+        // The compliance tick shares `resolve_daemon_modules` and deliberately does
+        // NOT fill: nothing it stores renders a version.
+        crate::modules::fill_module_available_versions(
+            &mut resolved_modules,
+            &registry.manager_map(),
+        );
+        resolved_modules
+    });
     let mut plan = match reconciler.plan(
-        &resolved,
+        resolved,
         file_actions,
         pkg_actions,
-        resolved_modules,
+        (*resolved_modules_ref).clone(),
         crate::reconciler::ReconcileContext::Reconcile,
     ) {
         Ok(p) => p,
@@ -607,7 +654,7 @@ pub(crate) fn handle_reconcile(
             // owner group at that moment.
             let hooks_phase =
                 crate::reconciler::pseudo_phase(printer, crate::reconciler::HOOKS_PHASE_LABEL);
-            let drift_script_path_dirs = crate::reconciler::all_recorded_path_dirs(&store);
+            let drift_script_path_dirs = crate::reconciler::all_recorded_path_dirs(store);
 
             if !profile_hooks.is_empty() {
                 tracing::info!(count = profile_hooks.len(), "running onDrift scripts");
@@ -705,7 +752,7 @@ pub(crate) fn handle_reconcile(
         // Set the in-memory count from the actual outstanding rows, not an
         // append-only accumulator, so `/status` tracks `/drift`. A read failure
         // leaves the prior count untouched rather than forcing a misleading 0.
-        if let Some(outstanding) = super::drift::current_drift_count(&store) {
+        if let Some(outstanding) = super::drift::current_drift_count(store) {
             rt.block_on(async {
                 let mut st = state.lock().await;
                 st.drift_count = outstanding;
@@ -753,7 +800,7 @@ pub(crate) fn handle_reconcile(
                 let run = crate::reconciler::ApplyRun::new(run_ctx(), &plan);
                 let mut exec = TickExecutor {
                     reconciler: &reconciler,
-                    resolved: &resolved,
+                    resolved,
                     config_dir: &config_dir,
                     modules: &resolved_modules_ref,
                     abort,
@@ -848,7 +895,7 @@ pub(crate) fn handle_reconcile(
                         // same tick: 0 on full success, the remainder on a
                         // partial failure (those rows stay recorded). A read
                         // failure leaves the prior count untouched.
-                        if let Some(outstanding) = super::drift::current_drift_count(&store) {
+                        if let Some(outstanding) = super::drift::current_drift_count(store) {
                             rt.block_on(async {
                                 let mut st = state.lock().await;
                                 st.drift_count = outstanding;
@@ -905,7 +952,7 @@ pub(crate) fn handle_reconcile(
     }
 
     // Server check-in after reconciliation
-    let changed = try_server_checkin(&cfg, &resolved);
+    let changed = try_server_checkin(cfg, resolved);
     if changed {
         tracing::info!(
             "reconcile: server reports config has changed — will reconcile on next tick"

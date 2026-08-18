@@ -93,6 +93,13 @@ fn never_abort() -> &'static crate::AbortFlag {
     FLAG.get_or_init(crate::AbortFlag::new)
 }
 
+/// A tick cache nobody else shares, leaked so a helper-built `ReconcileCtx` can
+/// borrow one without its caller having to own it. Every call mints a fresh
+/// one, so a test never reads a derivation another test produced.
+fn fresh_tick_cache() -> &'static super::tick_cache::TickCache {
+    Box::leak(Box::new(super::tick_cache::TickCache::new()))
+}
+
 fn quiet_reconcile_ctx<'a>(
     state: &'a Arc<Mutex<DaemonState>>,
     notifier: &'a Arc<Notifier>,
@@ -114,6 +121,7 @@ fn quiet_reconcile_ctx<'a>(
         drift_policy_override: None,
         scope: crate::Scope::User,
         abort: never_abort(),
+        cache: fresh_tick_cache(),
     }
 }
 
@@ -1553,6 +1561,7 @@ async fn tick_against_default_store(config_path: PathBuf) {
                 drift_policy_override: None,
                 scope: crate::Scope::User,
                 abort: never_abort(),
+                cache: fresh_tick_cache(),
             },
         );
     })
@@ -8773,6 +8782,7 @@ async fn handle_reconcile_auto_apply_honors_a_raised_abort_flag() {
                 drift_policy_override: None,
                 scope: crate::Scope::User,
                 abort: &ab,
+                cache: fresh_tick_cache(),
             },
         );
     })
@@ -10935,6 +10945,7 @@ mod harness {
         let ctx = DaemonLoopContext {
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+            tick_cache: Arc::new(super::tick_cache::TickCache::new()),
             state: Arc::clone(&state),
             hooks: Arc::new(NoopHooks),
             notifier,
@@ -11745,6 +11756,7 @@ spec:
         let ctx = DaemonLoopContext {
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+            tick_cache: Arc::new(super::tick_cache::TickCache::new()),
             state: Arc::clone(&state),
             hooks: Arc::new(PanickingPlanFilesHooks { ran: ran_tx }),
             notifier,
@@ -11831,6 +11843,7 @@ spec:
         let ctx = DaemonLoopContext {
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+            tick_cache: Arc::new(super::tick_cache::TickCache::new()),
             state: Arc::clone(&state),
             hooks: Arc::new(PanickingRegistryHooks),
             notifier,
@@ -12084,6 +12097,7 @@ spec:
         let ctx = DaemonLoopContext {
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+            tick_cache: Arc::new(super::tick_cache::TickCache::new()),
             state: Arc::clone(&state),
             hooks,
             notifier,
@@ -12160,6 +12174,7 @@ spec:
         let ctx = DaemonLoopContext {
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+            tick_cache: Arc::new(super::tick_cache::TickCache::new()),
             state: Arc::clone(&state),
             hooks,
             notifier,
@@ -12221,6 +12236,7 @@ spec:
         let ctx = DaemonLoopContext {
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+            tick_cache: Arc::new(super::tick_cache::TickCache::new()),
             state: Arc::clone(&state),
             hooks,
             notifier,
@@ -16383,6 +16399,7 @@ mod handle_reconcile_extra_branches {
                     drift_policy_override: Some(config::DriftPolicy::NotifyOnly),
                     scope: crate::Scope::User,
                     abort: never_abort(),
+                    cache: fresh_tick_cache(),
                 },
             );
         })
@@ -18252,4 +18269,371 @@ mod backup_timers {
             })
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tick cache — what a tick costs on the ticks after the first
+// ---------------------------------------------------------------------------
+
+/// A package manager that counts how many times it was asked what it has
+/// installed. The observable behind the "one enumeration, however many ticks"
+/// claim — a count, never a duration — and shared, because a
+/// `Box<dyn PackageManager>` in a registry cannot be read back for it.
+struct EnumerationCountingManager {
+    enumerations: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl PackageManager for EnumerationCountingManager {
+    fn name(&self) -> &str {
+        "cargo"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn bootstrap_plan(&self) -> Option<crate::providers::BootstrapPlan> {
+        None
+    }
+    fn bootstrap(&self, _cx: &PackageContext<'_>) -> crate::errors::Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self, _: &PackageContext<'_>) -> crate::errors::Result<HashSet<String>> {
+        self.enumerations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(HashSet::new())
+    }
+    fn install(&self, _: &[String], _: &PackageContext<'_>) -> crate::errors::Result<()> {
+        Ok(())
+    }
+    fn uninstall(&self, _: &[String], _: &PackageContext<'_>) -> crate::errors::Result<()> {
+        Ok(())
+    }
+    fn has_index(&self) -> bool {
+        false
+    }
+    fn refresh_index(&self, _: &PackageContext<'_>) -> crate::errors::Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _: &str) -> crate::errors::Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+/// Hooks that count what a tick DERIVES.
+///
+/// `build_registry` runs once per config derivation and nowhere else — the
+/// parse, the profile resolution and the source composition sit in the same
+/// closure — so its count is the derivation count. `plan_packages` asks each
+/// available manager what it has installed, which is what every real hook does
+/// and what makes the enumeration count meaningful.
+struct TickCountingHooks {
+    derivations: Arc<std::sync::atomic::AtomicUsize>,
+    enumerations: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl DaemonHooks for TickCountingHooks {
+    fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+        self.derivations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut reg = ProviderRegistry::new();
+        reg.add_package_manager(Box::new(EnumerationCountingManager {
+            enumerations: Arc::clone(&self.enumerations),
+        }));
+        reg
+    }
+    fn plan_files(&self, _: &Path, _: &ResolvedProfile) -> crate::errors::Result<Vec<FileAction>> {
+        Ok(vec![])
+    }
+    fn plan_packages(
+        &self,
+        _: &MergedProfile,
+        managers: &[&dyn PackageManager],
+        _: &std::collections::HashSet<String>,
+        cx: &PackageContext<'_>,
+    ) -> crate::errors::Result<Vec<PackageAction>> {
+        for manager in managers {
+            cx.installed_for(*manager)?;
+        }
+        Ok(vec![])
+    }
+    fn extend_registry_custom_managers(&self, _: &mut ProviderRegistry, _: &config::PackagesSpec) {}
+    fn expand_tilde(&self, path: &Path) -> PathBuf {
+        crate::expand_tilde(path)
+    }
+}
+
+/// Drive one reconcile tick against a shared tick cache, the way the daemon
+/// loop does: on a blocking thread, with the test home carried across.
+async fn drive_cached_tick(
+    config_path: &Path,
+    state_dir: &Path,
+    hooks: Arc<dyn DaemonHooks>,
+    cache: Arc<super::tick_cache::TickCache>,
+    state: Arc<Mutex<DaemonState>>,
+    notifier: Arc<Notifier>,
+) {
+    let cp = config_path.to_path_buf();
+    let sd = state_dir.to_path_buf();
+    crate::spawn_blocking_with_test_home(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            ReconcileCtx {
+                state: &state,
+                notifier: &notifier,
+                notify_on_drift: false,
+                hooks: &*hooks,
+                state_dir_override: Some(&sd),
+                explicit_state_dir: true,
+                printer: &printer,
+                module_filter: None,
+                auto_apply_override: None,
+                drift_policy_override: None,
+                scope: crate::Scope::User,
+                abort: never_abort(),
+                cache: &cache,
+            },
+        );
+    })
+    .await
+    .unwrap();
+}
+
+/// Run `measure` until it completes inside a window in which nothing moved the
+/// process-wide `command_resolution_generation()`.
+///
+/// The async twin of `test_helpers::measured_in_a_stable_generation`, which
+/// cannot await: a tick is dispatched through `spawn_blocking`. Any test in this
+/// binary that installs a package or runs a lifecycle script invalidates every
+/// memo in the process, and the enumeration claim below is exactly a memo-hit
+/// claim, so without this it is unmeasurable rather than merely fragile. The
+/// closure must be re-runnable — mint the counters and the cache INSIDE it.
+async fn measured_in_a_stable_generation_async<F, Fut, T>(mut measure: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    for _ in 0..16 {
+        let before = crate::command_resolution_generation();
+        let measured = measure().await;
+        if crate::command_resolution_generation() == before {
+            return measured;
+        }
+    }
+    panic!(
+        "the resolution generation never held still across a measurement — \
+         something in this binary is invalidating it continuously"
+    );
+}
+
+/// Write the config + profile pair every tick-cache test below reconciles.
+fn write_tick_cache_config(root: &Path) -> PathBuf {
+    let config_path = root.join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: NotifyOnly\n",
+    )
+    .unwrap();
+    let profiles_dir = root.join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+    config_path
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repeat_ticks_over_an_unchanged_config_derive_and_enumerate_once() {
+    // Before the tick cache every tick re-read the config, re-resolved the
+    // profile, rebuilt the registry and re-asked every manager what it had
+    // installed — on a 5s daemon, twelve times a minute, for a config nobody
+    // had touched.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let config_path = write_tick_cache_config(tmp.path());
+
+    let (derivations, enumerations) = measured_in_a_stable_generation_async(|| async {
+        let derivations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let enumerations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hooks: Arc<dyn DaemonHooks> = Arc::new(TickCountingHooks {
+            derivations: Arc::clone(&derivations),
+            enumerations: Arc::clone(&enumerations),
+        });
+        let cache = Arc::new(super::tick_cache::TickCache::new());
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+        for _ in 0..3 {
+            drive_cached_tick(
+                &config_path,
+                &state_dir,
+                Arc::clone(&hooks),
+                Arc::clone(&cache),
+                Arc::clone(&state),
+                Arc::clone(&notifier),
+            )
+            .await;
+        }
+        (
+            derivations.load(std::sync::atomic::Ordering::SeqCst),
+            enumerations.load(std::sync::atomic::Ordering::SeqCst),
+        )
+    })
+    .await;
+
+    assert_eq!(derivations, 1, "three ticks must derive the config once");
+    assert_eq!(enumerations, 1, "three ticks must enumerate cargo once");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_touched_profile_re_derives_exactly_once() {
+    // The gate is on what the derivation READ, and the profile is one of those
+    // reads even though the file the daemon was pointed at never moved.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let config_path = write_tick_cache_config(tmp.path());
+
+    let derivations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hooks: Arc<dyn DaemonHooks> = Arc::new(TickCountingHooks {
+        derivations: Arc::clone(&derivations),
+        enumerations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    });
+    let cache = Arc::new(super::tick_cache::TickCache::new());
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+    for _ in 0..2 {
+        drive_cached_tick(
+            &config_path,
+            &state_dir,
+            Arc::clone(&hooks),
+            Arc::clone(&cache),
+            Arc::clone(&state),
+            Arc::clone(&notifier),
+        )
+        .await;
+    }
+    assert_eq!(derivations.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // A different LENGTH, so the fingerprint moves whatever the filesystem's
+    // timestamp granularity is.
+    std::fs::write(
+        tmp.path().join("profiles").join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: EDITOR\n      value: nvim\n",
+    )
+    .unwrap();
+
+    for _ in 0..2 {
+        drive_cached_tick(
+            &config_path,
+            &state_dir,
+            Arc::clone(&hooks),
+            Arc::clone(&cache),
+            Arc::clone(&state),
+            Arc::clone(&notifier),
+        )
+        .await;
+    }
+    assert_eq!(
+        derivations.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "the changed profile must re-derive exactly once, not once per tick"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_touched_cached_source_profile_re_derives() {
+    // The composed inputs are inputs too. A source's cached profile lives
+    // outside the config directory entirely, and a gate that watched only the
+    // files the daemon was pointed at would reconcile against a source manifest
+    // that had already changed underneath it.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    // `default_cache_dir_for` short-circuits on this env var on every platform;
+    // the reconcile runs on a blocking worker where the thread-local test home
+    // does not reach.
+    let cache_root = tmp.path().join("cache-root").join("cfgd");
+    let _cache_env =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    stage_cached_source(
+        &cache_root,
+        "test-src",
+        "  env:\n    - name: TEAM\n      value: one\n",
+    );
+
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: NotifyOnly\n  sources:\n    - name: test-src\n      origin:\n        type: Git\n        url: https://example.test/team.git\n      subscription:\n        profile: team\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let derivations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hooks: Arc<dyn DaemonHooks> = Arc::new(TickCountingHooks {
+        derivations: Arc::clone(&derivations),
+        enumerations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    });
+    let cache = Arc::new(super::tick_cache::TickCache::new());
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+    for _ in 0..2 {
+        drive_cached_tick(
+            &config_path,
+            &state_dir,
+            Arc::clone(&hooks),
+            Arc::clone(&cache),
+            Arc::clone(&state),
+            Arc::clone(&notifier),
+        )
+        .await;
+    }
+    assert_eq!(
+        derivations.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "an unchanged source composition must be derived once"
+    );
+
+    // The source published a new value — a longer file, so the fingerprint moves
+    // whatever the filesystem's timestamp granularity is.
+    std::fs::write(
+        cache_root
+            .join("sources")
+            .join("test-src")
+            .join("profiles")
+            .join("team.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n  env:\n    - name: TEAM\n      value: two-and-then-some\n",
+    )
+    .unwrap();
+
+    drive_cached_tick(
+        &config_path,
+        &state_dir,
+        Arc::clone(&hooks),
+        Arc::clone(&cache),
+        Arc::clone(&state),
+        Arc::clone(&notifier),
+    )
+    .await;
+    assert_eq!(
+        derivations.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "a changed cached source profile must re-derive"
+    );
 }

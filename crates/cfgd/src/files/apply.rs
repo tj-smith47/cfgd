@@ -119,6 +119,13 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
 
     fn apply(&self, actions: &[FileAction], printer: &Printer) -> Result<()> {
         let pb = printer.progress_bar(actions.len() as u64, "Applying files");
+        // Every secret this run interpolates, resolved once however many
+        // templates name it. Scoped to the call rather than to the manager
+        // because a manager can outlive a run — the daemon holds one registry
+        // across ticks — and plaintext must not: a rotated secret has to be
+        // re-read, and a value nobody is writing right now should not be
+        // sitting in memory. See `cfgd_core::providers::SecretCache`.
+        let secrets = cfgd_core::providers::SecretCache::new();
 
         for action in actions {
             match action {
@@ -237,7 +244,7 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
                                     &provider_refs,
                                     self.secret_backend.as_deref(),
                                     &self.config_dir,
-                                    &self.secrets,
+                                    &secrets,
                                 )?;
                             }
 

@@ -1895,6 +1895,10 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn repeated_availability_sweeps_ask_each_manager_once() {
+        // The claim is that a memoized sweep STANDS, so the ceiling is pinned
+        // out of reach rather than left to be a statement about how long five
+        // adjacent calls took on a loaded runner.
+        let _ttl = crate::test_helpers::AvailabilityMemoTtlGuard::never_expires();
         // Re-runnable: a retry builds its own registry, so the sweep it counts
         // is its own.
         let (here_asked, gone_asked) = crate::test_helpers::measured_in_a_stable_generation(|| {
@@ -1924,6 +1928,9 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn a_bootstrap_invalidation_lets_a_new_manager_into_the_sweep() {
+        // Half of this test's claim is that the sweep stands until something
+        // reports itself, so the age ceiling is pinned out of the way.
+        let _ttl = crate::test_helpers::AvailabilityMemoTtlGuard::never_expires();
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (pending, asked) = CountingManager::new("pending", &flag);
         let mut registry = ProviderRegistry::new();
@@ -1954,6 +1961,40 @@ mod tests {
         let available = registry.available_package_managers();
         assert_eq!(available.len(), 1);
         assert_eq!(available[0].name(), "pending");
+    }
+
+    /// The generation covers every install cfgd performs; the ceiling covers the
+    /// one it cannot see. It exists for the holder that outlives a run — the
+    /// daemon keeps ONE registry across ticks now — where a generation-only memo
+    /// would answer "not installed" for the rest of the process's life about a
+    /// manager a human installed by hand thirty seconds after startup.
+    #[test]
+    #[serial_test::serial]
+    fn a_sweep_older_than_the_ceiling_is_taken_again() {
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (pending, asked) = CountingManager::new("pending", &flag);
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(pending));
+
+        {
+            let _ttl = crate::test_helpers::AvailabilityMemoTtlGuard::never_expires();
+            assert!(registry.available_package_managers().is_empty());
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            assert!(
+                registry.available_package_managers().is_empty(),
+                "inside the ceiling the sweep stands"
+            );
+            assert_eq!(asked_count(&asked), 1);
+        }
+
+        let _ttl = crate::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+        let available = registry.available_package_managers();
+        assert_eq!(
+            available.len(),
+            1,
+            "past the ceiling the machine is re-asked"
+        );
+        assert_eq!(asked_count(&asked), 2);
     }
 
     /// Registration is the second thing that retires a sweep: the CLI builds a

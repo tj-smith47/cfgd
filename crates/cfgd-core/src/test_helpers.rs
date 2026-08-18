@@ -2163,9 +2163,11 @@ impl Drop for EnumerationMemoTtlGuard {
 /// The ceiling exists for the holder that outlives one run — the daemon keeps
 /// one registry across ticks — so a test whose claim is that a sweep still
 /// stands pins `never_expires`, and one whose claim is that the ceiling retires
-/// a sweep pins `always_expired`. Pair every use with
-/// `#[serial_test::serial(availability_memo)]`: the pin is process-global and
-/// every test that reads this memo asserts on a COUNT of `is_available` probes.
+/// a sweep pins `always_expired`. Pair every use with the UNNAMED
+/// `#[serial_test::serial]`, which is the group the sweep's own tests already
+/// share: the pin is process-global and every test that reads this memo asserts
+/// on a COUNT of `is_available` probes, and a named group would not exclude the
+/// unnamed ones.
 pub struct AvailabilityMemoTtlGuard {
     prior: Option<u64>,
 }
