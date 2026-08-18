@@ -168,20 +168,26 @@ pub fn plan_packages_observed(
             .collect()
     };
 
+    // Asked once per manager, ahead of both passes: `is_available()` is a PATH
+    // probe (and for some managers a shell-out), and the two passes below ask
+    // the same managers the same question with nothing between them that could
+    // change the answer.
+    let availability: Vec<bool> = managers.iter().map(|m| m.is_available()).collect();
+
     // Pass 1: determine which managers will be bootstrapped
     let mut bootstrapping: HashSet<String> = HashSet::new();
-    for manager in managers {
+    for (manager, available) in managers.iter().zip(&availability) {
         let desired = desired_for(manager.name());
         if desired.is_empty() {
             continue;
         }
-        if !manager.is_available() && manager.can_bootstrap() {
+        if !available && manager.can_bootstrap() {
             bootstrapping.insert(manager.name().to_string());
         }
     }
 
     // Pass 2: generate actions
-    for manager in managers {
+    for (manager, available) in managers.iter().zip(&availability) {
         let desired = desired_for(manager.name());
 
         // A manager with no desired packages AND no cfgd-tracked installs has
@@ -202,7 +208,7 @@ pub fn plan_packages_observed(
         // package from a manager still removes its cfgd-tracked installs.
         // Only available managers can read installed state to confirm the
         // package is still present before pruning.
-        if manager.is_available() {
+        if *available {
             // ONE enumeration serves both the install/prune diff and the
             // source-decision observation: `installed_packages_with_versions`
             // reads the same manager database as `installed_packages` and

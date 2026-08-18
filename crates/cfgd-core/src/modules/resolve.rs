@@ -85,8 +85,11 @@ pub fn resolve_package(
             None => continue,
         };
 
-        let bootstrappable = !mgr.is_available() && mgr.can_bootstrap();
-        if !mgr.is_available() && !bootstrappable {
+        // Asked once: `is_available()` is a PATH probe, and this runs per
+        // candidate manager of every declared package.
+        let available = mgr.is_available();
+        let bootstrappable = !available && mgr.can_bootstrap();
+        if !available && !bootstrappable {
             continue;
         }
 

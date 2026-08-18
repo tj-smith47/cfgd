@@ -260,7 +260,11 @@ impl<'a> super::Reconciler<'a> {
 
         let mut actions = Vec::new();
 
-        for configurator in self.registry.available_system_configurators() {
+        // One sweep for both loops below: the second asks which keys no
+        // available configurator claims, which is the same population.
+        let available = self.registry.available_system_configurators();
+
+        for configurator in &available {
             if let Some(desired) = system.get(configurator.name()) {
                 let drifts = configurator.diff(desired)?;
                 for drift in drifts {
@@ -283,7 +287,6 @@ impl<'a> super::Reconciler<'a> {
         // can't run it" from "cfgd has no such configurator" — a registered-but-
         // unavailable configurator (e.g. systemdUnits where systemctl is absent)
         // must not masquerade as "not registered".
-        let available = self.registry.available_system_configurators();
         for key in system.keys() {
             if available.iter().any(|c| c.name() == key) {
                 continue;
@@ -528,31 +531,37 @@ impl<'a> super::Reconciler<'a> {
             // a bootstrappable manager's action from overlapping an available
             // one's is the dispatcher's serial gate around any action whose
             // manager is not currently available.
-            let mut manager_order: Vec<&String> = by_manager.keys().collect();
-            // `(class, name)`, not `class` alone: `sort_by_key` is stable, so a
-            // key that ties on `class` falls back to `HashMap::keys()`'s
-            // arbitrary, per-process order. Two managers in the same class
-            // (`cargo` and `npm`, both `0`) would then emit their
-            // `InstallPackages` actions in a different relative order on every
-            // run — the plan tree's bullet order, the `-o json` payload order,
-            // the journal `action_index`, and the phase's execution offer
-            // order all read from this `Vec`.
-            manager_order.sort_by_key(|mgr| {
-                let class = match self
-                    .registry
-                    .package_managers
-                    .iter()
-                    .find(|m| m.name() == mgr.as_str())
-                {
-                    Some(m) if m.is_available() => 0, // available (native) first
-                    // Bootstrappable second — a manager with a plan to provision it.
-                    Some(m) if m.can_bootstrap() => 1,
-                    _ => 2, // unknown last
-                };
-                (class, mgr.as_str())
-            });
+            // The class is computed once PER MANAGER, ahead of the sort, rather
+            // than inside the comparator: `is_available()` is a PATH probe, and
+            // a comparator runs it O(n log n) times per module.
+            let mut manager_order: Vec<(u8, &String)> = by_manager
+                .keys()
+                .map(|mgr| {
+                    let class = match self
+                        .registry
+                        .package_managers
+                        .iter()
+                        .find(|m| m.name() == mgr.as_str())
+                    {
+                        Some(m) if m.is_available() => 0, // available (native) first
+                        // Bootstrappable second — a manager with a plan to provision it.
+                        Some(m) if m.can_bootstrap() => 1,
+                        _ => 2, // unknown last
+                    };
+                    (class, mgr)
+                })
+                .collect();
+            // `(class, name)`, not `class` alone: a key that ties on `class`
+            // would otherwise fall back to `HashMap::keys()`'s arbitrary,
+            // per-process order. Two managers in the same class (`cargo` and
+            // `npm`, both `0`) would then emit their `InstallPackages` actions
+            // in a different relative order on every run — the plan tree's
+            // bullet order, the `-o json` payload order, the journal
+            // `action_index`, and the phase's execution offer order all read
+            // from this `Vec`.
+            manager_order.sort_by(|a, b| (a.0, a.1.as_str()).cmp(&(b.0, b.1.as_str())));
 
-            for mgr_name in manager_order {
+            for (_, mgr_name) in manager_order {
                 let resolved = &by_manager[mgr_name];
                 actions.push(routed(
                     module,
