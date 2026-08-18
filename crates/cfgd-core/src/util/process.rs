@@ -891,6 +891,18 @@ mod tests {
         assert_eq!(command_path(stem).as_deref(), Some(preferred.as_path()));
     }
 
+    /// `u64::MAX` millis is the "no override" sentinel. A pin asking for a
+    /// ceiling that large means "out of reach", so it must not fold back into
+    /// the 30s default the caller pinned to escape.
+    #[test]
+    #[serial]
+    fn a_command_path_ceiling_pinned_at_the_sentinel_is_still_a_pin() {
+        let _ttl = crate::test_helpers::CommandPathMemoTtlGuard::pinned(
+            std::time::Duration::from_millis(u64::MAX),
+        );
+        assert!(command_path_memo_ttl() > COMMAND_PATH_MEMO_TTL);
+    }
+
     /// A memoized answer is reused until something declares it may have moved.
     ///
     /// The observation is the filesystem changing under a resolution already
