@@ -1,14 +1,18 @@
 name: cfgd Plan
-description: Run cfgd plan and post the diff as a PR comment
+description: Run cfgd plan against a config repo and post the diff as a PR comment
 branding:
   icon: settings
   color: blue
 
 inputs:
   config-dir:
-    description: Path to cfgd configuration directory
+    description: Path to the cfgd configuration directory (must contain cfgd.yaml)
     required: false
     default: "."
+  profile:
+    description: Profile to plan (defaults to the config's active profile)
+    required: false
+    default: ""
   version:
     description: cfgd version to install (default latest)
     required: false
@@ -18,42 +22,106 @@ inputs:
     required: false
     default: ""
   comment:
-    description: Post plan as PR comment (true/false)
+    description: Post the plan as a PR comment, updating one comment in place (true/false)
     required: false
     default: "true"
+  fail-on-error:
+    description: Fail the step when cfgd plan exits non-zero (true/false)
+    required: false
+    default: "true"
+  fail-on-changes:
+    description: Fail the step when the plan contains pending actions, for merge gates (true/false)
+    required: false
+    default: "false"
   github-token:
     description: GitHub token for posting PR comments
     required: false
     default: ${{ github.token }}
+
+outputs:
+  json:
+    description: The plan as JSON (the -o json payload)
+    value: ${{ steps.plan.outputs.json }}
+  human:
+    description: The human-readable plan output
+    value: ${{ steps.plan.outputs.human }}
+  has-changes:
+    description: '"true" when the plan contains at least one action'
+    value: ${{ steps.plan.outputs.has-changes }}
+  total-actions:
+    description: Number of actions in the plan
+    value: ${{ steps.plan.outputs.total-actions }}
+  exit-code:
+    description: Exit code of cfgd plan
+    value: ${{ steps.plan.outputs.exit-code }}
 
 runs:
   using: composite
   steps:
     - name: Install cfgd
       shell: bash
+      env:
+        CFGD_VERSION: ${{ inputs.version }}
       run: |
-        VERSION="${{ inputs.version }}"
-        if [ "$VERSION" = "latest" ]; then
+        if [ "$CFGD_VERSION" = "latest" ]; then
           curl -fsSL https://github.com/tj-smith47/cfgd/releases/latest/download/install.sh | bash
         else
-          curl -fsSL "https://github.com/tj-smith47/cfgd/releases/download/v${VERSION#v}/install.sh" | bash -s -- --version "$VERSION"
+          curl -fsSL "https://github.com/tj-smith47/cfgd/releases/download/v${CFGD_VERSION#v}/install.sh" | bash -s -- --version "$CFGD_VERSION"
         fi
 
     - name: Run cfgd plan
       id: plan
       shell: bash
+      env:
+        CONFIG_DIR: ${{ inputs.config-dir }}
+        PROFILE: ${{ inputs.profile }}
+        EXTRA_ARGS: ${{ inputs.args }}
       run: |
-        cd "${{ inputs.config-dir }}"
-        OUTPUT=$(cfgd plan --output json ${{ inputs.args }} 2>&1) || true
-        echo "plan<<CFGD_EOF" >> "$GITHUB_OUTPUT"
-        echo "$OUTPUT" >> "$GITHUB_OUTPUT"
-        echo "CFGD_EOF" >> "$GITHUB_OUTPUT"
+        # The default config path is ~/.config/cfgd/cfgd.yaml; CI must point at the
+        # checked-out repo explicitly or the plan silently reads the runner's HOME.
+        CONFIG="$CONFIG_DIR/cfgd.yaml"
+        if [ ! -f "$CONFIG" ]; then
+          echo "::error::no cfgd.yaml at '$CONFIG' (config-dir: '$CONFIG_DIR')"
+          exit 1
+        fi
+        ARGS=(--config "$CONFIG")
+        if [ -n "$PROFILE" ]; then
+          ARGS+=(--profile "$PROFILE")
+        fi
+        # shellcheck disable=SC2206 # deliberate word-splitting of user-supplied args
+        ARGS+=($EXTRA_ARGS)
 
-        # Also produce human-readable output
-        HUMAN=$(cfgd plan ${{ inputs.args }} 2>&1) || true
-        echo "human<<CFGD_HUMAN_EOF" >> "$GITHUB_OUTPUT"
-        echo "$HUMAN" >> "$GITHUB_OUTPUT"
-        echo "CFGD_HUMAN_EOF" >> "$GITHUB_OUTPUT"
+        # JSON from stdout only: stderr carries progress/log noise that must not
+        # corrupt the payload. The exit code is captured, never swallowed.
+        set +e
+        JSON=$(cfgd plan -o json "${ARGS[@]}" 2>"$RUNNER_TEMP/cfgd-plan-stderr.log")
+        CODE=$?
+        HUMAN=$(cfgd plan --no-color "${ARGS[@]}" 2>&1)
+        set -e
+
+        TOTAL=$(jq -r '.totalActions // 0' <<<"$JSON" 2>/dev/null || echo 0)
+        HAS_CHANGES=false
+        if [ "$TOTAL" -gt 0 ] 2>/dev/null; then
+          HAS_CHANGES=true
+        fi
+
+        {
+          echo "exit-code=$CODE"
+          echo "total-actions=$TOTAL"
+          echo "has-changes=$HAS_CHANGES"
+          echo "json<<CFGD_EOF"
+          echo "$JSON"
+          echo "CFGD_EOF"
+          echo "human<<CFGD_HUMAN_EOF"
+          echo "$HUMAN"
+          echo "CFGD_HUMAN_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        if [ "$CODE" -ne 0 ]; then
+          echo "::group::cfgd plan stderr"
+          cat "$RUNNER_TEMP/cfgd-plan-stderr.log"
+          echo "::endgroup::"
+        fi
 
     - name: Post PR comment
       if: inputs.comment == 'true' && github.event_name == 'pull_request'
@@ -61,16 +129,60 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         PLAN_HUMAN: ${{ steps.plan.outputs.human }}
-        PLAN_JSON: ${{ steps.plan.outputs.plan }}
+        PLAN_EXIT: ${{ steps.plan.outputs.exit-code }}
+        PLAN_TOTAL: ${{ steps.plan.outputs.total-actions }}
+        PLAN_HAS_CHANGES: ${{ steps.plan.outputs.has-changes }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
       run: |
-        cat > /tmp/cfgd-comment.md <<'EOF'
-        ### cfgd Plan
-        EOF
+        MARKER='<!-- cfgd-plan-action -->'
+        BODY="$RUNNER_TEMP/cfgd-comment.md"
 
-        printf '\n<details>\n<summary>Plan output</summary>\n\n```\n%s\n```\n\n</details>\n' "$PLAN_HUMAN" >> /tmp/cfgd-comment.md
-        printf '\n<details>\n<summary>JSON output</summary>\n\n```json\n%s\n```\n\n</details>\n' "$PLAN_JSON" >> /tmp/cfgd-comment.md
-        printf '\n---\n*Generated by [cfgd](https://github.com/tj-smith47/cfgd)*\n' >> /tmp/cfgd-comment.md
+        {
+          echo "$MARKER"
+          echo "### cfgd Plan"
+          echo
+          if [ "$PLAN_EXIT" != "0" ]; then
+            echo "**Plan failed** (exit code $PLAN_EXIT). See the workflow run for stderr."
+          elif [ "$PLAN_HAS_CHANGES" = "true" ]; then
+            echo "**$PLAN_TOTAL pending action(s).**"
+          else
+            echo "**No changes.** The machine state matches this configuration."
+          fi
+        } > "$BODY"
 
-        gh pr comment "${{ github.event.pull_request.number }}" \
-          --repo "${{ github.repository }}" \
-          --body-file /tmp/cfgd-comment.md
+        if [ "$PLAN_EXIT" = "0" ]; then
+          # GitHub caps comment bodies at 65536 chars; leave headroom for the frame.
+          TRUNCATED=$(printf '%s' "$PLAN_HUMAN" | head -c 60000)
+          if [ "$TRUNCATED" != "$PLAN_HUMAN" ]; then
+            TRUNCATED=$(printf '%s\n... (truncated; full output in the workflow run)' "$TRUNCATED")
+          fi
+          printf '\n<details>\n<summary>Plan output</summary>\n\n```\n%s\n```\n\n</details>\n' "$TRUNCATED" >> "$BODY"
+        fi
+        printf '\n---\n*Generated by [cfgd](https://github.com/tj-smith47/cfgd)*\n' >> "$BODY"
+
+        # Update the existing plan comment in place instead of stacking a new one per push.
+        EXISTING=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+          --jq "[.[] | select(.body | startswith(\"$MARKER\"))][0].id // empty")
+        if [ -n "$EXISTING" ]; then
+          gh api -X PATCH "repos/$REPO/issues/comments/$EXISTING" -F "body=@$BODY" >/dev/null
+        else
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$BODY"
+        fi
+
+    - name: Enforce failure gates
+      shell: bash
+      env:
+        PLAN_EXIT: ${{ steps.plan.outputs.exit-code }}
+        PLAN_HAS_CHANGES: ${{ steps.plan.outputs.has-changes }}
+        FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+        FAIL_ON_CHANGES: ${{ inputs.fail-on-changes }}
+      run: |
+        if [ "$FAIL_ON_ERROR" = "true" ] && [ "$PLAN_EXIT" != "0" ]; then
+          echo "::error::cfgd plan failed with exit code $PLAN_EXIT"
+          exit "$PLAN_EXIT"
+        fi
+        if [ "$FAIL_ON_CHANGES" = "true" ] && [ "$PLAN_HAS_CHANGES" = "true" ]; then
+          echo "::error::plan contains pending actions and fail-on-changes is set"
+          exit 1
+        fi

@@ -252,10 +252,16 @@ In addition to publishing binaries to [GitHub Releases](https://github.com/tj-sm
 
 ```yaml
 # Example: set up your dev tools on a GitHub Actions runner
-- uses: tj-smith47/cfgd/ecosystem/github-action-setup@master
+- uses: tj-smith47/cfgd/ecosystem/github-actions/setup@master
   with:
     source: git@github.com:you/machine-config.git
     module: dev-tools
+
+# Example: plan config changes on every PR, comment the diff, gate the merge
+- uses: tj-smith47/cfgd/ecosystem/github-actions/plan@master
+  with:
+    config-dir: .
+    fail-on-error: true
 ```
 
 Modules can also be exported as [DevContainer Features](https://containers.dev/implementors/features/) for injection into devcontainers:

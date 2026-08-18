@@ -1365,6 +1365,62 @@ fn interactive_script_without_tty_skips_with_warn() {
     );
 }
 
+/// A user script is the one thing cfgd runs whose effects it cannot predict: a
+/// `preApply` hook that installs a toolchain must be visible to everything
+/// planned after it. The tool lands in a directory a bootstrap registered, so
+/// nothing about `PATH` or the registry changes while the script runs — only the
+/// script's own completion can retire the miss memoized before it.
+#[cfg(all(unix, feature = "test-helpers"))]
+#[test]
+#[serial_test::serial]
+fn a_script_that_installs_a_tool_retires_the_memoized_miss() {
+    let (printer, _buf) = crate::output::Printer::for_test();
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture();
+    let tmp = tempfile::tempdir().unwrap();
+    let stem = "cfgd-probe-installed-by-script";
+    crate::register_bootstrapped_path_dirs(&[tmp.path().to_string_lossy().into_owned()]);
+
+    assert!(
+        !crate::command_available(stem),
+        "the tool is not there yet — and this miss is what gets memoized"
+    );
+
+    let installer = tmp.path().join(stem);
+    let entry = ScriptEntry::Full {
+        workdir: None,
+        run: format!(
+            "printf '#!/bin/sh\\nexit 0\\n' > {p} && chmod 755 {p}",
+            p = installer.display()
+        ),
+        timeout: None,
+        idle_timeout: None,
+        continue_on_error: None,
+        shell: ScriptShell::Auto,
+        only_if: None,
+        unless: None,
+        creates: None,
+        interactive: false,
+    };
+    execute_script_with_tty(
+        false,
+        &entry,
+        tmp.path(),
+        tmp.path(),
+        &[],
+        std::time::Duration::from_secs(30),
+        &printer,
+        None,
+        None,
+        ScriptReport::default(),
+    )
+    .expect("script must run");
+
+    assert!(
+        crate::command_available(stem),
+        "a tool a lifecycle script installed must be resolvable to what follows it"
+    );
+}
+
 // A skip emits a Role::Skipped status line naming the guard and reason.
 #[cfg(all(unix, feature = "test-helpers"))]
 #[test]
