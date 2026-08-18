@@ -19,6 +19,8 @@ mod lockfile;
 mod registry;
 mod resolve;
 
+#[cfg(any(test, feature = "test-helpers"))]
+pub(crate) use git::set_repo_refresh_ttl_override;
 pub use git::{
     GitSource, TagSignatureStatus, check_tag_signature, default_module_cache_dir,
     default_module_cache_dir_for, fetch_git_source, get_head_commit_sha, git_cache_dir,
@@ -35,7 +37,8 @@ pub use registry::{
     latest_module_version_remote, parse_registry_ref, resolve_profile_module_name,
 };
 pub use resolve::{
-    resolve_module_files, resolve_module_packages, resolve_modules, resolve_package,
+    fill_available_versions, fill_module_available_versions, resolve_module_files,
+    resolve_module_packages, resolve_modules, resolve_package,
 };
 
 // ---------------------------------------------------------------------------
@@ -51,7 +54,13 @@ pub struct ResolvedPackage {
     pub resolved_name: String,
     /// Which manager will install it. `"script"` means use a custom install script.
     pub manager: String,
-    /// Available version (if queried).
+    /// The version the manager currently offers, when anything asked.
+    ///
+    /// Resolution fills it only where it had to look anyway — a `minVersion`
+    /// constraint. Everywhere else it is a DISPLAY detail and stays `None` until
+    /// a surface that renders one calls
+    /// [`resolve::fill_available_versions`]; a read path that shows no version
+    /// pays no query for it.
     pub version: Option<String>,
     /// Install script content (inline or file path). Only set when `manager == "script"`.
     pub script: Option<String>,

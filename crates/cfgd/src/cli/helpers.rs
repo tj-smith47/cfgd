@@ -668,17 +668,6 @@ pub(in crate::cli) fn scan_module_names(
 
 // --- Registry / state / editor helpers ---
 
-/// Build a HashMap of manager name → &dyn PackageManager from the registry.
-pub(in crate::cli) fn managers_map(
-    registry: &ProviderRegistry,
-) -> std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> {
-    registry
-        .package_managers()
-        .iter()
-        .map(|m| (m.name().to_string(), m.as_ref()))
-        .collect()
-}
-
 pub(in crate::cli) fn module_state_map(
     state: &cfgd_core::state::StateStore,
 ) -> std::collections::HashMap<String, cfgd_core::state::ModuleStateRecord> {
@@ -1106,9 +1095,11 @@ pub(in crate::cli) fn resolve_desired_state(
         Vec::new()
     } else {
         let platform = Platform::current();
-        let mgr_map = managers_map(registry.get_or_init(|| {
-            build_registry_with_config_and_packages(Some(cfg), Some(&resolved.merged.packages))
-        }));
+        let mgr_map = registry
+            .get_or_init(|| {
+                build_registry_with_config_and_packages(Some(cfg), Some(&resolved.merged.packages))
+            })
+            .manager_map();
         let cache_base = module_cache_dir(cli)?;
         match modules::resolve_modules(
             &module_names,

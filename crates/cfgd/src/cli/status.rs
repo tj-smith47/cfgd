@@ -539,7 +539,7 @@ pub(super) fn cmd_status_module(
         // so resolving it through a config-aware registry would map a module
         // package onto a manager the module cannot use.
         let registry = ctx.base_registry();
-        let mgr_map = managers_map(registry);
+        let mgr_map = registry.manager_map();
         let resolved_modules = modules::resolve_modules(
             &[mod_name.to_string()],
             config_dir,

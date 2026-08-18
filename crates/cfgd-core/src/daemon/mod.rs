@@ -133,11 +133,7 @@ pub(crate) fn resolve_daemon_modules(
         return Vec::new();
     }
     let platform = crate::platform::Platform::current();
-    let mgr_map: HashMap<String, &dyn PackageManager> = registry
-        .package_managers()
-        .iter()
-        .map(|m| (m.name().to_string(), m.as_ref() as &dyn PackageManager))
-        .collect();
+    let mgr_map = registry.manager_map();
     let cache_base = crate::modules::default_module_cache_dir_for(scope)
         .unwrap_or_else(|_| config_dir.join(".module-cache"));
     match crate::modules::resolve_modules(

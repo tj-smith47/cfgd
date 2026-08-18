@@ -220,9 +220,15 @@ pub fn run_apply(
     let mut registry = desired.take_registry(&cfg);
     let source_env = desired.source_env;
     let source_commits = desired.source_commits;
-    let resolved_modules = desired.modules;
+    let mut resolved_modules = desired.modules;
     let mut effective_resolved = desired.resolved;
     registry.set_system_config_dir(&config_dir);
+
+    // A version is a display detail resolution no longer prices, so the paths
+    // that show one ask for it. Apply is one: its plan preview reads `brew
+    // install neovim (0.10.2)`, and the same string is the persisted action
+    // description and the module's recorded packages hash.
+    modules::fill_module_available_versions(&mut resolved_modules, &registry.manager_map());
 
     // Resolve manifest files (Brewfile, package.json, etc.) into package lists
     ctx.resolve_manifest_packages(&mut effective_resolved.merged.packages)?;

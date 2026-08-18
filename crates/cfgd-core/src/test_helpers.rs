@@ -2103,6 +2103,108 @@ impl Drop for EnumerationMemoTtlGuard {
     }
 }
 
+/// RAII pin of the available-version memo's TTL, restoring the prior setting on
+/// drop. The sibling of [`EnumerationMemoTtlGuard`] over the other half of the
+/// package-manager memo pair: that one memoizes what a manager HAS, this one
+/// what it OFFERS.
+///
+/// Pinning needs the same serialization for the same reason — every test that
+/// reads this memo asserts on the COUNT of version queries, so a concurrent zero
+/// pin makes another test's memoized offer recompute and changes exactly what
+/// that test measures. Pair every use with
+/// `#[serial_test::serial(available_version_memo)]`.
+pub struct AvailableVersionMemoTtlGuard {
+    prior: Option<u64>,
+}
+
+impl AvailableVersionMemoTtlGuard {
+    /// Pin the TTL to `ttl`, saturating at the millisecond range.
+    pub fn pinned(ttl: std::time::Duration) -> Self {
+        // `u64::MAX` is the "no override" sentinel, so a pin that would land on
+        // it saturates one below: `pinned(Duration::MAX)` must pin the ceiling
+        // out of reach, never silently restore the default it was called to
+        // displace.
+        let millis = u64::try_from(ttl.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(u64::MAX - 1);
+        Self {
+            prior: crate::providers::set_available_version_memo_ttl_override(Some(millis)),
+        }
+    }
+
+    /// Pin the TTL beyond any test's lifetime, so no memoized offer can expire
+    /// mid-test. For a test whose claim is that an answer still stands.
+    pub fn never_expires() -> Self {
+        Self::pinned(std::time::Duration::from_millis(u64::MAX - 1))
+    }
+
+    /// Pin the TTL to zero, so every offer is expired the moment it is stored.
+    /// For a test whose claim is that expiry retires one.
+    pub fn always_expired() -> Self {
+        Self::pinned(std::time::Duration::ZERO)
+    }
+}
+
+impl Drop for AvailableVersionMemoTtlGuard {
+    fn drop(&mut self) {
+        crate::providers::set_available_version_memo_ttl_override(self.prior);
+    }
+}
+
+/// RAII pin of the module git-cache refresh window, restoring the prior setting
+/// on drop. The third sibling of [`CommandPathMemoTtlGuard`], guarding the
+/// window inside which one `git fetch` of a repository serves every later ask
+/// for it.
+///
+/// Any test that drives TWO fetches of one fixture repository and expects the
+/// second to really transfer — a tag pushed upstream between them — pins
+/// `always_expired`, because the window is exactly what would otherwise serve
+/// the first transfer's answer to the second ask. A test whose claim is that one
+/// transfer served both pins `never_expires`, so the assertion is about the
+/// mechanism rather than about how long two adjacent statements took.
+///
+/// Pinning needs no serialization of its own: fixture repositories live in
+/// per-test temp directories, so no two tests share a key in the refresh map,
+/// and neither pin can change the ANSWER a concurrent test reads — only whether
+/// its own repository is transferred again.
+pub struct GitRefreshWindowGuard {
+    prior: Option<u64>,
+}
+
+impl GitRefreshWindowGuard {
+    /// Pin the window to `ttl`, saturating at the millisecond range.
+    pub fn pinned(ttl: std::time::Duration) -> Self {
+        // `u64::MAX` is the "no override" sentinel, so a pin that would land on
+        // it saturates one below: `pinned(Duration::MAX)` must pin the window
+        // out of reach, never silently restore the default it was called to
+        // displace.
+        let millis = u64::try_from(ttl.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(u64::MAX - 1);
+        Self {
+            prior: crate::modules::set_repo_refresh_ttl_override(Some(millis)),
+        }
+    }
+
+    /// Pin the window beyond any test's lifetime, so no recorded transfer can
+    /// age out mid-test. For a test whose claim is that one transfer stands.
+    pub fn never_expires() -> Self {
+        Self::pinned(std::time::Duration::from_millis(u64::MAX - 1))
+    }
+
+    /// Pin the window to zero, so every repository is fetched on every ask. For
+    /// a test whose claim is about what a transfer itself does.
+    pub fn always_expired() -> Self {
+        Self::pinned(std::time::Duration::ZERO)
+    }
+}
+
+impl Drop for GitRefreshWindowGuard {
+    fn drop(&mut self) {
+        crate::modules::set_repo_refresh_ttl_override(self.prior);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Env-var test guards — replace per-file `struct EnvVarGuard` / `fn with_env`
 // duplicates. Pair with `serial_test::serial` because env-var mutation is

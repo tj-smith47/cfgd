@@ -292,7 +292,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     let config_dir = ctx.config_dir();
     let registry = ctx.base_registry();
     let platform = Platform::current();
-    let mgr_map = managers_map(registry);
+    let mgr_map = registry.manager_map();
     let cache_base = module_cache_dir(cli)?;
     let resolved_modules = match modules::resolve_modules(
         &[mod_name.to_string()],

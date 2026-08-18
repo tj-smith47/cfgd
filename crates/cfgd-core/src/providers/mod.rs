@@ -1,8 +1,11 @@
 // Provider traits and registry — consumed by packages/, files/, secrets/, reconciler/
 
+mod available;
 mod installed;
 pub mod skill;
 
+#[cfg(any(test, feature = "test-helpers"))]
+pub(crate) use available::set_available_version_memo_ttl_override;
 #[cfg(any(test, feature = "test-helpers"))]
 pub(crate) use installed::set_enumeration_memo_ttl_override;
 pub use installed::{InstalledEnumerations, InstalledPackages};
@@ -703,11 +706,30 @@ pub trait PackageManager: Send + Sync {
 pub trait PackageManagerExt {
     fn can_bootstrap(&self) -> bool;
     fn feasible_bootstrap_plan(&self) -> Option<BootstrapPlan>;
+    fn available_version_memoized(&self, package: &str) -> Result<Option<String>>;
 }
 
 impl<T: PackageManager + ?Sized> PackageManagerExt for T {
     fn can_bootstrap(&self) -> bool {
         self.feasible_bootstrap_plan().is_some()
+    }
+
+    /// [`PackageManager::available_version`], asked at most once per
+    /// `(manager, package)` while the answer stands.
+    ///
+    /// Every version query in a run goes through here rather than through the
+    /// trait method directly. The query is a subprocess and for `npm`, `cargo`
+    /// and `pipx` a network round-trip, while the same package is asked about
+    /// once per module that declares it, once per candidate manager, and again
+    /// by any display fill — so the un-memoized call is a per-package cost paid
+    /// several times over for one answer that cannot have changed in between.
+    ///
+    /// Answers are keyed by the REGISTERED manager name, never
+    /// [`crate::manager_family`]: `brew` and `brew-cask` offer different
+    /// packages under one binary, so folding them would answer a question about
+    /// a cask with an answer about a formula.
+    fn available_version_memoized(&self, package: &str) -> Result<Option<String>> {
+        available::get_or_query(self.name(), package, || self.available_version(package))
     }
 
     /// The plan this host can actually carry out: a cascade exists AND every
@@ -1220,6 +1242,21 @@ impl ProviderRegistry {
         &self.package_managers
     }
 
+    /// Every registered package manager keyed by its registered name — the
+    /// shape [`crate::modules::resolve_package`] and its siblings take.
+    ///
+    /// The ONE construction of that map. Four crates' worth of call sites built
+    /// the same `name → &dyn` collect by hand, including two inside the daemon
+    /// alone, and a copy that reached for [`crate::manager_family`] instead of
+    /// the registered name would silently answer a `brew-cask` question with
+    /// `brew`'s managers.
+    pub fn manager_map(&self) -> std::collections::HashMap<String, &dyn PackageManager> {
+        self.package_managers
+            .iter()
+            .map(|m| (m.name().to_string(), m.as_ref()))
+            .collect()
+    }
+
     /// Every registered system configurator, available or not.
     pub fn system_configurators(&self) -> &[Box<dyn SystemConfigurator>] {
         &self.system_configurators
@@ -1370,6 +1407,11 @@ pub(crate) struct StubPackageManager {
     /// reports a different letter case than the desired name. Lets tests guard
     /// the identity-routed comparison sites (verify, compliance, diff).
     pub fold_case: bool,
+    /// How many times this stub was asked what it OFFERS. The observable behind
+    /// every "asked once per (manager, package), and never on a read path"
+    /// claim — a count, never a duration — and shared, so a stub already handed
+    /// out as a `&dyn PackageManager` can still be read back for it.
+    version_queries: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[cfg(test)]
@@ -1384,7 +1426,14 @@ impl StubPackageManager {
             bootstrap_requires: Vec::new(),
             installed_error: None,
             fold_case: false,
+            version_queries: Arc::default(),
         }
+    }
+
+    /// The shared counter of this stub's version queries, taken BEFORE the stub
+    /// is handed to a resolver.
+    pub fn version_query_counter(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+        Arc::clone(&self.version_queries)
     }
 
     /// Mark this stub as a case-insensitive manager so `package_identity`
@@ -1461,6 +1510,8 @@ impl PackageManager for StubPackageManager {
         Ok(())
     }
     fn available_version(&self, package: &str) -> Result<Option<String>> {
+        self.version_queries
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(self.versions.get(package).cloned())
     }
     fn package_identity(&self, entry: &str) -> String {

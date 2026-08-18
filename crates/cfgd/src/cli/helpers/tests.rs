@@ -698,7 +698,7 @@ fn resolve_profile_name_returns_cli_profile_override_when_set() {
 #[test]
 fn managers_map_empty_registry_returns_empty_map() {
     let registry = ProviderRegistry::new();
-    let map = managers_map(&registry);
+    let map = registry.manager_map();
     assert!(map.is_empty());
 }
 
@@ -706,7 +706,7 @@ fn managers_map_empty_registry_returns_empty_map() {
 fn managers_map_keys_match_manager_names() {
     let mut registry = ProviderRegistry::new();
     registry.set_package_managers(packages::all_package_managers());
-    let map = managers_map(&registry);
+    let map = registry.manager_map();
     assert!(
         !map.is_empty(),
         "expected managers from all_package_managers"

@@ -256,7 +256,7 @@ pub fn cmd_module_create(
         let store = super::open_state_store(cli.state_dir.as_deref(), cli.scope())?;
 
         let platform = cfgd_core::platform::Platform::current();
-        let mgr_map = super::managers_map(&registry);
+        let mgr_map = registry.manager_map();
         let cache_base = module_cache_dir(cli)?;
         let resolved_modules = modules::resolve_modules(
             std::slice::from_ref(name),

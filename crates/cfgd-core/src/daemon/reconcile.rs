@@ -456,7 +456,7 @@ pub(crate) fn handle_reconcile(
     };
 
     // Resolve modules from profile + lockfile + source-delivered roots
-    let resolved_modules = super::resolve_daemon_modules(
+    let mut resolved_modules = super::resolve_daemon_modules(
         &registry,
         &resolved,
         &config_dir,
@@ -464,6 +464,11 @@ pub(crate) fn handle_reconcile(
         printer,
         scope,
     );
+    // The tick plans and (under auto-apply) applies, so its action descriptions
+    // and recorded packages hash carry the version the read paths never ask for.
+    // The compliance tick shares `resolve_daemon_modules` and deliberately does
+    // NOT fill: nothing it stores renders a version.
+    crate::modules::fill_module_available_versions(&mut resolved_modules, &registry.manager_map());
     let resolved_modules_ref = resolved_modules.clone();
     let mut plan = match reconciler.plan(
         &resolved,

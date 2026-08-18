@@ -39,26 +39,32 @@ pub fn save_lockfile(config_dir: &Path, lockfile: &ModuleLockfile) -> Result<()>
 
 /// Compute SHA-256 integrity hash of a module directory's contents.
 /// Hashes file paths (relative to module dir) and their contents, sorted for determinism.
+///
+/// The digest is taken over `<rel-path>\0<contents>\0` per file in sorted order,
+/// streamed into the hasher a chunk at a time. The byte sequence is exactly the
+/// one a buffered concatenation produced, because an existing `modules.lock`
+/// entry has to keep verifying — what changed is that a module's whole tree is
+/// no longer resident (twice) to answer a 32-byte question.
 pub fn hash_module_contents(module_dir: &Path) -> Result<String> {
-    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut entries: Vec<(String, std::path::PathBuf)> = Vec::new();
     collect_files_for_hash(module_dir, module_dir, &mut entries)?;
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut hasher_input = Vec::new();
-    for (rel_path, content) in &entries {
-        hasher_input.extend_from_slice(rel_path.as_bytes());
-        hasher_input.push(0);
-        hasher_input.extend_from_slice(content);
-        hasher_input.push(0);
+    let mut hasher = crate::Sha256Stream::new();
+    for (rel_path, path) in &entries {
+        hasher.update(rel_path.as_bytes());
+        hasher.update(&[0]);
+        hasher.absorb_file(path)?;
+        hasher.update(&[0]);
     }
 
-    Ok(crate::sha256_digest(&hasher_input))
+    Ok(hasher.finish_digest())
 }
 
 pub(super) fn collect_files_for_hash(
     base: &Path,
     current: &Path,
-    entries: &mut Vec<(String, Vec<u8>)>,
+    entries: &mut Vec<(String, std::path::PathBuf)>,
 ) -> Result<()> {
     if !current.is_dir() {
         return Ok(());
@@ -94,8 +100,7 @@ pub(super) fn collect_files_for_hash(
             // file as `templates\foo.conf` on Windows vs `templates/foo.conf`
             // on Linux, diverging the digest for identical module bytes.
             let rel = crate::to_posix_string(path.strip_prefix(base).unwrap_or(&path));
-            let content = std::fs::read(&path)?;
-            entries.push((rel, content));
+            entries.push((rel, path));
         }
     }
     Ok(())

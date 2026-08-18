@@ -115,7 +115,7 @@ pub fn resolve_package(
         }
 
         if let Some(ref min_ver) = entry.min_version {
-            match mgr.available_version(&resolved_name) {
+            match mgr.available_version_memoized(&resolved_name) {
                 Ok(Some(ver)) => {
                     // Manager-aware: pkg (FreeBSD) versions are not semver, so the
                     // manager compares against its own scheme; everyone else falls
@@ -138,13 +138,15 @@ pub fn resolve_package(
                 Err(_) => continue,
             }
         } else {
-            // No min-version: first available manager wins.
-            let version = mgr.available_version(&resolved_name).ok().flatten();
+            // No min-version: first available manager wins, and nothing about
+            // that choice depends on what the manager currently offers — so the
+            // version query is left to `fill_available_versions`, which the
+            // paths that DISPLAY a version call and the read paths do not.
             return Ok(Some(ResolvedPackage {
                 canonical_name: entry.name.clone(),
                 resolved_name,
                 manager: candidate.clone(),
-                version,
+                version: None,
                 script: None,
                 creates: None,
                 only_if: None,
@@ -175,6 +177,64 @@ pub fn resolve_module_packages(
         }
     }
     Ok(resolved)
+}
+
+/// Price every resolved package that does not already carry a version, so a
+/// surface that RENDERS one has it.
+///
+/// Resolution itself no longer asks: a package with no `minVersion` is placed on
+/// the first available manager whatever that manager currently offers, so the
+/// query answered nothing about the outcome and was paid by `status`, `diff`,
+/// `verify`, `compliance`, `checkin` and `decide` — none of which show a version
+/// — once per declared package, on every invocation and every daemon tick.
+///
+/// Call it from the paths that consume the version and from no others. Today
+/// that is `apply`, `plan`, and the daemon's reconcile tick (all three feed
+/// [`crate::reconciler::Reconciler::plan`], whose `InstallPackages` description
+/// renders `brew install neovim (0.10.2)` and is also the persisted action
+/// description and the module's recorded packages hash), plus the two
+/// introspection surfaces that print a version per declared package (`cfgd
+/// doctor` and `cfgd module show`).
+///
+/// The gating reproduces what resolution used to do exactly, so those surfaces
+/// render byte-identically: a package already carrying a version (the
+/// `minVersion` check found one) is left alone, `script` packages have no
+/// manager to ask, and a manager that is not available is not asked — an
+/// unavailable-but-bootstrappable manager resolved optimistically with no
+/// version before this existed and still does.
+pub fn fill_available_versions(
+    packages: &mut [ResolvedPackage],
+    managers: &HashMap<String, &dyn PackageManager>,
+) {
+    for pkg in packages {
+        if pkg.version.is_some() || pkg.manager == "script" {
+            continue;
+        }
+        let Some(mgr) = managers.get(pkg.manager.as_str()) else {
+            continue;
+        };
+        if !mgr.is_available() {
+            continue;
+        }
+        // A manager that cannot answer is not a resolution failure — the
+        // version is a display detail, and the package still installs.
+        pkg.version = mgr
+            .available_version_memoized(&pkg.resolved_name)
+            .ok()
+            .flatten();
+    }
+}
+
+/// [`fill_available_versions`] over every package of every resolved module —
+/// what the three planning paths call, since each holds modules rather than a
+/// flat package list.
+pub fn fill_module_available_versions(
+    modules: &mut [ResolvedModule],
+    managers: &HashMap<String, &dyn PackageManager>,
+) {
+    for module in modules {
+        fill_available_versions(&mut module.packages, managers);
+    }
 }
 
 // ---------------------------------------------------------------------------

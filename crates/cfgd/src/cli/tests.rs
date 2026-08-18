@@ -6926,7 +6926,7 @@ fn managers_map_round_trips_registry_managers_by_name() {
     // Build a registry, then check every name reachable via managers_map
     // matches a manager in the original registry.
     let registry = super::build_registry();
-    let map = super::managers_map(&registry);
+    let map = registry.manager_map();
     assert!(
         !map.is_empty(),
         "registry must produce at least one manager"

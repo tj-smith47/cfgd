@@ -331,7 +331,7 @@ pub(crate) fn cmd_module_show(
         Vec::new()
     } else {
         let registry = build_registry();
-        let mgr_map = managers_map(&registry);
+        let mgr_map = registry.manager_map();
         let platform = Platform::current();
         module
             .spec
@@ -365,12 +365,20 @@ pub(crate) fn cmd_module_show(
                 };
 
                 match modules::resolve_package(entry, name, platform, &mgr_map) {
-                    Ok(Some(resolved)) => PackageDisplay::Resolved {
-                        name: entry.name.clone(),
-                        manager: resolved.manager.clone(),
-                        resolved_name: resolved.resolved_name.clone(),
-                        version: resolved.version.clone(),
-                    },
+                    Ok(Some(mut resolved)) => {
+                        // `module show` prints the version beside each package,
+                        // so it is one of the surfaces that asks for one.
+                        modules::fill_available_versions(
+                            std::slice::from_mut(&mut resolved),
+                            &mgr_map,
+                        );
+                        PackageDisplay::Resolved {
+                            name: entry.name.clone(),
+                            manager: resolved.manager.clone(),
+                            resolved_name: resolved.resolved_name.clone(),
+                            version: resolved.version.clone(),
+                        }
+                    }
                     Ok(None) => PackageDisplay::Skipped {
                         name: entry.name.clone(),
                         platforms: platform_str,

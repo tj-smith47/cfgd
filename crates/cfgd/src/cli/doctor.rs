@@ -293,7 +293,7 @@ fn collect_doctor_output(
     // the profile's registry would report a module package as resolvable by a
     // manager the module cannot use.
     let modules_registry = ctx.base_registry();
-    let mgr_map = managers_map(modules_registry);
+    let mgr_map = modules_registry.manager_map();
     let platform = Platform::current();
     let doctor_cx = ctx
         .state_opt()
@@ -309,7 +309,13 @@ fn collect_doctor_output(
                     .iter()
                     .map(|entry| {
                         match modules::resolve_package(entry, mod_name, platform, &mgr_map) {
-                            Ok(Some(resolved)) => {
+                            Ok(Some(mut resolved)) => {
+                                // Doctor prints the version per package, so it
+                                // is one of the surfaces that asks for one.
+                                modules::fill_available_versions(
+                                    std::slice::from_mut(&mut resolved),
+                                    &mgr_map,
+                                );
                                 // One enumeration per manager for the whole
                                 // walk: `doctor` asks about every package of
                                 // every module, and the memo behind the

@@ -242,19 +242,29 @@ fn resolve_package_simple_native() {
         ..Default::default()
     };
 
-    let result = resolve_package(&entry, "test", &platform, &managers)
+    let mut result = resolve_package(&entry, "test", &platform, &managers)
         .unwrap()
         .unwrap();
     assert_eq!(result.canonical_name, "ripgrep");
     assert_eq!(result.resolved_name, "ripgrep");
     assert_eq!(result.manager, "brew");
+    // With no `minVersion` nothing about the choice depends on what brew
+    // offers, so resolution leaves the price unasked; a surface that renders
+    // one fills it.
+    assert_eq!(result.version, None);
+    fill_available_versions(std::slice::from_mut(&mut result), &managers);
     assert_eq!(result.version, Some("14.1.0".into()));
 }
 
 #[test]
 fn resolve_package_with_prefer_list() {
     let brew = MockManager::new("brew").unavailable();
-    let apt = MockManager::new("apt").with_package("neovim", "0.10.2");
+    // These two agree with `resolve_package_min_version_check`'s fixtures on
+    // purpose. A version query is memoized per `(manager, package)` for the
+    // process, so two tests claiming that one manager offers two different
+    // versions of one package would be claiming two different machines, and
+    // whichever ran second would read the other's answer.
+    let apt = MockManager::new("apt").with_package("neovim", "0.6.1");
     let snap = MockManager::new("snap").with_package("nvim", "0.10.3");
     let managers = make_manager_map(&[("brew", &brew), ("apt", &apt), ("snap", &snap)]);
     let platform = linux_ubuntu_platform();
@@ -284,7 +294,7 @@ fn resolve_package_with_prefer_list() {
 #[test]
 fn resolve_package_min_version_check() {
     let apt = MockManager::new("apt").with_package("neovim", "0.6.1");
-    let snap = MockManager::new("snap").with_package("nvim", "0.10.2");
+    let snap = MockManager::new("snap").with_package("nvim", "0.10.3");
     let managers = make_manager_map(&[("apt", &apt), ("snap", &snap)]);
     let platform = linux_ubuntu_platform();
 
@@ -301,12 +311,12 @@ fn resolve_package_min_version_check() {
         ..Default::default()
     };
 
-    // apt has 0.6.1 which is < 0.9, so snap (0.10.2) should be chosen
+    // apt has 0.6.1 which is < 0.9, so snap (0.10.3) should be chosen
     let result = resolve_package(&entry, "nvim", &platform, &managers)
         .unwrap()
         .unwrap();
     assert_eq!(result.manager, "snap");
-    assert_eq!(result.version, Some("0.10.2".into()));
+    assert_eq!(result.version, Some("0.10.3".into()));
 }
 
 #[test]
@@ -4284,6 +4294,154 @@ fn dependency_order_complex_dag_preserves_ordering_constraints() {
 }
 
 // -----------------------------------------------------------------------
+// Version pricing — resolution asks nothing, display asks once
+// -----------------------------------------------------------------------
+
+/// A manager name no other test in this binary shares, so a count taken over
+/// it describes only this test's own questions. The memo is keyed by
+/// `(manager, package)` and lives for the process.
+fn unshared_manager_name(prefix: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    format!(
+        "{prefix}-{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    )
+}
+
+fn priceable_package(manager: &str, name: &str) -> ResolvedPackage {
+    ResolvedPackage {
+        canonical_name: name.to_string(),
+        resolved_name: name.to_string(),
+        manager: manager.to_string(),
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+    }
+}
+
+/// The shape every read command takes: resolve a module's packages, render no
+/// version. `status`, `diff`, `verify`, `compliance`, `checkin` and `decide`
+/// all landed here once per declared package per invocation, and each landing
+/// was a subprocess (a network round-trip for npm/cargo/pipx).
+#[test]
+#[serial_test::serial(available_version_memo)]
+fn a_resolution_that_renders_no_version_asks_no_manager_for_one() {
+    let mgr_name = unshared_manager_name("read-path-mgr");
+    let mgr = MockManager::new(&mgr_name)
+        .with_package("ripgrep", "14.0.0")
+        .with_package("fd", "9.0.0");
+    let queries = mgr.version_query_counter();
+    let managers = make_manager_map(&[(mgr_name.as_str(), &mgr)]);
+    let platform = macos_platform();
+
+    let module = LoadedModule {
+        version: None,
+        name: "tools".into(),
+        spec: ModuleSpec {
+            packages: ["ripgrep", "fd"]
+                .into_iter()
+                .map(|name| ModulePackageEntry {
+                    name: name.into(),
+                    prefer: vec![mgr_name.clone()],
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        },
+        dir: PathBuf::from("/tmp/tools"),
+        origin: None,
+    };
+
+    let resolved = resolve_module_packages(&module, &platform, &managers).unwrap();
+    assert_eq!(resolved.len(), 2);
+    assert!(resolved.iter().all(|p| p.version.is_none()));
+    assert_eq!(
+        queries.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "resolution must not price a package no surface is going to render"
+    );
+}
+
+/// The other half: a surface that DOES render a version gets one, and two
+/// modules declaring the same package cost one query between them.
+#[test]
+#[serial_test::serial(available_version_memo)]
+fn a_package_two_modules_declare_is_priced_once() {
+    // Two claims in one: that the answer is memoized at all, and that it had
+    // not aged out between the two fills. Both are pinned rather than trusted
+    // to how long two adjacent statements took.
+    let _ttl = crate::test_helpers::AvailableVersionMemoTtlGuard::never_expires();
+    let queried = crate::test_helpers::measured_in_a_stable_generation(|| {
+        // Built inside the closure: a retry (some other test bumped the
+        // generation mid-measurement) must measure a fresh subject, not one an
+        // abandoned attempt already warmed.
+        let mgr_name = unshared_manager_name("priced-once-mgr");
+        let mgr = MockManager::new(&mgr_name).with_package("ripgrep", "14.0.0");
+        let queries = mgr.version_query_counter();
+        let managers = make_manager_map(&[(mgr_name.as_str(), &mgr)]);
+
+        let mut first = [priceable_package(&mgr_name, "ripgrep")];
+        let mut second = [priceable_package(&mgr_name, "ripgrep")];
+        fill_available_versions(&mut first, &managers);
+        fill_available_versions(&mut second, &managers);
+
+        assert_eq!(first[0].version.as_deref(), Some("14.0.0"));
+        assert_eq!(second[0].version.as_deref(), Some("14.0.0"));
+        queries.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    assert_eq!(
+        queried, 1,
+        "one package under one manager is one question, however many modules declare it"
+    );
+}
+
+/// The gate that keeps a plan's rendering byte-identical to what resolution
+/// used to produce: an unavailable manager was never asked before, and is not
+/// asked now. A bootstrappable manager resolves optimistically with no version
+/// because the binary that would answer is not on the machine yet.
+#[test]
+#[serial_test::serial(available_version_memo)]
+fn a_manager_that_is_not_on_the_machine_is_not_asked_what_it_offers() {
+    let mgr_name = unshared_manager_name("absent-mgr");
+    let mgr = MockManager::new(&mgr_name)
+        .with_package("ripgrep", "14.0.0")
+        .unavailable();
+    let queries = mgr.version_query_counter();
+    let managers = make_manager_map(&[(mgr_name.as_str(), &mgr)]);
+
+    let mut packages = [priceable_package(&mgr_name, "ripgrep")];
+    fill_available_versions(&mut packages, &managers);
+
+    assert!(packages[0].version.is_none());
+    assert_eq!(queries.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+/// A `script` package has no manager to ask, and a package already carrying a
+/// version (its `minVersion` check found one) is not re-asked.
+#[test]
+#[serial_test::serial(available_version_memo)]
+fn a_price_already_known_is_not_asked_for_again() {
+    let mgr_name = unshared_manager_name("known-price-mgr");
+    let mgr = MockManager::new(&mgr_name).with_package("ripgrep", "14.0.0");
+    let queries = mgr.version_query_counter();
+    let managers = make_manager_map(&[(mgr_name.as_str(), &mgr)]);
+
+    let mut already = priceable_package(&mgr_name, "ripgrep");
+    already.version = Some("13.0.0".into());
+    let mut scripted = priceable_package("script", "ripgrep");
+    scripted.script = Some("curl … | sh".into());
+
+    let mut packages = [already, scripted];
+    fill_available_versions(&mut packages, &managers);
+
+    assert_eq!(packages[0].version.as_deref(), Some("13.0.0"));
+    assert!(packages[1].version.is_none());
+    assert_eq!(queries.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+// -----------------------------------------------------------------------
 // resolve_module_packages — additional coverage
 // -----------------------------------------------------------------------
 
@@ -4745,7 +4903,7 @@ fn hash_module_contents_nested_rel_keys_are_posix() {
 
     // Assert the exact rel-path key the digest is built from: the nested file
     // keys with a forward slash on every platform, and no key contains `\`.
-    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut entries: Vec<(String, std::path::PathBuf)> = Vec::new();
     collect_files_for_hash(&mod_dir, &mod_dir, &mut entries).unwrap();
     let keys: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).collect();
     assert!(
@@ -4778,6 +4936,43 @@ fn hash_module_contents_nested_rel_keys_are_posix() {
         hash,
         crate::sha256_digest(&expected_input),
         "digest must equal the one computed from forward-slash keys"
+    );
+}
+
+#[test]
+fn hash_module_contents_streams_a_file_larger_than_its_read_buffer() {
+    // A persisted `modules.lock` integrity value has to keep verifying, so the
+    // streamed digest must be byte-identical to the buffered
+    // `<rel>\0<contents>\0` concatenation it replaced — including across the
+    // internal chunk boundary, which is where a hasher fed the whole scratch
+    // buffer instead of `&buf[..read]` would diverge. The payload is
+    // deliberately not a multiple of the chunk size so the final short read is
+    // exercised too.
+    let dir = tempfile::tempdir().unwrap();
+    let mod_dir = dir.path().join("big");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+
+    let big: Vec<u8> = (0..(64 * 1024 * 2 + 517))
+        .map(|i| (i % 251) as u8)
+        .collect();
+    std::fs::write(mod_dir.join("blob.bin"), &big).unwrap();
+    std::fs::write(mod_dir.join("module.yaml"), "name: big\n").unwrap();
+
+    let mut expected_input = Vec::new();
+    // Sorted lexicographically: `blob.bin` < `module.yaml`.
+    expected_input.extend_from_slice(b"blob.bin");
+    expected_input.push(0);
+    expected_input.extend_from_slice(&big);
+    expected_input.push(0);
+    expected_input.extend_from_slice(b"module.yaml");
+    expected_input.push(0);
+    expected_input.extend_from_slice(b"name: big\n");
+    expected_input.push(0);
+
+    assert_eq!(
+        hash_module_contents(&mod_dir).unwrap(),
+        crate::sha256_digest(&expected_input),
+        "the streamed digest must equal the buffered concatenation, or every existing lockfile entry stops verifying"
     );
 }
 

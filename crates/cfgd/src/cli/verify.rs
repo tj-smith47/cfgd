@@ -23,7 +23,7 @@ pub fn cmd_verify(
         let resolved = empty_resolved_profile(mod_name, &ctx.active_profile_name());
         let registry = build_registry();
         let platform = Platform::current();
-        let mgr_map = managers_map(&registry);
+        let mgr_map = registry.manager_map();
         let cache_base = module_cache_dir(cli)?;
         let mods = modules::resolve_modules(
             &[mod_name.to_string()],

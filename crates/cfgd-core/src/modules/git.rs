@@ -204,6 +204,13 @@ pub(super) fn resolve_subdir(
 ///
 /// If the repo is already cached, fetches updates. Otherwise, clones.
 /// Checks out the specified tag/ref if provided.
+///
+/// Two round-trips are skipped here, and both are skips of work that could not
+/// change the answer. A pin the cache already resolves ([`cache_answers_pinned_ref`])
+/// never fetches at all — the commit is immutable, so there is nothing upstream
+/// could tell us. Everything else fetches at most once per repository per
+/// refresh window (see [`fetch_existing_repo`]): a module declaring twenty files
+/// out of one repo used to run twenty full fetch cycles of the same refs.
 pub fn fetch_git_source(
     git_src: &GitSource,
     cache_base: &Path,
@@ -213,7 +220,9 @@ pub fn fetch_git_source(
     let cache_dir = git_cache_dir(cache_base, &git_src.repo_url);
 
     if cache_dir.join(".git").exists() || cache_dir.join("HEAD").exists() {
-        fetch_existing_repo(&cache_dir, git_src, module_name, printer)?;
+        if !cache_answers_pinned_ref(&cache_dir, git_src) {
+            fetch_existing_repo(&cache_dir, git_src, module_name, printer)?;
+        }
     } else {
         clone_repo(&cache_dir, git_src, module_name, printer)?;
     }
@@ -221,6 +230,184 @@ pub fn fetch_git_source(
     checkout_ref(&cache_dir, git_src, module_name)?;
 
     resolve_subdir(cache_dir, &git_src.subdir, module_name, &git_src.repo_url)
+}
+
+/// Whether the cached checkout can already answer `git_src`'s requested ref
+/// with no network round-trip.
+///
+/// True only for a ref that is a full 40-character hex object name — an
+/// immutable pin, so no fetch could change what it resolves to — whose commit
+/// the cache already holds. A branch or tag name is excluded even when the cache
+/// holds one: both move upstream, and learning where they moved to is the entire
+/// purpose of the fetch.
+///
+/// "Holds" is `find_commit` on the parsed object id: the object is in this
+/// repository's object database AND is a commit — the git2 spelling of
+/// `git cat-file -e <sha>^{commit}`, and no shell-out, so nothing here needs the
+/// controlled `git_cmd_*` layer. `revparse_single` is deliberately not used: it
+/// would also accept an abbreviated id (ambiguous, and not a pin) and would
+/// resolve a REF that merely shares the name.
+///
+/// That last case is why a ref by the same literal name suppresses the skip.
+/// [`checkout_ref`] resolves `refs/tags/<name>` and `refs/remotes/origin/<name>`
+/// ahead of the bare revision, so a tag or remote branch literally named with 40
+/// hex digits would be checked out after this predicate had judged the pin
+/// immutable — the one shape where skipping the fetch could change what lands in
+/// the working tree.
+fn cache_answers_pinned_ref(repo_path: &Path, git_src: &GitSource) -> bool {
+    let Some(ref_name) = git_src.tag.as_deref().or(git_src.git_ref.as_deref()) else {
+        return false;
+    };
+    if ref_name.len() != 40 || !ref_name.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return false;
+    }
+    let Ok(oid) = git2::Oid::from_str(ref_name) else {
+        return false;
+    };
+    let Ok(repo) = git2::Repository::open(repo_path) else {
+        return false;
+    };
+    if named_ref_exists(&repo, ref_name) {
+        return false;
+    }
+    repo.find_commit(oid).is_ok()
+}
+
+/// The two REF namespaces a pinned name is searched in, in the order
+/// [`checkout_ref`] searches them, before it falls back to a bare revision.
+///
+/// The ONE spelling of those namespaces. Three sites ask about them and all
+/// three must agree: the checkout itself, the pinned-SHA short-circuit (which
+/// stands down when a ref by the same literal name exists) and
+/// [`cache_resolves_ref`] (which asks whether the checkout to come will find
+/// anything). A fourth spelling elsewhere would decide a fetch on one rule and
+/// perform a checkout under another.
+fn named_ref_candidates(ref_name: &str) -> [String; 2] {
+    [
+        format!("refs/tags/{ref_name}"),
+        format!("refs/remotes/origin/{ref_name}"),
+    ]
+}
+
+/// Whether either named ref exists, without resolving a bare revision.
+fn named_ref_exists(repo: &git2::Repository, ref_name: &str) -> bool {
+    named_ref_candidates(ref_name)
+        .iter()
+        .any(|name| repo.refname_to_id(name).is_ok())
+}
+
+/// `ref_name` resolved the way [`checkout_ref`] resolves it: tag, then remote
+/// branch, then bare revision.
+fn resolve_ref_object<'r>(
+    repo: &'r git2::Repository,
+    ref_name: &str,
+) -> std::result::Result<git2::Object<'r>, git2::Error> {
+    let [tag, remote_branch] = named_ref_candidates(ref_name);
+    repo.revparse_single(&tag)
+        .or_else(|_| repo.revparse_single(&remote_branch))
+        .or_else(|_| repo.revparse_single(ref_name))
+}
+
+/// Whether the cached checkout can resolve `git_src`'s requested ref at all —
+/// the second half of the refresh window's condition.
+///
+/// A window alone is not enough to skip a transfer. `cfgd module upgrade` asks
+/// for a ref the cache has never seen, in the same process that just cloned the
+/// repository at the version being upgraded FROM, and a window keyed on the
+/// repository would answer that ask with the transfer that fetched the old
+/// version. The window's claim is only ever "this repository's refs were
+/// already brought over"; a ref the cache cannot name is proof that claim does
+/// not cover what this caller needs.
+///
+/// Resolution mirrors [`checkout_ref`] exactly — `refs/tags/<name>`, then
+/// `refs/remotes/origin/<name>`, then the bare revision — because the question
+/// is precisely "will the checkout that follows find this?". A source with no
+/// ref pinned stays on the default branch and so has nothing to resolve.
+fn cache_resolves_ref(repo_path: &Path, git_src: &GitSource) -> bool {
+    let Some(ref_name) = git_src.tag.as_deref().or(git_src.git_ref.as_deref()) else {
+        return true;
+    };
+    let Ok(repo) = git2::Repository::open(repo_path) else {
+        return false;
+    };
+    resolve_ref_object(&repo, ref_name).is_ok()
+}
+
+/// Repository URLs whose refs were transferred in this process, and when.
+///
+/// Keyed by URL rather than by (URL, ref) because the transfer is not per-ref:
+/// both fetch paths below use the remote's configured refspecs, so one
+/// `git fetch origin` brings every branch and tag the remote offers. A second
+/// ref of the same repository therefore has nothing left to learn.
+static REPO_REFRESHES: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+> = std::sync::OnceLock::new();
+
+/// How long a transfer stands for before the same repository is fetched again.
+///
+/// The window is what makes "once per run" true without a run being threaded
+/// through every resolver: a CLI invocation resolves its modules in one tight
+/// pass, so every file of every module sharing a repository lands inside it. It
+/// is a ceiling, not a cache lifetime — a daemon ticking on any interval longer
+/// than this refreshes on every tick, so a module tracking a mutable ref still
+/// converges. Thirty seconds, matching [`crate::command_path`]'s memo and the
+/// installed-enumeration memo, for the same reason.
+const REPO_REFRESH_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Millisecond override of [`REPO_REFRESH_TTL`], or [`u64::MAX`] for "no
+/// override", so a test never depends on wall time: a test whose claim is that
+/// one transfer served two asks pins the window out of reach, and one whose
+/// claim is that a fetch really transfers refs pins it to zero.
+#[cfg(any(test, feature = "test-helpers"))]
+static REPO_REFRESH_TTL_OVERRIDE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// How long a transfer stands for, honouring the test override.
+fn repo_refresh_ttl() -> std::time::Duration {
+    #[cfg(any(test, feature = "test-helpers"))]
+    {
+        let millis = REPO_REFRESH_TTL_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+        if millis != u64::MAX {
+            return std::time::Duration::from_millis(millis);
+        }
+    }
+    REPO_REFRESH_TTL
+}
+
+/// Pin the refresh window, or hand back the default with `None`. Returns what
+/// was pinned before, so a guard can put it back.
+///
+/// Reach for it through `test_helpers::GitRefreshWindowGuard`, never directly.
+#[cfg(any(test, feature = "test-helpers"))]
+pub(crate) fn set_repo_refresh_ttl_override(millis: Option<u64>) -> Option<u64> {
+    let prior = REPO_REFRESH_TTL_OVERRIDE.swap(
+        millis.unwrap_or(u64::MAX),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    (prior != u64::MAX).then_some(prior)
+}
+
+fn repo_refreshes()
+-> std::sync::MutexGuard<'static, std::collections::HashMap<String, std::time::Instant>> {
+    // A poisoned lock still holds usable bookkeeping: a panic elsewhere is no
+    // reason to start fetching the same repository once per declared file.
+    REPO_REFRESHES
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether `repo_url`'s refs were already transferred inside the current window.
+fn repo_refreshed_recently(repo_url: &str) -> bool {
+    let ttl = repo_refresh_ttl();
+    repo_refreshes()
+        .get(repo_url)
+        .is_some_and(|at| at.elapsed() < ttl)
+}
+
+/// Record that `repo_url`'s refs are now as current as a transfer can make them.
+fn record_repo_refresh(repo_url: &str) {
+    repo_refreshes().insert(repo_url.to_string(), std::time::Instant::now());
 }
 
 /// Open a git2 repo with a consistent error mapping.
@@ -265,6 +452,9 @@ pub(super) fn clone_repo(
     let label = format!("Cloning module '{}'", module_name);
     let cli_result = printer.run(&mut cmd, &label);
     if matches!(&cli_result, Ok(output) if output.status.success()) {
+        // A fresh clone transferred every ref the remote offers, so the next
+        // source out of this repository has nothing to fetch.
+        record_repo_refresh(&git_src.repo_url);
         return Ok(());
     }
 
@@ -301,15 +491,33 @@ pub(super) fn clone_repo(
     }
     result?;
 
+    record_repo_refresh(&git_src.repo_url);
     Ok(())
 }
 
+/// Transfer `git_src`'s repository refs into the cached checkout, at most once
+/// per repository per refresh window.
+///
+/// The window is what collapses N declared sources out of one repository into
+/// one transfer: `resolve_module_files` calls through here once per file entry,
+/// `load_locked_modules` once per locked entry, and a registry scan once per
+/// registry — all of which routinely name the same repository. See
+/// [`REPO_REFRESH_TTL`] for why the bound is a window rather than a run.
+///
+/// Both halves of the condition are required. The window says the repository's
+/// refs were brought over; [`cache_resolves_ref`] says they cover what THIS
+/// caller asked for. Skipping on the window alone breaks `cfgd module upgrade`,
+/// which asks one process for a ref published after that process cloned.
 pub(super) fn fetch_existing_repo(
     repo_path: &Path,
     git_src: &GitSource,
     module_name: &str,
     printer: &crate::output::Printer,
 ) -> Result<()> {
+    if repo_refreshed_recently(&git_src.repo_url) && cache_resolves_ref(repo_path, git_src) {
+        return Ok(());
+    }
+
     // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(&git_src.repo_url), None);
     cmd.args(["-C", &repo_path.display().to_string(), "fetch", "origin"]);
@@ -317,6 +525,7 @@ pub(super) fn fetch_existing_repo(
     let label = format!("Fetching module '{}'", module_name);
     let cli_result = printer.run(&mut cmd, &label);
     if matches!(&cli_result, Ok(output) if output.status.success()) {
+        record_repo_refresh(&git_src.repo_url);
         return Ok(());
     }
 
@@ -362,6 +571,7 @@ pub(super) fn fetch_existing_repo(
     }
     fetch_result?;
 
+    record_repo_refresh(&git_src.repo_url);
     Ok(())
 }
 
@@ -376,15 +586,11 @@ fn checkout_ref(repo_path: &Path, git_src: &GitSource, module_name: &str) -> Res
     };
 
     // Try as a tag first, then as a branch
-    let obj = repo
-        .revparse_single(&format!("refs/tags/{ref_name}"))
-        .or_else(|_| repo.revparse_single(&format!("refs/remotes/origin/{ref_name}")))
-        .or_else(|_| repo.revparse_single(ref_name))
-        .map_err(|e| ModuleError::GitFetchFailed {
-            module: module_name.to_string(),
-            url: git_src.repo_url.clone(),
-            message: format!("cannot find ref '{ref_name}': {e}"),
-        })?;
+    let obj = resolve_ref_object(&repo, ref_name).map_err(|e| ModuleError::GitFetchFailed {
+        module: module_name.to_string(),
+        url: git_src.repo_url.clone(),
+        message: format!("cannot find ref '{ref_name}': {e}"),
+    })?;
 
     // Peel to commit
     let commit = obj
@@ -1097,6 +1303,9 @@ mod tests {
         // fetch, so a checkout against it succeeds. If fetch silently did
         // nothing, the second checkout would fail with "cannot find ref".
         let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        // Deliberately unpinned: the refresh window is open from the clone, and
+        // the second ask still has to transfer because the tag it names is one
+        // the cache cannot resolve.
         let bare = crate::test_helpers::BareGitRepo::builder()
             .commit("init", &[("a.txt", "v1")])
             .build();
@@ -1131,6 +1340,174 @@ mod tests {
             "checked-out tree must contain the committed file"
         );
         assert_eq!(std::fs::read_to_string(path.join("a.txt")).unwrap(), "v1");
+    }
+
+    // --- pinned-SHA short-circuit and per-repository transfer window ---
+    //
+    // Both are proven the same way, and without a shim: the fixture's upstream
+    // is REMOVED after the cache is materialized, so any attempt to transfer
+    // from it fails loudly. A call that still succeeds is a call that did not
+    // reach the network — a stronger claim than a fetch count, which cannot
+    // distinguish a fetch that ran and found nothing.
+
+    #[test]
+    #[serial_test::serial]
+    fn a_pinned_sha_the_cache_already_holds_is_never_fetched_again() {
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        // The per-repository window is pinned SHUT, so the pin itself is the
+        // only thing that can spare the second call its fetch.
+        let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
+        let bare = crate::test_helpers::BareGitRepo::builder()
+            .commit("init", &[("a.txt", "v1")])
+            .build();
+
+        let cache_base = tempfile::tempdir().unwrap();
+        let printer = crate::test_helpers::test_printer();
+
+        let plain = parse_git_source(&bare.url()).unwrap();
+        let path = fetch_git_source(&plain, cache_base.path(), "pinned", &printer)
+            .expect("initial clone must succeed");
+        let sha = get_head_commit_sha(&git_cache_dir(cache_base.path(), &plain.repo_url))
+            .expect("cached checkout has a HEAD");
+        assert_eq!(sha.len(), 40, "the pin under test must be a full object id");
+
+        std::fs::remove_dir_all(bare.path()).expect("remove upstream");
+
+        let pinned = parse_git_source(&format!("{}@{sha}", bare.url())).unwrap();
+        assert_eq!(pinned.tag.as_deref(), Some(sha.as_str()));
+        let again = fetch_git_source(&pinned, cache_base.path(), "pinned", &printer)
+            .expect("a pinned SHA the cache already holds must resolve without the remote");
+        assert_eq!(again, path);
+        assert_eq!(std::fs::read_to_string(again.join("a.txt")).unwrap(), "v1");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_tag_pin_is_still_refreshed_because_a_tag_can_move() {
+        // The narrow half of the same claim: only a full object id is immutable,
+        // so a tag pin keeps its transfer even when the cache can already resolve
+        // the name. Without this, the short-circuit widening to "any ref the
+        // cache knows" would go unnoticed.
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
+        let bare = crate::test_helpers::BareGitRepo::builder()
+            .commit("init", &[("a.txt", "v1")])
+            .tag("v1.0.0")
+            .build();
+
+        let cache_base = tempfile::tempdir().unwrap();
+        let printer = crate::test_helpers::test_printer();
+
+        let tagged = parse_git_source(&format!("{}@v1.0.0", bare.url())).unwrap();
+        fetch_git_source(&tagged, cache_base.path(), "tagged", &printer)
+            .expect("initial clone must succeed");
+
+        std::fs::remove_dir_all(bare.path()).expect("remove upstream");
+
+        let err = fetch_git_source(&tagged, cache_base.path(), "tagged", &printer)
+            .expect_err("a tag pin must still be refreshed against the remote");
+        assert!(
+            err.to_string().contains("fetch"),
+            "the failure must be the refused transfer, got: {err}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn one_repository_is_transferred_once_however_many_sources_name_it() {
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _window = crate::test_helpers::GitRefreshWindowGuard::never_expires();
+        let bare = crate::test_helpers::BareGitRepo::builder()
+            .commit("init", &[("a.txt", "v1")])
+            .tag("v1.0.0")
+            .branch("feature", &[("f.txt", "f")])
+            .build();
+
+        let cache_base = tempfile::tempdir().unwrap();
+        let printer = crate::test_helpers::test_printer();
+
+        // Both refs are MUTABLE, so the pinned-SHA short-circuit cannot be what
+        // spares the second source its transfer.
+        let first = parse_git_source(&format!("{}@v1.0.0", bare.url())).unwrap();
+        fetch_git_source(&first, cache_base.path(), "one", &printer)
+            .expect("the first source out of the repository clones it");
+
+        std::fs::remove_dir_all(bare.path()).expect("remove upstream");
+
+        let second = parse_git_source(&format!("{}?ref=feature", bare.url())).unwrap();
+        let path = fetch_git_source(&second, cache_base.path(), "two", &printer).expect(
+            "a second source out of an already-transferred repository must not fetch again",
+        );
+        assert!(
+            path.join("f.txt").exists(),
+            "the branch ref must still check out from the cache"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_ref_the_cache_has_never_seen_is_transferred_even_inside_the_window() {
+        // `cfgd module upgrade` is this shape: one process clones the
+        // repository at the version being upgraded FROM, then asks for a
+        // version that did not exist when it did. A window keyed on the
+        // repository alone answers the second ask with the first transfer, and
+        // the upgrade fails with "cannot find ref".
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _window = crate::test_helpers::GitRefreshWindowGuard::never_expires();
+        let bare = crate::test_helpers::BareGitRepo::builder()
+            .commit("init", &[("a.txt", "v1")])
+            .tag("v1.0.0")
+            .build();
+
+        let cache_base = tempfile::tempdir().unwrap();
+        let printer = crate::test_helpers::test_printer();
+
+        let v1 = parse_git_source(&format!("{}@v1.0.0", bare.url())).unwrap();
+        fetch_git_source(&v1, cache_base.path(), "upgrading", &printer)
+            .expect("the first version clones the repository");
+
+        // The upstream publishes a version the cached checkout has never heard
+        // of, exactly as it would between an install and an upgrade.
+        let bare_repo = git2::Repository::open_bare(bare.path()).unwrap();
+        let head_oid = bare_repo
+            .refname_to_id(&format!("refs/heads/{}", bare.head_branch()))
+            .unwrap();
+        let head_obj = bare_repo.find_object(head_oid, None).unwrap();
+        bare_repo
+            .tag_lightweight("v2.0.0", &head_obj, false)
+            .unwrap();
+
+        let v2 = parse_git_source(&format!("{}@v2.0.0", bare.url())).unwrap();
+        fetch_git_source(&v2, cache_base.path(), "upgrading", &printer)
+            .expect("a ref the cache cannot resolve must be transferred, window open or not");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn the_transfer_window_is_what_spares_the_second_source_its_fetch() {
+        // The control for the test above: with the window pinned shut the same
+        // sequence fails, which is also what proves the removed upstream really
+        // does refuse a transfer rather than quietly succeeding.
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
+        let bare = crate::test_helpers::BareGitRepo::builder()
+            .commit("init", &[("a.txt", "v1")])
+            .tag("v1.0.0")
+            .branch("feature", &[("f.txt", "f")])
+            .build();
+
+        let cache_base = tempfile::tempdir().unwrap();
+        let printer = crate::test_helpers::test_printer();
+
+        let first = parse_git_source(&format!("{}@v1.0.0", bare.url())).unwrap();
+        fetch_git_source(&first, cache_base.path(), "one", &printer)
+            .expect("the first source out of the repository clones it");
+
+        std::fs::remove_dir_all(bare.path()).expect("remove upstream");
+
+        let second = parse_git_source(&format!("{}?ref=feature", bare.url())).unwrap();
+        fetch_git_source(&second, cache_base.path(), "two", &printer)
+            .expect_err("with the window pinned shut the second source must attempt a transfer");
     }
 
     // --- checkout_ref: ref that does not peel to a commit ---

@@ -62,9 +62,13 @@ pub fn cmd_plan(
     // used, custom managers included.
     let mut registry = desired.take_registry(&cfg);
     let source_env = desired.source_env;
-    let resolved_modules = desired.modules;
+    let mut resolved_modules = desired.modules;
     let mut effective_resolved = desired.resolved;
     registry.set_system_config_dir(&config_dir);
+
+    // The preview renders `brew install neovim (0.10.2)`, so this is one of the
+    // paths that consumes a version and therefore one of the paths that asks.
+    modules::fill_module_available_versions(&mut resolved_modules, &registry.manager_map());
 
     // Resolve manifest files (Brewfile, package.json, etc.) into package lists
     ctx.resolve_manifest_packages(&mut effective_resolved.merged.packages)?;
