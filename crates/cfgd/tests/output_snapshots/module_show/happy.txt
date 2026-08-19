@@ -14,8 +14,8 @@ Module: dev-tools
 
 Packages
   ✓ ripgrep → brew install ripgrep (14.1.0)
-  ⊙ winget-only-tool, platforms: windows             — skipped (platform filter)
-  ⚠ obscure-tool (prefer: nix), min: 1.0: unresolved — no manager available on this platform
+  ⊙ winget-only-tool, platforms: windows            — skipped (platform filter)
+  ⚠ obscure-tool (prefer: nix), min: 1.0 unresolved — no manager available on this platform
 
 Files
   vimrc                     ~/.vimrc

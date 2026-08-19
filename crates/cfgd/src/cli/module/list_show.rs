@@ -174,8 +174,13 @@ pub fn build_module_show_doc(
                 })
             }
             PackageDisplay::Unresolved { summary, error } => {
-                s.status_with(Role::Warn, summary.clone(), |f| {
-                    f.qualifier("unresolved").detail(error.clone())
+                // `summary` already carries two data colons of its own
+                // (`prefer:`, `min:`) — `.qualifier("unresolved")` would add
+                // a third with a different meaning ("unresolved" is not a
+                // field on the summary). "unresolved" joins the subject in
+                // plain text instead, and `error` is the one real detail.
+                s.status_with(Role::Warn, format!("{summary} unresolved"), |f| {
+                    f.detail(error.clone())
                 })
             }
         })
