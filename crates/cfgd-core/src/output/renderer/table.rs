@@ -72,20 +72,24 @@ impl Renderer {
         // Header row. Pad by the display-width deficit so CJK / emoji / accented
         // cells line up with ASCII neighbours — `format!("{:<w$}", ...)` pads by
         // char count, which over-pads multi-byte and under-pads zero-width.
+        // Each cell is styled on its own (R18): styling the joined row instead
+        // would wrap the "  " inter-column gap in the same SGR span, so a
+        // reader selecting just the gap copies an empty styled run.
         let header_line: String = t
             .headers
             .iter()
             .enumerate()
             .map(|(i, h)| {
                 let pad = widths[i].saturating_sub(UnicodeWidthStr::width(h.as_str()));
-                format!("{h}{}", " ".repeat(pad))
+                let padded = format!("{h}{}", " ".repeat(pad));
+                self.theme.header.apply_to(padded).to_string()
             })
             .collect::<Vec<_>>()
             .join("  ");
         // One emission: header row, separator and every data row leave under a
         // single state-lock acquisition, so a live bar redraws once around the
         // whole table rather than once per row.
-        let mut body = vec![self.theme.header.apply_to(&header_line).to_string()];
+        let mut body = vec![header_line];
         // Separator
         let sep: String = widths
             .iter()
@@ -160,6 +164,47 @@ mod tests {
         assert!(out.contains("─"));
         assert!(out.contains("alice"));
         assert!(out.contains("bob"));
+    }
+
+    /// R18: the header row styles each cell on its own — the "  " gap
+    /// between columns must stay outside any SGR span. Raw-captured (per
+    /// testing.md) because the assertion is ABOUT the escapes: `captured_text`
+    /// would strip exactly the bytes this test exists to check, and a bug
+    /// that wraps the whole joined row in one span would pass a stripped-text
+    /// comparison just as well as this one.
+    #[test]
+    #[serial_test::serial]
+    fn table_header_styles_each_cell_leaving_gaps_unstyled() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let r = Renderer::new(theme.clone(), Verbosity::Normal);
+        // Rows widen the "Age" column past the header's own width, so the
+        // padding this test exists to prove lands inside the styled span
+        // rather than the column happening to need none.
+        let t = Table::new(["Name", "Age"]).row(["Bob", "1000"]);
+        r.render_table(&sink, 0, &t);
+        // raw-capture-ok: asserting the header row's SGR spans stop at each cell rather than spanning the inter-column gap — captured_text would strip the ANSI this test exists to check
+        let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let expected = format!(
+            "{}  {}",
+            theme.header.apply_to("Name"),
+            theme.header.apply_to("Age "),
+        );
+        let header_line = raw
+            .lines()
+            .next()
+            .unwrap_or_else(|| panic!("no header line captured: {raw:?}"));
+        assert_eq!(
+            header_line, expected,
+            "each header cell must carry its own SGR span, with a plain, \
+             unstyled \"  \" gap between them: {header_line:?}"
+        );
+        assert!(
+            expected.contains('\u{1b}'),
+            "the fixture theme must actually emit SGR codes, or this test \
+             proves nothing: {expected:?}"
+        );
     }
 
     #[test]
