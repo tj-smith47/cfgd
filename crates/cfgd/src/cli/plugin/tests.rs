@@ -1727,10 +1727,11 @@ images:
         let manifest_path = dir.path().join("pod.yaml");
         std::fs::write(&manifest_path, POD_TWO_VOLUMES).expect("write manifest");
 
-        let (printer, out) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let (printer, out, err_buf) =
+            Printer::for_test_split_streams(cfgd_core::output::Verbosity::Normal);
         assert!(
             !printer.is_structured(),
-            "for_test_at must yield a non-structured (table) printer"
+            "for_test_split_streams must yield a non-structured (table) printer"
         );
         cmd_deploy(
             &printer,
@@ -1742,32 +1743,30 @@ images:
         .expect("human-mode deploy must succeed");
         drop(printer);
 
-        let printed = out.lock().expect("lock capture").clone();
-        // The capture writes both sinks into ONE buffer, and the rewrite
-        // summary is a stderr status line that names the reference it replaced.
-        // In production those are separate streams; here the status lines have
-        // to be dropped before asking what the DATA channel carries.
-        let manifest_only = printed
-            .lines()
-            .filter(|l| !l.trim_start().starts_with('\u{2299}'))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let stdout = cfgd_core::test_helpers::captured_text(&out);
+        let stderr = cfgd_core::test_helpers::captured_text(&err_buf);
         assert!(
-            manifest_only.contains("registry.jarvispro.io/gome/server@sha256:deadbeef"),
-            "stdout must carry the pinned digest ref: {printed}"
+            stdout.contains("registry.jarvispro.io/gome/server@sha256:deadbeef"),
+            "stdout must carry the pinned digest ref: {stdout}"
         );
         assert!(
-            !manifest_only.contains("gome/server:abc"),
-            "stdout must not carry the old mutable tag: {printed}"
+            !stdout.contains("gome/server:abc"),
+            "stdout must not carry the old mutable tag: {stdout}"
+        );
+        // stdout is the pipeline into `kubectl apply -f -`: nothing but the
+        // manifest may land there, and the split capture states that directly.
+        assert!(
+            !stdout.contains('\u{2299}'),
+            "no status line may reach the data channel: {stdout}"
         );
         assert!(
-            printed.contains("\u{2299} pinned registry.jarvispro.io/gome/server:abc"),
-            "the rewrite summary must reach the human channel: {printed}"
+            stderr.contains("\u{2299} pinned registry.jarvispro.io/gome/server:abc"),
+            "the rewrite summary must reach the human channel on stderr: {stderr}"
         );
         // The unmapped volume passes through untouched.
         assert!(
-            printed.contains("registry.jarvispro.io/other/thing:xyz"),
-            "unmapped volume reference must survive verbatim: {printed}"
+            stdout.contains("registry.jarvispro.io/other/thing:xyz"),
+            "unmapped volume reference must survive verbatim: {stdout}"
         );
     }
 }

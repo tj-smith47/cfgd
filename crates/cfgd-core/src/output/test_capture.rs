@@ -206,6 +206,30 @@ impl Printer {
         (p, buf)
     }
 
+    /// Split-stream capture: stdout and stderr land in SEPARATE buffers —
+    /// `(printer, stdout, stderr)` — the relationship the two sinks have in
+    /// production. The one constructor that can state a stdout-purity claim
+    /// directly: with a merged capture, a test asking "what did the DATA
+    /// channel carry" has to filter status glyphs back out, and then the
+    /// filter, not the printer, decides what counts as stdout.
+    pub fn for_test_split_streams(
+        verbosity: Verbosity,
+    ) -> (Self, Arc<Mutex<String>>, Arc<Mutex<String>>) {
+        let stdout = Arc::new(Mutex::new(String::new()));
+        let stderr = Arc::new(Mutex::new(String::new()));
+        let mut p = build_test_printer(
+            stderr.clone(),
+            Theme::default(),
+            verbosity,
+            OutputFormat::Table,
+            false,
+            None,
+            None,
+        );
+        p.sink_stdout = Arc::new(StringSink(stdout.clone()));
+        (p, stdout, stderr)
+    }
+
     pub fn for_test_with_format(format: OutputFormat) -> (Self, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
         let p = build_test_printer(
