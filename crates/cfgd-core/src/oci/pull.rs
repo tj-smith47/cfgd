@@ -64,7 +64,7 @@ pub fn pull_module(
     let auth = RegistryAuth::resolve(&oci_ref.registry);
     let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
 
-    let spinner = printer.map(|p| p.spinner(format!("Pulling module from {artifact_ref}...")));
+    let spinner = printer.map(|p| p.spinner(format!("Pulling module from {artifact_ref}")));
 
     match pull_module_inner(
         &agent,

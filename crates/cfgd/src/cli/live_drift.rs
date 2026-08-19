@@ -218,7 +218,7 @@ fn package_action_drift(action: &PackageAction) -> Option<VerifyResult> {
             resource_id: super::diff::package_resource_id(manager, packages),
             matches: false,
             expected: "installed".to_string(),
-            actual: "not installed".to_string(),
+            actual: cfgd_core::Absence::NotInstalled.to_string(),
         }),
         PackageAction::Uninstall {
             manager, packages, ..
@@ -278,11 +278,11 @@ pub(in crate::cli) fn manager_drift_phrase(action: &ManagerAction) -> Option<Man
     match action {
         ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => None,
         ManagerAction::Provision { via, .. } => Some(ManagerDriftPhrase {
-            state: "not installed",
+            state: cfgd_core::Absence::NotInstalled.as_str(),
             detail: format!("can bootstrap via {via}"),
         }),
         ManagerAction::Refuse { reason, .. } => Some(ManagerDriftPhrase {
-            state: "not installed",
+            state: cfgd_core::Absence::NotInstalled.as_str(),
             detail: format!("cannot bootstrap: {reason}"),
         }),
     }

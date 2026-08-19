@@ -53,6 +53,25 @@ pub(super) fn clamp_label(sink: &dyn Writer, message: &str, depth: usize) -> Str
     }
 }
 
+/// Compose an in-flight subject for a spinner, progress bar, or output
+/// window. Every constructor and `set_message` across this module (plus
+/// `LiveRow::window` and `Printer::output_window_at`) funnels its caller's
+/// text through this instead of a bare `.into()`, so "a running subject is a
+/// bare present participle, no trailing ellipsis" is enforced once instead of
+/// at every spinner call site in the workspace — a literal `"..."` or `…`
+/// left in a caller's format string becomes inert rather than doubled.
+pub(super) fn compose_in_flight_subject(text: impl Into<String>) -> String {
+    let text = text.into();
+    let trimmed = text.trim_end();
+    let stripped = trimmed
+        .strip_suffix('…')
+        .or_else(|| trimmed.strip_suffix("..."));
+    match stripped {
+        Some(base) => base.trim_end().to_string(),
+        None => text,
+    }
+}
+
 /// Indent a live bar by putting `depth`'s indent in its `{prefix}` field — the
 /// ONE way any bar in this module is indented, and the reason a spinner, a
 /// progress bar and a `LiveRow` cannot disagree about where the indent goes.
@@ -101,7 +120,8 @@ impl<'p> Spinner<'p> {
     /// narration be what an early `?` leaves behind, not the spinner's
     /// original opening label.
     pub fn set_message(&mut self, text: impl Into<String>) {
-        let clamped = clamp_label(self.sink.as_ref(), &text.into(), self.depth);
+        let text = compose_in_flight_subject(text);
+        let clamped = clamp_label(self.sink.as_ref(), &text, self.depth);
         self.bar.set_message(clamped.clone());
         self.message = clamped;
     }
@@ -241,7 +261,8 @@ impl<'p> ProgressBar<'p> {
     /// becomes `self.message`, the label `Drop` settles with if the bar is
     /// abandoned before `finish()`.
     pub fn set_message(&mut self, m: impl Into<String>) {
-        let clamped = clamp_label(self.sink.as_ref(), &m.into(), self.depth);
+        let m = compose_in_flight_subject(m);
+        let clamped = clamp_label(self.sink.as_ref(), &m, self.depth);
         self.bar.set_message(clamped.clone());
         self.message = clamped;
     }

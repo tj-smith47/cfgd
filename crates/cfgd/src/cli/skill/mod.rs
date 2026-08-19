@@ -514,7 +514,10 @@ pub fn cmd_skill_remove(
         let id = provider.id().to_string();
         match provider.remove(core_kind, scope, env!("CARGO_PKG_VERSION")) {
             Ok(Some(path)) => results.push(SkillInstallResult::removed(id, path)),
-            Ok(None) => results.push(SkillInstallResult::skipped(id, "not installed")),
+            Ok(None) => results.push(SkillInstallResult::skipped(
+                id,
+                cfgd_core::Absence::NotInstalled.as_str(),
+            )),
             Err(e) => {
                 any_failure = true;
                 results.push(SkillInstallResult::failed(id, install_failure_reason(&e)));
@@ -524,7 +527,7 @@ pub fn cmd_skill_remove(
     for provider in &not_installed {
         results.push(SkillInstallResult::skipped(
             provider.id().to_string(),
-            "not installed",
+            cfgd_core::Absence::NotInstalled.as_str(),
         ));
     }
 
@@ -611,7 +614,10 @@ pub fn cmd_skill_update(
         for provider in registry.iter().filter(|p| is_target(p.id(), providers)) {
             let id = provider.id().to_string();
             if !skill_already_installed(provider.as_ref(), kind, scope) {
-                results.push(SkillInstallResult::skipped(id, "not installed"));
+                results.push(SkillInstallResult::skipped(
+                    id,
+                    cfgd_core::Absence::NotInstalled.as_str(),
+                ));
                 continue;
             }
             let r = update_one(provider.as_ref(), core_kind, scope);

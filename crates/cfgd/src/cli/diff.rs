@@ -324,7 +324,11 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                 Doc::new()
                     .status(
                         Role::Info,
-                        format!("Module '{}' not found — nothing to diff", mod_name),
+                        format!(
+                            "Module '{}' {} — nothing to diff",
+                            mod_name,
+                            cfgd_core::Absence::NotFound
+                        ),
                     )
                     .with_data(DiffOutput::default()),
             );
@@ -380,7 +384,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                     emitted = true;
                     group
                         .status(Role::Warn, pkg.manager.clone())
-                        .qualifier("missing")
+                        .qualifier(cfgd_core::Absence::Missing.as_str())
                         .detail(pkg.resolved_name.clone());
                     diff_payload.packages.push(drift);
                 }
@@ -447,7 +451,7 @@ pub(super) fn package_missing_drift(
     }
     Some(PackageDrift {
         manager: pkg.manager.clone(),
-        shape: "missing".to_string(),
+        shape: cfgd_core::Absence::Missing.to_string(),
         packages: vec![pkg.resolved_name.clone()],
         bootstrap_method: None,
         reason: None,
@@ -542,11 +546,11 @@ pub(super) fn print_package_drift(
                 } => {
                     group
                         .status(Role::Warn, manager.clone())
-                        .qualifier("missing")
+                        .qualifier(cfgd_core::Absence::Missing.as_str())
                         .detail(packages.join(", "));
                     payload.packages.push(PackageDrift {
                         manager: manager.clone(),
-                        shape: "missing".to_string(),
+                        shape: cfgd_core::Absence::Missing.to_string(),
                         packages: packages.clone(),
                         bootstrap_method: None,
                         reason: None,

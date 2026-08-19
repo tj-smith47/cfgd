@@ -21,7 +21,7 @@
 //!   - `init/apply_then_next_steps.txt` — bridge anchor: a streaming portion
 //!     (the real `ApplyRun` header + preview tree `apply_plan` emits for a
 //!     non-empty plan) followed by a buffered Doc carrying a real
-//!     `section("Next Steps", |s| s.bullet(...))` payload. Asserts the
+//!     `section("Next Steps", |s| s.kv_block(...))` payload. Asserts the
 //!     one-blank-line bridge rule programmatically.
 //!
 //! Goldens live under `tests/output_snapshots/init/`. Regenerate with:
@@ -341,7 +341,7 @@ fn init_apply_then_next_steps_bridge_invariant() {
     // — the real `ApplyRun` header and preview of a preview-only run, not a
     // hand-written imitation of them —
     // and then emitting a buffered Doc carrying a real
-    // `section("Next Steps", |s| s.bullet(...))` payload. The snapshot pins
+    // `section("Next Steps", |s| s.kv_block(...))` payload. The snapshot pins
     // the rendered output and the assertions below confirm the bridge
     // invariant: exactly one blank line between the last streaming line and
     // the first buffered line.
@@ -392,13 +392,15 @@ fn init_apply_then_next_steps_bridge_invariant() {
         ),
     );
 
-    // Buffered portion — a real section with bullets, matching the shape
+    // Buffered portion — a real section with a kv_block, matching the shape
     // cmd_init emits when `should_apply == false` (the "Next steps"
     // section in cmd_init.rs).
     let doc = Doc::new().section("Next Steps", |s| {
-        s.bullet("cfgd apply           — apply configuration")
-            .bullet("cfgd status         — view configured state")
-            .bullet("cfgd daemon install — start background sync")
+        s.kv_block([
+            ("cfgd apply", "apply configuration"),
+            ("cfgd status", "view configured state"),
+            ("cfgd daemon install", "start background sync"),
+        ])
     });
     printer.emit(doc);
     drop(printer);

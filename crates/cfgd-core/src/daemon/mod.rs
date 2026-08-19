@@ -900,7 +900,7 @@ pub(super) async fn run_daemon_with(
     cfgd_version: &str,
 ) -> Result<()> {
     printer.heading("Daemon");
-    printer.status_simple(Role::Info, "Starting cfgd daemon...");
+    printer.status_simple(Role::Info, "Starting cfgd daemon");
 
     let ipc_path = overrides
         .ipc_path
@@ -1461,11 +1461,11 @@ impl ShutdownSignals {
         }
         tokio::select! {
             _ = recv(self.sigterm) => {
-                printer.status_simple(Role::Info, "Received SIGTERM, shutting down daemon...");
+                printer.status_simple(Role::Info, "Received SIGTERM, shutting down daemon");
                 143
             }
             _ = recv(self.sigint) => {
-                printer.status_simple(Role::Info, "Shutting down daemon...");
+                printer.status_simple(Role::Info, "Shutting down daemon");
                 130
             }
         }
@@ -1502,7 +1502,7 @@ impl ShutdownSignals {
             }
             None => std::future::pending::<()>().await,
         }
-        printer.status_simple(Role::Info, "Shutting down daemon...");
+        printer.status_simple(Role::Info, "Shutting down daemon");
         130
     }
 }

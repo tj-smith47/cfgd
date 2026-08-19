@@ -33,7 +33,7 @@ pub fn push_module(
     let oci_ref = OciReference::parse(artifact_ref)?;
     let auth = RegistryAuth::resolve(&oci_ref.registry);
     let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
-    let spinner = printer.map(|p| p.spinner(format!("Pushing module to {artifact_ref}...")));
+    let spinner = printer.map(|p| p.spinner(format!("Pushing module to {artifact_ref}")));
     match push_module_inner(&agent, dir, &oci_ref, auth.as_ref(), platform) {
         Ok((digest, _size)) => {
             if let Some(s) = spinner {
@@ -219,11 +219,8 @@ pub fn push_module_multiplatform(
     let auth = RegistryAuth::resolve(&oci_ref.registry);
     let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
 
-    let spinner = printer.map(|p| {
-        p.spinner(format!(
-            "Pushing multi-platform module to {artifact_ref}..."
-        ))
-    });
+    let spinner =
+        printer.map(|p| p.spinner(format!("Pushing multi-platform module to {artifact_ref}")));
 
     let result = push_multiplatform_manifests_and_index(&agent, builds, &oci_ref, auth.as_ref());
 

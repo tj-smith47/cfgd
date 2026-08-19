@@ -107,7 +107,7 @@ pub(crate) fn cmd_enroll(
         printer.heading("Token Enrollment");
         printer.status_simple(
             Role::Info,
-            "Exchanging bootstrap token for device credential...",
+            "Exchanging bootstrap token for device credential",
         );
 
         let resp = client
@@ -274,11 +274,8 @@ fn finish_enrollment(
 /// `EnrollOutput` payload. Pure builder so snapshot tests can drive it
 /// without standing up a mock server.
 pub fn build_enroll_final_doc(output: &EnrollOutput) -> Doc {
-    let lines = next_steps_lines();
     Doc::new()
-        .section("Next Steps", |s| {
-            lines.iter().fold(s, |s, line| s.bullet(*line))
-        })
+        .section("Next Steps", |s| s.kv_block(next_steps_lines().to_vec()))
         .with_data(output)
 }
 
@@ -308,14 +305,15 @@ pub(super) fn build_device_credential(
 /// Pinned as a pure helper so the line set is testable and stable — the
 /// CLI's "what do I do next?" affordance must not silently drop or reorder
 /// these as the codebase evolves; doing so degrades the first-run UX.
-/// Lines are bare command strings — the "Next Steps" section bullets supply
-/// their own indent and `- ` prefix.
-pub(super) fn next_steps_lines() -> &'static [&'static str] {
+/// `(command, description)` pairs, rendered as a `kv_block` — the section's
+/// own alignment, not a hand-padded column of trailing spaces baked into the
+/// command string.
+pub(super) fn next_steps_lines() -> &'static [(&'static str, &'static str)] {
     &[
-        "cfgd checkin --server-url <url>  — report status to server",
-        "cfgd apply --dry-run             — preview configuration",
-        "cfgd apply                       — apply configuration",
-        "cfgd daemon install              — start background sync",
+        ("cfgd checkin --server-url <url>", "report status to server"),
+        ("cfgd apply --dry-run", "preview configuration"),
+        ("cfgd apply", "apply configuration"),
+        ("cfgd daemon install", "start background sync"),
     ]
 }
 

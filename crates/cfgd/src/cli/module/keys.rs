@@ -277,7 +277,7 @@ pub fn cmd_module_keys_rotate(
     let new_key_path = Path::new(key_dir).join("cosign.key");
     let mut resigned: Vec<String> = Vec::new();
     for artifact in artifacts {
-        let sp = printer.spinner(format!("Re-signing {artifact}..."));
+        let sp = printer.spinner(format!("Re-signing {artifact}"));
         match cfgd_core::oci::sign_artifact(artifact, Some(&new_key_path.display().to_string())) {
             Ok(()) => {
                 sp.finish_ok(format!("Re-signed {artifact}"));

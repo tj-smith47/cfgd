@@ -138,7 +138,7 @@ fn collect_doctor_output(
                 path: cli.config.display().to_string(),
                 name: None,
                 profile: None,
-                error: Some("not found".into()),
+                error: Some(cfgd_core::Absence::NotFound.to_string()),
                 state,
             },
             None,
@@ -368,7 +368,7 @@ fn collect_doctor_output(
                 DoctorModuleCheck {
                     name: mod_name.clone(),
                     valid: false,
-                    error: Some("module not found".into()),
+                    error: Some(format!("module {}", cfgd_core::Absence::NotFound)),
                     packages: Vec::new(),
                 }
             }
@@ -564,13 +564,16 @@ fn build_config_top(doc: Doc, cfg: &DoctorConfigCheck) -> Doc {
             doc
         }
         DoctorConfigState::MissingAtDefault => doc.status_with(Role::Warn, "Config file", |sf| {
-            sf.qualifier(cfg.path.clone())
-                .detail("not found; run 'cfgd init' to create one")
+            sf.qualifier(cfg.path.clone()).detail(format!(
+                "{}; run 'cfgd init' to create one",
+                cfgd_core::Absence::NotFound
+            ))
         }),
         DoctorConfigState::MissingAtExplicit => doc.status_with(Role::Fail, "Config file", |sf| {
-            sf.qualifier(cfg.path.clone()).detail(
-                "not found; the given --config/--config-dir/CFGD_CONFIG path does not exist",
-            )
+            sf.qualifier(cfg.path.clone()).detail(format!(
+                "{}; the given --config/--config-dir/CFGD_CONFIG path does not exist",
+                cfgd_core::Absence::NotFound
+            ))
         }),
         DoctorConfigState::Invalid => doc.status_with(Role::Fail, "Config file", |f| {
             f.qualifier(cfg.path.clone())
@@ -584,7 +587,8 @@ fn build_tools_section(s: SectionBuilder, git_available: bool) -> SectionBuilder
         s.status_with(Role::Ok, "git", |f| f.qualifier("found"))
     } else {
         s.status_with(Role::Fail, "git", |f| {
-            f.qualifier("not found").detail("install git to use cfgd")
+            f.qualifier(cfgd_core::Absence::NotFound.as_str())
+                .detail("install git to use cfgd")
         })
     }
 }
@@ -597,7 +601,7 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
         })
     } else {
         s.status_with(Role::Warn, "sops", |f| {
-            f.qualifier("not found")
+            f.qualifier(cfgd_core::Absence::NotFound.as_str())
                 .detail("required for secrets (https://github.com/getsops/sops#install)")
         })
     };
@@ -605,8 +609,10 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
     s = match (secrets.age_key_exists, secrets.age_key_path.as_deref()) {
         (true, Some(path)) => s.status_with(Role::Ok, "age key", |f| f.qualifier(path.to_string())),
         (false, Some(path)) => s.status_with(Role::Warn, "age key", |f| {
-            f.qualifier(path.to_string())
-                .detail("not found; run 'cfgd init' to generate")
+            f.qualifier(path.to_string()).detail(format!(
+                "{}; run 'cfgd init' to generate",
+                cfgd_core::Absence::NotFound
+            ))
         }),
         _ => s,
     };
@@ -620,7 +626,7 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
         }
         (true, None) => s.status_with(Role::Ok, ".sops.yaml", |f| f.qualifier("present")),
         (false, _) => s.status_with(Role::Warn, ".sops.yaml", |f| {
-            f.qualifier("not found")
+            f.qualifier(cfgd_core::Absence::NotFound.as_str())
                 .detail("will be generated on 'cfgd init'")
         }),
     };
@@ -632,7 +638,7 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
             })
         } else {
             s.status_with(Role::Info, format!("provider {}", provider.name), |f| {
-                f.qualifier("not installed (optional)")
+                f.qualifier(format!("{} (optional)", cfgd_core::Absence::NotInstalled))
             })
         };
     }
@@ -652,11 +658,12 @@ fn build_managers_section(s: SectionBuilder, managers: &[DoctorManagerCheck]) ->
                     None => "can auto-bootstrap".into(),
                 };
                 s.status_with(Role::Warn, m.name.clone(), |sf| {
-                    sf.qualifier("not found").detail(detail)
+                    sf.qualifier(cfgd_core::Absence::NotFound.as_str())
+                        .detail(detail)
                 })
             } else {
                 s.status_with(Role::Fail, m.name.clone(), |sf| {
-                    sf.qualifier("not found")
+                    sf.qualifier(cfgd_core::Absence::NotFound.as_str())
                         .detail("declared in config but not available")
                 })
             }
@@ -734,8 +741,10 @@ fn build_module_package_status(
     } else {
         sub.status_with(Role::Fail, pkg.name.clone(), |sf| {
             sf.detail(format!(
-                "not installed ({} {})",
-                pkg.manager, pkg.resolved_name
+                "{} ({} {})",
+                cfgd_core::Absence::NotInstalled,
+                pkg.manager,
+                pkg.resolved_name
             ))
         })
     }
@@ -763,9 +772,11 @@ fn build_system_section(mut s: SectionBuilder, extras: &DoctorExtras) -> Section
                 sf.qualifier(format!("{} ({} profiles)", pd.path, pd.profile_count))
             })
         } else {
-            s.status_with(Role::Warn, "Profiles directory not found", |sf| {
-                sf.qualifier(pd.path.clone())
-            })
+            s.status_with(
+                Role::Warn,
+                format!("Profiles directory {}", cfgd_core::Absence::NotFound),
+                |sf| sf.qualifier(pd.path.clone()),
+            )
         };
     }
     if let Some(var) = extras.update_optout {

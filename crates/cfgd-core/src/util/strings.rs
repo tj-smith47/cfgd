@@ -531,6 +531,45 @@ pub fn xml_escape(s: &str) -> String {
     out
 }
 
+/// The ONE absence vocabulary this workspace renders, so three call sites
+/// naming the same kind of gap never drift into three different spellings.
+/// The choice is about WHAT is absent, not how badly:
+/// - [`Absence::NotInstalled`] — could exist on this machine (a package a
+///   manager reports it does not have)
+/// - [`Absence::Missing`] — the user's own config DECLARED it and it is not
+///   on disk (a file, a resource an apply expected to find)
+/// - [`Absence::NotFound`] — a LOOKUP came back empty (searching a registry,
+///   resolving a name/id that matches nothing)
+///
+/// `Display` renders the bare word so a caller composes it into a longer
+/// sentence (`format!("{} — run 'cfgd source update'", Absence::NotFound)`);
+/// reach for [`Absence::as_str`] where a `&'static str` is required directly
+/// (a `.qualifier(...)` or `.detail(...)` call that takes `impl Into<String>`
+/// accepts either).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Absence {
+    NotInstalled,
+    Missing,
+    NotFound,
+}
+
+impl Absence {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Absence::NotInstalled => "not installed",
+            Absence::Missing => "missing",
+            Absence::NotFound => "not found",
+        }
+    }
+}
+
+impl std::fmt::Display for Absence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

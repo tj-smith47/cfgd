@@ -3654,29 +3654,36 @@ fn next_steps_lines_starts_with_checkin_then_apply() {
     let lines = super::next_steps_lines();
     assert_eq!(lines.len(), 4, "exactly four next-step suggestions");
     assert!(
-        lines[0].contains("cfgd checkin"),
+        lines[0].0.contains("cfgd checkin"),
         "first line: {}",
-        lines[0]
+        lines[0].0
     );
-    assert!(lines[1].contains("apply --dry-run"), "second: {}", lines[1]);
-    assert!(lines[2].contains("cfgd apply"), "third: {}", lines[2]);
-    assert!(lines[3].contains("daemon install"), "fourth: {}", lines[3]);
+    assert!(
+        lines[1].0.contains("apply --dry-run"),
+        "second: {}",
+        lines[1].0
+    );
+    assert!(lines[2].0.contains("cfgd apply"), "third: {}", lines[2].0);
+    assert!(
+        lines[3].0.contains("daemon install"),
+        "fourth: {}",
+        lines[3].0
+    );
 }
 
 #[test]
 fn next_steps_lines_are_bare_commands_not_pre_indented() {
-    // The "Next Steps" Doc section renders each line as a bullet, which
-    // supplies its own indent and "- " prefix. The line strings must NOT
-    // carry leading whitespace or the bullet output would have two layers
-    // of indentation.
-    for line in super::next_steps_lines() {
+    // The "Next Steps" Doc section renders each pair through a `kv_block`,
+    // which supplies its own indent and column alignment. The command half
+    // must NOT carry leading whitespace or hand-rolled padding of its own.
+    for (command, _description) in super::next_steps_lines() {
         assert!(
-            !line.starts_with(' ') && !line.starts_with('\t'),
-            "line must be a bare command, got: {line:?}"
+            !command.starts_with(' ') && !command.starts_with('\t'),
+            "command must be bare, got: {command:?}"
         );
         assert!(
-            line.starts_with("cfgd "),
-            "line must start with the cfgd command verb, got: {line:?}"
+            command.starts_with("cfgd "),
+            "command must start with the cfgd verb, got: {command:?}"
         );
     }
 }

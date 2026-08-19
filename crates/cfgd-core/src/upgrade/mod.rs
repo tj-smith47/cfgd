@@ -182,7 +182,7 @@ fn fetch_latest_release_from(
     let body = github_get(
         &url,
         printer,
-        "Checking for latest release...",
+        "Checking for latest release",
         "Checked latest release",
         "Failed to fetch release information",
     )?;
@@ -202,7 +202,7 @@ fn fetch_newest_release_from(
     let body = github_get(
         &url,
         printer,
-        "Checking for newest release (incl. prereleases)...",
+        "Checking for newest release (incl. prereleases)",
         "Checked newest release",
         "Failed to fetch release information",
     )?;
@@ -517,7 +517,7 @@ fn verify_cosign_bundle(
         None
     };
 
-    let verify_spinner = printer.map(|p| p.spinner("Verifying cosign signature..."));
+    let verify_spinner = printer.map(|p| p.spinner("Verifying cosign signature"));
     let outcome = run_cosign_verify_blob(checksums_path, &bundle_path, cert_path.as_deref());
     match &outcome {
         Ok(()) => {
@@ -627,7 +627,7 @@ fn download_to_file(
             download_with_progress_bar(p, url, total, &mut reader, &mut tmp)?;
         }
         (Some(p), None) => {
-            let spinner = p.spinner(format!("Downloading {url}..."));
+            let spinner = p.spinner(format!("Downloading {url}"));
             match std::io::copy(&mut reader, &mut tmp) {
                 Ok(_) => {
                     let _ = spinner.finish_ok(format!("Downloaded {url}"));
@@ -832,7 +832,7 @@ pub(crate) fn download_and_install_to(
                 message: format!("read checksums: {}", e),
             })?;
 
-        let verify_spinner = printer.map(|p| p.spinner("Verifying checksum..."));
+        let verify_spinner = printer.map(|p| p.spinner("Verifying checksum"));
         let verify_result = verify_archive_checksum(&archive_path, &checksums_content, &asset.name);
         match &verify_result {
             Ok(()) => {
@@ -864,7 +864,7 @@ pub(crate) fn download_and_install_to(
         message: format!("create extract dir: {}", e),
     })?;
 
-    let extract_spinner = printer.map(|p| p.spinner("Extracting archive..."));
+    let extract_spinner = printer.map(|p| p.spinner("Extracting archive"));
     #[cfg(unix)]
     let extract_result = extract_tarball(&archive_path, &extract_dir);
     #[cfg(windows)]

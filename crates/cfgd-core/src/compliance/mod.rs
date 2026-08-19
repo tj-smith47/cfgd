@@ -326,7 +326,11 @@ pub fn collect_file_checks(
                 category: "file".into(),
                 target: Some(to_posix_string(&target)),
                 status: ComplianceStatus::Violation,
-                detail: Some(format!("managed file missing{}", suffix)),
+                detail: Some(format!(
+                    "managed file {}{}",
+                    crate::Absence::Missing,
+                    suffix
+                )),
                 ..Default::default()
             });
             continue;
@@ -577,7 +581,7 @@ pub fn collect_package_checks(
                     name: Some(pkg.clone()),
                     manager: Some(pm.name().to_owned()),
                     status: ComplianceStatus::Violation,
-                    detail: Some(format!("not installed{}", suffix)),
+                    detail: Some(format!("{}{}", crate::Absence::NotInstalled, suffix)),
                     ..Default::default()
                 });
             }
@@ -747,7 +751,7 @@ pub fn collect_secret_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
                 category: "secret".into(),
                 target: Some(to_posix_string(&target)),
                 status: ComplianceStatus::Violation,
-                detail: Some("target file missing".into()),
+                detail: Some(format!("target file {}", crate::Absence::Missing)),
                 ..Default::default()
             });
         }

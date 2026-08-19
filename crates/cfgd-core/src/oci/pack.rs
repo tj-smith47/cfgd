@@ -308,7 +308,7 @@ pub fn pack_image(
     let auth = RegistryAuth::resolve(&oci_ref.registry);
     let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
 
-    let spinner = printer.map(|p| p.spinner(format!("Packing image to {artifact_ref}...")));
+    let spinner = printer.map(|p| p.spinner(format!("Packing image to {artifact_ref}")));
 
     match pack_image_inner(dir, &oci_ref, auth.as_ref(), &agent, opts) {
         Ok(outcome) => {

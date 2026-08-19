@@ -269,7 +269,7 @@ impl super::Printer {
 
     #[must_use]
     pub fn output_window_at(&self, depth: usize, label: impl Into<String>) -> OutputWindow<'_> {
-        let label = label.into();
+        let label = super::spinner::compose_in_flight_subject(label);
         let (bar, live) = super::spinner::make_spinner_bar(
             &self.multi_progress,
             &self.renderer,

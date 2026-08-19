@@ -129,7 +129,7 @@ impl<'p> LiveRow<'p> {
     /// The returned window does NOT retire the bar when it closes: the row
     /// outlives it and settles the line itself.
     pub(crate) fn window(&self, subject: impl Into<String>) -> OutputWindow<'p> {
-        let subject = subject.into();
+        let subject = super::spinner::compose_in_flight_subject(subject);
         if !self.bar.is_hidden() {
             self.bar.set_style(super::spinner::spinner_style(
                 &self.renderer,

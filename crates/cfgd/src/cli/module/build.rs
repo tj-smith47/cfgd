@@ -101,7 +101,7 @@ pub fn cmd_module_build(
                 "target",
                 (*t).to_string(),
             ));
-            let sp = owner.spinner(format!("Building for {t}..."));
+            let sp = owner.spinner(format!("Building for {t}"));
             let output_dir = match cfgd_core::oci::build_module(dir_path, Some(t), base_image) {
                 Ok(d) => {
                     sp.finish_ok(format!("Built {t} to {}", d.posix()));

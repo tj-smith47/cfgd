@@ -323,7 +323,7 @@ pub fn cmd_module_upgrade(
                     .into(),
                     name,
                     "not_found",
-                    format!("Module '{}' not found", name),
+                    format!("Module '{}' {}", name, cfgd_core::Absence::NotFound),
                     serde_json::json!({}),
                 ));
             }
@@ -964,7 +964,7 @@ fn registry_not_found_error(name: &str) -> anyhow::Error {
         .into(),
         name,
         "registry_not_found",
-        format!("Registry '{}' not found", name),
+        format!("Registry '{}' {}", name, cfgd_core::Absence::NotFound),
         serde_json::json!({}),
     )
 }
@@ -1006,7 +1006,7 @@ pub fn cmd_module_registry_rename(
             .into(),
             name,
             "registry_not_found",
-            format!("Registry '{}' not found", name),
+            format!("Registry '{}' {}", name, cfgd_core::Absence::NotFound),
             serde_json::json!({}),
         ));
     }
