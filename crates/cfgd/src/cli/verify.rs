@@ -38,9 +38,12 @@ pub fn cmd_verify(
             // "not found" is reserved for a genuinely unknown module name and
             // degrades to the same empty-results "No managed resources to
             // verify" render the rest of this function already produces for
-            // it; any other resolution failure (e.g. a source's
-            // `ScriptsNotAllowed` constraint) must surface as the error it
-            // is, not read as a miss.
+            // it; any other resolution failure (e.g. a dependency cycle among
+            // local modules) must surface as the error it is, not read as a
+            // miss. This call passes an empty `source_roots`, so
+            // `ScriptsNotAllowed` can never originate here — that constraint
+            // is enforced only where a source's own module roots are
+            // resolved (`resolve_desired_state`).
             Err(e)
                 if matches!(
                     &e,
@@ -183,6 +186,73 @@ pub fn build_verify_doc(output: &VerifyOutput) -> Doc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use serial_test::serial;
+
+    /// `cfgd verify --module <name>` against a local module set carrying a
+    /// dependency cycle must surface the typed `ModuleError::DependencyCycle`
+    /// — the real reason resolution failed — rather than degrading to the
+    /// empty-results "No managed resources to verify" render `cmd_verify`'s
+    /// `Err(e) if matches!(.., NotFound { .. }) => Vec::new()` arm reserves
+    /// for a genuinely unknown module name. A prior revision matched on any
+    /// `Err(_)` here and silently reported zero resources for every
+    /// resolution failure alike, which is exactly what this pins against
+    /// regressing. `resolve_modules` is called with an empty `source_roots`
+    /// at this call site (see the comment above the match), so a dependency
+    /// cycle — not `ScriptsNotAllowed`, which needs a source's own module
+    /// roots — is the reachable non-`NotFound` error here.
+    #[test]
+    #[serial]
+    fn cmd_verify_module_dependency_cycle_surfaces_the_real_error() {
+        use crate::cli::helpers::tests::{make_cli, quiet_printer};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+
+        let modules_dir = tmp.path().join("modules");
+        for (name, dependency) in [("cycle-a", "cycle-b"), ("cycle-b", "cycle-a")] {
+            let dir = modules_dir.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("module.yaml"),
+                format!(
+                    "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n  depends: [{dependency}]\n"
+                ),
+            )
+            .unwrap();
+        }
+
+        let mut cli = make_cli(config_path);
+        cli.state_dir = Some(tmp.path().join("state"));
+        cli.cache_dir = Some(tmp.path().join("cache"));
+        let printer = quiet_printer();
+
+        let err = cmd_verify(&cli, &printer, Some("cycle-a"), false).unwrap_err();
+        let cfgd_err = err
+            .downcast_ref::<cfgd_core::errors::CfgdError>()
+            .unwrap_or_else(|| panic!("expected a typed CfgdError, got: {err}"));
+        assert!(
+            matches!(
+                cfgd_err,
+                cfgd_core::errors::CfgdError::Module(
+                    cfgd_core::errors::ModuleError::DependencyCycle { .. }
+                )
+            ),
+            "expected DependencyCycle, got: {cfgd_err}"
+        );
+    }
 
     fn passing_result() -> reconciler::VerifyResult {
         reconciler::VerifyResult {
