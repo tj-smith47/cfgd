@@ -1072,10 +1072,10 @@ mod tests {
         assert!(!result.matches);
     }
 
-    /// B3's real claim: a `strategy: copy` directory deployment — the usual
-    /// Windows choice when Developer Mode is off — has no symlink and no
-    /// shared inode by design, so a converged one must NOT report the
-    /// permanent false drift a link-identity-only guard produced.
+    /// A `strategy: copy` directory deployment — the usual Windows choice
+    /// when Developer Mode is off — has no symlink and no shared inode by
+    /// design, so a converged one must NOT report the permanent false drift
+    /// a link-identity-only guard produced.
     #[test]
     fn diff_one_copy_deployed_directory_reports_no_drift_when_converged() {
         let dir = tempfile::tempdir().unwrap();
@@ -1103,9 +1103,9 @@ mod tests {
         assert_eq!(result.actual, "directory content matches source");
     }
 
-    /// The other half of B3: a file tampered INSIDE a copy-deployed directory
-    /// must still be caught — the fix must not trade a false positive for a
-    /// false negative.
+    /// A file tampered INSIDE a copy-deployed directory must still be
+    /// caught — the drift-detection fix above must not trade a false
+    /// positive for a false negative.
     #[test]
     fn diff_one_copy_deployed_directory_reports_drift_when_a_file_inside_is_tampered() {
         let dir = tempfile::tempdir().unwrap();

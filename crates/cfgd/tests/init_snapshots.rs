@@ -392,11 +392,11 @@ fn init_apply_then_next_steps_bridge_invariant() {
         ),
     );
 
-    // Buffered portion — a real section with a kv_block, matching the shape
-    // cmd_init emits when `should_apply == false` (the "Next steps"
+    // Buffered portion — a real section with a command_list, matching the
+    // shape cmd_init emits when `should_apply == false` (the "Next steps"
     // section in cmd_init.rs).
     let doc = Doc::new().section("Next Steps", |s| {
-        s.kv_block([
+        s.command_list([
             ("cfgd apply", "apply configuration"),
             ("cfgd status", "view configured state"),
             ("cfgd daemon install", "start background sync"),

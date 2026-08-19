@@ -504,8 +504,7 @@ mod tests {
 
     #[test]
     fn compose_in_flight_subject_on_nothing_but_the_marker_yields_empty() {
-        // Documents the edge the review flagged rather than hiding it: a
-        // caller that hands in only "..."/"…" gets back "". No production
+        // A caller that hands in only "..."/"…" gets back "". No production
         // call site does this — every in-flight subject names a verb — but
         // the composer's contract must be pinned regardless of who calls it.
         assert_eq!(compose_in_flight_subject("..."), "");

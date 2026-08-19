@@ -1069,7 +1069,7 @@ fn format_conflict_preview_lines_emits_canonical_shape() {
 fn format_conflict_preview_lines_rewords_the_persisted_arrow_for_display_only() {
     // `details` keeps its persisted `<-` shape in storage (composition::record);
     // this formatter is a display path and must reword it without a raw ASCII
-    // arrow ever reaching the terminal (R9).
+    // arrow ever reaching the terminal.
     let conflicts = vec![conflict(
         "curl",
         cfgd_core::composition::ResolutionType::Rejected,

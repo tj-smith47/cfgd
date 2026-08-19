@@ -586,10 +586,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn absence_renders_the_three_vocab_arms_by_what_is_absent_not_how_badly() {
-        assert_eq!(Absence::NotInstalled.as_str(), "not installed");
-        assert_eq!(Absence::Missing.as_str(), "missing");
-        assert_eq!(Absence::NotFound.as_str(), "not found");
+    fn absence_wording_carries_no_severity_vocabulary() {
+        // The three arms are chosen by WHAT is absent — a package
+        // (`NotInstalled`), a file (`Missing`), a named lookup (`NotFound`)
+        // — never by how alarming the absence is. Severity is the caller's
+        // `Role`; a status carrying `Role::Warn` and one carrying
+        // `Role::Fail` may both pair with `Absence::NotFound`, so the arm's
+        // own text must never leak a severity word that would make one of
+        // those pairings read as self-escalating.
+        for (arm, text) in [
+            (Absence::NotInstalled, Absence::NotInstalled.as_str()),
+            (Absence::Missing, Absence::Missing.as_str()),
+            (Absence::NotFound, Absence::NotFound.as_str()),
+        ] {
+            let lower = text.to_lowercase();
+            for word in ["error", "fail", "critical", "warn", "urgent"] {
+                assert!(
+                    !lower.contains(word),
+                    "{arm:?} leaks severity vocabulary via {word:?}: {text}"
+                );
+            }
+        }
     }
 
     #[test]

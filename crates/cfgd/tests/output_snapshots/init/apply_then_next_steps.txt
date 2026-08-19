@@ -10,6 +10,6 @@ Phase: Files
 ⊙ 1 action planned
 
 Next Steps
-  cfgd apply           apply configuration
-  cfgd status          view configured state
-  cfgd daemon install  start background sync
+  cfgd apply          — apply configuration
+  cfgd status         — view configured state
+  cfgd daemon install — start background sync

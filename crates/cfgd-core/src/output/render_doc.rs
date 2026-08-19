@@ -150,18 +150,10 @@ mod row_roles_round_trip_tests {
     //! styling is invisible without colors enabled.
 
     use super::*;
-    use crate::output::renderer::Renderer;
+    use crate::output::renderer::{Renderer, StringSink};
     use crate::output::{Role, Theme, Verbosity};
     use crate::test_helpers::EnvVarGuard;
     use std::sync::{Arc, Mutex};
-
-    struct StringSink(Arc<Mutex<String>>);
-    impl super::Writer for StringSink {
-        fn write_line(&self, text: &str) {
-            self.0.lock().unwrap().push_str(text);
-            self.0.lock().unwrap().push('\n');
-        }
-    }
 
     #[test]
     #[serial_test::serial]
@@ -210,18 +202,10 @@ mod heading_title_tests {
     //! `doc.rs`'s own tests).
 
     use super::*;
-    use crate::output::renderer::Renderer;
+    use crate::output::renderer::{Renderer, StringSink};
     use crate::output::{Theme, Verbosity};
     use crate::test_helpers::EnvVarGuard;
     use std::sync::{Arc, Mutex};
-
-    struct StringSink(Arc<Mutex<String>>);
-    impl super::Writer for StringSink {
-        fn write_line(&self, text: &str) {
-            self.0.lock().unwrap().push_str(text);
-            self.0.lock().unwrap().push('\n');
-        }
-    }
 
     #[test]
     #[serial_test::serial]
@@ -259,18 +243,10 @@ mod owner_section_restyle_tests {
     //! (unstyled `golden_doc!` captures) exercise.
 
     use super::*;
-    use crate::output::renderer::Renderer;
+    use crate::output::renderer::{Renderer, StringSink};
     use crate::output::{Doc, OwnerLabel, Theme, Verbosity};
     use crate::test_helpers::EnvVarGuard;
     use std::sync::{Arc, Mutex};
-
-    struct StringSink(Arc<Mutex<String>>);
-    impl super::Writer for StringSink {
-        fn write_line(&self, text: &str) {
-            self.0.lock().unwrap().push_str(text);
-            self.0.lock().unwrap().push('\n');
-        }
-    }
 
     /// A `subsection_owner` child renders the owner token styled through
     /// `OwnerLabel::styled`, not the section header slot's own plain coat.

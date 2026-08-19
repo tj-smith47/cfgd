@@ -1479,10 +1479,10 @@ fn resolve_run_target_relative_no_args_is_direct_exec() {
     }
 }
 
-// N1 regression pin: a whole-string `run:` naming a DIRECTORY, not a file,
-// must not take the direct-exec arm — `exists()` accepted a directory just
-// as readily as a file, and the same defect this commit fixes for the
-// leading-token case also reached here.
+// A whole-string `run:` naming a DIRECTORY, not a file, must not take the
+// direct-exec arm — `exists()` accepts a directory just as readily as a
+// file, and the same defect the leading-token case guards below reaches
+// here too.
 #[test]
 fn resolve_run_target_whole_string_naming_a_directory_is_left_untouched() {
     let script_dir = tempfile::tempdir().unwrap();
@@ -1589,7 +1589,7 @@ fn resolve_run_target_unresolvable_single_token_is_left_untouched() {
     }
 }
 
-// N1 regression pin: a leading `.` (the POSIX dot-source builtin, e.g.
+// A leading `.` (the POSIX dot-source builtin, e.g.
 // `run: . ~/.venv/bin/activate && python app.py`) must NOT resolve —
 // `script_dir.join(".")` names `script_dir` itself, which `exists()` (but
 // not `is_file()`) accepts, and substituting a directory in place of the
@@ -1606,7 +1606,7 @@ fn resolve_run_target_leading_dot_source_builtin_is_left_untouched() {
     }
 }
 
-// N1 regression pin: a block scalar opening with a blank line
+// A block scalar opening with a blank line
 // (`run_str == "\necho hi\n"`) has an empty leading token —
 // `script_dir.join("")` names `script_dir` itself, the same directory trap
 // as the dot-source case. Must not substitute `script_dir` in as argv[0].

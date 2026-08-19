@@ -70,9 +70,11 @@ golden_doc!(regression, compliance_changed_with_detail, |p, cap| {
 // BEFORE: cli/init/cmd_init.rs:288-290  three printer.info("  cfgd ...") lines
 golden_doc!(regression, init_next_steps, |p, cap| {
     let s = p.section("Next Steps");
-    s.bullet("cfgd module create <name>");
-    s.bullet("cfgd profile create <name>");
-    s.bullet("cfgd apply");
+    s.command_list([
+        ("cfgd module create <name>", "create a module"),
+        ("cfgd profile create <name>", "create a profile"),
+        ("cfgd apply", "apply configuration"),
+    ]);
 });
 
 // BEFORE: cli/config_cmd.rs:28  printer.key_value("  Branch", &origin.branch);
@@ -301,12 +303,15 @@ golden_doc!(regression, worked_example_compliance_diff, |p, cap| {
 });
 
 // BEFORE: `cfgd init` worked example (the orphan-indent fix). Streaming
-// Section + bullets.
+// Section + command_list — the composer aligns the glue column itself, so
+// no fixture ever hand-pads a key or hand-types the " — " glue.
 golden_doc!(regression, worked_example_init_next_steps, |p, cap| {
     let next = p.section("Next Steps");
-    next.bullet("cfgd module create <name>   — create a module");
-    next.bullet("cfgd profile create <name>  — create a profile");
-    next.bullet("cfgd apply                  — apply configuration");
+    next.command_list([
+        ("cfgd module create <name>", "create a module"),
+        ("cfgd profile create <name>", "create a profile"),
+        ("cfgd apply", "apply configuration"),
+    ]);
 });
 
 // `cfgd module list` table — per-cell roles. The `Source` value "remote" and
