@@ -374,7 +374,19 @@ mod tests {
     /// docker build and no push.
     #[test]
     fn build_failure_settle_line_nests_under_the_target_owner_header() {
+        // `cmd_module_build` shells out to `docker build`/`podman build` even
+        // for a base image it will fail to reach — the runtime binary itself
+        // has to be present on PATH before the "connection refused" failure
+        // this test depends on is even reachable. A bare `return` here left
+        // no trace in the run's output when neither runtime is on the host,
+        // so the test silently proved nothing rather than being visibly
+        // skipped; `eprintln!` inside a `#[cfg(test)]` block is exempt from
+        // the output-centralization audit (`strip_test_blocks_from_file`).
         if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
+            eprintln!(
+                "SKIPPED build_failure_settle_line_nests_under_the_target_owner_header: \
+                 neither docker nor podman is on PATH"
+            );
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -394,21 +406,10 @@ mod tests {
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
-        let header_line = output
-            .lines()
-            .find(|l| l.trim_start() == "target:linux/amd64")
-            .unwrap_or_else(|| panic!("target owner header must be rendered: {output}"));
-        let settled_line = output
-            .lines()
-            .find(|l| l.contains("Build failed for linux/amd64"))
-            .unwrap_or_else(|| panic!("build-failed settle line must be rendered: {output}"));
-
-        let header_indent = header_line.len() - header_line.trim_start().len();
-        let settled_indent = settled_line.len() - settled_line.trim_start().len();
-        assert!(
-            settled_indent > header_indent,
-            "the settle line must nest deeper than its owner header \
-             (header indent {header_indent}, settle indent {settled_indent}): {output}"
+        crate::cli::test_support::assert_nests_under(
+            &output,
+            "target:linux/amd64",
+            "Build failed for linux/amd64",
         );
     }
 

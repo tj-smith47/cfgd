@@ -414,22 +414,7 @@ fn module_add_fetch_settle_line_nests_under_the_fetch_section_header() {
     drop(printer);
 
     let human = strip_ansi(&cap.human());
-    let header_line = human
-        .lines()
-        .find(|l| l.trim_start() == "Fetch")
-        .unwrap_or_else(|| panic!("Fetch section header must be rendered: {human}"));
-    let settled_line = human
-        .lines()
-        .find(|l| l.contains("Fetched"))
-        .unwrap_or_else(|| panic!("fetch settle line must be rendered: {human}"));
-
-    let header_indent = header_line.len() - header_line.trim_start().len();
-    let settled_indent = settled_line.len() - settled_line.trim_start().len();
-    assert!(
-        settled_indent > header_indent,
-        "the settle line must nest deeper than its section header \
-         (header indent {header_indent}, settle indent {settled_indent}): {human}"
-    );
+    common::assert_nests_under(&human, "Fetch", "Fetched");
 }
 
 // ─── module add_from_registry (streaming) — bridge.txt ──────────────

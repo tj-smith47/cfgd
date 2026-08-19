@@ -409,20 +409,32 @@ pub fn cmd_module_pull(
         printer.status_simple(Role::Ok, "SLSA provenance attestation verified");
     }
 
-    cfgd_core::oci::pull_module(
-        artifact_ref,
-        output_path,
-        cfgd_core::oci::SignaturePolicy::None,
-        Some(printer),
-    )
-    .map_err(|e| {
-        crate::cli::cli_error(
+    // Same shape as `cmd_module_push`'s section around `push_module`: the kv
+    // block above nests one level deeper than depth 0 (the
+    // `last_was_top_heading` bump in `render_kv_block`), so the pull spinner
+    // `pull_module` opens on this same bare `printer` needs a real section to
+    // match it — a bare `depth_inheritance()` guard with no section open
+    // still resolves to depth 0. `pull_module` keeps its `&Printer`
+    // signature (it has non-CLI callers too), so the section is opened and
+    // scoped here rather than threaded into the library call.
+    {
+        let _pull_sec = printer.section("Pull");
+        let _inherit = printer.depth_inheritance();
+        cfgd_core::oci::pull_module(
             artifact_ref,
-            "pull_failed",
-            e.to_string(),
-            serde_json::json!({ "artifact": artifact_ref, "output": output }),
+            output_path,
+            cfgd_core::oci::SignaturePolicy::None,
+            Some(printer),
         )
-    })?;
+        .map_err(|e| {
+            crate::cli::cli_error(
+                artifact_ref,
+                "pull_failed",
+                e.to_string(),
+                serde_json::json!({ "artifact": artifact_ref, "output": output }),
+            )
+        })?;
+    }
 
     printer.status_simple(Role::Ok, format!("Pulled {artifact_ref} to {output}"));
 
@@ -834,22 +846,7 @@ mod tests {
             drop(printer);
 
             let output = cfgd_core::test_helpers::captured_text(&buf);
-            let header_line = output
-                .lines()
-                .find(|l| l.trim_start() == "Push")
-                .unwrap_or_else(|| panic!("Push section header must be rendered: {output}"));
-            let settled_line = output
-                .lines()
-                .find(|l| l.contains("Pushed module to"))
-                .unwrap_or_else(|| panic!("push settle line must be rendered: {output}"));
-
-            let header_indent = header_line.len() - header_line.trim_start().len();
-            let settled_indent = settled_line.len() - settled_line.trim_start().len();
-            assert!(
-                settled_indent > header_indent,
-                "the settle line must nest deeper than its section header \
-                 (header indent {header_indent}, settle indent {settled_indent}): {output}"
-            );
+            crate::cli::test_support::assert_nests_under(&output, "Push", "Pushed module to");
         }
 
         #[test]
@@ -1317,6 +1314,89 @@ spec:
         assert!(
             doc["output"].is_string(),
             "output field must be present: {doc}"
+        );
+    }
+
+    /// QP9 round-1 fix: `cmd_module_pull` called `pull_module` on a bare
+    /// `printer` with no section wrapping it, while `cmd_module_push` (see
+    /// `push_settle_line_nests_under_the_push_section_header` below) already
+    /// opened `printer.section("Push")` around the matching `push_module`
+    /// call — an asymmetry, since both library fns open their own bare
+    /// top-level spinner the same way. `cmd_module_pull` now opens
+    /// `printer.section("Pull")` + `depth_inheritance()` around
+    /// `pull_module`, so its settle line nests one level deeper than a
+    /// "Pull" section header instead of sitting flush with it, matching
+    /// push's shape exactly.
+    #[test]
+    fn pull_settle_line_nests_under_the_pull_section_header() {
+        let mut server = mockito::Server::new();
+        let registry = server.url().trim_start_matches("http://").to_string();
+
+        let src_dir = tempfile::tempdir().expect("src module dir");
+        write_module_yaml(src_dir.path());
+
+        let layer_data = cfgd_core::oci::create_tar_gz(src_dir.path()).expect("create layer");
+        let config_blob =
+            serde_json::to_vec(&serde_json::json!({ "moduleYaml": "name: test-mod" })).unwrap();
+        let config_digest = cfgd_core::sha256_digest(&config_blob);
+        let layer_digest = cfgd_core::sha256_digest(&layer_data);
+
+        let manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {
+                "mediaType": cfgd_core::oci::MEDIA_TYPE_MODULE_CONFIG,
+                "digest": config_digest,
+                "size": config_blob.len(),
+            },
+            "layers": [{
+                "mediaType": cfgd_core::oci::MEDIA_TYPE_MODULE_LAYER,
+                "digest": layer_digest,
+                "size": layer_data.len(),
+            }],
+        });
+
+        server
+            .mock("GET", "/v2/test/mod/manifests/v1")
+            .with_status(200)
+            .with_header("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+            .with_body(serde_json::to_string(&manifest).unwrap())
+            .create();
+
+        server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
+            )
+            .with_status(200)
+            .with_body(layer_data)
+            .create();
+
+        let artifact_ref = format!("{}/test/mod:v1", registry);
+        let output_dir = tempfile::tempdir().expect("output dir");
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+        cmd_module_pull(
+            &printer,
+            &artifact_ref,
+            output_dir.path().to_str().unwrap(),
+            false,
+            false,
+            cfgd_core::oci::VerifyOptions {
+                key: None,
+                identity: None,
+                issuer: None,
+            },
+        )
+        .expect("pull must succeed");
+        drop(printer);
+
+        let output = cfgd_core::test_helpers::captured_text(&buf);
+        crate::cli::test_support::assert_nests_under(
+            &output,
+            "Pull",
+            &format!("Pulled module from {artifact_ref}"),
         );
     }
 

@@ -1466,3 +1466,34 @@ pub fn workflow_empty_test_setup() -> (tempfile::TempDir, tempfile::TempDir) {
     .unwrap();
     (config_dir, state_dir)
 }
+
+/// Assert that `needle`'s line sits exactly one section level (2 spaces —
+/// see `Renderer::indent_prefix`) deeper than `header`'s own line: the shape
+/// every QP9 depth fix must hold, a settled action line nesting DIRECTLY
+/// under the section/owner header that introduced it, not merely somewhere
+/// deeper than it. `output` is ANSI-stripped human text.
+///
+/// The integration-test sibling of `cfgd::cli::test_support::assert_nests_under`
+/// — an integration test cannot reach a `pub(crate)` item in the binary
+/// crate, so the two copies exist. Keep both in sync if the nesting contract
+/// ever changes.
+pub fn assert_nests_under(output: &str, header: &str, needle: &str) {
+    let header_line = output
+        .lines()
+        .find(|l| l.trim_start() == header)
+        .unwrap_or_else(|| panic!("{header:?} header must be rendered: {output}"));
+    let settled_line = output
+        .lines()
+        .find(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("{needle:?} settle line must be rendered: {output}"));
+
+    let header_indent = header_line.len() - header_line.trim_start().len();
+    let settled_indent = settled_line.len() - settled_line.trim_start().len();
+    assert_eq!(
+        settled_indent,
+        header_indent + 2,
+        "the settle line must nest exactly one section level (2 spaces) \
+         under its header, not merely somewhere deeper \
+         (header indent {header_indent}, settle indent {settled_indent}): {output}"
+    );
+}

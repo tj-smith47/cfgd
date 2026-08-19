@@ -35,6 +35,8 @@ pub mod source;
 pub mod state_cmd;
 pub mod status;
 pub mod sync;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod upgrade;
 pub mod validate;
 pub mod verify;

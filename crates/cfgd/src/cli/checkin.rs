@@ -604,22 +604,7 @@ spec:
         drift.assert();
 
         let human = cfgd_core::output::strip_ansi(&cap.human());
-        let header_line = human
-            .lines()
-            .find(|l| l.trim_start() == "Drift")
-            .unwrap_or_else(|| panic!("Drift section header must be rendered: {human}"));
-        let settled_line = human
-            .lines()
-            .find(|l| l.contains("drift items reported"))
-            .unwrap_or_else(|| panic!("drift settle line must be rendered: {human}"));
-
-        let header_indent = header_line.len() - header_line.trim_start().len();
-        let settled_indent = settled_line.len() - settled_line.trim_start().len();
-        assert!(
-            settled_indent > header_indent,
-            "the settle line must nest deeper than its section header \
-             (header indent {header_indent}, settle indent {settled_indent}): {human}"
-        );
+        crate::cli::test_support::assert_nests_under(&human, "Drift", "drift items reported");
     }
 
     #[cfg(unix)]
@@ -773,22 +758,7 @@ spec:
         mock.assert();
 
         let human = cfgd_core::output::strip_ansi(&cap.human());
-        let header_line = human
-            .lines()
-            .find(|l| l.trim_start() == "Gateway")
-            .unwrap_or_else(|| panic!("Gateway section header must be rendered: {human}"));
-        let settled_line = human
-            .lines()
-            .find(|l| l.contains("server status: ok"))
-            .unwrap_or_else(|| panic!("gateway settle line must be rendered: {human}"));
-
-        let header_indent = header_line.len() - header_line.trim_start().len();
-        let settled_indent = settled_line.len() - settled_line.trim_start().len();
-        assert!(
-            settled_indent > header_indent,
-            "the settle line must nest deeper than its section header \
-             (header indent {header_indent}, settle indent {settled_indent}): {human}"
-        );
+        crate::cli::test_support::assert_nests_under(&human, "Gateway", "server status: ok");
     }
 
     #[test]

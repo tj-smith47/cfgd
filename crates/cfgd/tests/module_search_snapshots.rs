@@ -195,20 +195,5 @@ fn search_settle_line_nests_under_the_registry_owner_header() {
     drop(printer);
 
     let human = strip_ansi(&cap.human());
-    let header_line = human
-        .lines()
-        .find(|l| l.trim_start() == "registry:myreg")
-        .unwrap_or_else(|| panic!("registry owner header must be rendered: {human}"));
-    let settled_line = human
-        .lines()
-        .find(|l| l.contains("Searched myreg"))
-        .unwrap_or_else(|| panic!("search settle line must be rendered: {human}"));
-
-    let header_indent = header_line.len() - header_line.trim_start().len();
-    let settled_indent = settled_line.len() - settled_line.trim_start().len();
-    assert!(
-        settled_indent > header_indent,
-        "the settle line must nest deeper than its owner header \
-         (header indent {header_indent}, settle indent {settled_indent}): {human}"
-    );
+    common::assert_nests_under(&human, "registry:myreg", "Searched myreg");
 }
