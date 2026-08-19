@@ -30,7 +30,9 @@ use std::sync::Arc;
 
 use indicatif::{ProgressBar as IndProgressBar, ProgressStyle};
 
-use super::renderer::{LiveBarGuard, Renderer, StatusFields, Writer, finalize_subject, wrap};
+use super::renderer::{
+    LiveBarGuard, Renderer, StatusFields, Writer, finalize_subject, indent_prefix, wrap,
+};
 use super::spinner::Spinner;
 use super::window::OutputWindow;
 
@@ -105,7 +107,7 @@ impl<'p> LiveRow<'p> {
         // continuation lines below it are separate rows of the same repaint
         // and are clamped at their own indent.
         let width = wrap::line_width(self.sink.as_ref(), self.depth);
-        let indent = "  ".repeat(self.depth + 1);
+        let indent = indent_prefix(self.depth + 1);
         let mut message = wrap::clamp(&line, width);
         for tail in &tails {
             message.push('\n');

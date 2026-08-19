@@ -28,6 +28,7 @@ use std::collections::VecDeque;
 use std::marker::PhantomData;
 
 use super::renderer::StatusFields;
+use super::renderer::indent_prefix;
 use super::renderer::wrap::{available_width, clamp as clamp_line};
 use super::spinner::Spinner;
 use super::status_builder::StatusBuilder;
@@ -148,7 +149,7 @@ impl<'p> OutputWindow<'p> {
     }
 
     fn repaint(&mut self) {
-        let indent = "  ".repeat(self.body_depth);
+        let indent = indent_prefix(self.body_depth);
         let mut msg = self.label.clone();
         for line in &self.ring {
             msg.push('\n');

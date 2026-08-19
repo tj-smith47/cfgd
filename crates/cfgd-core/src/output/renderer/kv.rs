@@ -15,7 +15,7 @@
 //! The rule that keeps it safe is structural rather than remembered: the block
 //! is built by a collector holding `&mut RenderState`, which can reach neither
 //! the state lock nor a sink, so it cannot become a second exit.
-use super::{Emitting, Renderer, Writer};
+use super::{Emitting, Renderer, Writer, indent_prefix};
 use crate::output::Verbosity;
 
 const KEY_WIDTH_CAP: usize = 24;
@@ -75,7 +75,7 @@ impl Emitting<'_> {
         }
         let effective_depth = if bump { depth + 1 } else { depth };
 
-        let prefix = "  ".repeat(effective_depth);
+        let prefix = indent_prefix(effective_depth);
         let key_col = pairs
             .iter()
             .map(|(k, _)| k.len())

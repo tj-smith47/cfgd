@@ -26,6 +26,15 @@ pub(crate) use glyphs::{finalize_subject, role_glyph};
 pub use status::StatusFields;
 pub use table::Table;
 
+/// The ONE `"  ".repeat(depth)` in the workspace. Every surface that indents
+/// by depth — the renderer's own line pusher, kv blocks, and the three live
+/// primitives (`Spinner`, `OutputWindow`, `LiveRow`) that cannot reach a
+/// `Renderer` to call [`Renderer::indent_prefix`] — calls through here rather
+/// than re-deriving the multiplication at its own site.
+pub(crate) fn indent_prefix(depth: usize) -> String {
+    "  ".repeat(depth)
+}
+
 /// The kind of a top-level (outside any section) group emission.
 ///
 /// Blank lines separate GROUPS, not the lines inside one. Three rules follow
@@ -391,7 +400,7 @@ impl Renderer {
 
     /// Build the indent prefix for the current depth.
     pub(crate) fn indent_prefix(&self, depth: usize) -> String {
-        "  ".repeat(depth)
+        indent_prefix(depth)
     }
 
     /// Called by every top-level emit before writing. Returns the depth at
@@ -589,7 +598,7 @@ impl Emitting<'_> {
         // Any emission resets the heading-just-emitted flag. Heading itself
         // sets the flag back true after this call returns.
         self.state.last_was_top_heading = false;
-        let prefix = "  ".repeat(depth);
+        let prefix = indent_prefix(depth);
         for physical in wrap::wrap_body_with_trailer(trimmed, &prefix, self.wrap_cols, trailer) {
             self.out.push(physical);
         }

@@ -22,7 +22,7 @@ use std::time::Duration;
 use indicatif::{ProgressBar as IndProgressBar, ProgressStyle};
 
 use super::Role;
-use super::renderer::{LiveBarGuard, Renderer, Writer, wrap};
+use super::renderer::{LiveBarGuard, Renderer, Writer, indent_prefix, wrap};
 use super::status_builder::StatusBuilder;
 
 pub(crate) fn stderr_is_terminal() -> bool {
@@ -63,7 +63,7 @@ pub(super) fn clamp_label(sink: &dyn Writer, message: &str, depth: usize) -> Str
 /// line sits in the same column its settled line will, rather than jumping into
 /// the tree the moment it stops moving.
 pub(super) fn set_bar_depth(bar: &IndProgressBar, depth: usize) {
-    bar.set_prefix("  ".repeat(depth));
+    bar.set_prefix(indent_prefix(depth));
 }
 
 /// Live spinner. Drop without `finish_*()` settles a `Role::Skipped` Status
