@@ -4,7 +4,7 @@ Diff
 Phase: Files
   module:diff-mod
     ⊙ <CONFIG_DIR>/mod-out/conf (new file)
-module content
+    module content
   ⚠ File drift detected
 
 Phase: Packages

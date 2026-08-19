@@ -5,7 +5,7 @@ Diff
 Phase: Files
   profile:tiny
     ⊙ <TARGET> (new file)
-hello world
+    hello world
   ⚠ File drift detected
 
 Phase: Packages
