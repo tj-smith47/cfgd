@@ -1,8 +1,7 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::LOCAL_LAYER;
-use cfgd_core::output::{Doc, Printer, Role, condense_script_label, renderer::Table};
-use cfgd_core::reconciler::Owner;
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, condense_script_label, renderer::Table};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,7 +116,7 @@ fn render_drift_section(
                     // vocabulary `cfgd sync` and `cfgd source *` head their
                     // groups with, so a reader carries one spelling across the
                     // three surfaces that name a source.
-                    let label_text = Owner::source(&event.source).token();
+                    let label_text = OwnerLabel::new("source", &event.source).plain();
                     s.status_with(Role::Warn, subject, |f| {
                         f.drift(expected, actual).label(Role::Secondary, label_text)
                     })
@@ -222,7 +221,7 @@ pub fn build_fleet_status_doc(
             // Subject is the owner token, exactly as the tree that applied the
             // module heads its group; the counts and the state are what the
             // line reports about it.
-            s.status_with(role, Owner::module(&m.name).token(), |f| {
+            s.status_with(role, OwnerLabel::new("module", &m.name).plain(), |f| {
                 f.detail(format!("{summary}, {suffix}"))
             })
         })

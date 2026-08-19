@@ -19,6 +19,10 @@ pub(crate) fn render_doc(renderer: &Renderer, sink: &dyn Writer, doc: &Doc) {
             let styled = label.styled(&renderer.theme);
             renderer.render_heading_styled(sink, &styled);
         }
+        Some(HeadingKind::Owner(label)) => {
+            let styled = label.styled(&renderer.theme);
+            renderer.render_heading_styled(sink, &styled);
+        }
         None => {}
     }
     for child in &doc.children {
@@ -103,9 +107,21 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
             name,
             keep_when_empty,
             empty_state,
+            owner,
             children,
         } => {
-            renderer.render_section_open(name, *keep_when_empty);
+            // `owner` sections are built via `SectionBuilder::new_owner`, whose
+            // `name` is always an `OwnerLabel::plain()` `kind:name` token — the
+            // split mirrors `Owner::token()`'s own composition, never the
+            // reverse: nothing else stores a colon-joined `name` on this path.
+            let styled_name = if *owner {
+                name.split_once(':').map(|(kind, label_name)| {
+                    super::OwnerLabel::new(kind, label_name).styled(&renderer.theme)
+                })
+            } else {
+                None
+            };
+            renderer.render_section_open_styled(name, styled_name, *keep_when_empty);
             if let Some(es) = empty_state {
                 renderer.render_section_empty_state(es);
             }

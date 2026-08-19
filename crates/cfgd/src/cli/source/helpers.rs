@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::validate_source_priority;
-use cfgd_core::output::{Doc, Printer, Role, SectionBuilder};
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, SectionBuilder};
 
 // --- Source cache layout ---
 
@@ -228,21 +228,18 @@ pub(crate) fn build_pending_decisions_table_section(
         let plural = if count == 1 { "" } else { "s" };
         // The same `source:<name>` token every other source-owned line carries —
         // one screen must not name one source two ways.
-        s.subsection(
-            cfgd_core::reconciler::Owner::source(source_name).token(),
-            |sub| {
-                let sub = sub.status(Role::Info, format!("{count} pending item{plural}"));
-                items.iter().fold(sub, |sub, item| {
-                    sub.status(
-                        Role::Info,
-                        format!(
-                            "{} {} — {} ({})",
-                            item.tier, item.resource, item.summary, item.action
-                        ),
-                    )
-                })
-            },
-        )
+        s.subsection_owner(&OwnerLabel::new("source", source_name), |sub| {
+            let sub = sub.status(Role::Info, format!("{count} pending item{plural}"));
+            items.iter().fold(sub, |sub, item| {
+                sub.status(
+                    Role::Info,
+                    format!(
+                        "{} {} — {} ({})",
+                        item.tier, item.resource, item.summary, item.action
+                    ),
+                )
+            })
+        })
     })
 }
 

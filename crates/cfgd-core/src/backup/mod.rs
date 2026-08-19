@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use crate::PathDisplayExt;
 use crate::config::{BackupSpec, ScriptEntry, render_backup_name_pattern};
 use crate::errors::{BackupError, Result};
-use crate::output::{Printer, Role, collapse_to_subject_line};
+use crate::output::{OwnerLabel, Printer, Role, collapse_to_subject_line};
 use crate::reconciler::{
     ReconcileContext, ScriptEnvContext, ScriptPhase, ScriptReport, ScriptSubject, build_script_env,
     effective_continue_on_error, execute_script, script_default_workdir,
@@ -1050,6 +1050,7 @@ fn remove_existing(path: &Path) -> std::io::Result<()> {
 /// foreign row bounds the table instead of aiming a recursive delete.
 fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer) {
     let spec = unit.spec;
+    let owner = OwnerLabel::new("backup", &spec.name).plain();
     let destination = unit.destination_dir();
     let runs = match store.backup_runs(&spec.name) {
         Ok(runs) => runs,
@@ -1057,8 +1058,7 @@ fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer)
             printer.status_simple(
                 Role::Warn,
                 format!(
-                    "backup '{}': retention prune skipped — could not read run history: {}",
-                    spec.name,
+                    "{owner}: retention prune skipped — could not read run history: {}",
                     collapse_to_subject_line(&e)
                 ),
             );
@@ -1070,8 +1070,7 @@ fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer)
     let drop_row = |id: i64| {
         if let Err(e) = store.delete_backup_run(id) {
             warn(format!(
-                "backup '{}': could not delete run record {id}: {}",
-                spec.name,
+                "{owner}: could not delete run record {id}: {}",
                 collapse_to_subject_line(&e)
             ));
         }
@@ -1089,9 +1088,8 @@ fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer)
             && !is_snapshot_within(Path::new(path), &destination)
         {
             warn(format!(
-                "backup '{}': run {} records a snapshot outside the destination {} ({path}); \
+                "{owner}: run {} records a snapshot outside the destination {} ({path}); \
                  dropping the record and leaving the path untouched — delete it yourself if it is stale",
-                spec.name,
                 run.id,
                 destination.posix(),
             ));
@@ -1113,8 +1111,7 @@ fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer)
             let path = Path::new(path);
             if let Err(e) = remove_existing(path) {
                 warn(format!(
-                    "backup '{}': could not prune snapshot {}: {}",
-                    spec.name,
+                    "{owner}: could not prune snapshot {}: {}",
                     path.posix(),
                     collapse_to_subject_line(&e)
                 ));

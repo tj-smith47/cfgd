@@ -10,6 +10,7 @@ use super::{Role, Theme};
 
 /// A `<kind>:<name>` owner token. `plain` is the uncoloured form every
 /// structured, quiet and colour-disabled path renders.
+#[derive(Clone)]
 pub struct OwnerLabel {
     kind: String,
     name: String,
@@ -48,6 +49,13 @@ impl OwnerLabel {
             paint(Role::Warn, ":"),
             paint(Role::Ok, &self.name)
         )
+    }
+
+    /// `<prefix> <kind>:<name>` (`Add module:vim-config`) — the fixed verb in
+    /// the heading slot, then this token's own three slots. `plain` mirrors
+    /// `format!("{prefix} {}", self.plain())`.
+    pub(crate) fn styled_with_prefix(&self, theme: &Theme, prefix: &str) -> String {
+        format!("{} {}", theme.header.apply_to(prefix), self.styled(theme))
     }
 }
 
@@ -115,6 +123,21 @@ mod tests {
         assert_eq!(
             styled, "\u{1b}[4mmodule\u{1b}[0m:nvim",
             "the underlined secondary must survive colour being off"
+        );
+    }
+
+    /// `styled_with_prefix` is the fixed verb in the heading slot, a space,
+    /// then the owner token's own three slots — not a fourth slot of its own.
+    #[test]
+    #[serial_test::serial]
+    fn styled_with_prefix_is_header_prefix_plus_styled_token() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let label = OwnerLabel::new("source", "acme");
+        let styled = label.styled_with_prefix(&theme, "Add");
+        assert_eq!(strip_ansi(&styled), "Add source:acme");
+        assert_eq!(
+            styled,
+            format!("{} {}", theme.header.apply_to("Add"), label.styled(&theme))
         );
     }
 }

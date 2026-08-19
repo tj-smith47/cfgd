@@ -1,6 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer, Role};
-use cfgd_core::reconciler::Owner;
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
 
 pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow::Result<()> {
     // Resolve the reference before anything reads the URL, so the inferred name,
@@ -23,7 +22,7 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
     let source_name = name
         .map(|s| s.to_string())
         .unwrap_or_else(|| infer_source_name(url));
-    printer.heading(format!("Add {}", Owner::source(&source_name).token()));
+    printer.heading_owner("Add", &OwnerLabel::new("source", &source_name));
 
     // A pin selects its own git ref (tag or commit), so an explicit branch is
     // meaningless and contradictory — reject the combination before any clone.

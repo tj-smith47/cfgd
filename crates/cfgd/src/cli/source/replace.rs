@@ -1,6 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer, Role};
-use cfgd_core::reconciler::Owner;
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
 
 pub fn cmd_source_replace(
     cli: &Cli,
@@ -12,7 +11,7 @@ pub fn cmd_source_replace(
     // the success line and its structured payload report the URL that was
     // actually subscribed to, not the shorthand.
     let new_url = &*cfgd_core::resolve_repo_reference(new_url);
-    printer.heading(format!("Replace {}", Owner::source(old_name).token()));
+    printer.heading_owner("Replace", &OwnerLabel::new("source", old_name));
 
     // Capture old source's profile and priority before removing
     let config_path = cli.config.clone();

@@ -1,7 +1,6 @@
 use super::*;
 use cfgd_core::config::LOCAL_LAYER;
-use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
-use cfgd_core::reconciler::Owner;
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, renderer::Table};
 
 pub fn cmd_source_remove(
     cli: &Cli,
@@ -22,7 +21,7 @@ pub fn cmd_source_remove(
 
     // The heading names the subject with the canonical owner token, so every
     // line below it says only what happened.
-    printer.heading(format!("Remove {}", Owner::source(name).token()));
+    printer.heading_owner("Remove", &OwnerLabel::new("source", name));
 
     let config_path = cli.config.clone();
     let mut cfg = config::load_config(&config_path)?;

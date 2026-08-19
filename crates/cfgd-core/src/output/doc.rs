@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use super::OwnerLabel;
 use super::Role;
 use super::TitleLabel;
 use super::component::{Component, KvPair, StatusLabel};
@@ -13,6 +14,7 @@ use super::renderer::Table;
 pub(crate) enum HeadingKind {
     Plain(String),
     Title(TitleLabel),
+    Owner(OwnerLabel),
 }
 
 impl HeadingKind {
@@ -23,6 +25,7 @@ impl HeadingKind {
         match self {
             HeadingKind::Plain(text) => text.clone(),
             HeadingKind::Title(label) => label.plain(),
+            HeadingKind::Owner(label) => label.plain(),
         }
     }
 }
@@ -128,6 +131,14 @@ impl Doc {
     /// `heading`'s single `theme.header` coat.
     pub fn heading_title(mut self, label: impl Into<String>, value: impl Into<String>) -> Self {
         self.heading = Some(HeadingKind::Title(TitleLabel::new(label, value)));
+        self
+    }
+
+    /// A structured owner-token heading (`source:acme`), styled through
+    /// [`OwnerLabel`]'s three slots at render time instead of `heading`'s
+    /// single `theme.header` coat.
+    pub fn heading_owner(mut self, kind: impl Into<String>, name: impl Into<String>) -> Self {
+        self.heading = Some(HeadingKind::Owner(OwnerLabel::new(kind, name)));
         self
     }
 
@@ -301,6 +312,13 @@ impl Doc {
 /// Builder for one Section. Same vocabulary as Doc plus `subsection`.
 pub struct SectionBuilder {
     name: String,
+    /// Set only by [`Self::new_owner`]: the section's `name` is a
+    /// `kind:name` owner token that should render through [`OwnerLabel`]'s
+    /// three slots rather than `render_section_open`'s single `theme.header`/
+    /// `theme.secondary` coat. Never serialized — `Component::Section`'s
+    /// `name` stays the same plain string either way, so the flag changes
+    /// only the human render, never the `-o json` shape.
+    owner: bool,
     keep_when_empty: bool,
     empty_state: Option<String>,
     children: Vec<Component>,
@@ -310,6 +328,19 @@ impl SectionBuilder {
     pub(crate) fn new(name: impl Into<String>, keep_when_empty: bool) -> Self {
         Self {
             name: name.into(),
+            owner: false,
+            keep_when_empty,
+            empty_state: None,
+            children: Vec::new(),
+        }
+    }
+
+    /// A section headed by a styled owner token (`module:nvim`) — the
+    /// buffered-`Doc` counterpart of [`super::Printer::section_owner`].
+    pub(crate) fn new_owner(owner: &OwnerLabel, keep_when_empty: bool) -> Self {
+        Self {
+            name: owner.plain(),
+            owner: true,
             keep_when_empty,
             empty_state: None,
             children: Vec::new(),
@@ -319,6 +350,7 @@ impl SectionBuilder {
     pub(crate) fn into_component(self) -> Component {
         Component::Section {
             name: self.name,
+            owner: self.owner,
             keep_when_empty: self.keep_when_empty,
             empty_state: self.empty_state,
             children: self.children,
@@ -415,6 +447,19 @@ impl SectionBuilder {
         F: FnOnce(SectionBuilder) -> SectionBuilder,
     {
         let sb = build(SectionBuilder::new(name, /*keep_when_empty=*/ true));
+        self.children.push(sb.into_component());
+        self
+    }
+
+    /// A nested subsection headed by a styled owner token (`source:acme`)
+    /// instead of a hand-built `format!("{kind}:{name}")` string.
+    pub fn subsection_owner<F>(mut self, owner: &OwnerLabel, build: F) -> Self
+    where
+        F: FnOnce(SectionBuilder) -> SectionBuilder,
+    {
+        let sb = build(SectionBuilder::new_owner(
+            owner, /*keep_when_empty=*/ true,
+        ));
         self.children.push(sb.into_component());
         self
     }

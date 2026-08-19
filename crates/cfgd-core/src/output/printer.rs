@@ -414,6 +414,24 @@ impl Printer {
         }
     }
 
+    /// Top-level `<Verb> <owner>` heading (`Add source:acme`), styled through
+    /// [`super::OwnerLabel`]'s three slots for the token instead of folding
+    /// the whole line into `heading`'s single `theme.header` coat.
+    pub fn heading_owner(&self, prefix: impl Into<String>, owner: &super::OwnerLabel) {
+        let depth = self.renderer.enforce_structural_top_level(0);
+        let styled = owner.styled_with_prefix(&self.renderer.theme, &prefix.into());
+        // See `heading`'s comment: render_heading_styled is hardcoded to
+        // depth 0, so the runtime re-route path writes the same styled line
+        // at the section's actual depth instead.
+        if depth == 0 {
+            self.renderer
+                .render_heading_styled(self.sink_stderr.as_ref(), &styled);
+        } else {
+            self.renderer
+                .write_line(self.sink_stderr.as_ref(), depth, &styled);
+        }
+    }
+
     pub fn kv(&self, key: impl Into<String>, value: impl Into<String>) {
         // kv buffers; flush will use the renderer's current depth, so the
         // runtime check is informational here — no depth value to thread

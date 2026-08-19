@@ -79,6 +79,14 @@ pub enum Component {
         keep_when_empty: bool,
         /// Set when the user provided an explicit `empty_state(...)`.
         empty_state: Option<String>,
+        /// Set only by `SectionBuilder::new_owner` / `subsection_owner`:
+        /// `name` is a `kind:name` owner token that renders through
+        /// `OwnerLabel`'s three slots rather than the section's ordinary
+        /// single-colour heading coat. Never serialized — the JSON shape is
+        /// the same plain `name` string either way, so this changes only
+        /// the human render.
+        #[serde(skip)]
+        owner: bool,
         children: Vec<Component>,
     },
 }
@@ -179,12 +187,14 @@ mod tests {
             name: "X".into(),
             keep_when_empty: true,
             empty_state: None,
+            owner: false,
             children: vec![],
         };
         let collapse = Component::Section {
             name: "X".into(),
             keep_when_empty: false,
             empty_state: None,
+            owner: false,
             children: vec![],
         };
         let p = serde_json::to_value(&plain).unwrap();
