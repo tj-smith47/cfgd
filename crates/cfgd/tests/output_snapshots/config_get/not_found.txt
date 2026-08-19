@@ -1,1 +1,1 @@
-✗ key 'ghost' not found in config
+✗ config error: key 'ghost' not found in config

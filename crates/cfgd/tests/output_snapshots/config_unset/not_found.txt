@@ -1,1 +1,1 @@
-✗ key 'ghostKey' not found in config
+✗ config error: key 'ghostKey' not found in config
