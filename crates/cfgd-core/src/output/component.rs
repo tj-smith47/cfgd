@@ -29,6 +29,20 @@ pub enum Component {
         /// muted qualifier. Landed right after the subject, ahead of `label`,
         /// by `render_doc`; the colon and qualifier text are always styled the
         /// same way (never a per-call role), unlike `label`.
+        ///
+        /// Deliberately NOT folded into `subject` the way [`super::TitleLabel`]
+        /// folds its label/value into one `heading` string: `Component`
+        /// serializes structurally (`#[derive(Serialize)]`), so a JSON reader
+        /// sees `{"subject": "…", "qualifier": "…"}` as two fields, split from
+        /// what the pre-`qualifier` spelling rendered as one `"subject": "curl:
+        /// missing"` string. Every current call site is safe from that split
+        /// because a `Doc` carrying a qualifier also carries `with_data`
+        /// (`Doc::data_or_self_json` prefers it over `to_json_value`), so this
+        /// field never reaches an actual `-o json` payload today — but the
+        /// first `status_with(...).qualifier(...)` built WITHOUT `with_data`
+        /// changes that Doc's JSON shape silently. A caller adding a
+        /// qualifier to a Doc with no typed payload must add `with_data` in
+        /// the same change, not rely on this field staying unread.
         #[serde(skip_serializing_if = "Option::is_none")]
         qualifier: Option<String>,
         /// Trailing styled label (e.g. `[source-name]`). Rendered at the END of
