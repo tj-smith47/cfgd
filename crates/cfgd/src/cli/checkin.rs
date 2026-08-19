@@ -139,7 +139,7 @@ pub fn cmd_checkin(
 
     if let Some(ref desired) = resp.desired_config {
         printer.status_simple(Role::Warn, "Server pushed desired config");
-        let push_sec = printer.section("Server config");
+        let push_sec = printer.section("Server Config");
         match cfgd_core::state::save_pending_server_config(desired) {
             Ok(path) => {
                 push_sec.status_simple(Role::Ok, format!("Saved to {}", path.posix()));

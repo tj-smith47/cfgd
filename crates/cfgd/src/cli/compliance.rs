@@ -301,43 +301,26 @@ pub fn build_compliance_diff_doc(
     if diff.added.is_empty() && diff.removed.is_empty() && diff.changed.is_empty() {
         doc = doc.status(Role::Ok, "No differences between snapshots");
     } else {
-        doc = doc.section_if_nonempty(
-            format!(
-                "Added ({})",
-                cfgd_core::pluralize(diff.added.len(), "check")
-            ),
-            &diff.added,
-            |s, items| items.iter().fold(s, |s, c| s.bullet(check_key(c))),
-        );
-        doc = doc.section_if_nonempty(
-            format!(
-                "Removed ({})",
-                cfgd_core::pluralize(diff.removed.len(), "check")
-            ),
-            &diff.removed,
-            |s, items| items.iter().fold(s, |s, c| s.bullet(check_key(c))),
-        );
-        doc = doc.section_if_nonempty(
-            format!(
-                "Changed ({})",
-                cfgd_core::pluralize(diff.changed.len(), "check")
-            ),
-            &diff.changed,
-            |s, items| {
-                items.iter().fold(s, |s, c| {
-                    let role = match c.new_status.as_str() {
-                        "Violation" => Role::Fail,
-                        "Warning" => Role::Warn,
-                        _ => Role::Ok,
-                    };
-                    s.status_with(
-                        role,
-                        format!("{} ({} → {})", c.key, c.old_status, c.new_status),
-                        |sf| sf.detail_opt(c.detail.as_deref()),
-                    )
-                })
-            },
-        );
+        doc = doc.section_if_nonempty("Added", &diff.added, |s, items| {
+            items.iter().fold(s, |s, c| s.bullet(check_key(c)))
+        });
+        doc = doc.section_if_nonempty("Removed", &diff.removed, |s, items| {
+            items.iter().fold(s, |s, c| s.bullet(check_key(c)))
+        });
+        doc = doc.section_if_nonempty("Changed", &diff.changed, |s, items| {
+            items.iter().fold(s, |s, c| {
+                let role = match c.new_status.as_str() {
+                    "Violation" => Role::Fail,
+                    "Warning" => Role::Warn,
+                    _ => Role::Ok,
+                };
+                s.status_with(
+                    role,
+                    format!("{} ({} → {})", c.key, c.old_status, c.new_status),
+                    |sf| sf.detail_opt(c.detail.as_deref()),
+                )
+            })
+        });
     }
 
     doc.with_data(ComplianceDiffOutput {
@@ -687,15 +670,15 @@ mod tests {
 
         let output = cap.human();
         assert!(
-            output.contains("Added (1 check)") && output.contains("file:/c"),
+            output.contains("Added") && output.contains("file:/c"),
             "should report added check file:/c, got: {output}"
         );
         assert!(
-            output.contains("Removed (1 check)") && output.contains("file:/b"),
+            output.contains("Removed") && output.contains("file:/b"),
             "should report removed check file:/b, got: {output}"
         );
         assert!(
-            output.contains("Changed (1 check)") && output.contains("file:/a"),
+            output.contains("Changed") && output.contains("file:/a"),
             "should report changed check file:/a, got: {output}"
         );
         assert!(

@@ -856,7 +856,7 @@ pub fn cmd_module_delete(
             // Purge mode: remove all files deployed by this module to target locations.
             // This replaces symlink restoration — there's nothing to restore if we're
             // removing everything.
-            let purge_sec = printer.section("Purging files");
+            let purge_sec = printer.section("Purging Files");
             for file_entry in &doc.spec.files {
                 let target = cfgd_core::expand_tilde(std::path::Path::new(&file_entry.target));
                 if target.is_symlink() || target.exists() {
@@ -874,7 +874,7 @@ pub fn cmd_module_delete(
             // Default: restore symlinked files before deleting the module directory.
             // When module create adopts files, it moves them into the module dir and
             // symlinks the original location back. On delete, we reverse that.
-            let restore_sec = printer.section("Restoring files");
+            let restore_sec = printer.section("Restoring Files");
             for file_entry in &doc.spec.files {
                 let target = cfgd_core::expand_tilde(std::path::Path::new(&file_entry.target));
                 let source = module_dir.join(&file_entry.source);

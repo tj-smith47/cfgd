@@ -345,7 +345,7 @@ pub fn build_explain_schema_doc(schema: &ResourceSchema, recursive: bool) -> Doc
             ("kind", schema.kind.as_str()),
             ("location", schema.location.as_str()),
         ])
-        .section("FIELDS (under spec)", |s| {
+        .section("Fields (under spec)", |s| {
             schema
                 .fields
                 .iter()

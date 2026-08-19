@@ -5,7 +5,7 @@ apiVersion  cfgd.io/v1alpha1
 kind        Profile
 location    profiles/<name>/profile.yaml
 
-FIELDS (under spec)
+Fields (under spec)
   aliases
     ⊙ command <string> (required) — 
     ⊙ name <string> (required)    — 

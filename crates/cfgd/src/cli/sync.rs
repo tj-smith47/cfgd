@@ -20,7 +20,7 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
     };
 
     {
-        let repo_sec = printer.section("Local repo");
+        let repo_sec = printer.section("Local Repo");
         let sp = repo_sec.spinner("Pulling from remote");
         match cfgd_core::daemon::git_pull_sync(&config_dir) {
             Ok(true) => {
@@ -125,7 +125,7 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                         let proceed = if let Some(perm_changes) = perm_changes {
                             sp.finish_warn("permission changes need approval");
                             {
-                                let perm_sec = owner.section("permission changes");
+                                let perm_sec = owner.section("Permission Changes");
                                 for change in &perm_changes {
                                     perm_sec.bullet(change.description.clone());
                                 }

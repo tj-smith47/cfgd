@@ -114,7 +114,7 @@ fn checkin_no_drift_human() {
 }
 
 /// Server pushed a desired config — `Role::Warn` status precedes the nested
-/// "Server config" section so the urgency carries.
+/// "Server Config" section so the urgency carries.
 #[test]
 fn checkin_server_pushed_config_human() {
     let (printer, cap) = Printer::for_test_doc();
@@ -123,7 +123,7 @@ fn checkin_server_pushed_config_human() {
     printer.kv("Config changed", "true");
     printer.status_simple(Role::Warn, "Server pushed desired config");
     {
-        let push_sec = printer.section("Server config");
+        let push_sec = printer.section("Server Config");
         push_sec.status_simple(Role::Ok, "Saved to <PATH>");
         push_sec.status_simple(
             Role::Info,

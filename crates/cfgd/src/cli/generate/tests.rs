@@ -191,7 +191,7 @@ fn cmd_generate_scan_only_defaults_shell_to_zsh_when_shell_env_unset() {
     );
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Scanning zsh config"),
+        output.contains("Scanning zsh Config"),
         "should default to zsh when $SHELL is unset, got: {output}"
     );
 }
@@ -227,7 +227,7 @@ fn cmd_generate_scan_only_data_payload_has_expected_keys() {
         "should print completion line, got: {output}"
     );
     assert!(
-        output.contains("Scanning zsh config"),
+        output.contains("Scanning zsh Config"),
         "should print zsh scanning header, got: {output}"
     );
 }
@@ -691,7 +691,7 @@ fn cmd_generate_scan_only_with_empty_home() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Scanning dotfiles"),
+        output.contains("Scanning Dotfiles"),
         "should show scanning header, got: {output}"
     );
     assert!(
@@ -731,11 +731,11 @@ fn cmd_generate_scan_only_with_shell_configs() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Scanning dotfiles"),
+        output.contains("Scanning Dotfiles"),
         "should scan dotfiles, got: {output}"
     );
     assert!(
-        output.contains("Scanning bash config"),
+        output.contains("Scanning bash Config"),
         "should scan bash config, got: {output}"
     );
 }
@@ -773,7 +773,7 @@ fn cmd_generate_scan_only_with_dotfiles() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("dotfile"),
+        output.contains("Dotfile"),
         "should report dotfile entries, got: {output}"
     );
 }
@@ -804,7 +804,7 @@ fn cmd_generate_scan_only_default_shell_is_zsh() {
     if let Some(ref shell) = original_shell {
         let shell_name = shell.rsplit('/').next().unwrap_or("zsh");
         assert!(
-            output.contains(&format!("Scanning {} config", shell_name)),
+            output.contains(&format!("Scanning {shell_name} Config")),
             "should detect shell from env, got: {output}"
         );
     }
@@ -941,7 +941,7 @@ fn cmd_generate_scan_only_with_fish_shell() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Scanning fish config"),
+        output.contains("Scanning fish Config"),
         "should scan fish config, got: {output}"
     );
 }
@@ -1597,7 +1597,7 @@ mod cmd_generate_mockito {
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            output.contains("Generated files") || output.contains("Generated 1 file"),
+            output.contains("Generated Files") || output.contains("Generated 1 file"),
             "must surface the generated-files summary: {output}"
         );
         assert!(

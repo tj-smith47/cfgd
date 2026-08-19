@@ -5,7 +5,7 @@ apiVersion  cfgd.io/v1alpha1
 kind        Module
 location    modules/<name>/module.yaml
 
-FIELDS (under spec)
+Fields (under spec)
   ⊙ aliases <[]object> [+]  — 
   ⊙ depends <[]string>      — 
   ⊙ env <[]object> [+]      — 

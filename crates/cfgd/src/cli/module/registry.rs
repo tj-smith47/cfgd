@@ -545,7 +545,7 @@ pub(super) fn print_module_review_summary(
     }
 
     if !module.spec.packages.is_empty() {
-        let pkgs_sec = mod_sec.section(format!("Packages ({})", module.spec.packages.len()));
+        let pkgs_sec = mod_sec.section("Packages");
         for pkg in &module.spec.packages {
             let ver = pkg
                 .min_version
@@ -557,7 +557,7 @@ pub(super) fn print_module_review_summary(
     }
 
     if !module.spec.files.is_empty() {
-        let files_sec = mod_sec.section(format!("Files ({})", module.spec.files.len()));
+        let files_sec = mod_sec.section("Files");
         for file in &module.spec.files {
             files_sec.bullet(format!("{} -> {}", file.source, file.target));
         }
@@ -567,14 +567,14 @@ pub(super) fn print_module_review_summary(
     // shell, so they belong on the same review surface as a post-apply script.
     // Rendered in full: a truncated value is exactly where a payload hides.
     if !module.spec.env.is_empty() {
-        let env_sec = mod_sec.section(format!("Environment ({})", module.spec.env.len()));
+        let env_sec = mod_sec.section("Environment");
         for ev in &module.spec.env {
             review_entry(&env_sec, "", &format!("{}={}", ev.name, ev.value));
         }
     }
 
     if !module.spec.aliases.is_empty() {
-        let alias_sec = mod_sec.section(format!("Aliases ({})", module.spec.aliases.len()));
+        let alias_sec = mod_sec.section("Aliases");
         for alias in &module.spec.aliases {
             review_entry(&alias_sec, "", &format!("{}={}", alias.name, alias.command));
         }
@@ -897,7 +897,7 @@ pub fn cmd_module_registry_remove(
             }
 
             if !affected_profiles.is_empty() {
-                let warn_sec = printer.section("Profile references");
+                let warn_sec = printer.section("Profile References");
                 for profile_name in &affected_profiles {
                     warn_sec.status_simple(
                         Role::Warn,

@@ -119,7 +119,7 @@ pub(crate) fn run_source_update(
                     let source_sec =
                         printer.section_owner(&OwnerLabel::new("source", &source.name));
                     if !perm_changes.is_empty() {
-                        let perm_sec = source_sec.section("permission changes");
+                        let perm_sec = source_sec.section("Permission Changes");
                         for change in &perm_changes {
                             perm_sec.status_simple(Role::Warn, change.description.clone());
                         }

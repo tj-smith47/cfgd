@@ -270,7 +270,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
     let mut committed = false;
     if !generated.is_empty() {
         {
-            let sec = printer.section("Generated files");
+            let sec = printer.section("Generated Files");
             for item in &generated {
                 sec.status(Role::Ok, item.name.clone())
                     .qualifier(item.path.posix().to_string());
@@ -436,7 +436,7 @@ fn cmd_generate_scan_only(printer: &Printer, args: &GenerateArgs) -> anyhow::Res
     sorted_tools.sort();
 
     {
-        let sec = printer.section("Scanning dotfiles");
+        let sec = printer.section("Scanning Dotfiles");
         if dotfiles.is_empty() {
             sec.status(Role::Info, "No dotfiles found");
         } else {
@@ -449,7 +449,7 @@ fn cmd_generate_scan_only(printer: &Printer, args: &GenerateArgs) -> anyhow::Res
 
     let shell_result = generate::scan::scan_shell_config(&detected_shell, &home_path)?;
     {
-        let sec = printer.section(format!("Scanning {} config", detected_shell));
+        let sec = printer.section(format!("Scanning {detected_shell} Config"));
         if !shell_result.aliases.is_empty() {
             sec.kv("Aliases", shell_result.aliases.len().to_string());
         }

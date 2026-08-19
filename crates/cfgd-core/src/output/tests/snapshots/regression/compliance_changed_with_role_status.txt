@@ -1,2 +1,2 @@
-Changed (1)
+Changed
   ⚠ tmux (Pass → Warning)

@@ -6,7 +6,7 @@ Update Sources
 ✓ Fetching source 'accept-src'
 
 source:accept-src
-  permission changes
+  Permission Changes
     ⚠ Required items increased from 0 to 2
   ✓ updated
 

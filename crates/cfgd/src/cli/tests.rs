@@ -18881,8 +18881,8 @@ fn cmd_sync_non_git_shows_pull_warning_and_sync_header() {
     // Spinner section appears with the pulling message; final state is "Pull
     // failed" on a non-git dir.
     assert!(
-        output.contains("Local repo"),
-        "missing 'Local repo' section: {output}"
+        output.contains("Local Repo"),
+        "missing 'Local Repo' section: {output}"
     );
     assert!(
         output.contains("Pull failed"),
@@ -19984,7 +19984,7 @@ mod cmd_source_add_local {
             let full = h.output();
             let update_out = &full[baseline_len..];
             assert!(
-                update_out.contains("permission changes"),
+                update_out.contains("Permission Changes"),
                 "expected permission-change warning, got: {update_out}"
             );
             assert!(

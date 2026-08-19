@@ -169,10 +169,8 @@ pub fn cmd_upgrade(
     })?;
 
     {
-        let sec = printer.section(format!(
-            "Update available: {} -> {}",
-            check.current, check.latest
-        ));
+        let sec = printer.section("Update Available");
+        sec.kv("Version", format!("{} -> {}", check.current, check.latest));
         sec.kv("Binary", &asset.name);
         if asset.size > 0 {
             sec.kv("Size", format_bytes(asset.size));

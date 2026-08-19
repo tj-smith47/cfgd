@@ -6,7 +6,7 @@ Update Sources
 ✓ Fetching source 'reject-src'
 
 source:reject-src
-  permission changes
+  Permission Changes
     ⚠ Required items increased from 0 to 2
   ⊙ skipped (permission changes rejected)
 

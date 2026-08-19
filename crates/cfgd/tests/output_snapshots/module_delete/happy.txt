@@ -1,6 +1,6 @@
 Delete Module: del-mod
 
-Restoring files
+Restoring Files
   (none)
 
 ✓ Deleted module 'del-mod'

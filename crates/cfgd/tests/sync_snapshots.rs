@@ -214,7 +214,7 @@ fn sync_bridge_one_blank_line() {
 
     printer.heading("Sync");
     {
-        let repo_sec = printer.section("Local repo");
+        let repo_sec = printer.section("Local Repo");
         repo_sec.status(Role::Ok, "Already up to date");
     }
 
