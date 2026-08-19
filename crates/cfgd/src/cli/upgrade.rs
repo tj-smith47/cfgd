@@ -2,6 +2,23 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::format_bytes;
 use cfgd_core::output::{Doc, Printer, Role};
 
+/// Append the daemon line an upgrade owes its human reader when it terminated a
+/// running daemon.
+///
+/// The old process is gone the moment the binary is replaced, and only a
+/// service manager brings it back on its own — a daemon started by hand stays
+/// down, and nothing reconciles drift until the user starts it again. Both
+/// install paths (`cfgd upgrade` and the startup policy update) already carry
+/// the fact in their `daemonRestarted` payload field; this is the same fact for
+/// the reader who is not parsing JSON.
+fn with_daemon_line(doc: Doc, daemon_restarted: bool) -> Doc {
+    if daemon_restarted {
+        doc.kv("Daemon", "terminated to pick up the new binary")
+    } else {
+        doc
+    }
+}
+
 pub fn cmd_upgrade(
     printer: &Printer,
     config_path: &std::path::Path,
@@ -181,19 +198,22 @@ pub fn cmd_upgrade(
     let report = &applied.report;
 
     printer.emit(
-        Doc::new()
-            .status(Role::Ok, format!("cfgd upgraded to {}", check.latest))
-            .kv("Installed to", report.installed_path.display_posix())
-            .with_data(serde_json::json!({
-                "currentVersion": check.current.to_string(),
-                "targetVersion": check.latest.to_string(),
-                "downloaded": true,
-                "installed": true,
-                "verified": true,
-                "daemonRestarted": applied.daemon_restarted,
-                "installedPath": report.installed_path.display().to_string(),
-                "verificationMode": report.verification_mode.as_wire_str(),
-            })),
+        with_daemon_line(
+            Doc::new()
+                .status(Role::Ok, format!("cfgd upgraded to {}", check.latest))
+                .kv("Installed to", report.installed_path.display_posix()),
+            applied.daemon_restarted,
+        )
+        .with_data(serde_json::json!({
+            "currentVersion": check.current.to_string(),
+            "targetVersion": check.latest.to_string(),
+            "downloaded": true,
+            "installed": true,
+            "verified": true,
+            "daemonRestarted": applied.daemon_restarted,
+            "installedPath": report.installed_path.display().to_string(),
+            "verificationMode": report.verification_mode.as_wire_str(),
+        })),
     );
 
     Ok(())
@@ -371,16 +391,19 @@ fn apply_startup_update(
         Ok(applied) => {
             let report = &applied.report;
             printer.emit(
-                Doc::new()
-                    .status(Role::Ok, format!("cfgd upgraded to {}", check.latest))
-                    .kv("Installed to", report.installed_path.display_posix())
-                    .with_data(serde_json::json!({
-                        "currentVersion": check.current.to_string(),
-                        "targetVersion": check.latest.to_string(),
-                        "installed": true,
-                        "daemonRestarted": applied.daemon_restarted,
-                        "verificationMode": report.verification_mode.as_wire_str(),
-                    })),
+                with_daemon_line(
+                    Doc::new()
+                        .status(Role::Ok, format!("cfgd upgraded to {}", check.latest))
+                        .kv("Installed to", report.installed_path.display_posix()),
+                    applied.daemon_restarted,
+                )
+                .with_data(serde_json::json!({
+                    "currentVersion": check.current.to_string(),
+                    "targetVersion": check.latest.to_string(),
+                    "installed": true,
+                    "daemonRestarted": applied.daemon_restarted,
+                    "verificationMode": report.verification_mode.as_wire_str(),
+                })),
             );
             true
         }
@@ -407,6 +430,34 @@ mod tests {
     fn upgrade_error_meta(err: &anyhow::Error) -> &crate::cli::CliErrorMeta {
         err.downcast_ref::<crate::cli::CliErrorMeta>()
             .expect("upgrade handler returns a CliErrorMeta carrier")
+    }
+
+    /// The human render owes the same daemon fact the `-o json` payload carries:
+    /// a terminated daemon that no service manager owns stays down until the
+    /// user starts it, so hiding it changes what they have to do next.
+    #[test]
+    fn a_terminated_daemon_is_reported_to_the_human_reader() {
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(with_daemon_line(
+            Doc::new().status(Role::Ok, "cfgd upgraded to v9.9.0"),
+            true,
+        ));
+        let restarted = strip_ansi(&cap.human());
+        assert!(
+            restarted.contains("Daemon"),
+            "a terminated daemon must be reported, got: {restarted:?}"
+        );
+
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(with_daemon_line(
+            Doc::new().status(Role::Ok, "cfgd upgraded to v9.9.0"),
+            false,
+        ));
+        let untouched = strip_ansi(&cap.human());
+        assert!(
+            !untouched.contains("Daemon"),
+            "no daemon was running, so no daemon line is owed, got: {untouched:?}"
+        );
     }
 
     fn current_version_tag() -> String {
