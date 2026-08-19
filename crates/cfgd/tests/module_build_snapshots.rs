@@ -87,7 +87,7 @@ fn module_build_bridge_one_blank_line() {
     printer.heading("Build Module");
     {
         let owner = printer.section_owner(&OwnerLabel::new("target", "linux/amd64"));
-        let sp = owner.spinner("Building for linux/amd64...");
+        let sp = owner.spinner("Building for linux/amd64");
         sp.finish_ok("Built linux/amd64 to /tmp/build-out");
     }
     printer.emit(

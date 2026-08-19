@@ -25,13 +25,13 @@ golden_doc!(regression, sync_change, |p, cap| {
 
 // BEFORE: cli/module/registry.rs:281  printer.info(&format!("  {}", change));
 golden_doc!(regression, registry_change, |p, cap| {
-    let s = p.section("Registry changes");
+    let s = p.section("Registry Changes");
     s.bullet("module foo @ 1.2.3 → 1.2.4");
 });
 
 // BEFORE: cli/module/registry.rs:352  printer.info(&format!("  + {}{}", pkg.name, ver));
 golden_doc!(regression, registry_added_pkg, |p, cap| {
-    let s = p.section_or_collapse("Added packages");
+    let s = p.section_or_collapse("Added Packages");
     s.bullet("nodejs@20");
 });
 
@@ -43,7 +43,7 @@ golden_doc!(regression, registry_file_map, |p, cap| {
 
 // BEFORE: cli/module/registry.rs:373  printer.warning(&format!("  $ {}", script));
 golden_doc!(regression, registry_script, |p, cap| {
-    let s = p.section_or_collapse("Scripts (will run)");
+    let s = p.section_or_collapse("Scripts (Will Run)");
     s.bullet("./post-install.sh");
 });
 
@@ -103,7 +103,7 @@ golden_doc!(regression, config_reconcile_settings, |p, cap| {
 
 // BEFORE: cli/profile/update.rs:137  printer.info(&format!("  {}", f.file_path));
 golden_doc!(regression, profile_update_file, |p, cap| {
-    let s = p.section_or_collapse("Updated files");
+    let s = p.section_or_collapse("Updated Files");
     s.bullet("/home/tj/.zshrc");
 });
 
@@ -134,7 +134,7 @@ golden_doc!(regression, doctor_check_failed, |p, cap| {
 
 // BEFORE: cli/source/update.rs:61  printer.warning(&format!("  - {}", change.description));
 golden_doc!(regression, source_update_change, |p, cap| {
-    let s = p.section_or_collapse("Source updates");
+    let s = p.section_or_collapse("Source Updates");
     s.bullet("dotfiles repo updated");
 });
 
