@@ -219,7 +219,9 @@ pub fn error_doc(
             payload_map.insert(k, v);
         }
     }
-    Doc::new().status(Role::Fail, message).with_data(payload)
+    let mut doc = Doc::new().status(Role::Fail, message).with_data(payload);
+    doc.is_error = true;
+    doc
 }
 
 pub mod render_doc;

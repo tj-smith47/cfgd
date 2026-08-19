@@ -50,6 +50,17 @@ pub struct Doc {
     pub(crate) children: Vec<Component>,
     /// Optional payload that REPLACES Doc-derived JSON in structured modes.
     pub(crate) data: Option<serde_json::Value>,
+    /// Set only by [`super::error_doc`]. A selector output format
+    /// (`jsonpath=`/`template=`/`name`) applies the reader's SUCCESS-shaped
+    /// selector to whatever this doc happens to carry, and an error doc's
+    /// shape (`error`/`message`/`name`) is not that shape — the selector
+    /// almost always misses, printing nothing to stdout, and unlike `json`/
+    /// `yaml` (which dump the whole payload regardless of selector) that
+    /// leaves NO diagnostic anywhere. `emit_structured` reads this flag to
+    /// echo the failure to stderr regardless of which selector was asked for,
+    /// the same "always visible independent of `-o`" guarantee `alert`/
+    /// `deprecation` already give a run-affecting notice.
+    pub(crate) is_error: bool,
 }
 
 impl Default for Doc {
@@ -64,6 +75,7 @@ impl Doc {
             heading: None,
             children: Vec::new(),
             data: None,
+            is_error: false,
         }
     }
 
@@ -214,6 +226,26 @@ impl Doc {
 
     pub(crate) fn data_or_self_json(&self) -> serde_json::Value {
         self.data.clone().unwrap_or_else(|| self.to_json_value())
+    }
+
+    /// The failure's human message, when this doc [`Self::is_error`] — the
+    /// subject of its (always-present, `error_doc`-authored) `Role::Fail`
+    /// status. Used by `emit_structured`'s selector formats to echo the
+    /// failure to stderr; a call site that never built the doc through
+    /// `error_doc` sees `None` regardless of what its own children happen to
+    /// contain.
+    pub(crate) fn error_message(&self) -> Option<&str> {
+        if !self.is_error {
+            return None;
+        }
+        self.children.iter().find_map(|c| match c {
+            Component::Status {
+                role: Role::Fail,
+                subject,
+                ..
+            } => Some(subject.as_str()),
+            _ => None,
+        })
     }
 }
 

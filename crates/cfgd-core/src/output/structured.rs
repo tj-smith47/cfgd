@@ -317,6 +317,28 @@ pub(crate) fn emit_structured(
     format: &OutputFormat,
     list_envelope: bool,
 ) -> bool {
+    // A selector format (`name`/`jsonpath=`/`template=`/`template-file=`)
+    // projects the doc through the reader's SUCCESS-shaped selector, and an
+    // error doc's shape (`error`/`message`/`name`) almost never satisfies
+    // one written for `.items[].foo` — unlike `json`/`yaml`, which dump the
+    // whole payload regardless of selector, a miss here prints nothing to
+    // stdout and (with no fix) nothing anywhere else either, leaving only
+    // the exit code to say a failure happened. Echo the failure to stderr
+    // up front, unconditionally of what the selector itself resolves to —
+    // the QP9b mirror-sweep fix for `-o jsonpath=`/`template=` matching
+    // nothing on an error path specifically.
+    if doc.is_error
+        && matches!(
+            format,
+            OutputFormat::Name
+                | OutputFormat::Jsonpath(_)
+                | OutputFormat::Template(_)
+                | OutputFormat::TemplateFile(_)
+        )
+        && let Some(msg) = doc.error_message()
+    {
+        sink_stderr.write_line(msg);
+    }
     match format {
         OutputFormat::Table | OutputFormat::Wide => false,
         OutputFormat::Json => {
@@ -919,6 +941,82 @@ mod tests {
         let (handled, _) = emit(&sink, &doc, &OutputFormat::Jsonpath("{.name}".into()));
         assert!(handled);
         assert_eq!(take(&buf), "x\n");
+    }
+
+    /// QP9b mirror-sweep fix: a `--only`-shaped selector was never the only
+    /// zero-match hazard in the CLI — `-o jsonpath=`/`template=`/`name` apply
+    /// the reader's SUCCESS-shaped selector to an error doc's `error`/
+    /// `message`/`name` shape, and a miss used to print NOTHING anywhere
+    /// (unlike `json`/`yaml`, which dump the whole payload regardless of
+    /// selector). Four formats, one fixture, one assertion shape each: the
+    /// error message always lands on stderr, whatever stdout's selector
+    /// resolves to.
+    #[test]
+    fn emit_structured_jsonpath_on_an_error_doc_echoes_the_message_to_stderr_even_on_a_miss() {
+        let (stdout_buf, sink) = capture();
+        let doc =
+            crate::output::error_doc("acme", "not_found", "acme not found", serde_json::json!({}));
+        let (handled, _output_error, stderr) = emit_with_stderr(
+            &sink,
+            &doc,
+            &OutputFormat::Jsonpath("{.noSuchField}".into()),
+        );
+        assert!(handled);
+        assert_eq!(
+            take(&stdout_buf),
+            "\n",
+            "the selector itself still resolves empty"
+        );
+        assert_eq!(
+            stderr, "acme not found\n",
+            "the failure must still be visible on stderr despite the selector missing"
+        );
+    }
+
+    #[test]
+    fn emit_structured_name_on_an_unnamed_error_doc_echoes_the_message_to_stderr() {
+        let (stdout_buf, sink) = capture();
+        // `render_cli_error`'s untyped fallback names `""` — the shape that
+        // made `-o name` print a blank line and nothing else.
+        let doc = crate::output::error_doc("", "error", "boom", serde_json::json!({}));
+        let (handled, _output_error, stderr) = emit_with_stderr(&sink, &doc, &OutputFormat::Name);
+        assert!(handled);
+        assert_eq!(take(&stdout_buf), "\n");
+        assert_eq!(stderr, "boom\n");
+    }
+
+    #[test]
+    fn emit_structured_template_on_an_error_doc_echoes_the_message_to_stderr() {
+        let (stdout_buf, sink) = capture();
+        let doc = crate::output::error_doc("x", "error", "template boom", serde_json::json!({}));
+        // A literal template — no context lookup, so it neither errors nor
+        // happens to surface any of the error doc's own fields — proves the
+        // stderr echo fires independently of what the selector itself does.
+        let (handled, _output_error, stderr) =
+            emit_with_stderr(&sink, &doc, &OutputFormat::Template("selected".into()));
+        assert!(handled);
+        assert_eq!(take(&stdout_buf), "selected\n");
+        assert_eq!(stderr, "template boom\n");
+    }
+
+    /// The stderr echo is gated on `Doc::is_error` — a normal success doc
+    /// under a jsonpath selector that happens to miss must NOT gain a
+    /// mystery stderr line it never had before.
+    #[test]
+    fn emit_structured_jsonpath_on_a_success_doc_never_writes_to_stderr() {
+        let (buf, sink) = capture();
+        let doc = doc_with(serde_json::json!({"name": "x"}));
+        let (handled, _output_error, stderr) = emit_with_stderr(
+            &sink,
+            &doc,
+            &OutputFormat::Jsonpath("{.noSuchField}".into()),
+        );
+        assert!(handled);
+        assert_eq!(take(&buf), "\n");
+        assert_eq!(
+            stderr, "",
+            "a success doc's selector miss must stay silent on stderr"
+        );
     }
 
     #[test]
