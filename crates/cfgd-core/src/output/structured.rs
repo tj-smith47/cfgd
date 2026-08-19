@@ -324,9 +324,9 @@ pub(crate) fn emit_structured(
     // whole payload regardless of selector, a miss here prints nothing to
     // stdout and (with no fix) nothing anywhere else either, leaving only
     // the exit code to say a failure happened. Echo the failure to stderr
-    // up front, unconditionally of what the selector itself resolves to —
-    // the QP9b mirror-sweep fix for `-o jsonpath=`/`template=` matching
-    // nothing on an error path specifically.
+    // up front, unconditionally of what the selector itself resolves to,
+    // so a `-o jsonpath=`/`template=` selector that matches nothing on an
+    // error path still surfaces why the command failed.
     if doc.is_error
         && matches!(
             format,
@@ -943,9 +943,8 @@ mod tests {
         assert_eq!(take(&buf), "x\n");
     }
 
-    /// QP9b mirror-sweep fix: a `--only`-shaped selector was never the only
-    /// zero-match hazard in the CLI — `-o jsonpath=`/`template=`/`name` apply
-    /// the reader's SUCCESS-shaped selector to an error doc's `error`/
+    /// A `-o jsonpath=`/`template=`/`name` selector applies the reader's
+    /// SUCCESS-shaped selector to an error doc's `error`/
     /// `message`/`name` shape, and a miss used to print NOTHING anywhere
     /// (unlike `json`/`yaml`, which dump the whole payload regardless of
     /// selector). Four formats, one fixture, one assertion shape each: the

@@ -1630,7 +1630,7 @@ Scripted consumers rely on distinct exit codes to decide follow-up actions witho
 | `3` | No cfgd config file at the resolved path. | Any command when `--config` points to a missing file. |
 | `4` | Config file exists but failed parse or validation. | Any command when `--config` is malformed or schema-invalid. |
 | `5` | Drift detected between actual and desired state. | `cfgd diff --exit-code`, `cfgd status --exit-code`, `cfgd verify --exit-code`. |
-| `6` | A named resource was not found. | Any command naming a missing resource — e.g. `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`, `cfgd backup run/list/restore <missing>`, `cfgd backup restore --at <missing-snapshot>`, `cfgd init --apply-profile <missing>`. The destructive verbs `module delete`, `module registry remove`, `source remove`, and `profile delete` accept `--ignore-not-found` to exit `0` instead when the target is absent. |
+| `6` | A named resource was not found. | Any command naming a missing resource — e.g. `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`, `cfgd backup run/list/restore <missing>`, `cfgd backup restore --at <missing-snapshot>`, `cfgd init --apply-profile <missing>`, `cfgd init --apply-module <missing>`, `cfgd config get/set/unset <missing-key>`, `cfgd alias show/delete <missing>` (which dispatch into the same config-key lookup with an `aliases.` prefix), `cfgd rollback <missing-apply-id>`. The destructive verbs `module delete`, `module registry remove`, `source remove`, and `profile delete` accept `--ignore-not-found` to exit `0` instead when the target is absent. |
 | `7` | An apply ran but at least one action failed (partial or total). Also a schedule-less `spec.backups[]` unit that failed or didn't complete cleanly during `cfgd apply` (see [Apply Integration](backups.md#cli)) — the unit is reported, apply continues, and the overall status downgrades to `partial`. | `cfgd apply`, `cfgd init --apply/--apply-profile/--apply-module`, and `cfgd module add --apply` when one or more actions fail. |
 | `130` | `apply` was cooperatively aborted by `SIGINT` (Ctrl-C). | `cfgd apply` interrupted with Ctrl-C; the in-flight action finishes, the lock releases, the run is recorded as `Aborted`. |
 | `143` | `apply` was cooperatively aborted by `SIGTERM`. | `cfgd apply` interrupted with `kill`; same cooperative-abort semantics as `130`. |
@@ -1641,12 +1641,13 @@ External-process passthrough (e.g. `kubectl exec` invoked by the `kubectl cfgd` 
 
 ### Error output
 
-Every failure renders exactly once, to `stderr` in human mode and to `stdout` in structured mode:
+A failure always renders somewhere; where depends on the format, because a
+selector format's success shape and an error doc's shape rarely agree:
 
-- **Human (default):** a single `✗` line carrying the error message, followed by any
+- **Human (default):** a single `✗` line carrying the error message, to `stderr`, followed by any
   remediation hints (e.g. `Available modules: …`, or `run \`cfgd init\``). The same failure is
   never printed twice.
-- **Structured (`-o json` / `yaml` / `jsonpath` / `template`):** exactly one error object,
+- **Full-dump structured (`-o json` / `yaml`):** exactly one error object, to `stdout`,
   always — even for an unclassified internal error, so a scripted consumer is never left with
   empty output on failure. The shape is stable:
 
@@ -1660,6 +1661,15 @@ Every failure renders exactly once, to `stderr` in human mode and to `stdout` in
   command-specific fields follow. An error that carries no typed metadata falls back to
   `{ "error": "error", "name": "", "message": "<text>" }`. Remediation hints are human-only and
   never appear in the structured payload.
+- **Selector structured (`-o name` / `jsonpath=` / `template=` / `template-file=`):** the same
+  error message is *always* echoed to `stderr` first, before the selector is evaluated. A
+  selector is written against the success shape (`.items[].foo`), and an error doc's shape
+  (`error`/`message`/`name`) almost never satisfies one — without the `stderr` echo, a
+  non-matching selector printed nothing to `stdout` and nothing anywhere else, leaving only the
+  exit code to say a failure happened. If the selector *does* resolve against the error doc's
+  fields (e.g. `-o jsonpath={.name}` against a `not_found` error, which does carry `name`), that
+  projection additionally prints to `stdout` — so a selector format can render an error twice,
+  once as the guaranteed `stderr` diagnostic and once as whatever the selector matched.
 
 ### Use in CI
 

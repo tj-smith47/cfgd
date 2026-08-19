@@ -23,6 +23,20 @@ The `output` module (`crates/cfgd-core/src/output/`) provides:
   - `printer.data_line(text)` — raw structured-output line
   - `printer.emit(doc)` — `Doc` emit (for `-o json|yaml|jsonpath|template`)
 
+**An error `Doc` under a selector format always echoes to stderr first.** `emit_structured`
+(`crates/cfgd-core/src/output/structured.rs`) routes `-o name` / `jsonpath=` / `template=` /
+`template-file=` through the reader's SUCCESS-shaped selector; an error doc's shape
+(`error`/`message`/`name`) almost never satisfies one written for `.items[].foo`, so — unlike
+`json`/`yaml`, which dump the whole payload regardless of selector — a non-matching selector on
+an error doc used to print nothing to stdout and nothing anywhere else, leaving only the exit
+code to say a failure happened. `emit_structured` now writes `doc.error_message()` to
+`sink_stderr` unconditionally, before evaluating the selector, whenever `doc.is_error` and the
+format is one of those four. The selector still runs afterward and may separately match
+something in the error doc's own fields (e.g. `jsonpath={.name}` against a `not_found` error) and
+print that to stdout — so a selector format can render an error twice: once as the guaranteed
+stderr diagnostic, once as whatever stdout the selector produced. Documented in
+`docs/cli-reference.md`'s "Error output" section; keep the two in sync.
+
 **Every module receives a `&Printer` (or `Arc<Printer>` in async contexts). This is non-negotiable.**
 
 **Collapse a captured error before it becomes a status subject.** When formatting an `io::Error`, `CfgdError`, or command stderr into a `status[_simple]` subject or detail, route through `cfgd_core::output::collapse_to_subject_line(err)`: an error's own line breaks are an artifact of how it was captured, not structure the reader wants, and a one-line subject is what scans.

@@ -296,14 +296,19 @@ impl<'a> ApplyRun<'a> {
         self
     }
 
-    /// Title + context rows, then the plan's warnings as `Role::Warn` lines at
-    /// row depth.
+    /// Title + context rows, then the plan's warnings via `printer.alert`, at
+    /// the section's depth.
     ///
     /// Omits every empty row (a run with no in-scope work has no `Phases` and
     /// no `Actions` row); `Phases` lists only phases holding in-scope work
     /// **that renders**, and `Actions` renders `{n} planned` unless the run is
     /// preview-only. Warnings live here, not in the preview, so they survive
-    /// `--yes`.
+    /// `--yes`. Rendered via `alert` rather than `status_simple(Role::Warn,
+    /// …)` so a run-level warning — the undecidable-batch notice, the
+    /// zero-match `--skip`/`--only` accounting — stays visible at
+    /// `Verbosity::Quiet`, the same always-visible guarantee every producer of
+    /// [`crate::reconciler::Plan::warnings`] already gets for itself when it
+    /// warns directly.
     ///
     /// `n` is computed here, before the run, from whichever source this run has
     /// — never from `ApplyResult.planned_total`, which does not exist yet. With
@@ -385,7 +390,7 @@ impl<'a> ApplyRun<'a> {
             let head = printer.section(self.ctx.title.as_str());
             head.kv_block(rows);
             for warning in warnings {
-                head.status_simple(Role::Warn, warning);
+                printer.alert(warning);
             }
         }
         self.render_withheld(printer);
