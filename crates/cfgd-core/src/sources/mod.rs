@@ -83,12 +83,65 @@ pub struct SourceManager {
     sources: HashMap<String, CachedSource>,
     /// When true, skip signature verification even if a source requires it.
     allow_unsigned: bool,
-    /// Every "this source was skipped" advisory this manager has emitted, in the
-    /// order it emitted them. Recorded as well as printed so a caller that
-    /// REUSES a composition can re-state a condition that still holds without
-    /// re-composing to hear it again — a persistent warning that stops appearing
-    /// reads as resolved. See [`Self::take_skip_advisories`].
-    skip_advisories: Vec<String>,
+    /// Every advisory this manager has emitted, in the order it emitted them.
+    /// Recorded as well as printed so a caller that REUSES a composition can
+    /// re-state a condition that still holds without re-composing to hear it
+    /// again — a persistent warning that stops appearing reads as resolved. See
+    /// [`Self::take_advisories`].
+    advisories: Vec<SourceAdvisory>,
+}
+
+/// One thing a composition said out loud, carried WITH the channel it was said
+/// on.
+///
+/// A re-stating caller must not pick the channel: a bypass announced through
+/// `alert` (which survives `Verbosity::Quiet` and structured output) and
+/// re-stated through `status_simple(Role::Warn, …)` is filtered away on exactly
+/// the runs it was written for — the daemon's quiet ticks — so the operator
+/// hears it once and then hears an unchanged machine go silent. The channel
+/// travels with the sentence so the first statement and every restatement are
+/// the same statement.
+#[derive(Clone, Debug)]
+pub(crate) struct SourceAdvisory {
+    message: String,
+    channel: AdvisoryChannel,
+}
+
+/// The two channels a source advisory is ever said on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AdvisoryChannel {
+    /// An ordinary warning, correctly suppressed at `Verbosity::Quiet` and
+    /// under `-o json`: the source was skipped and the composition went on.
+    Status,
+    /// Always visible, stderr only: the run acted against a security policy the
+    /// user declared.
+    Alert,
+}
+
+impl std::fmt::Display for SourceAdvisory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl SourceAdvisory {
+    /// A skip advisory built without a composition, for a test that drives a
+    /// holder's restatement rather than the composition that produced one.
+    #[cfg(test)]
+    pub(crate) fn skipped(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            channel: AdvisoryChannel::Status,
+        }
+    }
+
+    /// Say it again, on the channel it was first said on.
+    pub(crate) fn restate(&self, printer: &Printer) {
+        match self.channel {
+            AdvisoryChannel::Status => printer.status_simple(Role::Warn, &self.message),
+            AdvisoryChannel::Alert => printer.alert(&self.message),
+        }
+    }
 }
 
 impl SourceManager {
@@ -98,7 +151,7 @@ impl SourceManager {
             cache_dir: cache_dir.to_path_buf(),
             sources: HashMap::new(),
             allow_unsigned: false,
-            skip_advisories: Vec::new(),
+            advisories: Vec::new(),
         }
     }
 
@@ -114,8 +167,12 @@ impl SourceManager {
     /// re-states later is byte-identical to the one it first printed rather than
     /// a second copy that can drift from it.
     fn skip_advisory(&mut self, printer: &Printer, message: String) {
-        printer.status_simple(Role::Warn, &message);
-        self.skip_advisories.push(message);
+        let advisory = SourceAdvisory {
+            message,
+            channel: AdvisoryChannel::Status,
+        };
+        advisory.restate(printer);
+        self.advisories.push(advisory);
     }
 
     /// Say — and remember — that a policy this source declared was BYPASSED and
@@ -129,21 +186,27 @@ impl SourceManager {
     /// structured output, which is the whole reason it exists. It is remembered
     /// for the same reason a skip is: a holder that caches a composition across
     /// ticks must re-state it, or a bypass that goes quiet reads as one that
-    /// stopped happening.
+    /// stopped happening. `SourceAdvisory` carries that choice with the
+    /// sentence, so a re-stating caller cannot undo it.
     fn bypass_advisory(&mut self, printer: &Printer, message: String) {
-        printer.alert(&message);
-        self.skip_advisories.push(message);
+        let advisory = SourceAdvisory {
+            message,
+            channel: AdvisoryChannel::Alert,
+        };
+        advisory.restate(printer);
+        self.advisories.push(advisory);
     }
 
-    /// Take the skip advisories emitted since the last take.
+    /// Take the advisories emitted since the last take.
     ///
     /// For a caller that holds a composition across more than one unit of work:
     /// the conditions these describe (a source never synced, a checkout cloned
-    /// from an origin the spec no longer names) persist until someone runs
-    /// `cfgd sync`, so a holder re-states them rather than letting them fall
-    /// silent behind a cache hit.
-    pub(crate) fn take_skip_advisories(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.skip_advisories)
+    /// from an origin the spec no longer names, a signature check bypassed)
+    /// persist until someone runs `cfgd sync` or drops `--allow-unsigned`, so a
+    /// holder re-states them rather than letting them fall silent behind a cache
+    /// hit.
+    pub(crate) fn take_advisories(&mut self) -> Vec<SourceAdvisory> {
+        std::mem::take(&mut self.advisories)
     }
 
     /// Default source cache directory: `<cache-root>/sources` under the single
@@ -814,7 +877,7 @@ impl SourceManager {
     /// manifest half arrives from inside the cached clone, which is the one
     /// thing a planted cache controls. `allow_unsigned` on this SourceManager
     /// still bypasses both.
-    pub fn verify_commit_signature(
+    pub(crate) fn verify_commit_signature(
         &mut self,
         spec: &SourceSpec,
         source_dir: &Path,

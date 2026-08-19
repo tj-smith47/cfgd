@@ -316,7 +316,7 @@ pub(crate) fn handle_reconcile(
             resolved: composed.resolved,
             source_module_roots: composed.source_module_roots,
             registry,
-            source_advisories: composed.skip_advisories,
+            source_advisories: composed.advisories,
         })
     });
     let Ok(derived) = derived else {
@@ -328,7 +328,7 @@ pub(crate) fn handle_reconcile(
     // that REUSED the composition re-states what that composition said instead
     // of falling silent — an operator watching a warning stop reads it as fixed.
     for advisory in derived.advisories_to_restate() {
-        printer.status_simple(crate::output::Role::Warn, advisory.as_str());
+        advisory.restate(printer);
     }
     let cfg = &*derived.cfg;
     let profile_name = derived.profile_name.as_str();

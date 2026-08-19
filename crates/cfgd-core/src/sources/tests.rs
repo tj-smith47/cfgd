@@ -386,15 +386,27 @@ fn an_allow_unsigned_bypass_is_announced_even_at_quiet_and_is_remembered() {
         "the bypass must reach the user at Quiet, got: {out:?}"
     );
 
-    let remembered = mgr.take_skip_advisories();
+    let remembered = mgr.take_advisories();
     assert_eq!(
         remembered.len(),
         1,
         "a holder caching this composition must be able to re-state the bypass, got: {remembered:?}"
     );
     assert!(
-        out.contains(remembered[0].trim()),
+        out.contains(remembered[0].to_string().trim()),
         "the remembered sentence must be the one that was printed, got: {remembered:?}"
+    );
+
+    // The restatement carries the channel with it. A daemon tick that reuses a
+    // cached composition runs at Quiet, where a Warn status is dropped — so a
+    // restatement that picked its own channel would state the bypass once and
+    // then let an unchanged machine go silent.
+    let (again, again_buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Quiet);
+    remembered[0].restate(&again);
+    let restated = crate::test_helpers::captured_text(&again_buf);
+    assert!(
+        restated.contains("--allow-unsigned"),
+        "a re-stated bypass must survive Quiet exactly as the first statement did, got: {restated:?}"
     );
 }
 
@@ -2191,6 +2203,63 @@ fn verify_head_signature_with_no_git_on_path_returns_clear_error() {
     assert!(
         msg.contains("git CLI is required") || msg.contains("not available"),
         "no-git error must call out git: {msg}"
+    );
+}
+
+/// The success line is new output on every composing command (`apply`, `plan`,
+/// `status`, `diff`, `backup`) whenever `requireSignedCommits` is set, so both
+/// halves of its contract are pinned: an ordinary `Role::Ok` status, present at
+/// Normal and correctly dropped at Quiet, where a read path composes.
+///
+/// The good signature comes from a `git` shim on PATH answering
+/// `log --format=%G?` with `G`. A real GPG-signed fixture commit would make the
+/// test depend on a gpg keyring on the host rather than on cfgd.
+#[cfg(unix)]
+#[test]
+#[serial]
+fn a_verified_signature_is_reported_at_normal_and_dropped_at_quiet() {
+    use crate::test_helpers::EnvVarGuard;
+    use std::os::unix::fs::PermissionsExt;
+
+    // Declared before the PATH override so it drops last, bracketing the whole
+    // window against concurrent spawns.
+    let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
+    // The bootstrapped-dir registry is searched after PATH and holds whatever a
+    // fixture registered earlier in this binary.
+    let _dirs = crate::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
+    let bin = tempfile::tempdir().unwrap();
+    let shim = bin.path().join("git");
+    std::fs::write(&shim, "#!/bin/sh\nprintf 'G'\n").unwrap();
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _path = EnvVarGuard::set("PATH", &bin.path().display().to_string());
+
+    let dir = tempfile::tempdir().unwrap();
+    let constraints = crate::config::SourceConstraints {
+        require_signed_commits: true,
+        ..Default::default()
+    };
+    let spec = source_spec_named("signed");
+
+    let mut mgr = SourceManager::new(dir.path());
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    mgr.verify_commit_signature(&spec, dir.path(), &constraints, &printer)
+        .expect("the shim reports a good signature");
+    let normal = crate::test_helpers::captured_text(&buf);
+    assert!(
+        normal.contains("signed") && normal.contains("signature verified"),
+        "a check the user asked for must say it ran, got: {normal:?}"
+    );
+
+    let mut quiet_mgr = SourceManager::new(dir.path());
+    let (quiet, quiet_buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Quiet);
+    quiet_mgr
+        .verify_commit_signature(&spec, dir.path(), &constraints, &quiet)
+        .expect("the shim reports a good signature");
+    assert_eq!(
+        crate::test_helpers::captured_text(&quiet_buf),
+        "",
+        "an expected success is an ordinary status, so a read path composing at \
+         Quiet must stay silent"
     );
 }
 

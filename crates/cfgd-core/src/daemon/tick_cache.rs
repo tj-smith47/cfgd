@@ -65,6 +65,7 @@ use std::time::{Duration, Instant};
 use crate::config::{CfgdConfig, ResolvedProfile};
 use crate::modules::{ResolvedModule, SourceModuleRoot};
 use crate::providers::ProviderRegistry;
+use crate::sources::SourceAdvisory;
 use crate::state::StateStore;
 use crate::{ConfigInputRecorder, ConfigInputs};
 
@@ -98,7 +99,7 @@ struct ConfigDerivation {
     resolved: Arc<ResolvedProfile>,
     source_module_roots: Arc<Vec<SourceModuleRoot>>,
     registry: Arc<ProviderRegistry>,
-    source_advisories: Arc<Vec<String>>,
+    source_advisories: Arc<Vec<SourceAdvisory>>,
 }
 
 /// The module half, and the config derivation it was resolved against.
@@ -524,7 +525,7 @@ pub(crate) struct DerivedConfig {
     pub(crate) source_module_roots: Vec<SourceModuleRoot>,
     pub(crate) registry: ProviderRegistry,
     /// What the composition said out loud about sources it skipped.
-    pub(crate) source_advisories: Vec<String>,
+    pub(crate) source_advisories: Vec<SourceAdvisory>,
 }
 
 /// One tick's handle on the config-derived objects.
@@ -537,7 +538,7 @@ pub(crate) struct CachedConfig {
     pub(crate) registry: Arc<ProviderRegistry>,
     /// The composition's skip advisories, carried so a REUSING tick can re-state
     /// a condition that still holds. See [`Self::advisories_to_restate`].
-    source_advisories: Arc<Vec<String>>,
+    source_advisories: Arc<Vec<SourceAdvisory>>,
     /// Whether this handle came from a held derivation rather than from one this
     /// caller just ran. The derivation printed its own advisories; a reuse did
     /// not, and has to.
@@ -568,7 +569,7 @@ impl CachedConfig {
     /// with no local cache is reported once per tick exactly as it was before
     /// the derivation was ever held across ticks. Suppressing them would make an
     /// unchanged, still-broken source look like one that got fixed.
-    pub(crate) fn advisories_to_restate(&self) -> &[String] {
+    pub(crate) fn advisories_to_restate(&self) -> &[SourceAdvisory] {
         if self.reused {
             &self.source_advisories
         } else {
@@ -582,7 +583,10 @@ impl CachedConfig {
 ///
 /// Shared with the daemon's own tests, which drive a tick against this cache.
 #[cfg(test)]
-pub(super) fn test_derived_config(marker: &str, source_advisories: Vec<String>) -> DerivedConfig {
+pub(super) fn test_derived_config(
+    marker: &str,
+    source_advisories: Vec<SourceAdvisory>,
+) -> DerivedConfig {
     use crate::config::{ConfigMetadata, ConfigSpec, MergedProfile};
     DerivedConfig {
         cfg: CfgdConfig {
@@ -614,7 +618,7 @@ mod tests {
     }
 
     /// The same, carrying what the composition said about skipped sources.
-    fn derived_advising(marker: &str, source_advisories: Vec<String>) -> DerivedConfig {
+    fn derived_advising(marker: &str, source_advisories: Vec<SourceAdvisory>) -> DerivedConfig {
         test_derived_config(marker, source_advisories)
     }
 
@@ -910,7 +914,7 @@ mod tests {
         let config_path = tmp.path().join("cfgd.yaml");
         std::fs::write(&config_path, "first").unwrap();
         let cache = TickCache::new();
-        let advisory = "source 'team' has never been synced — skipping".to_string();
+        let advisory = SourceAdvisory::skipped("source 'team' has never been synced — skipping");
 
         // Asserted per tick, so a shortfall names the tick that produced it and
         // says which of the two ways it went wrong: a tick that re-derived

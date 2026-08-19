@@ -192,7 +192,7 @@ pub(crate) fn compose_daemon_desired_state(
         return Ok(DaemonComposition {
             resolved: local.clone(),
             source_module_roots: Vec::new(),
-            skip_advisories: Vec::new(),
+            advisories: Vec::new(),
         });
     }
     let cache_dir = crate::sources::SourceManager::default_cache_dir_for(scope)
@@ -210,7 +210,7 @@ pub(crate) fn compose_daemon_desired_state(
     Ok(DaemonComposition {
         resolved: result.resolved,
         source_module_roots: result.source_module_roots,
-        skip_advisories: mgr.take_skip_advisories(),
+        advisories: mgr.take_advisories(),
     })
 }
 
@@ -218,11 +218,12 @@ pub(crate) fn compose_daemon_desired_state(
 pub(crate) struct DaemonComposition {
     pub(crate) resolved: ResolvedProfile,
     pub(crate) source_module_roots: Vec<crate::modules::SourceModuleRoot>,
-    /// The "this source was skipped" lines the composition printed, kept so a
-    /// caller REUSING this composition can re-state them. The conditions they
-    /// describe persist until someone runs `cfgd sync`, and a warning that stops
-    /// appearing reads as resolved.
-    pub(crate) skip_advisories: Vec<String>,
+    /// The lines the composition printed about its sources, each carrying the
+    /// channel it was printed on, kept so a caller REUSING this composition can
+    /// re-state them AS THEY WERE SAID. The conditions they describe persist
+    /// until someone runs `cfgd sync` (or drops `--allow-unsigned`), and a
+    /// warning that stops appearing reads as resolved.
+    pub(crate) advisories: Vec<crate::sources::SourceAdvisory>,
 }
 
 const DEBOUNCE_MS: u64 = 500;
