@@ -406,7 +406,7 @@ pub fn run_apply(
 
     // Apply --skip / --only filters. `known_module_names` reads the module
     // tree and lockfile ONCE, only when a filter is actually active — a
-    // filter-less run (the common case) never pays that I/O (review S1).
+    // filter-less run (the common case) never pays that I/O.
     let known_modules = if skip.is_empty() && only.is_empty() {
         std::collections::HashSet::new()
     } else {

@@ -1893,7 +1893,7 @@ impl TokenHits {
 /// inside `module_known_but_unresolved`, once per zero-match token, putting
 /// filesystem I/O behind a `&Path` threaded through every filter call site
 /// (~30 of them in tests alone) purely so this one hint could ask a question
-/// only it needed answered (review S1). A load failure (no `modules/`
+/// only it needed answered. A load failure (no `modules/`
 /// directory, no lockfile) contributes nothing rather than erroring — the
 /// hint degrades to "unknown", the same as it always did.
 pub(in crate::cli) fn known_module_names(config_dir: &Path) -> HashSet<String> {
