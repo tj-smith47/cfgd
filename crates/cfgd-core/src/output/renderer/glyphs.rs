@@ -24,7 +24,13 @@ fn compose_subject_with_label(theme: &Theme, subject: &str, label: &StatusLabel)
 /// color cannot be followed by outer-role-styled text.
 fn compose_subject_with_qualifier(theme: &Theme, subject: &str, qualifier: &str) -> String {
     let (_, colon_style) = role_glyph(theme, Role::Warn);
-    let muted = theme.muted.apply_to(format!(" {qualifier}"));
+    // `qualifier` is as untrusted as `subject` — both can carry a captured
+    // error string — so it gets the same sanitation before it is wrapped in
+    // the renderer-owned muted span, or a foreign `\x1b[0m` inside it closes
+    // the span early and everything the renderer writes after paints in
+    // whatever colour the foreign escape last set.
+    let sanitized_qualifier = strip_ansi(qualifier);
+    let muted = theme.muted.apply_to(format!(" {sanitized_qualifier}"));
     format!("{subject}{}{muted}", colon_style.apply_to(":"))
 }
 
@@ -107,7 +113,7 @@ mod tests {
     }
 
     /// The colon is always `Role::Warn` and the qualifier text always
-    /// `theme.muted`, whatever role the status LINE itself carries — R6's
+    /// `theme.muted`, whatever role the status LINE itself carries — the
     /// "role slot / warning colon / muted qualifier" split composes fixed
     /// styling for the trailing two slots, not a per-call choice the way
     /// `label`'s role parameter is.
@@ -125,6 +131,26 @@ mod tests {
             composed.contains(&text),
             "qualifier text not styled muted; got: {composed:?}"
         );
+    }
+
+    /// A qualifier built from a captured error string can carry foreign SGR
+    /// (a colour-emitting child process's own escapes). It must be stripped
+    /// exactly like `subject` is — a raw `\x1b[0m` surviving inside the
+    /// muted span would close it early and leave everything the renderer
+    /// writes afterward painted in whatever colour the foreign escape last
+    /// set.
+    #[test]
+    fn qualifier_carrying_foreign_ansi_is_stripped_before_composing() {
+        let t = Theme::default().with_colors(true);
+        let composed = finalize_subject(&t, "curl", None, Some("\x1b[31mmissing\x1b[0m"), None);
+        // The foreign red-fg code and reset must be gone — only the
+        // renderer's own muted styling may remain, proven by round-tripping
+        // through `strip_ansi` back to the plain text.
+        assert!(
+            !composed.contains("\x1b[31m"),
+            "foreign colour escape survived inside the composed qualifier: {composed:?}"
+        );
+        assert_eq!(crate::output::strip_ansi(&composed), "curl: missing");
     }
 
     /// Qualifier lands ahead of `label` — both are trailing, at-end-of-subject
