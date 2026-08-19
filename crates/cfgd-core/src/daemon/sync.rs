@@ -303,11 +303,11 @@ async fn apply_daemon_update(
         Ok(Ok(applied)) => {
             tracing::info!(
                 version = %version_str,
-                daemon_restarted = applied.daemon_restarted,
+                daemon_terminated = applied.daemon_terminated,
                 "auto-update installed",
             );
-            let restart_note = if applied.daemon_restarted {
-                "; restarting daemon."
+            let restart_note = if applied.daemon_terminated {
+                "; daemon stopped to pick up the new binary."
             } else {
                 "."
             };

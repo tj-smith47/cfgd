@@ -843,7 +843,7 @@ pub(crate) fn download_and_install_to(
 #[derive(Debug, Clone)]
 pub struct AppliedUpdate {
     pub report: InstallReport,
-    pub daemon_restarted: bool,
+    pub daemon_terminated: bool,
     /// Outcome of the user-scope skill ride-along run as part of this apply.
     pub skill_refresh: RideAlongOutcome,
 }
@@ -882,10 +882,10 @@ pub fn install_release(
     // project scope is never touched. Best-effort — a refresh failure must not
     // unwind a binary upgrade that already succeeded.
     let skill_refresh = refresh_user_scope_skills(cfg, cfgd_version);
-    let daemon_restarted = restart_daemon_if_running();
+    let daemon_terminated = terminate_daemon_if_running();
     Ok(AppliedUpdate {
         report,
-        daemon_restarted,
+        daemon_terminated,
         skill_refresh,
     })
 }
@@ -1003,9 +1003,17 @@ fn extract_zip(archive: &Path, dest: &Path) -> std::result::Result<(), UpgradeEr
     Ok(())
 }
 
-/// Check if the daemon is running and restart it.
-/// Returns true if the daemon was restarted, false if it wasn't running.
-pub fn restart_daemon_if_running() -> bool {
+/// Terminate a running daemon so it comes back on the new binary.
+///
+/// Named for what it DOES rather than for what usually follows: cfgd kills the
+/// process and nothing more. A daemon under systemd/launchd/SCM is restarted by
+/// its service manager; one started by hand stays down until the user starts it
+/// again, and every surface reporting this — the `-o json` `daemonTerminated`
+/// field, the human upgrade line, the auto-update notification — says
+/// "terminated" for that reason.
+///
+/// Returns true if a running daemon was terminated, false if none was running.
+pub fn terminate_daemon_if_running() -> bool {
     // No CLI runtime override available in the self-upgrade path; env/default.
     let status = match crate::daemon::query_daemon_status(None, crate::Scope::User) {
         Ok(Some(s)) => s,

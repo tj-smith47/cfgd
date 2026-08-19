@@ -2,21 +2,34 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::format_bytes;
 use cfgd_core::output::{Doc, Printer, Role};
 
-/// Append the daemon line an upgrade owes its human reader when it terminated a
-/// running daemon.
+/// Report a completed upgrade — the human render and the structured payload
+/// together — for both install paths (`cfgd upgrade` and the startup policy
+/// update).
 ///
-/// The old process is gone the moment the binary is replaced, and only a
-/// service manager brings it back on its own — a daemon started by hand stays
-/// down, and nothing reconciles drift until the user starts it again. Both
-/// install paths (`cfgd upgrade` and the startup policy update) already carry
-/// the fact in their `daemonRestarted` payload field; this is the same fact for
-/// the reader who is not parsing JSON.
-fn with_daemon_line(doc: Doc, daemon_restarted: bool) -> Doc {
-    if daemon_restarted {
-        doc.kv("Daemon", "terminated to pick up the new binary")
-    } else {
-        doc
+/// The daemon fact is minted HERE, on both channels at once, so the two cannot
+/// disagree: a call site that could emit the payload without the line is what
+/// let the `-o json` field and the human render describe the same event
+/// differently. `terminated`, not `restarted`, because that is all
+/// `terminate_daemon_if_running` does — a service manager brings a managed
+/// daemon back, while one started by hand stays down and reconciles nothing
+/// until the user starts it again, which is exactly the thing the reader has to
+/// act on.
+fn upgraded_doc(
+    version: &str,
+    installed_path: String,
+    daemon_terminated: bool,
+    mut data: serde_json::Value,
+) -> Doc {
+    let mut doc = Doc::new()
+        .status(Role::Ok, format!("cfgd upgraded to {version}"))
+        .kv("Installed to", installed_path);
+    if daemon_terminated {
+        doc = doc.kv("Daemon", "terminated to pick up the new binary");
     }
+    if let Some(obj) = data.as_object_mut() {
+        obj.insert("daemonTerminated".into(), daemon_terminated.into());
+    }
+    doc.with_data(data)
 }
 
 pub fn cmd_upgrade(
@@ -197,24 +210,20 @@ pub fn cmd_upgrade(
     })?;
     let report = &applied.report;
 
-    printer.emit(
-        with_daemon_line(
-            Doc::new()
-                .status(Role::Ok, format!("cfgd upgraded to {}", check.latest))
-                .kv("Installed to", report.installed_path.display_posix()),
-            applied.daemon_restarted,
-        )
-        .with_data(serde_json::json!({
+    printer.emit(upgraded_doc(
+        &check.latest.to_string(),
+        report.installed_path.display_posix(),
+        applied.daemon_terminated,
+        serde_json::json!({
             "currentVersion": check.current.to_string(),
             "targetVersion": check.latest.to_string(),
             "downloaded": true,
             "installed": true,
             "verified": true,
-            "daemonRestarted": applied.daemon_restarted,
             "installedPath": report.installed_path.display().to_string(),
             "verificationMode": report.verification_mode.as_wire_str(),
-        })),
-    );
+        }),
+    ));
 
     Ok(())
 }
@@ -390,21 +399,17 @@ fn apply_startup_update(
     ) {
         Ok(applied) => {
             let report = &applied.report;
-            printer.emit(
-                with_daemon_line(
-                    Doc::new()
-                        .status(Role::Ok, format!("cfgd upgraded to {}", check.latest))
-                        .kv("Installed to", report.installed_path.display_posix()),
-                    applied.daemon_restarted,
-                )
-                .with_data(serde_json::json!({
+            printer.emit(upgraded_doc(
+                &check.latest.to_string(),
+                report.installed_path.display_posix(),
+                applied.daemon_terminated,
+                serde_json::json!({
                     "currentVersion": check.current.to_string(),
                     "targetVersion": check.latest.to_string(),
                     "installed": true,
-                    "daemonRestarted": applied.daemon_restarted,
                     "verificationMode": report.verification_mode.as_wire_str(),
-                })),
-            );
+                }),
+            ));
             true
         }
         Err(e) => {
@@ -432,31 +437,71 @@ mod tests {
             .expect("upgrade handler returns a CliErrorMeta carrier")
     }
 
-    /// The human render owes the same daemon fact the `-o json` payload carries:
-    /// a terminated daemon that no service manager owns stays down until the
-    /// user starts it, so hiding it changes what they have to do next.
+    /// One builder is only one builder while both install paths still call it.
+    /// The round-1 shape put the daemon line in a helper and the payload key at
+    /// the call sites, so deleting a call site left every test green while a
+    /// real upgrade reported nothing; this reads the module back and fails if
+    /// the success sentence is minted anywhere but in `upgraded_doc`.
     #[test]
-    fn a_terminated_daemon_is_reported_to_the_human_reader() {
+    fn the_success_doc_is_minted_in_exactly_one_place() {
+        let source = include_str!("upgrade.rs");
+        // Split so this test's own literals are not what it counts.
+        let sentence = format!("cfgd upgraded {}", "to {version}");
+        assert_eq!(
+            source.matches(sentence.as_str()).count(),
+            1,
+            "both install paths must emit through upgraded_doc, not their own Doc"
+        );
+        let retired_key = format!("daemon{}", "Restarted");
+        assert_eq!(
+            source.matches(retired_key.as_str()).count(),
+            0,
+            "the payload key says what the code does: the daemon is terminated, \
+             never restarted"
+        );
+    }
+
+    /// The human render and the `-o json` payload owe the reader the SAME
+    /// daemon fact: a terminated daemon that no service manager owns stays down
+    /// until the user starts it, so a payload saying one thing while the human
+    /// line says another (or says nothing) sends half the readers the wrong way.
+    /// One builder mints both, and this pins them together.
+    #[test]
+    fn a_terminated_daemon_is_reported_to_both_readers() {
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(with_daemon_line(
-            Doc::new().status(Role::Ok, "cfgd upgraded to v9.9.0"),
+        printer.emit(upgraded_doc(
+            "v9.9.0",
+            "/usr/local/bin/cfgd".to_string(),
             true,
+            serde_json::json!({ "installed": true }),
         ));
-        let restarted = strip_ansi(&cap.human());
+        let human = strip_ansi(&cap.human());
         assert!(
-            restarted.contains("Daemon"),
-            "a terminated daemon must be reported, got: {restarted:?}"
+            human.contains("Daemon") && human.contains("terminated"),
+            "a terminated daemon must be reported to the human reader, got: {human:?}"
+        );
+        let json = cap.json().expect("the doc carries a payload");
+        assert_eq!(
+            json["daemonTerminated"], true,
+            "the payload must say what the human line says: {json}"
         );
 
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(with_daemon_line(
-            Doc::new().status(Role::Ok, "cfgd upgraded to v9.9.0"),
+        printer.emit(upgraded_doc(
+            "v9.9.0",
+            "/usr/local/bin/cfgd".to_string(),
             false,
+            serde_json::json!({ "installed": true }),
         ));
-        let untouched = strip_ansi(&cap.human());
+        let human = strip_ansi(&cap.human());
         assert!(
-            !untouched.contains("Daemon"),
-            "no daemon was running, so no daemon line is owed, got: {untouched:?}"
+            !human.contains("Daemon"),
+            "no daemon was running, so no daemon line is owed, got: {human:?}"
+        );
+        let json = cap.json().expect("the doc carries a payload");
+        assert_eq!(
+            json["daemonTerminated"], false,
+            "the payload still states the fact when it is false: {json}"
         );
     }
 

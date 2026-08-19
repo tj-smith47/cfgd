@@ -1033,12 +1033,12 @@ fn record_check_at_updates_timestamp_on_existing_cache() {
 }
 
 #[test]
-fn restart_daemon_if_running_returns_false_when_no_daemon() {
+fn terminate_daemon_if_running_returns_false_when_no_daemon() {
     // In test environments, no daemon is running, so this should return false
-    let result = restart_daemon_if_running();
+    let result = terminate_daemon_if_running();
     assert!(
         !result,
-        "restart_daemon_if_running should return false when no daemon is running"
+        "terminate_daemon_if_running should return false when no daemon is running"
     );
 }
 
