@@ -194,7 +194,10 @@ and carries the `// tracing-ok: <why>` marker inside the banned domains.
 
 ## The two mechanisms that keep tracing off the live region
 
-Both live in `output/`; nothing outside it may reach for either.
+One is the writer, in `output/`; the other is the default filter, which lives
+where the flags are parsed — `crates/cfgd/src/main.rs`. Nothing outside `output/`
+may build a `MakeWriter` of its own, and nothing but `main.rs` picks a default
+filter.
 
 - **`output::LiveTracingWriter`** (`output/tracing_writer.rs`) — the `MakeWriter`
   the cfgd binary installs on its subscriber. Every event is written through the
@@ -204,12 +207,16 @@ Both live in `output/`; nothing outside it may reach for either.
   once the process printer exists; an unattached writer, and one attached to a
   printer with no live region, writes plain stderr. Never wire a subscriber to
   `std::io::stderr` in the cfgd binary again.
-- **`main.rs::tracing_filter_for(quiet, verbose, daemon)`** — the default filter.
-  A command defaults to `warn`; the flags keep the meanings they document
-  (`-v` = `debug`, `-vv` = `trace`) and `--quiet` is `error`, so only the
-  no-flag default moved. `cfgd daemon` keeps `info` as its floor, because there
-  the log IS the output — a service prints its ticks to journald through this
-  channel and no other. `RUST_LOG` outranks all of it.
+- **`crates/cfgd/src/main.rs::tracing_filter_for(quiet, verbose, daemon)`** — the
+  default filter. A command defaults to `warn`; the flags keep the meanings they
+  document (`-v` = `debug`, `-vv` = `trace`) and `--quiet` is `error`, so only
+  the no-flag default moved. The RECONCILE LOOP keeps `info` as its floor —
+  `cfgd daemon` (bare), `cfgd daemon run` and the SCM-launched `cfgd daemon
+  service`, selected by `main.rs::runs_reconcile_loop` — because there the log
+  IS the output: a service prints its ticks to journald through this channel and
+  no other. `daemon install` / `uninstall` / `status` are ordinary one-shot
+  commands and keep the `warn` default, since they report through the `Printer`.
+  `RUST_LOG` outranks all of it.
 
 ## `LiveBarState` is shared by every renderer writing one live region
 

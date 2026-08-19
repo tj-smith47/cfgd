@@ -97,6 +97,26 @@ fn tracing_filter_for(quiet: bool, verbose: u8, daemon: bool) -> &'static str {
     }
 }
 
+/// Whether this invocation IS the reconcile loop, and so owes its operator a
+/// journal rather than a terminal.
+///
+/// Only `cfgd daemon` (bare, which defaults to `run`), `cfgd daemon run` and the
+/// SCM-launched `cfgd daemon service` are the loop. `daemon install`,
+/// `uninstall` and `status` are ordinary one-shot CLI commands that print their
+/// result through the `Printer` like every other command, so raising their
+/// tracing floor to `info` only gives them a second copy of what they already
+/// said — the exact duplication the default filter exists to stop.
+fn runs_reconcile_loop(command: &Option<cli::Command>) -> bool {
+    matches!(
+        command,
+        Some(cli::Command::Daemon {
+            command: None
+                | Some(cli::DaemonCommand::Run)
+                | Some(cli::DaemonCommand::Service { .. })
+        })
+    )
+}
+
 fn main() -> anyhow::Result<()> {
     // Normalize boolish env vars before clap reads them (see fn docs).
     for var in BOOL_ENV_VARS {
@@ -234,7 +254,7 @@ fn main() -> anyhow::Result<()> {
 
     // Initialize tracing
     let is_daemon = matches!(cli.command, Some(cli::Command::Daemon { .. }));
-    let filter = tracing_filter_for(cli.quiet, cli.verbose, is_daemon);
+    let filter = tracing_filter_for(cli.quiet, cli.verbose, runs_reconcile_loop(&cli.command));
     // Bound to the process printer once it exists, a few statements below.
     // Built here because the subscriber has to be installed first: anything
     // the printer's own construction logs would otherwise go nowhere.
@@ -358,7 +378,8 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_bool_str, normalize_boolish_env, normalize_cfgd_verbose_env, tracing_filter_for,
+        canonical_bool_str, cli, normalize_boolish_env, normalize_cfgd_verbose_env,
+        runs_reconcile_loop, tracing_filter_for,
     };
     use cfgd_core::test_helpers::EnvVarGuard;
     use serial_test::serial;
@@ -382,6 +403,36 @@ mod tests {
         assert_eq!(tracing_filter_for(false, 0, true), "info");
         assert_eq!(tracing_filter_for(false, 1, true), "debug");
         assert_eq!(tracing_filter_for(false, 2, true), "trace");
+    }
+
+    /// The floor belongs to the reconcile loop, not to the word "daemon":
+    /// `install` / `uninstall` / `status` are one-shot commands that report
+    /// through the `Printer`, so an `info` floor would only duplicate them.
+    #[test]
+    fn only_the_reconcile_loop_claims_the_daemon_floor() {
+        for command in [None, Some(cli::DaemonCommand::Run)] {
+            assert!(runs_reconcile_loop(&Some(cli::Command::Daemon { command })));
+        }
+        assert!(runs_reconcile_loop(&Some(cli::Command::Daemon {
+            command: Some(cli::DaemonCommand::Service {
+                enable_event_log: false
+            })
+        })));
+
+        for command in [
+            cli::DaemonCommand::Install,
+            cli::DaemonCommand::Uninstall,
+            cli::DaemonCommand::Status,
+        ] {
+            assert!(
+                !runs_reconcile_loop(&Some(cli::Command::Daemon {
+                    command: Some(command)
+                })),
+                "a one-shot daemon subcommand is not the loop"
+            );
+        }
+
+        assert!(!runs_reconcile_loop(&None));
     }
 
     /// `--quiet` outranks any `-v` count clap collected alongside it, and the
