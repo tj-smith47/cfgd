@@ -1273,8 +1273,12 @@ pub(super) fn format_interval_lines(
 /// run hint. Pure-output; testable via `Printer::for_test_at(Verbosity::Normal)`
 /// (Quiet suppresses Ok/Info statuses).
 pub(super) fn print_startup_banner(printer: &Printer, intervals: &[String], ipc_path: &str) {
-    printer.status_simple(Role::Ok, format!("Health: {}", ipc_path));
-    printer.status_simple(Role::Ok, format!("Intervals: {}", intervals.join(", ")));
+    printer
+        .status(Role::Ok, "Health")
+        .qualifier(ipc_path.to_string());
+    printer
+        .status(Role::Ok, "Intervals")
+        .qualifier(intervals.join(", "));
     printer.status_simple(Role::Info, "Daemon running — press Ctrl+C to stop");
 }
 
