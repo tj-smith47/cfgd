@@ -77,10 +77,7 @@ fn no_subscriber_writes_straight_to_stderr() {
             continue;
         };
         for (i, line) in body.lines().enumerate() {
-            let squashed: String = line.chars().filter(|c| !c.is_whitespace()).collect();
-            if squashed.contains("with_writer(std::io::stderr)")
-                || squashed.contains("with_writer(io::stderr)")
-            {
+            if wires_a_writer_at_stderr(line) {
                 offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
             }
         }
@@ -91,6 +88,51 @@ fn no_subscriber_writes_straight_to_stderr() {
          output::LiveTracingWriter instead:\n{}",
         offenders.join("\n")
     );
+}
+
+/// Whether `line` hands a subscriber the raw stderr stream.
+///
+/// Judged on the code half of the line only, so prose naming both halves of the
+/// rule (this fence's own doc comment, the rule text quoted elsewhere) is not
+/// read as a wiring. Any spelling that reaches the stream counts: a path
+/// (`std::io::stderr`), an import (`use std::io::stderr;` then bare `stderr`),
+/// or a closure around either. The first cut pinned the two fully-qualified
+/// forms and let every other spelling of the same mistake through.
+fn wires_a_writer_at_stderr(line: &str) -> bool {
+    let code = line.split("//").next().unwrap_or(line);
+    let squashed: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+    squashed.contains("with_writer(") && squashed.contains("stderr")
+}
+
+/// The fence above is only as wide as its predicate, and a predicate that
+/// recognizes one spelling of a mistake is a fence somebody walks around
+/// without noticing. Every way the workspace could reach the raw stream is
+/// pinned here, together with the wiring that is correct.
+#[test]
+fn the_stderr_fence_recognizes_every_spelling() {
+    for offender in [
+        "        .with_writer(std::io::stderr)",
+        "        .with_writer(io::stderr)",
+        "        .with_writer(stderr)",
+        "        .with_writer(|| std::io::stderr())",
+        "        .with_writer(|| io::stderr()).with_ansi(false)",
+    ] {
+        assert!(
+            wires_a_writer_at_stderr(offender),
+            "the fence must recognize this wiring: {offender:?}"
+        );
+    }
+    for allowed in [
+        "        .with_writer(tracing_writer.clone())",
+        "        .with_writer(LiveTracingWriter::new())",
+        "/// Never wire a subscriber to `with_writer` at stderr again.",
+        "        let mut err = io::stderr().lock();",
+    ] {
+        assert!(
+            !wires_a_writer_at_stderr(allowed),
+            "the fence must not flag this line: {allowed:?}"
+        );
+    }
 }
 
 /// Extract the body of every `struct Emitting` / `impl … Emitting` region in

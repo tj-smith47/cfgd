@@ -243,4 +243,33 @@ mod tests {
             "a region that draws nowhere is not a routing target"
         );
     }
+
+    /// The writer and the renderers share ONE judgement about ONE terminal: once
+    /// the renderer's latch says the region stopped answering, the writer must
+    /// stop routing events at it too, rather than re-discovering the dead
+    /// terminal with a failed `println` per event.
+    #[test]
+    fn a_latched_terminal_stops_being_a_routing_target() {
+        let (printer, _screen) = Printer::for_test_live_terminal(24, 100);
+        let writer = LiveTracingWriter::new();
+        writer.attach(&printer);
+        assert!(
+            writer.target().is_some(),
+            "a live region is a routing target before anything fails"
+        );
+
+        printer
+            .renderer
+            .live
+            .record_route_failure(&io::Error::from(io::ErrorKind::BrokenPipe));
+
+        assert!(
+            writer.target().is_none(),
+            "a latched terminal is not a routing target"
+        );
+        assert!(
+            writer.make_writer().route.is_none(),
+            "each sink made after the latch falls through to stderr"
+        );
+    }
 }
