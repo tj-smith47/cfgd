@@ -654,7 +654,7 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
     if registries.is_empty() {
         printer.emit(
             Doc::new()
-                .heading(format!("Search Modules: {}", query))
+                .heading_title("Search Modules", query)
                 .status(Role::Info, NO_REGISTRIES_MSG)
                 .hint("Add a registry: cfgd module registry add <git-url>")
                 .with_data(serde_json::json!([])),
@@ -687,7 +687,7 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
         }
     }
 
-    let mut doc = Doc::new().heading(format!("Search Modules: {}", query));
+    let mut doc = Doc::new().heading_title("Search Modules", query);
 
     if !errors.is_empty() {
         let mut errs_doc = doc;

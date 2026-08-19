@@ -3,8 +3,29 @@ use std::time::Duration;
 use serde::Serialize;
 
 use super::Role;
+use super::TitleLabel;
 use super::component::{Component, KvPair, StatusLabel};
 use super::renderer::Table;
+
+/// A `Doc`'s top-level heading, deferred past construction because the
+/// styled render needs a `Theme` a `Doc` is built without — `render_doc`
+/// is the first point in the pipeline that holds one.
+pub(crate) enum HeadingKind {
+    Plain(String),
+    Title(TitleLabel),
+}
+
+impl HeadingKind {
+    /// The uncoloured form every structured/quiet/`-o json` path reads;
+    /// `to_json_value`'s `"heading"` field is always this string, whichever
+    /// variant produced it.
+    fn plain_text(&self) -> String {
+        match self {
+            HeadingKind::Plain(text) => text.clone(),
+            HeadingKind::Title(label) => label.plain(),
+        }
+    }
+}
 
 /// One status row's optional fields, used by `status_with`.
 #[derive(Default)]
@@ -46,7 +67,7 @@ impl StatusFields {
 
 /// Top-level buffered document. Built then handed to `Printer::emit`.
 pub struct Doc {
-    pub(crate) heading: Option<String>,
+    pub(crate) heading: Option<HeadingKind>,
     pub(crate) children: Vec<Component>,
     /// Optional payload that REPLACES Doc-derived JSON in structured modes.
     pub(crate) data: Option<serde_json::Value>,
@@ -80,7 +101,15 @@ impl Doc {
     }
 
     pub fn heading(mut self, text: impl Into<String>) -> Self {
-        self.heading = Some(text.into());
+        self.heading = Some(HeadingKind::Plain(text.into()));
+        self
+    }
+
+    /// A structured `Label: value` heading (`Status: dev-tools`), styled
+    /// through [`TitleLabel`]'s three slots at render time instead of
+    /// `heading`'s single `theme.header` coat.
+    pub fn heading_title(mut self, label: impl Into<String>, value: impl Into<String>) -> Self {
+        self.heading = Some(HeadingKind::Title(TitleLabel::new(label, value)));
         self
     }
 
@@ -218,7 +247,7 @@ impl Doc {
             .collect();
         let mut obj = serde_json::Map::new();
         if let Some(h) = &self.heading {
-            obj.insert("heading".into(), serde_json::Value::String(h.clone()));
+            obj.insert("heading".into(), serde_json::Value::String(h.plain_text()));
         }
         obj.insert("children".into(), serde_json::Value::Array(children));
         serde_json::Value::Object(obj)
@@ -420,6 +449,16 @@ mod tests {
         assert_eq!(kids.len(), 1);
         assert_eq!(kids[0]["type"], "kv_block");
         assert_eq!(kids[0]["pairs"][0]["key"], "Profile");
+    }
+
+    /// `heading_title`'s JSON field is the plain `Label: value` string, the
+    /// same shape `heading` produces — a `-o json` reader must not see the
+    /// two builder entry points as two different fields.
+    #[test]
+    fn heading_title_serializes_as_the_plain_label_colon_value_string() {
+        let d = Doc::new().heading_title("Status", "dev-tools");
+        let v = d.to_json_value();
+        assert_eq!(v["heading"], "Status: dev-tools");
     }
 
     #[test]

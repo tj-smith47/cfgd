@@ -260,7 +260,7 @@ pub fn build_fleet_status_doc(
 /// `deployed_files` is a list of (path, exists) pairs.
 pub fn build_module_status_doc(output: &ModuleStatus, deployed_files: &[(String, bool)]) -> Doc {
     let mut doc = Doc::new()
-        .heading(format!("Status: {}", output.name))
+        .heading_title("Status", &output.name)
         .kv("Packages", output.packages.to_string())
         .kv("Files", output.files.to_string());
 
@@ -303,7 +303,7 @@ pub fn build_module_status_not_found_doc(name: &str) -> Doc {
         drift_checked_live: false,
     };
     Doc::new()
-        .heading(format!("Status: {}", name))
+        .heading_title("Status", name)
         .status(Role::Info, format!("Module '{}' not found", name))
         .with_data(&payload)
 }

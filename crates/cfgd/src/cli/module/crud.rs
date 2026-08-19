@@ -1,6 +1,8 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role, collapse_to_subject_line, condense_script_label};
+use cfgd_core::output::{
+    Doc, Printer, Role, TitleLabel, collapse_to_subject_line, condense_script_label,
+};
 
 pub fn cmd_module_create(
     cli: &Cli,
@@ -16,7 +18,7 @@ pub fn cmd_module_create(
     let post_apply = &args.post_apply;
     let sets = &args.sets;
     validate_resource_name(name, "Module")?;
-    printer.heading(format!("Create Module: {}", name));
+    printer.heading_title(&TitleLabel::new("Create Module", name));
 
     let config_dir = config_dir(cli);
     let module_dir = config_dir.join("modules").join(name);
@@ -779,7 +781,7 @@ pub fn cmd_module_delete(
     ignore_not_found: bool,
 ) -> anyhow::Result<()> {
     validate_resource_name(name, "Module")?;
-    printer.heading(format!("Delete Module: {}", name));
+    printer.heading_title(&TitleLabel::new("Delete Module", name));
 
     let config_dir = config_dir(cli);
     let module_dir = config_dir.join("modules").join(name);

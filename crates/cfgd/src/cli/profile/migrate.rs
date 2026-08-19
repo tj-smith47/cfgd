@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Printer, Role, TitleLabel};
 
 /// One profile's migration outcome, emitted in the structured payload.
 #[derive(serde::Serialize)]
@@ -128,7 +128,7 @@ pub(crate) fn run_profile_migrate(
 
     let plan: Vec<PlanItem> = if let Some(name) = name {
         validate_resource_name(name, "Profile")?;
-        printer.heading(format!("Migrate Profile: {}", name));
+        printer.heading_title(&TitleLabel::new("Migrate Profile", name));
         match plan_for_name(&pdir, name) {
             Ok(item) => vec![item],
             Err(e @ cfgd_core::errors::ConfigError::ProfileNotFound { .. }) => {

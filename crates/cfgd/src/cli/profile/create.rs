@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Printer, Role, TitleLabel};
 
 pub fn cmd_profile_create(
     cli: &Cli,
@@ -23,7 +23,7 @@ pub fn cmd_profile_create(
     let on_change = &args.on_change;
     let on_drift = &args.on_drift;
     validate_resource_name(name, "Profile")?;
-    printer.heading(format!("Create Profile: {}", name));
+    printer.heading_title(&TitleLabel::new("Create Profile", name));
 
     let config_dir = config_dir(cli);
     let pdir = config_dir.join("profiles");

@@ -396,6 +396,24 @@ impl Printer {
         }
     }
 
+    /// Top-level `Label: value` heading (`Status: dev-tools`), styled through
+    /// [`super::TitleLabel`]'s three slots instead of `heading`'s single
+    /// `theme.header` coat.
+    pub fn heading_title(&self, title: &super::TitleLabel) {
+        let depth = self.renderer.enforce_structural_top_level(0);
+        let styled = title.styled(&self.renderer.theme);
+        // See `heading`'s comment: render_heading_styled is hardcoded to
+        // depth 0, so the runtime re-route path writes the same styled line
+        // at the section's actual depth instead.
+        if depth == 0 {
+            self.renderer
+                .render_heading_styled(self.sink_stderr.as_ref(), &styled);
+        } else {
+            self.renderer
+                .write_line(self.sink_stderr.as_ref(), depth, &styled);
+        }
+    }
+
     pub fn kv(&self, key: impl Into<String>, value: impl Into<String>) {
         // kv buffers; flush will use the renderer's current depth, so the
         // runtime check is informational here — no depth value to thread
@@ -1550,6 +1568,21 @@ mod tests {
         assert!(out.contains("Profile  dev"));
         assert!(out.contains("Files\n"));
         assert!(out.contains("\n  - foo.txt\n"));
+    }
+
+    /// `Printer::heading_title` composes the same three slots
+    /// [`super::TitleLabel::styled`] tests directly — this proves the
+    /// composer's output actually reaches the terminal through the
+    /// imperative `Printer` entry point, not only through its own unit tests.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn heading_title_reaches_the_terminal_styled() {
+        use super::super::TitleLabel;
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        p.heading_title(&TitleLabel::new("Status", "dev-tools"));
+        p.flush();
+        let out = crate::test_helpers::captured_text(&buf);
+        assert_eq!(out.trim_end(), "Status: dev-tools");
     }
 
     #[cfg(feature = "test-helpers")]

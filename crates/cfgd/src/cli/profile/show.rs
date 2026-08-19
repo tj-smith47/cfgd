@@ -9,7 +9,7 @@ use cfgd_core::output::{Doc, Printer};
 /// nothing — the caller serializes `{name, resolved}` as the structured payload.
 pub fn build_profile_show_doc(resolved: &ResolvedProfile, name: &str, config_path: &Path) -> Doc {
     let mut doc = Doc::new()
-        .heading(format!("Profile: {}", name))
+        .heading_title("Profile", name)
         .kv("Config", config_path.display_posix())
         .kv("Profile", name);
 

@@ -106,7 +106,7 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry]) -> Doc {
 /// `BackupListEntry::last_run_at` uses, and `Size` goes through the CLI's one
 /// byte renderer so it reads the same as `cfgd upgrade`'s asset size.
 pub fn build_backup_snapshot_list_doc(name: &str, entries: &[BackupSnapshotEntry]) -> Doc {
-    let mut doc = Doc::new().heading(format!("Snapshots: {name}"));
+    let mut doc = Doc::new().heading_title("Snapshots", name);
 
     if entries.is_empty() {
         doc = doc.status(Role::Info, format!("Backup '{name}' has no snapshots"));

@@ -775,13 +775,21 @@ impl Renderer {
 
     /// Heading: bold styled by Theme::header. No `=== ===` decoration. Always depth 0.
     pub fn render_heading(&self, w: &dyn Writer, text: &str) {
+        let styled = self.theme.header.apply_to(text).to_string();
+        self.render_heading_styled(w, &styled);
+    }
+
+    /// The same top-level heading slot, for a caller that already composed
+    /// its own styled string — [`super::TitleLabel`]'s 3-slot `Label: value`
+    /// render, where the single `theme.header` coat `render_heading` applies
+    /// would repaint over the colon/value slots the caller already styled.
+    pub(crate) fn render_heading_styled(&self, w: &dyn Writer, styled: &str) {
         if self.verbosity == Verbosity::Quiet {
             return;
         }
-        let styled = self.theme.header.apply_to(text).to_string();
         self.emit_with(w, |e| {
             e.open_top_group(TopGroup::Heading);
-            e.push_line(0, &styled);
+            e.push_line(0, styled);
             // The heading-just-emitted flag is armed AFTER the line, which
             // clears it. The next top-level kv_block consumes it to re-anchor
             // itself at depth+1 so it visually nests under the heading.

@@ -8,13 +8,18 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::component::Component;
-use super::doc::Doc;
+use super::doc::{Doc, HeadingKind};
 use super::renderer::{Renderer, StatusFields, Table, Writer, finalize_subject};
 
 pub(crate) fn render_doc(renderer: &Renderer, sink: &dyn Writer, doc: &Doc) {
     renderer.enter_doc();
-    if let Some(h) = &doc.heading {
-        renderer.render_heading(sink, h);
+    match &doc.heading {
+        Some(HeadingKind::Plain(text)) => renderer.render_heading(sink, text),
+        Some(HeadingKind::Title(label)) => {
+            let styled = label.styled(&renderer.theme);
+            renderer.render_heading_styled(sink, &styled);
+        }
+        None => {}
     }
     for child in &doc.children {
         render_component(renderer, sink, child, /*depth=*/ 0);
@@ -163,5 +168,53 @@ mod row_roles_round_trip_tests {
             out.contains(dracula_orange),
             "accent (orange) must reach renderer; got:\n{out:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod heading_title_tests {
+    //! `Doc::heading_title` is theme-deferred (`HeadingKind::Title` holds a
+    //! plain `TitleLabel`, not a pre-styled string) — this proves the styled
+    //! 3-slot render really does reach the renderer at `render_doc` time,
+    //! not just that `to_json_value`'s plain fallback round-trips (covered in
+    //! `doc.rs`'s own tests).
+
+    use super::*;
+    use crate::output::renderer::Renderer;
+    use crate::output::{Theme, Verbosity};
+    use crate::test_helpers::EnvVarGuard;
+    use std::sync::{Arc, Mutex};
+
+    struct StringSink(Arc<Mutex<String>>);
+    impl super::Writer for StringSink {
+        fn write_line(&self, text: &str) {
+            self.0.lock().unwrap().push_str(text);
+            self.0.lock().unwrap().push('\n');
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn doc_heading_title_renders_the_three_slot_form_not_a_single_header_coat() {
+        let _no_color = EnvVarGuard::unset("NO_COLOR");
+        let _colorterm = EnvVarGuard::set("COLORTERM", "truecolor");
+
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let renderer = Renderer::new(theme.clone(), Verbosity::Normal);
+        let buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+
+        let doc = Doc::new().heading_title("Status", "dev-tools");
+        render_doc(&renderer, &sink, &doc);
+
+        // raw-capture-ok: comparing against TitleLabel's own styled() output, which carries ANSI — captured_text would strip exactly what this test compares
+        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let expected = crate::output::TitleLabel::new("Status", "dev-tools").styled(&theme);
+        assert_eq!(out.trim_end(), expected);
+        // Not vacuous: a plain `render_heading("Status: dev-tools")` would
+        // paint the whole line in one `theme.header` coat, which is NOT what
+        // the three-slot form produces.
+        let single_coat = theme.header.apply_to("Status: dev-tools").to_string();
+        assert_ne!(out.trim_end(), single_coat);
     }
 }

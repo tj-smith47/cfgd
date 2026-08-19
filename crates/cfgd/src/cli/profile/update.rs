@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Printer, Role, TitleLabel};
 
 pub fn cmd_profile_update(
     cli: &Cli,
@@ -25,7 +25,7 @@ pub fn cmd_profile_update(
     let (add_on_change, remove_on_change) = cfgd_core::split_add_remove(&args.on_change);
     let (add_on_drift, remove_on_drift) = cfgd_core::split_add_remove(&args.on_drift);
     validate_resource_name(name, "Profile")?;
-    printer.heading(format!("Update Profile: {}", name));
+    printer.heading_title(&TitleLabel::new("Update Profile", name));
 
     let config_dir = config_dir(cli);
     let profiles_dir = config_dir.join("profiles");

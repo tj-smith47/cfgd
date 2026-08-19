@@ -25,6 +25,9 @@ pub use owner_label::OwnerLabel;
 pub mod phase_label;
 pub use phase_label::PhaseLabel;
 
+pub mod title_label;
+pub use title_label::TitleLabel;
+
 pub mod section_guard;
 pub use section_guard::SectionGuard;
 

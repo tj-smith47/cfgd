@@ -118,7 +118,7 @@ pub fn build_module_show_doc(
     post_apply: &[String],
     show_values: bool,
 ) -> Doc {
-    let mut doc = Doc::new().heading(format!("Module: {}", output.name));
+    let mut doc = Doc::new().heading_title("Module", &output.name);
 
     if let Some(version) = &output.metadata.version {
         doc = doc.kv("Version", version);

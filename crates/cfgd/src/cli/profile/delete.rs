@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Printer, Role, TitleLabel};
 
 /// Pre-mutation snapshot of the profile's payload directory: the dir that
 /// owns the payload (canonical `<name>/`, legacy `<name>/files/`) plus
@@ -52,7 +52,7 @@ pub fn cmd_profile_delete(
     ignore_not_found: bool,
 ) -> anyhow::Result<()> {
     validate_resource_name(name, "Profile")?;
-    printer.heading(format!("Delete Profile: {}", name));
+    printer.heading_title(&TitleLabel::new("Delete Profile", name));
 
     let pdir = profiles_dir(cli);
     let profile_path = match cfgd_core::config::find_profile_path(&pdir, name) {
