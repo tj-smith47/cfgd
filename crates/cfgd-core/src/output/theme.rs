@@ -43,7 +43,7 @@ pub struct ThemedStyle {
     /// Whether this style has been given an actual foreground colour (a
     /// truecolor hex or a named `console::Color`), independent of `colors`
     /// (which says only whether emitting it is currently allowed). Backs the
-    /// `bold()` debug assertion for R12: bold never pairs with colour in a
+    /// `bold()` debug assertion: bold never pairs with colour in a
     /// theme's rendered style. A style built colourless and bolded first,
     /// then coloured via `recolor`, is the legitimate "attrs survive a
     /// colour swap" shape; a style that already carries a colour gaining
@@ -135,14 +135,16 @@ impl ThemedStyle {
         }
     }
 
-    /// R12: bold never pairs with colour in a theme's rendered style. Panics
-    /// in debug builds when the style already carries a colour — the
-    /// legitimate order is bold-then-colour (attrs survive `recolor`), never
-    /// colour-then-bold.
+    /// Bold never pairs with colour in a theme's rendered style, in either
+    /// composition order. Panics in debug builds when the style already
+    /// carries a colour; `with_attrs` carries the mirror check for the
+    /// other order (bold carried into a style that is only now being
+    /// coloured, via `recolor`/`apply_color`), since neither of those routes
+    /// through this method.
     pub fn bold(mut self) -> Self {
         debug_assert!(
             !self.has_color,
-            "bold must not be layered onto an already-coloured ThemedStyle (R12: bold never pairs with colour) — apply bold() before the colour, not after"
+            "bold must not be layered onto an already-coloured ThemedStyle — this style already carries a colour"
         );
         self.inner = self.inner.bold();
         self.attrs.bold = true;
@@ -186,10 +188,18 @@ impl ThemedStyle {
     /// Swap the foreground for a named colour, carrying the attribute set and
     /// the colour decision across. Rebuilding `inner` from scratch is what makes
     /// carrying explicit: a swap that dropped `colors` would leave a stamped
-    /// theme with one silently unstyled slot.
+    /// theme with one silently unstyled slot. `bold` is the one attribute NOT
+    /// carried across: bold never pairs with colour, so a style bolded while
+    /// colourless drops bold the moment it gains a colour here, rather than
+    /// silently landing in the paired state `with_attrs`'s own assert exists
+    /// to refuse.
     fn recolor(self, color: Color) -> Self {
+        let attrs = AttrSet {
+            bold: false,
+            ..self.attrs
+        };
         Self::from_console_color(color)
-            .with_attrs(self.attrs)
+            .with_attrs(attrs)
             .with_colors(self.colors)
     }
 
@@ -204,6 +214,18 @@ impl ThemedStyle {
     }
 
     fn with_attrs(mut self, attrs: AttrSet) -> Self {
+        // The mirror of `bold()`'s own check, for the order `bold()` cannot
+        // see: `recolor`/`apply_color` build a freshly-coloured style
+        // (`has_color` already true here) and carry the PREVIOUS attribute
+        // set across via this method, bypassing `bold()` entirely. Without
+        // this, a colourless style bolded first and then recoloured (or a
+        // bold-only preset slot later given a colour override) would gain
+        // bold+colour with no assertion catching it — the same pairing
+        // `bold()` refuses, reached from the other direction.
+        debug_assert!(
+            !(attrs.bold && self.has_color),
+            "bold must not be paired with a coloured ThemedStyle in either composition order"
+        );
         if attrs.bold {
             self.inner = self.inner.bold();
         }
@@ -653,7 +675,14 @@ fn hex(s: &str) -> ThemedStyle {
 
 fn apply_color(style: &mut ThemedStyle, hex: &str) {
     if let Some((r, g, b)) = parse_hex_rgb(hex) {
-        let attrs = style.attrs;
+        // `bold` is dropped, not carried: a user overriding a colourless
+        // bold-only slot's colour (`minimal`'s header/error) is moving that
+        // slot INTO the coloured population, where bold never pairs with
+        // colour — the same rule any other preset's slot already carries.
+        let attrs = AttrSet {
+            bold: false,
+            ..style.attrs
+        };
         // The colour decision belongs to the printer, not to the palette an
         // override names, so it survives the slot being rebuilt.
         let colors = style.colors;
@@ -814,8 +843,9 @@ mod tests {
         assert_eq!(out, "\x1b[38;2;189;147;249mhi\x1b[0m", "got: {out:?}");
     }
 
-    /// Builds the same style `from_hex(hex).bold()` produced before R12 —
-    /// bypassing the guarded `bold()` method directly, via the private
+    /// Builds the same style `from_hex(hex).bold()` produced when a preset
+    /// still paired bold with colour — bypassing the guarded `bold()` method
+    /// directly, via the private
     /// fields this same-file test module can still reach — so the SGR
     /// composition of an attr with a truecolor foreground stays proven even
     /// though no theme preset is allowed to construct that pairing anymore.
@@ -1021,17 +1051,34 @@ mod tests {
     }
 
     #[test]
-    fn with_attrs_preserves_all_attrs_through_yellow_swap() {
+    fn with_attrs_drops_bold_but_preserves_other_attrs_through_yellow_swap() {
+        // Bold never pairs with colour: unlike dim/italic/underline, it does
+        // not survive a colourless style gaining a colour — that composition
+        // is exactly the one `with_attrs`'s own assert refuses.
         let s = ThemedStyle::plain()
             .bold()
             .dim()
             .italic()
             .underlined()
             .yellow();
-        assert!(s.attrs.bold);
+        assert!(!s.attrs.bold);
         assert!(s.attrs.dim);
         assert!(s.attrs.italic);
         assert!(s.attrs.underline);
+    }
+
+    /// Reproduces the exact composition order the historical defect shipped
+    /// as (`ThemedStyle::plain().bold().cyan()`, once a real preset's
+    /// `header` slot) and proves it can no longer land bold+colour: the
+    /// style still gains its colour, only bold is the casualty.
+    #[test]
+    fn bold_then_colour_composition_yields_coloured_not_bold() {
+        let s = ThemedStyle::plain().bold().cyan();
+        assert!(s.has_color, "the colour swap must still take effect");
+        assert!(
+            !s.attrs.bold,
+            "bold-then-colour must not silently produce a bold coloured style"
+        );
     }
 
     /// The RGB a terminal actually paints for one of the 240 addressable
@@ -1180,9 +1227,12 @@ mod tests {
     }
 
     #[test]
-    fn from_config_style_override_preserves_preset_attrs() {
-        // Minimal's `error` slot is plain().bold(); overriding the color via
-        // apply_color must not strip the bold attr.
+    fn from_config_style_override_on_a_bold_only_slot_drops_bold() {
+        // Minimal's `error` slot is plain().bold() — bold stands in for the
+        // colour minimal spends none of. Overriding the colour moves that
+        // slot into the coloured population, where bold never pairs with
+        // colour: the override must apply the new colour AND drop bold,
+        // never combine both.
         let cfg = crate::config::ThemeConfig {
             name: "minimal".to_string(),
             overrides: crate::config::ThemeOverrides {
@@ -1193,8 +1243,8 @@ mod tests {
         let t = Theme::from_config(Some(&cfg));
         assert_eq!(t.error.rgb, Some((0xab, 0xcd, 0xef)));
         assert!(
-            t.error.attrs.bold,
-            "minimal preset's error slot is bold; override must preserve it"
+            !t.error.attrs.bold,
+            "a colour override must drop bold from a slot it colours, never pair the two"
         );
     }
 
@@ -1326,7 +1376,7 @@ mod tests {
         );
     }
 
-    /// R12: bold never pairs with colour. Walks every style slot of the four
+    /// Bold never pairs with colour. Walks every style slot of the four
     /// named colour presets rather than pinning one hand-picked slot (header
     /// and error are the ones that regressed; a slot-by-slot walk catches a
     /// future preset author reintroducing the pairing on any slot, not just
@@ -1363,7 +1413,7 @@ mod tests {
 
     /// `minimal` spends no colour at all, so bold on header/error is its
     /// colour distinction rather than a forbidden pairing — the one preset
-    /// R12 names as the legitimate exception.
+    /// that is a legitimate exception to the bold-never-pairs-with-colour rule.
     #[test]
     fn minimal_preset_keeps_bold_since_it_spends_no_colour() {
         let t = Theme::from_preset("minimal");
