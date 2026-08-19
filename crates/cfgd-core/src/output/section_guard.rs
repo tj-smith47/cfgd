@@ -607,6 +607,53 @@ mod tests {
         );
     }
 
+    /// `commit_header` writes an owner group's header immediately instead of
+    /// leaving it deferred to the group's first committed child line — for
+    /// exactly the shape `cli/sync.rs` hits: the group's first action opens a
+    /// live spinner, and a DERIVED Quiet printer sharing the same live region
+    /// (the `silent_printer` a library call runs under) can still land a
+    /// `Role::Fail` line while that spinner is running, since `Fail` survives
+    /// `Quiet`. Reached only through `for_test_with_live_bars`, the one
+    /// capture that records both the routed line AND the header in the order
+    /// they actually landed — `for_test_live_scrollback` cannot tell the two
+    /// orderings apart, because whether the header commits eagerly or is
+    /// deferred to the spinner's own settle line, the FINAL committed sequence
+    /// is byte-identical; only the moment a mid-spinner write from elsewhere
+    /// lands relative to it differs.
+    #[test]
+    fn commit_header_lands_before_a_mid_spinner_write_from_a_derived_printer() {
+        use crate::output::OwnerLabel;
+
+        let (p, buf) = Printer::for_test_with_live_bars();
+        let quiet = p.at_verbosity(Verbosity::Quiet);
+        {
+            let sources_sec = p.section("Sources");
+            let owner = sources_sec.section_owner(&OwnerLabel::new("source", "missing-team"));
+            owner.commit_header();
+            let sp = owner.spinner("Syncing");
+            // The library call's own Quiet printer still lands a Fail line
+            // while `sp` is live — the shared MultiProgress routes it through
+            // rather than garbling the spinner's paint.
+            quiet.status_simple(Role::Fail, "boom");
+            sp.finish_ok("synced");
+        }
+        p.flush();
+
+        let out = crate::test_helpers::captured_text(&buf);
+        let header_at = out
+            .find("source:missing-team")
+            .unwrap_or_else(|| panic!("owner header missing: {out:?}"));
+        let fail_at = out
+            .find("boom")
+            .unwrap_or_else(|| panic!("mid-spinner Fail line missing: {out:?}"));
+        assert!(
+            header_at < fail_at,
+            "commit_header must land the owner header before a write that \
+             reaches the shared live region while the group's first child \
+             (the spinner) is still open: {out:?}"
+        );
+    }
+
     /// `Printer::section_caveats` paints its "Caveats" heading `theme.accent`
     /// + bold — the phase-name slot, because the heading is a phase-class
     /// title meant to draw the eye. Every other section (plain or owner)

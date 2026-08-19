@@ -429,7 +429,7 @@ mod tests {
     fn an_abandoned_window_leaves_the_row_able_to_speak_and_records_nothing() {
         // A lane worker that panics drops its handle without releasing the
         // window. The line is the ROW's, and an owned spinner's Drop would
-        // clear it and leave a `Status(Info)` behind — retiring a row its owner
+        // clear it and settle a `Role::Skipped` "(interrupted)" line — retiring a row its owner
         // is still going to settle, and printing a second line for an action
         // whose outcome that settle is about to write.
         let (printer, buf) = Printer::for_test_with_live_bars();

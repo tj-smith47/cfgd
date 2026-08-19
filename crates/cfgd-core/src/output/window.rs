@@ -56,8 +56,10 @@ fn sanitize(line: &str) -> String {
 /// [`super::Printer::output_window`], feed with [`OutputWindow::push_line`],
 /// close with one of the `finish_*` methods.
 ///
-/// Dropping without an explicit finish collapses the window and emits a
-/// `Status(Info)`, so an abandoned step still leaves one line behind.
+/// Dropping without an explicit finish collapses the window and settles it
+/// via the inner [`Spinner`]'s own Drop — `Role::Skipped` with an
+/// "(interrupted)" suffix — so an abandoned step still leaves one line
+/// behind, distinct from a real success or failure.
 pub struct OutputWindow<'p> {
     spinner: Spinner<'p>,
     ring: VecDeque<String>,

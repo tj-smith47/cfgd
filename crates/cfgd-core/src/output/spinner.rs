@@ -125,8 +125,8 @@ impl<'p> Spinner<'p> {
     /// combined status line elsewhere — each lane's own spinner must vanish
     /// silently, or every lane would print its own line on top of the one
     /// summary line describing all of them.
-    /// Suppresses `Drop`'s `Status(Info)`, the same way an explicit
-    /// `finish_*` does.
+    /// Suppresses `Drop`'s `Role::Skipped` "(interrupted)" settle, the same
+    /// way an explicit `finish_*` does.
     pub(crate) fn finish_silent(mut self) {
         self.bar.finish_and_clear();
         self.finished = true;
@@ -591,6 +591,50 @@ mod tests {
         );
         assert!(!out.contains('✓'), "Drop must never claim success: {out:?}");
         assert!(!out.contains('✗'), "Drop must never claim failure: {out:?}");
+    }
+
+    /// QP9-review W3: the two tests above prove the settled STATUS LINE, but
+    /// both build their bar via `IndProgressBar::hidden()`, which can never
+    /// paint — so neither proves the doc's actual headline claim ("instead
+    /// of leaving its last paint on screen forever"). `for_test_live_terminal`
+    /// is the one surface that can: a real bar paints onto an emulated
+    /// screen, and what the screen is left holding after Drop is exactly
+    /// what a stranded paint would look like if the erase-before-record
+    /// ordering in `Drop` were wrong.
+    #[test]
+    fn progress_bar_drop_leaves_nothing_behind_on_the_live_screen() {
+        let (printer, screen) = super::super::Printer::for_test_live_terminal(24, 100);
+        {
+            let pb = printer.progress_bar(4, "downloading");
+            pb.set_position(2);
+            let painted = screen.contents();
+            assert!(
+                painted.contains("downloading"),
+                "the bar must actually be on screen before Drop is asserted \
+                 to have cleared it: {painted:?}"
+            );
+            // Dropped here without finish().
+        }
+        let held = screen.contents();
+        let lines: Vec<&str> = held.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "the bar's paint must be replaced by exactly one settled line, \
+             nothing left stranded above or below it: {held:?}"
+        );
+        assert!(
+            lines[0].contains("downloading (interrupted)"),
+            "the settled line must carry the neutral marker: {held:?}"
+        );
+        assert!(
+            lines[0].trim_start().starts_with('\u{2014}'),
+            "the settled line must carry the muted Skipped glyph, not a bar: {held:?}"
+        );
+        assert!(
+            !held.contains('[') && !held.contains(']'),
+            "no bar frame (the `[...]` fill) may remain on screen: {held:?}"
+        );
     }
 
     /// The finished half: a `ProgressBar` that called `finish()` must not
