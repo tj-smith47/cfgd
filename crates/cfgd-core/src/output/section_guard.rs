@@ -80,6 +80,32 @@ impl<'p> SectionGuard<'p> {
         self
     }
 
+    /// Unified diff, nested at this section's depth. The bare
+    /// `Printer::diff` reads `inherit_depth()`, which asserts (debug builds)
+    /// when a section is genuinely open and no `DepthInheritGuard` covers the
+    /// call — this is the guard-scoped counterpart a caller reaches for once
+    /// it is already holding the `SectionGuard` a diff belongs under, the
+    /// same shape `code_block` and `table` already follow.
+    pub fn diff(&self, old: &str, new: &str) -> &Self {
+        self.renderer
+            .render_diff(self.sink.as_ref(), self.depth, old, new);
+        self
+    }
+
+    /// Syntax-highlighted code, nested at this section's depth. See
+    /// [`Self::diff`] for why this exists alongside `Printer::syntax_highlight`.
+    pub fn syntax_highlight(&self, code: &str, lang: &str) -> &Self {
+        self.renderer.render_syntax_highlight(
+            self.sink.as_ref(),
+            self.depth,
+            code,
+            lang,
+            &self.printer.syntax_set,
+            &self.printer.theme_set,
+        );
+        self
+    }
+
     /// Set the empty-state placeholder for this section (overrides the default
     /// "(none)"). Only meaningful for sections opened with `section()` (not
     /// `section_or_collapse()`).
@@ -655,28 +681,25 @@ mod tests {
     }
 
     /// `Printer::section_caveats` paints its "Caveats" heading `theme.accent`
-    /// + bold — the phase-name slot, because the heading is a phase-class
-    /// title meant to draw the eye. Every other section (plain or owner)
-    /// paints `theme.header`, so a style regression that quietly routed this
-    /// heading back through the ordinary path would still pass a plain-string
-    /// assertion; only comparing the raw styled run against both candidates
-    /// catches it.
+    /// — the same slot [`crate::output::PhaseLabel`] paints its name in,
+    /// because the heading is a phase-class title meant to draw the eye. No
+    /// `.bold()`: R12 forbids pairing bold with a colour-bearing slot, and
+    /// dracula's accent carries a hex colour. Every other section (plain or
+    /// owner) paints `theme.header`, so a style regression that quietly
+    /// routed this heading back through the ordinary path would still pass a
+    /// plain-string assertion; only comparing the raw styled run against both
+    /// candidates catches it.
     #[test]
     #[serial_test::serial]
-    fn section_caveats_heading_is_accent_bold_not_header() {
+    fn section_caveats_heading_is_accent_not_header() {
         use crate::output::Theme;
 
         let theme = Theme::from_preset("dracula");
         let colored = theme.clone().with_colors(true);
-        let expected_accent_bold = colored
-            .accent
-            .clone()
-            .bold()
-            .apply_to("Caveats")
-            .to_string();
+        let expected_accent = colored.accent.clone().apply_to("Caveats").to_string();
         let header_styled = colored.header.apply_to("Caveats").to_string();
         assert_ne!(
-            expected_accent_bold, header_styled,
+            expected_accent, header_styled,
             "the fixture theme must actually distinguish the two slots, or this test proves nothing"
         );
 
@@ -690,8 +713,8 @@ mod tests {
         // raw-capture-ok: asserting the heading's exact styled run reaches the renderer unrestyled — captured_text would strip the ANSI this test exists to check
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(
-            raw.contains(&expected_accent_bold),
-            "Caveats heading must be theme.accent + bold: {raw:?}"
+            raw.contains(&expected_accent),
+            "Caveats heading must be theme.accent: {raw:?}"
         );
         assert!(
             !raw.contains(&header_styled),
@@ -736,5 +759,84 @@ mod tests {
             plain.contains("\n  profile:tiny\n"),
             "a speaking owner group heads itself under its phase: {plain:?}"
         );
+    }
+
+    /// `SectionGuard::diff` renders under the section it belongs to — header
+    /// first, then the diff body indented to the section's own depth — rather
+    /// than tripping the top-level structural assert a bare `Printer::diff`
+    /// would hit here, since a section genuinely is open at the call site.
+    #[test]
+    fn section_diff_nests_under_its_own_header() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("~/.bashrc");
+            s.diff("old line\n", "new line\n");
+        }
+        p.flush();
+        let out = crate::test_helpers::captured_text(&buf);
+        let header_at = out
+            .find("~/.bashrc")
+            .unwrap_or_else(|| panic!("section header missing: {out:?}"));
+        let removed_at = out
+            .find("-old line")
+            .unwrap_or_else(|| panic!("removed line missing: {out:?}"));
+        assert!(
+            header_at < removed_at,
+            "the section header must render before the diff it opened: {out:?}"
+        );
+        let removed_line = out
+            .lines()
+            .find(|l| l.contains("-old line"))
+            .unwrap_or_else(|| panic!("removed line missing: {out:?}"));
+        assert!(
+            removed_line.starts_with("  -old line"),
+            "the diff must indent to the section's depth: {removed_line:?}"
+        );
+    }
+
+    /// `SectionGuard::syntax_highlight` renders under the section it belongs
+    /// to, the highlighted counterpart of `section_diff_nests_under_its_own_header`.
+    #[test]
+    fn section_syntax_highlight_nests_under_its_own_header() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("~/.config/new.yaml (new file)");
+            s.syntax_highlight("key: value\n", "yaml");
+        }
+        p.flush();
+        let out = crate::test_helpers::captured_text(&buf);
+        let header_at = out
+            .find("new.yaml")
+            .unwrap_or_else(|| panic!("section header missing: {out:?}"));
+        let body_at = out
+            .find("key: value")
+            .unwrap_or_else(|| panic!("highlighted body missing: {out:?}"));
+        assert!(
+            header_at < body_at,
+            "the section header must render before the syntax-highlighted body: {out:?}"
+        );
+        let body_line = out
+            .lines()
+            .find(|l| l.contains("key: value"))
+            .unwrap_or_else(|| panic!("highlighted body missing: {out:?}"));
+        assert!(
+            body_line.starts_with("  key: value"),
+            "the highlighted body must indent to the section's depth: {body_line:?}"
+        );
+    }
+
+    /// The workaround R11 deletes (`plan_ops.rs`'s bare `heading()` +
+    /// `printer.diff()`) existed because the old `emit_raw_block` skipped
+    /// header-flushing; a real `printer.section(...).diff(...)` must now
+    /// produce byte-identical ordering without that workaround.
+    #[test]
+    fn section_diff_replaces_the_heading_plus_bare_diff_workaround() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        p.section("~/.zshrc").diff("a\n", "b\n");
+        p.flush();
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(out.contains("~/.zshrc"), "header missing: {out:?}");
+        assert!(out.contains("-a"), "removed line missing: {out:?}");
+        assert!(out.contains("+b"), "added line missing: {out:?}");
     }
 }

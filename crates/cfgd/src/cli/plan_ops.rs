@@ -752,10 +752,9 @@ pub(in crate::cli) fn display_plan_preview(
                     } else {
                         std::fs::read_to_string(source).unwrap_or_default()
                     };
-                    // `printer.diff` bypasses section header flushing; wrapping the
-                    // file label in `section()` would render the header after the diff.
-                    printer.heading(target.display_posix());
-                    printer.diff(&target_content, &source_content);
+                    printer
+                        .section(target.display_posix())
+                        .diff(&target_content, &source_content);
                 }
             }
         }

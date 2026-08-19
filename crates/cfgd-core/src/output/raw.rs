@@ -1,8 +1,14 @@
 //! Raw renderers — diff, syntax_highlight, data_line.
 //!
-//! Raw renderers are exempt from the indent invariant because their content
-//! is multi-line and line-by-line indent would corrupt syntax/diff output.
-//! All three render at depth 0.
+//! `diff` and `syntax_highlight` are exempt from the WRAP invariant every
+//! other emission gets: their content is multi-line and word-wrapping a diff
+//! row or a highlighted source line mid-token would no longer be the content
+//! it was built from. They are NOT exempt from indentation — each nests
+//! under whatever depth its caller's section opened, via
+//! `Renderer::emit_raw_block`, the same as any other emission. `data_line`
+//! stays at depth 0 unconditionally: it is the machine channel (`cfgd
+//! config get`-shaped output consumed by other programs), not a rendered
+//! line that could nest under a human-facing section.
 
 use similar::{ChangeTag, TextDiff};
 use syntect::easy::HighlightLines;
@@ -15,8 +21,8 @@ use super::renderer::{Renderer, Writer};
 impl Renderer {
     /// Render a unified diff using `theme.diff_*` styles. Lines starting with
     /// `+` are themed diff_add, `-` themed diff_remove, others diff_context.
-    /// Always at depth 0 (raw renderer).
-    pub fn render_diff(&self, w: &dyn Writer, old: &str, new: &str) {
+    /// Nests at `depth`, like any other emission.
+    pub fn render_diff(&self, w: &dyn Writer, depth: usize, old: &str, new: &str) {
         let diff = TextDiff::from_lines(old, new);
         let mut lines = Vec::new();
         for change in diff.iter_all_changes() {
@@ -31,15 +37,16 @@ impl Renderer {
         }
         // One block per render, so a diff is never split across two of
         // indicatif's clear/redraw cycles.
-        self.emit_raw_block(w, &lines);
+        self.emit_raw_block(w, depth, &lines);
     }
 
     /// Render syntax-highlighted code. Caller passes the `lang` hint (e.g.,
-    /// "yaml", "rust", "json"); falls back to plain text on unknown.
-    /// Always at depth 0 (raw renderer).
+    /// "yaml", "rust", "json"); falls back to plain text on unknown. Nests
+    /// at `depth`, like any other emission.
     pub fn render_syntax_highlight(
         &self,
         w: &dyn Writer,
+        depth: usize,
         code: &str,
         lang: &str,
         syntax_set: &SyntaxSet,
@@ -52,7 +59,7 @@ impl Renderer {
         // pipe. Same fallback as the missing-theme arm below.
         if !self.theme.colors() {
             let plain: Vec<String> = code.lines().map(str::to_string).collect();
-            self.emit_raw_block(w, &plain);
+            self.emit_raw_block(w, depth, &plain);
             return;
         }
         let syntax = syntax_set
@@ -66,7 +73,7 @@ impl Renderer {
         else {
             // No syntect themes available; emit unstyled lines.
             let plain: Vec<String> = code.lines().map(str::to_string).collect();
-            self.emit_raw_block(w, &plain);
+            self.emit_raw_block(w, depth, &plain);
             return;
         };
         let mut h = HighlightLines::new(syntax, theme);
@@ -78,21 +85,26 @@ impl Renderer {
         }
         // Built outside the guard: highlighting is expensive and touches no
         // render state, so the lock is taken only around the emission.
-        self.emit_raw_block(w, &lines);
+        self.emit_raw_block(w, depth, &lines);
     }
 }
 
 impl super::Printer {
-    /// Diff renderer. Goes to stderr.
+    /// Diff renderer. Goes to stderr. Nests at whatever depth the caller's
+    /// section opened, the same as every other Printer emission.
     pub fn diff(&self, old: &str, new: &str) {
+        let depth = self.renderer.inherit_depth();
         self.renderer
-            .render_diff(self.sink_stderr.as_ref(), old, new);
+            .render_diff(self.sink_stderr.as_ref(), depth, old, new);
     }
 
-    /// Syntax-highlighted code. Goes to stderr.
+    /// Syntax-highlighted code. Goes to stderr. Nests at whatever depth the
+    /// caller's section opened, the same as every other Printer emission.
     pub fn syntax_highlight(&self, code: &str, lang: &str) {
+        let depth = self.renderer.inherit_depth();
         self.renderer.render_syntax_highlight(
             self.sink_stderr.as_ref(),
+            depth,
             code,
             lang,
             &self.syntax_set,
@@ -137,10 +149,52 @@ mod tests {
         let buf = Arc::new(Mutex::new(String::new()));
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Normal);
-        r.render_diff(&sink, "a\nb\nc\n", "a\nB\nc\n");
+        r.render_diff(&sink, 0, "a\nb\nc\n", "a\nB\nc\n");
         let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("-b"), "got: {out:?}");
         assert!(out.contains("+B"), "got: {out:?}");
+    }
+
+    /// R11: a raw block indents to its owning depth like any other
+    /// emission, rather than landing at column 0 under a depth-2 parent.
+    #[test]
+    fn diff_indents_to_the_given_depth() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(Theme::default(), Verbosity::Normal);
+        r.render_diff(&sink, 2, "a\nb\nc\n", "a\nB\nc\n");
+        let out = crate::test_helpers::captured_text(&buf);
+        let removed = out
+            .lines()
+            .find(|l| l.contains("-b"))
+            .unwrap_or_else(|| panic!("removed line missing: {out:?}"));
+        assert!(
+            removed.starts_with("    -b"),
+            "depth-2 raw line must carry a four-space indent: {removed:?}"
+        );
+    }
+
+    /// R11: `emit_raw_block` flushes a deferred section header before the
+    /// block's own lines, the same as every other emission — a diff opened
+    /// mid-section must not skip past the header that names it.
+    #[test]
+    fn diff_flushes_a_pending_section_header_first() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(Theme::default(), Verbosity::Normal);
+        r.render_section_open("module:nvim", true);
+        r.render_diff(&sink, 1, "a\n", "b\n");
+        let out = crate::test_helpers::captured_text(&buf);
+        let header_at = out
+            .find("module:nvim")
+            .unwrap_or_else(|| panic!("section header missing: {out:?}"));
+        let diff_at = out
+            .find("-a")
+            .unwrap_or_else(|| panic!("removed line missing: {out:?}"));
+        assert!(
+            header_at < diff_at,
+            "the section header must render before the diff it opened: {out:?}"
+        );
     }
 
     #[test]
@@ -150,7 +204,7 @@ mod tests {
         let r = Renderer::new(Theme::default(), Verbosity::Normal);
         let ss = SyntaxSet::load_defaults_newlines();
         let ts = syntect::highlighting::ThemeSet::load_defaults();
-        r.render_syntax_highlight(&sink, "let x = 1;\nlet y = 2;\n", "rs", &ss, &ts);
+        r.render_syntax_highlight(&sink, 0, "let x = 1;\nlet y = 2;\n", "rs", &ss, &ts);
         let out = crate::test_helpers::captured_text(&buf);
         let stripped = strip_ansi(&out);
         assert!(
@@ -175,7 +229,7 @@ mod tests {
             let buf = Arc::new(Mutex::new(String::new()));
             let sink = StringSink(buf.clone());
             let r = Renderer::new(Theme::default().with_colors(colors), Verbosity::Normal);
-            r.render_syntax_highlight(&sink, "let x = 1;\nlet y = 2;\n", "rs", &ss, &ts);
+            r.render_syntax_highlight(&sink, 0, "let x = 1;\nlet y = 2;\n", "rs", &ss, &ts);
             // raw-capture-ok: asserting on the presence/absence of raw ANSI escapes themselves — captured_text would strip them
             buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
         };

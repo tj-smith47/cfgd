@@ -495,13 +495,14 @@ impl Renderer {
         }
     }
 
-    /// Emit a pre-built block whose construction read and wrote no
-    /// `RenderState`. The lock is taken for ORDERING only — so one raw render
-    /// cannot be interleaved with another emission's block — rather than to
-    /// protect state the builder touched.
-    pub(crate) fn emit_raw_block(&self, w: &dyn Writer, lines: &[String]) {
-        let _ordering = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        self.emit_block(w, lines);
+    /// Emit a pre-built block (diff, syntax-highlighted code) at `depth`.
+    /// Flushes any deferred section header first and indents every line to
+    /// `depth` — a raw block nests under whatever section opened it exactly
+    /// like any other emission — but never word-wraps a line: each entry is
+    /// already one complete rendered row, and wrapping it mid-token would no
+    /// longer be the diff/syntax content it was built from.
+    pub(crate) fn emit_raw_block(&self, w: &dyn Writer, depth: usize, lines: &[String]) {
+        self.emit_with(w, |e| e.push_raw_block(depth, lines));
     }
 
     /// Run one logical emission: take the state lock once, build every line of
@@ -602,6 +603,33 @@ impl Emitting<'_> {
         for physical in wrap::wrap_body_with_trailer(trimmed, &prefix, self.wrap_cols, trailer) {
             self.out.push(physical);
         }
+    }
+
+    /// Collect a pre-built raw block (diff, syntax-highlighted code) at
+    /// `depth`. Each entry in `lines` is already ONE complete rendered line —
+    /// unlike `push_line`, nothing here word-wraps it: a diff row or a
+    /// highlighted source line broken mid-token by `wrap::wrap_body` is no
+    /// longer the content it was built from, which is the exemption
+    /// `emit_raw_block`'s own doc names. Indentation is not part of that
+    /// exemption — a raw block still nests under whatever section opened it,
+    /// so it flushes any deferred section header first (same as every other
+    /// emission) and prepends `depth`'s indent to each line.
+    pub(crate) fn push_raw_block(&mut self, depth: usize, lines: &[String]) {
+        self.flush_section_headers();
+        self.drain_kv_buffer();
+        if self.state.leading {
+            self.state.leading = false;
+            self.state.blank_pending = false;
+        } else if self.state.blank_pending {
+            self.out.push(String::new());
+            self.state.blank_pending = false;
+        }
+        self.state.last_was_top_heading = false;
+        let prefix = indent_prefix(depth);
+        for line in lines {
+            self.out.push(format!("{prefix}{line}"));
+        }
+        self.mark_top_level_group(TopGroup::CodeBlock);
     }
 
     /// Render the buffered kvs, if any, as one aligned block.
