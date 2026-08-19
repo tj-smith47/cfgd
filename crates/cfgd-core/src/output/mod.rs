@@ -158,14 +158,20 @@ pub fn collapse_to_subject_line(err: impl std::fmt::Display) -> String {
 
 /// The ONE spelling of a planned-vs-actual mismatch: `want: <expected>,
 /// have: <actual>`. [`super::status_builder::StatusBuilder::drift`] and
-/// `doc::StatusFields::drift` both compose their detail slot through this,
-/// and so does [`super::compliance::system_checks_from_diffs`]'s `detail`
-/// field — three producers that would otherwise drift (three different
-/// spellings were observed: `want {}, have {}` with no colon, `expected {},
-/// actual {}`, and this canonical form baked straight into a status
-/// subject instead of the detail slot). Display-only: a `-o json` payload
-/// keeps its own `expected`/`actual` fields under their own names: this
-/// never touches serialization, only what a human reads.
+/// `doc::StatusFields::drift` both compose their detail slot through this —
+/// two DISPLAY producers that would otherwise drift apart (two different
+/// spellings were observed: `want {}, have {}` with no colon, and this
+/// canonical form baked straight into a status subject instead of the
+/// detail slot). Reach for this only where the string is RENDERED to a
+/// human, never where it is stored: `crate::compliance::system_checks_from_diffs`
+/// composes its persisted/hashed `ComplianceCheck.detail` with a plain
+/// `format!("expected {}, actual {}", …)` on purpose, because that string is
+/// serialized into the `-o json` payload and into `compliance_snapshots`'
+/// content-hash digest — a display-only spelling change there breaks a
+/// consumer parsing `.detail` and re-hashes every stored snapshot on
+/// upgrade for no real drift. `cli::compliance` composes this function at
+/// the point it prints a check for a human, not at the point the check is
+/// built.
 pub fn drift_detail(expected: impl std::fmt::Display, actual: impl std::fmt::Display) -> String {
     format!("want: {expected}, have: {actual}")
 }

@@ -265,6 +265,33 @@ fn collect_system_checks_maps_drifts() {
     assert!(checks[0].detail.as_deref().unwrap().contains("/bin/bash"));
 }
 
+/// Pins `system_checks_from_diffs`' `detail` to its stored byte shape.
+/// `ComplianceCheck` is serialized into the `-o json` payload and into
+/// `compliance_snapshots.snapshot_json`, whose content hash covers `detail`
+/// (see `snapshot_content_hash`), so this string is a persisted/hashed
+/// value, not a display string: a display-side spelling like
+/// `crate::output::drift_detail`'s `want: …, have: …` must never land here,
+/// because every stored machine's system-violation snapshot would re-hash on
+/// upgrade with nothing having actually changed.
+#[test]
+fn system_checks_from_diffs_pins_the_persisted_detail_shape() {
+    let diffs = vec![SystemDiff {
+        configurator: "shell".into(),
+        outcome: SystemDiffOutcome::Drifts(vec![SystemDrift {
+            key: "defaultShell".into(),
+            expected: "/bin/zsh".into(),
+            actual: "/bin/bash".into(),
+        }]),
+    }];
+
+    let checks = system_checks_from_diffs(&diffs);
+    assert_eq!(checks.len(), 1);
+    assert_eq!(
+        checks[0].detail.as_deref(),
+        Some("expected /bin/zsh, actual /bin/bash")
+    );
+}
+
 #[test]
 fn collect_system_checks_compliant_when_no_drift() {
     use crate::providers::ProviderRegistry;
@@ -818,8 +845,8 @@ fn collect_system_checks_with_drift_violation() {
     let checks = collect_system_checks(&profile, &[], &registry).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Violation);
-    assert!(checks[0].detail.as_deref().unwrap().contains("want: 1"));
-    assert!(checks[0].detail.as_deref().unwrap().contains("have: 0"));
+    assert!(checks[0].detail.as_deref().unwrap().contains("expected 1"));
+    assert!(checks[0].detail.as_deref().unwrap().contains("actual 0"));
 }
 
 #[test]
