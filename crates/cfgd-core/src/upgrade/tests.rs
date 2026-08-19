@@ -4714,3 +4714,84 @@ fn write_version_cache_errors_when_cache_dir_path_is_blocked_by_a_file() {
         "error message must name the failing step: {msg}"
     );
 }
+
+/// QP9-review B1 fix: `download_with_progress_bar` (the arm of
+/// `download_to_file` that runs when a `content-length` is known) used to
+/// run its chunked read/write loop under two early `?`s, so an IO failure
+/// mid-download abandoned `pb` to `Drop` — the error detail never reached a
+/// `finish_fail`-equivalent line, and the reader saw only
+/// `— <url> (interrupted)`. The loop is now `stream_chunks_to_file`, matched
+/// once by `download_with_progress_bar`, whose failure arm emits `Role::Fail`
+/// on the printer itself (a `ProgressBar` has no `finish_fail`, unlike
+/// `Spinner`) before `?` propagates.
+///
+/// A `Read` that errors partway through is the direct, deterministic way to
+/// exercise this: it needs no HTTP transport at all, and it fails inside the
+/// loop rather than before `download_with_progress_bar` is even called.
+struct FailAfter {
+    remaining_ok_bytes: usize,
+}
+
+impl std::io::Read for FailAfter {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining_ok_bytes == 0 {
+            return Err(std::io::Error::other("connection reset mid-download"));
+        }
+        let n = buf.len().min(self.remaining_ok_bytes);
+        buf[..n].fill(0xEE);
+        self.remaining_ok_bytes -= n;
+        Ok(n)
+    }
+}
+
+#[test]
+fn download_with_progress_bar_failure_settles_via_status_fail_not_drop() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut tmp = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+    let mut reader = FailAfter {
+        remaining_ok_bytes: 16,
+    };
+    let url = "https://example.com/cfgd-x86_64.tar.gz";
+
+    let (printer, buf) = crate::output::Printer::for_test_live_scrollback();
+    let result = download_with_progress_bar(&printer, url, 1024, &mut reader, &mut tmp);
+    drop(printer);
+
+    assert!(result.is_err(), "a read error mid-download must surface");
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains(&format!("Failed to download {url}")),
+        "the failure detail must reach a committed status line: {out}"
+    );
+    assert!(
+        !out.contains("(interrupted)"),
+        "a progress bar settled explicitly on failure must never also \
+         settle via Drop: {out}"
+    );
+}
+
+/// The success half, proving `download_with_progress_bar` still writes
+/// every byte and settles with no failure status when the reader never
+/// errors — the counterpart that keeps the failure test above from passing
+/// vacuously (e.g. if the arm stopped writing on every call).
+#[test]
+fn download_with_progress_bar_success_writes_all_bytes_and_settles_silently() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut tmp = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+    let body = vec![0xABu8; 4096];
+    let mut reader = std::io::Cursor::new(body.clone());
+    let url = "https://example.com/cfgd-x86_64.tar.gz";
+
+    let (printer, buf) = crate::output::Printer::for_test_live_scrollback();
+    let result =
+        download_with_progress_bar(&printer, url, body.len() as u64, &mut reader, &mut tmp);
+    drop(printer);
+
+    assert!(result.is_ok(), "a fully-readable stream must succeed");
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(
+        out.is_empty(),
+        "success settles the bar silently, with no status line of its own: {out}"
+    );
+    assert_eq!(std::fs::read(tmp.path()).unwrap(), body);
+}

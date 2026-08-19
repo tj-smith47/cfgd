@@ -184,6 +184,7 @@ fn fetch_latest_release_from(
         printer,
         "Checking for latest release...",
         "Checked latest release",
+        "Failed to fetch release information",
     )?;
     parse_release_json(&body)
 }
@@ -203,6 +204,7 @@ fn fetch_newest_release_from(
         printer,
         "Checking for newest release (incl. prereleases)...",
         "Checked newest release",
+        "Failed to fetch release information",
     )?;
 
     let json: serde_json::Value =
@@ -250,13 +252,16 @@ fn fetch_release_for_channel(
 
 /// Issue the GitHub GET with the upgrade agent + headers, surfacing the spinner
 /// when a printer is supplied, and return the response body. `start_label` is the
-/// in-flight spinner text; `finish_label` is the completion text — both reflect
-/// the release channel being queried so the wording stays accurate.
+/// in-flight spinner text; `finish_label` is the completion text; `fail_label` is
+/// the failure text — all three reflect the release channel being queried so the
+/// wording stays accurate for every caller (a hardcoded failure label was correct
+/// for the two callers that existed, but would silently mislabel a third).
 fn github_get(
     url: &str,
     printer: Option<&Printer>,
     start_label: &str,
     finish_label: &str,
+    fail_label: &str,
 ) -> Result<String> {
     let spinner = printer.map(|p| p.spinner(start_label.to_string()));
     match github_get_inner(url) {
@@ -269,7 +274,7 @@ fn github_get(
         Err(e) => {
             if let Some(s) = spinner {
                 let _ = s
-                    .finish_fail("Failed to fetch release information".to_string())
+                    .finish_fail(fail_label.to_string())
                     .detail(crate::output::collapse_to_subject_line(&e));
             }
             Err(e)
@@ -617,27 +622,7 @@ fn download_to_file(
     // Use progress bar if we know the size, spinner otherwise
     match (printer, content_length) {
         (Some(p), Some(total)) => {
-            let pb = p.progress_bar(total, url);
-            let mut buf = [0u8; 8192];
-            let mut downloaded: u64 = 0;
-            loop {
-                let n = reader
-                    .read(&mut buf)
-                    .map_err(|e| UpgradeError::DownloadFailed {
-                        message: format!("stream to disk: {}", e),
-                    })?;
-                if n == 0 {
-                    break;
-                }
-                std::io::Write::write_all(&mut tmp, &buf[..n]).map_err(|e| {
-                    UpgradeError::DownloadFailed {
-                        message: format!("stream to disk: {}", e),
-                    }
-                })?;
-                downloaded += n as u64;
-                pb.set_position(downloaded);
-            }
-            pb.finish();
+            download_with_progress_bar(p, url, total, &mut reader, &mut tmp)?;
         }
         (Some(p), None) => {
             let spinner = p.spinner(format!("Downloading {url}..."));
@@ -668,6 +653,60 @@ fn download_to_file(
             message: format!("rename to {}: {}", dest.posix(), e.error),
         })?;
 
+    Ok(())
+}
+
+/// `download_to_file`'s bounded-size (progress-bar) arm, extracted so its own
+/// two `?`s (a read error, a write error) match into ONE `Result` here rather
+/// than abandoning `pb` to `Drop` mid-download. A `ProgressBar` has no
+/// `finish_fail` (unlike `Spinner`), so the failure arm settles the bar
+/// silently via `finish()` and then emits the failure detail as its own
+/// `Role::Fail` status on the printer, at the same ambient depth `pb` was
+/// built at — the equivalent of a spinner's `finish_fail(...).detail(e)`.
+fn download_with_progress_bar(
+    p: &Printer,
+    url: &str,
+    total: u64,
+    reader: &mut dyn Read,
+    tmp: &mut tempfile::NamedTempFile,
+) -> std::result::Result<(), UpgradeError> {
+    let pb = p.progress_bar(total, url);
+    let result = stream_chunks_to_file(reader, tmp, &pb);
+    pb.finish();
+    if let Err(e) = &result {
+        p.status(Role::Fail, format!("Failed to download {url}"))
+            .detail(crate::output::collapse_to_subject_line(e));
+    }
+    result
+}
+
+/// The fallible half of [`download_with_progress_bar`]: one `Result` the
+/// caller matches once to settle the progress bar, instead of the two early
+/// `?`s (a read error, a write error) that used to abandon `pb` to `Drop`
+/// mid-download. Matches the inner-fn shape used at every other LEAK site
+/// fixed in this diff (e.g. `oci::pull::pull_module_inner`).
+fn stream_chunks_to_file(
+    reader: &mut dyn Read,
+    tmp: &mut tempfile::NamedTempFile,
+    pb: &crate::output::ProgressBar<'_>,
+) -> std::result::Result<(), UpgradeError> {
+    let mut buf = [0u8; 8192];
+    let mut downloaded: u64 = 0;
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| UpgradeError::DownloadFailed {
+                message: format!("stream to disk: {}", e),
+            })?;
+        if n == 0 {
+            break;
+        }
+        std::io::Write::write_all(tmp, &buf[..n]).map_err(|e| UpgradeError::DownloadFailed {
+            message: format!("stream to disk: {}", e),
+        })?;
+        downloaded += n as u64;
+        pb.set_position(downloaded);
+    }
     Ok(())
 }
 
