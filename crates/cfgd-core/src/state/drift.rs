@@ -118,6 +118,46 @@ impl StateStore {
         Ok(())
     }
 
+    /// Record that a live drift scan just ran against this machine (a
+    /// `diff`/`verify`/`status --scan` pass, or a daemon reconcile tick) —
+    /// the recorded-state `status` header's staleness signal on a host with
+    /// no outstanding drift rows to date it by. Upserts the single row.
+    ///
+    /// Infallible by design, unlike every other write on this store: all four
+    /// callers are read-only commands that already have their answer by the
+    /// time they stamp, and a store that refuses the stamp must cost the NEXT
+    /// run's header its age line rather than fail the run that found it. The
+    /// warning lives here so the four cannot drift into four policies and
+    /// four spellings of the same message.
+    pub fn record_scan(&self) {
+        let timestamp = crate::utc_now_iso8601();
+        let written = self.conn.execute(
+            "INSERT INTO last_scan (id, timestamp) VALUES (1, ?1)
+                 ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp",
+            params![timestamp],
+        );
+        if let Err(e) = written {
+            tracing::warn!(error = %e, "failed to record scan timestamp");
+        }
+    }
+
+    /// The timestamp of the most recent [`record_scan`], `None` if this
+    /// machine has never been scanned.
+    ///
+    /// [`record_scan`]: StateStore::record_scan
+    pub fn last_scan_at(&self) -> Result<Option<String>> {
+        let result =
+            self.conn
+                .query_row("SELECT timestamp FROM last_scan WHERE id = 1", [], |row| {
+                    row.get(0)
+                });
+        match result {
+            Ok(ts) => Ok(Some(ts)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(crate::errors::StateError::Database(e.to_string()).into()),
+        }
+    }
+
     /// Get unresolved drift events.
     pub fn unresolved_drift(&self) -> Result<Vec<DriftEvent>> {
         let mut stmt = self

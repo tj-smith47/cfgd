@@ -574,6 +574,12 @@ pub(crate) fn handle_reconcile(
         }
     });
 
+    // This tick just performed a live drift scan of the machine, whatever it
+    // found — the recorded-state `status` header's staleness signal reads
+    // from here, not from `drift_events` (which goes empty on a clean host
+    // and so cannot date a clean scan).
+    store.record_scan();
+
     if effective_total == 0 {
         tracing::debug!("reconcile: no drift detected");
 

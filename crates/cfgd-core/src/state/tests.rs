@@ -119,6 +119,25 @@ fn record_and_retrieve_drift() {
 }
 
 #[test]
+fn last_scan_at_is_none_before_the_first_scan() {
+    let store = StateStore::open_in_memory().unwrap();
+    assert_eq!(store.last_scan_at().unwrap(), None);
+}
+
+#[test]
+fn record_scan_upserts_the_single_row() {
+    let store = StateStore::open_in_memory().unwrap();
+    store.record_scan();
+    let first = store.last_scan_at().unwrap().expect("scan recorded");
+
+    // A second scan overwrites the same row rather than accumulating one per
+    // call — `last_scan` holds exactly one machine-wide timestamp.
+    store.record_scan();
+    let second = store.last_scan_at().unwrap().expect("scan recorded");
+    assert!(second >= first);
+}
+
+#[test]
 fn resolve_drift_links_to_apply() {
     let store = StateStore::open_in_memory().unwrap();
     store

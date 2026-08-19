@@ -96,6 +96,55 @@ pub fn parse_duration_str(s: &str) -> Result<std::time::Duration, String> {
         .map_err(|_| format!("invalid timeout '{}': use 30s, 5m, or 1h", s))
 }
 
+/// Render the age of an ISO 8601 timestamp relative to `now` as a short
+/// "Xm ago" / "Xh ago" / "Xd ago" string, or `None` when `ts` or `now` fails
+/// to parse, or `ts` names an instant after `now` (clock skew) — the caller
+/// then omits the age line rather than showing a negative duration. `now` is
+/// a parameter (never read from the wall clock here) so a caller can pin it
+/// for a golden or unit test instead of the render depending on when the test
+/// happened to run. Both timestamps are strings — the callers of this
+/// function (the `cfgd` binary crate's display paths) never hold a `chrono`
+/// type of their own, only the ISO 8601 strings `cfgd-core` already hands
+/// back from `utc_now_iso8601()` and the state store.
+pub fn humanize_age_since(ts: &str, now: &str) -> Option<String> {
+    let secs = age_since_secs(ts, now)?;
+    if secs < 0 {
+        return None;
+    }
+    Some(if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    })
+}
+
+/// The signed seconds between `ts` and `now` (positive when `ts` is in the
+/// past), or `None` when either fails to parse as RFC 3339. The shared
+/// primitive behind `humanize_age_since`'s rendering and `is_stale_since`'s
+/// threshold check, so the two can never disagree about what "the age of
+/// `ts`" means.
+fn age_since_secs(ts: &str, now: &str) -> Option<i64> {
+    let then = chrono::DateTime::parse_from_rfc3339(ts)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    let now = chrono::DateTime::parse_from_rfc3339(now)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    Some(now.signed_duration_since(then).num_seconds())
+}
+
+/// Whether `ts` is more than `threshold_secs` older than `now`. An
+/// unparseable `ts` (or `now`) reads as stale rather than fresh — a caller
+/// deciding whether to show a "this is old, go check" hint must not suppress
+/// it just because the timestamp it read was malformed.
+pub fn is_stale_since(ts: &str, now: &str, threshold_secs: i64) -> bool {
+    age_since_secs(ts, now).is_none_or(|secs| secs > threshold_secs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +178,45 @@ mod tests {
         assert_eq!(s.len(), 16, "expected YYYYMMDDTHHMMSSZ shape: {s:?}");
         assert!(!s.contains([':', '-']), "stamp kept a separator: {s:?}");
         assert!(s.ends_with('Z'), "stamp is not UTC-marked: {s:?}");
+    }
+
+    #[test]
+    fn humanize_age_since_buckets_by_magnitude() {
+        let now = "2026-05-12T14:30:25Z";
+        assert_eq!(
+            humanize_age_since("2026-05-12T14:30:00Z", now),
+            Some("just now".to_string())
+        );
+        assert_eq!(
+            humanize_age_since("2026-05-12T14:25:25Z", now),
+            Some("5m ago".to_string())
+        );
+        assert_eq!(
+            humanize_age_since("2026-05-12T11:30:25Z", now),
+            Some("3h ago".to_string())
+        );
+        assert_eq!(
+            humanize_age_since("2026-05-10T14:30:25Z", now),
+            Some("2d ago".to_string())
+        );
+    }
+
+    #[test]
+    fn humanize_age_since_rejects_unparseable_and_future_timestamps() {
+        let now = "2026-05-12T14:30:25Z";
+        assert_eq!(humanize_age_since("not-a-timestamp", now), None);
+        assert_eq!(humanize_age_since("2026-05-12T14:31:00Z", now), None);
+    }
+
+    #[test]
+    fn is_stale_since_compares_against_the_threshold() {
+        let now = "2026-05-12T14:30:25Z";
+        // 5 minutes old, 10 minute threshold: fresh.
+        assert!(!is_stale_since("2026-05-12T14:25:25Z", now, 600));
+        // 15 minutes old, 10 minute threshold: stale.
+        assert!(is_stale_since("2026-05-12T14:15:25Z", now, 600));
+        // Unparseable reads as stale rather than silently fresh.
+        assert!(is_stale_since("not-a-timestamp", now, 600));
     }
 
     #[test]

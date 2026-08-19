@@ -441,6 +441,19 @@ const MIGRATIONS: &[&str] = &[
     // never the journal.
     "ALTER TABLE apply_journal ADD COLUMN completion_index INTEGER;
      UPDATE apply_journal SET completion_index = action_index;",
+    // Migration 15: a single-row record of the last time this machine was
+    // actually SCANNED for drift (a live `diff`/`verify`/`status --scan` pass,
+    // or a daemon reconcile tick) — distinct from `drift_events`, which holds
+    // rows only while something is actively drifting and goes empty on a
+    // clean host. Without this a clean host has no signal at all for whether
+    // its recorded-state `status` dashboard reflects a check from five
+    // seconds ago or five weeks ago. `id = 1` pins it to one row: there is
+    // exactly one "last scan" per machine, and an UPSERT keyed on that fixed
+    // id is simpler than a MAX(timestamp) query over a growing table.
+    "CREATE TABLE IF NOT EXISTS last_scan (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        timestamp TEXT NOT NULL
+    );",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable

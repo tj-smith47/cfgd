@@ -293,7 +293,12 @@ pub fn resolve_default_ipc_path(runtime_over: Option<&Path>, scope: crate::Scope
         }
     }
 }
-const DEFAULT_RECONCILE_SECS: u64 = 300; // 5m
+/// The reconcile interval a daemon runs at when `spec.daemon.reconcile.interval`
+/// is unset — also the staleness threshold `cfgd status`'s recorded-state
+/// header compares its last-scan age against: on a machine with a live daemon
+/// this is exactly how far behind "now" the recorded state can be and still be
+/// current, so a `status` reading past it is worth a hint toward `--scan`.
+pub const DEFAULT_RECONCILE_SECS: u64 = 300; // 5m
 const DEFAULT_SYNC_SECS: u64 = 300; // 5m
 #[cfg(unix)]
 const LAUNCHD_LABEL: &str = "com.cfgd.daemon";

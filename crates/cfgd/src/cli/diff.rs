@@ -246,6 +246,13 @@ pub fn cmd_diff(
         system_check_failed: !diff_payload.system_errors.is_empty(),
     };
 
+    // This command just checked the machine itself, whatever it found — the
+    // recorded-state `status` header dates its display from here, and a scan
+    // that finds nothing is exactly the one a clean host has no other record of.
+    if let Ok(state) = ctx.state() {
+        state.record_scan();
+    }
+
     printer.emit(build_diff_doc(&diff_payload));
 
     if exit_code && let Some(code) = diff_exit_code(&diff_payload.summary) {
