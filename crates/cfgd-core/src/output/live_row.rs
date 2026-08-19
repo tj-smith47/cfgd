@@ -163,7 +163,7 @@ impl<'p> LiveRow<'p> {
             return;
         }
         let theme = &self.renderer.theme;
-        let subject = finalize_subject(theme, status.subject, None, None);
+        let subject = finalize_subject(theme, status.subject, None, None, None);
         self.set_status(
             &StatusFields {
                 role: status.role,

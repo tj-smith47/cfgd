@@ -224,7 +224,8 @@ pub fn cmd_diff(
                     Err(e) => {
                         let error = cfgd_core::output::collapse_to_subject_line(e);
                         sys_group
-                            .status(Role::Warn, format!("{}: error checking drift", key))
+                            .status(Role::Warn, key.to_string())
+                            .qualifier("error checking drift")
                             .detail(&error);
                         diff_payload.system_errors.push(SystemCheckError {
                             key: key.to_string(),
@@ -378,7 +379,8 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                     has_pkg_drift = true;
                     emitted = true;
                     group
-                        .status(Role::Warn, format!("{}: missing", pkg.manager))
+                        .status(Role::Warn, pkg.manager.clone())
+                        .qualifier("missing")
                         .detail(pkg.resolved_name.clone());
                     diff_payload.packages.push(drift);
                 }
@@ -503,7 +505,8 @@ pub(super) fn print_package_drift(
                     ManagerAction::Provision { via, .. } => {
                         for manager in ma.provisioned_managers() {
                             group
-                                .status(Role::Warn, format!("{}: {}", manager, phrase.state))
+                                .status(Role::Warn, manager)
+                                .qualifier(phrase.state)
                                 .detail(phrase.detail.clone());
                             payload.packages.push(PackageDrift {
                                 manager: manager.to_string(),
@@ -516,7 +519,8 @@ pub(super) fn print_package_drift(
                     }
                     ManagerAction::Refuse { manager, reason } => {
                         group
-                            .status(Role::Warn, format!("{}: {}", manager, phrase.state))
+                            .status(Role::Warn, manager.clone())
+                            .qualifier(phrase.state)
                             .detail(phrase.detail.clone());
                         payload.packages.push(PackageDrift {
                             manager: manager.clone(),
@@ -537,7 +541,8 @@ pub(super) fn print_package_drift(
                     manager, packages, ..
                 } => {
                     group
-                        .status(Role::Warn, format!("{}: missing", manager))
+                        .status(Role::Warn, manager.clone())
+                        .qualifier("missing")
                         .detail(packages.join(", "));
                     payload.packages.push(PackageDrift {
                         manager: manager.clone(),
@@ -551,7 +556,8 @@ pub(super) fn print_package_drift(
                     manager, packages, ..
                 } => {
                     group
-                        .status(Role::Warn, format!("{}: extra", manager))
+                        .status(Role::Warn, manager.clone())
+                        .qualifier("extra")
                         .detail(packages.join(", "));
                     payload.packages.push(PackageDrift {
                         manager: manager.clone(),

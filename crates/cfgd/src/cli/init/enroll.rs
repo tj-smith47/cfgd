@@ -352,7 +352,9 @@ pub(super) fn detect_ssh_key(printer: &Printer) -> Option<String> {
 
     // Fall back to on-disk keys
     if let Some(key) = first_existing_ssh_key(&ssh_dir) {
-        printer.status_simple(Role::Info, format!("Using SSH key: {}", key.posix()));
+        printer
+            .status(Role::Info, "Using SSH key")
+            .qualifier(key.posix().to_string());
         return Some(key.to_string_lossy().to_string());
     }
 

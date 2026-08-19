@@ -60,10 +60,10 @@ pub(crate) fn restore_or_remove_deployed_files(
         if let Ok(Some(backup)) = state.latest_backup_for_path(file_path) {
             match cfgd_core::reconciler::restore_file_from_backup(path, &backup, printer) {
                 cfgd_core::reconciler::RestoreOutcome::Restored => {
-                    section.status_simple(Role::Ok, format!("Restored: {file_path}"));
+                    section.status(Role::Ok, "Restored").qualifier(*file_path);
                 }
                 cfgd_core::reconciler::RestoreOutcome::Removed => {
-                    section.status_simple(Role::Ok, format!("Removed: {file_path}"));
+                    section.status(Role::Ok, "Removed").qualifier(*file_path);
                 }
                 // Skipped: target already matched, nothing to report.
                 // Failed: a warning was already emitted by the restore path.
@@ -73,12 +73,11 @@ pub(crate) fn restore_or_remove_deployed_files(
         } else if path.exists() || path.symlink_metadata().is_ok() {
             // No backup recorded — just remove the deployed file.
             if let Err(e) = std::fs::remove_file(path) {
-                section.status_simple(
-                    Role::Warn,
-                    format!("rollback: failed to remove {file_path}: {e}"),
-                );
+                section
+                    .status(Role::Warn, "rollback")
+                    .qualifier(format!("failed to remove {file_path}: {e}"));
             } else {
-                section.status_simple(Role::Ok, format!("Removed: {file_path}"));
+                section.status(Role::Ok, "Removed").qualifier(*file_path);
             }
         }
     }

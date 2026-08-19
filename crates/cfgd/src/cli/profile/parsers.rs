@@ -65,7 +65,9 @@ pub(crate) fn update_script_list(
             continue;
         }
         list.push(entry);
-        printer.status_simple(Role::Ok, format!("Added {}: {}", label, label_text));
+        printer
+            .status(Role::Ok, format!("Added {label}"))
+            .qualifier(label_text);
         changes += 1;
     }
     for script in remove {
@@ -83,7 +85,9 @@ pub(crate) fn update_script_list(
             let before = list.len();
             list.retain(|e| e.run_str() != script.as_str());
             if list.len() < before {
-                printer.status_simple(Role::Ok, format!("Removed {}: {}", label, label_text));
+                printer
+                    .status(Role::Ok, format!("Removed {label}"))
+                    .qualifier(label_text);
                 changes += 1;
             } else {
                 printer.status_simple(

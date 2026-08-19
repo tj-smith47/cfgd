@@ -17675,7 +17675,11 @@ fn emit_doc(
     let doc = super::doctor::build_doctor_doc(output, extras);
     printer.emit(doc);
     drop(printer);
-    cap.human()
+    // Every caller asserts on TEXT content (`.contains(...)`), never on
+    // escapes — a role-styled subject and a muted qualifier now land in the
+    // same rendered line separated by SGR codes, which a raw substring match
+    // cannot see across.
+    cfgd_core::output::strip_ansi(&cap.human())
 }
 
 #[test]

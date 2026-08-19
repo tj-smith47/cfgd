@@ -263,7 +263,9 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 drain_config_deprecations(printer, &mut cfg);
                 cfg.spec.profile = Some(name.to_string());
                 crate::cli::helpers::rewrite_user_yaml(&config_path, &cfg)?;
-                printer.status_simple(Role::Ok, format!("Set active profile: {}", name));
+                printer
+                    .status(Role::Ok, "Set active profile")
+                    .qualifier(name);
                 name.to_string()
             } else {
                 // No --apply-profile: use whatever's in cfgd.yaml, or pick interactively

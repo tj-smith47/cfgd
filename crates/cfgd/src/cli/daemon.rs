@@ -297,7 +297,7 @@ pub fn build_daemon_install_doc(payload: &DaemonInstallOutput) -> Doc {
             }
             doc = doc
                 .status(Role::Info, "The service will start automatically on boot")
-                .status(Role::Info, format!("Logs: {}", payload.path));
+                .status_with(Role::Info, "Logs", |f| f.qualifier(payload.path.clone()));
             if payload.windows_event_log.unwrap_or(false) {
                 doc = doc.status(
                     Role::Info,
@@ -311,10 +311,9 @@ pub fn build_daemon_install_doc(payload: &DaemonInstallOutput) -> Doc {
             }
         }
         "macos" => {
-            doc = doc.status(
-                Role::Ok,
-                format!("Installed launchd service: {}", payload.service),
-            );
+            doc = doc.status_with(Role::Ok, "Installed launchd service", |f| {
+                f.qualifier(payload.service.clone())
+            });
             if !payload.started {
                 doc = doc.status(
                     Role::Info,
@@ -323,10 +322,9 @@ pub fn build_daemon_install_doc(payload: &DaemonInstallOutput) -> Doc {
             }
         }
         _ => {
-            doc = doc.status(
-                Role::Ok,
-                format!("Installed systemd user service: {}", payload.service),
-            );
+            doc = doc.status_with(Role::Ok, "Installed systemd user service", |f| {
+                f.qualifier(payload.service.clone())
+            });
             if !payload.started {
                 doc = doc.status(
                     Role::Info,

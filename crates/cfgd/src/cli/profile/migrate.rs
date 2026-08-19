@@ -327,7 +327,9 @@ fn report_no_move(printer: &Printer, item: &PlanItem) -> MigrationRecord {
             }
         }
         PlanItem::Failed { name, reason } => {
-            printer.status_simple(Role::Fail, format!("Cannot migrate '{}': {}", name, reason));
+            printer
+                .status(Role::Fail, format!("Cannot migrate '{}'", name))
+                .qualifier(reason.clone());
             MigrationRecord {
                 name: name.clone(),
                 from: None,

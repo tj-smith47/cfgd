@@ -347,7 +347,9 @@ fn source_show_locked_policy_section_renders() {
     printer.emit(build_source_show_doc(&output, Some(&manifest)));
     drop(printer);
 
-    let human = cap.human();
+    // "env:" and its qualifier now render in separate theme slots; strip SGR
+    // before matching content.
+    let human = cfgd_core::output::strip_ansi(&cap.human());
     assert!(
         human.contains("Locked"),
         "Locked subsection must render: {human}"
@@ -440,7 +442,9 @@ fn source_show_all_package_manager_types_render() {
     printer.emit(build_source_show_doc(&output, Some(&manifest)));
     drop(printer);
 
-    let human = cap.human();
+    // Each manager label and its qualifier now render in separate theme
+    // slots; strip SGR before matching content.
+    let human = cfgd_core::output::strip_ansi(&cap.human());
 
     // brew formulae (lines 157-159)
     assert!(

@@ -14,6 +14,20 @@ fn compose_subject_with_label(theme: &Theme, subject: &str, label: &StatusLabel)
     format!("{subject} {styled}")
 }
 
+/// Compose a `subject` with a trailing `": " qualifier` (`curl: missing`) —
+/// three slots: the subject keeps whatever role-slot styling the status line
+/// already carries (untouched here), the colon is always `Role::Warn`, and
+/// the qualifier text is always `theme.muted`, matching `TitleLabel`'s
+/// separator/value split rather than taking a per-call role the way `label`
+/// does. Landed at end-of-subject, same reasoning as
+/// `compose_subject_with_label`: the inner SGR reset closing the qualifier's
+/// color cannot be followed by outer-role-styled text.
+fn compose_subject_with_qualifier(theme: &Theme, subject: &str, qualifier: &str) -> String {
+    let (_, colon_style) = role_glyph(theme, Role::Warn);
+    let muted = theme.muted.apply_to(format!(" {qualifier}"));
+    format!("{subject}{}{muted}", colon_style.apply_to(":"))
+}
+
 /// Compose a `subject` behind a leading styled `marker` (`postApply:`),
 /// separated by one ASCII space.
 ///
@@ -39,12 +53,17 @@ pub(crate) fn finalize_subject(
     theme: &Theme,
     subject: &str,
     marker: Option<&StatusLabel>,
+    qualifier: Option<&str>,
     label: Option<&StatusLabel>,
 ) -> String {
     let sanitized = strip_ansi(subject);
-    let labelled = match label {
-        Some(lbl) => compose_subject_with_label(theme, &sanitized, lbl),
+    let qualified = match qualifier {
+        Some(q) => compose_subject_with_qualifier(theme, &sanitized, q),
         None => sanitized,
+    };
+    let labelled = match label {
+        Some(lbl) => compose_subject_with_label(theme, &qualified, lbl),
+        None => qualified,
     };
     match marker {
         Some(mk) => compose_subject_with_marker(theme, &labelled, mk),
@@ -78,6 +97,51 @@ mod tests {
     /// and the attribute set, which is the whole of its rendering payload.
     fn style_repr(style: &ThemedStyle) -> String {
         format!("{style:?}")
+    }
+
+    #[test]
+    fn qualifier_composes_subject_colon_space_qualifier() {
+        let t = Theme::default();
+        let composed = finalize_subject(&t, "curl", None, Some("missing"), None);
+        assert_eq!(crate::output::strip_ansi(&composed), "curl: missing");
+    }
+
+    /// The colon is always `Role::Warn` and the qualifier text always
+    /// `theme.muted`, whatever role the status LINE itself carries — R6's
+    /// "role slot / warning colon / muted qualifier" split composes fixed
+    /// styling for the trailing two slots, not a per-call choice the way
+    /// `label`'s role parameter is.
+    #[test]
+    fn qualifier_colon_is_warn_and_text_is_muted() {
+        let t = Theme::default().with_colors(true);
+        let composed = finalize_subject(&t, "curl", None, Some("missing"), None);
+        let colon = role_glyph(&t, Role::Warn).1.apply_to(":").to_string();
+        let text = t.muted.apply_to(" missing").to_string();
+        assert!(
+            composed.contains(&colon),
+            "colon not styled Warn; got: {composed:?}"
+        );
+        assert!(
+            composed.contains(&text),
+            "qualifier text not styled muted; got: {composed:?}"
+        );
+    }
+
+    /// Qualifier lands ahead of `label` — both are trailing, at-end-of-subject
+    /// segments, and the qualifier reads as part of what the subject IS about
+    /// while the label is a separate trailing annotation (an owner token).
+    #[test]
+    fn qualifier_lands_before_label() {
+        let t = Theme::default();
+        let label = StatusLabel {
+            role: Role::Secondary,
+            text: "[team-config]".into(),
+        };
+        let composed = finalize_subject(&t, "curl", None, Some("missing"), Some(&label));
+        assert_eq!(
+            crate::output::strip_ansi(&composed),
+            "curl: missing [team-config]"
+        );
     }
 
     #[test]

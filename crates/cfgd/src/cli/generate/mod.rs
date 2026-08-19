@@ -272,7 +272,8 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
         {
             let sec = printer.section("Generated files");
             for item in &generated {
-                sec.status(Role::Ok, format!("{}: {}", item.name, item.path.posix()));
+                sec.status(Role::Ok, item.name.clone())
+                    .qualifier(item.path.posix().to_string());
             }
         }
 

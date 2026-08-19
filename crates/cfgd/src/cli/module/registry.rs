@@ -360,7 +360,9 @@ pub fn cmd_module_upgrade(
             match modules::latest_module_version_remote(&old_git_src.repo_url, name)? {
                 Some(version) => {
                     let tag = format!("{}/{}", name, version);
-                    printer.status_simple(Role::Info, format!("Latest version: {}", tag));
+                    printer
+                        .status(Role::Info, "Latest version")
+                        .qualifier(tag.clone());
                     tag
                 }
                 None => {

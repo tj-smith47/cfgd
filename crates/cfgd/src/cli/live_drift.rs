@@ -1036,9 +1036,10 @@ mod tests {
             );
         }
         drop(printer);
-        // `for_test_doc` pins colour off and both substrings sit inside a
-        // single theme slot, so no escape can land within either of them.
-        let rendered = cap.human();
+        // The manager name and its qualifier now render in separate theme
+        // slots (subject / muted qualifier), so a raw substring match would
+        // see the SGR reset between them; strip before asserting on content.
+        let rendered = cfgd_core::output::strip_ansi(&cap.human());
 
         let rows = manager_action_drift(&action);
         let row = rows.first().expect("a refusal is drift");

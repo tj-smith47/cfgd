@@ -5119,7 +5119,9 @@ mod cmd_init_apply_orchestration {
         });
 
         drop(printer);
-        let out = cap.human();
+        // "Set active profile" and its qualifier ("default") render in
+        // separate theme slots; strip SGR before matching content.
+        let out = cfgd_core::output::strip_ansi(&cap.human());
         assert!(
             out.contains("Set active profile: default"),
             "validated --apply-profile branch should announce profile selection: {out}"

@@ -49,14 +49,21 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
             detail,
             duration_ms,
             target,
+            qualifier,
             label,
         } => {
             let target_pb: Option<PathBuf> = target.as_ref().map(PathBuf::from);
             // Sanitize caller-supplied subject ANSI BEFORE composing the
-            // renderer-owned label SGR; matches `StatusBuilder::Drop`'s
+            // renderer-owned qualifier/label SGR; matches `StatusBuilder::Drop`'s
             // boundary handling so both Doc and streaming paths stay
             // byte-identical.
-            let subject_owned = finalize_subject(&renderer.theme, subject, None, label.as_ref());
+            let subject_owned = finalize_subject(
+                &renderer.theme,
+                subject,
+                None,
+                qualifier.as_deref(),
+                label.as_ref(),
+            );
             renderer.render_status(
                 sink,
                 depth,

@@ -104,7 +104,9 @@ pub(super) fn clone_into(
             .map_err(|e| anyhow::anyhow!("Failed to checkout '{}': {}", branch, e))?;
         repo.set_head(&format!("refs/heads/{}", branch))
             .map_err(|e| anyhow::anyhow!("Failed to set HEAD to '{}': {}", branch, e))?;
-        printer.status_simple(Role::Info, format!("Checked out branch: {}", branch));
+        printer
+            .status(Role::Info, "Checked out branch")
+            .qualifier(branch);
     }
 
     Ok(())

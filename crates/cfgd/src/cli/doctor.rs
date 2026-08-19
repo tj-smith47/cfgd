@@ -549,7 +549,9 @@ pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
 fn build_config_top(doc: Doc, cfg: &DoctorConfigCheck) -> Doc {
     match cfg.state {
         DoctorConfigState::Valid => {
-            let mut doc = doc.status(Role::Ok, format!("Config file: {} (valid)", cfg.path));
+            let mut doc = doc.status_with(Role::Ok, "Config file", |f| {
+                f.qualifier(format!("{} (valid)", cfg.path))
+            });
             let mut pairs: Vec<(String, String)> = Vec::new();
             if let Some(name) = cfg.name.as_deref() {
                 pairs.push(("Name".into(), name.into()));
@@ -561,24 +563,21 @@ fn build_config_top(doc: Doc, cfg: &DoctorConfigCheck) -> Doc {
             doc = doc.kv_block(pairs);
             doc
         }
-        DoctorConfigState::MissingAtDefault => doc.status_with(
-            Role::Warn,
-            format!("Config file: {} — not found", cfg.path),
-            |sf| sf.detail("run 'cfgd init' to create one"),
-        ),
-        DoctorConfigState::MissingAtExplicit => doc.status_with(
-            Role::Fail,
-            format!("Config file: {} — not found", cfg.path),
-            |sf| sf.detail("the given --config/--config-dir/CFGD_CONFIG path does not exist"),
-        ),
-        DoctorConfigState::Invalid => doc.status(
-            Role::Fail,
-            format!(
-                "Config file: {} — {}",
+        DoctorConfigState::MissingAtDefault => doc.status_with(Role::Warn, "Config file", |sf| {
+            sf.qualifier(format!("{} — not found", cfg.path))
+                .detail("run 'cfgd init' to create one")
+        }),
+        DoctorConfigState::MissingAtExplicit => doc.status_with(Role::Fail, "Config file", |sf| {
+            sf.qualifier(format!("{} — not found", cfg.path))
+                .detail("the given --config/--config-dir/CFGD_CONFIG path does not exist")
+        }),
+        DoctorConfigState::Invalid => doc.status_with(Role::Fail, "Config file", |f| {
+            f.qualifier(format!(
+                "{} — {}",
                 cfg.path,
                 cfg.error.as_deref().unwrap_or("invalid")
-            ),
-        ),
+            ))
+        }),
     }
 }
 
@@ -593,23 +592,25 @@ fn build_tools_section(s: SectionBuilder, git_available: bool) -> SectionBuilder
 fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) -> SectionBuilder {
     s = if secrets.sops_available {
         let version_str = secrets.sops_version.as_deref().unwrap_or("unknown version");
-        s.status(Role::Ok, format!("sops: found ({})", version_str))
+        s.status_with(Role::Ok, "sops", |f| {
+            f.qualifier(format!("found ({})", version_str))
+        })
     } else {
-        s.status(
-            Role::Warn,
-            "sops: not found — required for secrets (https://github.com/getsops/sops#install)",
-        )
+        s.status_with(Role::Warn, "sops", |f| {
+            f.qualifier(
+                "not found — required for secrets (https://github.com/getsops/sops#install)",
+            )
+        })
     };
 
     s = match (secrets.age_key_exists, secrets.age_key_path.as_deref()) {
-        (true, Some(path)) => s.status(Role::Ok, format!("age key: {}", path)),
-        (false, Some(path)) => s.status(
-            Role::Warn,
-            format!(
-                "age key: not found at {} — run 'cfgd init' to generate",
+        (true, Some(path)) => s.status_with(Role::Ok, "age key", |f| f.qualifier(path.to_string())),
+        (false, Some(path)) => s.status_with(Role::Warn, "age key", |f| {
+            f.qualifier(format!(
+                "not found at {} — run 'cfgd init' to generate",
                 path
-            ),
-        ),
+            ))
+        }),
         _ => s,
     };
 
@@ -617,22 +618,24 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
         secrets.sops_config_exists,
         secrets.sops_config_path.as_deref(),
     ) {
-        (true, Some(path)) => s.status(Role::Ok, format!(".sops.yaml: {}", path)),
+        (true, Some(path)) => {
+            s.status_with(Role::Ok, ".sops.yaml", |f| f.qualifier(path.to_string()))
+        }
         (true, None) => s.status(Role::Ok, ".sops.yaml: present"),
-        (false, _) => s.status(
-            Role::Warn,
-            ".sops.yaml: not found — will be generated on 'cfgd init'",
-        ),
+        (false, _) => s.status_with(Role::Warn, ".sops.yaml", |f| {
+            f.qualifier("not found — will be generated on 'cfgd init'")
+        }),
     };
 
     for provider in &secrets.providers {
         s = if provider.available {
-            s.status(Role::Ok, format!("provider {}: available", provider.name))
+            s.status_with(Role::Ok, format!("provider {}", provider.name), |f| {
+                f.qualifier("available")
+            })
         } else {
-            s.status(
-                Role::Info,
-                format!("provider {}: not installed (optional)", provider.name),
-            )
+            s.status_with(Role::Info, format!("provider {}", provider.name), |f| {
+                f.qualifier("not installed (optional)")
+            })
         };
     }
     s
@@ -642,10 +645,9 @@ fn build_managers_section(s: SectionBuilder, managers: &[DoctorManagerCheck]) ->
     managers.iter().fold(s, |s, m| {
         if m.declared {
             if m.available {
-                s.status(
-                    Role::Ok,
-                    format!("{}: available (declared in config)", m.name),
-                )
+                s.status_with(Role::Ok, m.name.clone(), |sf| {
+                    sf.qualifier("available (declared in config)")
+                })
             } else if m.can_bootstrap {
                 let detail = match m.bootstrap_method.as_deref() {
                     Some(method) => format!("can auto-bootstrap via {}", method),
@@ -655,19 +657,14 @@ fn build_managers_section(s: SectionBuilder, managers: &[DoctorManagerCheck]) ->
                     sf.detail(detail)
                 })
             } else {
-                s.status(
-                    Role::Fail,
-                    format!(
-                        "{}: not found — declared in config but not available",
-                        m.name
-                    ),
-                )
+                s.status_with(Role::Fail, m.name.clone(), |sf| {
+                    sf.qualifier("not found — declared in config but not available")
+                })
             }
         } else if m.available {
-            s.status(
-                Role::Info,
-                format!("{}: available (not used in config)", m.name),
-            )
+            s.status_with(Role::Info, m.name.clone(), |sf| {
+                sf.qualifier("available (not used in config)")
+            })
         } else {
             s
         }
@@ -761,34 +758,24 @@ fn build_system_section(mut s: SectionBuilder, extras: &DoctorExtras) -> Section
     }
     if let Some(pd) = extras.profiles_dir.as_ref() {
         s = if let Some(err) = pd.error.as_deref() {
-            s.status(
-                Role::Fail,
-                format!(
-                    "Profiles directory: {} — {}",
-                    pd.path,
-                    cfgd_core::output::collapse_to_subject_line(err)
-                ),
-            )
+            s.status_with(Role::Fail, "Profiles directory", |sf| {
+                sf.qualifier(pd.path.clone())
+                    .detail(cfgd_core::output::collapse_to_subject_line(err))
+            })
         } else if pd.exists {
-            s.status(
-                Role::Ok,
-                format!(
-                    "Profiles directory: {} ({} profiles)",
-                    pd.path, pd.profile_count
-                ),
-            )
+            s.status_with(Role::Ok, "Profiles directory", |sf| {
+                sf.qualifier(format!("{} ({} profiles)", pd.path, pd.profile_count))
+            })
         } else {
-            s.status(
-                Role::Warn,
-                format!("Profiles directory not found: {}", pd.path),
-            )
+            s.status_with(Role::Warn, "Profiles directory not found", |sf| {
+                sf.qualifier(pd.path.clone())
+            })
         };
     }
     if let Some(var) = extras.update_optout {
-        s = s.status(
-            Role::Info,
-            format!("Automatic update check: suppressed by {var}"),
-        );
+        s = s.status_with(Role::Info, "Automatic update check", |sf| {
+            sf.qualifier(format!("suppressed by {var}"))
+        });
     }
     s
 }
@@ -797,11 +784,12 @@ fn build_sources_section(s: SectionBuilder, sources: &[DoctorConfigSource]) -> S
     sources
         .iter()
         .fold(s, |s, source| match source.cached_path.as_deref() {
-            Some(path) => s.status(Role::Ok, format!("{}: cached at {}", source.name, path)),
-            None => s.status(
-                Role::Warn,
-                format!("{}: not cached (run 'cfgd source update')", source.name),
-            ),
+            Some(path) => s.status_with(Role::Ok, source.name.clone(), |f| {
+                f.qualifier(format!("cached at {}", path))
+            }),
+            None => s.status_with(Role::Warn, source.name.clone(), |f| {
+                f.qualifier("not cached (run 'cfgd source update')")
+            }),
         })
 }
 

@@ -169,7 +169,9 @@ pub fn build_module_show_doc(
                 format!("{}{} — skipped (platform filter)", name, platforms),
             ),
             PackageDisplay::Unresolved { summary, error } => {
-                s.status(Role::Warn, format!("{} — unresolved: {}", summary, error))
+                s.status_with(Role::Warn, format!("{} — unresolved", summary), |f| {
+                    f.qualifier(error.clone())
+                })
             }
         })
     });

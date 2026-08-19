@@ -425,7 +425,9 @@ pub fn cmd_module_update_local(
     for dep in &add_depends {
         if !doc.spec.depends.contains(dep) {
             doc.spec.depends.push(dep.clone());
-            printer.status_simple(Role::Ok, format!("Added dependency: {}", dep));
+            printer
+                .status(Role::Ok, "Added dependency")
+                .qualifier(dep.clone());
             changes += 1;
         }
     }
@@ -435,7 +437,9 @@ pub fn cmd_module_update_local(
         let before = doc.spec.depends.len();
         doc.spec.depends.retain(|d| d != dep);
         if doc.spec.depends.len() < before {
-            printer.status_simple(Role::Ok, format!("Removed dependency: {}", dep));
+            printer
+                .status(Role::Ok, "Removed dependency")
+                .qualifier(dep.clone());
             changes += 1;
         } else {
             printer.status_simple(Role::Warn, format!("Dependency '{}' not found", dep));
@@ -461,7 +465,9 @@ pub fn cmd_module_update_local(
             platforms: Vec::new(),
             ..Default::default()
         });
-        printer.status_simple(Role::Ok, format!("Added package: {}", pkg));
+        printer
+            .status(Role::Ok, "Added package")
+            .qualifier(pkg.clone());
         changes += 1;
     }
 
@@ -473,7 +479,9 @@ pub fn cmd_module_update_local(
         let before = doc.spec.packages.len();
         doc.spec.packages.retain(|p| p.name != canonical);
         if doc.spec.packages.len() < before {
-            printer.status_simple(Role::Ok, format!("Removed package: {}", canonical));
+            printer
+                .status(Role::Ok, "Removed package")
+                .qualifier(canonical.clone());
             changes += 1;
         } else {
             printer.status_simple(
@@ -523,7 +531,9 @@ pub fn cmd_module_update_local(
             encryption: None,
             permissions: None,
         });
-        printer.status_simple(Role::Ok, format!("Added file: {}", target.posix()));
+        printer
+            .status(Role::Ok, "Added file")
+            .qualifier(target.posix().to_string());
         changes += 1;
     }
 
@@ -554,7 +564,9 @@ pub fn cmd_module_update_local(
                     }
                 }
             }
-            printer.status_simple(Role::Ok, format!("Removed file: {}", target));
+            printer
+                .status(Role::Ok, "Removed file")
+                .qualifier(target.clone());
             changes += 1;
         } else {
             printer.status_simple(Role::Warn, format!("File '{}' not found in module", target));
@@ -565,7 +577,9 @@ pub fn cmd_module_update_local(
     for e in &add_env {
         let ev = cfgd_core::parse_env_var(e).map_err(|e| anyhow::anyhow!(e))?;
         cfgd_core::merge_env(&mut doc.spec.env, std::slice::from_ref(&ev));
-        printer.status_simple(Role::Ok, format!("Set env: {}={}", ev.name, ev.value));
+        printer
+            .status(Role::Ok, "Set env")
+            .qualifier(format!("{}={}", ev.name, ev.value));
         changes += 1;
     }
 
@@ -574,7 +588,9 @@ pub fn cmd_module_update_local(
         let before = doc.spec.env.len();
         doc.spec.env.retain(|ev| ev.name != *key);
         if doc.spec.env.len() < before {
-            printer.status_simple(Role::Ok, format!("Removed env: {}", key));
+            printer
+                .status(Role::Ok, "Removed env")
+                .qualifier(key.clone());
             changes += 1;
         } else {
             printer.status_simple(Role::Warn, format!("Env var '{}' not found", key));
@@ -585,10 +601,9 @@ pub fn cmd_module_update_local(
     for a in &add_aliases {
         let alias = cfgd_core::parse_alias(a).map_err(|e| anyhow::anyhow!(e))?;
         cfgd_core::merge_aliases(&mut doc.spec.aliases, std::slice::from_ref(&alias));
-        printer.status_simple(
-            Role::Ok,
-            format!("Set alias: {}={}", alias.name, alias.command),
-        );
+        printer
+            .status(Role::Ok, "Set alias")
+            .qualifier(format!("{}={}", alias.name, alias.command));
         changes += 1;
     }
 
@@ -597,7 +612,9 @@ pub fn cmd_module_update_local(
         let before = doc.spec.aliases.len();
         doc.spec.aliases.retain(|a| a.name != *name);
         if doc.spec.aliases.len() < before {
-            printer.status_simple(Role::Ok, format!("Removed alias: {}", name));
+            printer
+                .status(Role::Ok, "Removed alias")
+                .qualifier(name.clone());
             changes += 1;
         } else {
             printer.status_simple(Role::Warn, format!("Alias '{}' not found", name));
@@ -615,10 +632,9 @@ pub fn cmd_module_update_local(
         let entry = config::ScriptEntry::Simple(script.clone());
         if !scripts.post_apply.contains(&entry) {
             scripts.post_apply.push(entry);
-            printer.status_simple(
-                Role::Ok,
-                format!("Added post-apply script: {}", condense_script_label(script)),
-            );
+            printer
+                .status(Role::Ok, "Added post-apply script")
+                .qualifier(condense_script_label(script));
             changes += 1;
         }
     }
@@ -639,10 +655,9 @@ pub fn cmd_module_update_local(
             .unwrap_or(false);
         let label_text = condense_script_label(script);
         if removed {
-            printer.status_simple(
-                Role::Ok,
-                format!("Removed post-apply script: {}", label_text),
-            );
+            printer
+                .status(Role::Ok, "Removed post-apply script")
+                .qualifier(label_text);
             changes += 1;
         } else {
             // Echo back the exact raw argument the user searched for — a
@@ -889,13 +904,9 @@ pub fn cmd_module_delete(
     if let Ok(state) = open_state_store(cli.state_dir.as_deref(), cli.scope())
         && let Err(e) = state.remove_module_state(name)
     {
-        printer.status_simple(
-            Role::Warn,
-            format!(
-                "Failed to clean module state: {}",
-                cfgd_core::output::collapse_to_subject_line(&e),
-            ),
-        );
+        printer
+            .status(Role::Warn, "Failed to clean module state")
+            .qualifier(cfgd_core::output::collapse_to_subject_line(&e));
     }
 
     // Clean from lockfile if present

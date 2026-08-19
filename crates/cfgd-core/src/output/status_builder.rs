@@ -28,6 +28,7 @@ pub struct StatusBuilder<'p> {
     pub(crate) detail: Option<String>,
     pub(crate) duration: Option<Duration>,
     pub(crate) target: Option<PathBuf>,
+    pub(crate) qualifier: Option<String>,
     pub(crate) label: Option<StatusLabel>,
     pub(crate) marker: Option<StatusLabel>,
     pub(crate) subject_style: Option<ThemedStyle>,
@@ -55,6 +56,7 @@ impl<'p> StatusBuilder<'p> {
             detail: None,
             duration: None,
             target: None,
+            qualifier: None,
             label: None,
             marker: None,
             subject_style: None,
@@ -109,6 +111,18 @@ impl<'p> StatusBuilder<'p> {
         self.detail(super::drift_detail(expected, actual))
     }
 
+    /// A subject qualifier (`curl: missing`) — the R6 shape: subject keeps
+    /// its role-slot styling untouched, the colon is always `Role::Warn`, the
+    /// qualifier text is always `theme.muted`. Composed through
+    /// [`super::renderer::finalize_subject`] at Drop, landing ahead of
+    /// `label` in the same at-end-of-subject slot. Not a builder-chained
+    /// `StatusLabel` like `label`/`marker`: the styling is fixed, never a
+    /// per-call role choice.
+    pub fn qualifier(mut self, text: impl Into<String>) -> Self {
+        self.qualifier = Some(text.into());
+        self
+    }
+
     pub fn duration(mut self, d: Duration) -> Self {
         self.duration = Some(d);
         self
@@ -158,6 +172,7 @@ impl Drop for StatusBuilder<'_> {
             &self.renderer.theme,
             &self.subject,
             self.marker.as_ref(),
+            self.qualifier.as_deref(),
             self.label.as_ref(),
         );
         let detail = self.detail.as_deref();
@@ -252,6 +267,34 @@ mod tests {
             s.contains("sysctl.net.ipv4.ip_forward — want: 1, have: 0"),
             "got: {s:?}"
         );
+    }
+
+    /// `StatusBuilder::qualifier` composes the `subject: qualifier` shape in
+    /// the subject slot itself — visible before the label, unlike `.drift()`,
+    /// which lands in the detail slot after the em-dash.
+    #[test]
+    fn qualifier_composes_subject_colon_qualifier() {
+        let (r, buf) = build();
+        let sink = sink_for(&buf);
+        let b = StatusBuilder::new(r, sink, 0, Role::Warn, "curl").qualifier("missing");
+        drop(b);
+        let s = crate::test_helpers::captured_text(&buf);
+        assert!(s.contains("curl: missing"), "got: {s:?}");
+    }
+
+    /// A qualifier lands ahead of a label — both are trailing at-end-of-
+    /// subject segments, and the qualifier reads as part of what the subject
+    /// IS about while the label is a separate trailing annotation.
+    #[test]
+    fn qualifier_lands_before_label() {
+        let (r, buf) = build();
+        let sink = sink_for(&buf);
+        let b = StatusBuilder::new(r, sink, 0, Role::Warn, "curl")
+            .qualifier("missing")
+            .label(Role::Secondary, "[team-config]");
+        drop(b);
+        let s = crate::test_helpers::captured_text(&buf);
+        assert!(s.contains("curl: missing [team-config]"), "got: {s:?}");
     }
 
     /// API-contract test for `StatusBuilder::label`. The label is appended at

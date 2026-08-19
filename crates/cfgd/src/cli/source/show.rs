@@ -154,42 +154,44 @@ fn append_policy_items(mut s: SectionBuilder, items: &PolicyItems) -> SectionBui
     if let Some(ref pkgs) = items.packages {
         if let Some(ref brew) = pkgs.brew {
             for f in &brew.formulae {
-                s = s.status(Role::Info, format!("brew formula: {f}"));
+                s = s.status_with(Role::Info, "brew formula", |sf| sf.qualifier(f.clone()));
             }
             for c in &brew.casks {
-                s = s.status(Role::Info, format!("brew cask: {c}"));
+                s = s.status_with(Role::Info, "brew cask", |sf| sf.qualifier(c.clone()));
             }
         }
         if let Some(ref apt) = pkgs.apt {
             for p in &apt.packages {
-                s = s.status(Role::Info, format!("apt: {p}"));
+                s = s.status_with(Role::Info, "apt", |sf| sf.qualifier(p.clone()));
             }
         }
         if let Some(ref cargo) = pkgs.cargo {
             for p in &cargo.packages {
-                s = s.status(Role::Info, format!("cargo: {p}"));
+                s = s.status_with(Role::Info, "cargo", |sf| sf.qualifier(p.clone()));
             }
         }
         for p in &pkgs.pipx {
-            s = s.status(Role::Info, format!("pipx: {p}"));
+            s = s.status_with(Role::Info, "pipx", |sf| sf.qualifier(p.clone()));
         }
         for p in &pkgs.dnf {
-            s = s.status(Role::Info, format!("dnf: {p}"));
+            s = s.status_with(Role::Info, "dnf", |sf| sf.qualifier(p.clone()));
         }
         if let Some(ref npm) = pkgs.npm {
             for p in &npm.global {
-                s = s.status(Role::Info, format!("npm: {p}"));
+                s = s.status_with(Role::Info, "npm", |sf| sf.qualifier(p.clone()));
             }
         }
     }
     for f in &items.files {
-        s = s.status(Role::Info, format!("file: {}", f.target.posix()));
+        s = s.status_with(Role::Info, "file", |sf| {
+            sf.qualifier(f.target.posix().to_string())
+        });
     }
     for ev in &items.env {
-        s = s.status(Role::Info, format!("env: {}", ev.name));
+        s = s.status_with(Role::Info, "env", |sf| sf.qualifier(ev.name.clone()));
     }
     for k in items.system.keys() {
-        s = s.status(Role::Info, format!("system: {k}"));
+        s = s.status_with(Role::Info, "system", |sf| sf.qualifier(k.clone()));
     }
     s
 }
@@ -281,13 +283,9 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
     // discarded one, so it would sit beside the `-o json` payload every time
     // the machine were offline.
     if let Err(e) = mgr.load_source_cached(source_spec, &silent_printer) {
-        printer.status_simple(
-            Role::Warn,
-            format!(
-                "Failed to load source manifest: {}",
-                cfgd_core::output::collapse_to_subject_line(&e),
-            ),
-        );
+        printer
+            .status(Role::Warn, "Failed to load source manifest")
+            .qualifier(cfgd_core::output::collapse_to_subject_line(&e));
     }
     let manifest = mgr.get(name).map(|c| &c.manifest);
 

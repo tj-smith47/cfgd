@@ -33,6 +33,7 @@ pub struct StatusFields {
     pub detail: Option<String>,
     pub duration: Option<Duration>,
     pub target: Option<String>,
+    pub qualifier: Option<String>,
     pub label: Option<StatusLabel>,
 }
 
@@ -59,6 +60,15 @@ impl StatusFields {
     }
     pub fn target(mut self, s: impl Into<String>) -> Self {
         self.target = Some(s.into());
+        self
+    }
+    /// A subject qualifier (`curl: missing`) — role slot / warning colon /
+    /// muted qualifier, composed through [`super::renderer::finalize_subject`]
+    /// at render time. Lands ahead of `label` in the same at-end-of-subject
+    /// slot; the colon and qualifier text are always styled the same way,
+    /// never a per-call role.
+    pub fn qualifier(mut self, text: impl Into<String>) -> Self {
+        self.qualifier = Some(text.into());
         self
     }
     /// Trailing styled label (e.g. `[source-name]`). Rendered at the END of
@@ -156,6 +166,7 @@ impl Doc {
             detail: None,
             duration_ms: None,
             target: None,
+            qualifier: None,
             label: None,
         });
         self
@@ -174,6 +185,7 @@ impl Doc {
             detail: f.detail,
             duration_ms: f.duration.map(|d| d.as_millis()),
             target: f.target,
+            qualifier: f.qualifier,
             label: f.label,
         });
         self
@@ -349,6 +361,7 @@ impl SectionBuilder {
             detail: None,
             duration_ms: None,
             target: None,
+            qualifier: None,
             label: None,
         });
         self
@@ -367,6 +380,7 @@ impl SectionBuilder {
             detail: f.detail,
             duration_ms: f.duration.map(|d| d.as_millis()),
             target: f.target,
+            qualifier: f.qualifier,
             label: f.label,
         });
         self
@@ -594,6 +608,7 @@ mod tests {
             detail,
             duration_ms,
             target,
+            qualifier,
             label,
         } = &d.children[0]
         {
@@ -602,6 +617,7 @@ mod tests {
             assert!(detail.is_none());
             assert!(duration_ms.is_none());
             assert!(target.is_none());
+            assert!(qualifier.is_none());
             assert!(label.is_none());
         } else {
             panic!("expected Status");
@@ -614,6 +630,7 @@ mod tests {
             f.detail("3 files changed")
                 .duration(Duration::from_millis(42))
                 .target("/etc/config")
+                .qualifier("unresolved")
                 .label(Role::Secondary, "source-a")
         });
         if let Component::Status {
@@ -622,6 +639,7 @@ mod tests {
             detail,
             duration_ms,
             target,
+            qualifier,
             label,
         } = &d.children[0]
         {
@@ -630,6 +648,7 @@ mod tests {
             assert_eq!(detail.as_deref(), Some("3 files changed"));
             assert_eq!(*duration_ms, Some(42));
             assert_eq!(target.as_deref(), Some("/etc/config"));
+            assert_eq!(qualifier.as_deref(), Some("unresolved"));
             let l = label.as_ref().unwrap();
             assert!(matches!(l.role, Role::Secondary));
             assert_eq!(l.text, "source-a");

@@ -25,6 +25,12 @@ pub enum Component {
         duration_ms: Option<u128>,
         #[serde(skip_serializing_if = "Option::is_none")]
         target: Option<String>,
+        /// A subject qualifier (`curl: missing`) — role slot / warning colon /
+        /// muted qualifier. Landed right after the subject, ahead of `label`,
+        /// by `render_doc`; the colon and qualifier text are always styled the
+        /// same way (never a per-call role), unlike `label`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        qualifier: Option<String>,
         /// Trailing styled label (e.g. `[source-name]`). Rendered at the END of
         /// the subject by `render_doc` so the inner SGR reset can never be
         /// followed by outer-role-styled text — enforces the at-end layout that
@@ -106,12 +112,14 @@ mod tests {
             detail: None,
             duration_ms: None,
             target: None,
+            qualifier: None,
             label: None,
         };
         let json = serde_json::to_value(&c).unwrap();
         assert!(json.get("detail").is_none());
         assert!(json.get("duration_ms").is_none());
         assert!(json.get("target").is_none());
+        assert!(json.get("qualifier").is_none());
         assert!(json.get("label").is_none());
         assert_eq!(json["role"], "ok");
     }
@@ -124,6 +132,7 @@ mod tests {
             detail: None,
             duration_ms: None,
             target: None,
+            qualifier: None,
             label: Some(StatusLabel {
                 role: Role::Secondary,
                 text: "[team-config]".into(),
@@ -133,6 +142,21 @@ mod tests {
         let label = json.get("label").expect("label must serialize when set");
         assert_eq!(label["role"], "secondary");
         assert_eq!(label["text"], "[team-config]");
+    }
+
+    #[test]
+    fn status_qualifier_serializes_as_a_plain_string() {
+        let c = Component::Status {
+            role: Role::Warn,
+            subject: "curl".into(),
+            detail: None,
+            duration_ms: None,
+            target: None,
+            qualifier: Some("missing".into()),
+            label: None,
+        };
+        let json = serde_json::to_value(&c).unwrap();
+        assert_eq!(json["qualifier"], "missing");
     }
 
     #[test]
