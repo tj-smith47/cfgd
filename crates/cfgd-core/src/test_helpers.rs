@@ -926,9 +926,10 @@ impl BareGitRepoBuilder {
         }
 
         BareGitRepo {
+            bare_path: bare_repo.path().to_path_buf(),
             _bare_dir: bare_dir,
             _work_dir: work_dir,
-            bare_repo,
+            bare_repo: Some(bare_repo),
             head_branch,
         }
     }
@@ -941,7 +942,8 @@ impl BareGitRepoBuilder {
 pub struct BareGitRepo {
     _bare_dir: tempfile::TempDir,
     _work_dir: tempfile::TempDir,
-    bare_repo: git2::Repository,
+    bare_path: std::path::PathBuf,
+    bare_repo: Option<git2::Repository>,
     head_branch: String,
 }
 
@@ -953,12 +955,40 @@ impl BareGitRepo {
 
     /// The `file://` URL for this bare repo, suitable for clone/fetch.
     pub fn url(&self) -> String {
-        file_url(self.bare_repo.path())
+        file_url(&self.bare_path)
     }
 
     /// The path to the bare repo on disk.
     pub fn path(&self) -> &Path {
-        self.bare_repo.path()
+        &self.bare_path
+    }
+
+    /// Take the upstream out of service, so any later transfer against it
+    /// fails and a cache-served read is provably cache-served.
+    ///
+    /// `remove_dir_all` alone is not portable: this fixture holds the
+    /// repository open, libgit2 keeps mapped packfiles in a process-global
+    /// cache, and Windows refuses to unlink an open or mapped file. The held
+    /// handle is dropped first; if the removal is still refused, the
+    /// repository is broken in place (HEAD, config, refs) until it stops
+    /// answering. Query methods (`has_tag`, `tags`, …) panic after this.
+    pub fn remove_upstream(&mut self) {
+        drop(self.bare_repo.take());
+        if std::fs::remove_dir_all(&self.bare_path).is_ok() {
+            return;
+        }
+        for f in ["HEAD", "config", "packed-refs"] {
+            let _ = std::fs::remove_file(self.bare_path.join(f));
+        }
+        for d in ["refs", "info"] {
+            let _ = std::fs::remove_dir_all(self.bare_path.join(d));
+        }
+    }
+
+    fn repo(&self) -> &git2::Repository {
+        self.bare_repo
+            .as_ref()
+            .expect("the upstream was removed by remove_upstream")
     }
 
     /// The name of the main branch (usually "master" or "main").
@@ -1003,21 +1033,21 @@ impl BareGitRepo {
 
     /// Check whether a lightweight tag exists in the bare repo.
     pub fn has_tag(&self, name: &str) -> bool {
-        self.bare_repo
+        self.repo()
             .find_reference(&format!("refs/tags/{name}"))
             .is_ok()
     }
 
     /// Check whether a branch exists in the bare repo.
     pub fn has_branch(&self, name: &str) -> bool {
-        self.bare_repo
+        self.repo()
             .find_reference(&format!("refs/heads/{name}"))
             .is_ok()
     }
 
     /// List all tag names in the bare repo.
     pub fn tags(&self) -> Vec<String> {
-        self.bare_repo
+        self.repo()
             .tag_names(None)
             .map(|names| {
                 names

@@ -3254,7 +3254,7 @@ fn a_locked_entry_resolves_from_the_cache_with_the_remote_gone() {
     // the load its fetch — only resolving the entry by its commit can.
     let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
 
-    let bare = crate::test_helpers::BareGitRepo::builder()
+    let mut bare = crate::test_helpers::BareGitRepo::builder()
         .commit(
             "init",
             &[(
@@ -3284,7 +3284,7 @@ fn a_locked_entry_resolves_from_the_cache_with_the_remote_gone() {
     )
     .unwrap();
 
-    std::fs::remove_dir_all(bare.path()).expect("remove upstream");
+    bare.remove_upstream();
 
     let modules = load_all_modules(dir.path(), &cache_base, &[], &printer)
         .expect("a locked entry the cache already holds must load with no remote");

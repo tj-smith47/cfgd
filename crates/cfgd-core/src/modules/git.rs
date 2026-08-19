@@ -1500,7 +1500,7 @@ mod tests {
         // The per-repository window is pinned SHUT, so the pin itself is the
         // only thing that can spare the second call its fetch.
         let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
-        let bare = crate::test_helpers::BareGitRepo::builder()
+        let mut bare = crate::test_helpers::BareGitRepo::builder()
             .commit("init", &[("a.txt", "v1")])
             .build();
 
@@ -1514,7 +1514,7 @@ mod tests {
             .expect("cached checkout has a HEAD");
         assert_eq!(sha.len(), 40, "the pin under test must be a full object id");
 
-        std::fs::remove_dir_all(bare.path()).expect("remove upstream");
+        bare.remove_upstream();
 
         let pinned = parse_git_source(&format!("{}@{sha}", bare.url())).unwrap();
         assert_eq!(pinned.tag.as_deref(), Some(sha.as_str()));
@@ -1533,7 +1533,7 @@ mod tests {
         // cache knows" would go unnoticed.
         let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
         let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
-        let bare = crate::test_helpers::BareGitRepo::builder()
+        let mut bare = crate::test_helpers::BareGitRepo::builder()
             .commit("init", &[("a.txt", "v1")])
             .tag("v1.0.0")
             .build();
@@ -1545,7 +1545,7 @@ mod tests {
         fetch_git_source(&tagged, cache_base.path(), "tagged", &printer)
             .expect("initial clone must succeed");
 
-        std::fs::remove_dir_all(bare.path()).expect("remove upstream");
+        bare.remove_upstream();
 
         let err = fetch_git_source(&tagged, cache_base.path(), "tagged", &printer)
             .expect_err("a tag pin must still be refreshed against the remote");
@@ -1560,7 +1560,7 @@ mod tests {
     fn one_repository_is_transferred_once_however_many_sources_name_it() {
         let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
         let _window = crate::test_helpers::GitRefreshWindowGuard::never_expires();
-        let bare = crate::test_helpers::BareGitRepo::builder()
+        let mut bare = crate::test_helpers::BareGitRepo::builder()
             .commit("init", &[("a.txt", "v1")])
             .tag("v1.0.0")
             .branch("feature", &[("f.txt", "f")])
@@ -1575,7 +1575,7 @@ mod tests {
         fetch_git_source(&first, cache_base.path(), "one", &printer)
             .expect("the first source out of the repository clones it");
 
-        std::fs::remove_dir_all(bare.path()).expect("remove upstream");
+        bare.remove_upstream();
 
         let second = parse_git_source(&format!("{}?ref=feature", bare.url())).unwrap();
         let path = fetch_git_source(&second, cache_base.path(), "two", &printer).expect(
@@ -1726,7 +1726,7 @@ mod tests {
         // does refuse a transfer rather than quietly succeeding.
         let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
         let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
-        let bare = crate::test_helpers::BareGitRepo::builder()
+        let mut bare = crate::test_helpers::BareGitRepo::builder()
             .commit("init", &[("a.txt", "v1")])
             .tag("v1.0.0")
             .branch("feature", &[("f.txt", "f")])
@@ -1739,7 +1739,7 @@ mod tests {
         fetch_git_source(&first, cache_base.path(), "one", &printer)
             .expect("the first source out of the repository clones it");
 
-        std::fs::remove_dir_all(bare.path()).expect("remove upstream");
+        bare.remove_upstream();
 
         let second = parse_git_source(&format!("{}?ref=feature", bare.url())).unwrap();
         fetch_git_source(&second, cache_base.path(), "two", &printer)

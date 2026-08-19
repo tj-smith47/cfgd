@@ -217,6 +217,11 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
+    // Unix-only: Windows maps a path through a regular file to
+    // ERROR_PATH_NOT_FOUND, the same `ErrorKind::NotFound` a genuinely
+    // missing parent directory gives, so the distinction this test pins is
+    // not expressible there for this shape.
+    #[cfg(unix)]
     #[test]
     fn a_probe_that_could_not_run_is_not_reported_as_not_found() {
         // Walking THROUGH a regular file is a probe failure, not an absence.

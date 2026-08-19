@@ -995,6 +995,12 @@ mod tests {
         );
     }
 
+    // Unix-only: staging "the path stopped naming the open file" means
+    // unlinking a database the held connection keeps open, which Windows
+    // refuses (sharing violation). There the same probe reads the refusal as
+    // "could not look" and keeps the connection — `try_file_identity`'s
+    // documented arm — so the scenario this test stages cannot arise.
+    #[cfg(unix)]
     #[test]
     fn a_state_database_that_moved_out_from_under_the_daemon_is_reopened() {
         // cfgd itself moves this file: `StateStore::open` migrates a legacy

@@ -254,11 +254,15 @@ mod tests {
         let first = ctx.state().unwrap() as *const StateStore;
         // A second open would re-create the directory it was told to use, so
         // the directory still being absent afterwards is the proof there was
-        // no second open.
+        // no second open. Unix-only: Windows refuses to unlink the database
+        // file the held connection keeps open, so there the proof rests on
+        // the OnceCell identity alone.
+        #[cfg(unix)]
         std::fs::remove_dir_all(&state_dir).unwrap();
         let second = ctx.state().unwrap() as *const StateStore;
 
         assert_eq!(first, second);
+        #[cfg(unix)]
         assert!(!state_dir.exists());
     }
 
