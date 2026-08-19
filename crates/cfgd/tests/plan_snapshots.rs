@@ -13,11 +13,19 @@
 //!     `Owner::sort_key` order inside one phase, with `owner`/`token`.
 //!   - `plan/empty.txt`          — `MSG_NOTHING_TO_DO` branch via an
 //!     empty-profile fixture.
-//!   - `plan/module_only.txt`    — `--module` filter with no profile loaded
-//!     (the module-only fallback kv lines).
+//!   - `plan_module_only_unresolved_module_errors` (no golden — an error
+//!     path) — `--module` naming a module that never resolves now fails the
+//!     whole invocation instead of rendering a "matched no actions" warning
+//!     and exiting 0 (the swallow that used to make that render possible was
+//!     removed).
 //!   - `plan/with_inert_decision.txt` — a decision row belonging to a source
 //!     the config does not subscribe to: it withholds nothing and is named
 //!     nowhere, so the render is byte-identical to the plain plan.
+//!   - `plan/only_zero_match.txt` — QP9b deliverable 3: `--only` naming a
+//!     token (`packages.brwe`, a typo of `packages.brew`) that matches
+//!     nothing in the plan. Pins the always-visible alert shape (names the
+//!     token verbatim, hints the owner tokens the plan actually held) and
+//!     that `MSG_NOTHING_TO_DO` never renders for this reason.
 
 mod common;
 
@@ -216,17 +224,19 @@ fn plan_empty_human() {
 }
 
 #[test]
-fn plan_module_only_human() {
-    // `--module` filter pointed at a config dir without a valid profile —
-    // `cmd_plan` falls into the module-only branch and emits the
-    // "Profile: (module-only)" kv. The module itself is unresolved (no
-    // module repo configured), so `resolve_modules` returns an empty list.
-    // The summary must name the unresolved module rather than claim
-    // "everything is up to date" — a silent no-op would hide the miss.
+fn plan_module_only_unresolved_module_errors() {
+    // `--module` names an isolated run; it is resolved atomically (see
+    // `resolve_desired_state`), so a name that never resolves (no module
+    // repo configured here) now fails the whole invocation with a typed
+    // "module not found" error rather than degrading to an empty plan and a
+    // "matched no actions" warning at exit 0 — the swallow that produced
+    // that render was removed. Nothing prints before the failure: the
+    // module resolution runs before any plan output is emitted.
     let config_dir = tempfile::tempdir().unwrap();
     let state_dir = tempfile::tempdir().unwrap();
-    // Bare config — no `spec.profile`, no profiles dir. Forces the
-    // `load_config_and_profile` Err branch.
+    // Bare config — no `spec.profile`, no profiles dir. An isolated
+    // `--module` run never resolves a profile at all (see
+    // `load_config_and_profile_module_scoped`), so this is otherwise inert.
     let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec: {}\n";
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
@@ -234,12 +244,51 @@ fn plan_module_only_human() {
     let (printer, cap) = Printer::for_test_doc();
     let args = plan_args_module("nettools");
 
+    let err = cmd_plan(&cli, &printer, &args).unwrap_err();
+    drop(printer);
+
+    assert!(
+        err.to_string().contains("module not found: nettools"),
+        "expected a typed module-not-found error naming 'nettools', got: {err}"
+    );
+    assert!(
+        cap.human().is_empty(),
+        "an unresolved --module must fail before any plan output is emitted, got: {}",
+        cap.human()
+    );
+}
+
+#[test]
+fn plan_only_zero_match_token_warns_and_names_owners_present_human() {
+    // QP9b deliverable 3's golden: `--only` naming a token that matches
+    // nothing must never render `MSG_NOTHING_TO_DO` (that would read as "the
+    // machine is in sync", when really the filter just never matched
+    // anything) — it renders the "No actions in scope" branch instead, plus
+    // an always-visible alert naming the token verbatim and hinting the
+    // owner tokens the plan actually held.
+    let (config_dir, state_dir, _target) = tiny_profile_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+    let args = cfgd::cli::PlanArgs {
+        only: vec!["packages.brwe".to_string()],
+        ..plan_args()
+    };
+
     cmd_plan(&cli, &printer, &args).unwrap();
     drop(printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);
     let stripped = strip_ansi(&normalized);
-    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "plan/module_only.txt", &stripped);
+    assert!(
+        !stripped.contains("up to date") && !stripped.contains("nothing to do"),
+        "a zero-match filter token must never render MSG_NOTHING_TO_DO, got:\n{stripped}"
+    );
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "plan/only_zero_match.txt",
+        &stripped
+    );
 }
 
 #[test]

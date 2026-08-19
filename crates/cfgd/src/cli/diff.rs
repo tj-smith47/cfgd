@@ -96,7 +96,8 @@ pub fn cmd_diff(
         &ctx,
         cfg,
         local_resolved,
-        None,
+        &[],
+        false,
         printer,
         false,
         composition::ConstraintMode::Report,
@@ -304,7 +305,17 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         printer,
     ) {
         Ok(mods) => mods,
-        Err(_) => {
+        // "not found" is reserved for a genuinely unknown module name; any
+        // other resolution failure (e.g. a source's `ScriptsNotAllowed`
+        // constraint) must surface as the error it is, not read as a miss.
+        Err(e)
+            if matches!(
+                &e,
+                cfgd_core::errors::CfgdError::Module(
+                    cfgd_core::errors::ModuleError::NotFound { .. }
+                )
+            ) =>
+        {
             printer.emit(
                 Doc::new()
                     .status(
@@ -315,6 +326,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
             );
             return Ok(());
         }
+        Err(e) => return Err(e.into()),
     };
 
     printer.kv_block([("Module".to_string(), mod_name.to_string())]);
@@ -333,7 +345,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         // tera origin (None).
         let files_phase = printer.section_phase(&PhaseName::Files.section_label());
         let _inherit = printer.depth_inheritance();
-        let resolved = empty_resolved_profile(mod_name, &ctx.active_profile_name());
+        let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
         let fm = CfgdFileManager::new(config_dir, &resolved)?;
         for module in &resolved_modules {
             let group =

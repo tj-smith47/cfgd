@@ -124,7 +124,9 @@ cfgd apply --yes                    # skip confirmation
 cfgd apply --phase packages         # single phase
 cfgd apply --phase modules          # every module-owned action, in every phase
 cfgd apply --phase prerequisites.managers  # one owner group within a phase
-cfgd apply --module nvim            # single module + deps (no profile required)
+cfgd apply --module nvim            # nvim + deps, isolated from the profile
+cfgd apply --module nvim --module tmux   # union of both, still isolated
+cfgd apply --module nvim --with-profile  # full profile PLUS nvim
 cfgd apply --only packages.brew     # dot-notation filter (the brew manager)
 cfgd apply --only packages.module:nvim  # a module's package work
 cfgd apply --skip module:nvim       # one module, every phase
@@ -143,7 +145,8 @@ cfgd apply --yes --on-conflict fail      # refuse to touch a file cfgd never wro
 | `--dry-run` | Preview changes without applying (supports `-o json`) |
 | `--phase <name>` | Apply only a specific phase; takes a dotted `<phase>[.<selector>]` path (see below) |
 | `--yes`, `-y` | Skip confirmation prompt |
-| `--module <name>` | Apply only this module and its dependencies |
+| `--module <name>` | Resolve and apply ONLY this module and its dependencies, isolated from the active profile — every profile-owned contribution (env, aliases, packages, files, system settings, secrets, scripts, backups) is zeroed, not composed. Repeatable: unions several modules |
+| `--with-profile` | Compose `--module`'s named module(s) WITH the full active profile instead of isolating them. Rejected (with an error) if passed without `--module` |
 | `--skip <path>` | Skip items by dot-notation path (repeatable) |
 | `--only <path>` | Apply only items matching dot-notation paths (repeatable) |
 | `--skip-scripts` | Skip all script hooks (pre/post/onChange) |
@@ -219,7 +222,8 @@ Preview the reconciliation plan without applying. This is the canonical preview 
 ```sh
 cfgd plan                               # preview with default (apply) context
 cfgd plan --context reconcile           # preview what the daemon would run
-cfgd plan --module nvim                 # plan for a single module
+cfgd plan --module nvim                 # nvim + deps, isolated from the profile
+cfgd plan --module nvim --with-profile  # full profile PLUS nvim
 cfgd plan --phase prerequisites.managers  # one owner group within a phase
 cfgd plan --skip prerequisites.session  # skip the live-session broadcast
 cfgd plan --skip-scripts                # exclude all script hooks
@@ -230,7 +234,8 @@ cfgd plan -o json                       # structured plan output
 |---|---|
 | `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory (an existing path wins over the shorthand) |
 | `--phase <name>` | Show only a specific phase; takes a dotted `<phase>[.<selector>]` path (see below) |
-| `--module <name>` | Plan only this module and its dependencies |
+| `--module <name>` | Resolve and plan ONLY this module and its dependencies, isolated from the active profile — every profile-owned contribution (env, aliases, packages, files, system settings, secrets, scripts, backups) is zeroed, not composed. Repeatable: unions several modules |
+| `--with-profile` | Compose `--module`'s named module(s) WITH the full active profile instead of isolating them. Rejected (with an error) if passed without `--module` |
 | `--skip <path>` | Skip items by dot-notation path (repeatable) |
 | `--only <path>` | Plan only items matching dot-notation paths (repeatable) |
 | `--skip-scripts` | Exclude all script hooks from the plan |

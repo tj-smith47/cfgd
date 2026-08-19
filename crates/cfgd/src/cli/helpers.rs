@@ -103,11 +103,14 @@ pub(in crate::cli) fn resolve_profile_for(
     }
 }
 
-/// Load config and resolve a profile, with the `--module` degrade shared by
-/// `cmd_apply` and `cmd_plan`: when `module_filter` names a single module
-/// and no profile resolves (unset, or named but not found), fall back to
-/// module-only mode instead of erroring, since a module-only run needs no
-/// profile at all.
+/// Load config and resolve a profile, with the `--module` isolate mode
+/// shared by `cmd_apply` and `cmd_plan`: when `module_filter` names one or
+/// more modules and `with_profile` is false, the run is ISOLATED from the
+/// active profile unconditionally — a profile is never even resolved, so a
+/// profile that DOES resolve can no longer leak its packages/files/env/
+/// aliases/system/scripts into a run the caller asked to isolate. `--module
+/// --with-profile` (or no `--module` at all) behaves exactly like a normal
+/// run: the active profile must resolve, same as `cfgd apply` with no flags.
 ///
 /// Loads (and drains) `cli.config` EXACTLY ONCE regardless of which branch
 /// is taken. The two call sites this replaces each called
@@ -119,12 +122,13 @@ pub(in crate::cli) fn resolve_profile_for(
 pub(in crate::cli) fn load_config_and_profile_module_scoped(
     cli: &Cli,
     printer: &Printer,
-    module_filter: Option<&str>,
+    module_filter: &[String],
+    with_profile: bool,
 ) -> anyhow::Result<(CfgdConfig, ResolvedProfile, Option<String>, bool)> {
-    let Some(mod_name) = module_filter else {
+    if module_filter.is_empty() || with_profile {
         let (cfg, profile_name, resolved) = load_config_and_profile(cli, printer)?;
         return Ok((cfg, resolved, Some(profile_name), true));
-    };
+    }
 
     // `minimal_config()` subscribes to nothing, and that fabricated empty
     // list must never reach the decision sweep: it would read as "no
@@ -139,22 +143,8 @@ pub(in crate::cli) fn load_config_and_profile_module_scoped(
         Err(_) => (config::minimal_config(), false),
     };
 
-    let profile_name = cli
-        .profile
-        .as_deref()
-        .map(str::to_string)
-        .or_else(|| cfg.active_profile().ok().map(str::to_string));
-    let resolved = profile_name
-        .as_deref()
-        .and_then(|name| config::resolve_profile(name, &profiles_dir(cli)).ok());
-
-    match resolved {
-        Some(resolved) => Ok((cfg, resolved, profile_name, config_parsed)),
-        None => {
-            let resolved = empty_resolved_profile(mod_name, &active_profile_name(cli, Some(&cfg)));
-            Ok((cfg, resolved, None, config_parsed))
-        }
-    }
+    let resolved = empty_resolved_profile(module_filter, &active_profile_name(cli, Some(&cfg)));
+    Ok((cfg, resolved, None, config_parsed))
 }
 
 /// Turn a bare `ProfileNotFound` into an actionable error when the requested
@@ -323,7 +313,7 @@ pub(in crate::cli) fn active_profile_name(cli: &Cli, cfg: Option<&CfgdConfig>) -
 /// scripts see as `CFGD_PROFILE`. Its spec is empty, so the layer contributes
 /// nothing to the merged profile.
 pub(in crate::cli) fn empty_resolved_profile(
-    module_name: &str,
+    module_names: &[String],
     profile_name: &str,
 ) -> ResolvedProfile {
     ResolvedProfile {
@@ -335,7 +325,7 @@ pub(in crate::cli) fn empty_resolved_profile(
             spec: cfgd_core::config::ProfileSpec::default(),
         }],
         merged: MergedProfile {
-            modules: vec![module_name.to_string()],
+            modules: module_names.to_vec(),
             ..Default::default()
         },
     }
@@ -1044,18 +1034,30 @@ fn display_and_persist_conflicts(
 /// local profile's own modules with empty source maps — identical to the old
 /// per-command path, so the no-sources case is a pure regression.
 ///
-/// `module_filter` scopes module resolution to a single module (apply/diff
-/// `--module`); `None` resolves the whole effective profile.
+/// `module_filter` scopes module resolution to the named modules
+/// (apply/plan `--module`, repeatable); empty resolves the whole effective
+/// profile. A non-empty `module_filter` with `with_profile = false`
+/// ISOLATES: the returned `resolved` is replaced outright by a zeroed
+/// profile carrying only those module names, so every profile-owned
+/// contribution is zeroed, not just packages/files. `with_profile = true`
+/// instead UNIONS the named modules into the full composed profile's own
+/// module list, so an out-of-profile module can be added without dropping
+/// anything the profile already declares.
 ///
 /// Errors from `compose` (constraint violations, malformed cached manifest,
 /// failed signature) propagate so an invalid source config fails every command
 /// consistently — a command that reports state must not silently report empty
-/// when the desired state is broken.
+/// when the desired state is broken. Module-resolution errors (including a
+/// genuinely unknown `--module` name, or a source's `ScriptsNotAllowed`
+/// constraint) propagate the same way — atomically over the whole requested
+/// list, never swallowed to an empty result.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::cli) fn resolve_desired_state(
     ctx: &RunContext<'_>,
     cfg: &config::CfgdConfig,
     local_resolved: &ResolvedProfile,
-    module_filter: Option<&str>,
+    module_filter: &[String],
+    with_profile: bool,
     printer: &Printer,
     refresh: bool,
     mode: composition::ConstraintMode,
@@ -1072,10 +1074,52 @@ pub(in crate::cli) fn resolve_desired_state(
     } = composition;
 
     let config_dir = ctx.config_dir();
-    let module_names = match module_filter {
-        Some(name) => vec![name.to_string()],
-        None => resolved.merged.modules.clone(),
+
+    // `--module` without `--with-profile` isolates: only the named modules
+    // (plus their dependencies) plan. `--with-profile` keeps the fully
+    // composed profile and UNIONS the named modules into its own module
+    // list instead of replacing it, so an out-of-profile module can be
+    // added without dropping any module the profile already declares.
+    let module_names: Vec<String> = if module_filter.is_empty() {
+        resolved.merged.modules.clone()
+    } else if with_profile {
+        let mut names = resolved.merged.modules.clone();
+        for name in module_filter {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
+        names
+    } else {
+        module_filter.to_vec()
     };
+
+    // The isolation itself: replace the whole composed profile with a zeroed
+    // one carrying only the requested module names, so every profile-owned
+    // contribution — packages, files, env, aliases, system, scripts,
+    // secrets, backups — is zeroed regardless of whether a profile resolved
+    // or a source layered its own content into the composition above. A
+    // half-isolation that zeroed only packages/files (leaving env/aliases/
+    // system/scripts to flow through from `resolved.merged`) is exactly the
+    // bug this replaces: `Reconciler::plan` derives ALL of those from
+    // `resolved.merged`, not just packages/files.
+    // `desired.modules` (built from `module_names` below) is what
+    // `Reconciler::plan` actually resolves against — `resolved.merged.modules`
+    // itself is never read there. It IS read by callers outside the plan/apply
+    // path that take a `ResolvedProfile` at face value (the daemon's own
+    // resolution, `cfgd doctor`, `cfgd module list/show`, `cfgd init`), so it
+    // must still agree with what this run resolved: a `--with-profile` caller
+    // reading it back would otherwise see the profile's ORIGINAL module list
+    // with the named module silently missing from it, even though that module
+    // is what `desired.modules` — and therefore the plan — actually carries.
+    let mut resolved = if !module_filter.is_empty() && !with_profile {
+        empty_resolved_profile(module_filter, &active_profile_name(cli, Some(cfg)))
+    } else {
+        resolved
+    };
+    if !module_filter.is_empty() && with_profile {
+        resolved.merged.modules = module_names.clone();
+    }
 
     // Config-aware registry so a module that references a custom package manager
     // (declared in cfg / composed packages) resolves identically on every
@@ -1101,7 +1145,14 @@ pub(in crate::cli) fn resolve_desired_state(
             })
             .manager_map();
         let cache_base = module_cache_dir(cli)?;
-        match modules::resolve_modules(
+        // Resolution is atomic over the whole requested-name list: any
+        // failure — including a genuinely unknown module name, or a source
+        // constraint (`ScriptsNotAllowed`) — propagates as the error it is.
+        // "Not found" is reserved for a name that truly does not resolve;
+        // swallowing every error here as a silent empty Vec previously made
+        // a source-constraint violation on `--module x` report as "module
+        // not found" instead of the constraint failure it actually was.
+        modules::resolve_modules(
             &module_names,
             config_dir,
             &cache_base,
@@ -1109,17 +1160,7 @@ pub(in crate::cli) fn resolve_desired_state(
             platform,
             &mgr_map,
             printer,
-        ) {
-            Ok(mods) => mods,
-            // A `--module` filter naming a module that does not resolve degrades
-            // to empty (the command reports "module not found"), matching apply's
-            // module-filter behavior. A full-profile resolution error propagates.
-            Err(e) if module_filter.is_some() => {
-                tracing::debug!("module filter '{}' not found: {}", module_names[0], e);
-                Vec::new()
-            }
-            Err(e) => return Err(e.into()),
-        }
+        )?
     };
 
     Ok(DesiredState {

@@ -2401,10 +2401,13 @@ fn cfgd_quiet_boolish_engages_quiet() {
 /// flag") in addition to bare integers. Before the fix `CFGD_VERBOSE=on` exited
 /// 2 with "invalid digit found in string".
 ///
-/// `plan --module nope` logs a `DEBUG module filter 'nope' not found` line on
-/// stderr — visible only when the verbosity-driven tracing filter is at `debug`.
-/// The test proves engagement: the line appears under `CFGD_VERBOSE=on` (and
-/// under the `-v` flag) but is absent in a plain run.
+/// `plan --module nope` logs a `DEBUG resolving modules` line (naming "nope")
+/// on stderr before failing with a typed "module not found" error — visible
+/// only when the verbosity-driven tracing filter is at `debug`. The test
+/// proves engagement: the line appears under `CFGD_VERBOSE=on` (and under the
+/// `-v` flag) but is absent in a plain run. The command fails in every case
+/// (an unresolved `--module` name is a hard error, not a warning) — only
+/// stderr's debug-line presence is under test.
 #[test]
 fn cfgd_verbose_boolish_on_engages_verbose() {
     let dir = tempfile::tempdir().unwrap();
@@ -2421,14 +2424,17 @@ fn cfgd_verbose_boolish_on_engages_verbose() {
         if let Some(v) = env_verbose {
             cmd.env("CFGD_VERBOSE", v);
         }
-        cmd.assert().success().get_output().stderr.clone()
+        cmd.assert().failure().get_output().stderr.clone()
     };
 
     let plain = stderr_of(None, false);
     let verbose_env = stderr_of(Some("on"), false);
     let verbose_flag = stderr_of(None, true);
 
-    let has_debug = |bytes: &[u8]| String::from_utf8_lossy(bytes).contains("module filter 'nope'");
+    let has_debug = |bytes: &[u8]| {
+        let text = String::from_utf8_lossy(bytes);
+        text.contains("resolving modules") && text.contains("nope")
+    };
     assert!(
         !has_debug(&plain),
         "plain run must not emit the debug line; got: {:?}",

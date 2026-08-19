@@ -20,12 +20,12 @@ pub fn cmd_verify(
     let state = ctx.state()?;
 
     let (resolved, resolved_modules, mut registry) = if let Some(mod_name) = module_filter {
-        let resolved = empty_resolved_profile(mod_name, &ctx.active_profile_name());
+        let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
         let registry = build_registry();
         let platform = Platform::current();
         let mgr_map = registry.manager_map();
         let cache_base = module_cache_dir(cli)?;
-        let mods = modules::resolve_modules(
+        let mods = match modules::resolve_modules(
             &[mod_name.to_string()],
             config_dir,
             &cache_base,
@@ -33,8 +33,26 @@ pub fn cmd_verify(
             platform,
             &mgr_map,
             printer,
-        )
-        .unwrap_or_default();
+        ) {
+            Ok(mods) => mods,
+            // "not found" is reserved for a genuinely unknown module name and
+            // degrades to the same empty-results "No managed resources to
+            // verify" render the rest of this function already produces for
+            // it; any other resolution failure (e.g. a source's
+            // `ScriptsNotAllowed` constraint) must surface as the error it
+            // is, not read as a miss.
+            Err(e)
+                if matches!(
+                    &e,
+                    cfgd_core::errors::CfgdError::Module(
+                        cfgd_core::errors::ModuleError::NotFound { .. }
+                    )
+                ) =>
+            {
+                Vec::new()
+            }
+            Err(e) => return Err(e.into()),
+        };
         (resolved, mods, registry)
     } else {
         let (cfg, _profile_name, local_resolved) = ctx.config_and_profile()?;
@@ -45,7 +63,8 @@ pub fn cmd_verify(
             &ctx,
             cfg,
             local_resolved,
-            None,
+            &[],
+            false,
             printer,
             false,
             composition::ConstraintMode::Report,

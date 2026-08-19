@@ -487,9 +487,16 @@ pub struct ApplyArgs {
     /// Apply only items matching dot-notation paths (e.g., packages, files)
     #[arg(long)]
     pub only: Vec<String>,
-    /// Apply only the specified module and its dependencies
+    /// Resolve and apply ONLY the named module and its dependencies, isolated
+    /// from the active profile (repeatable: --module a --module b applies the
+    /// union of both). Pair with --with-profile to apply the full profile
+    /// PLUS this module instead of isolating it.
     #[arg(long)]
-    pub module: Option<String>,
+    pub module: Vec<String>,
+    /// Compose the --module names WITH the full active profile instead of
+    /// isolating them. Meaningless — and rejected — without --module.
+    #[arg(long)]
+    pub with_profile: bool,
     /// Skip all script hooks (pre/post/onChange)
     #[arg(long)]
     pub skip_scripts: bool,
@@ -545,9 +552,16 @@ pub struct PlanArgs {
     /// Plan only items matching dot-notation paths (e.g., packages, files)
     #[arg(long)]
     pub only: Vec<String>,
-    /// Plan only the specified module and its dependencies
+    /// Resolve and plan ONLY the named module and its dependencies, isolated
+    /// from the active profile (repeatable: --module a --module b plans the
+    /// union of both). Pair with --with-profile to plan the full profile
+    /// PLUS this module instead of isolating it.
     #[arg(long)]
-    pub module: Option<String>,
+    pub module: Vec<String>,
+    /// Compose the --module names WITH the full active profile instead of
+    /// isolating them. Meaningless — and rejected — without --module.
+    #[arg(long)]
+    pub with_profile: bool,
     /// Skip all script hooks (pre/post/onChange)
     #[arg(long)]
     pub skip_scripts: bool,
@@ -621,13 +635,13 @@ pub enum Command {
 
     /// Apply the configuration (use --dry-run to preview without applying)
     #[command(
-        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--on-conflict decides what happens when a managed target already holds a file\ncfgd has never written: ask (default — prompts, or backs up when nothing can be\nasked), backup, overwrite, skip, fail. A target that already holds exactly the\ndesired bytes is left alone under every policy.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --phase prerequisites.managers --yes                # one owner group\n  cfgd apply --skip prerequisites.session                        # skip the broadcast half\n  cfgd apply --skip prerequisites.brew                            # skip one manager\n  cfgd apply --module nettools\n  cfgd apply --yes --on-conflict backup                          # copy each conflict aside\n  cfgd apply --yes --on-conflict fail                            # refuse to touch strangers\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
+        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and applies ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to apply the full profile PLUS the named module(s) instead.\n--only module:<name>/--skip module:<name> filter an ALREADY-composed plan by\nowner and never resolve a module of their own — pair with --module to bring an\nout-of-profile module into scope first.\n\n--on-conflict decides what happens when a managed target already holds a file\ncfgd has never written: ask (default — prompts, or backs up when nothing can be\nasked), backup, overwrite, skip, fail. A target that already holds exactly the\ndesired bytes is left alone under every policy.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --phase prerequisites.managers --yes                # one owner group\n  cfgd apply --skip prerequisites.session                        # skip the broadcast half\n  cfgd apply --skip prerequisites.brew                            # skip one manager\n  cfgd apply --module nettools                                    # nettools + deps, isolated\n  cfgd apply --module nettools --module lpass-tools               # several modules\n  cfgd apply --module nettools --with-profile                     # full profile PLUS nettools\n  cfgd apply --yes --on-conflict backup                          # copy each conflict aside\n  cfgd apply --yes --on-conflict fail                            # refuse to touch strangers\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
     )]
     Apply(ApplyArgs),
 
     /// Preview the reconciliation plan without applying
     #[command(
-        long_about = "Render the reconciliation plan without applying it.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --phase prerequisites.managers                       # one owner group\n  cfgd plan --skip prerequisites.session                         # skip the broadcast half\n  cfgd plan --from acme/cfgd-config                              # GitHub shorthand\n  cfgd plan --from https://gitlab.example.com/acme/config.git\n  cfgd plan --skip packages.brew --only files"
+        long_about = "Render the reconciliation plan without applying it.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and previews ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to preview the full profile PLUS the named module(s) instead.\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --phase prerequisites.managers                       # one owner group\n  cfgd plan --skip prerequisites.session                         # skip the broadcast half\n  cfgd plan --module nettools                                     # nettools + deps, isolated\n  cfgd plan --module nettools --with-profile                     # full profile PLUS nettools\n  cfgd plan --from acme/cfgd-config                              # GitHub shorthand\n  cfgd plan --from https://gitlab.example.com/acme/config.git\n  cfgd plan --skip packages.brew --only files"
     )]
     Plan(PlanArgs),
 

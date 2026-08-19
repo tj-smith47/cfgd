@@ -4619,7 +4619,8 @@ fn cmd_apply_dry_run_empty_profile() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -4657,7 +4658,12 @@ fn cmd_apply_from_flag_parses() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: Some("dev-tools".to_string()),
+        // No --module here deliberately: this test is about --from wiring,
+        // not module resolution. A `--module` name that does not resolve now
+        // propagates as its own error (deliverable 4), which would otherwise
+        // mask whatever `--from` actually did.
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -4734,7 +4740,8 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -4777,7 +4784,8 @@ fn cmd_apply_dry_run_with_phase_filter() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -4817,7 +4825,8 @@ fn cmd_apply_dry_run_with_skip() {
         yes: true,
         skip: vec!["packages".to_string()],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -4842,7 +4851,8 @@ fn cmd_apply_dry_run_with_only() {
         yes: true,
         skip: vec![],
         only: vec!["files".to_string()],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -4876,7 +4886,8 @@ fn cmd_apply_real_with_empty_profile() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -4916,7 +4927,8 @@ fn cmd_status_after_apply() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -4954,7 +4966,8 @@ fn cmd_log_after_apply() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -5030,7 +5043,8 @@ fn cmd_apply_dry_run_with_files() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -5089,7 +5103,8 @@ fn cmd_apply_creates_file() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -5138,7 +5153,8 @@ fn cmd_apply_idempotent() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -5395,7 +5411,8 @@ fn execute_apply_dry_run() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -5585,7 +5602,8 @@ fn cmd_apply_with_module_filter() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: Some("test-mod".to_string()),
+        module: vec!["test-mod".to_string()],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -5664,7 +5682,8 @@ fn cmd_apply_with_env_vars_for_host(zsh_present: bool, expected_actions: u32) {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -5788,7 +5807,8 @@ fn cmd_status_with_drift_events() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -6142,7 +6162,8 @@ fn cmd_apply_dry_run_each_phase() {
             yes: true,
             skip: vec![],
             only: vec![],
-            module: None,
+            module: vec![],
+            with_profile: false,
             skip_scripts: false,
             context: "apply".to_string(),
             shell: None,
@@ -6187,7 +6208,8 @@ fn cmd_verify_after_apply_with_env() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -6310,7 +6332,8 @@ fn cmd_plan_empty_profile() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -6336,7 +6359,8 @@ fn cmd_plan_reconcile_context() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "reconcile".to_string(),
     };
@@ -6362,7 +6386,8 @@ fn cmd_plan_invalid_context() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "bogus".to_string(),
     };
@@ -6383,7 +6408,8 @@ fn cmd_plan_with_phase_filter() {
         phase: Some(PhaseArg::bare(ApplyPhase::Packages)),
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -6412,7 +6438,8 @@ fn cmd_plan_with_skip_filter() {
         phase: None,
         skip: vec!["packages".to_string()],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -6437,7 +6464,8 @@ fn cmd_plan_with_only_filter() {
         phase: None,
         skip: vec![],
         only: vec!["files".to_string()],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -6462,7 +6490,8 @@ fn cmd_plan_with_skip_scripts() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: true,
         context: "apply".to_string(),
     };
@@ -6493,7 +6522,8 @@ fn cmd_plan_with_module_filter() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: Some("plan-mod".to_string()),
+        module: vec!["plan-mod".to_string()],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -6559,7 +6589,8 @@ fn cmd_rollback_after_file_apply() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -6639,7 +6670,8 @@ fn apply_one_file_and_record(
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -6968,7 +7000,7 @@ fn default_device_id_returns_the_hostname_string() {
 
 #[test]
 fn empty_resolved_profile_contains_module_name() {
-    let resolved = super::empty_resolved_profile("my-module", "work");
+    let resolved = super::empty_resolved_profile(&["my-module".to_string()], "work");
     assert_eq!(resolved.merged.modules, vec!["my-module".to_string()]);
     assert_eq!(resolved.profile_name(), "work");
     assert!(resolved.merged.packages.brew.is_none());
@@ -7011,7 +7043,8 @@ fn cmd_apply_dry_run_with_skip_scripts() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: true,
         context: "apply".to_string(),
         shell: None,
@@ -7047,7 +7080,8 @@ fn execute_plan_command() {
             phase: None,
             skip: vec![],
             only: vec![],
-            module: None,
+            module: vec![],
+            with_profile: false,
             skip_scripts: false,
             context: "apply".to_string(),
         })),
@@ -7202,7 +7236,8 @@ fn cmd_plan_structured_json() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -7455,7 +7490,8 @@ fn cmd_plan_module_with_packages() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -10085,6 +10121,7 @@ fn filter_plan_skip_file_by_target() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
+        Path::new("/nonexistent-config"),
     );
     assert_eq!(plan.phases[0].action_count(), 1);
 }
@@ -10113,6 +10150,7 @@ fn filter_plan_empty_skip_and_only_noop() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
+        Path::new("/nonexistent-config"),
     );
     assert_eq!(plan.phases[0].action_count(), 1);
 }
@@ -10141,6 +10179,7 @@ fn filter_plan_skip_uninstall_packages() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
+        Path::new("/nonexistent-config"),
     );
 
     match plan.phases[0].actions().next().expect("one action") {
@@ -10175,6 +10214,7 @@ fn filter_plan_only_with_uninstall() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
+        Path::new("/nonexistent-config"),
     );
 
     match plan.phases[0].actions().next().expect("one action") {
@@ -10825,7 +10865,8 @@ fn cmd_apply_module_only_no_profile() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: Some("standalone-mod".to_string()),
+        module: vec!["standalone-mod".to_string()],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -10872,7 +10913,8 @@ fn cmd_plan_module_only_no_profile() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: Some("solo".to_string()),
+        module: vec!["solo".to_string()],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -10896,7 +10938,7 @@ fn cmd_plan_module_only_no_profile() {
 
 #[test]
 fn empty_resolved_profile_has_module() {
-    let resolved = super::empty_resolved_profile("my-mod", "work");
+    let resolved = super::empty_resolved_profile(&["my-mod".to_string()], "work");
     assert_eq!(resolved.merged.modules, vec!["my-mod".to_string()]);
     assert!(resolved.merged.env.is_empty());
     assert_eq!(resolved.profile_name(), "work");
@@ -11127,7 +11169,8 @@ fn cmd_apply_with_aliases() {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -11241,7 +11284,8 @@ fn cmd_plan_structured_output() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -11786,7 +11830,8 @@ fn cmd_apply_dry_run_with_skip_and_only() {
         yes: true,
         skip: vec!["packages.cargo".to_string()],
         only: vec!["packages".to_string()],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -11840,7 +11885,8 @@ fn cmd_plan_module_structured_output() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: Some("struct-mod".to_string()),
+        module: vec!["struct-mod".to_string()],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -12171,7 +12217,8 @@ fn cmd_plan_invalid_context_fails() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "invalid".to_string(),
     };
@@ -12187,7 +12234,8 @@ fn cmd_plan_with_skip_filters_actions() {
         phase: None,
         skip: vec!["packages".to_string()],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -12371,7 +12419,8 @@ fn cmd_apply_real_records_state() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         from: None,
         skip_scripts: false,
         context: "apply".to_string(),
@@ -12408,7 +12457,8 @@ fn cmd_apply_with_skip_and_only() {
         phase: None,
         skip: vec!["packages".to_string()],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         from: None,
         skip_scripts: false,
         context: "apply".to_string(),
@@ -12435,7 +12485,8 @@ fn cmd_apply_skip_scripts_flag() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         from: None,
         skip_scripts: true,
         context: "apply".to_string(),
@@ -12462,7 +12513,8 @@ fn cmd_apply_invalid_context_fails() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         from: None,
         skip_scripts: false,
         context: "bogus".to_string(),
@@ -12536,7 +12588,8 @@ fn cmd_apply_reconcile_context_threads_through() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         from: None,
         skip_scripts: false,
         context: "reconcile".to_string(),
@@ -12595,7 +12648,8 @@ spec:
         yes: true,
         skip: vec![],
         only: vec![],
-        module: Some("nvim".to_string()),
+        module: vec!["nvim".to_string()],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -12625,6 +12679,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             unfiltered_total: 0,
             phases_with_work: vec![],
             module_miss: None,
+            filter_miss: false,
         };
         report_no_in_scope_actions(&printer, &scope);
         printer.flush();
@@ -12644,6 +12699,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             unfiltered_total: 3,
             phases_with_work: vec!["Files".to_string()],
             module_miss: None,
+            filter_miss: false,
         };
         report_no_in_scope_actions(&printer, &scope);
         printer.flush();
@@ -12670,6 +12726,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             unfiltered_total: 0,
             phases_with_work: vec![],
             module_miss: None,
+            filter_miss: false,
         };
         report_no_in_scope_actions(&printer, &scope);
         printer.flush();
@@ -12688,6 +12745,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             unfiltered_total: 0,
             phases_with_work: vec![],
             module_miss: Some("nvm".to_string()),
+            filter_miss: false,
         };
         report_no_in_scope_actions(&printer, &scope);
         printer.flush();
@@ -12699,6 +12757,31 @@ fn report_no_in_scope_actions_classifies_outcomes() {
         assert!(
             !out.contains(MSG_NOTHING_TO_DO),
             "module miss must not claim up-to-date, got:\n{out}"
+        );
+    }
+
+    // filter_miss:true overrides the unfiltered_total==0 shortcut — a
+    // --skip/--only token that matched nothing is not evidence the machine
+    // converged, even when the (unfiltered) plan itself had no other work.
+    {
+        let (printer, buf) = test_printer_capture();
+        let scope = ScopeReport {
+            filter_active: true,
+            unfiltered_total: 0,
+            phases_with_work: vec![],
+            module_miss: None,
+            filter_miss: true,
+        };
+        report_no_in_scope_actions(&printer, &scope);
+        printer.flush();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            !out.contains(MSG_NOTHING_TO_DO),
+            "filter_miss must override the unfiltered_total==0 shortcut, got:\n{out}"
+        );
+        assert!(
+            out.contains("No actions in scope"),
+            "expected the scope-excluded warning, got:\n{out}"
         );
     }
 }
@@ -12756,7 +12839,8 @@ spec:
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -13934,7 +14018,8 @@ fn json_schema_plan() {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -14993,6 +15078,7 @@ fn filter_plan_skip_removes_matching_packages() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
+        Path::new("/nonexistent-config"),
     );
 
     // brew install should remain but without fd
@@ -15057,6 +15143,7 @@ fn filter_plan_only_keeps_matching_phase() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
+        Path::new("/nonexistent-config"),
     );
 
     // Packages phase should keep its action
@@ -15100,6 +15187,7 @@ fn filter_plan_skip_uninstall_packages_env() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
+        Path::new("/nonexistent-config"),
     );
 
     match plan.phases[0].actions().next().expect("one action") {
@@ -15134,6 +15222,7 @@ fn filter_plan_empty_filters_is_noop() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
+        Path::new("/nonexistent-config"),
     );
 
     assert_eq!(
@@ -15308,7 +15397,8 @@ spec:
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     }));
@@ -15320,7 +15410,8 @@ spec:
             phase: None,
             skip: vec![],
             only: vec![],
-            module: None,
+            module: vec![],
+            with_profile: false,
             skip_scripts: false,
             context: "apply".to_string(),
         },
@@ -15371,7 +15462,8 @@ spec:
         phase: None,
         skip: vec![],
         only: vec![],
-        module: Some("standalone".to_string()),
+        module: vec!["standalone".to_string()],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -15386,6 +15478,257 @@ spec:
     assert!(
         output.contains("Plan"),
         "should show Plan header, got: {output}"
+    );
+}
+
+/// `--module` pulls in transitive dependencies, and repeating the flag
+/// unions the requested modules — both still under full isolation (the
+/// active `default` profile's own `bat`/`vim` env never appears).
+#[test]
+fn cmd_plan_module_only_includes_transitive_deps_and_unions_repeated_flags() {
+    let base_yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: base
+spec:
+  packages:
+    - name: jq
+"#;
+    let a_yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: a
+spec:
+  depends:
+    - base
+  packages:
+    - name: fd
+"#;
+    let b_yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: b
+spec:
+  packages:
+    - name: rg
+"#;
+    let h = CliTestHarness::builder()
+        .module("base", base_yaml)
+        .module("a", a_yaml)
+        .module("b", b_yaml)
+        .json()
+        .build();
+    let args = PlanArgs {
+        from: None,
+        phase: None,
+        skip: vec![],
+        only: vec![],
+        module: vec!["a".to_string(), "b".to_string()],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+    };
+    super::plan::cmd_plan(&h.cli(), h.printer(), &args).unwrap();
+    let json = h.json_output();
+
+    let tokens: std::collections::BTreeSet<String> = json["phases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|p| p["groups"].as_array().unwrap())
+        .map(|g| g["token"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        tokens.contains("module:a") && tokens.contains("module:b"),
+        "both repeated --module names must plan, got tokens: {tokens:?}"
+    );
+    assert!(
+        tokens.contains("module:base"),
+        "a's transitive dependency 'base' must be pulled in and planned, got tokens: {tokens:?}"
+    );
+    assert!(
+        !tokens.iter().any(|t| t == "profile:default"),
+        "the active profile must not contribute under isolation, got tokens: {tokens:?}"
+    );
+    let raw = serde_json::to_string(&json).unwrap();
+    assert!(
+        !raw.contains("\"editor\"") && !raw.contains("vim"),
+        "the default profile's own env (editor=vim) must not leak into an isolated plan: {raw}"
+    );
+}
+
+// -----------------------------------------------------------------------
+// --with-profile alone (no --module) — QP9b deliverable 2's guard.
+// -----------------------------------------------------------------------
+
+#[test]
+fn cmd_plan_with_profile_alone_errors() {
+    let h = CliTestHarness::builder().build();
+    let args = PlanArgs {
+        from: None,
+        phase: None,
+        skip: vec![],
+        only: vec![],
+        module: vec![],
+        with_profile: true,
+        skip_scripts: false,
+        context: "apply".to_string(),
+    };
+    let result = super::plan::cmd_plan(&h.cli(), h.printer(), &args);
+    assert_error_contains(&result, "--with-profile requires --module");
+}
+
+#[test]
+fn cmd_apply_with_profile_alone_errors() {
+    let h = CliTestHarness::builder().build();
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        from: None,
+        dry_run: true,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: vec![],
+        with_profile: true,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    };
+    let result = super::apply::cmd_apply(&h.cli(), h.printer(), &args);
+    assert_error_contains(&result, "--with-profile requires --module");
+}
+
+// -----------------------------------------------------------------------
+// Interplay matrix: --module × --only/--skip module:<name> (QP9b
+// deliverables 1 + 3, "no second hand-rolled mechanism" requirement)
+// -----------------------------------------------------------------------
+
+/// `--module X --only module:X` is a no-op on top of the isolate: every
+/// action DIRECTLY owned by `module:X` is already selected by isolation, so
+/// naming it again with `--only` is redundant — it drops no module-owned
+/// work, and the token itself registers a hit (never the zero-match warning).
+///
+/// NOT byte-identical to the bare isolate: an isolated plan can also carry
+/// shared-infrastructure actions (e.g. a `cfgd:managers` apt index refresh)
+/// that a module's packages depend on but that no single module OWNS, and a
+/// strict owner filter correctly excludes those — `--only`/`--skip` are
+/// documented as owner/path filters over an already-composed plan, not a
+/// "bring the dependency closure back in" operation. That asymmetry (an
+/// excluded `RefreshIndex` gets no stranding warning, unlike an excluded
+/// `Provision`) is a real mirror-sweep finding, reported separately rather
+/// than silently special-cased here.
+#[test]
+fn interplay_module_x_only_module_x_is_redundant_and_drops_no_module_owned_action() {
+    let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: standalone
+spec:
+  packages:
+    - name: jq
+"#;
+    let plain = CliTestHarness::builder()
+        .module("standalone", module_yaml)
+        .json()
+        .build();
+    let args_plain = PlanArgs {
+        from: None,
+        phase: None,
+        skip: vec![],
+        only: vec![],
+        module: vec!["standalone".to_string()],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+    };
+    super::plan::cmd_plan(&plain.cli(), plain.printer(), &args_plain).unwrap();
+    let plain_json = plain.json_output();
+    let plain_module_actions = plain_json["phases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|p| p["groups"].as_array().unwrap())
+        .filter(|g| g["token"] == "module:standalone")
+        .flat_map(|g| g["actions"].as_array().unwrap().clone())
+        .count();
+    assert!(
+        plain_module_actions > 0,
+        "the isolated plan must carry the module's own action(s): {plain_json}"
+    );
+
+    let filtered = CliTestHarness::builder()
+        .module("standalone", module_yaml)
+        .json()
+        .build();
+    let args_filtered = PlanArgs {
+        only: vec!["module:standalone".to_string()],
+        ..args_plain
+    };
+    super::plan::cmd_plan(&filtered.cli(), filtered.printer(), &args_filtered).unwrap();
+    let filtered_json = filtered.json_output();
+    let filtered_module_actions = filtered_json["phases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|p| p["groups"].as_array().unwrap())
+        .filter(|g| g["token"] == "module:standalone")
+        .flat_map(|g| g["actions"].as_array().unwrap().clone())
+        .count();
+
+    assert_eq!(
+        plain_module_actions, filtered_module_actions,
+        "an --only naming the isolate's own owner must not drop any module-owned action: \
+         plain={plain_json}, filtered={filtered_json}"
+    );
+    // The token accounting mechanism (deliverable 3) must record this as a
+    // hit, not a miss — no zero-match alert on stderr.
+    let out = filtered.output();
+    assert!(
+        !out.contains("matched no actions in this plan"),
+        "`--only module:standalone` matches the module's own actions and must not be reported \
+         as a zero-match token, got:\n{out}"
+    );
+}
+
+/// `--module X --skip module:X` empties the isolated plan (the skip token DID
+/// match — every action was module:X-owned), so this is NOT the zero-match
+/// case. It must still not read as "up to date": the accounting-driven
+/// `report_no_in_scope_actions` warns that a filter excluded pending work,
+/// because `--skip` set `filter_active` before the plan was emptied.
+#[test]
+fn interplay_module_x_skip_module_x_speaks_via_accounting_not_up_to_date() {
+    let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: standalone
+spec:
+  packages:
+    - name: jq
+"#;
+    let h = CliTestHarness::builder()
+        .module("standalone", module_yaml)
+        .build();
+    let args = PlanArgs {
+        from: None,
+        phase: None,
+        skip: vec!["module:standalone".to_string()],
+        only: vec![],
+        module: vec!["standalone".to_string()],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+    };
+    super::plan::cmd_plan(&h.cli(), h.printer(), &args).unwrap();
+    let out = h.output();
+
+    assert!(
+        !out.contains(MSG_NOTHING_TO_DO),
+        "a --skip that consumed the whole isolated plan is not the system converging, got:\n{out}"
+    );
+    assert!(
+        out.contains("No actions in scope"),
+        "expected the filter-excluded-work warning, got:\n{out}"
     );
 }
 
@@ -15432,7 +15775,8 @@ spec:
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     };
@@ -20973,7 +21317,8 @@ fn plan_args() -> PlanArgs {
         phase: None,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
     }
@@ -20989,7 +21334,8 @@ fn apply_args(dry_run: bool) -> ApplyArgs {
         yes: true,
         skip: vec![],
         only: vec![],
-        module: None,
+        module: vec![],
+        with_profile: false,
         skip_scripts: false,
         context: "apply".to_string(),
         shell: None,
@@ -21432,7 +21778,8 @@ fn a_module_only_run_on_a_broken_config_keeps_every_decision_row() {
 
     let args = ApplyArgs {
         on_conflict: crate::cli::OnConflict::Ask,
-        module: Some("nonexistent".into()),
+        module: vec!["nonexistent".into()],
+        with_profile: false,
         ..apply_args(false)
     };
     let _ = super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &args);

@@ -345,7 +345,8 @@ pub(super) fn cmd_status(
         &ctx,
         cfg,
         local_resolved,
-        None,
+        &[],
+        false,
         printer,
         false,
         composition::ConstraintMode::Report,
@@ -549,7 +550,7 @@ pub(super) fn cmd_status_module(
             &mgr_map,
             printer,
         )?;
-        let resolved = empty_resolved_profile(mod_name, &ctx.active_profile_name());
+        let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
         let fm = CfgdFileManager::new(config_dir, &resolved)?;
         for r in super::live_drift::module_file_verify_results(
             &fm,

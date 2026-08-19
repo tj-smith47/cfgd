@@ -578,6 +578,13 @@ pub(in crate::cli) struct ScopeReport {
     /// Set to the requested module name when `--module <name>` resolved to
     /// nothing (typo / not found / unreadable) rather than to real actions.
     pub module_miss: Option<String>,
+    /// At least one `--skip`/`--only` token matched zero actions
+    /// ([`TokenHits::misses`], set by `filter_plan` after it runs). A plan
+    /// that ends up empty for THIS reason is not "up to date" — a filter
+    /// token that never resolved anything is not evidence the machine
+    /// converged, so this must override the `unfiltered_total == 0` shortcut
+    /// below even when the profile itself had nothing else pending.
+    pub filter_miss: bool,
 }
 
 impl ScopeReport {
@@ -596,6 +603,7 @@ impl ScopeReport {
                 .map(|p| p.name.display_name().to_string())
                 .collect(),
             module_miss,
+            filter_miss: false,
         }
     }
 }
@@ -616,7 +624,7 @@ pub(in crate::cli) fn report_no_in_scope_actions(printer: &Printer, scope: &Scop
         );
         return;
     }
-    if !scope.filter_active || scope.unfiltered_total == 0 {
+    if !scope.filter_active || (scope.unfiltered_total == 0 && !scope.filter_miss) {
         printer.status_simple(Role::Ok, MSG_NOTHING_TO_DO);
         return;
     }
@@ -1613,11 +1621,18 @@ pub(in crate::cli) fn apply_conflict_policy(
 
 /// Apply --skip and --only filters to a plan, modifying it in place.
 ///
-/// Also emits the two diagnostics that only filtering can produce: the
-/// deprecation for a legacy `modules[.name]` pattern, and the stranded-install
+/// Also emits the diagnostics that only filtering can produce: the
+/// deprecation for a legacy `modules[.name]` pattern, the stranded-install
 /// warning for a filter that removed a package manager's bootstrap without
-/// removing the installs that need it. Both live here so neither call site can
-/// forget one.
+/// removing the installs that need it, and — the QP9b SSOT — a warning for
+/// every `--skip`/`--only` token that matched zero actions. All three live
+/// here so no call site can forget one, and no command hand-rolls a second
+/// "matched nothing" message of its own (see `warn_zero_match_tokens`).
+///
+/// Returns whether any token matched zero actions, so the caller's
+/// [`ScopeReport`] can refuse `MSG_NOTHING_TO_DO` on the strength of a filter
+/// that never matched anything rather than a machine that is actually in
+/// sync.
 pub(in crate::cli) fn filter_plan(
     plan: &mut reconciler::Plan,
     skip: &[String],
@@ -1625,7 +1640,8 @@ pub(in crate::cli) fn filter_plan(
     phase_filter: Option<&reconciler::PhaseFilter>,
     printer: &Printer,
     registry: &ProviderRegistry,
-) {
+    config_dir: &Path,
+) -> bool {
     // Every selector the user supplied is materialised into the plan HERE, so
     // one pass owns the whole question of what this run will do. `--phase` is
     // resolved as a predicate downstream, which cannot split a node — and a
@@ -1635,11 +1651,29 @@ pub(in crate::cli) fn filter_plan(
         reconciler::restrict_provision_batches(plan, phase, selector);
     }
     if skip.is_empty() && only.is_empty() {
-        return;
+        return false;
     }
     warn_legacy_module_patterns(printer, skip, only);
     let skip = &normalize_legacy_phase_patterns(printer, "--skip", skip);
     let only = &normalize_legacy_phase_patterns(printer, "--only", only);
+
+    // Owner tokens present before any pruning — the "did you mean one of
+    // these" hint a zero-match token gets must describe what this run's plan
+    // actually held, not what survives the very filter it failed to match.
+    let owners_present: Vec<String> = {
+        let mut tokens: Vec<String> = plan
+            .phases
+            .iter()
+            .flat_map(|p| p.owned_actions())
+            .map(|(owner, _)| owner.token())
+            .collect();
+        tokens.sort();
+        tokens.dedup();
+        tokens
+    };
+
+    let mut skip_hits = TokenHits::new(skip);
+    let mut only_hits = TokenHits::new(only);
 
     let mut removals = BootstrapRemovals::default();
     for phase in &mut plan.phases {
@@ -1663,6 +1697,8 @@ pub(in crate::cli) fn filter_plan(
                                 packages,
                                 skip,
                                 only,
+                                &mut skip_hits,
+                                &mut only_hits,
                             );
                             if !kept.is_empty() {
                                 filtered_actions.push(reconciler::Action::Package(
@@ -1687,6 +1723,8 @@ pub(in crate::cli) fn filter_plan(
                                 packages,
                                 skip,
                                 only,
+                                &mut skip_hits,
+                                &mut only_hits,
                             );
                             if !kept.is_empty() {
                                 filtered_actions.push(reconciler::Action::Package(
@@ -1718,19 +1756,29 @@ pub(in crate::cli) fn filter_plan(
                     let mut kept: Vec<String> = Vec::new();
                     for member in ma.provisioned_managers() {
                         let path = format!("{}.{}", phase_name.as_str(), member);
-                        let matched_skip = skip
+                        let matching_skips: Vec<&String> = skip
                             .iter()
-                            .find(|s| pattern_matches_action(s, owner, &path));
-                        let passes_only = only.is_empty()
-                            || only.iter().any(|o| {
+                            .filter(|s| pattern_matches_action(s, owner, &path))
+                            .collect();
+                        for s in &matching_skips {
+                            skip_hits.record(s);
+                        }
+                        let matching_onlys: Vec<&String> = only
+                            .iter()
+                            .filter(|o| {
                                 pattern_matches_action(o, owner, &path) || pattern_matches(&path, o)
-                            });
-                        if matched_skip.is_none() && passes_only {
+                            })
+                            .collect();
+                        for o in &matching_onlys {
+                            only_hits.record(o);
+                        }
+                        let passes_only = only.is_empty() || !matching_onlys.is_empty();
+                        if matching_skips.is_empty() && passes_only {
                             kept.push(member.to_string());
                         } else {
                             // Filtered away, a provision strands the installs
                             // that needed the manager.
-                            removals.record(member, matched_skip.map(String::as_str));
+                            removals.record(member, matching_skips.first().map(|s| s.as_str()));
                         }
                     }
                     if let Some((first, rest)) = kept.split_first() {
@@ -1748,15 +1796,25 @@ pub(in crate::cli) fn filter_plan(
 
                 // Non-package actions: action-level filtering
                 let path = action_path(&phase_name, &action);
-                let matched_skip = skip
+                let matching_skips: Vec<&String> = skip
                     .iter()
-                    .find(|s| pattern_matches_action(s, owner, &path));
-                let passes_only = only.is_empty()
-                    || only.iter().any(|o| {
+                    .filter(|s| pattern_matches_action(s, owner, &path))
+                    .collect();
+                for s in &matching_skips {
+                    skip_hits.record(s);
+                }
+                let matching_onlys: Vec<&String> = only
+                    .iter()
+                    .filter(|o| {
                         pattern_matches_action(o, owner, &path) || pattern_matches(&path, o)
-                    });
+                    })
+                    .collect();
+                for o in &matching_onlys {
+                    only_hits.record(o);
+                }
+                let passes_only = only.is_empty() || !matching_onlys.is_empty();
 
-                if matched_skip.is_none() && passes_only {
+                if matching_skips.is_empty() && passes_only {
                     filtered_actions.push(action);
                 }
             }
@@ -1790,6 +1848,106 @@ pub(in crate::cli) fn filter_plan(
     }
 
     warn_stranded_installs(plan, printer, registry, &removals);
+
+    let skip_missed =
+        warn_zero_match_tokens(printer, "skip", &skip_hits, &owners_present, config_dir);
+    let only_missed =
+        warn_zero_match_tokens(printer, "only", &only_hits, &owners_present, config_dir);
+    skip_missed || only_missed
+}
+
+/// Per-token match accounting for one `filter_plan` run's `--skip`/`--only`
+/// tokens — the QP9b SSOT every selector/filter surface in the CLI that can
+/// select zero of something routes through (directly, for `--skip`/`--only`;
+/// by the same shape, for a command's own miss check) rather than hand-rolling
+/// a second "matched nothing" message. Every supplied token starts at zero, so
+/// a token shadowed entirely by an earlier one is still reported as a miss —
+/// silence is never mistaken for coverage.
+pub(in crate::cli) struct TokenHits {
+    counts: std::collections::HashMap<String, usize>,
+    order: Vec<String>,
+}
+
+impl TokenHits {
+    pub(in crate::cli) fn new(tokens: &[String]) -> Self {
+        let mut counts = std::collections::HashMap::new();
+        let mut order = Vec::new();
+        for t in tokens {
+            if !counts.contains_key(t) {
+                order.push(t.clone());
+            }
+            counts.entry(t.clone()).or_insert(0);
+        }
+        Self { counts, order }
+    }
+
+    pub(in crate::cli) fn record(&mut self, token: &str) {
+        if let Some(c) = self.counts.get_mut(token) {
+            *c += 1;
+        }
+    }
+
+    /// Distinct supplied tokens that matched zero actions, in the order they
+    /// were first supplied.
+    pub(in crate::cli) fn misses(&self) -> Vec<&str> {
+        self.order
+            .iter()
+            .filter(|t| self.counts.get(t.as_str()).copied().unwrap_or(0) == 0)
+            .map(String::as_str)
+            .collect()
+    }
+}
+
+/// Is `name` a module cfgd already knows about (declared locally, or a remote
+/// module recorded in the lockfile) — checked with no network I/O, so a
+/// zero-match hint can afford to ask it. Distinguishes a genuinely unknown
+/// module name (a typo) from a real module that simply is not part of THIS
+/// run's graph, which gets a more actionable hint (`--module <name>`) than
+/// the generic owner-token list.
+fn module_known_but_unresolved(config_dir: &Path, name: &str) -> bool {
+    if let Ok(local) = modules::load_modules(config_dir)
+        && local.contains_key(name)
+    {
+        return true;
+    }
+    if let Ok(lockfile) = modules::load_lockfile(config_dir)
+        && lockfile.modules.iter().any(|e| e.name == name)
+    {
+        return true;
+    }
+    false
+}
+
+/// Warn on every token in `hits` that matched zero actions — the QP9b
+/// zero-match accounting every `--skip`/`--only` pass renders through. Same
+/// alert-class shape as [`warn_stranded_installs`]: always-visible, because
+/// acting on this run's output without knowing a token never matched anything
+/// means acting on a wrong picture of what happened. Returns whether any
+/// token missed.
+fn warn_zero_match_tokens(
+    printer: &Printer,
+    flag: &str,
+    hits: &TokenHits,
+    owners_present: &[String],
+    config_dir: &Path,
+) -> bool {
+    let misses = hits.misses();
+    for token in &misses {
+        let hint = token
+            .strip_prefix("module:")
+            .filter(|name| module_known_but_unresolved(config_dir, name))
+            .map(|name| format!("to resolve a module outside the profile: --module {name}"))
+            .or_else(|| {
+                (!owners_present.is_empty())
+                    .then(|| format!("owners present: {}", owners_present.join(", ")))
+            });
+        let message = format!("`--{flag} {token}` matched no actions in this plan");
+        printer.alert(match hint {
+            Some(hint) => format!("{message}; {hint}"),
+            None => message,
+        });
+    }
+    !misses.is_empty()
 }
 
 /// The bootstraps a filter removed, and the `--skip` pattern that removed each.
@@ -1885,7 +2043,9 @@ fn warn_stranded_installs(
     ));
 }
 
-/// Filter individual packages from an install/uninstall list based on skip/only patterns.
+/// Filter individual packages from an install/uninstall list based on skip/only
+/// patterns, recording each token's hits into `skip_hits`/`only_hits` as it goes.
+#[allow(clippy::too_many_arguments)]
 fn filter_package_list(
     phase: &str,
     owner: &reconciler::Owner,
@@ -1893,6 +2053,8 @@ fn filter_package_list(
     packages: &[String],
     skip: &[String],
     only: &[String],
+    skip_hits: &mut TokenHits,
+    only_hits: &mut TokenHits,
 ) -> Vec<String> {
     packages
         .iter()
@@ -1900,20 +2062,30 @@ fn filter_package_list(
             let pkg_path = format!("{}.{}.{}", phase, manager, pkg);
 
             // Check skip: pattern can target the specific package, manager, phase or owner
-            let pkg_skip = skip
+            let matching_skips: Vec<&String> = skip
                 .iter()
-                .any(|s| pattern_matches_action(s, owner, &pkg_path));
+                .filter(|s| pattern_matches_action(s, owner, &pkg_path))
+                .collect();
+            for s in &matching_skips {
+                skip_hits.record(s);
+            }
 
             // Check only: the pattern must cover this package.
             // "packages" covers "packages.brew.ripgrep" (broad → specific)
             // "packages.brew.ripgrep" covers "packages.brew.ripgrep" (exact)
             // But "packages.brew.ripgrep" does NOT cover "packages.brew.fd"
-            let pkg_only = only.is_empty()
-                || only.iter().any(|o| {
+            let matching_onlys: Vec<&String> = only
+                .iter()
+                .filter(|o| {
                     pattern_matches_action(o, owner, &pkg_path) || pattern_matches(&pkg_path, o)
-                });
+                })
+                .collect();
+            for o in &matching_onlys {
+                only_hits.record(o);
+            }
+            let pkg_only = only.is_empty() || !matching_onlys.is_empty();
 
-            !pkg_skip && pkg_only
+            matching_skips.is_empty() && pkg_only
         })
         .cloned()
         .collect()

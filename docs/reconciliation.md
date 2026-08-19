@@ -239,7 +239,8 @@ installs, then `module:nvim`. Execution reverses those two — see the note abov
 cfgd apply --phase packages              # single phase
 cfgd apply --phase modules               # every module-owned action, in every phase
 cfgd apply --phase prerequisites.managers  # one owner group within a phase
-cfgd apply --module nvim                 # single module + deps
+cfgd apply --module nvim                 # nvim + deps, isolated from the profile
+cfgd apply --module nvim --with-profile  # full profile PLUS nvim
 cfgd apply --only packages.brew          # dot-notation filter (the brew manager)
 cfgd apply --only packages.module:nvim   # a module's package work
 cfgd apply --skip module:nvim            # one module, every phase

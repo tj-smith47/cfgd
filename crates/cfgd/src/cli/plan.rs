@@ -36,14 +36,24 @@ pub fn cmd_plan(
     let config_dir = config_dir(cli);
     let ctx = RunContext::new(cli, printer);
     let state = ctx.state()?;
-    let module_filter = args.module.as_deref();
+    let module_filter: &[String] = &args.module;
+    let with_profile = args.with_profile;
+
+    // `--with-profile` opts a `--module` run INTO composing with the full
+    // profile; with no module named, there is nothing for it to compose
+    // with — reject rather than silently behaving like a plain `cfgd plan`.
+    if with_profile && module_filter.is_empty() {
+        anyhow::bail!(
+            "--with-profile requires --module (it composes the named module(s) with the full profile; without --module there is nothing to add)"
+        );
+    }
 
     // Load config and profile — same pattern as cmd_apply. The header these
     // rows belong to is rendered once the plan is final, so the profile label
-    // is carried down rather than printed here. A module-only run resolved no
+    // is carried down rather than printed here. An isolated run resolved no
     // profile, so it carries none and the header omits the row.
     let (cfg, resolved, profile_label, config_parsed) =
-        load_config_and_profile_module_scoped(cli, printer, module_filter)?;
+        load_config_and_profile_module_scoped(cli, printer, module_filter, with_profile)?;
 
     // Compose with sources (network refresh) and resolve modules through the one
     // shared desired-state resolver — same path apply takes.
@@ -52,6 +62,7 @@ pub fn cmd_plan(
         &cfg,
         &resolved,
         module_filter,
+        with_profile,
         printer,
         true,
         composition::ConstraintMode::Enforce,
@@ -81,13 +92,18 @@ pub fn cmd_plan(
     let phase_filter: Option<PhaseFilter> =
         resolve_phase_filter(args.phase.clone(), &registry, printer)?;
 
-    let module_only = module_filter.is_some();
+    // Isolated (--module without --with-profile): skip profile-level
+    // packages/files — everything else profile-owned is already zeroed by
+    // `resolve_desired_state`'s isolation (`effective_resolved`).
+    let module_only = !module_filter.is_empty() && !with_profile;
 
-    // `--module <name>` that resolved to nothing (typo / not found) — captured
-    // before `resolved_modules` is consumed by planning below.
-    let module_miss = module_filter
-        .filter(|_| resolved_modules.is_empty())
-        .map(str::to_string);
+    // `resolve_modules` is atomic over the whole requested-name list (see
+    // `resolve_desired_state`): a `--module` name that does not resolve
+    // already propagated as an error above, so this path never reaches here
+    // with a non-empty `module_filter` and an empty `resolved_modules`. The
+    // arm stays reachable only through `ScopeReport::capture`'s own direct
+    // callers/tests — never fed a real value from `plan`.
+    let module_miss: Option<String> = None;
 
     // Plan-only mode: no secret providers needed
     let (pkg_actions, file_actions, dry_run_fm, actual_packages) = if module_only {
@@ -175,16 +191,17 @@ pub fn cmd_plan(
         || !args.skip.is_empty()
         || !args.only.is_empty()
         || args.skip_scripts;
-    let scope = ScopeReport::capture(&plan, filter_active, module_miss);
+    let mut scope = ScopeReport::capture(&plan, filter_active, module_miss);
 
     // Apply --skip / --only filters
-    filter_plan(
+    scope.filter_miss = filter_plan(
         &mut plan,
         &args.skip,
         &args.only,
         phase_filter.as_ref(),
         printer,
         &registry,
+        &config_dir,
     );
 
     // Strip script phases when --skip-scripts is set

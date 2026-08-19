@@ -100,11 +100,21 @@ fn parse_package_flag_no_known_managers_always_bare() {
 
 #[test]
 fn empty_resolved_profile_contains_only_named_module() {
-    let rp = empty_resolved_profile("mymod", "work");
+    let rp = empty_resolved_profile(&["mymod".to_string()], "work");
     assert_eq!(rp.merged.modules, vec!["mymod".to_string()]);
     // All other merged fields are default-empty.
     assert!(rp.merged.env.is_empty());
     assert!(rp.merged.packages.brew.is_none());
+}
+
+/// Repeatable `--module a --module b` carries the whole list through, in
+/// order — the isolate path unions/replaces on this list directly, so a
+/// dropped or reordered name here would silently narrow which modules an
+/// isolated run plans.
+#[test]
+fn empty_resolved_profile_contains_every_named_module_in_order() {
+    let rp = empty_resolved_profile(&["a".to_string(), "b".to_string()], "work");
+    assert_eq!(rp.merged.modules, vec!["a".to_string(), "b".to_string()]);
 }
 
 /// The synthesized layer exists only to carry the profile name: a module-only
@@ -112,7 +122,7 @@ fn empty_resolved_profile_contains_only_named_module() {
 /// fallback `ResolvedProfile::profile_name` reports for a layerless profile.
 #[test]
 fn empty_resolved_profile_reports_the_requested_profile_name() {
-    let rp = empty_resolved_profile("mymod", "work");
+    let rp = empty_resolved_profile(&["mymod".to_string()], "work");
     assert_eq!(rp.profile_name(), "work");
     assert_eq!(rp.layers.len(), 1);
     assert!(rp.layers[0].spec.modules.is_empty());
@@ -743,7 +753,7 @@ fn compose_with_sources_no_sources_returns_local_profile_unchanged() {
 
     let cli = make_cli(config_path.clone());
     let cfg = config::load_config(&config_path).unwrap();
-    let local = empty_resolved_profile("my-module", "work");
+    let local = empty_resolved_profile(&["my-module".to_string()], "work");
     let printer = quiet_printer();
     let ctx = RunContext::new(&cli, &printer);
 
@@ -889,7 +899,7 @@ fn compose_with_sources_with_local_source_merges_source_profile() {
     cli.cache_dir = Some(tmp.path().join("cache"));
 
     let cfg = config::load_config(&config_path).unwrap();
-    let local = empty_resolved_profile("my-module", "work");
+    let local = empty_resolved_profile(&["my-module".to_string()], "work");
     let printer = quiet_printer();
     let ctx = RunContext::new(&cli, &printer);
 
@@ -956,7 +966,7 @@ fn compose_with_sources_merges_canonical_form_source_profile() {
     cli.cache_dir = Some(tmp.path().join("cache"));
 
     let cfg = config::load_config(&config_path).unwrap();
-    let local = empty_resolved_profile("my-module", "work");
+    let local = empty_resolved_profile(&["my-module".to_string()], "work");
     let printer = quiet_printer();
     let ctx = RunContext::new(&cli, &printer);
 
@@ -1007,7 +1017,7 @@ fn resolve_desired_state_read_path_sees_source_package_and_module() {
     cli.state_dir = Some(tmp.path().join("state"));
     cli.cache_dir = Some(tmp.path().join("cache"));
     let cfg = config::load_config(&config_path).unwrap();
-    let local = empty_resolved_profile("my-module", "work");
+    let local = empty_resolved_profile(&["my-module".to_string()], "work");
     let printer = quiet_printer();
     let ctx = RunContext::new(&cli, &printer);
 
@@ -1028,7 +1038,8 @@ fn resolve_desired_state_read_path_sees_source_package_and_module() {
         &ctx,
         &cfg,
         &local,
-        None,
+        &[],
+        false,
         &printer,
         false,
         composition::ConstraintMode::Enforce,
@@ -1097,7 +1108,8 @@ fn resolve_desired_state_read_path_cache_miss_falls_back_to_local() {
         &ctx,
         &cfg,
         &local,
-        None,
+        &[],
+        false,
         &printer,
         false,
         composition::ConstraintMode::Enforce,
@@ -1142,7 +1154,7 @@ fn resolve_desired_state_apply_and_read_compute_same_module_set() {
     cli.state_dir = Some(tmp.path().join("state"));
     cli.cache_dir = Some(tmp.path().join("cache"));
     let cfg = config::load_config(&config_path).unwrap();
-    let local = empty_resolved_profile("my-module", "work");
+    let local = empty_resolved_profile(&["my-module".to_string()], "work");
     let printer = quiet_printer();
     let ctx = RunContext::new(&cli, &printer);
 
@@ -1151,7 +1163,8 @@ fn resolve_desired_state_apply_and_read_compute_same_module_set() {
         &ctx,
         &cfg,
         &local,
-        None,
+        &[],
+        false,
         &printer,
         true,
         composition::ConstraintMode::Enforce,
@@ -1162,7 +1175,8 @@ fn resolve_desired_state_apply_and_read_compute_same_module_set() {
         &ctx,
         &cfg,
         &local,
-        None,
+        &[],
+        false,
         &printer,
         false,
         composition::ConstraintMode::Enforce,
@@ -1211,7 +1225,8 @@ fn resolve_desired_state_no_sources_resolves_local_only() {
         &ctx,
         &cfg,
         &local,
-        None,
+        &[],
+        false,
         &printer,
         false,
         composition::ConstraintMode::Enforce,
@@ -1223,6 +1238,343 @@ fn resolve_desired_state_no_sources_resolves_local_only() {
     assert_eq!(
         desired.resolved.merged.modules, local.merged.modules,
         "no-sources resolved must equal the local profile"
+    );
+}
+
+/// The core QP9b deliverable-1 proof: `--module` without `--with-profile`
+/// zeroes EVERY profile-owned contribution, not just packages/files. Builds a
+/// local profile with content in every `MergedProfile` field — env, aliases,
+/// packages, files, system, secrets, scripts, backups — resolves it under
+/// `module_filter = ["standalone"]`, `with_profile = false`, and asserts every
+/// one of those fields comes back empty/default on the far side while
+/// `modules` carries exactly the requested name. Before this fix only
+/// packages/files were zeroed and env/aliases/system/scripts/secrets/backups
+/// still flowed through from the real profile.
+#[test]
+#[serial]
+fn resolve_desired_state_module_only_isolates_every_profile_owned_field() {
+    let tmp = tempdir().unwrap();
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(&config_path, CONFIG_YAML).unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("default.yaml"), PROFILE_YAML).unwrap();
+
+    let module_dir = tmp.path().join("modules").join("standalone");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: standalone\nspec: {}\n",
+    )
+    .unwrap();
+
+    let cli = make_cli(config_path.clone());
+    let cfg = config::load_config(&config_path).unwrap();
+
+    let mut system = config::SystemSettings::new();
+    system.insert(
+        "hostname".to_string(),
+        serde_yaml::Value::String("rich-host".to_string()),
+    );
+
+    let rich = ResolvedProfile {
+        layers: Vec::new(),
+        merged: MergedProfile {
+            modules: vec!["profile-only-module".to_string()],
+            env: vec![config::EnvVar {
+                name: "RICH_VAR".to_string(),
+                value: "1".to_string(),
+            }],
+            env_scope: config::EnvScope::Login,
+            aliases: vec![config::ShellAlias {
+                name: "gs".to_string(),
+                command: "git status".to_string(),
+            }],
+            packages: config::PackagesSpec {
+                pipx: vec!["some-tool".to_string()],
+                ..Default::default()
+            },
+            files: config::FilesSpec {
+                managed: vec![],
+                permissions: std::collections::HashMap::from([(
+                    "/etc/rich".to_string(),
+                    "0644".to_string(),
+                )]),
+            },
+            system,
+            secrets: vec![config::SecretSpec {
+                source: "op://vault/item".to_string(),
+                target: None,
+                template: None,
+                backend: None,
+                envs: None,
+            }],
+            scripts: config::ScriptSpec {
+                pre_apply: vec![config::ScriptEntry::Simple("echo pre".to_string())],
+                ..Default::default()
+            },
+            backups: vec![config::BackupSpec {
+                name: "daily".to_string(),
+                source: PathBuf::from("/data"),
+                destination: None,
+                name_pattern: "{filename}.{timestamp}".to_string(),
+                schedule: None,
+                retention: 10,
+                pre_backup: vec![],
+                post_backup: vec![],
+            }],
+        },
+    };
+
+    let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
+    let desired = resolve_desired_state(
+        &ctx,
+        &cfg,
+        &rich,
+        &["standalone".to_string()],
+        false,
+        &printer,
+        false,
+        composition::ConstraintMode::Enforce,
+    )
+    .unwrap();
+
+    let m = &desired.resolved.merged;
+    assert_eq!(
+        m.modules,
+        vec!["standalone".to_string()],
+        "isolate replaces the module list with exactly the requested name(s)"
+    );
+    assert!(
+        m.env.is_empty(),
+        "env must be zeroed under isolation, got: {:?}",
+        m.env
+    );
+    assert_eq!(
+        m.env_scope,
+        config::EnvScope::default(),
+        "env_scope must reset to its default under isolation"
+    );
+    assert!(
+        m.aliases.is_empty(),
+        "aliases must be zeroed under isolation, got: {:?}",
+        m.aliases
+    );
+    assert!(
+        m.packages.pipx.is_empty(),
+        "packages must be zeroed under isolation (module's own resolved packages are tracked separately on DesiredState::modules)"
+    );
+    assert!(
+        m.files.managed.is_empty() && m.files.permissions.is_empty(),
+        "files must be zeroed under isolation"
+    );
+    assert!(
+        m.system.is_empty(),
+        "system must be zeroed under isolation, got: {:?}",
+        m.system
+    );
+    assert!(
+        m.secrets.is_empty(),
+        "secrets must be zeroed under isolation, got: {:?}",
+        m.secrets
+    );
+    assert!(
+        m.scripts.pre_apply.is_empty(),
+        "scripts must be zeroed under isolation, got: {:?}",
+        m.scripts.pre_apply
+    );
+    assert!(
+        m.backups.is_empty(),
+        "backups must be zeroed under isolation, got: {:?}",
+        m.backups
+    );
+}
+
+/// The sibling proof for `--with-profile`: the named module is UNIONED into
+/// the real profile's module list, and every other field of the composed
+/// profile survives untouched — the opposite of isolation.
+#[test]
+#[serial]
+fn resolve_desired_state_with_profile_unions_module_and_keeps_every_profile_owned_field() {
+    let tmp = tempdir().unwrap();
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(&config_path, CONFIG_YAML).unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("default.yaml"), PROFILE_YAML).unwrap();
+
+    for name in ["standalone", "profile-only-module"] {
+        let module_dir = tmp.path().join("modules").join(name);
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec: {{}}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    let cli = make_cli(config_path.clone());
+    let cfg = config::load_config(&config_path).unwrap();
+
+    let rich = ResolvedProfile {
+        layers: Vec::new(),
+        merged: MergedProfile {
+            modules: vec!["profile-only-module".to_string()],
+            env: vec![config::EnvVar {
+                name: "RICH_VAR".to_string(),
+                value: "1".to_string(),
+            }],
+            ..Default::default()
+        },
+    };
+
+    let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
+    let desired = resolve_desired_state(
+        &ctx,
+        &cfg,
+        &rich,
+        &["standalone".to_string()],
+        true,
+        &printer,
+        false,
+        composition::ConstraintMode::Enforce,
+    )
+    .unwrap();
+
+    let m = &desired.resolved.merged;
+    assert_eq!(
+        m.modules,
+        vec!["profile-only-module".to_string(), "standalone".to_string()],
+        "--with-profile unions the requested module onto the end of the profile's own list"
+    );
+    assert_eq!(
+        m.env,
+        vec![config::EnvVar {
+            name: "RICH_VAR".to_string(),
+            value: "1".to_string(),
+        }],
+        "--with-profile must not zero any profile-owned field"
+    );
+}
+
+/// Like [`create_local_source_repo`], but the delivered `source-module`
+/// carries a `preApply` script instead of a package — a body
+/// `load_source_modules` gates on the source's `subscription.allowScripts`
+/// opt-in (default `false`, unset here). Used by the QP9b deliverable-4
+/// probe: a `--module` naming a module blocked this way must surface
+/// `ModuleError::ScriptsNotAllowed`, not the swallowed "not found" the
+/// deleted `Err(e) if module_filter.is_some() => Vec::new()` arm produced.
+fn create_local_source_repo_with_blocked_script(root: &std::path::Path) -> PathBuf {
+    let repo_dir = root.join("source-repo");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+
+    cfgd_core::git_cmd_local()
+        .args(["init", "-b", "master"])
+        .current_dir(&repo_dir)
+        .output()
+        .unwrap();
+    cfgd_core::git_cmd_local()
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(&repo_dir)
+        .output()
+        .unwrap();
+    cfgd_core::git_cmd_local()
+        .args(["config", "user.name", "Test"])
+        .current_dir(&repo_dir)
+        .output()
+        .unwrap();
+
+    std::fs::write(
+        repo_dir.join("cfgd-source.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: test-src\nspec:\n  provides:\n    modules:\n      - source-module\n",
+    )
+    .unwrap();
+
+    let module_dir = repo_dir.join("modules").join("source-module");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: source-module\nspec:\n  scripts:\n    preApply:\n      - run: \"echo hi\"\n",
+    )
+    .unwrap();
+
+    cfgd_core::git_cmd_local()
+        .args(["add", "."])
+        .current_dir(&repo_dir)
+        .output()
+        .unwrap();
+    cfgd_core::git_cmd_local()
+        .args(["commit", "-m", "init"])
+        .current_dir(&repo_dir)
+        .output()
+        .unwrap();
+
+    repo_dir
+}
+
+/// Deliverable-4 regression: `--module source-module` against a source that
+/// never opted into `subscription.allowScripts` must surface
+/// `ModuleError::ScriptsNotAllowed` — the real reason resolution failed —
+/// rather than the generic "not found" the deleted swallow arm
+/// (`Err(e) if module_filter.is_some() => Vec::new()`) used to produce for
+/// EVERY resolution error alike. This is the scenario the QP9b brief's
+/// fail-without-fix probe reproduces against a copied tree with that arm
+/// reintroduced: RED (silently reports zero modules, no error) without the
+/// fix, GREEN (typed `ScriptsNotAllowed`) with it.
+#[test]
+#[serial]
+fn resolve_desired_state_module_blocked_by_scripts_not_allowed_surfaces_the_real_error() {
+    let tmp = tempdir().unwrap();
+    let source_repo = create_local_source_repo_with_blocked_script(tmp.path());
+    let config_path = write_config_with_local_source(tmp.path(), &source_repo, "default");
+    // `write_config_with_local_source` subscribes to a profile (`default`)
+    // the source repo does not carry — irrelevant here, since this test
+    // resolves `source-module` directly via `--module`, never through the
+    // profile's own module list.
+
+    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let mut cli = make_cli(config_path.clone());
+    cli.state_dir = Some(tmp.path().join("state"));
+    cli.cache_dir = Some(tmp.path().join("cache"));
+
+    let cfg = config::load_config(&config_path).unwrap();
+    let local = ResolvedProfile {
+        layers: Vec::new(),
+        merged: MergedProfile::default(),
+    };
+    let printer = quiet_printer();
+    let ctx = RunContext::new(&cli, &printer);
+
+    let result = resolve_desired_state(
+        &ctx,
+        &cfg,
+        &local,
+        &["source-module".to_string()],
+        false,
+        &printer,
+        true,
+        composition::ConstraintMode::Enforce,
+    );
+    let err = match result {
+        Ok(_) => panic!("expected ScriptsNotAllowed, got Ok"),
+        Err(e) => e,
+    };
+
+    let cfgd_err = err
+        .downcast_ref::<cfgd_core::errors::CfgdError>()
+        .unwrap_or_else(|| panic!("expected a typed CfgdError, got: {err}"));
+    assert!(
+        matches!(
+            cfgd_err,
+            cfgd_core::errors::CfgdError::Module(
+                cfgd_core::errors::ModuleError::ScriptsNotAllowed { .. }
+            )
+        ),
+        "expected ScriptsNotAllowed, got: {cfgd_err}"
     );
 }
 
@@ -1253,7 +1605,8 @@ fn a_module_free_resolution_builds_no_registry_until_one_is_asked_for() {
         &ctx,
         &cfg,
         &no_modules,
-        None,
+        &[],
+        false,
         &printer,
         false,
         composition::ConstraintMode::Report,
@@ -1277,12 +1630,13 @@ fn a_module_free_resolution_builds_no_registry_until_one_is_asked_for() {
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: my-module\nspec:\n  packages:\n    - name: module-pkg\n      prefer: [cargo]\n",
     )
     .unwrap();
-    let with_module = empty_resolved_profile("my-module", "work");
+    let with_module = empty_resolved_profile(&["my-module".to_string()], "work");
     let desired = resolve_desired_state(
         &ctx,
         &cfg,
         &with_module,
-        None,
+        &[],
+        false,
         &printer,
         false,
         composition::ConstraintMode::Report,
@@ -1512,7 +1866,7 @@ fn the_desired_state_registers_each_custom_manager_exactly_once() {
     let printer = quiet_printer();
     let ctx = RunContext::new(&cli, &printer);
 
-    let mut local = empty_resolved_profile("my-module", "work");
+    let mut local = empty_resolved_profile(&["my-module".to_string()], "work");
     local.merged.modules.clear();
     local.merged.packages.custom = vec![cfgd_core::config::CustomManagerSpec {
         name: "mise".to_string(),
@@ -1528,7 +1882,8 @@ fn the_desired_state_registers_each_custom_manager_exactly_once() {
         &ctx,
         &cfg,
         &local,
-        None,
+        &[],
+        false,
         &printer,
         false,
         composition::ConstraintMode::Report,

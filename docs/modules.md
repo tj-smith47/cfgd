@@ -727,16 +727,17 @@ cfgd module search tmux
 ### Apply/Plan by Module
 
 ```sh
-cfgd apply --module nvim            # apply only nvim and its dependencies
-cfgd apply --dry-run --module nvim  # preview module changes
+cfgd apply --module nvim                 # nvim + deps, isolated from the profile
+cfgd apply --module nvim --with-profile  # full profile PLUS nvim
+cfgd apply --dry-run --module nvim       # preview module changes
 ```
 
 ### Bootstrap a Single Module
 
 ```sh
-cfgd init --from jane/dotfiles --module nvim                       # GitHub shorthand
-cfgd init --from git@github.com:jane/dotfiles.git --module nvim
-cfgd init --from https://gitlab.example.com/jane/dotfiles.git --module nvim
+cfgd init --from jane/dotfiles --apply-module nvim                       # GitHub shorthand
+cfgd init --from git@github.com:jane/dotfiles.git --apply-module nvim
+cfgd init --from https://gitlab.example.com/jane/dotfiles.git --apply-module nvim
 ```
 
 Clones the repo, finds the module, resolves deps, detects platform, and applies just that module.

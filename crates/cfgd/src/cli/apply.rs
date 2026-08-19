@@ -182,17 +182,29 @@ pub fn run_apply(
     let yes = args.yes;
     let skip = &args.skip;
     let only = &args.only;
-    let module_filter = args.module.as_deref();
+    let module_filter: &[String] = &args.module;
+    let with_profile = args.with_profile;
+
+    // `--with-profile` opts a `--module` run INTO composing with the full
+    // profile; with no module named, there is nothing for it to compose
+    // with — reject rather than silently behaving like a plain `cfgd apply`.
+    if with_profile && module_filter.is_empty() {
+        anyhow::bail!(
+            "--with-profile requires --module (it composes the named module(s) with the full profile; without --module there is nothing to add)"
+        );
+    }
 
     let config_dir = config_dir(cli);
 
-    // When --module is set, try loading profile but fall back to empty if none
-    // configured. The header these rows belong to is rendered once the plan is
-    // final — it states the phase and action counts — so the profile label is
-    // carried down rather than printed here. A module-only run resolved no
-    // profile, so it carries none and the header omits the row.
+    // `--module` without `--with-profile` isolates unconditionally — a
+    // profile is never even resolved, so a profile that DOES resolve can no
+    // longer leak into an isolated run. The header these rows belong to is
+    // rendered once the plan is final — it states the phase and action
+    // counts — so the profile label is carried down rather than printed
+    // here. An isolated run resolved no profile, so it carries none and the
+    // header omits the row.
     let (cfg, resolved, profile_label, config_parsed) =
-        load_config_and_profile_module_scoped(cli, printer, module_filter)?;
+        load_config_and_profile_module_scoped(cli, printer, module_filter, with_profile)?;
 
     let ctx = RunContext::new(cli, printer);
 
@@ -209,6 +221,7 @@ pub fn run_apply(
         &cfg,
         &resolved,
         module_filter,
+        with_profile,
         printer,
         true,
         composition::ConstraintMode::Enforce,
@@ -241,8 +254,10 @@ pub fn run_apply(
     let phase_filter: Option<PhaseFilter> =
         resolve_phase_filter(args.phase.clone(), &registry, printer)?;
 
-    // If --module is set, skip profile-level packages/files
-    let module_only = module_filter.is_some();
+    // Isolated (--module without --with-profile): skip profile-level
+    // packages/files — everything else profile-owned is already zeroed by
+    // `resolve_desired_state`'s isolation (`effective_resolved`).
+    let module_only = !module_filter.is_empty() && !with_profile;
 
     // Declarative prune (and the post-apply tracking-table GC below) reconcile
     // removals, which is only safe on a FULL, unscoped run: it needs the
@@ -387,19 +402,24 @@ pub fn run_apply(
     // outcome distinguishes "in sync" from "a filter excluded pending work".
     let filter_active =
         phase_filter.is_some() || !skip.is_empty() || !only.is_empty() || args.skip_scripts;
-    let module_miss = module_filter
-        .filter(|_| resolved_modules.is_empty())
-        .map(str::to_string);
-    let scope = ScopeReport::capture(&plan, filter_active, module_miss);
+    // `resolve_modules` is atomic over the whole requested-name list (see
+    // `resolve_desired_state`): a `--module` name that does not resolve
+    // already propagated as an error above, so this path never reaches here
+    // with a non-empty `module_filter` and an empty `resolved_modules`. The
+    // arm stays reachable only through `ScopeReport::capture`'s own direct
+    // callers/tests — never fed a real value from `apply`.
+    let module_miss: Option<String> = None;
+    let mut scope = ScopeReport::capture(&plan, filter_active, module_miss);
 
     // Apply --skip / --only filters
-    filter_plan(
+    scope.filter_miss = filter_plan(
         &mut plan,
         skip,
         only,
         phase_filter.as_ref(),
         printer,
         &registry,
+        &config_dir,
     );
 
     // Strip script phases when --skip-scripts is set
