@@ -290,6 +290,72 @@ fn apply_creates_files() {
     assert_eq!(fs::read_to_string(&target).unwrap(), "hello world");
 }
 
+/// QP9 LEAK-site fix: `apply`'s loop used to run each `FileAction` under its
+/// own early `?`, so an action that failed mid-loop (here, a target whose
+/// parent is a regular file — `ensure_target_writable` returns `ENOTDIR`)
+/// abandoned the "Applying files" progress bar without a `finish()` call.
+/// `ProgressBar::drop` now settles an abandoned bar as a `Role::Skipped`
+/// "(interrupted)" line (the same rule `Spinner::drop` follows), which made
+/// this specific leak visible for the first time: a leaked bar rendered as a
+/// silent, un-styled line under the OLD `Drop` (no custom impl at all), so
+/// nothing here ever caught it. `apply_one_file_action` now carries the
+/// per-action work, and `apply`'s loop matches its result exactly once,
+/// calling `pb.finish()` on both the success and the failure path.
+#[test]
+fn apply_failure_settles_the_progress_bar_explicitly_never_via_drop() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path();
+
+    let files_dir = config_dir.join("files");
+    fs::create_dir_all(&files_dir).unwrap();
+    fs::write(files_dir.join("test.txt"), "hello world").unwrap();
+
+    // The parent of `target` is a regular file, not a directory:
+    // `ensure_target_writable` hits `fs::create_dir_all` and returns an IO
+    // error — the same shape `apply_with_failures_human` exercises end to
+    // end through the reconciler.
+    let blocker = config_dir.join("blocker");
+    fs::write(&blocker, "i am a file, not a dir").unwrap();
+    let target = blocker.join("test.txt");
+
+    let resolved = make_resolved_profile(
+        vec![],
+        FilesSpec {
+            managed: vec![ManagedFileSpec {
+                patch: None,
+                source: "files/test.txt".to_string(),
+                target: target.clone(),
+                strategy: Some(FileStrategy::Copy),
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            }],
+            permissions: HashMap::new(),
+        },
+    );
+
+    let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+    let actions = fm.plan(&resolved.merged).unwrap();
+    assert_eq!(actions.len(), 1);
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let result = fm.apply(&actions, &printer);
+    drop(printer);
+
+    assert!(
+        result.is_err(),
+        "a target whose parent is a regular file must fail to apply"
+    );
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        !out.contains("(interrupted)"),
+        "the progress bar must be finished explicitly on the failure path, \
+         never left for Drop to settle: {out:?}"
+    );
+}
+
 #[test]
 fn apply_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();

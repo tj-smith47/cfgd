@@ -11,6 +11,19 @@ use cfgd_core::providers::{
 
 use super::template::is_tera_template;
 
+/// The one target `Path` every `FileAction` variant carries — the progress
+/// bar's per-step label reads this so an early `?` mid-loop settles naming
+/// the file it was on, not just "Applying files".
+fn file_action_target(action: &FileAction) -> &Path {
+    match action {
+        FileAction::Create { target, .. }
+        | FileAction::Update { target, .. }
+        | FileAction::Delete { target, .. }
+        | FileAction::SetPermissions { target, .. }
+        | FileAction::Skip { target, .. } => target,
+    }
+}
+
 /// Implement the FileManager trait for CfgdFileManager.
 impl cfgd_core::providers::FileManager for super::CfgdFileManager {
     fn scan_source(&self, layers: &[FileLayer]) -> Result<FileTree> {
@@ -118,7 +131,7 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
     }
 
     fn apply(&self, actions: &[FileAction], printer: &Printer) -> Result<()> {
-        let pb = printer.progress_bar(actions.len() as u64, "Applying files");
+        let mut pb = printer.progress_bar(actions.len() as u64, "Applying files");
         // Every secret this run interpolates, resolved once however many
         // templates name it. Scoped to the call rather than to the manager
         // because a manager can outlive a run — the daemon holds one registry
@@ -128,147 +141,17 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
         let secrets = cfgd_core::providers::SecretCache::new();
 
         for action in actions {
-            match action {
-                FileAction::Create {
-                    source,
-                    target,
-                    strategy,
-                    patch,
-                    ..
-                }
-                | FileAction::Update {
-                    source,
-                    target,
-                    strategy,
-                    patch,
-                    ..
-                } => {
-                    let file_origin = match action {
-                        FileAction::Create { origin, .. } | FileAction::Update { origin, .. } => {
-                            if origin == LOCAL_LAYER {
-                                None
-                            } else {
-                                Some(origin.as_str())
-                            }
-                        }
-                        _ => None,
-                    };
-
-                    // Ensure parent directory exists and is writable
-                    ensure_target_writable(target)?;
-
-                    // Remove existing target (symlink, file, etc.) before deploying.
-                    // `Patch` is exempt: the removal exists to clear a stale
-                    // link before `create_symlink`/`hard_link`, and `Patch`
-                    // instead writes through `atomic_write_merged`, which
-                    // replaces by rename and so carries the target's own mode
-                    // and follows its symlink. Deleting first would strip both.
-                    if !matches!(strategy, FileStrategy::Patch)
-                        && (target.exists() || target.symlink_metadata().is_ok())
-                    {
-                        fs::remove_file(target).map_err(|e| FileError::Io {
-                            path: target.clone(),
-                            source: e,
-                        })?;
-                    }
-
-                    match strategy {
-                        FileStrategy::Symlink => {
-                            cfgd_core::create_symlink(source, target).map_err(|e| {
-                                FileError::Io {
-                                    path: target.clone(),
-                                    source: e,
-                                }
-                            })?;
-                        }
-                        FileStrategy::Hardlink => {
-                            fs::hard_link(source, target).map_err(|e| FileError::Io {
-                                path: target.clone(),
-                                source: e,
-                            })?;
-                        }
-                        FileStrategy::Patch => {
-                            // The merge runs against the live file here — against
-                            // whatever the target holds now rather than what
-                            // planning saw, so an out-of-band edit between plan
-                            // and apply is folded in.
-                            let spec =
-                                patch.as_ref().ok_or_else(|| FileError::PatchBlockMissing {
-                                    path: target.clone(),
-                                })?;
-                            let patched = self
-                                .evaluate_spec(
-                                    spec,
-                                    target,
-                                    cfgd_core::reconciler::ReconcileContext::Apply,
-                                )?
-                                .patched;
-                            cfgd_core::atomic_write_merged(target, &patched).map_err(|e| {
-                                FileError::Io {
-                                    path: target.clone(),
-                                    source: e,
-                                }
-                            })?;
-                        }
-                        FileStrategy::Copy | FileStrategy::Template => {
-                            let mut content = if is_tera_template(source) {
-                                self.render_template(source, file_origin)?
-                            } else {
-                                fs::read_to_string(source).map_err(|e| FileError::Io {
-                                    path: source.clone(),
-                                    source: e,
-                                })?
-                            };
-
-                            // TOCTOU check: verify source hasn't changed since planning
-                            let expected_hash = match action {
-                                FileAction::Create { source_hash, .. }
-                                | FileAction::Update { source_hash, .. } => source_hash.as_deref(),
-                                _ => None,
-                            };
-                            if let Some(plan_hash) = expected_hash {
-                                let current_hash = cfgd_core::sha256_hex(content.as_bytes());
-                                if current_hash != plan_hash {
-                                    return Err(FileError::SourceChanged {
-                                        path: source.clone(),
-                                    }
-                                    .into());
-                                }
-                            }
-
-                            if content.contains("${secret:") {
-                                let provider_refs: Vec<&dyn cfgd_core::providers::SecretProvider> =
-                                    self.secret_providers.iter().map(|p| p.as_ref()).collect();
-                                content = crate::secrets::resolve_secret_refs(
-                                    &content,
-                                    &provider_refs,
-                                    self.secret_backend.as_deref(),
-                                    &self.config_dir,
-                                    &secrets,
-                                )?;
-                            }
-
-                            cfgd_core::atomic_write(target, content.as_bytes()).map_err(|e| {
-                                FileError::Io {
-                                    path: target.clone(),
-                                    source: e,
-                                }
-                            })?;
-                        }
-                    }
-                }
-                FileAction::Delete { target, .. } => {
-                    if target.exists() || target.symlink_metadata().is_ok() {
-                        fs::remove_file(target).map_err(|e| FileError::Io {
-                            path: target.clone(),
-                            source: e,
-                        })?;
-                    }
-                }
-                FileAction::SetPermissions { target, mode, .. } => {
-                    set_permissions(target, *mode)?;
-                }
-                FileAction::Skip { .. } => {}
+            // native-ok: progress-bar label, terminal-only display
+            pb.set_message(file_action_target(action).display().to_string());
+            // Matched exactly once: the per-action work used to run under this
+            // loop's own early `?`, so an action that failed mid-loop (a
+            // blocked parent directory, a changed source hash) abandoned `pb`
+            // without a `finish()` call for the reconciler's own status line
+            // to land beside — Drop then settled it a second time as an
+            // unwanted "(interrupted)" line ahead of the real failure.
+            if let Err(e) = apply_one_file_action(self, action, &secrets) {
+                pb.finish();
+                return Err(e);
             }
             pb.inc(1);
         }
@@ -286,6 +169,160 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
     ) -> Result<FileDriftResult> {
         self.file_drift_one(source, target, origin, strategy)
     }
+}
+
+/// One `FileAction`'s worth of `apply`'s work, extracted so its many `?`
+/// returns land here rather than abandoning `apply`'s progress bar mid-step
+/// — the loop settles `pb` explicitly on both outcomes instead of leaving an
+/// unfinished bar to `Drop`.
+fn apply_one_file_action(
+    manager: &super::CfgdFileManager,
+    action: &FileAction,
+    secrets: &cfgd_core::providers::SecretCache,
+) -> Result<()> {
+    match action {
+        FileAction::Create {
+            source,
+            target,
+            strategy,
+            patch,
+            ..
+        }
+        | FileAction::Update {
+            source,
+            target,
+            strategy,
+            patch,
+            ..
+        } => {
+            let file_origin = match action {
+                FileAction::Create { origin, .. } | FileAction::Update { origin, .. } => {
+                    if origin == LOCAL_LAYER {
+                        None
+                    } else {
+                        Some(origin.as_str())
+                    }
+                }
+                _ => None,
+            };
+
+            // Ensure parent directory exists and is writable
+            ensure_target_writable(target)?;
+
+            // Remove existing target (symlink, file, etc.) before deploying.
+            // `Patch` is exempt: the removal exists to clear a stale
+            // link before `create_symlink`/`hard_link`, and `Patch`
+            // instead writes through `atomic_write_merged`, which
+            // replaces by rename and so carries the target's own mode
+            // and follows its symlink. Deleting first would strip both.
+            if !matches!(strategy, FileStrategy::Patch)
+                && (target.exists() || target.symlink_metadata().is_ok())
+            {
+                fs::remove_file(target).map_err(|e| FileError::Io {
+                    path: target.clone(),
+                    source: e,
+                })?;
+            }
+
+            match strategy {
+                FileStrategy::Symlink => {
+                    cfgd_core::create_symlink(source, target).map_err(|e| FileError::Io {
+                        path: target.clone(),
+                        source: e,
+                    })?;
+                }
+                FileStrategy::Hardlink => {
+                    fs::hard_link(source, target).map_err(|e| FileError::Io {
+                        path: target.clone(),
+                        source: e,
+                    })?;
+                }
+                FileStrategy::Patch => {
+                    // The merge runs against the live file here — against
+                    // whatever the target holds now rather than what
+                    // planning saw, so an out-of-band edit between plan
+                    // and apply is folded in.
+                    let spec = patch.as_ref().ok_or_else(|| FileError::PatchBlockMissing {
+                        path: target.clone(),
+                    })?;
+                    let patched = manager
+                        .evaluate_spec(
+                            spec,
+                            target,
+                            cfgd_core::reconciler::ReconcileContext::Apply,
+                        )?
+                        .patched;
+                    cfgd_core::atomic_write_merged(target, &patched).map_err(|e| {
+                        FileError::Io {
+                            path: target.clone(),
+                            source: e,
+                        }
+                    })?;
+                }
+                FileStrategy::Copy | FileStrategy::Template => {
+                    let mut content = if is_tera_template(source) {
+                        manager.render_template(source, file_origin)?
+                    } else {
+                        fs::read_to_string(source).map_err(|e| FileError::Io {
+                            path: source.clone(),
+                            source: e,
+                        })?
+                    };
+
+                    // TOCTOU check: verify source hasn't changed since planning
+                    let expected_hash = match action {
+                        FileAction::Create { source_hash, .. }
+                        | FileAction::Update { source_hash, .. } => source_hash.as_deref(),
+                        _ => None,
+                    };
+                    if let Some(plan_hash) = expected_hash {
+                        let current_hash = cfgd_core::sha256_hex(content.as_bytes());
+                        if current_hash != plan_hash {
+                            return Err(FileError::SourceChanged {
+                                path: source.clone(),
+                            }
+                            .into());
+                        }
+                    }
+
+                    if content.contains("${secret:") {
+                        let provider_refs: Vec<&dyn cfgd_core::providers::SecretProvider> = manager
+                            .secret_providers
+                            .iter()
+                            .map(|p| p.as_ref())
+                            .collect();
+                        content = crate::secrets::resolve_secret_refs(
+                            &content,
+                            &provider_refs,
+                            manager.secret_backend.as_deref(),
+                            &manager.config_dir,
+                            secrets,
+                        )?;
+                    }
+
+                    cfgd_core::atomic_write(target, content.as_bytes()).map_err(|e| {
+                        FileError::Io {
+                            path: target.clone(),
+                            source: e,
+                        }
+                    })?;
+                }
+            }
+        }
+        FileAction::Delete { target, .. } => {
+            if target.exists() || target.symlink_metadata().is_ok() {
+                fs::remove_file(target).map_err(|e| FileError::Io {
+                    path: target.clone(),
+                    source: e,
+                })?;
+            }
+        }
+        FileAction::SetPermissions { target, mode, .. } => {
+            set_permissions(target, *mode)?;
+        }
+        FileAction::Skip { .. } => {}
+    }
+    Ok(())
 }
 
 /// Recursively scan a directory and add file entries to the map.
