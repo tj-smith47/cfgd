@@ -356,6 +356,79 @@ fn apply_failure_settles_the_progress_bar_explicitly_never_via_drop() {
     );
 }
 
+/// `apply`'s loop calls `pb.set_message(file_action_target(action)...)` once
+/// per action, so the bar's label tracks whichever file is currently being
+/// processed rather than sitting on the loop's opening "Applying files"
+/// caption for the whole run. Needs [`cfgd_core::output::Printer::for_test_with_live_bars`]
+/// (the constructor that routes indicatif's own paints into the captured
+/// buffer) — the plain `for_test_at` capture used above never draws the bar
+/// at all, so it cannot see a `set_message` that never reached it.
+#[test]
+fn apply_progress_bar_names_the_current_file_being_processed() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path();
+
+    let files_dir = config_dir.join("files");
+    fs::create_dir_all(&files_dir).unwrap();
+    fs::write(files_dir.join("first.txt"), "one").unwrap();
+    fs::write(files_dir.join("second.txt"), "two").unwrap();
+
+    let first_target = config_dir.join("out").join("first.txt");
+    let second_target = config_dir.join("out").join("second.txt");
+
+    let resolved = make_resolved_profile(
+        vec![],
+        FilesSpec {
+            managed: vec![
+                ManagedFileSpec {
+                    patch: None,
+                    source: "files/first.txt".to_string(),
+                    target: first_target.clone(),
+                    strategy: Some(FileStrategy::Copy),
+                    private: false,
+                    origin: None,
+                    encryption: None,
+                    permissions: None,
+                },
+                ManagedFileSpec {
+                    patch: None,
+                    source: "files/second.txt".to_string(),
+                    target: second_target.clone(),
+                    strategy: Some(FileStrategy::Copy),
+                    private: false,
+                    origin: None,
+                    encryption: None,
+                    permissions: None,
+                },
+            ],
+            permissions: HashMap::new(),
+        },
+    );
+
+    let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+    let actions = fm.plan(&resolved.merged).unwrap();
+    assert_eq!(actions.len(), 2);
+
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_live_bars();
+    let result = fm.apply(&actions, &printer);
+    drop(printer);
+
+    assert!(
+        result.is_ok(),
+        "both actions should apply cleanly: {result:?}"
+    );
+
+    let painted = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        painted.contains(&first_target.display().to_string()),
+        "the bar must have named the first file while it was in flight: {painted:?}"
+    );
+    assert!(
+        painted.contains(&second_target.display().to_string()),
+        "the bar must have named the second file while it was in flight: {painted:?}"
+    );
+}
+
 #[test]
 fn apply_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();

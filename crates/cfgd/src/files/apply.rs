@@ -147,8 +147,8 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
             // loop's own early `?`, so an action that failed mid-loop (a
             // blocked parent directory, a changed source hash) abandoned `pb`
             // without a `finish()` call for the reconciler's own status line
-            // to land beside — Drop then settled it a second time as an
-            // unwanted "(interrupted)" line ahead of the real failure.
+            // to land beside — Drop then settled it as an unwanted
+            // "(interrupted)" line ahead of the real failure.
             if let Err(e) = apply_one_file_action(self, action, &secrets) {
                 pb.finish();
                 return Err(e);
