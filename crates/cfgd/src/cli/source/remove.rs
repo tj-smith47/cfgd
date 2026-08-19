@@ -21,7 +21,7 @@ pub fn cmd_source_remove(
 
     // The heading names the subject with the canonical owner token, so every
     // line below it says only what happened.
-    printer.heading_owner("Remove", &OwnerLabel::new("source", name));
+    printer.heading_owner_prefixed("Remove", &OwnerLabel::new("source", name));
 
     let config_path = cli.config.clone();
     let mut cfg = config::load_config(&config_path)?;

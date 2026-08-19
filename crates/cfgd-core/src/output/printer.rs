@@ -426,7 +426,12 @@ impl Printer {
     /// Top-level `<Verb> <owner>` heading (`Add source:acme`), styled through
     /// [`super::OwnerLabel`]'s three slots for the token instead of folding
     /// the whole line into `heading`'s single `theme.header` coat.
-    pub fn heading_owner(&self, prefix: impl Into<String>, owner: &super::OwnerLabel) {
+    ///
+    /// Named `_prefixed` rather than plain `heading_owner`, unlike
+    /// `Doc::heading_owner`: the two used to share one name over incompatible
+    /// first arguments (a leading verb here, `kind` there), so a call site
+    /// four files from its sibling read as if it did the same thing.
+    pub fn heading_owner_prefixed(&self, prefix: impl Into<String>, owner: &super::OwnerLabel) {
         let depth = self.renderer.enforce_structural_top_level(0);
         let styled = owner.styled_with_prefix(&self.renderer.theme, &prefix.into());
         // See `heading`'s comment: render_heading_styled is hardcoded to
@@ -462,6 +467,24 @@ impl Printer {
             .collect();
         self.renderer
             .render_kv_block(self.sink_stderr.as_ref(), depth, &pairs);
+    }
+
+    /// A "command — description" list — `kv_block`'s counterpart for a left
+    /// column that is a shell command rather than a data-carrying key. See
+    /// `Renderer::render_command_list` for why it needs its own layout.
+    pub fn command_list<I, K, V>(&self, pairs: I)
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let depth = self.renderer.enforce_structural_top_level(0);
+        let pairs: Vec<(String, String)> = pairs
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
+        self.renderer
+            .render_command_list(self.sink_stderr.as_ref(), depth, &pairs);
     }
 
     pub fn hint(&self, text: impl Into<String>) {
@@ -814,10 +837,10 @@ impl Printer {
     /// have to add on top.
     #[must_use = "section closes when SectionGuard is dropped; bind it"]
     pub fn section_caveats(&self) -> super::section_guard::SectionGuard<'_> {
-        let (_, accent) = super::renderer::role_glyph(&self.renderer.theme, Role::Accent);
-        let styled = accent.apply_to("Caveats").to_string();
+        let label = super::AccentHeading::new("Caveats");
+        let styled = label.styled(&self.renderer.theme);
         self.renderer.render_section_open_styled(
-            "Caveats",
+            label.plain(),
             Some(styled),
             /*keep_when_empty=*/ true,
         );

@@ -275,7 +275,9 @@ fn finish_enrollment(
 /// without standing up a mock server.
 pub fn build_enroll_final_doc(output: &EnrollOutput) -> Doc {
     Doc::new()
-        .section("Next Steps", |s| s.kv_block(next_steps_lines().to_vec()))
+        .section("Next Steps", |s| {
+            s.command_list(next_steps_lines().to_vec())
+        })
         .with_data(output)
 }
 
@@ -305,9 +307,9 @@ pub(super) fn build_device_credential(
 /// Pinned as a pure helper so the line set is testable and stable — the
 /// CLI's "what do I do next?" affordance must not silently drop or reorder
 /// these as the codebase evolves; doing so degrades the first-run UX.
-/// `(command, description)` pairs, rendered as a `kv_block` — the section's
-/// own alignment, not a hand-padded column of trailing spaces baked into the
-/// command string.
+/// `(command, description)` pairs, rendered as a `command_list` — the
+/// section's own alignment, not a hand-padded column of trailing spaces
+/// baked into the command string.
 pub(super) fn next_steps_lines() -> &'static [(&'static str, &'static str)] {
     &[
         ("cfgd checkin --server-url <url>", "report status to server"),

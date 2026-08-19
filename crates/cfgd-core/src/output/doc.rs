@@ -137,8 +137,16 @@ impl Doc {
     /// A structured owner-token heading (`source:acme`), styled through
     /// [`OwnerLabel`]'s three slots at render time instead of `heading`'s
     /// single `theme.header` coat.
-    pub fn heading_owner(mut self, kind: impl Into<String>, name: impl Into<String>) -> Self {
-        self.heading = Some(HeadingKind::Owner(OwnerLabel::new(kind, name)));
+    ///
+    /// Takes an `&OwnerLabel` rather than separate `kind`/`name` strings: this
+    /// method and the streaming `Printer::heading_owner` used to share one
+    /// name over two incompatible first arguments (`kind, name` here vs. a
+    /// leading verb, `prefix, &OwnerLabel`, there), so a reader four files
+    /// apart could not tell from the name alone which shape a call site used.
+    /// The streaming counterpart is now `Printer::heading_owner_prefixed`,
+    /// leaving this the one method actually named `heading_owner`.
+    pub fn heading_owner(mut self, owner: &OwnerLabel) -> Self {
+        self.heading = Some(HeadingKind::Owner(owner.clone()));
         self
     }
 
@@ -166,6 +174,22 @@ impl Doc {
             // KvBlock children. Author intent matters here; consecutive
             // kv_block calls remain as separate aligned blocks.
             self.children.push(Component::KvBlock { pairs });
+        }
+        self
+    }
+
+    /// A "command — description" list (see [`Component::CommandList`]) —
+    /// `kv_block`'s counterpart for a left column that is a shell command
+    /// rather than a data-carrying key.
+    pub fn command_list<I, K, V>(mut self, pairs: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let pairs: Vec<KvPair> = pairs.into_iter().map(|(k, v)| KvPair::new(k, v)).collect();
+        if !pairs.is_empty() {
+            self.children.push(Component::CommandList { pairs });
         }
         self
     }
@@ -382,6 +406,22 @@ impl SectionBuilder {
         let pairs: Vec<KvPair> = pairs.into_iter().map(|(k, v)| KvPair::new(k, v)).collect();
         if !pairs.is_empty() {
             self.children.push(Component::KvBlock { pairs });
+        }
+        self
+    }
+
+    /// A "command — description" list (see [`Component::CommandList`]) —
+    /// `kv_block`'s counterpart for a left column that is a shell command
+    /// rather than a data-carrying key.
+    pub fn command_list<I, K, V>(mut self, pairs: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let pairs: Vec<KvPair> = pairs.into_iter().map(|(k, v)| KvPair::new(k, v)).collect();
+        if !pairs.is_empty() {
+            self.children.push(Component::CommandList { pairs });
         }
         self
     }

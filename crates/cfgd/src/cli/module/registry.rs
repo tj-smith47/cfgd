@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role, section_guard::SectionGuard};
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, section_guard::SectionGuard};
 
 pub fn cmd_module_add_from_registry(
     cli: &Cli,
@@ -282,10 +282,7 @@ pub fn cmd_module_upgrade(
     yes: bool,
     allow_unsigned: bool,
 ) -> anyhow::Result<()> {
-    printer.heading(format!(
-        "Update {}",
-        cfgd_core::reconciler::Owner::module(name).token()
-    ));
+    printer.heading_owner_prefixed("Update", &OwnerLabel::new("module", name));
 
     let config_dir = config_dir(cli);
     let cache_base = module_cache_dir(cli)?;

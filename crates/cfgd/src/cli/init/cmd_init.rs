@@ -434,7 +434,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     let doc = if !should_apply {
         Doc::new()
             .section("Next Steps", |s| {
-                s.kv_block([
+                s.command_list([
                     ("cfgd module create <name>", "create a module"),
                     ("cfgd profile create <name>", "create a profile"),
                     ("cfgd apply", "apply configuration"),

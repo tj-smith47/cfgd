@@ -13,6 +13,13 @@ pub enum Component {
     KvBlock {
         pairs: Vec<KvPair>,
     },
+    /// A "command — description" list — `KvBlock`'s counterpart for a left
+    /// column that is a shell command rather than a data-carrying key. See
+    /// `Renderer::render_command_list` for why it needs its own layout
+    /// (uncapped key column, `" — "` glue) rather than reusing `KvBlock`'s.
+    CommandList {
+        pairs: Vec<KvPair>,
+    },
     Bullet {
         text: String,
     },

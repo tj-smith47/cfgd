@@ -37,6 +37,17 @@ impl Renderer {
         self.emit_with(w, |e| e.render_kv_block(depth, pairs));
     }
 
+    /// Render a CommandList immediately. Public crate entry — the Doc render
+    /// path reaches the renderer here.
+    pub(crate) fn render_command_list(
+        &self,
+        w: &dyn Writer,
+        depth: usize,
+        pairs: &[(String, String)],
+    ) {
+        self.emit_with(w, |e| e.render_command_list(depth, pairs));
+    }
+
     /// Flush any buffered kvs as one aligned block at the current depth.
     /// Public crate API — wired through `Printer::flush` (see interfaces.md).
     pub(crate) fn flush_kv_buffer(&self, w: &dyn Writer) {
@@ -97,6 +108,50 @@ impl Emitting<'_> {
                 self.out.push(format!("{}{}", prefix, key));
                 self.out.push(format!("{}  {}", prefix, v));
             }
+        }
+        self.mark_top_level_group(super::TopGroup::KvBlock);
+    }
+
+    /// Collect one aligned "command — description" block at `depth`.
+    ///
+    /// `render_kv_block`'s counterpart for a list whose left column is a
+    /// shell command rather than a data-carrying key. Two things differ, both
+    /// deliberate: the key column carries no `KEY_WIDTH_CAP` (a wrapped
+    /// command severs the exact glue that makes the list scannable, and no
+    /// command list in the product runs wide enough for an uncapped column to
+    /// become the readability problem the cap exists to prevent for arbitrary
+    /// key/value pairs); and the glue is `" — "` — the same em-dash a status
+    /// subject/detail pair renders with — never the plain whitespace gap
+    /// `render_kv_block` uses, because this is a list of DESCRIPTIONS, not a
+    /// list of VALUES.
+    pub(crate) fn render_command_list(&mut self, depth: usize, pairs: &[(String, String)]) {
+        if self.verbosity == Verbosity::Quiet || pairs.is_empty() {
+            return;
+        }
+        self.flush_section_headers();
+
+        let bump =
+            depth == 0 && self.state.section_stack.is_empty() && self.state.last_was_top_heading;
+        self.state.last_was_top_heading = false;
+        if self.state.leading {
+            self.state.leading = false;
+            self.state.blank_pending = false;
+        } else if self.state.blank_pending && !bump {
+            self.out.push(String::new());
+            self.state.blank_pending = false;
+        } else if bump {
+            self.state.blank_pending = false;
+        }
+        let effective_depth = if bump { depth + 1 } else { depth };
+
+        let prefix = indent_prefix(effective_depth);
+        let key_col = pairs.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+        for (k, v) in pairs {
+            let key = self
+                .theme
+                .secondary
+                .apply_to(format!("{:<width$}", k, width = key_col));
+            self.out.push(format!("{}{} — {}", prefix, key, v));
         }
         self.mark_top_level_group(super::TopGroup::KvBlock);
     }
@@ -188,5 +243,71 @@ mod tests {
             !out.contains(&theme.header.apply_to("Profile").to_string()),
             "key is still painted with the header slot: {out:?}"
         );
+    }
+
+    #[test]
+    fn command_list_glues_with_em_dash_not_a_whitespace_gap() {
+        let (r, sink, buf) = capture();
+        r.render_command_list(
+            &sink,
+            0,
+            &[("cfgd apply".into(), "apply configuration".into())],
+        );
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("cfgd apply — apply configuration"),
+            "got: {out:?}"
+        );
+    }
+
+    /// The one behavior B3 exists to guarantee: a key past `KEY_WIDTH_CAP`
+    /// (24) stays on ONE line with its description, never wraps to its own
+    /// line the way `render_kv_block` wraps it.
+    #[test]
+    fn command_list_never_wraps_a_key_past_the_kv_width_cap() {
+        let (r, sink, buf) = capture();
+        let long_command = "cfgd module create <name>"; // 26 chars, > KEY_WIDTH_CAP
+        r.render_command_list(&sink, 0, &[(long_command.into(), "create a module".into())]);
+        let out = crate::test_helpers::captured_text(&buf);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 1, "expected one line, got: {out:?}");
+        assert!(
+            lines[0].contains("cfgd module create <name> — create a module"),
+            "got: {:?}",
+            lines[0]
+        );
+    }
+
+    #[test]
+    fn command_list_aligns_every_row_to_the_widest_key_uncapped() {
+        let (r, sink, buf) = capture();
+        r.render_command_list(
+            &sink,
+            0,
+            &[
+                ("cfgd apply".into(), "apply configuration".into()),
+                ("cfgd module create <name>".into(), "create a module".into()),
+            ],
+        );
+        let out = crate::test_helpers::captured_text(&buf);
+        // Both keys pad to the widest (26 chars) before the glue, so the
+        // glue column lines up across rows.
+        assert!(
+            out.contains("cfgd apply                — apply configuration"),
+            "got: {out:?}"
+        );
+        assert!(
+            out.contains("cfgd module create <name> — create a module"),
+            "got: {out:?}"
+        );
+    }
+
+    #[test]
+    fn command_list_quiet_suppressed() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(Theme::default(), Verbosity::Quiet);
+        r.render_command_list(&sink, 0, &[("cfgd apply".into(), "apply".into())]);
+        assert!(crate::test_helpers::captured_text(&buf).is_empty());
     }
 }

@@ -44,6 +44,13 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
                 .collect();
             renderer.render_kv_block(sink, depth, &pairs);
         }
+        Component::CommandList { pairs } => {
+            let pairs: Vec<(String, String)> = pairs
+                .iter()
+                .map(|p| (p.key.clone(), p.value.clone()))
+                .collect();
+            renderer.render_command_list(sink, depth, &pairs);
+        }
         Component::Bullet { text } => {
             renderer.render_bullet(sink, depth, text);
         }
@@ -239,5 +246,66 @@ mod heading_title_tests {
         // the three-slot form produces.
         let single_coat = theme.header.apply_to("Status: dev-tools").to_string();
         assert_ne!(out.trim_end(), single_coat);
+    }
+}
+
+#[cfg(test)]
+mod owner_section_restyle_tests {
+    //! `render_component`'s `Component::Section { owner: true, .. }` arm
+    //! (lines 117-124) re-derives an `OwnerLabel` from the section's colon-
+    //! joined `name` and restyles it through `renderer.theme` — proving that
+    //! restyle actually reaches the renderer needs a COLOURED render, which
+    //! neither `doc.rs`'s own tests (JSON round-trip only) nor `regression.rs`
+    //! (unstyled `golden_doc!` captures) exercise.
+
+    use super::*;
+    use crate::output::renderer::Renderer;
+    use crate::output::{Doc, OwnerLabel, Theme, Verbosity};
+    use crate::test_helpers::EnvVarGuard;
+    use std::sync::{Arc, Mutex};
+
+    struct StringSink(Arc<Mutex<String>>);
+    impl super::Writer for StringSink {
+        fn write_line(&self, text: &str) {
+            self.0.lock().unwrap().push_str(text);
+            self.0.lock().unwrap().push('\n');
+        }
+    }
+
+    /// A `subsection_owner` child renders the owner token styled through
+    /// `OwnerLabel::styled`, not the section header slot's own plain coat.
+    #[test]
+    #[serial_test::serial]
+    fn subsection_owner_restyles_the_owner_token_not_the_header_slot() {
+        let _no_color = EnvVarGuard::unset("NO_COLOR");
+        let _colorterm = EnvVarGuard::set("COLORTERM", "truecolor");
+
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let renderer = Renderer::new(theme.clone(), Verbosity::Normal);
+        let buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+
+        let label = OwnerLabel::new("module", "nvim");
+        let doc = Doc::new().section("Phase: Files", |s| {
+            s.subsection_owner(&label, |sub| sub.bullet("wrote init.lua"))
+        });
+        render_doc(&renderer, &sink, &doc);
+
+        // raw-capture-ok: comparing against OwnerLabel's own styled() output, which carries ANSI — stripping it first would hide exactly what this test checks
+        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let expected = label.styled(&theme);
+        assert!(
+            out.contains(&expected),
+            "owner token missing or restyled: {out:?}"
+        );
+
+        // Not vacuous: a plain, non-owner section named "module:nvim" would
+        // paint the whole header string in one `theme.header` coat instead of
+        // the three-slot owner styling.
+        let single_coat = theme.header.apply_to("module:nvim").to_string();
+        assert!(
+            !out.contains(&single_coat),
+            "restyle must diverge from a plain header coat: {out:?}"
+        );
     }
 }

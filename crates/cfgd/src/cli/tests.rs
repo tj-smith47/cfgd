@@ -1058,13 +1058,33 @@ fn format_conflict_preview_lines_emits_canonical_shape() {
         "package:apt:curl",
         cfgd_core::composition::ResolutionType::Locked,
         "acme-baseline",
-        "policy locks installation",
+        "LOCKED curl <- acme-baseline",
     )];
     let lines = super::format_conflict_preview_lines(&conflicts);
     assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0], "package:apt:curl: LOCKED curl from acme-baseline");
+}
+
+#[test]
+fn format_conflict_preview_lines_rewords_the_persisted_arrow_for_display_only() {
+    // `details` keeps its persisted `<-` shape in storage (composition::record);
+    // this formatter is a display path and must reword it without a raw ASCII
+    // arrow ever reaching the terminal (R9).
+    let conflicts = vec![conflict(
+        "curl",
+        cfgd_core::composition::ResolutionType::Rejected,
+        "local",
+        "REJECTED curl <- local rejected acme-baseline recommendation",
+    )];
+    let lines = super::format_conflict_preview_lines(&conflicts);
     assert_eq!(
         lines[0],
-        "LOCKED package:apt:curl from acme-baseline (policy locks installation)"
+        "curl: REJECTED curl from local rejected acme-baseline recommendation"
+    );
+    assert!(
+        !lines[0].contains("<-"),
+        "leaked a raw arrow: {:?}",
+        lines[0]
     );
 }
 
@@ -1072,37 +1092,40 @@ fn format_conflict_preview_lines_emits_canonical_shape() {
 fn format_conflict_preview_lines_renders_each_resolution_type_label() {
     // All five ResolutionType variants must produce their canonical UPPER
     // label — pin so a future rename of `Override` → `Overridden` is
-    // intentional, not silent.
+    // intentional, not silent. `details` carries the label in production
+    // (composition::record is the only real producer), so the fixture
+    // mirrors that instead of asserting on text the formatter no longer
+    // restates itself.
     let conflicts = vec![
         conflict(
             "a",
             cfgd_core::composition::ResolutionType::Locked,
             "src",
-            "d",
+            "LOCKED a <- src",
         ),
         conflict(
             "b",
             cfgd_core::composition::ResolutionType::Required,
             "src",
-            "d",
+            "REQUIRED b <- src",
         ),
         conflict(
             "c",
             cfgd_core::composition::ResolutionType::Override,
             "src",
-            "d",
+            "OVERRIDE c <- src",
         ),
         conflict(
             "d",
             cfgd_core::composition::ResolutionType::Rejected,
             "src",
-            "d",
+            "REJECTED d <- local rejected src recommendation",
         ),
         conflict(
             "e",
             cfgd_core::composition::ResolutionType::Default,
             "src",
-            "d",
+            "DEFAULT e <- src",
         ),
     ];
     let lines = super::format_conflict_preview_lines(&conflicts);
@@ -1136,12 +1159,12 @@ fn format_conflict_preview_lines_preserves_input_order() {
     ];
     let lines = super::format_conflict_preview_lines(&conflicts);
     assert!(
-        lines[0].contains(" z "),
+        lines[0].starts_with("z:"),
         "first line must be `z`: {:?}",
         lines
     );
     assert!(
-        lines[1].contains(" a "),
+        lines[1].starts_with("a:"),
         "second line must be `a`: {:?}",
         lines
     );

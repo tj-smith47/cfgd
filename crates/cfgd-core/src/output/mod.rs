@@ -28,6 +28,9 @@ pub use phase_label::PhaseLabel;
 pub mod title_label;
 pub use title_label::TitleLabel;
 
+mod accent_heading;
+use accent_heading::AccentHeading;
+
 pub mod section_guard;
 pub use section_guard::SectionGuard;
 

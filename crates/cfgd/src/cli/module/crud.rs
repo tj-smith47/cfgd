@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{
-    Doc, Printer, Role, TitleLabel, collapse_to_subject_line, condense_script_label,
+    Doc, OwnerLabel, Printer, Role, TitleLabel, collapse_to_subject_line, condense_script_label,
 };
 
 pub fn cmd_module_create(
@@ -389,10 +389,7 @@ pub fn cmd_module_update_local(
     let description = args.description.as_deref();
     let sets = &args.sets;
     validate_resource_name(name, "Module")?;
-    printer.heading(format!(
-        "Update {}",
-        cfgd_core::reconciler::Owner::module(name).token()
-    ));
+    printer.heading_owner_prefixed("Update", &OwnerLabel::new("module", name));
 
     let config_dir = config_dir(cli);
     let (mut doc, module_yaml_path) = match load_module_document(&config_dir, name) {

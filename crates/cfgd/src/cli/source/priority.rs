@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::config::validate_source_priority;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
 
 pub fn cmd_source_priority(
     cli: &Cli,
@@ -51,16 +51,12 @@ pub fn cmd_source_priority(
 
             printer.emit(
                 Doc::new()
-                    .status_with(
-                        Role::Ok,
-                        cfgd_core::reconciler::Owner::source(name).token(),
-                        |f| {
-                            f.detail(format!(
-                                "priority updated: {old_priority} {} {new_priority}",
-                                printer.arrow()
-                            ))
-                        },
-                    )
+                    .status_with(Role::Ok, OwnerLabel::new("source", name).plain(), |f| {
+                        f.detail(format!(
+                            "priority updated: {old_priority} {} {new_priority}",
+                            printer.arrow()
+                        ))
+                    })
                     .with_data(serde_json::json!({
                         "name": name,
                         "priority": new_priority,

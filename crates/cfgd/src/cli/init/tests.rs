@@ -3673,9 +3673,10 @@ fn next_steps_lines_starts_with_checkin_then_apply() {
 
 #[test]
 fn next_steps_lines_are_bare_commands_not_pre_indented() {
-    // The "Next Steps" Doc section renders each pair through a `kv_block`,
-    // which supplies its own indent and column alignment. The command half
-    // must NOT carry leading whitespace or hand-rolled padding of its own.
+    // The "Next Steps" Doc section renders each pair through a
+    // `command_list`, which supplies its own indent and column alignment.
+    // The command half must NOT carry leading whitespace or hand-rolled
+    // padding of its own.
     for (command, _description) in super::next_steps_lines() {
         assert!(
             !command.starts_with(' ') && !command.starts_with('\t'),
