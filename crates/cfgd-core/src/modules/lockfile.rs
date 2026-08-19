@@ -341,6 +341,16 @@ pub fn load_all_modules(
 /// marker into the text: the role's own icon at render time IS the marker, so
 /// this stays a single source of add/remove/change signal rather than two
 /// (a hand-typed glyph in the string AND a role driving the icon beside it).
+///
+/// This runs inside `cfgd module upgrade`'s pre-approval security review —
+/// the user is deciding whether to let the upgrade run on their machine — so
+/// every added/removed entry also spells the word into the text
+/// ("dependency added: …" / "dependency removed: …"), matching the
+/// postApply-script arm below. `Role::Ok`/`Role::Fail` alone would leave a
+/// removed package (the new version simply stopped declaring it, not a
+/// failure) reading as "this upgrade failed" at the exact moment the user is
+/// approving it; the words remove that ambiguity without inventing a
+/// dedicated add/remove role the rest of the theme has no other use for.
 pub fn diff_module_specs(
     old: &LoadedModule,
     new: &LoadedModule,
@@ -352,20 +362,20 @@ pub fn diff_module_specs(
     let old_deps: HashSet<&str> = old.spec.depends.iter().map(|s| s.as_str()).collect();
     let new_deps: HashSet<&str> = new.spec.depends.iter().map(|s| s.as_str()).collect();
     for dep in new_deps.difference(&old_deps) {
-        changes.push((Role::Ok, format!("dependency: {dep}")));
+        changes.push((Role::Ok, format!("dependency added: {dep}")));
     }
     for dep in old_deps.difference(&new_deps) {
-        changes.push((Role::Fail, format!("dependency: {dep}")));
+        changes.push((Role::Fail, format!("dependency removed: {dep}")));
     }
 
     // Packages
     let old_pkgs: HashSet<&str> = old.spec.packages.iter().map(|p| p.name.as_str()).collect();
     let new_pkgs: HashSet<&str> = new.spec.packages.iter().map(|p| p.name.as_str()).collect();
     for pkg in new_pkgs.difference(&old_pkgs) {
-        changes.push((Role::Ok, format!("package: {pkg}")));
+        changes.push((Role::Ok, format!("package added: {pkg}")));
     }
     for pkg in old_pkgs.difference(&new_pkgs) {
-        changes.push((Role::Fail, format!("package: {pkg}")));
+        changes.push((Role::Fail, format!("package removed: {pkg}")));
     }
 
     // Check for version constraint changes on existing packages
@@ -390,10 +400,10 @@ pub fn diff_module_specs(
     let old_files: HashSet<&str> = old.spec.files.iter().map(|f| f.target.as_str()).collect();
     let new_files: HashSet<&str> = new.spec.files.iter().map(|f| f.target.as_str()).collect();
     for file in new_files.difference(&old_files) {
-        changes.push((Role::Ok, format!("file target: {file}")));
+        changes.push((Role::Ok, format!("file target added: {file}")));
     }
     for file in old_files.difference(&new_files) {
-        changes.push((Role::Fail, format!("file target: {file}")));
+        changes.push((Role::Fail, format!("file target removed: {file}")));
     }
 
     // Env vars — an upgrade that introduces one reaches the login shell of
@@ -414,7 +424,7 @@ pub fn diff_module_specs(
         .collect();
     for ev in &new.spec.env {
         match old_env.get(ev.name.as_str()) {
-            None => changes.push((Role::Ok, format!("env: {}={}", ev.name, ev.value))),
+            None => changes.push((Role::Ok, format!("env added: {}={}", ev.name, ev.value))),
             Some(prev) if *prev != ev.value.as_str() => changes.push((
                 Role::Warn,
                 format!("env '{}': {} {} {}", ev.name, prev, arrow, ev.value),
@@ -424,7 +434,7 @@ pub fn diff_module_specs(
     }
     for ev in &old.spec.env {
         if !new_env.contains_key(ev.name.as_str()) {
-            changes.push((Role::Fail, format!("env: {}={}", ev.name, ev.value)));
+            changes.push((Role::Fail, format!("env removed: {}={}", ev.name, ev.value)));
         }
     }
 
@@ -443,7 +453,10 @@ pub fn diff_module_specs(
         .collect();
     for alias in &new.spec.aliases {
         match old_aliases.get(alias.name.as_str()) {
-            None => changes.push((Role::Ok, format!("alias: {}={}", alias.name, alias.command))),
+            None => changes.push((
+                Role::Ok,
+                format!("alias added: {}={}", alias.name, alias.command),
+            )),
             Some(prev) if *prev != alias.command.as_str() => changes.push((
                 Role::Warn,
                 format!(
@@ -458,7 +471,7 @@ pub fn diff_module_specs(
         if !new_aliases.contains_key(alias.name.as_str()) {
             changes.push((
                 Role::Fail,
-                format!("alias: {}={}", alias.name, alias.command),
+                format!("alias removed: {}={}", alias.name, alias.command),
             ));
         }
     }

