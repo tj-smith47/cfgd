@@ -40,6 +40,15 @@ pub struct ThemedStyle {
     /// that forgets to stamp renders UNSTYLED — that fails a positive assertion
     /// loudly, where the opposite default makes a negative one pass vacuously.
     colors: bool,
+    /// Whether this style has been given an actual foreground colour (a
+    /// truecolor hex or a named `console::Color`), independent of `colors`
+    /// (which says only whether emitting it is currently allowed). Backs the
+    /// `bold()` debug assertion for R12: bold never pairs with colour in a
+    /// theme's rendered style. A style built colourless and bolded first,
+    /// then coloured via `recolor`, is the legitimate "attrs survive a
+    /// colour swap" shape; a style that already carries a colour gaining
+    /// bold is the silent pairing this field lets `bold()` refuse.
+    has_color: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -108,6 +117,7 @@ impl ThemedStyle {
                 rgb: Some((r, g, b)),
                 attrs: AttrSet::default(),
                 colors: false,
+                has_color: true,
             },
             None => Self::default(),
         }
@@ -121,10 +131,19 @@ impl ThemedStyle {
             rgb: None,
             attrs: AttrSet::default(),
             colors: false,
+            has_color: true,
         }
     }
 
+    /// R12: bold never pairs with colour in a theme's rendered style. Panics
+    /// in debug builds when the style already carries a colour — the
+    /// legitimate order is bold-then-colour (attrs survive `recolor`), never
+    /// colour-then-bold.
     pub fn bold(mut self) -> Self {
+        debug_assert!(
+            !self.has_color,
+            "bold must not be layered onto an already-coloured ThemedStyle (R12: bold never pairs with colour) — apply bold() before the colour, not after"
+        );
         self.inner = self.inner.bold();
         self.attrs.bold = true;
         self
@@ -312,10 +331,10 @@ impl Default for Theme {
             // own default is the fall-through this slot exists to avoid — so
             // the subject keeps its role style.
             primary: None,
-            header: ThemedStyle::plain().bold().cyan(),
+            header: ThemedStyle::plain().cyan(),
             success: ThemedStyle::plain().green(),
             warning: ThemedStyle::plain().yellow(),
-            error: ThemedStyle::plain().red().bold(),
+            error: ThemedStyle::plain().red(),
             info: ThemedStyle::plain().cyan(),
             muted: ThemedStyle::plain().dim(),
             running: ThemedStyle::plain().cyan(),
@@ -381,10 +400,10 @@ impl Theme {
     fn dracula() -> Self {
         Self {
             primary: Some(hex("#f8f8f2")),
-            header: hex("#bd93f9").bold(),
+            header: hex("#bd93f9"),
             success: hex("#50fa7b"),
             warning: hex("#f1fa8c"),
-            error: hex("#ff5555").bold(),
+            error: hex("#ff5555"),
             info: hex("#8be9fd"),
             muted: hex("#6272a4"),
             running: hex("#8be9fd"),
@@ -400,10 +419,10 @@ impl Theme {
     fn solarized_dark() -> Self {
         Self {
             primary: Some(hex("#eee8d5")),
-            header: hex("#268bd2").bold(),
+            header: hex("#268bd2"),
             success: hex("#859900"),
             warning: hex("#b58900"),
-            error: hex("#dc322f").bold(),
+            error: hex("#dc322f"),
             info: hex("#268bd2"),
             muted: hex("#586e75"),
             running: hex("#2aa198"),
@@ -421,10 +440,10 @@ impl Theme {
             // base02, not a light tone: on a light background the deliberate
             // contrast colour is the dark end of the palette.
             primary: Some(hex("#073642")),
-            header: hex("#268bd2").bold(),
+            header: hex("#268bd2"),
             success: hex("#859900"),
             warning: hex("#b58900"),
-            error: hex("#dc322f").bold(),
+            error: hex("#dc322f"),
             info: hex("#268bd2"),
             muted: hex("#93a1a1"),
             running: hex("#2aa198"),
@@ -643,6 +662,7 @@ fn apply_color(style: &mut ThemedStyle, hex: &str) {
             rgb: Some((r, g, b)),
             attrs: AttrSet::default(),
             colors: false,
+            has_color: true,
         }
         .with_attrs(attrs)
         .with_colors(colors);
@@ -794,12 +814,24 @@ mod tests {
         assert_eq!(out, "\x1b[38;2;189;147;249mhi\x1b[0m", "got: {out:?}");
     }
 
+    /// Builds the same style `from_hex(hex).bold()` produced before R12 —
+    /// bypassing the guarded `bold()` method directly, via the private
+    /// fields this same-file test module can still reach — so the SGR
+    /// composition of an attr with a truecolor foreground stays proven even
+    /// though no theme preset is allowed to construct that pairing anymore.
+    fn colored_then_bolded(hex: &str) -> ThemedStyle {
+        let mut style = ThemedStyle::from_hex(hex);
+        style.inner = style.inner.bold();
+        style.attrs.bold = true;
+        style
+    }
+
     #[test]
     #[serial]
     fn hex_style_with_bold_emits_truecolor_with_attr() {
         let _no_color = EnvVarGuard::unset("NO_COLOR");
         let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
-        let style = ThemedStyle::from_hex("#bd93f9").bold().with_colors(true);
+        let style = colored_then_bolded("#bd93f9").with_colors(true);
         let out = style.apply_to("hi").to_string();
         assert_eq!(out, "\x1b[1;38;2;189;147;249mhi\x1b[0m", "got: {out:?}");
     }
@@ -836,7 +868,7 @@ mod tests {
         // per no-color.org.
         let colors = !crate::output::printer::colors_must_be_disabled(&OutputFormat::Table);
         assert!(!colors, "NO_COLOR must rule colour out");
-        let style = ThemedStyle::from_hex("#bd93f9").bold().with_colors(colors);
+        let style = colored_then_bolded("#bd93f9").with_colors(colors);
         let out = style.apply_to("hi").to_string();
         assert_eq!(out, "\x1b[1mhi\x1b[0m", "got: {out:?}");
     }
@@ -1292,5 +1324,55 @@ mod tests {
             t.primary.as_ref().and_then(|s| s.rgb),
             Some((0xff, 0x00, 0x00))
         );
+    }
+
+    /// R12: bold never pairs with colour. Walks every style slot of the four
+    /// named colour presets rather than pinning one hand-picked slot (header
+    /// and error are the ones that regressed; a slot-by-slot walk catches a
+    /// future preset author reintroducing the pairing on any slot, not just
+    /// those two).
+    #[test]
+    fn named_colour_presets_never_pair_bold_with_colour() {
+        for name in ["default", "dracula", "solarized-dark", "solarized-light"] {
+            let t = Theme::from_preset(name);
+            let mut slots: Vec<(&str, &ThemedStyle)> = vec![
+                ("header", &t.header),
+                ("success", &t.success),
+                ("warning", &t.warning),
+                ("error", &t.error),
+                ("info", &t.info),
+                ("muted", &t.muted),
+                ("running", &t.running),
+                ("diff_add", &t.diff_add),
+                ("diff_remove", &t.diff_remove),
+                ("diff_context", &t.diff_context),
+                ("accent", &t.accent),
+                ("secondary", &t.secondary),
+            ];
+            if let Some(p) = &t.primary {
+                slots.push(("primary", p));
+            }
+            for (label, style) in slots {
+                assert!(
+                    !(style.has_color && style.attrs.bold),
+                    "{name}'s {label} slot pairs bold with colour"
+                );
+            }
+        }
+    }
+
+    /// `minimal` spends no colour at all, so bold on header/error is its
+    /// colour distinction rather than a forbidden pairing — the one preset
+    /// R12 names as the legitimate exception.
+    #[test]
+    fn minimal_preset_keeps_bold_since_it_spends_no_colour() {
+        let t = Theme::from_preset("minimal");
+        assert!(t.header.attrs.bold, "minimal's header must stay bold");
+        assert!(t.error.attrs.bold, "minimal's error must stay bold");
+        assert!(
+            !t.header.has_color,
+            "minimal must not spend colour anywhere"
+        );
+        assert!(!t.error.has_color, "minimal must not spend colour anywhere");
     }
 }

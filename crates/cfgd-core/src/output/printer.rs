@@ -758,23 +758,19 @@ impl Printer {
     /// collected during the run, grouped under the owner that produced it and
     /// rendered once at the very end instead of inline under each action.
     ///
-    /// `theme.accent`, bold: Caveats is a phase-class heading meant to draw
-    /// the eye, and `accent` is the slot phase names draw attention with — so
-    /// it reads apart from every ordinary `theme.header` section title while
-    /// still reading as part of the run's phase structure. Bold keeps it
-    /// distinct under `--no-color` / `minimal`, where the accent colour drops
-    /// out but the attribute survives (per no-color.org) — the same rule
-    /// every other heading renders by.
+    /// Styled through the same `Role::Accent` slot [`super::PhaseLabel`]
+    /// paints its name in: Caveats is a phase-class heading meant to draw the
+    /// eye, and accent is the slot that draws attention without alarm, so it
+    /// reads apart from every ordinary `theme.header` section title while
+    /// still reading as part of the run's phase structure. No `.bold()` — R12
+    /// keeps bold off every colour-bearing slot (`default`/`dracula`/the two
+    /// `solarized` presets), and `minimal`'s accent already carries the
+    /// distinction as italic rather than as an attribute this heading would
+    /// have to add on top.
     #[must_use = "section closes when SectionGuard is dropped; bind it"]
     pub fn section_caveats(&self) -> super::section_guard::SectionGuard<'_> {
-        let styled = self
-            .renderer
-            .theme
-            .accent
-            .clone()
-            .bold()
-            .apply_to("Caveats")
-            .to_string();
+        let (_, accent) = super::renderer::role_glyph(&self.renderer.theme, Role::Accent);
+        let styled = accent.apply_to("Caveats").to_string();
         self.renderer.render_section_open_styled(
             "Caveats",
             Some(styled),

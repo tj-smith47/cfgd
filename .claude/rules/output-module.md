@@ -95,8 +95,8 @@ through one collection point — `Reconciler::settle_action`, called from both t
 concurrent-lane dispatch and the serial dispatch loop, is the ONE place a settled action's
 notes are folded into the run's `caveats` collector via `collect_caveats` — and one render
 path, `cfgd_core::reconciler::render_caveats` (opened through `Printer::section_caveats`,
-the "Caveats" heading painted `theme.accent` + bold — the phase-name slot, because the
-heading is a phase-class title meant to draw the eye). `cli::plan_ops::print_caveats` is the one assembler for a real `cfgd apply`
+the "Caveats" heading painted `theme.accent`, unstyled of bold — the phase-name slot, no
+`.bold()` since R12 forbids pairing bold with a colour-bearing slot). `cli::plan_ops::print_caveats` is the one assembler for a real `cfgd apply`
 (it also folds the `cfgd:env` re-source reminder into that owner's group, always last); a
 per-configurator snapshot bridge is the only other caller. Never grow a second drain or a
 second render path. A context nobody drains (`SystemContext::new`, `PackageContext::new`,
