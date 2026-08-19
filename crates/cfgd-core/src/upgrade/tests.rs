@@ -2018,8 +2018,19 @@ fn download_to_file_binary_content() {
 #[test]
 fn sha256_file_empty_file() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
-    // Write nothing (empty file)
-    let hash = sha256_file(tmp.path()).unwrap();
+    // Write nothing (empty file). On Windows a scanner (Defender, the indexer)
+    // can briefly hold a just-created file so the read-back open is denied;
+    // retry the open, since the claim here is the hash, not scanner timing.
+    let mut hash = sha256_file(tmp.path());
+    for _ in 0..1000 {
+        if hash.is_ok() {
+            break;
+        }
+        // sleep-ok: waiting out a foreign scanner's transient handle; no in-process observable exists for another process's handle
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        hash = sha256_file(tmp.path());
+    }
+    let hash = hash.unwrap();
     // SHA256 of empty string
     assert_eq!(
         hash,

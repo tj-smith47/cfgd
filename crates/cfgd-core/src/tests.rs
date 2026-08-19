@@ -681,8 +681,11 @@ fn a_contended_source_lock_announces_the_wait_and_completes_when_the_holder_rele
 }
 
 fn remove_with_retry(op: impl Fn() -> std::io::Result<()>, what: &str) {
+    // A foreign scanner's hold has been observed to outlast a full second on a
+    // loaded Windows host, so the budget is generous: this loop only ever
+    // spins when something outside the process is in the way.
     let mut last: Option<std::io::Error> = None;
-    for _ in 0..100 {
+    for _ in 0..1000 {
         match op() {
             Ok(()) => return,
             Err(e) => {
