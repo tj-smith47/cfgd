@@ -584,16 +584,23 @@ impl Printer {
         total: u64,
         message: impl Into<String>,
     ) -> super::spinner::ProgressBar<'_> {
+        let message = message.into();
+        let depth = self.renderer.inherit_depth();
         let (bar, live) = super::spinner::make_progress_bar(
             &self.multi_progress,
             &self.renderer,
             total,
             self.live_bars(),
-            self.renderer.inherit_depth(),
-            &message.into(),
+            depth,
+            &message,
         );
         super::spinner::ProgressBar {
+            renderer: self.renderer.clone(),
+            sink: self.sink_stderr.clone(),
+            depth,
             bar,
+            message,
+            finished: false,
             _live: live,
             _phantom: std::marker::PhantomData,
         }

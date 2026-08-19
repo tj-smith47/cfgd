@@ -135,7 +135,7 @@ impl<'p> LiveRow<'p> {
             ));
             self.bar.enable_steady_tick(super::spinner::SPINNER_TICK);
         }
-        let spinner = Spinner {
+        let mut spinner = Spinner {
             renderer: self.renderer.clone(),
             sink: self.sink.clone(),
             depth: self.depth,

@@ -263,16 +263,22 @@ impl<'p> SectionGuard<'p> {
         total: u64,
         message: impl Into<String>,
     ) -> super::spinner::ProgressBar<'_> {
+        let message = message.into();
         let (bar, live) = super::spinner::make_progress_bar(
             &self.printer.multi_progress,
             &self.renderer,
             total,
             self.printer.live_bars(),
             self.depth,
-            &message.into(),
+            &message,
         );
         super::spinner::ProgressBar {
+            renderer: self.renderer.clone(),
+            sink: self.sink.clone(),
+            depth: self.depth,
             bar,
+            message,
+            finished: false,
             _live: live,
             _phantom: std::marker::PhantomData,
         }
@@ -319,7 +325,7 @@ mod tests {
     fn section_progress_bar_returns_usable_bar() {
         let (p, _buf) = Printer::for_test_at(Verbosity::Normal);
         let s = p.section("Work");
-        let bar = s.progress_bar(10, "loading");
+        let mut bar = s.progress_bar(10, "loading");
         bar.inc(3);
         bar.set_position(5);
         bar.set_message("half done");

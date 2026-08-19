@@ -145,7 +145,7 @@ impl<'p> OutputWindow<'p> {
         self.repaint();
     }
 
-    fn repaint(&self) {
+    fn repaint(&mut self) {
         let indent = "  ".repeat(self.body_depth);
         let mut msg = self.label.clone();
         for line in &self.ring {

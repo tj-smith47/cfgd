@@ -4,9 +4,13 @@
 //! return a `StatusBuilder` so the caller can chain `.detail` / `.duration`
 //! / `.target` before the Status commits on Drop.
 //!
-//! A `Spinner` dropped without an explicit finish emits a `Status(Info)` so
-//! the spinner doesn't disappear silently — abandonment leaves a record. The
-//! one exception is a spinner whose bar it BORROWED from a
+//! A `Spinner` dropped without an explicit finish settles as a `Role::Skipped`
+//! Status, its label suffixed `(interrupted)`, so the spinner doesn't
+//! disappear silently. Drop cannot know whether the abandoned work succeeded
+//! or failed — `Skipped` is the one role that is honestly neither `✓` nor
+//! `✗`, and its muted `—` glyph is distinct from the animated running frame
+//! too. `ProgressBar` settles the same way (see its own doc). The one
+//! exception is a spinner whose bar it BORROWED from a
 //! [`super::live_row::LiveRow`]: that line has an owner who will settle or
 //! retire it, so an abandoned one leaves it alone rather than clearing it and
 //! recording a second line for the action the row is about to describe.
@@ -62,10 +66,11 @@ pub(super) fn set_bar_depth(bar: &IndProgressBar, depth: usize) {
     bar.set_prefix("  ".repeat(depth));
 }
 
-/// Live spinner. Drop without `finish_*()` emits a `Status(Info)` with the
-/// spinner message at the active depth — leaves a record so the spinner
-/// doesn't disappear silently. A `borrowed` spinner is the exception and ends
-/// silently, because the line is not its to end (see the field's own doc).
+/// Live spinner. Drop without `finish_*()` settles a `Role::Skipped` Status
+/// (`"{label} (interrupted)"`) at the active depth — leaves a record so the
+/// spinner doesn't disappear silently, without claiming an outcome Drop
+/// cannot know. A `borrowed` spinner is the exception and ends silently,
+/// because the line is not its to end (see the field's own doc).
 pub struct Spinner<'p> {
     pub(crate) renderer: Arc<Renderer>,
     pub(crate) sink: Arc<dyn Writer>,
@@ -81,18 +86,24 @@ pub struct Spinner<'p> {
     /// longer than the spinner does. Two consequences, both from that one fact:
     /// the row's style carries the indent in a `{prefix}` field, so a message
     /// must not repeat it; and the spinner never ends the bar — not on
-    /// `Drop` either, which for an owned bar clears the line and leaves a
-    /// `Status(Info)` record. On a borrowed bar that would retire the row its
-    /// owner is still going to settle, and print a line for an action whose
-    /// outcome is about to be written by the row itself.
+    /// `Drop` either, which for an owned bar clears the line and leaves an
+    /// interrupted-`Skipped` record. On a borrowed bar that would retire the
+    /// row its owner is still going to settle, and print a line for an action
+    /// whose outcome is about to be written by the row itself.
     pub(crate) borrowed: bool,
     pub(crate) _phantom: PhantomData<&'p ()>,
 }
 
 impl<'p> Spinner<'p> {
-    pub fn set_message(&self, text: impl Into<String>) {
-        self.bar
-            .set_message(clamp_label(self.sink.as_ref(), &text.into(), self.depth));
+    /// `&mut self`: the clamped text also becomes `self.message`, the label
+    /// `Drop` settles with when the bar is abandoned mid-step. A caller that
+    /// narrates progress (`OutputWindow::repaint`) must have its latest
+    /// narration be what an early `?` leaves behind, not the spinner's
+    /// original opening label.
+    pub fn set_message(&mut self, text: impl Into<String>) {
+        let clamped = clamp_label(self.sink.as_ref(), &text.into(), self.depth);
+        self.bar.set_message(clamped.clone());
+        self.message = clamped;
     }
 
     pub fn finish_ok(self, final_text: impl Into<String>) -> StatusBuilder<'p> {
@@ -173,7 +184,14 @@ impl Drop for Spinner<'_> {
             return;
         }
         self.bar.finish_and_clear();
-        // Emit an Info Status so the spinner leaves a record.
+        // Settle with a deliberate, neutral marker — Drop cannot know whether
+        // the work in flight succeeded or failed, so the honest record is
+        // neither `✓` nor `✗`. `Role::Skipped` already renders a muted,
+        // no-conclusion glyph (`—`) distinct from both settled roles and from
+        // the animated running frame; the "(interrupted)" suffix keeps it
+        // distinct from a deliberate, caller-chosen skip. Suppressed at
+        // `Verbosity::Quiet` exactly like the running spinner it replaces, so
+        // a Quiet run gains no new visible line.
         //
         // The `self.renderer.clone()` and `self.sink.clone()` Arc-clones
         // inside `StatusBuilder::new` (passed as arguments below) are
@@ -187,18 +205,27 @@ impl Drop for Spinner<'_> {
             self.renderer.clone(),
             self.sink.clone(),
             self.depth,
-            Role::Info,
-            msg,
+            Role::Skipped,
+            format!("{msg} (interrupted)"),
         );
         drop(sb);
     }
 }
 
-/// Bounded progress bar.
+/// Bounded progress bar. Drop parity with [`Spinner`]: abandoned without an
+/// explicit `finish()`, it settles a `Role::Skipped` Status
+/// (`"{label} (interrupted)"`) at the active depth instead of leaving its
+/// last paint on screen forever — a bar has no `Drop` at all before this,
+/// so a step that returned `?` between building the bar and calling
+/// `finish()` stranded whatever the bar last painted.
 pub struct ProgressBar<'p> {
+    pub(crate) renderer: Arc<Renderer>,
+    pub(crate) sink: Arc<dyn Writer>,
+    pub(crate) depth: usize,
     pub(crate) bar: IndProgressBar,
-    /// See `Spinner::_live`. `finish` consumes the wrapper, so the guard is
-    /// released exactly once with no `Drop` impl of its own.
+    pub(crate) message: String,
+    pub(crate) finished: bool,
+    /// See `Spinner::_live`.
     pub(crate) _live: Option<LiveBarGuard>,
     pub(crate) _phantom: PhantomData<&'p ()>,
 }
@@ -210,11 +237,37 @@ impl<'p> ProgressBar<'p> {
     pub fn set_position(&self, pos: u64) {
         self.bar.set_position(pos);
     }
-    pub fn set_message(&self, m: impl Into<String>) {
-        self.bar.set_message(m.into());
+    /// `&mut self`, mirroring [`Spinner::set_message`]: the clamped text also
+    /// becomes `self.message`, the label `Drop` settles with if the bar is
+    /// abandoned before `finish()`.
+    pub fn set_message(&mut self, m: impl Into<String>) {
+        let clamped = clamp_label(self.sink.as_ref(), &m.into(), self.depth);
+        self.bar.set_message(clamped.clone());
+        self.message = clamped;
     }
-    pub fn finish(self) {
+    pub fn finish(mut self) {
         self.bar.finish_and_clear();
+        self.finished = true;
+    }
+}
+
+impl Drop for ProgressBar<'_> {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.bar.finish_and_clear();
+        // See `Spinner::drop` for why `Role::Skipped` + "(interrupted)" is
+        // the honest settle for an outcome Drop cannot know.
+        let msg = std::mem::take(&mut self.message);
+        let sb = StatusBuilder::new(
+            self.renderer.clone(),
+            self.sink.clone(),
+            self.depth,
+            Role::Skipped,
+            format!("{msg} (interrupted)"),
+        );
+        drop(sb);
     }
 }
 
@@ -430,8 +483,14 @@ mod tests {
         assert!(out.contains("  ✓ done"), "got: {out:?}");
     }
 
+    /// Deliberate ruling for QP9: an abandoned spinner settles `Role::Skipped`
+    /// (the muted `—` glyph) with an `(interrupted)` suffix — neither `✓` nor
+    /// `✗`, because Drop cannot know which the abandoned work was heading
+    /// toward, and visibly distinct from the running frame it replaces. Must
+    /// never be confused with an intentional `finish_skipped()` outcome, which
+    /// carries no suffix at all.
     #[test]
-    fn drop_without_finish_emits_info_record() {
+    fn drop_without_finish_settles_skipped_interrupted_not_ok_or_fail() {
         let r = renderer();
         let buf = Arc::new(Mutex::new(String::new()));
         let sink = sink_for(&buf);
@@ -447,10 +506,143 @@ mod tests {
                 borrowed: false,
                 _phantom: std::marker::PhantomData,
             };
+            // Dropped here without finish_ok/finish_warn/finish_fail/finish_skipped.
         }
         let out = crate::test_helpers::captured_text(&buf);
-        // Info role has no icon; subject text appears.
-        assert!(out.contains("abandoned"), "got: {out:?}");
+        assert!(
+            out.contains("abandoned (interrupted)"),
+            "abandoned spinner must settle with a neutral, distinguishable marker: {out:?}"
+        );
+        assert!(!out.contains('✓'), "Drop must never claim success: {out:?}");
+        assert!(!out.contains('✗'), "Drop must never claim failure: {out:?}");
+        assert!(
+            out.contains('—'),
+            "Drop must settle with the muted Skipped glyph: {out:?}"
+        );
+    }
+
+    /// The other half of Drop parity: a spinner that DID finish must not
+    /// print a second line when it goes out of scope — `finished` gates
+    /// Drop's own settle, and this is the test that would catch a regression
+    /// where the gate is dropped or inverted.
+    #[test]
+    fn finish_ok_then_drop_commits_exactly_once() {
+        let r = renderer();
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = sink_for(&buf);
+        let sp = Spinner {
+            renderer: r.clone(),
+            sink: sink.clone(),
+            depth: 0,
+            bar: indicatif::ProgressBar::hidden(),
+            message: "doing work".into(),
+            finished: false,
+            _live: None,
+            borrowed: false,
+            _phantom: std::marker::PhantomData,
+        };
+        drop(sp.finish_ok("done"));
+        let out = crate::test_helpers::captured_text(&buf);
+        assert_eq!(
+            out.matches("done").count(),
+            1,
+            "finish_ok settled line must appear exactly once: {out:?}"
+        );
+        assert!(
+            !out.contains("(interrupted)"),
+            "a spinner that finished must never also settle via Drop: {out:?}"
+        );
+    }
+
+    fn hidden_progress_bar(
+        r: &Arc<Renderer>,
+        sink: &Arc<dyn Writer>,
+        depth: usize,
+        message: &str,
+    ) -> ProgressBar<'static> {
+        ProgressBar {
+            renderer: r.clone(),
+            sink: sink.clone(),
+            depth,
+            bar: indicatif::ProgressBar::hidden(),
+            message: message.to_string(),
+            finished: false,
+            _live: None,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// `ProgressBar` Drop parity with `Spinner`: abandoned before `finish()`,
+    /// it settles the same neutral, distinguishable marker instead of leaving
+    /// its last paint on screen forever.
+    #[test]
+    fn progress_bar_drop_without_finish_settles_skipped_interrupted() {
+        let r = renderer();
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = sink_for(&buf);
+        {
+            let _pb = hidden_progress_bar(&r, &sink, 0, "downloading");
+            // Dropped here without finish().
+        }
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("downloading (interrupted)"),
+            "abandoned progress bar must settle with a neutral marker: {out:?}"
+        );
+        assert!(!out.contains('✓'), "Drop must never claim success: {out:?}");
+        assert!(!out.contains('✗'), "Drop must never claim failure: {out:?}");
+    }
+
+    /// The finished half: a `ProgressBar` that called `finish()` must not
+    /// print a second line on Drop.
+    #[test]
+    fn progress_bar_finish_then_drop_commits_nothing_extra() {
+        let r = renderer();
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = sink_for(&buf);
+        let pb = hidden_progress_bar(&r, &sink, 0, "downloading");
+        pb.finish();
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            !out.contains("(interrupted)"),
+            "a progress bar that finished must never also settle via Drop: {out:?}"
+        );
+        assert!(
+            out.is_empty(),
+            "finish() prints no status line of its own and Drop must add none: {out:?}"
+        );
+    }
+
+    /// `ProgressBar::set_message` must clamp through the same `clamp_label`
+    /// path `Spinner::set_message` does — mirrors
+    /// `clamp_label_keeps_the_spinner_on_one_row` above, but through the live
+    /// method rather than calling the free function directly, so a future
+    /// change that stops routing `set_message` through `clamp_label` is
+    /// caught here even if the free function itself keeps working.
+    #[test]
+    fn progress_bar_set_message_clamps_like_spinners_does() {
+        let r = renderer();
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = sink_for(&buf);
+        let mut pb = hidden_progress_bar(&r, &sink, 0, "downloading");
+        let long = "applying/very/long/nested/module/file/path/segment/".repeat(20);
+        pb.set_message(long.clone());
+        assert!(
+            !pb.message.contains('\n'),
+            "clamped message must stay on one row: {:?}",
+            pb.message
+        );
+        assert!(
+            pb.message.len() < long.len(),
+            "message was not clamped: {:?}",
+            pb.message
+        );
+        assert!(
+            pb.message.ends_with('…'),
+            "clamp_label always truncates with an ellipsis: {:?}",
+            pb.message
+        );
+        pb.finish();
     }
 
     /// A `--no-color` run must not draw a green bar beside unstyled text.
