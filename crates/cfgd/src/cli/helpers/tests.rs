@@ -1852,6 +1852,50 @@ fn display_and_persist_conflicts_routes_roles_and_persists() {
 }
 
 #[test]
+#[serial]
+fn display_and_persist_conflicts_rewords_the_arrow_on_the_primary_apply_surface() {
+    use std::collections::HashMap;
+
+    let tmp = tempdir().expect("tempdir");
+    let mut cli = make_cli(tmp.path().join("cfgd.yaml"));
+    cli.state_dir = Some(tmp.path().join("state"));
+
+    let result = composition::CompositionResult {
+        resolved: ResolvedProfile {
+            layers: Vec::new(),
+            merged: MergedProfile::default(),
+        },
+        conflicts: vec![composition::ConflictResolution {
+            resource_id: "package:apt:curl".to_string(),
+            resolution_type: composition::ResolutionType::Locked,
+            winning_source: "acme-baseline".to_string(),
+            details: "LOCKED curl <- acme-baseline".to_string(),
+        }],
+        source_env: HashMap::new(),
+        source_commits: HashMap::new(),
+        source_module_roots: Vec::new(),
+        constraint_violations: Vec::new(),
+    };
+
+    let (printer, cap) = Printer::for_test_at(Verbosity::Normal);
+    let ctx = RunContext::new(&cli, &printer);
+    display_and_persist_conflicts(&ctx, &result, &printer);
+    drop(printer);
+
+    let out = cap.lock().expect("capture lock");
+    // Same event, same producer as source add's preview — the two must not
+    // disagree about which vocabulary reaches the terminal.
+    assert!(
+        out.contains("LOCKED curl from acme-baseline"),
+        "apply's Source Conflicts section must reword the arrow: {out}"
+    );
+    assert!(
+        !out.contains("<-"),
+        "a raw ASCII arrow must never reach the terminal: {out}"
+    );
+}
+
+#[test]
 fn the_desired_state_registers_each_custom_manager_exactly_once() {
     let tmp = tempdir().unwrap();
     let config_path = tmp.path().join("cfgd.yaml");

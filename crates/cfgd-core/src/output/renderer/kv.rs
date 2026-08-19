@@ -56,21 +56,20 @@ impl Renderer {
 }
 
 impl Emitting<'_> {
-    /// Collect one aligned kv block at `depth`.
-    pub(crate) fn render_kv_block(&mut self, depth: usize, pairs: &[(String, String)]) {
-        if self.verbosity == Verbosity::Quiet || pairs.is_empty() {
-            return;
-        }
-        // Collect deferred section headers FIRST so this kv block lands under
-        // them, not above.
+    /// Preamble shared by every aligned block renderer (`render_kv_block`,
+    /// `render_command_list`): flush deferred section headers so the block
+    /// lands under them, not above; honor blank-pending/leading; and consume
+    /// the heading-just-emitted flag — when the previous emission was a
+    /// top-level heading and we're still at root, re-anchor this block one
+    /// level deeper so it visually nests under the heading, SUPPRESSING the
+    /// would-be blank between them (heading + block render as one bound
+    /// unit). Returns the depth-appropriate indent prefix. Column width and
+    /// glue are the one thing each caller still owns — those differ per
+    /// block kind, which is the whole justification for two callers sharing
+    /// one preamble instead of one renderer for both.
+    fn open_aligned_block(&mut self, depth: usize) -> String {
         self.flush_section_headers();
 
-        // Honor blank-pending / leading. Also consume the heading-just-emitted
-        // flag: when the previous emission was a top-level heading and we're
-        // still at root, re-anchor this kv_block one level deeper so it
-        // visually nests under the heading. When we bump, also SUPPRESS the
-        // would-be blank between heading and kv_block — heading + kv_block
-        // render as one bound unit with no blank between them.
         let bump =
             depth == 0 && self.state.section_stack.is_empty() && self.state.last_was_top_heading;
         self.state.last_was_top_heading = false;
@@ -81,12 +80,18 @@ impl Emitting<'_> {
             self.out.push(String::new());
             self.state.blank_pending = false;
         } else if bump {
-            // kv_block consuming heading-flag: drop the would-be blank.
             self.state.blank_pending = false;
         }
         let effective_depth = if bump { depth + 1 } else { depth };
+        indent_prefix(effective_depth)
+    }
 
-        let prefix = indent_prefix(effective_depth);
+    /// Collect one aligned kv block at `depth`.
+    pub(crate) fn render_kv_block(&mut self, depth: usize, pairs: &[(String, String)]) {
+        if self.verbosity == Verbosity::Quiet || pairs.is_empty() {
+            return;
+        }
+        let prefix = self.open_aligned_block(depth);
         let key_col = pairs
             .iter()
             .map(|(k, _)| k.len())
@@ -128,23 +133,7 @@ impl Emitting<'_> {
         if self.verbosity == Verbosity::Quiet || pairs.is_empty() {
             return;
         }
-        self.flush_section_headers();
-
-        let bump =
-            depth == 0 && self.state.section_stack.is_empty() && self.state.last_was_top_heading;
-        self.state.last_was_top_heading = false;
-        if self.state.leading {
-            self.state.leading = false;
-            self.state.blank_pending = false;
-        } else if self.state.blank_pending && !bump {
-            self.out.push(String::new());
-            self.state.blank_pending = false;
-        } else if bump {
-            self.state.blank_pending = false;
-        }
-        let effective_depth = if bump { depth + 1 } else { depth };
-
-        let prefix = indent_prefix(effective_depth);
+        let prefix = self.open_aligned_block(depth);
         let key_col = pairs.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
         for (k, v) in pairs {
             let key = self
@@ -260,9 +249,10 @@ mod tests {
         );
     }
 
-    /// The one behavior B3 exists to guarantee: a key past `KEY_WIDTH_CAP`
-    /// (24) stays on ONE line with its description, never wraps to its own
-    /// line the way `render_kv_block` wraps it.
+    /// A command past `KEY_WIDTH_CAP` (24) stays on ONE line with its
+    /// description: wrapping it would sever the `" — "` glue that makes the
+    /// list scannable, unlike `render_kv_block`, which wraps a long key onto
+    /// its own line ahead of an ordinary value.
     #[test]
     fn command_list_never_wraps_a_key_past_the_kv_width_cap() {
         let (r, sink, buf) = capture();
@@ -298,6 +288,29 @@ mod tests {
         );
         assert!(
             out.contains("cfgd module create <name> — create a module"),
+            "got: {out:?}"
+        );
+    }
+
+    /// A `command_list` at depth 0 immediately under a top-level heading
+    /// re-anchors one level deeper and binds to the heading with no blank
+    /// line between them — the exact `open_aligned_block` bump behaviour
+    /// `render_kv_block` already exercised, now proven for its sibling too
+    /// so the shared preamble cannot silently diverge for one caller.
+    #[test]
+    fn command_list_nests_under_a_top_level_heading_with_no_blank() {
+        let (r, sink, buf) = capture();
+        r.render_heading(&sink, "Next Steps");
+        r.render_command_list(
+            &sink,
+            0,
+            &[("cfgd apply".into(), "apply configuration".into())],
+        );
+        let out = crate::test_helpers::captured_text(&buf);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines,
+            vec!["Next Steps", "  cfgd apply — apply configuration"],
             "got: {out:?}"
         );
     }

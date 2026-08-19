@@ -991,6 +991,16 @@ pub(in crate::cli) fn compose_with_sources(
     Ok(result)
 }
 
+/// Reword `conflict.details`'s persisted `" <- "` arrow to `" from "` for
+/// terminal display. `conflict.details` is [`composition::record`]'s
+/// persisted string and keeps its own `<-` shape in storage (see that
+/// module's doc comment); this is the ONE display-side reword, shared by
+/// `display_and_persist_conflicts` below and `source::helpers::format_conflict_preview_lines`,
+/// so a raw ASCII arrow reaches the terminal from neither surface.
+pub(in crate::cli) fn reword_conflict_arrow_for_display(details: &str) -> String {
+    details.replace(" <- ", " from ")
+}
+
 /// Render composition conflicts under a section and persist them to the state
 /// store for `status`/history. Best-effort persistence: a state error is logged,
 /// not fatal, so a read-only filesystem never blocks a compose.
@@ -1004,14 +1014,15 @@ fn display_and_persist_conflicts(
     }
     let guard = printer.section("Source Conflicts");
     for conflict in &result.conflicts {
+        let details = reword_conflict_arrow_for_display(&conflict.details);
         match conflict.resolution_type {
             composition::ResolutionType::Locked => {
-                guard.status_simple(Role::Warn, &conflict.details);
+                guard.status_simple(Role::Warn, &details);
             }
             composition::ResolutionType::Required
             | composition::ResolutionType::Rejected
             | composition::ResolutionType::Override => {
-                guard.status_simple(Role::Info, &conflict.details);
+                guard.status_simple(Role::Info, &details);
             }
             composition::ResolutionType::Default => {}
         }

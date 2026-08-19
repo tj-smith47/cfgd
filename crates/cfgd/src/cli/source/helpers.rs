@@ -408,8 +408,11 @@ pub(crate) fn build_subscription_preview_input(
 ///
 /// `conflict.details` is [`composition::record`]'s persisted string and
 /// keeps its own `<-` shape in storage (see that module's doc comment); this
-/// is a DISPLAY path only, so the arrow is reworded to "from" here rather
-/// than touching what gets written to `source_conflicts.detail`. The
+/// is a DISPLAY path only, so the arrow is reworded to "from" here through
+/// `crate::cli::helpers::reword_conflict_arrow_for_display` — the same
+/// display-side reword `display_and_persist_conflicts` applies to the
+/// primary `apply`/`plan` surface, so the two never disagree — rather than
+/// touching what gets written to `source_conflicts.detail`. The
 /// wrapper used to also restate `resolution_type.label()`,
 /// `conflict.resource_id` and `conflict.winning_source` ahead of
 /// `details` — but `details` already carries the label, the resource and
@@ -428,7 +431,7 @@ pub(crate) fn format_conflict_preview_lines(
             format!(
                 "{}: {}",
                 conflict.resource_id,
-                conflict.details.replace(" <- ", " from ")
+                crate::cli::helpers::reword_conflict_arrow_for_display(&conflict.details)
             )
         })
         .collect()

@@ -404,8 +404,14 @@ pub fn run_backup_restore(
     let into_detail = format!("into {}", outcome.restored_to);
     match &outcome.error {
         Some(e) => {
+            // ": ", not " — ": the renderer's own subject↔detail glue is
+            // already " — " (applied once, ahead of this whole string), so
+            // reusing it here inside the detail would render two identical
+            // em-dashes at different semantic levels with no way to tell
+            // which one is the renderer's. No composer exists for a detail
+            // with two parts; the two are joined as a single sentence instead.
             printer.status(role, subject).detail(format!(
-                "{into_detail} — {}",
+                "{into_detail}: {}",
                 cfgd_core::output::collapse_to_subject_line(e)
             ));
         }
