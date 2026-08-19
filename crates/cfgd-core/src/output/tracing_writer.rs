@@ -16,6 +16,17 @@ use std::io::{self, Write};
 use std::sync::{Arc, RwLock};
 
 use super::Printer;
+use super::renderer::LiveBarState;
+
+/// Where a routed event goes, and the latch that says whether routing is still
+/// working — the SAME latch every renderer writing this region consults, so a
+/// terminal judged dead is dead for both writers rather than re-probed once per
+/// event.
+#[derive(Clone)]
+struct LiveRoute {
+    bars: indicatif::MultiProgress,
+    live: Arc<LiveBarState>,
+}
 
 /// A `MakeWriter` bound to a [`Printer`]'s live region.
 ///
@@ -27,7 +38,7 @@ use super::Printer;
 /// before this existed.
 #[derive(Clone, Default)]
 pub struct LiveTracingWriter {
-    bars: Arc<RwLock<Option<indicatif::MultiProgress>>>,
+    route: Arc<RwLock<Option<LiveRoute>>>,
 }
 
 impl LiveTracingWriter {
@@ -40,16 +51,19 @@ impl LiveTracingWriter {
     /// Takes the `Printer` rather than its `MultiProgress` so no caller outside
     /// `output/` ever holds an indicatif handle (Hard Rule #1).
     pub fn attach(&self, printer: &Printer) {
-        let mut slot = self.bars.write().unwrap_or_else(|e| e.into_inner());
-        *slot = Some(printer.multi_progress.clone());
+        let mut slot = self.route.write().unwrap_or_else(|e| e.into_inner());
+        *slot = Some(LiveRoute {
+            bars: printer.multi_progress.clone(),
+            live: printer.renderer.live.clone(),
+        });
     }
 
-    fn target(&self) -> Option<indicatif::MultiProgress> {
-        self.bars
+    fn target(&self) -> Option<LiveRoute> {
+        self.route
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .filter(|mp| !mp.is_hidden())
+            .filter(|route| !route.bars.is_hidden() && !route.live.broken())
             .cloned()
     }
 }
@@ -59,7 +73,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LiveTracingWriter {
 
     fn make_writer(&'a self) -> Self::Writer {
         LiveTracingSink {
-            bars: self.target(),
+            route: self.target(),
             buf: Vec::new(),
         }
     }
@@ -72,7 +86,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LiveTracingWriter {
 /// and repainting the bars around each fragment would interleave the region
 /// with a partial line.
 pub struct LiveTracingSink {
-    bars: Option<indicatif::MultiProgress>,
+    route: Option<LiveRoute>,
     buf: Vec<u8>,
 }
 
@@ -82,12 +96,21 @@ impl LiveTracingSink {
             return;
         }
         let bytes = std::mem::take(&mut self.buf);
-        if let Some(mp) = &self.bars {
+        if let Some(route) = &self.route {
             let text = String::from_utf8_lossy(&bytes);
             // `println` supplies the line ending itself, and a trailing one
             // here would draw a blank row into the region on every event.
-            if mp.println(text.trim_end_matches(['\r', '\n'])).is_ok() {
-                return;
+            match route.bars.println(text.trim_end_matches(['\r', '\n'])) {
+                Ok(()) => {
+                    route.live.note_route_success();
+                    return;
+                }
+                // The renderer's judgement, made from here: a kind that proves
+                // the terminal gone latches at once, a transient refusal only
+                // counts toward the latch.
+                Err(e) => {
+                    route.live.record_route_failure(&e);
+                }
             }
         }
         // No region, or the region's terminal just refused the write: the
@@ -177,18 +200,47 @@ mod tests {
         );
     }
 
-    /// An unattached writer is the plain stderr writer, so installing the
-    /// subscriber before the printer exists loses no event.
+    /// Which sink an event gets, for each of the three states the writer can be
+    /// in: unattached (the subscriber is installed before the printer exists),
+    /// attached to a live region, and attached to a printer whose region draws
+    /// nowhere. Only the middle one is a routing target — the other two fall
+    /// through to the stream the subscriber wrote before this type existed, and
+    /// routing a `println` at a hidden region would swallow the event instead.
+    ///
+    /// The sinks are inspected, never written: a write here would land on the
+    /// suite's own stderr.
     #[test]
-    fn an_unattached_writer_still_emits() {
-        let writer = LiveTracingWriter::new();
+    fn only_a_visible_region_becomes_a_routing_target() {
+        let unattached = LiveTracingWriter::new();
         assert!(
-            writer.target().is_none(),
+            unattached.target().is_none(),
             "a fresh writer must have no region to route through"
         );
-        writer
-            .make_writer()
-            .write_all(b"WARN before the printer existed\n")
-            .expect("the sink buffers, so a write cannot fail");
+        assert!(
+            unattached.make_writer().route.is_none(),
+            "an unattached sink must fall through to stderr"
+        );
+
+        let (printer, _screen) = Printer::for_test_live_terminal(24, 100);
+        let attached = LiveTracingWriter::new();
+        attached.attach(&printer);
+        assert!(
+            attached.target().is_some(),
+            "an attached writer routes through the printer's region"
+        );
+        assert!(
+            attached.make_writer().route.is_some(),
+            "each sink the subscriber makes inherits the region"
+        );
+
+        // A hidden draw target: the region exists but paints nothing, so a
+        // `println` at it would consume the event silently.
+        let (hidden, _buf) = Printer::for_test_live_scrollback();
+        let over_hidden = LiveTracingWriter::new();
+        over_hidden.attach(&hidden);
+        assert!(
+            over_hidden.target().is_none(),
+            "a region that draws nowhere is not a routing target"
+        );
     }
 }

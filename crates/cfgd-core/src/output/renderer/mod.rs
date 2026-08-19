@@ -222,17 +222,29 @@ pub(crate) struct LiveBarState {
     /// that were actually `multi.add`ed: a hidden bar is never added, so
     /// counting one would open the routing gate over an empty multi.
     live_bars: AtomicUsize,
-    /// One-way latch: set when a routed write returned an io error. Later
-    /// writes go straight to the sink, which swallows write errors exactly as
-    /// every write did before the routing existed.
+    /// One-way latch: set when the terminal behind the bars is judged dead.
+    /// Later writes go straight to the sink, which swallows write errors
+    /// exactly as every write did before the routing existed.
     bars_broken: AtomicBool,
+    /// Consecutive routed writes that failed without proving the terminal
+    /// dead — see [`LiveBarState::record_route_failure`].
+    route_failures: AtomicUsize,
 }
+
+/// Consecutive transient failures that stand in for a dead terminal.
+///
+/// One is not enough: latching on a single refusal hands the whole process
+/// (every renderer AND the tracing writer share one latch) back to raw writes
+/// over a live region — the strand this type exists to prevent, re-entered
+/// through the failure path.
+const ROUTE_FAILURES_BEFORE_LATCH: usize = 2;
 
 impl LiveBarState {
     fn new() -> Self {
         Self {
             live_bars: AtomicUsize::new(0),
             bars_broken: AtomicBool::new(false),
+            route_failures: AtomicUsize::new(0),
         }
     }
 
@@ -246,6 +258,39 @@ impl LiveBarState {
 
     fn mark_broken(&self) {
         self.bars_broken.store(true, Relaxed);
+    }
+
+    /// A routed write landed: the region is answering, so any earlier refusal
+    /// was transient and the run of failures restarts.
+    pub(crate) fn note_route_success(&self) {
+        // Relaxed on purpose, like every other field here: the latch decides
+        // where a LINE goes, and a decision made against a value one write out
+        // of date costs one line's routing, never correctness.
+        if self.route_failures.load(Relaxed) != 0 {
+            self.route_failures.store(0, Relaxed);
+        }
+    }
+
+    /// A routed write was refused. Answers whether routing is now latched off.
+    ///
+    /// An error kind that cannot be transient (the far end of the terminal is
+    /// gone, or was never there) latches at once, because retrying it every
+    /// line buys nothing. Everything else — an interrupted write, a pipe that
+    /// was momentarily full, a timeout — is a condition the next write may not
+    /// meet, so it only counts toward [`ROUTE_FAILURES_BEFORE_LATCH`].
+    pub(crate) fn record_route_failure(&self, err: &std::io::Error) -> bool {
+        use std::io::ErrorKind::*;
+        let terminal_is_gone = matches!(
+            err.kind(),
+            BrokenPipe | NotConnected | PermissionDenied | Unsupported | UnexpectedEof
+        );
+        if terminal_is_gone
+            || self.route_failures.fetch_add(1, Relaxed) + 1 >= ROUTE_FAILURES_BEFORE_LATCH
+        {
+            self.mark_broken();
+            return true;
+        }
+        false
     }
 }
 
@@ -312,11 +357,16 @@ impl Renderer {
         seed: RenderState,
         live: std::sync::Arc<LiveBarState>,
     ) -> Self {
+        // Spelled out rather than `..Self::new(theme, verbosity)`: the struct
+        // update operand is evaluated in full, so the shorthand mints a fresh
+        // `Arc<LiveBarState>` per derived printer only to drop it unread.
         Self {
-            bars: Some(bars),
+            theme,
+            verbosity,
             state: Mutex::new(seed),
+            bars: Some(bars),
             live,
-            ..Self::new(theme, verbosity)
+            inherit_guards: AtomicUsize::new(0),
         }
     }
 
@@ -394,11 +444,16 @@ impl Renderer {
             Some(mp) if !self.live.broken() && self.live.count() > 0 && !mp.is_hidden() => {
                 // `println` splits on '\n' itself, so one call is one
                 // clear/redraw cycle for the whole emission.
-                if mp.println(lines.join("\n")).is_err() {
-                    // Latch AND fall through: the emission that discovers the
-                    // broken terminal is the one most likely to explain it.
-                    self.live.mark_broken();
-                    plain();
+                match mp.println(lines.join("\n")) {
+                    Ok(()) => self.live.note_route_success(),
+                    Err(e) => {
+                        // Fall through whether or not this refusal latched: the
+                        // line still has to reach the user, and the emission
+                        // that discovers a broken terminal is the one most
+                        // likely to explain it.
+                        self.live.record_route_failure(&e);
+                        plain();
+                    }
                 }
             }
             _ => plain(),
@@ -1267,6 +1322,49 @@ mod tests {
         let drawn = f.drawn();
         for line in ["one", "two", "three", "single"] {
             assert!(drawn.contains(line), "{line:?} missing from: {drawn:?}");
+        }
+    }
+
+    /// The latch is shared by every renderer AND by the tracing writer, so
+    /// latching on a single refusal hands the whole process back to raw writes
+    /// over a live region — the strand the latch exists to survive, re-entered
+    /// through the failure path.
+    #[test]
+    fn a_transient_refusal_alone_does_not_latch_routing_off() {
+        let transient = || std::io::Error::from(std::io::ErrorKind::Interrupted);
+        let live = LiveBarState::new();
+
+        assert!(!live.record_route_failure(&transient()));
+        assert!(!live.broken(), "one refusal is not a dead terminal");
+
+        // The region answered again, so the run of failures restarts and the
+        // NEXT lone refusal must not latch either.
+        live.note_route_success();
+        assert!(!live.record_route_failure(&transient()));
+        assert!(!live.broken(), "a success in between restarts the run");
+
+        assert!(
+            live.record_route_failure(&transient()),
+            "consecutive refusals stand in for a terminal that stopped answering"
+        );
+        assert!(live.broken());
+    }
+
+    /// A kind that says the far end is gone will say it again on every later
+    /// line, so re-probing it per line buys nothing.
+    #[test]
+    fn a_terminal_that_is_gone_latches_on_its_first_refusal() {
+        for kind in [
+            std::io::ErrorKind::BrokenPipe,
+            std::io::ErrorKind::NotConnected,
+            std::io::ErrorKind::PermissionDenied,
+        ] {
+            let live = LiveBarState::new();
+            assert!(
+                live.record_route_failure(&std::io::Error::from(kind)),
+                "{kind:?} must latch at once"
+            );
+            assert!(live.broken(), "{kind:?} left routing on");
         }
     }
 
