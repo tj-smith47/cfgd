@@ -546,6 +546,17 @@ pub fn xml_escape(s: &str) -> String {
 /// reach for [`Absence::as_str`] where a `&'static str` is required directly
 /// (a `.qualifier(...)` or `.detail(...)` call that takes `impl Into<String>`
 /// accepts either).
+///
+/// `as_str`'s three literals are also a WIRE CONTRACT: `cli/diff.rs` writes
+/// `Absence::Missing` into a `-o json` `shape` field a consumer may match on,
+/// and `compliance/mod.rs` writes `Absence::{NotInstalled,Missing}` into a
+/// `ComplianceCheck.detail` that `snapshot_content_hash` digests to decide
+/// whether a machine changed — so a reword here changes both what an
+/// external `-o json` matcher sees and what every daemon in a fleet reports
+/// on its very next tick, for machines that did not actually change.
+/// `absence_literals_are_a_pinned_wire_contract` in this file's test module
+/// pins the three literals byte-for-byte; touching one means updating that
+/// test deliberately, not by accident, and auditing both consumers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Absence {
     NotInstalled,
@@ -573,6 +584,36 @@ impl std::fmt::Display for Absence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absence_renders_the_three_vocab_arms_by_what_is_absent_not_how_badly() {
+        assert_eq!(Absence::NotInstalled.as_str(), "not installed");
+        assert_eq!(Absence::Missing.as_str(), "missing");
+        assert_eq!(Absence::NotFound.as_str(), "not found");
+    }
+
+    #[test]
+    fn absence_display_matches_as_str() {
+        assert_eq!(
+            Absence::NotInstalled.to_string(),
+            Absence::NotInstalled.as_str()
+        );
+        assert_eq!(Absence::Missing.to_string(), Absence::Missing.as_str());
+        assert_eq!(Absence::NotFound.to_string(), Absence::NotFound.as_str());
+    }
+
+    #[test]
+    fn absence_literals_are_a_pinned_wire_contract() {
+        // `diff.rs`'s `-o json` `shape` field and `compliance/mod.rs`'s
+        // hashed snapshot `detail` field both consume `Absence::as_str()`.
+        // A reword here changes an external matcher's answer and flips
+        // every daemon's drift-detection hash fleet-wide — so this pin
+        // exists to make that change deliberate, never an incidental find-
+        // and-replace.
+        assert_eq!(Absence::NotInstalled.as_str(), "not installed");
+        assert_eq!(Absence::Missing.as_str(), "missing");
+        assert_eq!(Absence::NotFound.as_str(), "not found");
+    }
 
     #[test]
     fn a_count_agrees_with_its_noun_in_both_numbers() {

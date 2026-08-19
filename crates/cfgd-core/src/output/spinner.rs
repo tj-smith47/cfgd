@@ -482,6 +482,49 @@ mod tests {
     }
 
     #[test]
+    fn compose_in_flight_subject_strips_a_trailing_ellipsis_char() {
+        assert_eq!(compose_in_flight_subject("Cloning…"), "Cloning");
+    }
+
+    #[test]
+    fn compose_in_flight_subject_strips_a_trailing_literal_dots() {
+        assert_eq!(compose_in_flight_subject("Cloning..."), "Cloning");
+    }
+
+    #[test]
+    fn compose_in_flight_subject_strips_trailing_whitespace_around_the_marker() {
+        assert_eq!(compose_in_flight_subject("Cloning ... "), "Cloning");
+        assert_eq!(compose_in_flight_subject("Cloning …  "), "Cloning");
+    }
+
+    #[test]
+    fn compose_in_flight_subject_leaves_a_bare_participle_untouched() {
+        assert_eq!(compose_in_flight_subject("Cloning"), "Cloning");
+    }
+
+    #[test]
+    fn compose_in_flight_subject_on_nothing_but_the_marker_yields_empty() {
+        // Documents the edge the review flagged rather than hiding it: a
+        // caller that hands in only "..."/"…" gets back "". No production
+        // call site does this — every in-flight subject names a verb — but
+        // the composer's contract must be pinned regardless of who calls it.
+        assert_eq!(compose_in_flight_subject("..."), "");
+        assert_eq!(compose_in_flight_subject("…"), "");
+    }
+
+    #[test]
+    fn compose_in_flight_subject_strips_only_one_trailing_marker() {
+        // A doubled marker ("Cloning……" / "Cloning......") is not a shape any
+        // caller produces, and the composer's contract is "strip the trailing
+        // marker", not "strip every trailing dot" — a second stacked marker,
+        // or a lone ".." that is not the three-dot ellipsis, is left in place
+        // rather than guessed at.
+        assert_eq!(compose_in_flight_subject("Cloning……"), "Cloning…");
+        assert_eq!(compose_in_flight_subject("Cloning......"), "Cloning...");
+        assert_eq!(compose_in_flight_subject("Cloning.."), "Cloning..");
+    }
+
+    #[test]
     fn finish_ok_emits_status_at_section_depth() {
         let r = renderer();
         let buf = Arc::new(Mutex::new(String::new()));
