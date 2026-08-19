@@ -155,8 +155,8 @@ mod tests {
         assert!(out.contains("+B"), "got: {out:?}");
     }
 
-    /// R11: a raw block indents to its owning depth like any other
-    /// emission, rather than landing at column 0 under a depth-2 parent.
+    /// A raw block indents to its owning depth like any other emission,
+    /// rather than landing at column 0 under a depth-2 parent.
     #[test]
     fn diff_indents_to_the_given_depth() {
         let buf = Arc::new(Mutex::new(String::new()));
@@ -174,7 +174,7 @@ mod tests {
         );
     }
 
-    /// R11: `emit_raw_block` flushes a deferred section header before the
+    /// `emit_raw_block` flushes a deferred section header before the
     /// block's own lines, the same as every other emission — a diff opened
     /// mid-section must not skip past the header that names it.
     #[test]
@@ -194,6 +194,30 @@ mod tests {
         assert!(
             header_at < diff_at,
             "the section header must render before the diff it opened: {out:?}"
+        );
+    }
+
+    /// `emit_raw_block` drains any buffered `kv` pairs before writing the
+    /// block's own lines, the same as `flush_section_headers` does for a
+    /// pending header — a diff opened right after a `kv()` call must not
+    /// render above the buffered pair it followed.
+    #[test]
+    fn diff_drains_a_pending_kv_buffer_first() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(Theme::default(), Verbosity::Normal);
+        r.render_kv("Path", "/etc/cfgd.yaml");
+        r.render_diff(&sink, 0, "a\n", "b\n");
+        let out = crate::test_helpers::captured_text(&buf);
+        let kv_at = out
+            .find("/etc/cfgd.yaml")
+            .unwrap_or_else(|| panic!("buffered kv missing: {out:?}"));
+        let diff_at = out
+            .find("-a")
+            .unwrap_or_else(|| panic!("removed line missing: {out:?}"));
+        assert!(
+            kv_at < diff_at,
+            "a kv buffered before the diff must render first: {out:?}"
         );
     }
 
