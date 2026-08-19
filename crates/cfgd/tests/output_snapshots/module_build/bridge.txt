@@ -1,4 +1,6 @@
 Build Module
-✓ Built linux/amd64 to /tmp/build-out
+
+target:linux/amd64
+  ✓ Built linux/amd64 to /tmp/build-out
 
 ✓ Built module

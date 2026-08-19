@@ -64,7 +64,11 @@ fn checkin_happy_json() {
 }
 
 /// Drift > 0, report succeeded — the streaming "Drift report" section closes
-/// with an Ok status carrying the count.
+/// with an Ok status carrying the count. Mirrors production's real section
+/// shape (`printer.section("Drift")`, spinner nested inside it) — see
+/// `cmd_checkin_drift_settle_line_nests_under_the_drift_section_header` in
+/// `cli/checkin.rs`, which asserts the settled line renders deeper than the
+/// `Drift` header for the real command.
 #[test]
 fn checkin_drift_reported_human() {
     let (printer, cap) = Printer::for_test_doc();
@@ -72,7 +76,8 @@ fn checkin_drift_reported_human() {
     printer.kv("Server status", "ok");
     printer.kv("Config changed", "false");
     {
-        let sp = printer.spinner("Reporting drift");
+        let drift_sec = printer.section("Drift");
+        let sp = drift_sec.spinner("Reporting drift");
         sp.finish_ok("3 drift items reported");
     }
     printer.emit(build_checkin_doc(&CheckinOutput {
@@ -143,20 +148,23 @@ fn checkin_server_pushed_config_human() {
     );
 }
 
-/// Bridge invariant: streaming "Checkin" section drops, then a synthetic
+/// Bridge invariant: streaming "Gateway" section drops, then a synthetic
 /// buffered status emits — combined human surface contains exactly one
 /// blank line at the transition. The bridge synthetic adds a status that
 /// real `cmd_checkin` does not emit (production's buffered Doc is
 /// payload-only); deterministic minimal content on both sides is preferred
-/// over matching the real shape.
+/// over matching the real shape, EXCEPT the section itself — `Gateway` is
+/// the section production actually opens around the checkin request
+/// (`cli/checkin.rs`'s `printer.section("Gateway")`), so the mirror stays a
+/// mirror instead of naming a section production never renders.
 #[test]
 fn checkin_bridge_one_blank_line() {
     let (printer, cap) = Printer::for_test_doc();
 
     printer.heading("Checkin");
     {
-        let net_sec = printer.section("Checkin");
-        net_sec.status_simple(Role::Ok, "server status: ok");
+        let gateway_sec = printer.section("Gateway");
+        gateway_sec.status_simple(Role::Ok, "server status: ok");
     }
 
     let doc = Doc::new()
