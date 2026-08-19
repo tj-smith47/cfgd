@@ -955,6 +955,47 @@ mod tests {
     }
 
     #[test]
+    fn a_reusing_tick_restates_a_bypass_where_a_quiet_daemon_hears_it() {
+        // The reason the advisory carries its channel: a daemon ticks at
+        // Verbosity::Quiet, where a Role::Warn status is dropped. A bypass of a
+        // security constraint the user declared has to reach the operator on
+        // every reusing tick, not only on the one that composed.
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, "first").unwrap();
+        let cache = TickCache::new();
+        let advisory = SourceAdvisory::bypassed(
+            "source 'team': --allow-unsigned bypassed requireSignedCommits",
+        );
+
+        let derive = || {
+            let held = cache.config_derivation(&config_path, None, || {
+                crate::record_config_input(&config_path);
+                Ok::<_, ()>(derived_advising("first", vec![advisory.clone()]))
+            });
+            match held {
+                Ok(c) => c,
+                Err(()) => unreachable!("the derivation above cannot fail"),
+            }
+        };
+
+        drop(derive());
+        let reusing = derive();
+
+        let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Quiet);
+        for advisory in reusing.advisories_to_restate() {
+            advisory.restate(&printer);
+        }
+        printer.flush();
+
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("bypassed requireSignedCommits"),
+            "a quiet daemon tick must still hear the bypass, got: {out:?}"
+        );
+    }
+
+    #[test]
     fn a_state_database_that_moved_out_from_under_the_daemon_is_reopened() {
         // cfgd itself moves this file: `StateStore::open` migrates a legacy
         // state dir by renaming the database. A daemon holding the old

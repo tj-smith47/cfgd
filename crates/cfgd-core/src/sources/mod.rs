@@ -108,7 +108,7 @@ pub(crate) struct SourceAdvisory {
 }
 
 /// The two channels a source advisory is ever said on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 enum AdvisoryChannel {
     /// An ordinary warning, correctly suppressed at `Verbosity::Quiet` and
     /// under `-o json`: the source was skipped and the composition went on.
@@ -132,6 +132,17 @@ impl SourceAdvisory {
         Self {
             message: message.into(),
             channel: AdvisoryChannel::Status,
+        }
+    }
+
+    /// A bypass advisory built without a composition, for a test that drives a
+    /// holder's restatement of the ALERT channel — the one whose whole claim is
+    /// that it survives a quiet daemon tick.
+    #[cfg(test)]
+    pub(crate) fn bypassed(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            channel: AdvisoryChannel::Alert,
         }
     }
 
