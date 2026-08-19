@@ -118,6 +118,23 @@ impl SourceManager {
         self.skip_advisories.push(message);
     }
 
+    /// Say — and remember — that a policy this source declared was BYPASSED and
+    /// the composition went on anyway.
+    ///
+    /// `alert`, not `skip_advisory`'s `status_simple(Role::Warn, …)`: a bypass
+    /// is a statement about what the run actually did with the user's own
+    /// security setting, and every path that loads a source hands `load_source`
+    /// a `Verbosity::Quiet` printer (`cfgd sync`, `cfgd compliance`, the daemon)
+    /// under which a Warn status is filtered away. `alert` survives Quiet AND
+    /// structured output, which is the whole reason it exists. It is remembered
+    /// for the same reason a skip is: a holder that caches a composition across
+    /// ticks must re-state it, or a bypass that goes quiet reads as one that
+    /// stopped happening.
+    fn bypass_advisory(&mut self, printer: &Printer, message: String) {
+        printer.alert(&message);
+        self.skip_advisories.push(message);
+    }
+
     /// Take the skip advisories emitted since the last take.
     ///
     /// For a caller that holds a composition across more than one unit of work:
@@ -251,7 +268,12 @@ impl SourceManager {
 
         // A cached source still gets its signature verified — a tampered cache
         // must not silently feed a read path.
-        self.verify_commit_signature(spec, &source_dir, &manifest.spec.policy.constraints)?;
+        self.verify_commit_signature(
+            spec,
+            &source_dir,
+            &manifest.spec.policy.constraints,
+            printer,
+        )?;
 
         let last_commit = Self::head_commit(&source_dir);
 
@@ -422,7 +444,7 @@ impl SourceManager {
                             spec.name, pin
                         ),
                     );
-                    return self.load_from_existing_cache(spec, &source_dir);
+                    return self.load_from_existing_cache(spec, &source_dir, printer);
                 }
                 Err(e) => return Err(e),
             },
@@ -443,7 +465,12 @@ impl SourceManager {
         let manifest = self.parse_manifest(&spec.name, &source_dir)?;
 
         // Signature verification: if the source requires signed commits, verify HEAD
-        self.verify_commit_signature(spec, &source_dir, &manifest.spec.policy.constraints)?;
+        self.verify_commit_signature(
+            spec,
+            &source_dir,
+            &manifest.spec.policy.constraints,
+            printer,
+        )?;
 
         let last_commit = Self::head_commit(&source_dir);
 
@@ -473,9 +500,14 @@ impl SourceManager {
     /// keep it composed at the previously-resolved ref. A corrupt manifest or
     /// failed signature still surfaces as an error — only the pin-not-found case
     /// routes here.
-    fn load_from_existing_cache(&mut self, spec: &SourceSpec, source_dir: &Path) -> Result<()> {
+    fn load_from_existing_cache(
+        &mut self,
+        spec: &SourceSpec,
+        source_dir: &Path,
+        printer: &Printer,
+    ) -> Result<()> {
         let manifest = self.parse_manifest(&spec.name, source_dir)?;
-        self.verify_commit_signature(spec, source_dir, &manifest.spec.policy.constraints)?;
+        self.verify_commit_signature(spec, source_dir, &manifest.spec.policy.constraints, printer)?;
 
         let last_commit = Self::head_commit(source_dir);
 
@@ -783,10 +815,11 @@ impl SourceManager {
     /// thing a planted cache controls. `allow_unsigned` on this SourceManager
     /// still bypasses both.
     pub fn verify_commit_signature(
-        &self,
+        &mut self,
         spec: &SourceSpec,
         source_dir: &Path,
         constraints: &crate::config::SourceConstraints,
+        printer: &Printer,
     ) -> Result<()> {
         if !spec.requires_signed_commits(constraints.require_signed_commits) {
             return Ok(());
@@ -794,15 +827,25 @@ impl SourceManager {
 
         let name = spec.name.as_str();
         if self.allow_unsigned {
-            tracing::debug!(
-                source = %name,
-                "Signature verification skipped for source '{}' (allow-unsigned is set)",
-                name
+            self.bypass_advisory(
+                printer,
+                format!(
+                    "Source '{name}' requires signed commits, but --allow-unsigned is set — composing it WITHOUT verifying its signature"
+                ),
             );
             return Ok(());
         }
 
-        verify_head_signature(name, source_dir)
+        verify_head_signature(name, source_dir)?;
+        // The user asked for signed commits, so the check having RUN is part of
+        // what they asked for. An ordinary status: a read path composes at
+        // `Verbosity::Quiet` and correctly says nothing, and a failure is an
+        // error rather than a line.
+        printer.status_simple(
+            Role::Ok,
+            format!("Source '{name}': HEAD commit signature verified"),
+        );
+        Ok(())
     }
 
     /// Resolve a `pinVersion` value to a concrete git ref against the remote.

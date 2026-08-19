@@ -321,7 +321,7 @@ fn parse_ls_remote_tags_drops_peeled_lines() {
 #[test]
 fn verify_signature_skipped_when_not_required() {
     let dir = tempfile::tempdir().unwrap();
-    let mgr = SourceManager::new(dir.path());
+    let mut mgr = SourceManager::new(dir.path());
     let constraints = crate::config::SourceConstraints::default();
     assert!(
         !constraints.require_signed_commits,
@@ -329,7 +329,7 @@ fn verify_signature_skipped_when_not_required() {
     );
     // require_signed_commits defaults to false — should return Ok(()) without any repo
     let spec = source_spec_named("test");
-    let result = mgr.verify_commit_signature(&spec, dir.path(), &constraints);
+    let result = mgr.verify_commit_signature(&spec, dir.path(), &constraints, &test_printer());
     assert_eq!(
         result.unwrap(),
         (),
@@ -353,11 +353,48 @@ fn verify_signature_skipped_when_allow_unsigned() {
     );
     // Even though require_signed_commits is true, allow_unsigned bypasses it
     let spec = source_spec_named("test");
-    let result = mgr.verify_commit_signature(&spec, dir.path(), &constraints);
+    let result = mgr.verify_commit_signature(&spec, dir.path(), &constraints, &test_printer());
     assert_eq!(
         result.unwrap(),
         (),
         "expected Ok(()) when allow_unsigned bypasses verification"
+    );
+}
+
+/// Every path that loads a source hands `load_source` a `Verbosity::Quiet`
+/// printer, so a bypass announced with an ordinary `Role::Warn` status is
+/// filtered away and the user is never told their own `requireSignedCommits`
+/// was not honoured. The capture is taken at Quiet for exactly that reason.
+#[test]
+fn an_allow_unsigned_bypass_is_announced_even_at_quiet_and_is_remembered() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut mgr = SourceManager::new(dir.path());
+    mgr.set_allow_unsigned(true);
+    let constraints = crate::config::SourceConstraints {
+        require_signed_commits: true,
+        ..Default::default()
+    };
+    let spec = source_spec_named("bypassed");
+
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Quiet);
+    mgr.verify_commit_signature(&spec, dir.path(), &constraints, &printer)
+        .expect("allow_unsigned bypasses verification");
+
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains("bypassed") && out.contains("--allow-unsigned"),
+        "the bypass must reach the user at Quiet, got: {out:?}"
+    );
+
+    let remembered = mgr.take_skip_advisories();
+    assert_eq!(
+        remembered.len(),
+        1,
+        "a holder caching this composition must be able to re-state the bypass, got: {remembered:?}"
+    );
+    assert!(
+        out.contains(remembered[0].trim()),
+        "the remembered sentence must be the one that was printed, got: {remembered:?}"
     );
 }
 
@@ -372,14 +409,14 @@ fn verify_signature_fails_on_unsigned_commit() {
     repo.commit(Some("HEAD"), &sig, &sig, "unsigned commit", &tree, &[])
         .unwrap();
 
-    let mgr = SourceManager::new(dir.path());
+    let mut mgr = SourceManager::new(dir.path());
     let constraints = crate::config::SourceConstraints {
         require_signed_commits: true,
         ..Default::default()
     };
 
     let spec = source_spec_named("test-source");
-    let result = mgr.verify_commit_signature(&spec, dir.path(), &constraints);
+    let result = mgr.verify_commit_signature(&spec, dir.path(), &constraints, &test_printer());
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
     assert!(
@@ -402,7 +439,7 @@ fn verify_signature_runs_when_only_the_subscriber_demands_it() {
     repo.commit(Some("HEAD"), &sig, &sig, "unsigned commit", &tree, &[])
         .unwrap();
 
-    let mgr = SourceManager::new(dir.path());
+    let mut mgr = SourceManager::new(dir.path());
     let constraints = crate::config::SourceConstraints {
         require_signed_commits: false,
         ..Default::default()
@@ -411,7 +448,7 @@ fn verify_signature_runs_when_only_the_subscriber_demands_it() {
     spec.subscription.require_signed_commits = true;
 
     let err = mgr
-        .verify_commit_signature(&spec, dir.path(), &constraints)
+        .verify_commit_signature(&spec, dir.path(), &constraints, &test_printer())
         .expect_err("subscriber demand must force verification of an unsigned HEAD");
     assert!(
         err.to_string().contains("not signed"),
@@ -422,14 +459,14 @@ fn verify_signature_runs_when_only_the_subscriber_demands_it() {
 #[test]
 fn verify_signature_still_skipped_when_neither_side_demands_it() {
     let dir = tempfile::tempdir().unwrap();
-    let mgr = SourceManager::new(dir.path());
+    let mut mgr = SourceManager::new(dir.path());
     let constraints = crate::config::SourceConstraints {
         require_signed_commits: false,
         ..Default::default()
     };
     let spec = source_spec_named("quiet");
     assert!(!spec.subscription.require_signed_commits);
-    mgr.verify_commit_signature(&spec, dir.path(), &constraints)
+    mgr.verify_commit_signature(&spec, dir.path(), &constraints, &test_printer())
         .expect("no demand from either side leaves the repo untouched");
 }
 
@@ -2062,7 +2099,7 @@ fn verify_signature_required_but_allow_unsigned_skips() {
     // Even though require_signed_commits is true, allow_unsigned bypasses it
     // This should succeed without even checking the repo
     let spec = source_spec_named("test");
-    let result = mgr.verify_commit_signature(&spec, dir.path(), &constraints);
+    let result = mgr.verify_commit_signature(&spec, dir.path(), &constraints, &test_printer());
     assert!(result.is_ok());
 }
 
@@ -4108,7 +4145,7 @@ fn load_sources_succeeds_when_at_least_one_source_loads() {
 #[test]
 fn verify_commit_signature_returns_ok_when_constraints_disabled_even_with_no_repo() {
     let tmp = tempfile::tempdir().unwrap();
-    let mgr = SourceManager::new(tmp.path());
+    let mut mgr = SourceManager::new(tmp.path());
     let constraints = crate::config::SourceConstraints {
         require_signed_commits: false,
         ..Default::default()
@@ -4117,7 +4154,7 @@ fn verify_commit_signature_returns_ok_when_constraints_disabled_even_with_no_rep
     // return Ok(()) without ever invoking git or git2.
     let nonexistent = tmp.path().join("does-not-exist");
     let spec = source_spec_named("test");
-    let result = mgr.verify_commit_signature(&spec, &nonexistent, &constraints);
+    let result = mgr.verify_commit_signature(&spec, &nonexistent, &constraints, &test_printer());
     result.expect("constraint disabled → Ok regardless of repo state");
 }
 
@@ -4252,7 +4289,7 @@ mod bare_repo_load {
                 ..Default::default()
             };
             let err = mgr
-                .verify_commit_signature(&spec, &source_dir, &constraints)
+                .verify_commit_signature(&spec, &source_dir, &constraints, &test_printer())
                 .expect_err("unsigned commit must fail verification");
             let msg = err.to_string();
             assert!(
