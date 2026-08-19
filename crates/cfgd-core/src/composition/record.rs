@@ -16,7 +16,7 @@ pub(super) fn record_policy_conflicts(
             resolution_type: resolution_type.clone(),
             winning_source: source_name.to_string(),
             details: format!(
-                "{} {} from {}",
+                "{} {} <- {}",
                 resolution_type.label(),
                 file.target.posix(),
                 source_name
@@ -32,7 +32,7 @@ pub(super) fn record_policy_conflicts(
                 resource_id: pkg.clone(),
                 resolution_type: resolution_type.clone(),
                 winning_source: source_name.to_string(),
-                details: format!("{} {} from {}", resolution_type.label(), pkg, source_name),
+                details: format!("{} {} <- {}", resolution_type.label(), pkg, source_name),
             });
         }
     }
@@ -43,12 +43,7 @@ pub(super) fn record_policy_conflicts(
             resource_id: format!("env:{}", ev.name),
             resolution_type: resolution_type.clone(),
             winning_source: source_name.to_string(),
-            details: format!(
-                "{} {} from {}",
-                resolution_type.label(),
-                ev.name,
-                source_name
-            ),
+            details: format!("{} {} <- {}", resolution_type.label(), ev.name, source_name),
         });
     }
 
@@ -59,7 +54,7 @@ pub(super) fn record_policy_conflicts(
             resolution_type: resolution_type.clone(),
             winning_source: source_name.to_string(),
             details: format!(
-                "{} {} from {}",
+                "{} {} <- {}",
                 resolution_type.label(),
                 alias.name,
                 source_name
@@ -74,7 +69,7 @@ pub(super) fn record_policy_conflicts(
             resolution_type: resolution_type.clone(),
             winning_source: source_name.to_string(),
             details: format!(
-                "{} module {} from {}",
+                "{} module {} <- {}",
                 resolution_type.label(),
                 module,
                 source_name
@@ -89,7 +84,7 @@ pub(super) fn record_policy_conflicts(
             resolution_type: resolution_type.clone(),
             winning_source: source_name.to_string(),
             details: format!(
-                "{} {} from {}",
+                "{} {} <- {}",
                 resolution_type.label(),
                 secret.source,
                 source_name
@@ -121,7 +116,7 @@ pub(super) fn record_rejections(
                             resolution_type: ResolutionType::Rejected,
                             winning_source: LOCAL_LAYER.to_string(),
                             details: format!(
-                                "REJECTED {} from local rejected {} recommendation",
+                                "REJECTED {} <- local rejected {} recommendation",
                                 name, source_name
                             ),
                         });
@@ -139,7 +134,7 @@ pub(super) fn record_rejections(
                                     resolution_type: ResolutionType::Rejected,
                                     winning_source: LOCAL_LAYER.to_string(),
                                     details: format!(
-                                        "REJECTED {} from local rejected {} recommendation",
+                                        "REJECTED {} <- local rejected {} recommendation",
                                         name, source_name
                                     ),
                                 });
@@ -163,7 +158,7 @@ pub(super) fn record_rejections(
                     resolution_type: ResolutionType::Rejected,
                     winning_source: LOCAL_LAYER.to_string(),
                     details: format!(
-                        "REJECTED module {} from local rejected {} recommendation",
+                        "REJECTED module {} <- local rejected {} recommendation",
                         name, source_name
                     ),
                 });

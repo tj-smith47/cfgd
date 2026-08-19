@@ -5,7 +5,7 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::backup::{BackupUnit, SnapshotInfo};
 use cfgd_core::format_bytes;
-use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, renderer::Table};
 use cfgd_core::state::{BackupRunRecord, BackupRunStatus};
 
 fn backup_not_found_error(name: &str, valid: Vec<String>) -> anyhow::Error {
@@ -393,21 +393,24 @@ pub fn run_backup_restore(
     };
     let subject = format!(
         "{} restored from {}",
-        cfgd_core::reconciler::Owner::backup(&outcome.name).token(),
+        OwnerLabel::new("backup", &outcome.name).plain(),
         outcome.snapshot
     );
     // `outcome.restored_to`, not the requested target: a symlinked source is
     // followed, and the operator needs to be told where the bytes actually went.
-    let qualifier = format!("into {}", outcome.restored_to);
+    // `.detail(...)`, not `.qualifier(...)`: "into <path>" is a prepositional
+    // phrase describing the restore, not a `Label: value` pair the snapshot
+    // name has a field called "into" — `.qualifier` would misread it as one.
+    let into_detail = format!("into {}", outcome.restored_to);
     match &outcome.error {
         Some(e) => {
-            printer
-                .status(role, subject)
-                .qualifier(qualifier)
-                .detail(cfgd_core::output::collapse_to_subject_line(e));
+            printer.status(role, subject).detail(format!(
+                "{into_detail} — {}",
+                cfgd_core::output::collapse_to_subject_line(e)
+            ));
         }
         None => {
-            printer.status(role, subject).qualifier(qualifier);
+            printer.status(role, subject).detail(into_detail);
         }
     }
     // `hint`, not `note`: where the overwritten data went is the one thing an

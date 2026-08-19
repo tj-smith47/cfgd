@@ -402,10 +402,23 @@ pub(crate) fn build_subscription_preview_input(
 /// `conflicts` is empty so the caller can take the "no conflicts with
 /// current config" branch on `is_empty()`.
 ///
-/// Format pinned to `"{LABEL} {resource_id} from {winning_source} ({details})"`
-/// — capital label, no leading indent (the caller renders each line through
-/// `status_simple` inside a section, which supplies its own). Any change to
-/// this shape is consumer-visible.
+/// Format pinned to `"{resource_id}: {details}"` — no leading indent (the
+/// caller renders each line through `status_simple` inside a section, which
+/// supplies its own). Any change to this shape is consumer-visible.
+///
+/// `conflict.details` is [`composition::record`]'s persisted string and
+/// keeps its own `<-` shape in storage (see that module's doc comment); this
+/// is a DISPLAY path only, so the arrow is reworded to "from" here rather
+/// than touching what gets written to `source_conflicts.detail`. The
+/// wrapper used to also restate `resolution_type.label()`,
+/// `conflict.resource_id` and `conflict.winning_source` ahead of
+/// `details` — but `details` already carries the label, the resource and
+/// the source (`record.rs` is the only producer), so on every real conflict
+/// the two halves said the same thing in two different shapes
+/// (`"LOCKED package:apt:curl from acme (LOCKED curl <- acme)"`). Dropping
+/// the restatement to `resource_id: details` keeps the resource's
+/// kind-prefixed name (useful for scanning a list of mixed kinds) without
+/// repeating the relationship a second time.
 pub(crate) fn format_conflict_preview_lines(
     conflicts: &[cfgd_core::composition::ConflictResolution],
 ) -> Vec<String> {
@@ -413,11 +426,9 @@ pub(crate) fn format_conflict_preview_lines(
         .iter()
         .map(|conflict| {
             format!(
-                "{} {} from {} ({})",
-                conflict.resolution_type.label(),
+                "{}: {}",
                 conflict.resource_id,
-                conflict.winning_source,
-                conflict.details
+                conflict.details.replace(" <- ", " from ")
             )
         })
         .collect()
