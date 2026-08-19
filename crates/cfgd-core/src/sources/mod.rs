@@ -642,12 +642,14 @@ impl SourceManager {
         let cli_ok = matches!(&cli_result, Ok(output) if output.status.success());
 
         if !cli_ok {
-            // Fall back to libgit2 with spinner
-            let spinner = printer.spinner(format!("Fetching source '{}' (libgit2)...", spec.name));
-
+            // Fall back to libgit2. `Repository::open`/`find_remote` are local
+            // handle acquisition, not the fetch the spinner narrates — hoisted
+            // above it so an early `?` here never leaves a running spinner
+            // behind with nothing left to settle it.
             let repo = Repository::open(source_dir).map_err(to_git_err)?;
-
             let mut remote = repo.find_remote("origin").map_err(to_git_err)?;
+
+            let spinner = printer.spinner(format!("Fetching source '{}' (libgit2)...", spec.name));
 
             let mut fo = FetchOptions::new();
             let mut callbacks = RemoteCallbacks::new();

@@ -259,7 +259,27 @@ fn github_get(
     finish_label: &str,
 ) -> Result<String> {
     let spinner = printer.map(|p| p.spinner(start_label.to_string()));
+    match github_get_inner(url) {
+        Ok(body) => {
+            if let Some(s) = spinner {
+                let _ = s.finish_ok(finish_label.to_string());
+            }
+            Ok(body)
+        }
+        Err(e) => {
+            if let Some(s) = spinner {
+                let _ = s
+                    .finish_fail("Failed to fetch release information".to_string())
+                    .detail(crate::output::collapse_to_subject_line(&e));
+            }
+            Err(e)
+        }
+    }
+}
 
+/// The fallible half of [`github_get`]: one `Result` the caller matches once
+/// to settle the spinner, instead of an early `?` abandoning it mid-request.
+fn github_get_inner(url: &str) -> Result<String> {
     let agent = crate::http::http_agent(crate::http::HTTP_UPGRADE_TIMEOUT);
     let mut response = agent
         .get(url)
@@ -277,10 +297,6 @@ fn github_get(
             .map_err(|e| UpgradeError::ApiError {
                 message: format!("failed to read response body: {}", e),
             })?;
-
-    if let Some(s) = spinner {
-        let _ = s.finish_ok(finish_label.to_string());
-    }
 
     Ok(body)
 }
@@ -625,10 +641,20 @@ fn download_to_file(
         }
         (Some(p), None) => {
             let spinner = p.spinner(format!("Downloading {url}..."));
-            std::io::copy(&mut reader, &mut tmp).map_err(|e| UpgradeError::DownloadFailed {
-                message: format!("stream to disk: {}", e),
-            })?;
-            let _ = spinner.finish_ok(format!("Downloaded {url}"));
+            match std::io::copy(&mut reader, &mut tmp) {
+                Ok(_) => {
+                    let _ = spinner.finish_ok(format!("Downloaded {url}"));
+                }
+                Err(e) => {
+                    let err = UpgradeError::DownloadFailed {
+                        message: format!("stream to disk: {}", e),
+                    };
+                    let _ = spinner
+                        .finish_fail(format!("Failed to download {url}"))
+                        .detail(crate::output::collapse_to_subject_line(&err));
+                    return Err(err);
+                }
+            }
         }
         _ => {
             std::io::copy(&mut reader, &mut tmp).map_err(|e| UpgradeError::DownloadFailed {
@@ -799,12 +825,24 @@ pub(crate) fn download_and_install_to(
 
     let extract_spinner = printer.map(|p| p.spinner("Extracting archive..."));
     #[cfg(unix)]
-    extract_tarball(&archive_path, &extract_dir)?;
+    let extract_result = extract_tarball(&archive_path, &extract_dir);
     #[cfg(windows)]
-    extract_zip(&archive_path, &extract_dir)?;
-    if let Some(s) = extract_spinner {
-        let _ = s.finish_ok("Extracted archive");
+    let extract_result = extract_zip(&archive_path, &extract_dir);
+    match &extract_result {
+        Ok(()) => {
+            if let Some(s) = extract_spinner {
+                let _ = s.finish_ok("Extracted archive");
+            }
+        }
+        Err(e) => {
+            if let Some(s) = extract_spinner {
+                let _ = s
+                    .finish_fail("Failed to extract archive")
+                    .detail(crate::output::collapse_to_subject_line(e));
+            }
+        }
     }
+    extract_result?;
 
     // Find the cfgd binary in the extracted contents
     #[cfg(unix)]

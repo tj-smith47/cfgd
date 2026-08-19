@@ -6,7 +6,7 @@ use std::path::Path;
 
 use crate::PathDisplayExt;
 use crate::errors::OciError;
-use crate::output::Printer;
+use crate::output::{Printer, collapse_to_subject_line};
 use crate::sha256_digest;
 
 use super::archive::extract_tar_gz;
@@ -66,8 +66,49 @@ pub fn pull_module(
 
     let spinner = printer.map(|p| p.spinner(format!("Pulling module from {artifact_ref}...")));
 
+    match pull_module_inner(
+        &agent,
+        &oci_ref,
+        auth.as_ref(),
+        output_dir,
+        &signature_policy,
+        artifact_ref,
+    ) {
+        Ok(()) => {
+            if let Some(s) = spinner {
+                let _ = s.finish_ok(format!("Pulled module from {artifact_ref}"));
+            }
+            tracing::debug!(
+                reference = %oci_ref,
+                output = %output_dir.posix(),
+                "module pulled"
+            );
+            Ok(())
+        }
+        Err(e) => {
+            if let Some(s) = spinner {
+                let _ = s
+                    .finish_fail(format!("Failed to pull module from {artifact_ref}"))
+                    .detail(collapse_to_subject_line(&e));
+            }
+            Err(e)
+        }
+    }
+}
+
+/// The fallible half of [`pull_module`]: every step from signature
+/// verification through extraction runs under one `Result` the caller
+/// matches once, rather than an early `?` abandoning the spinner mid-pull.
+fn pull_module_inner(
+    agent: &ureq::Agent,
+    oci_ref: &OciReference,
+    auth: Option<&RegistryAuth>,
+    output_dir: &Path,
+    signature_policy: &SignaturePolicy<'_>,
+    artifact_ref: &str,
+) -> Result<(), OciError> {
     if signature_policy.requires_signature() {
-        let opts = match &signature_policy {
+        let opts = match signature_policy {
             SignaturePolicy::None => unreachable!("guarded by requires_signature()"),
             SignaturePolicy::RequireKey { path } => VerifyOptions {
                 key: Some(path),
@@ -92,10 +133,10 @@ pub fn pull_module(
     );
 
     let resp = authenticated_request(
-        &agent,
+        agent,
         "GET",
         &manifest_url,
-        auth.as_ref(),
+        auth,
         Some(MEDIA_TYPE_OCI_MANIFEST),
         None,
         None,
@@ -132,10 +173,10 @@ pub fn pull_module(
     );
 
     let resp = authenticated_request(
-        &agent,
+        agent,
         "GET",
         &blob_url,
-        auth.as_ref(),
+        auth,
         Some("application/octet-stream"),
         None,
         None,
@@ -173,16 +214,6 @@ pub fn pull_module(
 
     // Extract
     extract_tar_gz(&blob_data, output_dir)?;
-
-    if let Some(s) = spinner {
-        let _ = s.finish_ok(format!("Pulled module from {artifact_ref}"));
-    }
-
-    tracing::debug!(
-        reference = %oci_ref,
-        output = %output_dir.posix(),
-        "module pulled"
-    );
 
     Ok(())
 }
@@ -423,6 +454,52 @@ mod tests {
             None,
         );
         assert!(matches!(result, Err(OciError::ManifestNotFound { .. })));
+    }
+
+    /// QP9 LEAK-site fix, representative of the "inner-fn" shape (the other
+    /// site is `oci/pack.rs`, same reasoning). `pull_module` used to create
+    /// its spinner and then run every fallible step under its own early `?`,
+    /// so a manifest 404 abandoned an already-running spinner — Drop then
+    /// settled it as an unwanted "(interrupted)" line nobody asked for. Every
+    /// step now runs inside `pull_module_inner`, matched exactly once, so the
+    /// spinner is always settled by `finish_fail` and never by Drop.
+    #[test]
+    fn pull_module_failure_settles_via_finish_fail_not_drop() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        server
+            .mock("GET", "/v2/test/missingmod/manifests/v1")
+            .with_status(404)
+            .create();
+
+        let output_dir = tempfile::tempdir().unwrap();
+        let artifact_ref = format!("{}/test/missingmod:v1", registry);
+
+        let (printer, buf) = crate::output::Printer::for_test_live_scrollback();
+        let result = pull_module(
+            &artifact_ref,
+            output_dir.path(),
+            SignaturePolicy::None,
+            Some(&printer),
+        );
+        drop(printer);
+
+        assert!(matches!(result, Err(OciError::ManifestNotFound { .. })));
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("Failed to pull module"),
+            "the finish_fail line must be committed: {out}"
+        );
+        assert_eq!(
+            out.matches("Failed to pull module").count(),
+            1,
+            "the failure must settle exactly once, never twice: {out}"
+        );
+        assert!(
+            !out.contains("(interrupted)"),
+            "a spinner settled by finish_fail must never also settle via Drop: {out}"
+        );
     }
 
     #[test]

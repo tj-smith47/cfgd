@@ -1417,9 +1417,9 @@ fn fetch_latest_release_from_with_printer_drives_spinner_branch() {
 
 #[test]
 fn fetch_latest_release_from_with_printer_on_error_still_returns_err() {
-    // Printer present when the API returns an error status — spinner is created
-    // but never finished (the early return happens before finish_ok). This
-    // exercises the error path with printer != None.
+    // Printer present when the API returns an error status — `github_get`
+    // settles the spinner itself via `finish_fail` before propagating the
+    // error, so this exercises the error path with printer != None.
     let mut server = mockito::Server::new();
     let mock = server
         .mock("GET", "/repos/test/repo/releases/latest")
@@ -1434,6 +1434,47 @@ fn fetch_latest_release_from_with_printer_on_error_still_returns_err() {
     assert!(
         result.is_err(),
         "502 with printer must still surface as Err"
+    );
+}
+
+/// QP9 LEAK-site fix, representative of the "match-once" shape shared by
+/// `upgrade/mod.rs`'s three spinner sites (`github_get`, the checksum-verify
+/// spinner in `download_and_install_to`, and its extract spinner — same
+/// reasoning at each). `github_get` used to run its request under the
+/// caller's early `?`, so a request failure abandoned an already-running
+/// spinner; it now matches its inner result exactly once and always settles
+/// via `finish_fail`, never via Drop.
+#[test]
+fn fetch_latest_release_from_failure_settles_via_finish_fail_not_drop() {
+    let mut server = mockito::Server::new();
+    let mock = server
+        .mock("GET", "/repos/test/repo/releases/latest")
+        .with_status(502)
+        .with_body("Bad Gateway")
+        .create();
+
+    let (printer, buf) = crate::output::Printer::for_test_live_scrollback();
+    let result = fetch_latest_release_from(&server.url(), "test/repo", Some(&printer));
+    drop(printer);
+    mock.assert();
+
+    assert!(
+        result.is_err(),
+        "502 with printer must still surface as Err"
+    );
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains("Failed to fetch release information"),
+        "the finish_fail line must be committed: {out}"
+    );
+    assert_eq!(
+        out.matches("Failed to fetch release information").count(),
+        1,
+        "the failure must settle exactly once, never twice: {out}"
+    );
+    assert!(
+        !out.contains("(interrupted)"),
+        "a spinner settled by finish_fail must never also settle via Drop: {out}"
     );
 }
 

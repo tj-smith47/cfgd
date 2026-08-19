@@ -4467,3 +4467,42 @@ fn git_checkout_detached_pins_to_tag_then_errors_on_bad_ref() {
         "error should name the offending ref: {msg}"
     );
 }
+
+/// QP9 LEAK-site fix, representative of the "hoist" shape (the other site is
+/// `modules/git.rs`'s fetch, same reasoning). `fetch_source`'s libgit2
+/// fallback used to create its spinner BEFORE `Repository::open`/
+/// `find_remote`, so a failure there abandoned an already-running spinner —
+/// Drop then settled it as an unwanted "(interrupted)" line nobody asked for.
+/// Both calls are now hoisted above spinner creation, so a failure here never
+/// creates one at all. `source_dir` exists but is not a git repository, so
+/// the git-CLI attempt fails immediately (no network) and the libgit2
+/// fallback's `Repository::open` fails too — the spinner must never appear.
+#[test]
+fn fetch_source_libgit2_fallback_open_failure_never_creates_a_spinner() {
+    let cache_dir = tempfile::tempdir().unwrap();
+    let mgr = SourceManager::new(cache_dir.path());
+    let source_dir = tempfile::tempdir().unwrap();
+    let spec = SourceManager::build_source_spec(
+        "test",
+        "https://127.0.0.1.invalid/nonexistent/config.git",
+        None,
+    );
+
+    let (printer, buf) = crate::output::Printer::for_test_live_scrollback();
+    let result = mgr.fetch_source(&spec, source_dir.path(), &printer);
+    drop(printer);
+
+    assert!(
+        result.is_err(),
+        "fetch against a non-repository directory must fail"
+    );
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(
+        !out.contains("(libgit2)"),
+        "no spinner may ever be created when the hoisted Repository::open fails: {out}"
+    );
+    assert!(
+        !out.contains("(interrupted)"),
+        "a spinner that was never created cannot leak a Drop-interrupted line: {out}"
+    );
+}

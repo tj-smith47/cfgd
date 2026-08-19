@@ -571,9 +571,10 @@ pub(super) fn fetch_existing_repo(
         return Ok(());
     }
 
-    // Fall back to libgit2 with spinner.
-    let spinner = printer.spinner(format!("Fetching module '{}' (libgit2)...", module_name));
-
+    // Fall back to libgit2. `open_repo`/`find_remote` are local handle
+    // acquisition, not the fetch the spinner narrates — hoisted above it so
+    // an early `?` here never leaves a running spinner behind with nothing
+    // left to settle it.
     let repo = open_repo(repo_path, module_name, &git_src.repo_url)?;
 
     let mut remote = repo
@@ -583,6 +584,8 @@ pub(super) fn fetch_existing_repo(
             url: git_src.repo_url.clone(),
             message: format!("no 'origin' remote: {e}"),
         })?;
+
+    let spinner = printer.spinner(format!("Fetching module '{}' (libgit2)...", module_name));
 
     let refspecs: Vec<String> = remote
         .refspecs()
