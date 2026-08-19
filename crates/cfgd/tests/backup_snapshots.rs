@@ -1068,6 +1068,48 @@ fn backup_restore_human() {
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "backup/restore.txt", &normalized,);
 }
 
+/// `backup restore <name> --at <bogus>` must surface the CLI's typed
+/// `snapshot_not_found` error (with the available-snapshot hint), not a bare
+/// `anyhow` string — the same pinning the core-level `select_snapshot` gets
+/// in `cfgd-core/src/backup/tests.rs`, proven here through the CLI wrapper
+/// that names it `snapshot_not_found` and attaches the hint.
+#[test]
+fn backup_restore_at_unknown_snapshot_is_a_snapshot_not_found_error() {
+    let (config_dir, state_dir, _source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    run_docs(&cli);
+
+    let (printer, _cap) = Printer::for_test_doc();
+    let err = run_backup_restore(
+        &cli,
+        &printer,
+        &RestoreArgs {
+            name: "docs",
+            at: Some("no-such-snapshot"),
+            to: None,
+            yes: true,
+        },
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("no-such-snapshot"),
+        "expected the bogus snapshot name in the error, got: {msg}"
+    );
+
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("a snapshot miss must be the CLI's typed error, not a bare anyhow string");
+    assert_eq!(meta.error_kind, "snapshot_not_found");
+    assert_eq!(meta.name, "docs");
+    assert!(
+        meta.hints
+            .iter()
+            .any(|h| h.contains("available snapshots:")),
+        "expected the available-snapshots hint, got: {meta:?}"
+    );
+}
+
 #[test]
 fn backup_restore_to_redirects_and_omits_the_safety_snapshot() {
     let (config_dir, state_dir, source) = backup_profile_setup();

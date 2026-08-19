@@ -178,7 +178,9 @@ pub(super) fn walk_yaml_path<'a>(
                 let key = serde_yaml::Value::String((*segment).to_string());
                 current = map.get(&key).ok_or_else(|| {
                     let partial = segments[..=i].join(".");
-                    anyhow::anyhow!("key '{}' not found in config", partial)
+                    anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
+                        cfgd_core::errors::ConfigError::KeyNotFound { key: partial },
+                    ))
                 })?;
             }
             _ => {
@@ -404,7 +406,11 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
                 previous = serde_json::to_value(&prior).unwrap_or(serde_json::Value::Null);
                 Ok(())
             }
-            None => anyhow::bail!("key '{}' not found in config", key),
+            None => Err(anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
+                cfgd_core::errors::ConfigError::KeyNotFound {
+                    key: key.to_string(),
+                },
+            ))),
         }
     });
 
@@ -790,6 +796,27 @@ spec:
             err.to_string().contains("'missing' not found"),
             "expected key-not-found error, got: {err}"
         );
+
+        // A missing config key is the same scriptable "named thing not there"
+        // condition as a missing profile/module — it must carry the typed
+        // ConfigError::KeyNotFound so the exit code resolves to NotFound (6),
+        // not the generic ExitCode::Error (1) a bare anyhow error collapses to.
+        let cfgd_err = err
+            .downcast_ref::<cfgd_core::errors::CfgdError>()
+            .expect("a missing config key must carry the typed ConfigError::KeyNotFound");
+        assert!(
+            matches!(
+                cfgd_err,
+                cfgd_core::errors::CfgdError::Config(
+                    cfgd_core::errors::ConfigError::KeyNotFound { .. }
+                )
+            ),
+            "expected ConfigError::KeyNotFound, got: {cfgd_err}"
+        );
+        assert_eq!(
+            cfgd_core::exit::exit_code_for_error(cfgd_err),
+            cfgd_core::exit::ExitCode::NotFound
+        );
     }
 
     #[test]
@@ -965,6 +992,23 @@ spec:
         assert!(
             err.to_string().contains("'missingKey' not found"),
             "expected key-not-found error, got: {err}"
+        );
+
+        let cfgd_err = err
+            .downcast_ref::<cfgd_core::errors::CfgdError>()
+            .expect("a missing config key must carry the typed ConfigError::KeyNotFound");
+        assert!(
+            matches!(
+                cfgd_err,
+                cfgd_core::errors::CfgdError::Config(
+                    cfgd_core::errors::ConfigError::KeyNotFound { .. }
+                )
+            ),
+            "expected ConfigError::KeyNotFound, got: {cfgd_err}"
+        );
+        assert_eq!(
+            cfgd_core::exit::exit_code_for_error(cfgd_err),
+            cfgd_core::exit::ExitCode::NotFound
         );
     }
 

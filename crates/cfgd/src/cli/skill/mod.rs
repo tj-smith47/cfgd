@@ -213,11 +213,14 @@ fn validate_provider_ids(
 ) -> anyhow::Result<()> {
     for name in providers {
         if !all.iter().any(|p| p.id() == name) {
-            let valid: Vec<&str> = all.iter().map(|p| p.id()).collect();
-            return Err(anyhow!(
-                "unknown provider '{name}'; valid providers: {}",
-                valid.join(", ")
-            ));
+            let valid: Vec<String> = all.iter().map(|p| p.id().to_string()).collect();
+            return Err(cfgd_core::errors::CfgdError::Skill(
+                cfgd_core::errors::SkillError::UnknownProvider {
+                    name: name.clone(),
+                    valid,
+                },
+            )
+            .into());
         }
     }
     Ok(())
@@ -637,4 +640,50 @@ pub fn cmd_skill_update(
         cfgd_core::exit::ExitCode::Error.exit();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--provider <unknown>` (shared by `skill install`/`remove`/`update`
+    /// through `validate_provider_ids`) must carry the typed
+    /// `SkillError::UnknownProvider` — not a bare `anyhow!` — so the exit
+    /// code resolves to `NotFound` (6) and `-o json` gets the stable
+    /// `{"error":"not_found",...}` payload uniform with every other named
+    /// lookup miss in the CLI (unknown module, profile, backup name, …).
+    #[test]
+    fn validate_provider_ids_unknown_name_is_a_typed_not_found_error() {
+        let all = all_skill_providers();
+        let err = validate_provider_ids(&all, &["no-such-provider".to_string()]).unwrap_err();
+        let cfgd_err = err
+            .downcast_ref::<cfgd_core::errors::CfgdError>()
+            .expect("an unknown --provider name must carry the typed SkillError::UnknownProvider");
+        assert!(
+            matches!(
+                cfgd_err,
+                cfgd_core::errors::CfgdError::Skill(
+                    cfgd_core::errors::SkillError::UnknownProvider { .. }
+                )
+            ),
+            "expected SkillError::UnknownProvider, got: {cfgd_err}"
+        );
+        assert_eq!(
+            cfgd_core::exit::exit_code_for_error(cfgd_err),
+            cfgd_core::exit::ExitCode::NotFound
+        );
+    }
+
+    #[test]
+    fn validate_provider_ids_known_name_passes() {
+        let all = all_skill_providers();
+        let first_id = all[0].id().to_string();
+        assert!(validate_provider_ids(&all, &[first_id]).is_ok());
+    }
+
+    #[test]
+    fn validate_provider_ids_empty_list_is_auto_mode_and_passes() {
+        let all = all_skill_providers();
+        assert!(validate_provider_ids(&all, &[]).is_ok());
+    }
 }

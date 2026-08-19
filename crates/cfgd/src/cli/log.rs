@@ -26,7 +26,22 @@ fn cmd_log_show_output(
     apply_id: i64,
 ) -> anyhow::Result<()> {
     if state.get_apply(apply_id)?.is_none() {
-        anyhow::bail!("no apply found with ID {}", apply_id);
+        // Typed StateError::ApplyNotFound so the exit-code downcast resolves to
+        // ExitCode::NotFound (6), uniform with `cfgd rollback <id>` — the sibling
+        // apply-ID lookup — and every other named-resource miss (backup name,
+        // snapshot, module, profile), and so `-o json` gets the stable
+        // `{"error":"not_found",...}` payload instead of nothing.
+        let e = cfgd_core::errors::CfgdError::State(cfgd_core::errors::StateError::ApplyNotFound {
+            apply_id,
+        });
+        let message = e.to_string();
+        return Err(crate::cli::cli_error_ctx(
+            e.into(),
+            apply_id.to_string(),
+            "not_found",
+            message,
+            serde_json::json!({}),
+        ));
     }
     let entries = state.journal_entries(apply_id)?;
 
@@ -212,6 +227,36 @@ mod tests {
         assert!(
             out.contains("echo line-one"),
             "condensed header should reference the first line, got: {out}"
+        );
+    }
+
+    /// `cfgd log --show-output <id>` naming an apply ID that isn't in the log
+    /// is the same "you asked for a thing that is not there" condition as
+    /// `cfgd rollback <id>` — its sibling apply-ID lookup — so it must carry
+    /// the typed `StateError::ApplyNotFound` and resolve to exit `6`, not a
+    /// bare `anyhow!` and the generic exit code.
+    #[test]
+    fn log_show_output_unknown_apply_id_is_a_typed_not_found_error() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let state = cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
+        let (printer, _buf) = Printer::for_test_at(Verbosity::Normal);
+
+        let err = cmd_log_show_output(&printer, &state, 999).unwrap_err();
+        let cfgd_err = err
+            .downcast_ref::<cfgd_core::errors::CfgdError>()
+            .expect("an unknown apply ID must carry the typed StateError::ApplyNotFound");
+        assert!(
+            matches!(
+                cfgd_err,
+                cfgd_core::errors::CfgdError::State(
+                    cfgd_core::errors::StateError::ApplyNotFound { .. }
+                )
+            ),
+            "expected StateError::ApplyNotFound, got: {cfgd_err}"
+        );
+        assert_eq!(
+            cfgd_core::exit::exit_code_for_error(cfgd_err),
+            cfgd_core::exit::ExitCode::NotFound
         );
     }
 }

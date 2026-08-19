@@ -189,7 +189,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             for m in args.apply_modules {
                 let resolved_name = modules::resolve_profile_module_name(m);
                 if !all_modules.contains_key(resolved_name) {
-                    anyhow::bail!("Module '{}' not found in {}", m, target_dir.posix());
+                    let mut available: Vec<String> = all_modules.keys().cloned().collect();
+                    available.sort();
+                    return Err(crate::cli::module::list_show::build_module_not_found_error(
+                        m, &available,
+                    ));
                 }
             }
 
@@ -296,7 +300,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 for m in args.apply_modules {
                     let resolved_name = modules::resolve_profile_module_name(m);
                     if !all_modules.contains_key(resolved_name) {
-                        anyhow::bail!("Module '{}' not found in {}", m, target_dir.posix());
+                        let mut available: Vec<String> = all_modules.keys().cloned().collect();
+                        available.sort();
+                        return Err(crate::cli::module::list_show::build_module_not_found_error(
+                            m, &available,
+                        ));
                     }
                 }
                 modules::resolve_modules(

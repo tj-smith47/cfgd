@@ -95,6 +95,9 @@ pub enum ConfigError {
     #[error("profile not found: {name}")]
     ProfileNotFound { name: String },
 
+    #[error("key '{key}' not found in config")]
+    KeyNotFound { key: String },
+
     #[error(
         "ambiguous profile '{name}': multiple forms exist ({forms}) — delete or rename one of them (the canonical form is '{name}/profile.yaml')",
         forms = join_quoted_posix(.paths)
@@ -499,6 +502,9 @@ pub enum BackupError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
+    #[error("no apply found with ID {apply_id}")]
+    ApplyNotFound { apply_id: i64 },
+
     #[error("state database error: {0}")]
     Database(String),
 
@@ -807,6 +813,16 @@ pub enum GenerateError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SkillError {
+    #[error(
+        "unknown provider '{name}'{}",
+        if .valid.is_empty() {
+            String::new()
+        } else {
+            format!(" — valid providers: {}", .valid.join(", "))
+        }
+    )]
+    UnknownProvider { name: String, valid: Vec<String> },
+
     #[error("failed to render skill for provider '{provider}': {message}")]
     Render { provider: String, message: String },
 

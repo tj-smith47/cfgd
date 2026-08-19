@@ -12,7 +12,21 @@ pub fn cmd_rollback(
     let state = open_state_store(state_dir, scope)?;
 
     if state.get_apply(apply_id)?.is_none() {
-        anyhow::bail!("no apply found with ID {}", apply_id);
+        // Typed StateError::ApplyNotFound so the exit-code downcast resolves to
+        // ExitCode::NotFound (6), uniform with every other named-resource miss
+        // (backup name, snapshot, module, profile) and so `-o json` gets the
+        // stable `{"error":"not_found",...}` payload instead of nothing.
+        let e = cfgd_core::errors::CfgdError::State(cfgd_core::errors::StateError::ApplyNotFound {
+            apply_id,
+        });
+        let message = e.to_string();
+        return Err(crate::cli::cli_error_ctx(
+            e.into(),
+            apply_id.to_string(),
+            "not_found",
+            message,
+            serde_json::json!({}),
+        ));
     }
 
     let target_backups = state.get_apply_backups(apply_id)?;

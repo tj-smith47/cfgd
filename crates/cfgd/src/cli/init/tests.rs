@@ -1093,6 +1093,106 @@ fn cmd_init_apply_profile_with_a_module_prices_the_package_it_installs() {
     );
 }
 
+/// `init --apply-module <bogus>` (module-only path, no `--apply-profile`)
+/// must be the SAME typed `not_found` error `cfgd apply --module <bogus>`
+/// resolves to (exit 6), not a bare `anyhow::bail!` string (exit 1) — the two
+/// are documented siblings and must never diverge on what a missing name
+/// reports.
+#[test]
+fn cmd_init_apply_module_only_unknown_module_is_a_typed_not_found_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+    let target = dir.path().join("config");
+    std::fs::create_dir_all(target.join("modules")).unwrap();
+
+    let state_dir = dir.path().join("state");
+    let cache_dir = dir.path().join("cache");
+    let (printer, _cap) = Printer::for_test_at(Verbosity::Normal);
+    let target_str = target.display().to_string();
+    let modules = ["no-such-module".to_string()];
+    let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        path: Some(&target_str),
+        from: None,
+        branch: "master",
+        name: Some("bogus-module-init"),
+        apply: false,
+        dry_run: false,
+        yes: true,
+        install_daemon: false,
+        theme: None,
+        apply_profile: None,
+        apply_modules: &modules,
+        cache_dir: Some(&cache_dir),
+        state_dir: Some(&state_dir),
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+
+    let err = cmd_init_guarded(&printer, &args).unwrap_err();
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("an unknown --apply-module name must carry the typed not_found CliErrorMeta");
+    assert_eq!(meta.error_kind, "not_found");
+    assert_eq!(meta.name, "no-such-module");
+    assert_eq!(
+        cfgd_core::exit::exit_code_for_error(
+            err.downcast_ref::<cfgd_core::errors::CfgdError>()
+                .expect("the typed ModuleError::NotFound survives the CliErrorMeta wrap")
+        ),
+        cfgd_core::exit::ExitCode::NotFound,
+        "must be exit 6, the same as `cfgd apply --module <bogus>`"
+    );
+}
+
+/// The profile+`--apply-module` path's sibling of the test above: an unknown
+/// `--apply-module` name must fail the same typed way whether or not
+/// `--apply-profile` is also given.
+#[test]
+fn cmd_init_apply_profile_with_unknown_module_is_a_typed_not_found_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+    let target = dir.path().join("config");
+    std::fs::create_dir_all(target.join("modules")).unwrap();
+    std::fs::create_dir_all(target.join("profiles")).unwrap();
+    std::fs::write(
+        target.join("profiles").join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let state_dir = dir.path().join("state");
+    let cache_dir = dir.path().join("cache");
+    let (printer, _cap) = Printer::for_test_at(Verbosity::Normal);
+    let target_str = target.display().to_string();
+    let modules = ["no-such-module".to_string()];
+    let args = InitArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        path: Some(&target_str),
+        from: None,
+        branch: "master",
+        name: Some("bogus-module-profile-init"),
+        apply: false,
+        dry_run: false,
+        yes: true,
+        install_daemon: false,
+        theme: None,
+        apply_profile: Some("default"),
+        apply_modules: &modules,
+        cache_dir: Some(&cache_dir),
+        state_dir: Some(&state_dir),
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+
+    let err = cmd_init_guarded(&printer, &args).unwrap_err();
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("an unknown --apply-module name must carry the typed not_found CliErrorMeta");
+    assert_eq!(meta.error_kind, "not_found");
+    assert_eq!(meta.name, "no-such-module");
+}
+
 #[test]
 fn ensure_config_file_creates_without_origin() {
     let dir = tempfile::tempdir().unwrap();
@@ -4814,6 +4914,16 @@ mod cmd_init_apply_orchestration {
                 msg.contains("ghost-module") && msg.contains("not found"),
                 "error should explain that ghost-module isn't found: {msg}"
             );
+            // Same typed error, exit 6, that `cfgd apply --module ghost-module`
+            // resolves to — an unknown `--apply-module` name is not a distinct
+            // failure mode from `apply --module`'s.
+            assert_eq!(
+                cfgd_core::exit::exit_code_for_error(
+                    err.downcast_ref::<cfgd_core::errors::CfgdError>()
+                        .expect("the typed ModuleError::NotFound survives the CliErrorMeta wrap")
+                ),
+                cfgd_core::exit::ExitCode::NotFound
+            );
         });
     }
 
@@ -5371,6 +5481,14 @@ mod cmd_init_apply_orchestration {
             assert!(
                 msg.contains("ghost-extra") && msg.contains("not found"),
                 "error should name the missing module: {msg}"
+            );
+            assert_eq!(
+                cfgd_core::exit::exit_code_for_error(
+                    err.downcast_ref::<cfgd_core::errors::CfgdError>()
+                        .expect("the typed ModuleError::NotFound survives the CliErrorMeta wrap")
+                ),
+                cfgd_core::exit::ExitCode::NotFound,
+                "must be exit 6, the same as the module-only branch and as `apply --module`"
             );
         });
     }

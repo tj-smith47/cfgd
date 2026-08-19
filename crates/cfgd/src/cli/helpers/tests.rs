@@ -11,7 +11,7 @@ use cfgd_core::test_helpers::EnvVarGuard;
 // Helpers shared across tests
 // ---------------------------------------------------------------------------
 
-fn make_cli(config: PathBuf) -> Cli {
+pub(crate) fn make_cli(config: PathBuf) -> Cli {
     Cli {
         config,
         config_explicit: false,
@@ -42,7 +42,7 @@ const PROFILE_YAML: &str = "apiVersion: cfgd.io/v1alpha1\n\
                             metadata:\n  name: default\n\
                             spec: {}\n";
 
-fn quiet_printer() -> Printer {
+pub(crate) fn quiet_printer() -> Printer {
     Printer::for_test().0
 }
 
@@ -856,7 +856,7 @@ fn create_local_source_repo_with_form(
 /// Build a cfgd.yaml that subscribes to a single local source selecting
 /// `profile`, plus a local `default.yaml` profile, under `tmp`. Returns the
 /// config path. Mirrors the layout the existing source tests build.
-fn write_config_with_local_source(
+pub(crate) fn write_config_with_local_source(
     tmp: &std::path::Path,
     source_repo: &std::path::Path,
     source_profile: &str,
@@ -1241,7 +1241,7 @@ fn resolve_desired_state_no_sources_resolves_local_only() {
     );
 }
 
-/// The core QP9b deliverable-1 proof: `--module` without `--with-profile`
+/// The core module-isolation proof: `--module` without `--with-profile`
 /// zeroes EVERY profile-owned contribution, not just packages/files. Builds a
 /// local profile with content in every `MergedProfile` field — env, aliases,
 /// packages, files, system, secrets, scripts, backups — resolves it under
@@ -1464,11 +1464,11 @@ fn resolve_desired_state_with_profile_unions_module_and_keeps_every_profile_owne
 /// Like [`create_local_source_repo`], but the delivered `source-module`
 /// carries a `preApply` script instead of a package — a body
 /// `load_source_modules` gates on the source's `subscription.allowScripts`
-/// opt-in (default `false`, unset here). Used by the QP9b deliverable-4
-/// probe: a `--module` naming a module blocked this way must surface
-/// `ModuleError::ScriptsNotAllowed`, not the swallowed "not found" the
-/// deleted `Err(e) if module_filter.is_some() => Vec::new()` arm produced.
-fn create_local_source_repo_with_blocked_script(root: &std::path::Path) -> PathBuf {
+/// opt-in (default `false`, unset here). Used to prove: a `--module` naming a
+/// module blocked this way must surface `ModuleError::ScriptsNotAllowed`, not
+/// the swallowed "not found" the deleted `Err(e) if module_filter.is_some()
+/// => Vec::new()` arm produced.
+pub(crate) fn create_local_source_repo_with_blocked_script(root: &std::path::Path) -> PathBuf {
     let repo_dir = root.join("source-repo");
     std::fs::create_dir_all(&repo_dir).unwrap();
 
@@ -1516,15 +1516,14 @@ fn create_local_source_repo_with_blocked_script(root: &std::path::Path) -> PathB
     repo_dir
 }
 
-/// Deliverable-4 regression: `--module source-module` against a source that
-/// never opted into `subscription.allowScripts` must surface
-/// `ModuleError::ScriptsNotAllowed` — the real reason resolution failed —
-/// rather than the generic "not found" the deleted swallow arm
-/// (`Err(e) if module_filter.is_some() => Vec::new()`) used to produce for
-/// EVERY resolution error alike. This is the scenario the QP9b brief's
-/// fail-without-fix probe reproduces against a copied tree with that arm
-/// reintroduced: RED (silently reports zero modules, no error) without the
-/// fix, GREEN (typed `ScriptsNotAllowed`) with it.
+/// `--module source-module` against a source that never opted into
+/// `subscription.allowScripts` must surface `ModuleError::ScriptsNotAllowed`
+/// — the real reason resolution failed — rather than the generic "not found"
+/// the deleted swallow arm (`Err(e) if module_filter.is_some() =>
+/// Vec::new()`) used to produce for EVERY resolution error alike. This is the
+/// scenario a fail-without-fix probe reproduces against a copied tree with
+/// that arm reintroduced: RED (silently reports zero modules, no error)
+/// without the fix, GREEN (typed `ScriptsNotAllowed`) with it.
 #[test]
 #[serial]
 fn resolve_desired_state_module_blocked_by_scripts_not_allowed_surfaces_the_real_error() {

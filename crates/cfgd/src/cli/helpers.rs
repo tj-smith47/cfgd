@@ -143,6 +143,19 @@ pub(in crate::cli) fn load_config_and_profile_module_scoped(
         Err(_) => (config::minimal_config(), false),
     };
 
+    // Isolation skips composing the profile's CONTENT, but an explicit
+    // `--profile` still names a real thing every module script reads back as
+    // `CFGD_PROFILE` — a typo here must not silently become the literal
+    // string a script trusts. `active_profile_name`'s own fallback path (no
+    // `--profile`, config's own `active_profile()`) stays best-effort: that
+    // name was never user-typed on THIS invocation, so there is no operator
+    // input to validate.
+    if let Some(name) = cli.profile.as_deref()
+        && let Err(e) = config::resolve_profile(name, &profiles_dir(cli))
+    {
+        return Err(decorate_profile_not_found(cli, &cfg, name, e));
+    }
+
     let resolved = empty_resolved_profile(module_filter, &active_profile_name(cli, Some(&cfg)));
     Ok((cfg, resolved, None, config_parsed))
 }
@@ -1261,4 +1274,4 @@ pub(in crate::cli) fn sign_and_attest(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
