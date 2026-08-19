@@ -15538,6 +15538,10 @@ spec:
 
 #[test]
 fn cmd_plan_module_only_mode() {
+    // Package resolution asks `command_available` for each candidate manager;
+    // a concurrent test emptying PATH to drive a command-not-found branch
+    // would make every manager unresolvable mid-plan.
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
@@ -15580,6 +15584,10 @@ spec:
 /// active `default` profile's own `bat`/`vim` env never appears).
 #[test]
 fn cmd_plan_module_only_includes_transitive_deps_and_unions_repeated_flags() {
+    // Package resolution asks `command_available` for each candidate manager;
+    // a concurrent test emptying PATH to drive a command-not-found branch
+    // would make every manager unresolvable mid-plan.
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let base_yaml = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
