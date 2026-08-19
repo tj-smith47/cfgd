@@ -297,8 +297,15 @@ mod tests {
         assert!(drifts.is_empty());
     }
 
+    // A non-empty unit list makes `diff` snapshot the manager's listing, so
+    // this needs the shim + serial like every other spawning diff test: run
+    // plain, its spawn lands in whichever sibling's shim log is live and
+    // breaks that test's exactly-one-listing count.
+    #[cfg(unix)]
     #[test]
+    #[serial_test::serial]
     fn systemd_diff_unit_without_name_skipped() {
+        let _shim = systemctl_shim("");
         let su = SystemdUnitConfigurator::default();
         let mut unit = serde_yaml::Mapping::new();
         unit.insert(
