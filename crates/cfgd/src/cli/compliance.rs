@@ -329,6 +329,20 @@ pub fn build_compliance_diff_doc(
                 )
             })
         });
+        // The per-section titles carry no count (R4 moved it out of the
+        // title), and unlike the module-review sections above them a diff
+        // between two large snapshots can scroll past the screen — this is
+        // the surface where the total IS the headline, so it closes with one
+        // rather than making the reader count rows.
+        doc = doc.status(
+            Role::Info,
+            format!(
+                "Compliance diff — {} added, {} removed, {} changed",
+                diff.added.len(),
+                diff.removed.len(),
+                diff.changed.len()
+            ),
+        );
     }
 
     doc.with_data(ComplianceDiffOutput {

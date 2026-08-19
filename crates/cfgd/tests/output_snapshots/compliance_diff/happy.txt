@@ -10,3 +10,5 @@ Removed
 
 Changed
   ✗ file:/etc/resolv.conf (Compliant → Violation) — nameserver mismatch
+
+⊙ Compliance diff — 1 added, 1 removed, 1 changed
