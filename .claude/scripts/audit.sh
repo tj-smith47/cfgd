@@ -496,6 +496,48 @@ else
     log_ok "No tracing::info!/warn!/error! in the config/module/source domains"
 fi
 
+log_section "Duplicate Narration (tracing::info! outside daemon/)"
+# An `info!` is cfgd narrating itself, and every user-facing thing it has to say
+# is already a Printer line. What the tracing channel adds at that level is a
+# second copy of the same sentence, written to the one stream the live region
+# repaints — which strands the last paint of whatever bar is on screen (cfgd
+# module push printed its result three times that way and froze its spinner).
+# The binary's default filter is `warn` for exactly that reason, so an info!
+# outside the daemon is a line nobody sees AND a strand risk when they do.
+#
+# daemon/ is the whole exemption, and not a grandfathered one: there the log IS
+# the output — a service under systemd/launchd prints its ticks to journald
+# through this channel and no other, which is why `cfgd daemon run` keeps `info`
+# as its tracing floor (main.rs::runs_reconcile_loop).
+#
+# Same // tracing-ok: <why> hatch as the domain gate above.
+narration_scope_dirs=(crates/cfgd-core/src crates/cfgd/src)
+require_dirs "duplicate narration scan" "${narration_scope_dirs[@]}" || true
+narration_violations=""
+while IFS= read -r -d '' rsfile; do
+    case "$rsfile" in
+        */daemon/*) continue ;;
+        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
+    esac
+    file_hits=$(strip_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
+        { code = code_only($0); comment = LAST_COMMENT }
+        code ~ /tracing::info!/ &&
+        !is_comment_line($0) &&
+        !marker_applies(comment, prev, prev_comment, "tracing-ok:") { print }
+        { prev = $0; prev_comment = comment }
+    ')
+    if [[ -n "$file_hits" ]]; then
+        narration_violations="${narration_violations}${file_hits}"$'\n'
+    fi
+done < <(find "${narration_scope_dirs[@]}" -name '*.rs' -print0 2>/dev/null)
+narration_violations=$(echo "$narration_violations" | sed '/^$/d')
+if [[ -n "$narration_violations" ]]; then
+    log_error "tracing::info! outside daemon/ (a second copy of a line the Printer already prints, on the stream the live region repaints — demote to debug!, delete it, or mark // tracing-ok: <why>):"
+    echo "$narration_violations" | head -20
+else
+    log_ok "No tracing::info! outside daemon/"
+fi
+
 log_section "Controlled Shell Execution"
 # gateway/ allowed for SSH/GPG enrollment signature verification
 # output/ allowed for Printer::run (controlled execution layer for progress UI)

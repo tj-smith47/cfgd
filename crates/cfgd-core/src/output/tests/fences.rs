@@ -61,6 +61,38 @@ fn suspend_is_never_called() {
     );
 }
 
+/// A tracing subscriber wired straight to `std::io::stderr` writes past the
+/// live region: every event lands on the stream indicatif is repainting, and
+/// the last paint of whatever bar was on screen is left stranded behind it.
+/// `output::LiveTracingWriter` is the writer every subscriber in the workspace
+/// takes, because it routes each event through the printer's `MultiProgress`.
+#[test]
+fn no_subscriber_writes_straight_to_stderr() {
+    let mut offenders = Vec::new();
+    for path in workspace_rust_files() {
+        if path.ends_with(Path::new("output/tests/fences.rs")) {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (i, line) in body.lines().enumerate() {
+            let squashed: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+            if squashed.contains("with_writer(std::io::stderr)")
+                || squashed.contains("with_writer(io::stderr)")
+            {
+                offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a subscriber writing straight to stderr strands the live region; take \
+         output::LiveTracingWriter instead:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// Extract the body of every `struct Emitting` / `impl … Emitting` region in
 /// `source`, by brace matching from the region's opening `{`.
 ///
