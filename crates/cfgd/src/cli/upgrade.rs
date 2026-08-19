@@ -14,11 +14,15 @@ use cfgd_core::output::{Doc, Printer, Role};
 /// daemon back, while one started by hand stays down and reconciles nothing
 /// until the user starts it again, which is exactly the thing the reader has to
 /// act on.
+/// Takes the payload as PAIRS rather than a `Value`, so the daemon key always
+/// has somewhere to land: handed a `Value`, an array or a scalar would take the
+/// insert silently and ship a human line the payload does not carry — the
+/// disagreement this builder exists to make unrepresentable.
 fn upgraded_doc(
     version: &str,
     installed_path: String,
     daemon_terminated: bool,
-    mut data: serde_json::Value,
+    data: impl IntoIterator<Item = (&'static str, serde_json::Value)>,
 ) -> Doc {
     let mut doc = Doc::new()
         .status(Role::Ok, format!("cfgd upgraded to {version}"))
@@ -26,10 +30,12 @@ fn upgraded_doc(
     if daemon_terminated {
         doc = doc.kv("Daemon", "terminated to pick up the new binary");
     }
-    if let Some(obj) = data.as_object_mut() {
-        obj.insert("daemonTerminated".into(), daemon_terminated.into());
-    }
-    doc.with_data(data)
+    let mut payload: serde_json::Map<String, serde_json::Value> = data
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect();
+    payload.insert("daemonTerminated".into(), daemon_terminated.into());
+    doc.with_data(serde_json::Value::Object(payload))
 }
 
 pub fn cmd_upgrade(
@@ -214,15 +220,24 @@ pub fn cmd_upgrade(
         &check.latest.to_string(),
         report.installed_path.display_posix(),
         applied.daemon_terminated,
-        serde_json::json!({
-            "currentVersion": check.current.to_string(),
-            "targetVersion": check.latest.to_string(),
-            "downloaded": true,
-            "installed": true,
-            "verified": true,
-            "installedPath": report.installed_path.display().to_string(),
-            "verificationMode": report.verification_mode.as_wire_str(),
-        }),
+        [
+            (
+                "currentVersion",
+                serde_json::json!(check.current.to_string()),
+            ),
+            ("targetVersion", serde_json::json!(check.latest.to_string())),
+            ("downloaded", serde_json::json!(true)),
+            ("installed", serde_json::json!(true)),
+            ("verified", serde_json::json!(true)),
+            (
+                "installedPath",
+                serde_json::json!(cfgd_core::to_posix_string(&report.installed_path)),
+            ),
+            (
+                "verificationMode",
+                serde_json::json!(report.verification_mode.as_wire_str()),
+            ),
+        ],
     ));
 
     Ok(())
@@ -403,12 +418,18 @@ fn apply_startup_update(
                 &check.latest.to_string(),
                 report.installed_path.display_posix(),
                 applied.daemon_terminated,
-                serde_json::json!({
-                    "currentVersion": check.current.to_string(),
-                    "targetVersion": check.latest.to_string(),
-                    "installed": true,
-                    "verificationMode": report.verification_mode.as_wire_str(),
-                }),
+                [
+                    (
+                        "currentVersion",
+                        serde_json::json!(check.current.to_string()),
+                    ),
+                    ("targetVersion", serde_json::json!(check.latest.to_string())),
+                    ("installed", serde_json::json!(true)),
+                    (
+                        "verificationMode",
+                        serde_json::json!(report.verification_mode.as_wire_str()),
+                    ),
+                ],
             ));
             true
         }
@@ -438,10 +459,11 @@ mod tests {
     }
 
     /// One builder is only one builder while both install paths still call it.
-    /// The round-1 shape put the daemon line in a helper and the payload key at
-    /// the call sites, so deleting a call site left every test green while a
-    /// real upgrade reported nothing; this reads the module back and fails if
-    /// the success sentence is minted anywhere but in `upgraded_doc`.
+    /// A helper that appended only the daemon line, with the payload key minted
+    /// at each call site, let the two channels disagree; a builder minting both
+    /// still lets an install path go silent by dropping its emit. This reads the
+    /// module back and pins both halves: the success sentence exists once, and
+    /// the production half of the file still emits it twice.
     #[test]
     fn the_success_doc_is_minted_in_exactly_one_place() {
         let source = include_str!("upgrade.rs");
@@ -459,6 +481,18 @@ mod tests {
             "the payload key says what the code does: the daemon is terminated, \
              never restarted"
         );
+        // Everything above the test module: this module's own calls must not
+        // stand in for the install paths' calls.
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map(|(before, _)| before)
+            .unwrap_or(source);
+        assert_eq!(
+            production.matches("printer.emit(upgraded_doc(").count(),
+            2,
+            "both install paths — cfgd upgrade and the startup policy update — \
+             must still emit the upgraded doc"
+        );
     }
 
     /// The human render and the `-o json` payload owe the reader the SAME
@@ -473,7 +507,7 @@ mod tests {
             "v9.9.0",
             "/usr/local/bin/cfgd".to_string(),
             true,
-            serde_json::json!({ "installed": true }),
+            [("installed", serde_json::json!(true))],
         ));
         let human = strip_ansi(&cap.human());
         assert!(
@@ -491,7 +525,7 @@ mod tests {
             "v9.9.0",
             "/usr/local/bin/cfgd".to_string(),
             false,
-            serde_json::json!({ "installed": true }),
+            [("installed", serde_json::json!(true))],
         ));
         let human = strip_ansi(&cap.human());
         assert!(
