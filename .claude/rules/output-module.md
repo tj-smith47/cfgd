@@ -13,7 +13,7 @@ The `output` module (`crates/cfgd-core/src/output/`) provides:
   - `printer.status(role, subject)` — returns `StatusBuilder` for `.detail(...)`, `.duration(...)`, `.label(label_role, label_text)`, `.with_data(...)`. The `.label(...)` form appends a styled label at end-of-subject (enforced by API construction — see `compose_subject_with_label`).
   - `printer.hint(text)`, `printer.note(text)` — supplementary output
   - `printer.deprecation(text)` — a notice that the SPELLING the user reached for is on the way out (a legacy flag or filter pattern). Always visible: it survives the structured-output auto-quiet, and writes to stderr only so the `-o` data channel stays pure
-  - `printer.alert(text)` — a persistent advisory about what THIS run will actually do, when acting on the output without it would mean acting on a wrong picture (a `--skip` that stranded package installs). Same always-visible stderr routing as `deprecation`; separate because a deprecation is about spelling and an alert is about effect. Not a substitute for `status_simple(Role::Warn, …)`, which is the ordinary warning and is correctly suppressed under `-o json`
+  - `printer.alert(text)` — a persistent advisory about what THIS run will actually do, when acting on the output without it would mean acting on a wrong picture (a `--skip` that stranded package installs). Same always-visible stderr routing as `deprecation`; separate because a deprecation is about spelling and an alert is about effect. Not a substitute for `status_simple(Role::Warn, …)`, which is the ordinary warning and is correctly suppressed under `-o json`. The ONE always-visible emit that is correct at any depth: it is called where the effect is discovered (a source-constraint bypass, mid-composition, under whatever section the command opened), so it renders at the open section's depth and never trips the top-level structural assert. `deprecation` keeps that assert, because a deprecation is drained at the command boundary that owns the terminal
   - `printer.table(table)` — tabular data
   - `printer.section(name)` — returns `SectionGuard` (drop ends the section)
   - `printer.spinner(label)` — returns `Spinner` with `.finish_ok(subject)` / `.finish_fail(subject).detail(e)`
@@ -191,6 +191,26 @@ printed line does not.
 An event that is NOT a duplicate — a genuinely internal diagnostic, an event
 the daemon's journal is the only reader of — stays at the level it belongs at
 and carries the `// tracing-ok: <why>` marker inside the banned domains.
+
+**What the audit gate enforces, exactly.** `tracing::info!` is rejected in every
+non-test `.rs` under `crates/cfgd-core/src` and `crates/cfgd/src` — the whole of
+both crates, not the three config/module/source domains above — with one
+exemption and one hatch:
+
+- **`daemon/` is exempt at any depth in either crate.** There the log IS the
+  output: a service under systemd/launchd prints its ticks to journald through
+  this channel and no other, which is why `cfgd daemon run` keeps `info` as its
+  tracing floor (`main.rs::runs_reconcile_loop`).
+- **The `// tracing-ok: <why>` hatch applies**, read the same way as the domain
+  gate's: only inside a comment, only with a reason after it, inherited only
+  from the comment line directly above the call, and never from the call's own
+  message string.
+
+`warn!` and `error!` are NOT part of this gate — outside the three domains above
+they stay legal, because the binary's default filter is `warn` and those levels
+reach the user. `info!` is the level nobody sees without `RUST_LOG`, so an
+`info!` outside the daemon is a line nobody reads AND a strand risk when they
+do.
 
 ## The two mechanisms that keep tracing off the live region
 

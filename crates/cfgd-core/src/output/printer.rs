@@ -452,8 +452,15 @@ impl Printer {
     /// SPELLING and stays true until the surface is removed, while an alert is
     /// about the command's EFFECT this time. Routing both through one name makes
     /// them indistinguishable to a reader and to a grep.
+    ///
+    /// Correct at ANY depth (see `Renderer::advisory_depth`): unlike a
+    /// deprecation, which is drained at the command boundary that owns the
+    /// terminal, an alert is emitted where the effect is discovered — mid
+    /// composition, inside whatever section the caller opened — and a message
+    /// the user must see may not be the thing that panics a debug build for
+    /// being nested.
     pub fn alert(&self, msg: impl Into<String>) {
-        let depth = self.renderer.enforce_structural_top_level(0);
+        let depth = self.renderer.advisory_depth();
         self.renderer
             .render_advisory(self.sink_stderr.as_ref(), depth, &msg.into());
     }
@@ -1208,6 +1215,32 @@ mod tests {
         assert!(
             !payload.to_string().contains("stranded installs"),
             "the alert must not contaminate the -o data channel: {payload}"
+        );
+    }
+
+    /// An alert is emitted where the effect is DISCOVERED, and that site cannot
+    /// know whether its caller opened a section — a source-constraint bypass is
+    /// found while composing, under whichever group the command opened. The
+    /// structural assert would make that call a debug-build panic over a message
+    /// the user must see, so the advisory channel takes the open depth instead
+    /// and renders there.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn an_alert_renders_inside_an_open_section() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        let section = p.section("Sources");
+        p.alert("source 'team' bypassed requireSignedCommits");
+        drop(section);
+        p.flush();
+
+        let out = crate::test_helpers::captured_text(&buf);
+        let line = out
+            .lines()
+            .find(|l| l.contains("bypassed requireSignedCommits"))
+            .unwrap_or_else(|| panic!("the alert must still be emitted; got: {out:?}"));
+        assert!(
+            line.starts_with("  "),
+            "the alert renders at the open section's depth, not at column 0: {line:?}"
         );
     }
 

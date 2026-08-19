@@ -237,6 +237,17 @@ pub(crate) struct LiveBarState {
 /// (every renderer AND the tracing writer share one latch) back to raw writes
 /// over a live region — the strand this type exists to prevent, re-entered
 /// through the failure path.
+///
+/// Two is not free either, and the cost is paid in both directions. A terminal
+/// that dies with a kind the list below does not name costs ONE extra stranded
+/// paint before the latch takes: the first refusal falls through to the raw
+/// sink while bars are still counted live. And two unrelated transients with no
+/// successful write between them latch routing off permanently for a terminal
+/// that was never broken, which costs the region its repaints for the rest of
+/// the process. Two is the smallest number that keeps a single refusal from
+/// disabling the mechanism, and the run resets on the first write that lands
+/// (`note_route_success`), so the second cost needs two failures inside one
+/// unbroken run rather than two failures in a session.
 const ROUTE_FAILURES_BEFORE_LATCH: usize = 2;
 
 impl LiveBarState {
@@ -413,6 +424,21 @@ impl Renderer {
         } else {
             expected_depth
         }
+    }
+
+    /// Depth for an emit that is correct wherever it is reached — the advisory
+    /// channel (`Printer::alert`).
+    ///
+    /// No assert, in any mode, and deliberately not `inherit_depth`: an alert is
+    /// emitted at the site that DISCOVERS the effect it describes (a source
+    /// constraint bypassed while composing), and that site does not know whether
+    /// its caller opened a section, cannot open a `DepthInheritGuard` on the
+    /// caller's behalf, and must not be the reason a debug build panics — the
+    /// message is the one the user has to see. Rendering at the open section's
+    /// depth is the readable shape anyway, which is exactly what the release
+    /// re-route of `enforce_structural_top_level` already did.
+    pub(crate) fn advisory_depth(&self) -> usize {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).depth()
     }
 
     /// Depth for a NON-structural emit (status / hint / note / spinner / run).
