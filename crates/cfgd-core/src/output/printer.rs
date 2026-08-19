@@ -780,9 +780,9 @@ impl Printer {
     /// paints its name in: Caveats is a phase-class heading meant to draw the
     /// eye, and accent is the slot that draws attention without alarm, so it
     /// reads apart from every ordinary `theme.header` section title while
-    /// still reading as part of the run's phase structure. No `.bold()` — R12
-    /// keeps bold off every colour-bearing slot (`default`/`dracula`/the two
-    /// `solarized` presets), and `minimal`'s accent already carries the
+    /// still reading as part of the run's phase structure. No `.bold()` —
+    /// bold never pairs with colour on a colour-bearing slot
+    /// (`default`/`dracula`/the two `solarized` presets), and `minimal`'s accent already carries the
     /// distinction as italic rather than as an attribute this heading would
     /// have to add on top.
     #[must_use = "section closes when SectionGuard is dropped; bind it"]

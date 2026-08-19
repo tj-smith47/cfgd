@@ -238,7 +238,7 @@ impl std::fmt::Display for DisplaySubject {
 /// status line all derive from this, so the three cannot disagree about what an
 /// action is called — a shorter executed subject silently mis-pads every
 /// trailing field in the phase, and a preview that names a different string
-/// than the execution is the divergence R4 forbids outright.
+/// than the execution is a lie about what ran.
 ///
 /// Display-only. The persisted strings — the `managed_resources` id, the
 /// journal `resource_id`, `ActionResult.description` and the `-o json` plan

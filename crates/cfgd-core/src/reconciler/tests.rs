@@ -8949,7 +8949,7 @@ fn apply_system_action_unknown_key_renders_warn() {
         out.contains('\u{26A0}'),
         "unknown key must warn (⚠), got: {out}"
     );
-    // Byte-identical, not a substring: the sentence R3 moved out of
+    // Byte-identical, not a substring: the sentence moved out of
     // `apply_system_action` into `format_plan_items` includes the
     // ` — no such configurator (ignored)` half, and a substring assertion
     // would pass with that half missing.

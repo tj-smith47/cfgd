@@ -111,7 +111,7 @@ impl<'p> StatusBuilder<'p> {
         self.detail(super::drift_detail(expected, actual))
     }
 
-    /// A subject qualifier (`curl: missing`) — the R6 shape: subject keeps
+    /// A subject qualifier (`curl: missing`): subject keeps
     /// its role-slot styling untouched, the colon is always `Role::Warn`, the
     /// qualifier text is always `theme.muted`. Composed through
     /// [`super::renderer::finalize_subject`] at Drop, landing ahead of

@@ -72,7 +72,7 @@ impl Renderer {
         // Header row. Pad by the display-width deficit so CJK / emoji / accented
         // cells line up with ASCII neighbours — `format!("{:<w$}", ...)` pads by
         // char count, which over-pads multi-byte and under-pads zero-width.
-        // Each cell is styled on its own (R18): styling the joined row instead
+        // Each cell is styled on its own: styling the joined row instead
         // would wrap the "  " inter-column gap in the same SGR span, so a
         // reader selecting just the gap copies an empty styled run.
         let header_line: String = t
@@ -166,7 +166,7 @@ mod tests {
         assert!(out.contains("bob"));
     }
 
-    /// R18: the header row styles each cell on its own — the "  " gap
+    /// The header row styles each cell on its own — the "  " gap
     /// between columns must stay outside any SGR span. Raw-captured (per
     /// testing.md) because the assertion is ABOUT the escapes: `captured_text`
     /// would strip exactly the bytes this test exists to check, and a bug

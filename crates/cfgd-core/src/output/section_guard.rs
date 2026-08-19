@@ -683,7 +683,7 @@ mod tests {
     /// `Printer::section_caveats` paints its "Caveats" heading `theme.accent`
     /// — the same slot [`crate::output::PhaseLabel`] paints its name in,
     /// because the heading is a phase-class title meant to draw the eye. No
-    /// `.bold()`: R12 forbids pairing bold with a colour-bearing slot, and
+    /// `.bold()`: bold must never pair with a colour-bearing slot, and
     /// dracula's accent carries a hex colour. Every other section (plain or
     /// owner) paints `theme.header`, so a style regression that quietly
     /// routed this heading back through the ordinary path would still pass a
@@ -825,10 +825,11 @@ mod tests {
         );
     }
 
-    /// The workaround R11 deletes (`plan_ops.rs`'s bare `heading()` +
+    /// The `plan_ops.rs` workaround (a bare `heading()` followed by
     /// `printer.diff()`) existed because the old `emit_raw_block` skipped
-    /// header-flushing; a real `printer.section(...).diff(...)` must now
-    /// produce byte-identical ordering without that workaround.
+    /// header-flushing; now that it deletes into a real
+    /// `printer.section(...).diff(...)`, the section form must produce
+    /// byte-identical ordering without the workaround.
     #[test]
     fn section_diff_replaces_the_heading_plus_bare_diff_workaround() {
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
