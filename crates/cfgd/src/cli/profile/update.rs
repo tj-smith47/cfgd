@@ -87,13 +87,9 @@ pub fn cmd_profile_update(
             changes += 1;
         } else {
             if !modules_dir.join(m).join("module.yaml").exists() {
-                printer.status_simple(
-                    Role::Warn,
-                    format!(
-                        "Module '{}' not found locally — make sure it exists or is a remote module",
-                        m
-                    ),
-                );
+                printer
+                    .status(Role::Warn, format!("Module '{}' not found locally", m))
+                    .detail("make sure it exists or is a remote module");
             }
             doc.spec.modules.push(m.clone());
             printer

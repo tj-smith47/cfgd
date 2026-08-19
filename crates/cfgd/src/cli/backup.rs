@@ -398,15 +398,18 @@ pub fn run_backup_restore(
     );
     // `outcome.restored_to`, not the requested target: a symlinked source is
     // followed, and the operator needs to be told where the bytes actually went.
-    let detail = match &outcome.error {
-        Some(e) => format!(
-            "into {} — {}",
-            outcome.restored_to,
-            cfgd_core::output::collapse_to_subject_line(e)
-        ),
-        None => format!("into {}", outcome.restored_to),
-    };
-    printer.status(role, subject).detail(detail);
+    let qualifier = format!("into {}", outcome.restored_to);
+    match &outcome.error {
+        Some(e) => {
+            printer
+                .status(role, subject)
+                .qualifier(qualifier)
+                .detail(cfgd_core::output::collapse_to_subject_line(e));
+        }
+        None => {
+            printer.status(role, subject).qualifier(qualifier);
+        }
+    }
     // `hint`, not `note`: where the overwritten data went is the one thing an
     // operator needs after a restore they regret, and `note` is Verbose-only.
     if let Some(safety) = &outcome.safety_snapshot {

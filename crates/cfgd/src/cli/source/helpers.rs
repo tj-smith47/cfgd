@@ -231,12 +231,10 @@ pub(crate) fn build_pending_decisions_table_section(
         s.subsection_owner(&OwnerLabel::new("source", source_name), |sub| {
             let sub = sub.status(Role::Info, format!("{count} pending item{plural}"));
             items.iter().fold(sub, |sub, item| {
-                sub.status(
+                sub.status_with(
                     Role::Info,
-                    format!(
-                        "{} {} — {} ({})",
-                        item.tier, item.resource, item.summary, item.action
-                    ),
+                    format!("{} {}", item.tier, item.resource),
+                    |f| f.detail(format!("{} ({})", item.summary, item.action)),
                 )
             })
         })
@@ -404,9 +402,10 @@ pub(crate) fn build_subscription_preview_input(
 /// `conflicts` is empty so the caller can take the "no conflicts with
 /// current config" branch on `is_empty()`.
 ///
-/// Format pinned to `"  {LABEL} {resource_id} <- {winning_source} ({details})"`
-/// — two-space indent, capital label, ASCII left-arrow. Any change to this
-/// shape is consumer-visible.
+/// Format pinned to `"{LABEL} {resource_id} from {winning_source} ({details})"`
+/// — capital label, no leading indent (the caller renders each line through
+/// `status_simple` inside a section, which supplies its own). Any change to
+/// this shape is consumer-visible.
 pub(crate) fn format_conflict_preview_lines(
     conflicts: &[cfgd_core::composition::ConflictResolution],
 ) -> Vec<String> {
@@ -414,7 +413,7 @@ pub(crate) fn format_conflict_preview_lines(
         .iter()
         .map(|conflict| {
             format!(
-                "  {} {} <- {} ({})",
+                "{} {} from {} ({})",
                 conflict.resolution_type.label(),
                 conflict.resource_id,
                 conflict.winning_source,

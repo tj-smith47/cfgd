@@ -205,10 +205,9 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
         } else {
             "systemctl --user enable --now cfgd.service"
         };
-        printer.status_simple(
-            Role::Warn,
-            "systemctl not found — daemon installed but not started",
-        );
+        printer
+            .status(Role::Warn, "systemctl not found")
+            .detail("daemon installed but not started");
         printer.hint(format!("Start it later with: {}", hint_cmd));
         return Ok(false);
     }
@@ -220,20 +219,18 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
         match resolve_runtime_dir(std::env::var("XDG_RUNTIME_DIR").ok().as_deref(), &fallback) {
             RuntimeDirPlan::AlreadySet => None,
             RuntimeDirPlan::Derived(dir) => {
-                printer.status_simple(
-                    Role::Info,
-                    format!(
-                        "XDG_RUNTIME_DIR unset — using {} for the user service bus",
-                        dir.posix()
-                    ),
-                );
+                printer
+                    .status(Role::Info, "XDG_RUNTIME_DIR unset")
+                    .detail(format!("using {} for the user service bus", dir.posix()));
                 Some(dir)
             }
             RuntimeDirPlan::Missing => {
-                printer.status_simple(
-                    Role::Warn,
-                    "no user session bus (XDG_RUNTIME_DIR unset and /run/user/<uid> absent) — daemon installed but not started",
-                );
+                printer
+                    .status(
+                        Role::Warn,
+                        "no user session bus (XDG_RUNTIME_DIR unset and /run/user/<uid> absent)",
+                    )
+                    .detail("daemon installed but not started");
                 printer.hint(
                     "Enable lingering so the user service can run without an active login: loginctl enable-linger $USER, then re-run cfgd daemon install",
                 );
@@ -327,10 +324,9 @@ pub(crate) fn stop_systemd_service(printer: &Printer, scope: crate::Scope) {
         return;
     }
     if !crate::systemctl_available() {
-        printer.status_simple(
-            Role::Warn,
-            "systemctl not found — unit file removed but daemon may still be running",
-        );
+        printer
+            .status(Role::Warn, "systemctl not found")
+            .detail("unit file removed but daemon may still be running");
         let hint_cmd = if scope == crate::Scope::System {
             "systemctl disable --now cfgd.service".to_string()
         } else {

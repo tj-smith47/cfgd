@@ -20,10 +20,11 @@ pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
     doc = doc.section_if_nonempty("Origins", &cfg.spec.origin, |s, origins| {
         origins.iter().enumerate().fold(s, |s, (i, origin)| {
             let label = if i == 0 { "Primary" } else { "Secondary" };
-            s.subsection(
-                format!("{}: {:?} — {}", label, origin.origin_type, origin.url),
-                |sub| sub.kv("Branch", &origin.branch),
-            )
+            s.subsection(label, |sub| {
+                sub.kv("Url", &origin.url)
+                    .kv("Type", format!("{:?}", origin.origin_type))
+                    .kv("Branch", &origin.branch)
+            })
         })
     });
 

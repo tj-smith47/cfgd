@@ -108,7 +108,7 @@ fn shell_env_reminder_note(
 
     Some(cfgd_core::providers::ActionNote::untagged(
         Role::Warn,
-        format!("run `{command}` — or open a new shell"),
+        format!("run `{command}`, or open a new shell"),
     ))
 }
 
@@ -616,13 +616,12 @@ pub(in crate::cli) fn report_no_in_scope_actions(printer: &Printer, scope: &Scop
         printer.status_simple(Role::Ok, MSG_NOTHING_TO_DO);
         return;
     }
-    printer.status_simple(
-        Role::Warn,
-        format!(
-            "No actions in scope — the active filter excluded all {} planned; the system was not reconciled",
+    printer
+        .status(Role::Warn, "No actions in scope")
+        .detail(format!(
+            "the active filter excluded all {} planned; the system was not reconciled",
             cfgd_core::pluralize(scope.unfiltered_total, "action")
-        ),
-    );
+        ));
     if !scope.phases_with_work.is_empty() {
         printer.hint(format!(
             "actions exist in {}: {}",
@@ -1273,15 +1272,16 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
                                     // render, so the decision is reported here
                                     // or nowhere — the profile arm's `Skip`
                                     // action says the same thing in the tree.
-                                    printer.status_simple(
-                                        Role::Skipped,
-                                        format!(
-                                            "module '{}': {} — {}",
-                                            module_name,
-                                            file_target.posix(),
-                                            UNMANAGED_SKIP_REASON
-                                        ),
-                                    );
+                                    printer
+                                        .status(
+                                            Role::Skipped,
+                                            format!(
+                                                "module '{}': {}",
+                                                module_name,
+                                                file_target.posix()
+                                            ),
+                                        )
+                                        .detail(UNMANAGED_SKIP_REASON);
                                     skipped.push(file_target);
                                     files.remove(j);
                                     continue;

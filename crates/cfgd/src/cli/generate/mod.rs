@@ -376,7 +376,8 @@ fn handle_present_yaml(
 ) -> anyhow::Result<ContentBlock> {
     let req: PresentYamlRequest = serde_json::from_value(input.clone())?;
 
-    printer.heading(format!("Generated {} — {}", req.kind, req.description));
+    printer.heading(format!("Generated {}", req.kind));
+    printer.kv("Description", &req.description);
     printer.syntax_highlight(&req.content, "yaml");
 
     let response = if auto_accept {

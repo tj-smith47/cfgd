@@ -80,12 +80,15 @@ fn render_drift_section(
         // asked nothing of the machine, and "No drift detected" over a host
         // whose last apply left a declared package uninstalled is an assurance
         // no query backs.
-        let subject = if checked_live {
-            "No drift detected"
-        } else {
-            "No drift recorded — `cfgd diff` checks the live machine"
-        };
-        doc.section("Drift", |s| s.status(Role::Ok, subject))
+        doc.section("Drift", |s| {
+            if checked_live {
+                s.status(Role::Ok, "No drift detected")
+            } else {
+                s.status_with(Role::Ok, "No drift recorded", |sf| {
+                    sf.detail("`cfgd diff` checks the live machine")
+                })
+            }
+        })
     } else {
         doc.section("Drift", |s| {
             drift.iter().fold(s, |s, event| {

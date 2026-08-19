@@ -3163,7 +3163,7 @@ fn shell_env_reminder_names_the_written_env_file() {
         "expected a retypeable source command, got: {out}"
     );
     assert!(
-        out.contains("— or open a new shell"),
+        out.contains(", or open a new shell"),
         "expected the new-shell alternative, got: {out}"
     );
 }

@@ -150,9 +150,10 @@ pub fn build_verify_doc(output: &VerifyOutput) -> Doc {
     doc = doc.section("Resources", |s| {
         output.results.iter().fold(s, |s, r| {
             if r.matches {
-                s.status(
+                s.status_with(
                     Role::Ok,
-                    format!("{} {} — {}", r.resource_type, r.resource_id, r.expected),
+                    format!("{} {}", r.resource_type, r.resource_id),
+                    |sf| sf.detail(&r.expected),
                 )
             } else {
                 s.status_with(

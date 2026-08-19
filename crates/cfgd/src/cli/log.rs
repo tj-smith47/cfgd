@@ -1,6 +1,6 @@
 use super::*;
 
-use cfgd_core::output::{Doc, Printer, Role, condense_script_label, renderer::Table};
+use cfgd_core::output::{Doc, Printer, Role, TitleLabel, condense_script_label, renderer::Table};
 
 pub fn cmd_log(
     printer: &Printer,
@@ -48,7 +48,7 @@ fn cmd_log_show_output(
     if entries.is_empty() {
         printer.emit(
             Doc::new()
-                .heading(format!("Apply #{} — Script Output", apply_id))
+                .heading_title(format!("Apply #{apply_id}"), "Script Output")
                 .status(
                     Role::Info,
                     format!("No journal entries for apply #{}", apply_id),
@@ -61,7 +61,10 @@ fn cmd_log_show_output(
         return Ok(());
     }
 
-    printer.heading(format!("Apply #{} — Script Output", apply_id));
+    printer.heading_title(&TitleLabel::new(
+        format!("Apply #{apply_id}"),
+        "Script Output",
+    ));
 
     let mut payload_entries = Vec::new();
     let mut found_output = false;

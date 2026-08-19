@@ -359,7 +359,7 @@ golden_doc!(regression, sync_per_source_owner_group, |p, cap| {
 golden_doc!(regression, apply_shell_env_reminder, |p, cap| {
     let s = p.section_caveats();
     let owner = s.section_owner(&OwnerLabel::new("cfgd", "env"));
-    owner.status_simple(Role::Warn, "run `source ~/.cfgd.env` — or open a new shell");
+    owner.status_simple(Role::Warn, "run `source ~/.cfgd.env`, or open a new shell");
 });
 
 // Same reminder in its real position: emitted after the apply summary line.
@@ -373,7 +373,7 @@ golden_doc!(
             .duration(Duration::from_millis(820));
         let s = p.section_caveats();
         let owner = s.section_owner(&OwnerLabel::new("cfgd", "env"));
-        owner.status_simple(Role::Warn, "run `source ~/.cfgd.env` — or open a new shell");
+        owner.status_simple(Role::Warn, "run `source ~/.cfgd.env`, or open a new shell");
     }
 );
 

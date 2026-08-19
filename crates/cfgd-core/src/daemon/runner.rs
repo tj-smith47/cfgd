@@ -696,14 +696,16 @@ pub(super) fn apply_sighup_reload(
                 // Said out loud because the alternative — reporting "0 removed"
                 // — reads as "your edit had no effect" when what actually
                 // happened is that the daemon refused to act on half the inputs.
-                printer.status_simple(
-                    Role::Warn,
-                    format!(
-                        "Backup schedules NOT reloaded: config did not fully resolve — keeping the {} running {}, retrying automatically",
+                printer
+                    .status(
+                        Role::Warn,
+                        "Backup schedules NOT reloaded: config did not fully resolve",
+                    )
+                    .detail(format!(
+                        "keeping the {} running {}, retrying automatically",
                         backup_timers.len(),
                         crate::plural_noun(backup_timers.len(), "schedule")
-                    ),
-                );
+                    ));
             }
             if !changed.is_empty() {
                 printer.status_simple(

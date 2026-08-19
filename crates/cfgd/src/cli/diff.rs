@@ -586,14 +586,19 @@ pub fn build_diff_doc(output: &DiffOutput) -> Doc {
     } else {
         Role::Ok
     };
-    let subject = if any_drift {
-        "Drift detected"
-    } else if output.summary.system_check_failed {
-        "Drift undetermined — a system check could not run"
-    } else {
-        "No drift detected"
-    };
-    Doc::new().status(role, subject).with_data(output)
+    if any_drift {
+        return Doc::new().status(role, "Drift detected").with_data(output);
+    }
+    if output.summary.system_check_failed {
+        return Doc::new()
+            .status_with(role, "Drift undetermined", |f| {
+                f.detail("a system check could not run")
+            })
+            .with_data(output);
+    }
+    Doc::new()
+        .status(role, "No drift detected")
+        .with_data(output)
 }
 
 #[cfg(test)]

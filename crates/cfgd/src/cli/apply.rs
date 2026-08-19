@@ -852,13 +852,14 @@ pub(in crate::cli) fn preview_orphaned_custom_packages(
                     orphan.manager, orphan.package
                 ),
             ),
-            None => printer.status_simple(
-                Role::Warn,
-                format!(
-                    "orphaned {}/{} — no persisted uninstall; manual removal needed",
-                    orphan.manager, orphan.package
-                ),
-            ),
+            None => {
+                printer
+                    .status(
+                        Role::Warn,
+                        format!("orphaned {}/{}", orphan.manager, orphan.package),
+                    )
+                    .detail("no persisted uninstall; manual removal needed");
+            }
         }
     }
 }

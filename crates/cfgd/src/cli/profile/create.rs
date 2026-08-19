@@ -105,13 +105,9 @@ pub fn cmd_profile_create(
     let modules_dir = config_dir.join("modules");
     for m in &mods {
         if !modules_dir.join(m).join("module.yaml").exists() {
-            printer.status_simple(
-                Role::Warn,
-                format!(
-                    "Module '{}' not found locally — make sure it exists or is a remote module",
-                    m
-                ),
-            );
+            printer
+                .status(Role::Warn, format!("Module '{}' not found locally", m))
+                .detail("make sure it exists or is a remote module");
         }
     }
 

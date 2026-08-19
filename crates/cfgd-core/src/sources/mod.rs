@@ -331,7 +331,7 @@ impl SourceManager {
             self.skip_advisory(
                 printer,
                 format!(
-                    "Source '{}': cached checkout was cloned from a different origin — run 'cfgd sync' to re-fetch it; skipped without verifying its signature, using local state only",
+                    "Source '{}': cached checkout was cloned from a different origin, run 'cfgd sync' to re-fetch it; skipped without verifying its signature, using local state only",
                     spec.name
                 ),
             );
@@ -475,13 +475,18 @@ impl SourceManager {
             && Self::cached_recorded_origin(&source_dir)
                 .is_none_or(|recorded| recorded != spec.origin.url)
         {
-            printer.status_simple(
-                Role::Warn,
-                format!(
-                    "Source '{}': cached checkout was cloned from a different origin — discarding it and re-cloning from '{}'",
-                    spec.name, spec.origin.url
-                ),
-            );
+            printer
+                .status(
+                    Role::Warn,
+                    format!(
+                        "Source '{}': cached checkout was cloned from a different origin",
+                        spec.name
+                    ),
+                )
+                .detail(format!(
+                    "discarding it and re-cloning from '{}'",
+                    spec.origin.url
+                ));
             std::fs::remove_dir_all(&source_dir).map_err(|e| SourceError::CacheError {
                 message: format!(
                     "failed to discard stale cache for source '{}': {e}",

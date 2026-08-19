@@ -207,15 +207,16 @@ pub fn cmd_module_keys_rotate(
                 old_key.posix(),
                 e
             ));
-            printer.status_simple(
-                Role::Fail,
-                format!(
-                    "Failed to restore private key from {}: {} — backup remains at {}",
-                    backup_key.posix(),
-                    e,
-                    backup_key.posix()
-                ),
-            );
+            printer
+                .status(
+                    Role::Fail,
+                    format!(
+                        "Failed to restore private key from {}: {}",
+                        backup_key.posix(),
+                        e
+                    ),
+                )
+                .detail(format!("backup remains at {}", backup_key.posix()));
         }
         if backup_pub.exists()
             && let Err(e) = std::fs::rename(&backup_pub, &old_pub)
@@ -226,15 +227,16 @@ pub fn cmd_module_keys_rotate(
                 old_pub.posix(),
                 e
             ));
-            printer.status_simple(
-                Role::Fail,
-                format!(
-                    "Failed to restore public key from {}: {} — backup remains at {}",
-                    backup_pub.posix(),
-                    e,
-                    backup_pub.posix()
-                ),
-            );
+            printer
+                .status(
+                    Role::Fail,
+                    format!(
+                        "Failed to restore public key from {}: {}",
+                        backup_pub.posix(),
+                        e
+                    ),
+                )
+                .detail(format!("backup remains at {}", backup_pub.posix()));
         }
 
         let (bail_msg, json_extra) = if restore_failures.is_empty() {

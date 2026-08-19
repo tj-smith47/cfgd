@@ -1279,7 +1279,9 @@ pub(super) fn print_startup_banner(printer: &Printer, intervals: &[String], ipc_
     printer
         .status(Role::Ok, "Intervals")
         .qualifier(intervals.join(", "));
-    printer.status_simple(Role::Info, "Daemon running — press Ctrl+C to stop");
+    printer
+        .status(Role::Info, "Daemon running")
+        .detail("press Ctrl+C to stop");
 }
 
 /// Synchronous body of the startup server check-in. Resolves the profile,

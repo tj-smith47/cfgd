@@ -375,14 +375,16 @@ fn execute_move(
             GitMvOutcome::Moved => return Ok(()),
             GitMvOutcome::NotApplicable => {}
             GitMvOutcome::Failed(stderr) => {
-                printer.status_simple(
-                    Role::Warn,
-                    format!(
-                        "git mv failed for {} ({}); falling back to plain rename — git history not preserved",
-                        from.posix(),
-                        cfgd_core::output::collapse_to_subject_line(&stderr),
-                    ),
-                );
+                printer
+                    .status(
+                        Role::Warn,
+                        format!(
+                            "git mv failed for {} ({})",
+                            from.posix(),
+                            cfgd_core::output::collapse_to_subject_line(&stderr),
+                        ),
+                    )
+                    .detail("falling back to plain rename; git history not preserved");
             }
         }
     }

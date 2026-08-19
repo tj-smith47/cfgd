@@ -707,7 +707,7 @@ mod tests {
         {
             let s = p.section_caveats();
             let owner = s.section_owner(&crate::output::OwnerLabel::new("cfgd", "env"));
-            owner.status_simple(Role::Warn, "run `source ~/.cfgd.env` — or open a new shell");
+            owner.status_simple(Role::Warn, "run `source ~/.cfgd.env`, or open a new shell");
         }
         p.flush();
         // raw-capture-ok: asserting the heading's exact styled run reaches the renderer unrestyled — captured_text would strip the ANSI this test exists to check

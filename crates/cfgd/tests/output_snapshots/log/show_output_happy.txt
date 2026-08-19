@@ -1,4 +1,4 @@
-Apply #1 — Script Output
+Apply #1: Script Output
 
 Entries
   [scripts] script:pre:hello (script)

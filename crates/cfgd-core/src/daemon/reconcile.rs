@@ -933,13 +933,12 @@ pub(crate) fn handle_reconcile(
                 let run = crate::reconciler::ApplyRun::new(run_ctx(), &plan).preview_only();
                 run.header(printer);
                 run.preview(printer);
-                printer.status_simple(
-                    crate::output::Role::Warn,
-                    format!(
-                        "Drift detected — {}; policy is notify-only, nothing applied",
+                printer
+                    .status(crate::output::Role::Warn, "Drift detected")
+                    .detail(format!(
+                        "{}; policy is notify-only, nothing applied",
                         crate::pluralize(effective_total, "action")
-                    ),
-                );
+                    ));
                 if notify_on_drift {
                     notifier.notify(
                         "cfgd: drift detected",

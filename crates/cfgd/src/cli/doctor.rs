@@ -171,12 +171,10 @@ fn collect_doctor_output(
             // Manifest resolution failed (missing referenced file, unreadable
             // dir, parse error). Surface so the user knows the package report
             // below is computed from a partial set.
-            printer.status_simple(
-                Role::Warn,
-                format!(
-                    "doctor: manifest resolution failed: {e} — package report may be incomplete"
-                ),
-            );
+            printer
+                .status(Role::Warn, "doctor: manifest resolution failed")
+                .qualifier(cfgd_core::output::collapse_to_subject_line(&e))
+                .detail("package report may be incomplete");
         }
         packages
     });
@@ -228,13 +226,15 @@ fn collect_doctor_output(
                 declared.push(custom.name.clone());
             }
             if custom.name.contains('.') {
-                printer.status_simple(
-                    Role::Warn,
-                    format!(
-                        "custom manager '{}' contains '.' in its name: source-delivered packages under it cannot carry decisions (the decision path grammar splits on '.') and are withheld from every run — rename it to be asked about them",
-                        custom.name
-                    ),
-                );
+                printer
+                    .status(
+                        Role::Warn,
+                        format!(
+                            "custom manager '{}' contains '.' in its name: source-delivered packages under it cannot carry decisions (the decision path grammar splits on '.') and are withheld from every run",
+                            custom.name
+                        ),
+                    )
+                    .detail("rename it to be asked about them");
             }
         }
         declared
@@ -540,7 +540,7 @@ pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
     if all_passed(output) {
         doc = doc.status(Role::Ok, "All checks passed");
     } else {
-        doc = doc.status(Role::Fail, "Some checks failed — see above");
+        doc = doc.status_with(Role::Fail, "Some checks failed", |f| f.detail("see above"));
     }
 
     doc.with_data(output)
@@ -564,19 +564,17 @@ fn build_config_top(doc: Doc, cfg: &DoctorConfigCheck) -> Doc {
             doc
         }
         DoctorConfigState::MissingAtDefault => doc.status_with(Role::Warn, "Config file", |sf| {
-            sf.qualifier(format!("{} — not found", cfg.path))
-                .detail("run 'cfgd init' to create one")
+            sf.qualifier(cfg.path.clone())
+                .detail("not found; run 'cfgd init' to create one")
         }),
         DoctorConfigState::MissingAtExplicit => doc.status_with(Role::Fail, "Config file", |sf| {
-            sf.qualifier(format!("{} — not found", cfg.path))
-                .detail("the given --config/--config-dir/CFGD_CONFIG path does not exist")
+            sf.qualifier(cfg.path.clone()).detail(
+                "not found; the given --config/--config-dir/CFGD_CONFIG path does not exist",
+            )
         }),
         DoctorConfigState::Invalid => doc.status_with(Role::Fail, "Config file", |f| {
-            f.qualifier(format!(
-                "{} — {}",
-                cfg.path,
-                cfg.error.as_deref().unwrap_or("invalid")
-            ))
+            f.qualifier(cfg.path.clone())
+                .detail(cfg.error.as_deref().unwrap_or("invalid").to_string())
         }),
     }
 }
@@ -586,7 +584,7 @@ fn build_tools_section(s: SectionBuilder, git_available: bool) -> SectionBuilder
         s.status_with(Role::Ok, "git", |f| f.qualifier("found"))
     } else {
         s.status_with(Role::Fail, "git", |f| {
-            f.qualifier("not found — install git to use cfgd")
+            f.qualifier("not found").detail("install git to use cfgd")
         })
     }
 }
@@ -599,19 +597,16 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
         })
     } else {
         s.status_with(Role::Warn, "sops", |f| {
-            f.qualifier(
-                "not found — required for secrets (https://github.com/getsops/sops#install)",
-            )
+            f.qualifier("not found")
+                .detail("required for secrets (https://github.com/getsops/sops#install)")
         })
     };
 
     s = match (secrets.age_key_exists, secrets.age_key_path.as_deref()) {
         (true, Some(path)) => s.status_with(Role::Ok, "age key", |f| f.qualifier(path.to_string())),
         (false, Some(path)) => s.status_with(Role::Warn, "age key", |f| {
-            f.qualifier(format!(
-                "not found at {} — run 'cfgd init' to generate",
-                path
-            ))
+            f.qualifier(path.to_string())
+                .detail("not found; run 'cfgd init' to generate")
         }),
         _ => s,
     };
@@ -625,7 +620,8 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
         }
         (true, None) => s.status_with(Role::Ok, ".sops.yaml", |f| f.qualifier("present")),
         (false, _) => s.status_with(Role::Warn, ".sops.yaml", |f| {
-            f.qualifier("not found — will be generated on 'cfgd init'")
+            f.qualifier("not found")
+                .detail("will be generated on 'cfgd init'")
         }),
     };
 
@@ -660,7 +656,8 @@ fn build_managers_section(s: SectionBuilder, managers: &[DoctorManagerCheck]) ->
                 })
             } else {
                 s.status_with(Role::Fail, m.name.clone(), |sf| {
-                    sf.qualifier("not found — declared in config but not available")
+                    sf.qualifier("not found")
+                        .detail("declared in config but not available")
                 })
             }
         } else if m.available {
@@ -701,13 +698,10 @@ fn build_profiles_section(
             // them errors), unlike the supported legacy form — Fail, not Warn.
             s.status(Role::Fail, cfgd_core::output::collapse_to_subject_line(err))
         } else if p.legacy {
-            s.status(
-                Role::Warn,
-                format!(
-                    "profile '{}' uses the legacy flat layout — run 'cfgd profile migrate {}'",
-                    p.name, p.name
-                ),
-            )
+            s.status_with(Role::Warn, format!("profile '{}'", p.name), |sf| {
+                sf.qualifier("uses the legacy flat layout")
+                    .detail(format!("run 'cfgd profile migrate {}'", p.name))
+            })
         } else {
             s.status(Role::Ok, p.name.clone())
         }

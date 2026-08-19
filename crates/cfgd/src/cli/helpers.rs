@@ -1224,10 +1224,9 @@ pub(in crate::cli) fn sign_and_attest(
         let repo = cfgd_core::detect_git_remote();
         let commit = cfgd_core::detect_git_head();
         if repo.is_none() || commit.is_none() {
-            printer.status_simple(
-                Role::Warn,
-                "No git remote/HEAD detected — SLSA provenance will record source as \"unknown\"",
-            );
+            printer
+                .status(Role::Warn, "No git remote/HEAD detected")
+                .detail("SLSA provenance will record source as \"unknown\"");
         }
         let repo = repo.unwrap_or_else(|| "unknown".to_string());
         let commit = commit.unwrap_or_else(|| "unknown".to_string());

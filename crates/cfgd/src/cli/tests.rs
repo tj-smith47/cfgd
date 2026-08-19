@@ -1064,7 +1064,7 @@ fn format_conflict_preview_lines_emits_canonical_shape() {
     assert_eq!(lines.len(), 1);
     assert_eq!(
         lines[0],
-        "  LOCKED package:apt:curl <- acme-baseline (policy locks installation)"
+        "LOCKED package:apt:curl from acme-baseline (policy locks installation)"
     );
 }
 
@@ -1148,10 +1148,11 @@ fn format_conflict_preview_lines_preserves_input_order() {
 }
 
 #[test]
-fn format_conflict_preview_lines_uses_two_space_indent() {
-    // The output is indented under the "Conflicts with Current Config"
-    // subheader so the eye groups them. Two spaces is the project-wide
-    // indent convention.
+fn format_conflict_preview_lines_carries_no_leading_indent() {
+    // The renderer (a `status_simple` under the "Conflicts with Current
+    // Config" section) supplies the section's own indent — a hand-built
+    // leading indent here would be dead formatting the caller immediately
+    // strips.
     let conflicts = vec![conflict(
         "a",
         cfgd_core::composition::ResolutionType::Default,
@@ -1160,13 +1161,8 @@ fn format_conflict_preview_lines_uses_two_space_indent() {
     )];
     let lines = super::format_conflict_preview_lines(&conflicts);
     assert!(
-        lines[0].starts_with("  "),
-        "must start with two-space indent: {:?}",
-        lines[0]
-    );
-    assert!(
-        !lines[0].starts_with("   "),
-        "must not be three-space indent: {:?}",
+        !lines[0].starts_with(' '),
+        "must carry no leading indent: {:?}",
         lines[0]
     );
 }
@@ -17754,7 +17750,7 @@ fn build_doctor_doc_age_key_missing_with_path_emits_warn() {
     let text = emit_doc(&output, &extras);
     assert!(
         text.contains(
-            "age key: not found at /home/user/.config/cfgd/keys/age.key — run 'cfgd init' to generate"
+            "age key: /home/user/.config/cfgd/keys/age.key — not found; run 'cfgd init' to generate"
         ),
         "should warn about missing age key and suggest cfgd init, got: {text}"
     );
@@ -18758,7 +18754,7 @@ spec:
     let h = CliTestHarness::builder().config(config_with_source).build();
     super::source::cmd_source_priority(&h.cli(), h.printer(), "team-src", Some(100)).unwrap();
     // Should display the old->new priority change
-    h.assert_output_contains("priority updated: 750 -> 100");
+    h.assert_output_contains("priority updated: 750 → 100");
     // Verify the file was actually updated
     let cfg = config::load_config(&h.config_path().join("cfgd.yaml")).unwrap();
     let source = cfg
@@ -21143,7 +21139,7 @@ fn build_doctor_doc_legacy_profile_warns_with_migrate_hint() {
     let text = emit_doc(&output, &extras);
     assert!(
         text.contains(
-            "profile 'work' uses the legacy flat layout — run 'cfgd profile migrate work'"
+            "profile 'work': uses the legacy flat layout — run 'cfgd profile migrate work'"
         ),
         "should warn with the migrate remediation, got: {text}"
     );

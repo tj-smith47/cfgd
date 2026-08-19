@@ -650,7 +650,9 @@ pub(super) fn apply_plan(
             Ok(result.status)
         }
         cfgd_core::reconciler::RunDisposition::Declined => {
-            printer.status_simple(Role::Info, "Skipped — run 'cfgd apply' to apply later");
+            printer
+                .status(Role::Info, "Skipped")
+                .detail("run 'cfgd apply' to apply later");
             Ok(cfgd_core::state::ApplyStatus::Success)
         }
         // Unreachable for a run carrying a plan with work and no
@@ -884,7 +886,9 @@ pub(crate) fn regenerate_workflow(config_dir: &Path, printer: &Printer) -> anyho
 
 pub(super) fn check_prerequisites(printer: &Printer) -> bool {
     if !cfgd_core::command_available("git") {
-        printer.status_simple(Role::Fail, "git is not installed — cfgd requires git");
+        printer
+            .status(Role::Fail, "git is not installed")
+            .detail("cfgd requires git");
         if cfg!(target_os = "macos") {
             printer.hint("Install with: xcode-select --install");
         } else {

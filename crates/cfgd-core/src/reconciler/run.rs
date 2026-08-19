@@ -416,9 +416,9 @@ impl<'a> ApplyRun<'a> {
             return;
         };
         let row = |d: &crate::state::PendingDecision, suffix: &str| {
-            format!(
-                "{} {} — {} by {} ({suffix})",
-                d.tier, d.resource, d.action, d.source
+            (
+                format!("{} {}", d.tier, d.resource),
+                format!("{} by {} ({suffix})", d.action, d.source),
             )
         };
         if !withheld.pending.is_empty() {
@@ -434,16 +434,15 @@ impl<'a> ApplyRun<'a> {
                 } else {
                     "run `cfgd decide accept/reject`"
                 };
-                section.status_simple(Role::Info, row(d, suffix));
+                let (subject, detail) = row(d, suffix);
+                section.status(Role::Info, subject).detail(detail);
             }
         }
         if !withheld.rejected.is_empty() {
             let section = printer.section("Declined Decisions (not included in this plan)");
             for d in &withheld.rejected {
-                section.status_simple(
-                    Role::Skipped,
-                    row(d, "declined; run `cfgd decide accept` to include"),
-                );
+                let (subject, detail) = row(d, "declined; run `cfgd decide accept` to include");
+                section.status(Role::Skipped, subject).detail(detail);
             }
         }
     }
@@ -831,7 +830,11 @@ pub fn align_width(phase: &Phase) -> usize {
 /// Every arm returns; `Partial` returns three lines. No path panics, so the
 /// function is safe in core and testable without a `Printer` — and it reads a
 /// [`RunTally`], so a backup run reaches it without an [`ApplyResult`].
-fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String)> {
+///
+/// Each line is `(role, subject, detail)`: the detail glues to the subject
+/// through the ONE canonical " — " composer at render time
+/// (`StatusBuilder::detail`), never baked into the subject string by hand.
+fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<String>)> {
     match tally.status {
         // Partial leads with a Warn title line naming the outcome, because the
         // block below it opens on a ✓ and a reader who takes the first line as
@@ -844,20 +847,21 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String)> {
         ApplyStatus::Partial => vec![
             (
                 Role::Warn,
-                format!(
-                    "{} partial — {} of {} applied",
-                    title.as_str(),
-                    tally.succeeded,
-                    tally.planned_total
-                ),
+                format!("{} partial", title.as_str()),
+                Some(format!(
+                    "{} of {} applied",
+                    tally.succeeded, tally.planned_total
+                )),
             ),
             (
                 Role::Ok,
                 format!("{} succeeded", pluralize(tally.succeeded, "action")),
+                None,
             ),
             (
                 Role::Accent,
                 format!("{} failed", pluralize(tally.failed, "action")),
+                None,
             ),
         ],
         // A run that reached none of what it planned did not complete, whatever
@@ -865,31 +869,29 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String)> {
         // carry below is exactly the count named here.
         ApplyStatus::Success if tally.nothing_attempted() => vec![(
             Role::Skipped,
-            format!(
-                "{} did not run — {} not attempted",
-                title.as_str(),
+            format!("{} did not run", title.as_str()),
+            Some(format!(
+                "{} not attempted",
                 pluralize(tally.planned_total, "action")
-            ),
+            )),
         )],
         ApplyStatus::Success => vec![(
             Role::Ok,
-            format!(
-                "{} complete — {} succeeded",
-                title.as_str(),
+            format!("{} complete", title.as_str()),
+            Some(format!(
+                "{} succeeded",
                 pluralize(tally.succeeded, "action")
-            ),
+            )),
         )],
         ApplyStatus::Failed => vec![(
             Role::Fail,
-            format!(
-                "{} failed — {} failed",
-                title.as_str(),
-                pluralize(tally.failed, "action")
-            ),
+            format!("{} failed", title.as_str()),
+            Some(format!("{} failed", pluralize(tally.failed, "action"))),
         )],
         ApplyStatus::InProgress => vec![(
             Role::Warn,
             format!("{} still in progress (unexpected state)", title.as_str()),
+            None,
         )],
         // The one line that folds the title's case: it is pinned as a lowercase
         // sentence by `tests/apply_signal_abort.rs` and by the sample in
@@ -902,9 +904,9 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String)> {
         // accounts for every planned action or it accounts for none.
         ApplyStatus::Aborted => vec![(
             Role::Warn,
-            format!(
-                "{} aborted by signal — {} of {} applied{}; no partial writes, rerun to converge",
-                title.as_str().to_ascii_lowercase(),
+            format!("{} aborted by signal", title.as_str().to_ascii_lowercase()),
+            Some(format!(
+                "{} of {} applied{}; no partial writes, rerun to converge",
                 tally.succeeded,
                 pluralize(tally.planned_total, "action"),
                 if tally.failed > 0 {
@@ -912,7 +914,7 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String)> {
                 } else {
                     String::new()
                 }
-            ),
+            )),
         )],
     }
 }
@@ -937,15 +939,24 @@ pub fn render_run_rollup(
         lines.push((
             Role::Info,
             format!("{} not attempted", pluralize(shortfall, "action")),
+            None,
         ));
     }
     let last = lines.len().saturating_sub(1);
-    for (index, (role, subject)) in lines.into_iter().enumerate() {
+    for (index, (role, subject, detail)) in lines.into_iter().enumerate() {
         match elapsed {
             Some(d) if index == last => {
-                printer.status(role, subject).duration(d);
+                printer
+                    .status(role, subject)
+                    .detail_opt(detail.as_deref())
+                    .duration(d);
             }
-            _ => printer.status_simple(role, subject),
+            _ => match detail {
+                Some(detail) => {
+                    printer.status(role, subject).detail(detail);
+                }
+                None => printer.status_simple(role, subject),
+            },
         }
     }
     tally.status.clone()

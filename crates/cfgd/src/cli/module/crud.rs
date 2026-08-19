@@ -333,7 +333,9 @@ pub fn cmd_module_create(
                     applied = true;
                 }
                 cfgd_core::reconciler::RunDisposition::Declined => {
-                    printer.status_simple(Role::Info, "Skipped — run 'cfgd apply' to apply later");
+                    printer
+                        .status(Role::Info, "Skipped")
+                        .detail("run 'cfgd apply' to apply later");
                     printer.emit(Doc::new().with_data(serde_json::json!({
                         "name": name,
                         "path": module_dir.display().to_string(),

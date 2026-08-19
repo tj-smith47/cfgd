@@ -179,10 +179,9 @@ pub(crate) fn launchd_enable_argv(uid: u32, scope: crate::Scope) -> Vec<String> 
 #[cfg(unix)]
 pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> Result<bool> {
     if !crate::command_available("launchctl") {
-        printer.status_simple(
-            Role::Warn,
-            "launchctl not found — daemon installed but not started",
-        );
+        printer
+            .status(Role::Warn, "launchctl not found")
+            .detail("daemon installed but not started");
         printer.hint("Start it later from a GUI login session with: cfgd daemon install");
         return Ok(false);
     }
@@ -299,10 +298,9 @@ pub(crate) fn stop_launchd_service(printer: &Printer, scope: crate::Scope) {
         return;
     }
     if !crate::command_available("launchctl") {
-        printer.status_simple(
-            Role::Warn,
-            "launchctl not found — plist removed but daemon may still be running",
-        );
+        printer
+            .status(Role::Warn, "launchctl not found")
+            .detail("plist removed but daemon may still be running");
         let hint = if scope == crate::Scope::System {
             "Stop it later with: launchctl bootout system /Library/LaunchDaemons/com.cfgd.daemon.plist".to_string()
         } else {

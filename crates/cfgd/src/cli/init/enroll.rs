@@ -248,10 +248,9 @@ fn finish_enrollment(
     if let Some(ref desired) = resp.desired_config {
         match cfgd_core::state::save_pending_server_config(desired) {
             Ok(path) => {
-                printer.status_simple(
-                    Role::Info,
-                    format!("Server pushed desired config — saved to {}", path.posix()),
-                );
+                printer
+                    .status(Role::Info, "Server pushed desired config")
+                    .detail(format!("saved to {}", path.posix()));
                 printer.status_simple(Role::Info, MSG_RUN_APPLY);
             }
             Err(e) => {

@@ -166,7 +166,7 @@ fn rollup_lines_covers_every_apply_status() {
             "{status:?} produced the wrong line count: {lines:?}"
         );
         assert_eq!(
-            lines.iter().map(|(r, _)| *r).collect::<Vec<_>>(),
+            lines.iter().map(|(r, _, _)| *r).collect::<Vec<_>>(),
             roles,
             "{status:?} produced the wrong roles"
         );
@@ -219,7 +219,8 @@ fn a_run_that_attempted_nothing_says_so_instead_of_completing() {
         lines,
         vec![(
             Role::Skipped,
-            "Backup did not run — 3 actions not attempted".to_string()
+            "Backup did not run".to_string(),
+            Some("3 actions not attempted".to_string())
         )]
     );
 
@@ -238,7 +239,11 @@ fn a_run_that_attempted_nothing_says_so_instead_of_completing() {
     // do, and must keep saying so.
     assert_eq!(
         rollup_lines(&RunTally::empty(), RunTitle::Apply),
-        vec![(Role::Ok, "Apply complete — 0 actions succeeded".to_string())]
+        vec![(
+            Role::Ok,
+            "Apply complete".to_string(),
+            Some("0 actions succeeded".to_string())
+        )]
     );
 }
 
@@ -279,18 +284,21 @@ fn a_completed_rollup_names_the_run_it_finished() {
     assert_eq!(
         lines,
         vec![
-            (Role::Warn, "Apply partial — 1 of 2 applied".to_string()),
-            (Role::Ok, "1 action succeeded".to_string()),
-            (Role::Accent, "1 action failed".to_string()),
+            (
+                Role::Warn,
+                "Apply partial".to_string(),
+                Some("1 of 2 applied".to_string())
+            ),
+            (Role::Ok, "1 action succeeded".to_string(), None),
+            (Role::Accent, "1 action failed".to_string(), None),
         ],
         "a partial rollup leads with its own verdict and keeps both counts"
     );
     // The verdict names the run that was partial: a partially-applied backup
     // must not report itself as an apply.
-    assert_eq!(
-        rollup_lines(&partial, RunTitle::Backup)[0].1,
-        "Backup partial — 1 of 2 applied"
-    );
+    let backup_partial = &rollup_lines(&partial, RunTitle::Backup)[0];
+    assert_eq!(backup_partial.1, "Backup partial");
+    assert_eq!(backup_partial.2.as_deref(), Some("1 of 2 applied"));
 }
 
 /// A run that failed actions must not OPEN on a tick. The two count lines are
@@ -341,13 +349,16 @@ fn abort_rollup_keeps_the_lowercase_cli_sentence() {
         aborted: Some(130),
     };
     let lines = rollup_lines(&tally, RunTitle::Apply);
+    assert_eq!(lines[0].1, "apply aborted by signal");
     assert_eq!(
-        lines[0].1,
-        "apply aborted by signal — 2 of 5 actions applied; no partial writes, rerun to converge"
+        lines[0].2.as_deref(),
+        Some("2 of 5 actions applied; no partial writes, rerun to converge")
     );
+    let reconcile = rollup_lines(&tally, RunTitle::Reconcile);
+    assert_eq!(reconcile[0].1, "reconcile aborted by signal");
     assert_eq!(
-        rollup_lines(&tally, RunTitle::Reconcile)[0].1,
-        "reconcile aborted by signal — 2 of 5 actions applied; no partial writes, rerun to converge"
+        reconcile[0].2.as_deref(),
+        Some("2 of 5 actions applied; no partial writes, rerun to converge")
     );
 }
 
@@ -363,9 +374,11 @@ fn an_abort_that_killed_an_action_names_the_failure_too() {
         status: ApplyStatus::Aborted,
         aborted: Some(130),
     };
+    let lines = rollup_lines(&tally, RunTitle::Apply);
+    assert_eq!(lines[0].1, "apply aborted by signal");
     assert_eq!(
-        rollup_lines(&tally, RunTitle::Apply)[0].1,
-        "apply aborted by signal — 2 of 3 actions applied, 1 failed; no partial writes, rerun to converge"
+        lines[0].2.as_deref(),
+        Some("2 of 3 actions applied, 1 failed; no partial writes, rerun to converge")
     );
 }
 

@@ -1055,13 +1055,12 @@ fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer)
     let runs = match store.backup_runs(&spec.name) {
         Ok(runs) => runs,
         Err(e) => {
-            printer.status_simple(
-                Role::Warn,
-                format!(
-                    "{owner}: retention prune skipped — could not read run history: {}",
+            printer
+                .status(Role::Warn, format!("{owner}: retention prune skipped"))
+                .detail(format!(
+                    "could not read run history: {}",
                     collapse_to_subject_line(&e)
-                ),
-            );
+                ));
             return;
         }
     };
