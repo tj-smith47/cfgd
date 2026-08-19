@@ -2591,7 +2591,7 @@ fn script_status_status_after_open_window_emits_one_line() {
         lines[0]
     );
     assert!(
-        !out.contains('\u{2299}'),
-        "no Status(Info) from the window's Drop: {out}"
+        !out.contains("(interrupted)"),
+        "the window was finished explicitly via status(), not dropped: {out}"
     );
 }
