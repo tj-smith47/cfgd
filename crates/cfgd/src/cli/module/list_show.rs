@@ -117,6 +117,7 @@ pub fn build_module_show_doc(
     packages: &[PackageDisplay],
     post_apply: &[String],
     show_values: bool,
+    arrow: &str,
 ) -> Doc {
     let mut doc = Doc::new().heading_title("Module", &output.name);
 
@@ -161,16 +162,20 @@ pub fn build_module_show_doc(
                     .unwrap_or_default();
                 s.status(
                     Role::Ok,
-                    format!("{} -> {} install {}{}", name, manager, resolved_name, ver),
+                    format!(
+                        "{} {} {} install {}{}",
+                        name, arrow, manager, resolved_name, ver
+                    ),
                 )
             }
-            PackageDisplay::Skipped { name, platforms } => s.status(
-                Role::Info,
-                format!("{}{} — skipped (platform filter)", name, platforms),
-            ),
+            PackageDisplay::Skipped { name, platforms } => {
+                s.status_with(Role::Info, format!("{}{}", name, platforms), |f| {
+                    f.detail("skipped (platform filter)")
+                })
+            }
             PackageDisplay::Unresolved { summary, error } => {
-                s.status_with(Role::Warn, format!("{} — unresolved", summary), |f| {
-                    f.qualifier(error.clone())
+                s.status_with(Role::Warn, summary.clone(), |f| {
+                    f.qualifier("unresolved").detail(error.clone())
                 })
             }
         })
@@ -417,6 +422,7 @@ pub(crate) fn cmd_module_show(
         &packages,
         &post_apply,
         show_values,
+        printer.arrow(),
     ));
     Ok(())
 }

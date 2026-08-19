@@ -1,7 +1,7 @@
 Update module:upmod
 
 Changes
-  - (no spec changes)
+  ⊙ (no spec changes)
 
 Old commit     <COMMIT_SHA>
 New commit     <COMMIT_SHA>

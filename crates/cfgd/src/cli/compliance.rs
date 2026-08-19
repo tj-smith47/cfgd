@@ -190,7 +190,14 @@ pub(super) fn cmd_compliance_diff(
         .ok_or_else(|| anyhow::anyhow!("snapshot #{} not found", id2))?;
 
     let diff = compute_compliance_diff(&snap1, &snap2);
-    printer.emit(build_compliance_diff_doc(id1, id2, &snap1, &snap2, &diff));
+    printer.emit(build_compliance_diff_doc(
+        id1,
+        id2,
+        &snap1,
+        &snap2,
+        &diff,
+        printer.arrow(),
+    ));
     Ok(())
 }
 
@@ -290,9 +297,10 @@ pub fn build_compliance_diff_doc(
     snap1: &ComplianceSnapshot,
     snap2: &ComplianceSnapshot,
     diff: &ComplianceDiff,
+    arrow: &str,
 ) -> Doc {
     let mut doc = Doc::new()
-        .heading(format!("Compliance Diff #{} → #{}", id1, id2))
+        .heading(format!("Compliance Diff #{id1} {arrow} #{id2}"))
         .kv_block([
             ("Snapshot 1", snap1.timestamp.clone()),
             ("Snapshot 2", snap2.timestamp.clone()),
@@ -316,7 +324,7 @@ pub fn build_compliance_diff_doc(
                 };
                 s.status_with(
                     role,
-                    format!("{} ({} → {})", c.key, c.old_status, c.new_status),
+                    format!("{} ({} {arrow} {})", c.key, c.old_status, c.new_status),
                     |sf| sf.detail_opt(c.detail.as_deref()),
                 )
             })

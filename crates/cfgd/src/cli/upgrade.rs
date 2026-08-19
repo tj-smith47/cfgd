@@ -77,7 +77,12 @@ pub fn cmd_upgrade(
                 Doc::new()
                     .status(
                         Role::Info,
-                        format!("Update available: {} -> {}", check.current, check.latest),
+                        format!(
+                            "Update available: {} {} {}",
+                            check.current,
+                            printer.arrow(),
+                            check.latest
+                        ),
                     )
                     .hint("Run 'cfgd upgrade' to install")
                     .with_data(serde_json::json!({
@@ -170,7 +175,10 @@ pub fn cmd_upgrade(
 
     {
         let sec = printer.section("Update Available");
-        sec.kv("Version", format!("{} -> {}", check.current, check.latest));
+        sec.kv(
+            "Version",
+            format!("{} {} {}", check.current, printer.arrow(), check.latest),
+        );
         sec.kv("Binary", &asset.name);
         if asset.size > 0 {
             sec.kv("Size", format_bytes(asset.size));
@@ -291,8 +299,10 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
         confirm: Box::new(|c| {
             printer
                 .prompt_confirm(&format!(
-                    "Update available: {} -> {}. Install now?",
-                    c.current, c.latest
+                    "Update available: {} {} {}. Install now?",
+                    c.current,
+                    printer.arrow(),
+                    c.latest
                 ))
                 .unwrap_or(false)
         }),
@@ -301,7 +311,12 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
                 Doc::new()
                     .status(
                         Role::Info,
-                        format!("Update available: {} -> {}", c.current, c.latest),
+                        format!(
+                            "Update available: {} {} {}",
+                            c.current,
+                            printer.arrow(),
+                            c.latest
+                        ),
                     )
                     .hint("Run 'cfgd upgrade' to install"),
             );

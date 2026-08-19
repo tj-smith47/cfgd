@@ -206,7 +206,7 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
                     } else {
                         let conflicts_sec = printer.section("Conflicts with Current Config");
                         for line in &lines {
-                            conflicts_sec.status_simple(Role::Warn, line.trim_start().to_string());
+                            conflicts_sec.status_simple(Role::Warn, line.clone());
                         }
                     }
                 }

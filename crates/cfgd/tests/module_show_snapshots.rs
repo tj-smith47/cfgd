@@ -210,6 +210,7 @@ fn module_show_happy_human() {
         &pkgs,
         &post,
         false,
+        printer.arrow(),
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "module_show/happy.txt");
@@ -228,6 +229,7 @@ fn module_show_happy_json() {
         &pkgs,
         &post,
         false,
+        printer.arrow(),
     ));
     drop(printer);
     let expected = serde_json::to_value(&output).unwrap();

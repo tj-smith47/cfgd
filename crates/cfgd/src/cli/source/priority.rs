@@ -56,7 +56,8 @@ pub fn cmd_source_priority(
                         cfgd_core::reconciler::Owner::source(name).token(),
                         |f| {
                             f.detail(format!(
-                                "priority updated: {old_priority} -> {new_priority}"
+                                "priority updated: {old_priority} {} {new_priority}",
+                                printer.arrow()
                             ))
                         },
                     )

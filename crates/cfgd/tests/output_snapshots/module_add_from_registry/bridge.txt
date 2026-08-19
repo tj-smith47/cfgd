@@ -1,4 +1,4 @@
-⊙ Resolved: myreg/alpha -> file://<REG_SRC>//modules/alpha@alpha/v1.0.0
+⊙ Resolved: myreg/alpha → file://<REG_SRC>//modules/alpha@alpha/v1.0.0
 
 Add Remote Module
 

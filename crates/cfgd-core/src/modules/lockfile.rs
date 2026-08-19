@@ -7,6 +7,7 @@ use std::path::Path;
 use crate::PathDisplayExt;
 use crate::config::{ModuleLockEntry, ModuleLockfile};
 use crate::errors::{ConfigError, ModuleError, Result};
+use crate::output::Role;
 
 use super::git::{GitSource, fetch_git_source, git_cache_dir, parse_git_source, resolve_subdir};
 use super::loader::{load_module, load_modules};
@@ -333,27 +334,38 @@ pub fn load_all_modules(
 }
 
 /// Diff two module specs, returning a human-readable summary of changes.
-pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule) -> Vec<String> {
+///
+/// Each entry carries the [`Role`] the caller renders it with — `Ok` for an
+/// addition, `Fail` for a removal, `Warn` for a value change on an existing
+/// entry, `Info` for the no-changes sentinel — instead of baking a `+`/`-`/`~`
+/// marker into the text: the role's own icon at render time IS the marker, so
+/// this stays a single source of add/remove/change signal rather than two
+/// (a hand-typed glyph in the string AND a role driving the icon beside it).
+pub fn diff_module_specs(
+    old: &LoadedModule,
+    new: &LoadedModule,
+    arrow: &str,
+) -> Vec<(Role, String)> {
     let mut changes = Vec::new();
 
     // Dependencies
     let old_deps: HashSet<&str> = old.spec.depends.iter().map(|s| s.as_str()).collect();
     let new_deps: HashSet<&str> = new.spec.depends.iter().map(|s| s.as_str()).collect();
     for dep in new_deps.difference(&old_deps) {
-        changes.push(format!("+ dependency: {dep}"));
+        changes.push((Role::Ok, format!("dependency: {dep}")));
     }
     for dep in old_deps.difference(&new_deps) {
-        changes.push(format!("- dependency: {dep}"));
+        changes.push((Role::Fail, format!("dependency: {dep}")));
     }
 
     // Packages
     let old_pkgs: HashSet<&str> = old.spec.packages.iter().map(|p| p.name.as_str()).collect();
     let new_pkgs: HashSet<&str> = new.spec.packages.iter().map(|p| p.name.as_str()).collect();
     for pkg in new_pkgs.difference(&old_pkgs) {
-        changes.push(format!("+ package: {pkg}"));
+        changes.push((Role::Ok, format!("package: {pkg}")));
     }
     for pkg in old_pkgs.difference(&new_pkgs) {
-        changes.push(format!("- package: {pkg}"));
+        changes.push((Role::Fail, format!("package: {pkg}")));
     }
 
     // Check for version constraint changes on existing packages
@@ -361,11 +373,15 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule) -> Vec<String> 
         if let Some(old_pkg) = old.spec.packages.iter().find(|p| p.name == new_pkg.name)
             && old_pkg.min_version != new_pkg.min_version
         {
-            changes.push(format!(
-                "~ package '{}': minVersion {} -> {}",
-                new_pkg.name,
-                old_pkg.min_version.as_deref().unwrap_or("(none)"),
-                new_pkg.min_version.as_deref().unwrap_or("(none)")
+            changes.push((
+                Role::Warn,
+                format!(
+                    "package '{}': minVersion {} {} {}",
+                    new_pkg.name,
+                    old_pkg.min_version.as_deref().unwrap_or("(none)"),
+                    arrow,
+                    new_pkg.min_version.as_deref().unwrap_or("(none)")
+                ),
             ));
         }
     }
@@ -374,10 +390,10 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule) -> Vec<String> 
     let old_files: HashSet<&str> = old.spec.files.iter().map(|f| f.target.as_str()).collect();
     let new_files: HashSet<&str> = new.spec.files.iter().map(|f| f.target.as_str()).collect();
     for file in new_files.difference(&old_files) {
-        changes.push(format!("+ file target: {file}"));
+        changes.push((Role::Ok, format!("file target: {file}")));
     }
     for file in old_files.difference(&new_files) {
-        changes.push(format!("- file target: {file}"));
+        changes.push((Role::Fail, format!("file target: {file}")));
     }
 
     // Env vars — an upgrade that introduces one reaches the login shell of
@@ -398,16 +414,17 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule) -> Vec<String> 
         .collect();
     for ev in &new.spec.env {
         match old_env.get(ev.name.as_str()) {
-            None => changes.push(format!("+ env: {}={}", ev.name, ev.value)),
-            Some(prev) if *prev != ev.value.as_str() => {
-                changes.push(format!("~ env '{}': {} -> {}", ev.name, prev, ev.value))
-            }
+            None => changes.push((Role::Ok, format!("env: {}={}", ev.name, ev.value))),
+            Some(prev) if *prev != ev.value.as_str() => changes.push((
+                Role::Warn,
+                format!("env '{}': {} {} {}", ev.name, prev, arrow, ev.value),
+            )),
             Some(_) => {}
         }
     }
     for ev in &old.spec.env {
         if !new_env.contains_key(ev.name.as_str()) {
-            changes.push(format!("- env: {}={}", ev.name, ev.value));
+            changes.push((Role::Fail, format!("env: {}={}", ev.name, ev.value)));
         }
     }
 
@@ -426,17 +443,23 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule) -> Vec<String> 
         .collect();
     for alias in &new.spec.aliases {
         match old_aliases.get(alias.name.as_str()) {
-            None => changes.push(format!("+ alias: {}={}", alias.name, alias.command)),
-            Some(prev) if *prev != alias.command.as_str() => changes.push(format!(
-                "~ alias '{}': {} -> {}",
-                alias.name, prev, alias.command
+            None => changes.push((Role::Ok, format!("alias: {}={}", alias.name, alias.command))),
+            Some(prev) if *prev != alias.command.as_str() => changes.push((
+                Role::Warn,
+                format!(
+                    "alias '{}': {} {} {}",
+                    alias.name, prev, arrow, alias.command
+                ),
             )),
             Some(_) => {}
         }
     }
     for alias in &old.spec.aliases {
         if !new_aliases.contains_key(alias.name.as_str()) {
-            changes.push(format!("- alias: {}={}", alias.name, alias.command));
+            changes.push((
+                Role::Fail,
+                format!("alias: {}={}", alias.name, alias.command),
+            ));
         }
     }
 
@@ -460,15 +483,18 @@ pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule) -> Vec<String> 
         // user must see the FULL script body before approving it running on
         // their machine, so push the raw body untouched. Never condense here;
         // the caller (`cmd_module_upgrade` in `cli/module/registry.rs`)
-        // decides bullet-vs-code_block rendering based on embedded `\n`.
-        changes.push(format!("+ postApply script: {script}"));
+        // decides bullet-vs-code_block rendering based on embedded `\n`. A
+        // multi-line script renders as a `code_block`, which carries no
+        // per-line Role icon, so "added"/"removed" is spelled out in the
+        // label itself rather than relying on a marker the block can't show.
+        changes.push((Role::Ok, format!("postApply script added: {script}")));
     }
     for script in old_script_set.difference(&new_script_set) {
-        changes.push(format!("- postApply script: {script}"));
+        changes.push((Role::Fail, format!("postApply script removed: {script}")));
     }
 
     if changes.is_empty() {
-        changes.push("(no spec changes)".to_string());
+        changes.push((Role::Info, "(no spec changes)".to_string()));
     }
 
     changes

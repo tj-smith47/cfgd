@@ -378,6 +378,15 @@ impl Printer {
         self.colors
     }
 
+    /// The ONE arrow glyph for a rendered `old -> new` / `source -> target`
+    /// relationship — see [`Theme::arrow`], which this delegates to. A caller
+    /// composing such a string interpolates this instead of hardcoding ASCII
+    /// `->`, so a preset override applies uniformly rather than leaving some
+    /// relationships themed and others not.
+    pub fn arrow(&self) -> &str {
+        self.renderer.theme.arrow()
+    }
+
     // ----- Top-level emit methods (depth 0) -----
 
     pub fn heading(&self, text: impl Into<String>) {

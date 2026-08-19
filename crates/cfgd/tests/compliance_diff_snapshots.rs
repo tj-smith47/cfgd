@@ -125,7 +125,14 @@ fn compliance_diff_happy_human() {
     let (snap1, snap2) = happy_snap_pair();
     let diff = compute_compliance_diff(&snap1, &snap2);
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_compliance_diff_doc(1, 2, &snap1, &snap2, &diff));
+    printer.emit(build_compliance_diff_doc(
+        1,
+        2,
+        &snap1,
+        &snap2,
+        &diff,
+        printer.arrow(),
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "compliance_diff/happy.txt");
 }
@@ -135,7 +142,14 @@ fn compliance_diff_happy_json() {
     let (snap1, snap2) = happy_snap_pair();
     let diff = compute_compliance_diff(&snap1, &snap2);
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_compliance_diff_doc(1, 2, &snap1, &snap2, &diff));
+    printer.emit(build_compliance_diff_doc(
+        1,
+        2,
+        &snap1,
+        &snap2,
+        &diff,
+        printer.arrow(),
+    ));
     drop(printer);
     let actual = cap.json().expect("diff Doc carries with_data payload");
     assert_eq!(actual["id1"], 1);
@@ -150,7 +164,14 @@ fn compliance_diff_empty_human() {
     let (snap1, snap2) = empty_snap_pair();
     let diff = compute_compliance_diff(&snap1, &snap2);
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_compliance_diff_doc(7, 8, &snap1, &snap2, &diff));
+    printer.emit(build_compliance_diff_doc(
+        7,
+        8,
+        &snap1,
+        &snap2,
+        &diff,
+        printer.arrow(),
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "compliance_diff/empty.txt");
 }
@@ -163,7 +184,14 @@ fn compliance_diff_changed_only_human() {
     let snap2 = fixed_snapshot("2026-05-14T12:00:00Z", Vec::new());
     let diff = changed_only_diff();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_compliance_diff_doc(3, 4, &snap1, &snap2, &diff));
+    printer.emit(build_compliance_diff_doc(
+        3,
+        4,
+        &snap1,
+        &snap2,
+        &diff,
+        printer.arrow(),
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "compliance_diff/changed_only.txt");
 }

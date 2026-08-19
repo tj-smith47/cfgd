@@ -1,1 +1,1 @@
-✓ source:team-config — priority updated: 100 -> 500
+✓ source:team-config — priority updated: 100 → 500

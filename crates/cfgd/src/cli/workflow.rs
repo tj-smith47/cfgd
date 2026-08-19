@@ -145,7 +145,7 @@ pub(super) fn generate_release_workflow_yaml(
     let collisions: Vec<String> = folded
         .into_iter()
         .filter(|(_, sources)| sources.len() > 1)
-        .map(|(key, sources)| format!("{} <- {}", key, sources.join(", ")))
+        .map(|(key, sources)| format!("{} from {}", key, sources.join(", ")))
         .collect();
     if !collisions.is_empty() {
         anyhow::bail!(

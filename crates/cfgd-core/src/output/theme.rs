@@ -409,6 +409,14 @@ impl Theme {
         self.colors
     }
 
+    /// The ONE arrow glyph for a rendered `old -> new` relationship
+    /// (`icon_arrow`, `"→"` by default, themeable per preset/config). Every
+    /// caller composing such a string reaches it here instead of hardcoding
+    /// ASCII `->`, so a preset override applies uniformly.
+    pub fn arrow(&self) -> &str {
+        &self.icon_arrow
+    }
+
     pub fn from_preset(name: &str) -> Self {
         match name {
             "dracula" => Self::dracula(),

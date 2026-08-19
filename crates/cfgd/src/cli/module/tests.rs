@@ -3421,7 +3421,7 @@ fn cmd_module_show_renders_platform_filtered_and_resolved_packages() {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         assert!(
-            output.contains("curl -> "),
+            output.contains("curl → "),
             "resolved entry should render '<name> -> <mgr> install ...', got: {output}"
         );
         assert!(
@@ -3436,7 +3436,7 @@ fn cmd_module_show_renders_platform_filtered_and_resolved_packages() {
     #[cfg(target_os = "windows")]
     {
         assert!(
-            output.contains("notepad -> "),
+            output.contains("notepad → "),
             "resolved entry should render '<name> -> <mgr> install ...', got: {output}"
         );
         assert!(
@@ -5052,10 +5052,10 @@ fn upgrade_diff_trailing_newline_script_change_renders_as_single_bullet_not_code
     // the identical body as a bullet.
     let old = make_loaded_module("m", config::ModuleSpec::default());
     let new = module_with_post_apply_script("echo hello\n");
-    let changes = modules::diff_module_specs(&old, &new);
-    let change = changes
+    let changes = modules::diff_module_specs(&old, &new, "->");
+    let (_, change) = changes
         .iter()
-        .find(|c| c.contains("postApply script"))
+        .find(|(_, c)| c.contains("postApply script"))
         .expect("expected a postApply script diff entry");
     assert!(
         !super::registry::has_second_non_empty_line(change),

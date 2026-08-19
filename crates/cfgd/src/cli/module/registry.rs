@@ -57,13 +57,9 @@ pub fn cmd_module_add_from_registry(
     let tag = match reg_ref.tag {
         Some(t) => t,
         None => {
-            printer.status_simple(
-                Role::Info,
-                format!(
-                    "No tag specified — looking up latest for '{}'",
-                    reg_ref.module
-                ),
-            );
+            printer
+                .status(Role::Info, "No tag specified")
+                .detail(format!("looking up latest for '{}'", reg_ref.module));
             // Fetch the registry repo so we can read tags. The lib call
             // takes a Printer; the Quiet sink suppresses the lib's
             // progress emissions so this command's status surface above
@@ -92,8 +88,11 @@ pub fn cmd_module_add_from_registry(
     printer.status_simple(
         Role::Info,
         format!(
-            "Resolved: {}/{} -> {}",
-            reg_ref.registry, reg_ref.module, full_url
+            "Resolved: {}/{} {} {}",
+            reg_ref.registry,
+            reg_ref.module,
+            printer.arrow(),
+            full_url
         ),
     );
 
@@ -407,15 +406,15 @@ pub fn cmd_module_upgrade(
     }
 
     // Show diff
-    let changes = modules::diff_module_specs(&old_module, &new_module);
+    let changes = modules::diff_module_specs(&old_module, &new_module, printer.arrow());
     {
         let changes_sec = printer.section("Changes");
-        for change in &changes {
+        for (role, change) in &changes {
             // A diff entry embeds the unmodified body of whatever changed — a
             // multi-line script, or an env value carrying a newline — so it
             // goes through the same full-fidelity renderer as the add-time
             // review rather than being condensed at the moment of approval.
-            review_entry(&changes_sec, "", change);
+            review_entry(&changes_sec, Some(*role), "", change);
         }
     }
 
@@ -510,7 +509,15 @@ pub(super) fn has_second_non_empty_line(body: &str) -> bool {
 ///
 /// Renders nothing when `body` holds no non-empty line; a caller whose section
 /// header has already promised an entry handles that case itself.
-fn review_entry(section: &SectionGuard<'_>, prefix: &str, body: &str) {
+///
+/// `role` is the add/remove/change marker for a single-logical-line entry —
+/// its icon renders in place of a hand-typed `+`/`-`/`~` glyph, via
+/// `status_simple` instead of a plain `bullet`. `None` keeps the bare bullet
+/// (a caller with nothing to mark, e.g. a fresh `add`'s env/alias listing). A
+/// multi-line body always renders as a `code_block`, which carries no
+/// per-line icon — the caller spells "added"/"removed" into that body's own
+/// label instead of relying on `role` to convey it there.
+fn review_entry(section: &SectionGuard<'_>, role: Option<Role>, prefix: &str, body: &str) {
     // Split by hand rather than with `lines()`, which silently drops a `\r`
     // sitting before a `\n` — on a surface whose contract is "this is exactly
     // what will be written", a byte may not disappear just because it happens
@@ -520,7 +527,10 @@ fn review_entry(section: &SectionGuard<'_>, prefix: &str, body: &str) {
     if has_second_non_empty_line(body) {
         section.code_block(raw.map(decorate));
     } else if let Some(line) = raw.into_iter().find(|l| !l.trim().is_empty()) {
-        section.bullet(decorate(line));
+        match role {
+            Some(role) => section.status_simple(role, decorate(line)),
+            None => section.bullet(decorate(line)),
+        };
     }
 }
 
@@ -559,7 +569,12 @@ pub(super) fn print_module_review_summary(
     if !module.spec.files.is_empty() {
         let files_sec = mod_sec.section("Files");
         for file in &module.spec.files {
-            files_sec.bullet(format!("{} -> {}", file.source, file.target));
+            files_sec.bullet(format!(
+                "{} {} {}",
+                file.source,
+                printer.arrow(),
+                file.target
+            ));
         }
     }
 
@@ -569,27 +584,31 @@ pub(super) fn print_module_review_summary(
     if !module.spec.env.is_empty() {
         let env_sec = mod_sec.section("Environment");
         for ev in &module.spec.env {
-            review_entry(&env_sec, "", &format!("{}={}", ev.name, ev.value));
+            review_entry(&env_sec, None, "", &format!("{}={}", ev.name, ev.value));
         }
     }
 
     if !module.spec.aliases.is_empty() {
         let alias_sec = mod_sec.section("Aliases");
         for alias in &module.spec.aliases {
-            review_entry(&alias_sec, "", &format!("{}={}", alias.name, alias.command));
+            review_entry(
+                &alias_sec,
+                None,
+                "",
+                &format!("{}={}", alias.name, alias.command),
+            );
         }
     }
 
     if let Some(ref scripts) = module.spec.scripts
         && !scripts.post_apply.is_empty()
     {
-        mod_sec.status_simple(
-            Role::Warn,
-            format!(
-                "Post-apply scripts ({}) — these will execute on your machine:",
-                scripts.post_apply.len()
-            ),
-        );
+        mod_sec
+            .status(
+                Role::Warn,
+                format!("Post-apply scripts ({})", scripts.post_apply.len()),
+            )
+            .detail("these will execute on your machine:");
         let scripts_sec = mod_sec.section("Post-apply");
         for script in &scripts.post_apply {
             let body = script.run_str();
@@ -598,7 +617,7 @@ pub(super) fn print_module_review_summary(
                 // so rendering nothing would leave it unaccounted for.
                 scripts_sec.bullet("(empty script)");
             } else {
-                review_entry(&scripts_sec, "$ ", body);
+                review_entry(&scripts_sec, None, "$ ", body);
             }
         }
     }
@@ -899,13 +918,12 @@ pub fn cmd_module_registry_remove(
             if !affected_profiles.is_empty() {
                 let warn_sec = printer.section("Profile References");
                 for profile_name in &affected_profiles {
-                    warn_sec.status_simple(
-                        Role::Warn,
-                        format!(
-                            "Profile '{}' still references '{}/...' — those modules will fail to resolve",
-                            profile_name, name
-                        ),
-                    );
+                    warn_sec
+                        .status(
+                            Role::Warn,
+                            format!("Profile '{}' still references '{}/...'", profile_name, name),
+                        )
+                        .detail("those modules will fail to resolve");
                 }
             }
 
@@ -1035,15 +1053,13 @@ pub fn cmd_module_registry_rename(
             // Which candidate wins is unknowable, so no rewrite happens;
             // surface it loudly — a silent skip would leave dangling
             // '<old>/...' refs behind the rename.
-            printer.status_simple(
-                Role::Warn,
-                format!(
-                    "Profile '{}' not rewritten — '{}/...' references left as-is: {}",
-                    prof.name,
+            printer
+                .status(Role::Warn, format!("Profile '{}' not rewritten", prof.name))
+                .detail(format!(
+                    "'{}/...' references left as-is: {}",
                     name,
                     cfgd_core::output::collapse_to_subject_line(error)
-                ),
-            );
+                ));
             not_rewritten.push(prof.name);
             continue;
         }
