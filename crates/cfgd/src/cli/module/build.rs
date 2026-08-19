@@ -57,7 +57,14 @@ pub fn cmd_module_build(
         output_artifacts.push(output_dir.display().to_string());
 
         if let Some(art) = artifact {
-            let digest =
+            // Nest the push spinner under a real section: `printer.status_simple`
+            // above ran at depth 0, so nothing bumped the surrounding depth, but
+            // opening one here still gives `push_module` (a bare-`&Printer`
+            // library call, no `SectionGuard` of its own) somewhere to inherit
+            // depth from instead of rendering at depth 0 unconditionally.
+            let digest = {
+                let _push_sec = printer.section("Push");
+                let _inherit = printer.depth_inheritance();
                 cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(printer))
                     .map_err(|e| {
                         crate::cli::cli_error(
@@ -66,7 +73,8 @@ pub fn cmd_module_build(
                             cfgd_core::output::collapse_to_subject_line(&e),
                             serde_json::json!({ "artifact": art, "target": targets[0] }),
                         )
-                    })?;
+                    })?
+            };
             printer.kv("Digest", &digest);
             digest_value = Some(digest);
 
@@ -85,7 +93,15 @@ pub fn cmd_module_build(
     } else {
         let mut builds: Vec<(std::path::PathBuf, String)> = Vec::new();
         for t in &targets {
-            let sp = printer.spinner(format!("Building for {t}..."));
+            // One `target:<t>` owner group per platform, the same idiom
+            // `cli/sync.rs` uses per source: a bare loop of top-level spinners
+            // has no owner to attribute a build to when several run in
+            // sequence, and gives the spinner nowhere to inherit depth from.
+            let owner = printer.section_owner(&cfgd_core::output::OwnerLabel::new(
+                "target",
+                (*t).to_string(),
+            ));
+            let sp = owner.spinner(format!("Building for {t}..."));
             let output_dir = match cfgd_core::oci::build_module(dir_path, Some(t), base_image) {
                 Ok(d) => {
                     sp.finish_ok(format!("Built {t} to {}", d.posix()));
@@ -111,15 +127,23 @@ pub fn cmd_module_build(
                 .iter()
                 .map(|(dir, plat)| (dir.as_path(), plat.as_str()))
                 .collect();
-            let digest = cfgd_core::oci::push_module_multiplatform(&build_refs, art, Some(printer))
-                .map_err(|e| {
-                    crate::cli::cli_error(
-                        art,
-                        "push_failed",
-                        cfgd_core::output::collapse_to_subject_line(&e),
-                        serde_json::json!({ "artifact": art, "targets": &targets }),
-                    )
-                })?;
+            // See the single-target branch above: same section-plus-inheritance
+            // pairing so the multi-platform push spinner nests instead of
+            // rendering at depth 0 regardless of the header above it.
+            let digest = {
+                let _push_sec = printer.section("Push");
+                let _inherit = printer.depth_inheritance();
+                cfgd_core::oci::push_module_multiplatform(&build_refs, art, Some(printer)).map_err(
+                    |e| {
+                        crate::cli::cli_error(
+                            art,
+                            "push_failed",
+                            cfgd_core::output::collapse_to_subject_line(&e),
+                            serde_json::json!({ "artifact": art, "targets": &targets }),
+                        )
+                    },
+                )?
+            };
             printer.kv("Digest", &digest);
             digest_value = Some(digest);
 
@@ -338,6 +362,53 @@ mod tests {
         assert!(
             output.contains("linux/amd64") || output.contains("linux/arm64"),
             "spinner output must mention at least one target: {output}"
+        );
+    }
+
+    /// QP9 depth fix: the multi-target loop's `target:<t>` owner header used
+    /// to have nothing under it at depth 0 — a bare top-level spinner had no
+    /// owner to nest under. It now opens via `printer.section_owner(&OwnerLabel)`
+    /// per platform, so a build failure's settle line nests one level deeper
+    /// than its `target:<t>` header. An unreachable base image fails FAST
+    /// (connection refused) on the first target, so this needs no successful
+    /// docker build and no push.
+    #[test]
+    fn build_failure_settle_line_nests_under_the_target_owner_header() {
+        if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write_module_yaml(dir.path());
+
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let _ = cmd_module_build(
+            &printer,
+            dir.path().to_str().unwrap(),
+            Some("linux/amd64,linux/arm64"),
+            Some("localhost:1/cfgd-test-nonexistent:latest"),
+            None,
+            false,
+            None,
+        );
+        drop(printer);
+
+        let output = cfgd_core::test_helpers::captured_text(&buf);
+        let header_line = output
+            .lines()
+            .find(|l| l.trim_start() == "target:linux/amd64")
+            .unwrap_or_else(|| panic!("target owner header must be rendered: {output}"));
+        let settled_line = output
+            .lines()
+            .find(|l| l.contains("Build failed for linux/amd64"))
+            .unwrap_or_else(|| panic!("build-failed settle line must be rendered: {output}"));
+
+        let header_indent = header_line.len() - header_line.trim_start().len();
+        let settled_indent = settled_line.len() - settled_line.trim_start().len();
+        assert!(
+            settled_indent > header_indent,
+            "the settle line must nest deeper than its owner header \
+             (header indent {header_indent}, settle indent {settled_indent}): {output}"
         );
     }
 

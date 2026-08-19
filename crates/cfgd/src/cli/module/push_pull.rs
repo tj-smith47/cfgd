@@ -46,7 +46,15 @@ pub fn cmd_module_push(
     }
     printer.kv_block(header);
 
-    let digest =
+    // The kv block above nests one level deeper than depth 0 (the
+    // `last_was_top_heading` bump in `render_kv_block`), so the push spinner
+    // needs a real section to match it — a bare `depth_inheritance()` guard
+    // with no section open still resolves to depth 0. `push_module` keeps its
+    // `&Printer` signature (it has non-CLI callers too), so the section is
+    // opened and scoped here rather than threaded into the library call.
+    let digest = {
+        let _push_sec = printer.section("Push");
+        let _inherit = printer.depth_inheritance();
         cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer)).map_err(|e| {
             crate::cli::cli_error(
                 artifact,
@@ -54,7 +62,8 @@ pub fn cmd_module_push(
                 e.to_string(),
                 serde_json::json!({ "artifact": artifact, "dir": dir, "platform": platform }),
             )
-        })?;
+        })?
+    };
 
     printer.kv("Digest", &digest);
 
@@ -791,6 +800,56 @@ mod tests {
                 .create();
 
             (server, registry)
+        }
+
+        /// QP9 depth fix: `cmd_module_push`'s push spinner used to render at
+        /// depth 0 unconditionally (a bare `printer.spinner()` call inside
+        /// `push_module`, a library fn with no `SectionGuard` of its own).
+        /// It now runs inside a real `printer.section("Push")` plus
+        /// `depth_inheritance()`, so the settled line nests one level deeper
+        /// than the section header instead of sitting flush with it.
+        #[test]
+        #[serial]
+        fn push_settle_line_nests_under_the_push_section_header() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_module_yaml(dir.path());
+            let (_server, registry) = mock_push_registry();
+            let artifact = format!("{}/test/mod:v1", registry);
+
+            let (printer, buf) =
+                cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+            cmd_module_push(
+                &printer,
+                dir.path().to_str().unwrap(),
+                &artifact,
+                super::super::PushOptions {
+                    platform: None,
+                    apply: false,
+                    sign: false,
+                    key: None,
+                    attest: false,
+                },
+            )
+            .expect("push must succeed");
+            drop(printer);
+
+            let output = cfgd_core::test_helpers::captured_text(&buf);
+            let header_line = output
+                .lines()
+                .find(|l| l.trim_start() == "Push")
+                .unwrap_or_else(|| panic!("Push section header must be rendered: {output}"));
+            let settled_line = output
+                .lines()
+                .find(|l| l.contains("Pushed module to"))
+                .unwrap_or_else(|| panic!("push settle line must be rendered: {output}"));
+
+            let header_indent = header_line.len() - header_line.trim_start().len();
+            let settled_indent = settled_line.len() - settled_line.trim_start().len();
+            assert!(
+                settled_indent > header_indent,
+                "the settle line must nest deeper than its section header \
+                 (header indent {header_indent}, settle indent {settled_indent}): {output}"
+            );
         }
 
         #[test]

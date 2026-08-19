@@ -111,7 +111,14 @@ pub fn cmd_checkin(
     };
 
     let resp = {
-        let sp = printer.spinner("Posting to gateway");
+        // `client.checkin` narrates through the bare `&Printer` it's handed
+        // (`status_simple("Checking in with device gateway")`) rather than a
+        // bound `SectionGuard`, so it needs a real section to inherit depth
+        // from — without one both it and the spinner render at depth 0
+        // whatever else this command has already printed.
+        let gateway_sec = printer.section("Gateway");
+        let _inherit = printer.depth_inheritance();
+        let sp = gateway_sec.spinner("Posting to gateway");
         let result = client
             .checkin(&config_hash, compliance_summary, printer)
             .context("checkin to gateway failed");
@@ -150,7 +157,12 @@ pub fn cmd_checkin(
     let all_drifts = cfgd_core::compliance::system_drifts(system_diffs.get_or_init(diff_system));
 
     let drift_status = if !all_drifts.is_empty() {
-        let sp = printer.spinner("Reporting drift");
+        // Same reasoning as the gateway checkin above: `client.report_drift`
+        // narrates through the bare `&Printer` it's handed, so it needs a
+        // real section to inherit depth from.
+        let drift_sec = printer.section("Drift");
+        let _inherit = printer.depth_inheritance();
+        let sp = drift_sec.spinner("Reporting drift");
         let res = client
             .report_drift(&all_drifts, printer)
             .context("drift report to gateway failed");
@@ -519,6 +531,97 @@ spec:
         );
     }
 
+    /// QP9 depth fix: `client.report_drift` narrates through a bare
+    /// `&Printer`, so its drift spinner used to render at depth 0
+    /// unconditionally. It now runs inside a real `printer.section("Drift")`
+    /// plus `depth_inheritance()`, so its settled line nests one level
+    /// deeper than the section header instead of sitting flush with it.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn cmd_checkin_drift_settle_line_nests_under_the_drift_section_header() {
+        let shim = cfgd_core::test_helpers::ToolShim::install(
+            "CFGD_GSETTINGS_BIN",
+            0,
+            "org.gnome.cfgd-checkin color-scheme 'default'\n",
+            "",
+        );
+        let config_dir = make_test_config_dir();
+        std::fs::write(
+            config_dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+             profile: default\n  compliance:\n    enabled: true\n",
+        )
+        .unwrap();
+        std::fs::write(
+            config_dir.path().join("profiles").join("default.yaml"),
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  system:
+    gsettings:
+      org.gnome.cfgd-checkin:
+        color-scheme: prefer-dark
+"#,
+        )
+        .unwrap();
+
+        let state_dir = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(config_dir.path());
+        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+
+        let mut server = mockito::Server::new();
+        let checkin = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+        let drift = server
+            .mock(
+                "POST",
+                mockito::Matcher::Regex(r"/api/v1/devices/.*/drift".to_string()),
+            )
+            .with_status(200)
+            .with_body("{}")
+            .create();
+
+        let cli = test_cli_for(config_dir.path(), state_dir.path());
+        let (printer, cap) = Printer::for_test_doc();
+        let result = cmd_checkin(
+            &cli,
+            &printer,
+            &server.url(),
+            Some("test-key"),
+            Some("dev-1"),
+        );
+        drop(printer);
+        let _ = shim;
+
+        assert!(result.is_ok(), "cmd_checkin should succeed: {result:?}");
+        checkin.assert();
+        drift.assert();
+
+        let human = cfgd_core::output::strip_ansi(&cap.human());
+        let header_line = human
+            .lines()
+            .find(|l| l.trim_start() == "Drift")
+            .unwrap_or_else(|| panic!("Drift section header must be rendered: {human}"));
+        let settled_line = human
+            .lines()
+            .find(|l| l.contains("drift items reported"))
+            .unwrap_or_else(|| panic!("drift settle line must be rendered: {human}"));
+
+        let header_indent = header_line.len() - header_line.trim_start().len();
+        let settled_indent = settled_line.len() - settled_line.trim_start().len();
+        assert!(
+            settled_indent > header_indent,
+            "the settle line must nest deeper than its section header \
+             (header indent {header_indent}, settle indent {settled_indent}): {human}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     #[serial_test::serial]
@@ -632,6 +735,59 @@ spec:
             json["serverPushedConfig"].as_bool(),
             Some(false),
             "no desired_config in response: {json}"
+        );
+    }
+
+    /// QP9 depth fix: `client.checkin` narrates through a bare `&Printer`
+    /// (`status_simple`), so its gateway spinner used to render at depth 0
+    /// unconditionally. It now runs inside a real `printer.section("Gateway")`
+    /// plus `depth_inheritance()`, so its settled line nests one level
+    /// deeper than the section header instead of sitting flush with it.
+    #[test]
+    #[serial_test::serial]
+    fn cmd_checkin_gateway_settle_line_nests_under_the_gateway_section_header() {
+        let config_dir = make_test_config_dir();
+        let state_dir = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(config_dir.path());
+        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+
+        let cli = test_cli_for(config_dir.path(), state_dir.path());
+        let (printer, cap) = Printer::for_test_doc();
+        let result = cmd_checkin(
+            &cli,
+            &printer,
+            &server.url(),
+            Some("test-key"),
+            Some("dev-1"),
+        );
+        drop(printer);
+
+        assert!(result.is_ok(), "cmd_checkin should succeed: {result:?}");
+        mock.assert();
+
+        let human = cfgd_core::output::strip_ansi(&cap.human());
+        let header_line = human
+            .lines()
+            .find(|l| l.trim_start() == "Gateway")
+            .unwrap_or_else(|| panic!("Gateway section header must be rendered: {human}"));
+        let settled_line = human
+            .lines()
+            .find(|l| l.contains("server status: ok"))
+            .unwrap_or_else(|| panic!("gateway settle line must be rendered: {human}"));
+
+        let header_indent = header_line.len() - header_line.trim_start().len();
+        let settled_indent = settled_line.len() - settled_line.trim_start().len();
+        assert!(
+            settled_indent > header_indent,
+            "the settle line must nest deeper than its section header \
+             (header indent {header_indent}, settle indent {settled_indent}): {human}"
         );
     }
 

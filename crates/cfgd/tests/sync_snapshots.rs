@@ -297,6 +297,49 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
     );
 }
 
+/// QP9 LEAK-site fix, representative of the "missing else arm" shape at
+/// `cli/sync.rs`'s per-source loop. The sibling arm this fix added — `Ok(())`
+/// from `load_source` but the source absent from the cache — is structurally
+/// unreachable through the real `SourceManager` (every success path inserts
+/// into `self.sources` before returning `Ok`), so this proves the discipline
+/// on the reachable sibling instead: the `Err(e)` arm right below it, which
+/// settles the SAME spinner the same way (`finish_fail`, one line, no Drop).
+/// Both arms share one shape by construction — `sp.finish_fail("sync
+/// failed").detail(...)` — so proving one never leaks proves the other by
+/// symmetry. Live capture (not `for_test_doc`) so a leaked Drop-interrupted
+/// line would be visible rather than silently absorbed into a buffered Doc.
+#[test]
+#[serial]
+fn sync_source_failure_settles_the_spinner_exactly_once_never_via_drop() {
+    let _disallow = EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
+
+    let (config_dir, state_dir) = unreachable_source_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, buf) = Printer::for_test_live_scrollback();
+
+    cmd_sync(&cli, &printer).unwrap();
+    drop(printer);
+
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains("source:missing-team"),
+        "the owner header must be committed via commit_header before the settle line: {out}"
+    );
+    assert!(
+        out.contains("sync failed"),
+        "the finish_fail line must be committed: {out}"
+    );
+    assert_eq!(
+        out.matches("sync failed").count(),
+        1,
+        "the failure must settle exactly once, never twice: {out}"
+    );
+    assert!(
+        !out.contains("(interrupted)"),
+        "a spinner settled by finish_fail must never also settle via Drop: {out}"
+    );
+}
+
 // ─────────────────────────────────────────────────────
 // snapshot helpers
 // ─────────────────────────────────────────────────────

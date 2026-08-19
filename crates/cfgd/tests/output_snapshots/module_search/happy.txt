@@ -1,4 +1,5 @@
-✓ Searched myreg
+registry:myreg
+  ✓ Searched myreg
 
 Search Modules: alpha
 

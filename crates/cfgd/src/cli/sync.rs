@@ -84,6 +84,15 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
             // shape the reader has to learn twice. Every line below names its
             // outcome only — the group heading already says whose it is.
             let owner = sources_sec.section_owner(&OwnerLabel::new("source", &source_spec.name));
+            // The owner's header would otherwise stay deferred until its first
+            // committed child line — but its first action is a spinner (a live
+            // region), and `load_source` runs under a DERIVED Quiet printer
+            // whose `alert()`/Fail statuses still reach the shared live region
+            // (see output-module.md, "LiveBarState is shared by every
+            // renderer"). Committing now is exactly the case
+            // `SectionGuard::commit_header` documents: without it, one of
+            // those emissions can land above a header nothing has written yet.
+            owner.commit_header();
             let sp = owner.spinner("Syncing");
             let load_result = mgr.load_source(source_spec, &silent_printer);
             match load_result {
@@ -207,6 +216,18 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                                 commit: None,
                             });
                         }
+                    } else {
+                        // `load_source` reported success but the cache holds
+                        // nothing for this source — an internal inconsistency
+                        // the spinner must still settle rather than leak.
+                        sp.finish_fail("sync failed").detail(
+                            "load_source reported success but the source is not in the cache",
+                        );
+                        sync_payload.sources.push(SourceSyncOutput {
+                            name: source_spec.name.clone(),
+                            status: "failed".to_string(),
+                            commit: None,
+                        });
                     }
                 }
                 Err(e) => {

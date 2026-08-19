@@ -120,25 +120,32 @@ pub fn cmd_module_add_remote(
     let config_dir = config_dir(cli);
     let cache_base = module_cache_dir(cli)?;
 
-    // Streaming: clone-fetch spinner. The lib call takes a Printer; the
-    // Quiet sink suppresses the lib's progress emissions so the spinner
-    // owns the user-facing surface (inversion of control).
-    let sp = printer.spinner(format!("Fetching {}", url));
-    let lib_printer = null_lib_printer(printer);
-    let fetched = match modules::fetch_remote_module(url, &cache_base, &lib_printer) {
-        Ok(f) => {
-            sp.finish_ok(format!("Fetched {}", url));
-            f
-        }
-        Err(e) => {
-            sp.finish_fail(format!("Failed to fetch {}", url))
-                .detail(cfgd_core::output::collapse_to_subject_line(&e));
-            return Err(crate::cli::cli_error(
-                url,
-                "clone_failed",
-                e.to_string(),
-                serde_json::json!({}),
-            ));
+    // Streaming: clone-fetch spinner, nested under its own "Fetch" section —
+    // one identifiable step of the multi-step add flow below (review,
+    // signature check, confirm, lockfile write) rather than a bare depth-0
+    // line with nothing marking which phase it belongs to.
+    let fetched = {
+        let fetch_sec = printer.section("Fetch");
+        let sp = fetch_sec.spinner(format!("Fetching {}", url));
+        // The lib call takes a Printer; the Quiet sink suppresses the lib's
+        // progress emissions so the spinner owns the user-facing surface
+        // (inversion of control).
+        let lib_printer = null_lib_printer(printer);
+        match modules::fetch_remote_module(url, &cache_base, &lib_printer) {
+            Ok(f) => {
+                sp.finish_ok(format!("Fetched {}", url));
+                f
+            }
+            Err(e) => {
+                sp.finish_fail(format!("Failed to fetch {}", url))
+                    .detail(cfgd_core::output::collapse_to_subject_line(&e));
+                return Err(crate::cli::cli_error(
+                    url,
+                    "clone_failed",
+                    e.to_string(),
+                    serde_json::json!({}),
+                ));
+            }
         }
     };
     let module_name = fetched.module.name.clone();
@@ -659,7 +666,14 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
     let mut errors: Vec<String> = Vec::new();
 
     for source in registries {
-        let sp = printer.spinner(format!("Searching {} ({})", source.name, source.url));
+        // One `registry:<name>` owner group per source searched — the same
+        // idiom `cli/sync.rs` uses per source, and what gives each spinner
+        // an owner to nest under instead of a bare depth-0 line.
+        let owner = printer.section_owner(&cfgd_core::output::OwnerLabel::new(
+            "registry",
+            source.name.clone(),
+        ));
+        let sp = owner.spinner(format!("Searching {} ({})", source.name, source.url));
         match modules::fetch_registry_modules(source, &cache_base, &lib_printer) {
             Ok(registry_modules) => {
                 sp.finish_ok(format!("Searched {}", source.name));
