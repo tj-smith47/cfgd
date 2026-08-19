@@ -5401,6 +5401,58 @@ fn execute_config_set() {
 }
 
 #[test]
+fn execute_alias_show_unknown_name_is_a_typed_not_found_error() {
+    // `alias show`/`alias delete` dispatch straight into cmd_config_get/unset
+    // with an "aliases." prefix (see the Command::Alias match arm in mod.rs) —
+    // this proves that dispatch path, not just the underlying config_cmd
+    // functions, resolves to the typed ConfigError::KeyNotFound and exit 6,
+    // matching every other named-resource lookup in the CLI.
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Alias {
+        command: AliasCommand::Show {
+            name: "no-such-alias".to_string(),
+        },
+    });
+    let err =
+        super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap_err();
+    let cfgd_err = err
+        .downcast_ref::<cfgd_core::errors::CfgdError>()
+        .expect("alias show of an unknown name must carry the typed ConfigError::KeyNotFound");
+    assert!(
+        matches!(
+            cfgd_err,
+            cfgd_core::errors::CfgdError::Config(
+                cfgd_core::errors::ConfigError::KeyNotFound { .. }
+            )
+        ),
+        "expected ConfigError::KeyNotFound, got: {cfgd_err}"
+    );
+    assert_eq!(
+        cfgd_core::exit::exit_code_for_error(cfgd_err),
+        cfgd_core::exit::ExitCode::NotFound
+    );
+}
+
+#[test]
+fn execute_alias_delete_unknown_name_is_a_typed_not_found_error() {
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Alias {
+        command: AliasCommand::Delete {
+            name: "no-such-alias".to_string(),
+        },
+    });
+    let err =
+        super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap_err();
+    let cfgd_err = err
+        .downcast_ref::<cfgd_core::errors::CfgdError>()
+        .expect("alias delete of an unknown name must carry the typed ConfigError::KeyNotFound");
+    assert_eq!(
+        cfgd_core::exit::exit_code_for_error(cfgd_err),
+        cfgd_core::exit::ExitCode::NotFound
+    );
+}
+
+#[test]
 fn execute_apply_dry_run() {
     let h = CliTestHarness::builder().build();
     let cli = h.cli_with_command(Command::Apply(ApplyArgs {
@@ -6552,7 +6604,29 @@ fn cmd_rollback_invalid_id_empty_state() {
         cfgd_core::Scope::User,
     );
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("no apply found"));
+    let err = result.unwrap_err();
+    assert!(err.to_string().contains("no apply found"));
+
+    // A rollback naming an apply ID that isn't in the log is the same
+    // scriptable "you asked for a thing that is not there" condition as an
+    // unknown backup name or module — it must carry the typed
+    // StateError::ApplyNotFound so the exit code resolves to NotFound (6).
+    let cfgd_err = err
+        .downcast_ref::<cfgd_core::errors::CfgdError>()
+        .expect("an unknown apply ID must carry the typed StateError::ApplyNotFound");
+    assert!(
+        matches!(
+            cfgd_err,
+            cfgd_core::errors::CfgdError::State(
+                cfgd_core::errors::StateError::ApplyNotFound { .. }
+            )
+        ),
+        "expected StateError::ApplyNotFound, got: {cfgd_err}"
+    );
+    assert_eq!(
+        cfgd_core::exit::exit_code_for_error(cfgd_err),
+        cfgd_core::exit::ExitCode::NotFound
+    );
 }
 
 #[test]
@@ -10121,7 +10195,7 @@ fn filter_plan_skip_file_by_target() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
     assert_eq!(plan.phases[0].action_count(), 1);
 }
@@ -10150,7 +10224,7 @@ fn filter_plan_empty_skip_and_only_noop() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
     assert_eq!(plan.phases[0].action_count(), 1);
 }
@@ -10179,7 +10253,7 @@ fn filter_plan_skip_uninstall_packages() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     match plan.phases[0].actions().next().expect("one action") {
@@ -10214,7 +10288,7 @@ fn filter_plan_only_with_uninstall() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     match plan.phases[0].actions().next().expect("one action") {
@@ -12191,6 +12265,53 @@ fn load_config_and_profile_missing_profile_fails() {
     );
 }
 
+#[test]
+fn load_config_and_profile_module_scoped_isolated_rejects_a_nonexistent_explicit_profile() {
+    // `--module x --profile does-not-exist` (no `--with-profile`) isolates the
+    // run from the profile's CONTENT, but the name is still typed by the
+    // operator and still becomes `CFGD_PROFILE` for the module's own scripts —
+    // it must not silently pass through unresolved.
+    let (config_dir, state_dir) = setup_test_env();
+    let cli = Cli {
+        profile: Some("does-not-exist".to_string()),
+        ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+    };
+
+    let result = super::load_config_and_profile_module_scoped(
+        &cli,
+        &cfgd_core::test_helpers::test_printer(),
+        &["some-module".to_string()],
+        false,
+    );
+    let err = result.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("profile not found: does-not-exist"),
+        "expected 'profile not found: does-not-exist' error, got: {msg}"
+    );
+}
+
+#[test]
+fn load_config_and_profile_module_scoped_isolated_with_no_explicit_profile_stays_best_effort() {
+    // No `--profile` given: the isolated name comes from the config's own
+    // active profile (or "unknown"), never operator-typed on this
+    // invocation, so there is nothing to validate and this must still
+    // succeed even though the config's active profile is not itself probed
+    // for existence here.
+    let (config_dir, state_dir) = setup_test_env();
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+
+    let (_, resolved, profile_label, _) = super::load_config_and_profile_module_scoped(
+        &cli,
+        &cfgd_core::test_helpers::test_printer(),
+        &["some-module".to_string()],
+        false,
+    )
+    .unwrap();
+    assert!(profile_label.is_none(), "an isolated run carries no label");
+    assert!(!resolved.profile_name().is_empty());
+}
+
 // --- expand_aliases ---
 
 #[test]
@@ -12678,7 +12799,6 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: false,
             unfiltered_total: 0,
             phases_with_work: vec![],
-            module_miss: None,
             filter_miss: false,
         };
         report_no_in_scope_actions(&printer, &scope);
@@ -12698,7 +12818,6 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: true,
             unfiltered_total: 3,
             phases_with_work: vec!["Files".to_string()],
-            module_miss: None,
             filter_miss: false,
         };
         report_no_in_scope_actions(&printer, &scope);
@@ -12725,7 +12844,6 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: true,
             unfiltered_total: 0,
             phases_with_work: vec![],
-            module_miss: None,
             filter_miss: false,
         };
         report_no_in_scope_actions(&printer, &scope);
@@ -12734,29 +12852,6 @@ fn report_no_in_scope_actions_classifies_outcomes() {
         assert!(
             out.contains(MSG_NOTHING_TO_DO),
             "filter active but no pending work → up-to-date, got:\n{out}"
-        );
-    }
-
-    // --module that resolved to nothing → module-specific warning.
-    {
-        let (printer, buf) = test_printer_capture();
-        let scope = ScopeReport {
-            filter_active: true,
-            unfiltered_total: 0,
-            phases_with_work: vec![],
-            module_miss: Some("nvm".to_string()),
-            filter_miss: false,
-        };
-        report_no_in_scope_actions(&printer, &scope);
-        printer.flush();
-        let out = cfgd_core::test_helpers::captured_text(&buf);
-        assert!(
-            out.contains("Module 'nvm' matched no actions"),
-            "expected module-miss warning, got:\n{out}"
-        );
-        assert!(
-            !out.contains(MSG_NOTHING_TO_DO),
-            "module miss must not claim up-to-date, got:\n{out}"
         );
     }
 
@@ -12769,7 +12864,6 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             filter_active: true,
             unfiltered_total: 0,
             phases_with_work: vec![],
-            module_miss: None,
             filter_miss: true,
         };
         report_no_in_scope_actions(&printer, &scope);
@@ -15078,7 +15172,7 @@ fn filter_plan_skip_removes_matching_packages() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     // brew install should remain but without fd
@@ -15143,7 +15237,7 @@ fn filter_plan_only_keeps_matching_phase() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     // Packages phase should keep its action
@@ -15187,7 +15281,7 @@ fn filter_plan_skip_uninstall_packages_env() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     match plan.phases[0].actions().next().expect("one action") {
@@ -15222,7 +15316,7 @@ fn filter_plan_empty_filters_is_noop() {
         None,
         &test_printer(),
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     assert_eq!(
@@ -15558,7 +15652,7 @@ spec:
 }
 
 // -----------------------------------------------------------------------
-// --with-profile alone (no --module) — QP9b deliverable 2's guard.
+// --with-profile alone (no --module) is rejected.
 // -----------------------------------------------------------------------
 
 #[test]
@@ -15600,8 +15694,9 @@ fn cmd_apply_with_profile_alone_errors() {
 }
 
 // -----------------------------------------------------------------------
-// Interplay matrix: --module × --only/--skip module:<name> (QP9b
-// deliverables 1 + 3, "no second hand-rolled mechanism" requirement)
+// Interplay matrix: --module × --only/--skip module:<name> — proves module
+// isolation and the zero-match accounting share one mechanism, never a second
+// hand-rolled one.
 // -----------------------------------------------------------------------
 
 /// `--module X --only module:X` is a no-op on top of the isolate: every

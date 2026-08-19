@@ -402,16 +402,16 @@ pub fn run_apply(
     // outcome distinguishes "in sync" from "a filter excluded pending work".
     let filter_active =
         phase_filter.is_some() || !skip.is_empty() || !only.is_empty() || args.skip_scripts;
-    // `resolve_modules` is atomic over the whole requested-name list (see
-    // `resolve_desired_state`): a `--module` name that does not resolve
-    // already propagated as an error above, so this path never reaches here
-    // with a non-empty `module_filter` and an empty `resolved_modules`. The
-    // arm stays reachable only through `ScopeReport::capture`'s own direct
-    // callers/tests — never fed a real value from `apply`.
-    let module_miss: Option<String> = None;
-    let mut scope = ScopeReport::capture(&plan, filter_active, module_miss);
+    let mut scope = ScopeReport::capture(&plan, filter_active);
 
-    // Apply --skip / --only filters
+    // Apply --skip / --only filters. `known_module_names` reads the module
+    // tree and lockfile ONCE, only when a filter is actually active — a
+    // filter-less run (the common case) never pays that I/O (review S1).
+    let known_modules = if skip.is_empty() && only.is_empty() {
+        std::collections::HashSet::new()
+    } else {
+        known_module_names(&config_dir)
+    };
     scope.filter_miss = filter_plan(
         &mut plan,
         skip,
@@ -419,7 +419,7 @@ pub fn run_apply(
         phase_filter.as_ref(),
         printer,
         &registry,
-        &config_dir,
+        &known_modules,
     );
 
     // Strip script phases when --skip-scripts is set

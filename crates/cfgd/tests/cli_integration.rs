@@ -2431,9 +2431,19 @@ fn cfgd_verbose_boolish_on_engages_verbose() {
     let verbose_env = stderr_of(Some("on"), false);
     let verbose_flag = stderr_of(None, true);
 
+    // Asserts on the DEBUG *level* plus the requested module name, not the
+    // event's message body: the subscriber runs `.with_target(false)`, so a
+    // message string is the only thing distinguishing one DEBUG line from
+    // another, and the exact prose cfgd-core's module resolver logs has no
+    // contract with this test's real claim — that `-v`/`CFGD_VERBOSE`
+    // engages debug-level tracing at all. `resolve_modules` always logs the
+    // names it was asked to resolve before doing anything else with them, so
+    // the requested name surviving into a DEBUG line is a stable proxy for
+    // "debug tracing fired during resolution" that a message-wording change
+    // in cfgd-core cannot break.
     let has_debug = |bytes: &[u8]| {
         let text = String::from_utf8_lossy(bytes);
-        text.contains("resolving modules") && text.contains("nope")
+        text.contains("DEBUG") && text.contains("nope")
     };
     assert!(
         !has_debug(&plain),

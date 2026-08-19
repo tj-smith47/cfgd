@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::{FileStrategy, LOCAL_LAYER};
@@ -565,9 +567,12 @@ pub(in crate::cli) fn strip_scripts_from_plan(plan: &mut reconciler::Plan) {
 /// Pre-filter snapshot of a plan's scope, captured *before* `--skip`/`--only`
 /// destructively prune it, so a later zero-action outcome can be reported
 /// honestly. Without this, `apply`/`plan` claim "everything is up to date" even
-/// when a scoping flag (`--phase`/`--only`/`--skip`/`--skip-scripts`/`--module`)
+/// when a scoping flag (`--phase`/`--only`/`--skip`/`--skip-scripts`)
 /// excluded real, pending work — telling the user the system is in sync when it
-/// is not.
+/// is not. `--module` is not one of these: it resolves atomically (an
+/// unresolvable name is a propagated error, not a scope reduction), so a
+/// `--module`-scoped plan that ends up empty genuinely has nothing pending
+/// for that module.
 pub(in crate::cli) struct ScopeReport {
     /// Any scoping flag that can narrow the plan to a subset was set.
     pub filter_active: bool,
@@ -575,9 +580,6 @@ pub(in crate::cli) struct ScopeReport {
     pub unfiltered_total: usize,
     /// Display names of the phases that held actions before pruning.
     pub phases_with_work: Vec<String>,
-    /// Set to the requested module name when `--module <name>` resolved to
-    /// nothing (typo / not found / unreadable) rather than to real actions.
-    pub module_miss: Option<String>,
     /// At least one `--skip`/`--only` token matched zero actions
     /// ([`TokenHits::misses`], set by `filter_plan` after it runs). A plan
     /// that ends up empty for THIS reason is not "up to date" — a filter
@@ -588,11 +590,7 @@ pub(in crate::cli) struct ScopeReport {
 }
 
 impl ScopeReport {
-    pub(in crate::cli) fn capture(
-        plan: &reconciler::Plan,
-        filter_active: bool,
-        module_miss: Option<String>,
-    ) -> Self {
+    pub(in crate::cli) fn capture(plan: &reconciler::Plan, filter_active: bool) -> Self {
         Self {
             filter_active,
             unfiltered_total: plan.total_actions(),
@@ -602,7 +600,6 @@ impl ScopeReport {
                 .filter(|p| !p.is_empty())
                 .map(|p| p.name.display_name().to_string())
                 .collect(),
-            module_miss,
             filter_miss: false,
         }
     }
@@ -615,15 +612,6 @@ impl ScopeReport {
 /// *not* reconciled). Shared by both `apply` and `plan`/dry-run so the two
 /// surfaces never diverge.
 pub(in crate::cli) fn report_no_in_scope_actions(printer: &Printer, scope: &ScopeReport) {
-    if let Some(name) = &scope.module_miss {
-        printer.status_simple(
-            Role::Warn,
-            format!(
-                "Module '{name}' matched no actions — it was not found or could not be resolved"
-            ),
-        );
-        return;
-    }
     if !scope.filter_active || (scope.unfiltered_total == 0 && !scope.filter_miss) {
         printer.status_simple(Role::Ok, MSG_NOTHING_TO_DO);
         return;
@@ -1624,10 +1612,10 @@ pub(in crate::cli) fn apply_conflict_policy(
 /// Also emits the diagnostics that only filtering can produce: the
 /// deprecation for a legacy `modules[.name]` pattern, the stranded-install
 /// warning for a filter that removed a package manager's bootstrap without
-/// removing the installs that need it, and — the QP9b SSOT — a warning for
-/// every `--skip`/`--only` token that matched zero actions. All three live
-/// here so no call site can forget one, and no command hand-rolls a second
-/// "matched nothing" message of its own (see `warn_zero_match_tokens`).
+/// removing the installs that need it, and the SSOT zero-match accounting —
+/// a warning for every `--skip`/`--only` token that matched zero actions. All
+/// three live here so no call site can forget one, and no command hand-rolls
+/// a second "matched nothing" message of its own (see `warn_zero_match_tokens`).
 ///
 /// Returns whether any token matched zero actions, so the caller's
 /// [`ScopeReport`] can refuse `MSG_NOTHING_TO_DO` on the strength of a filter
@@ -1640,7 +1628,7 @@ pub(in crate::cli) fn filter_plan(
     phase_filter: Option<&reconciler::PhaseFilter>,
     printer: &Printer,
     registry: &ProviderRegistry,
-    config_dir: &Path,
+    known_modules: &HashSet<String>,
 ) -> bool {
     // Every selector the user supplied is materialised into the plan HERE, so
     // one pass owns the whole question of what this run will do. `--phase` is
@@ -1850,14 +1838,14 @@ pub(in crate::cli) fn filter_plan(
     warn_stranded_installs(plan, printer, registry, &removals);
 
     let skip_missed =
-        warn_zero_match_tokens(printer, "skip", &skip_hits, &owners_present, config_dir);
+        warn_zero_match_tokens(plan, "skip", &skip_hits, &owners_present, known_modules);
     let only_missed =
-        warn_zero_match_tokens(printer, "only", &only_hits, &owners_present, config_dir);
+        warn_zero_match_tokens(plan, "only", &only_hits, &owners_present, known_modules);
     skip_missed || only_missed
 }
 
 /// Per-token match accounting for one `filter_plan` run's `--skip`/`--only`
-/// tokens — the QP9b SSOT every selector/filter surface in the CLI that can
+/// tokens — the SSOT every selector/filter surface in the CLI that can
 /// select zero of something routes through (directly, for `--skip`/`--only`;
 /// by the same shape, for a command's own miss check) rather than hand-rolling
 /// a second "matched nothing" message. Every supplied token starts at zero, so
@@ -1898,51 +1886,75 @@ impl TokenHits {
     }
 }
 
-/// Is `name` a module cfgd already knows about (declared locally, or a remote
-/// module recorded in the lockfile) — checked with no network I/O, so a
-/// zero-match hint can afford to ask it. Distinguishes a genuinely unknown
-/// module name (a typo) from a real module that simply is not part of THIS
-/// run's graph, which gets a more actionable hint (`--module <name>`) than
-/// the generic owner-token list.
-fn module_known_but_unresolved(config_dir: &Path, name: &str) -> bool {
-    if let Ok(local) = modules::load_modules(config_dir)
-        && local.contains_key(name)
-    {
-        return true;
+/// Every module name cfgd already knows about — declared locally in
+/// `modules/`, or recorded in the source lockfile — read from disk ONCE by
+/// the caller before filtering starts. `filter_plan` previously took
+/// `config_dir` itself and re-read both the module tree and the lockfile
+/// inside `module_known_but_unresolved`, once per zero-match token, putting
+/// filesystem I/O behind a `&Path` threaded through every filter call site
+/// (~30 of them in tests alone) purely so this one hint could ask a question
+/// only it needed answered (review S1). A load failure (no `modules/`
+/// directory, no lockfile) contributes nothing rather than erroring — the
+/// hint degrades to "unknown", the same as it always did.
+pub(in crate::cli) fn known_module_names(config_dir: &Path) -> HashSet<String> {
+    let mut known = HashSet::new();
+    if let Ok(local) = modules::load_modules(config_dir) {
+        known.extend(local.into_keys());
     }
-    if let Ok(lockfile) = modules::load_lockfile(config_dir)
-        && lockfile.modules.iter().any(|e| e.name == name)
-    {
-        return true;
+    if let Ok(lockfile) = modules::load_lockfile(config_dir) {
+        known.extend(lockfile.modules.into_iter().map(|entry| entry.name));
     }
-    false
+    known
 }
 
-/// Warn on every token in `hits` that matched zero actions — the QP9b
-/// zero-match accounting every `--skip`/`--only` pass renders through. Same
-/// alert-class shape as [`warn_stranded_installs`]: always-visible, because
-/// acting on this run's output without knowing a token never matched anything
-/// means acting on a wrong picture of what happened. Returns whether any
-/// token missed.
+/// Is `name` a module cfgd already knows about (declared locally, or a remote
+/// module recorded in the lockfile), per the set [`known_module_names`]
+/// already read once for this run. Distinguishes a genuinely unknown module
+/// name (a typo) from a real module that simply is not part of THIS run's
+/// graph, which gets a more actionable hint (`--module <name>`) than the
+/// generic owner-token list. Pure lookup — no I/O — so it can be called once
+/// per zero-match token with no cost.
+fn module_known_but_unresolved(known_modules: &HashSet<String>, name: &str) -> bool {
+    known_modules.contains(name)
+}
+
+/// Warn on every token in `hits` that matched zero actions — the zero-match
+/// accounting every `--skip`/`--only` pass renders through. Pushed into
+/// [`reconciler::Plan::warnings`] rather than printed directly, the same
+/// route the undecidable-package-batch warning already takes: one producer
+/// (here), one render ([`reconciler::ApplyRun::header`], via `alert` so it
+/// stays visible at any depth and any verbosity — the same always-visible
+/// guarantee [`warn_stranded_installs`] gives itself directly), and one
+/// serialization (`build_plan_output`'s `warnings` field), so a `-o json`
+/// consumer sees the same miss a human reading the header does instead of an
+/// empty `phases` array with no explanation. Returns whether any token
+/// missed.
 fn warn_zero_match_tokens(
-    printer: &Printer,
+    plan: &mut reconciler::Plan,
     flag: &str,
     hits: &TokenHits,
     owners_present: &[String],
-    config_dir: &Path,
+    known_modules: &HashSet<String>,
 ) -> bool {
     let misses = hits.misses();
     for token in &misses {
         let hint = token
             .strip_prefix("module:")
-            .filter(|name| module_known_but_unresolved(config_dir, name))
+            .filter(|name| module_known_but_unresolved(known_modules, name))
             .map(|name| format!("to resolve a module outside the profile: --module {name}"))
             .or_else(|| {
                 (!owners_present.is_empty())
                     .then(|| format!("owners present: {}", owners_present.join(", ")))
             });
-        let message = format!("`--{flag} {token}` matched no actions in this plan");
-        printer.alert(match hint {
+        // `escape_control_chars`: the token is echoed verbatim below and, on
+        // an interactive terminal, is untrusted input the user typed —
+        // without this a `\r`/`\x1b[2K` token could repaint or erase the
+        // very line describing it.
+        let message = format!(
+            "`--{flag} {}` matched no actions in this plan",
+            cfgd_core::escape_control_chars(token)
+        );
+        plan.warnings.push(match hint {
             Some(hint) => format!("{message}; {hint}"),
             None => message,
         });

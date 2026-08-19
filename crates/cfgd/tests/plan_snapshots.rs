@@ -21,11 +21,11 @@
 //!   - `plan/with_inert_decision.txt` — a decision row belonging to a source
 //!     the config does not subscribe to: it withholds nothing and is named
 //!     nowhere, so the render is byte-identical to the plain plan.
-//!   - `plan/only_zero_match.txt` — QP9b deliverable 3: `--only` naming a
-//!     token (`packages.brwe`, a typo of `packages.brew`) that matches
-//!     nothing in the plan. Pins the always-visible alert shape (names the
-//!     token verbatim, hints the owner tokens the plan actually held) and
-//!     that `MSG_NOTHING_TO_DO` never renders for this reason.
+//!   - `plan/only_zero_match.txt` — `--only` naming a token
+//!     (`packages.brwe`, a typo of `packages.brew`) that matches nothing in
+//!     the plan. Pins the always-visible alert shape (names the token
+//!     verbatim, hints the owner tokens the plan actually held) and that
+//!     `MSG_NOTHING_TO_DO` never renders for this reason.
 
 mod common;
 
@@ -260,8 +260,8 @@ fn plan_module_only_unresolved_module_errors() {
 
 #[test]
 fn plan_only_zero_match_token_warns_and_names_owners_present_human() {
-    // QP9b deliverable 3's golden: `--only` naming a token that matches
-    // nothing must never render `MSG_NOTHING_TO_DO` (that would read as "the
+    // `--only` naming a token that matches nothing must never render
+    // `MSG_NOTHING_TO_DO` (that would read as "the
     // machine is in sync", when really the filter just never matched
     // anything) — it renders the "No actions in scope" branch instead, plus
     // an always-visible alert naming the token verbatim and hinting the

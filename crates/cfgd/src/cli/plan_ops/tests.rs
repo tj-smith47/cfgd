@@ -645,7 +645,7 @@ fn filter_plan_noop_when_empty_filters() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
     assert_eq!(plan.phases[0].action_count(), 2);
 }
@@ -669,7 +669,7 @@ fn filter_plan_skip_removes_matching_file_actions() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     // Every action in the Files phase was skipped, so the phase itself must
@@ -705,7 +705,7 @@ fn filter_plan_honours_the_legacy_env_phase_pattern_and_says_it_is_on_the_way_ou
         None,
         &printer,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -740,7 +740,7 @@ fn filter_plan_leaves_an_owner_token_opening_with_the_legacy_word_alone() {
         None,
         &printer,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -801,7 +801,7 @@ fn skipping_one_manager_of_a_batch_leaves_the_others_provisioned() {
         None,
         &printer,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
     assert_eq!(
         provision_lines(&plan),
@@ -827,7 +827,7 @@ fn a_phase_selector_naming_one_batch_member_provisions_only_that_manager() {
         )),
         &printer,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
     assert_eq!(
         provision_lines(&plan),
@@ -876,7 +876,7 @@ fn filter_plan_warns_when_a_skipped_provision_strands_the_installs_that_needed_i
         None,
         &printer,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -923,7 +923,7 @@ fn filter_plan_skip_prerequisites_session_removes_only_the_broadcast_and_strands
         None,
         &printer,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -995,7 +995,7 @@ fn filter_plan_skip_prerequisites_managers_strands_every_manager_it_removes() {
         None,
         &printer,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -1053,7 +1053,7 @@ fn filter_plan_skip_prerequisites_brew_leaves_other_managers_untouched() {
         None,
         &printer,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -1111,7 +1111,7 @@ fn filter_plan_skip_last_package_consumer_silently_prunes_its_now_purposeless_ma
         None,
         &printer,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -1145,7 +1145,7 @@ fn filter_plan_only_keeps_matching_actions() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     // Every file action fell outside the --only scope, so the Files phase
@@ -1205,7 +1205,7 @@ fn filter_plan_only_prerequisites_managers_keeps_every_manager_node() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     let prereq_phase = plan
@@ -1267,7 +1267,7 @@ fn filter_plan_only_cfgd_managers_keeps_every_manager_node() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     let prereq_phase = plan
@@ -1302,7 +1302,7 @@ fn filter_plan_skip_individual_packages() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     let phase = &plan.phases[0];
@@ -1334,7 +1334,7 @@ fn filter_plan_only_specific_packages() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     let phase = &plan.phases[0];
@@ -1364,7 +1364,7 @@ fn filter_plan_skip_removes_entire_manager_with_all_packages_skipped() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     let phase = &plan.phases[0];
@@ -1398,7 +1398,7 @@ fn filter_plan_only_specific_manager_keeps_just_that_manager() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     let phase = &plan.phases[0];
@@ -1425,7 +1425,7 @@ fn filter_plan_skip_uninstall_individual_packages() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     if let Action::Package(PackageAction::Uninstall { packages, .. }) =
@@ -1534,7 +1534,7 @@ fn filter_plan_drops_a_phase_left_entirely_empty() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     assert!(
@@ -3447,7 +3447,7 @@ fn skip_owner_pattern_selects_one_module_across_every_phase() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     let owners: Vec<String> = plan
@@ -3475,7 +3475,7 @@ fn skip_owner_pattern_selects_the_profile() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     let owners: Vec<String> = plan
@@ -3500,7 +3500,7 @@ fn legacy_modules_pattern_still_skips_and_says_so() {
         None,
         &printer,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -3530,7 +3530,7 @@ fn only_packages_brew_does_not_match_a_module_named_brew() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     let owners: Vec<String> = plan
@@ -3558,7 +3558,7 @@ fn only_packages_module_brew_selects_the_module_not_the_manager() {
         None,
         &Printer::for_test().0,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
 
     let owners: Vec<String> = plan
@@ -3580,7 +3580,7 @@ fn skip_cfgd_managers_warns_once_about_stranded_installs() {
         None,
         &printer,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -3622,7 +3622,7 @@ fn skip_packages_brew_leaves_the_sub_manager_it_does_not_cover_untouched() {
         None,
         &printer,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -3680,7 +3680,7 @@ fn stranded_warning_counts_actions_not_distinct_managers() {
         None,
         &printer,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -3710,7 +3710,7 @@ fn no_stranded_warning_when_every_manager_is_available() {
         None,
         &printer,
         &registry,
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
     printer.flush();
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -3875,7 +3875,7 @@ fn a_run_that_could_not_read_its_config_still_withholds_every_row() {
 }
 
 // -----------------------------------------------------------------------
-// TokenHits — per-token --skip/--only match accounting (QP9b deliverable 3)
+// TokenHits — per-token --skip/--only match accounting
 // -----------------------------------------------------------------------
 
 #[test]
@@ -3918,7 +3918,7 @@ fn token_hits_misses_empty_once_every_token_is_recorded() {
 
 // -----------------------------------------------------------------------
 // module_known_but_unresolved — the --module hint gate for a `module:<name>`
-// zero-match token (QP9b deliverable 3)
+// zero-match token
 // -----------------------------------------------------------------------
 
 #[test]
@@ -3932,34 +3932,33 @@ fn module_known_but_unresolved_true_for_a_locally_declared_module() {
     )
     .unwrap();
 
+    let known = known_module_names(dir.path());
     assert!(
-        module_known_but_unresolved(dir.path(), "nvm"),
+        module_known_but_unresolved(&known, "nvm"),
         "a module declared under modules/ is known, even though it is not part of the active profile"
     );
     assert!(
-        !module_known_but_unresolved(dir.path(), "no-such-module"),
+        !module_known_but_unresolved(&known, "no-such-module"),
         "a name naming nothing on disk or in the lockfile is not known"
     );
 }
 
 #[test]
-fn module_known_but_unresolved_false_when_config_dir_has_no_modules_at_all() {
-    assert!(!module_known_but_unresolved(
-        Path::new("/nonexistent-config"),
-        "anything"
-    ));
+fn known_module_names_is_empty_when_config_dir_has_no_modules_at_all() {
+    assert!(known_module_names(Path::new("/nonexistent-config")).is_empty());
 }
 
 // -----------------------------------------------------------------------
-// filter_plan zero-match token accounting (QP9b deliverable 3) — the alert
-// every `--skip`/`--only` token that matched nothing renders, and the
-// `bool` return `apply.rs`/`plan.rs` fold into `ScopeReport.filter_miss`.
+// filter_plan zero-match token accounting — the warning every
+// `--skip`/`--only` token that matched nothing pushes into `Plan.warnings`,
+// and the `bool` return `apply.rs`/`plan.rs` fold into
+// `ScopeReport.filter_miss`.
 // -----------------------------------------------------------------------
 
 #[test]
 fn filter_plan_zero_match_skip_token_alerts_and_reports_a_miss() {
     let mut plan = make_plan(vec![(PhaseName::Files, vec![file_create("/etc/foo")])]);
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
     let missed = filter_plan(
         &mut plan,
         &["no-such-owner".to_string()],
@@ -3967,22 +3966,26 @@ fn filter_plan_zero_match_skip_token_alerts_and_reports_a_miss() {
         None,
         &printer,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
-    printer.flush();
-    let out = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
         missed,
         "a token that matched zero actions must report a miss"
     );
     assert!(
-        out.contains("`--skip no-such-owner` matched no actions in this plan"),
-        "expected the zero-match alert naming the token verbatim, got:\n{out}"
+        plan.warnings
+            .iter()
+            .any(|w| w.contains("`--skip no-such-owner` matched no actions in this plan")),
+        "expected the zero-match warning naming the token verbatim, got:\n{:?}",
+        plan.warnings
     );
     assert!(
-        out.contains("owners present: profile:test"),
-        "expected the owner-token hint naming what the plan actually held, got:\n{out}"
+        plan.warnings
+            .iter()
+            .any(|w| w.contains("owners present: profile:test")),
+        "expected the owner-token hint naming what the plan actually held, got:\n{:?}",
+        plan.warnings
     );
     // The file action itself never matched "no-such-owner", so it survives.
     assert_eq!(plan.phases[0].action_count(), 1);
@@ -4000,7 +4003,8 @@ fn filter_plan_zero_match_only_token_naming_a_known_unresolved_module_hints_the_
     .unwrap();
 
     let mut plan = make_plan(vec![(PhaseName::Files, vec![file_create("/etc/foo")])]);
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let known_modules = known_module_names(dir.path());
     let missed = filter_plan(
         &mut plan,
         &[],
@@ -4008,24 +4012,29 @@ fn filter_plan_zero_match_only_token_naming_a_known_unresolved_module_hints_the_
         None,
         &printer,
         &ProviderRegistry::new(),
-        dir.path(),
+        &known_modules,
     );
-    printer.flush();
-    let out = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(missed);
     assert!(
-        out.contains("`--only module:nvm` matched no actions in this plan"),
-        "got:\n{out}"
+        plan.warnings
+            .iter()
+            .any(|w| w.contains("`--only module:nvm` matched no actions in this plan")),
+        "got:\n{:?}",
+        plan.warnings
     );
     assert!(
-        out.contains("to resolve a module outside the profile: --module nvm"),
+        plan.warnings
+            .iter()
+            .any(|w| w.contains("to resolve a module outside the profile: --module nvm")),
         "a token naming a module cfgd already knows about (just not part of this run's graph) \
-         must hint the way to bring it in, not the generic owner-token list, got:\n{out}"
+         must hint the way to bring it in, not the generic owner-token list, got:\n{:?}",
+        plan.warnings
     );
     assert!(
-        !out.contains("owners present:"),
-        "the module-specific hint replaces the generic one, got:\n{out}"
+        !plan.warnings.iter().any(|w| w.contains("owners present:")),
+        "the module-specific hint replaces the generic one, got:\n{:?}",
+        plan.warnings
     );
 }
 
@@ -4035,7 +4044,7 @@ fn filter_plan_a_token_that_matches_something_alerts_for_nothing() {
         PhaseName::Files,
         vec![file_create("/etc/foo"), file_update("/etc/bar")],
     )]);
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
     let missed = filter_plan(
         &mut plan,
         &["files".to_string()],
@@ -4043,14 +4052,52 @@ fn filter_plan_a_token_that_matches_something_alerts_for_nothing() {
         None,
         &printer,
         &ProviderRegistry::new(),
-        Path::new("/nonexistent-config"),
+        &std::collections::HashSet::new(),
     );
-    printer.flush();
-    let out = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(!missed, "a token that matched every action is not a miss");
     assert!(
-        !out.contains("matched no actions in this plan"),
-        "a fully-matching token must not render the zero-match alert, got:\n{out}"
+        !plan
+            .warnings
+            .iter()
+            .any(|w| w.contains("matched no actions in this plan")),
+        "a fully-matching token must not push the zero-match warning, got:\n{:?}",
+        plan.warnings
+    );
+}
+
+#[test]
+fn filter_plan_zero_match_token_escapes_embedded_control_chars() {
+    // A `--skip`/`--only` token is untrusted terminal input echoed verbatim
+    // into a warning that lands on the terminal (via `ApplyRun::header`'s
+    // `printer.alert`); an unescaped `\r` here would repaint or erase the
+    // very line describing it.
+    let mut plan = make_plan(vec![(PhaseName::Files, vec![file_create("/etc/foo")])]);
+    let (printer, _buf) = Printer::for_test();
+    let evil_token = "no-such-owner\r\x1b[2K";
+    let missed = filter_plan(
+        &mut plan,
+        &[evil_token.to_string()],
+        &[],
+        None,
+        &printer,
+        &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
+    );
+
+    assert!(missed);
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| !w.contains('\r') && !w.contains('\x1b')),
+        "the raw control bytes must not reach the warning text, got:\n{:?}",
+        plan.warnings
+    );
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.contains(r"\x0d") && w.contains(r"\x1b")),
+        "the control bytes must be rendered as visible \\xNN escapes, got:\n{:?}",
+        plan.warnings
     );
 }
