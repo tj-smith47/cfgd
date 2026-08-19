@@ -282,12 +282,20 @@ impl super::Emitting<'_> {
 }
 
 /// The body of a section's header line: the caller's pre-styled token when it
-/// supplied one, otherwise the name painted with `theme.header`.
+/// supplied one, otherwise the name painted with `theme.header` at the top
+/// level or `theme.secondary` when nested — a section opened while another
+/// is already open (`header_depth > 0`, the same signal that already governs
+/// whether the section's close leaves a blank line behind it) is a
+/// subsection regardless of whether the caller reached it through
+/// `Doc::subsection` or by nesting `SectionGuard::section` calls by hand, and
+/// reads visually apart from the section that owns it rather than repeating
+/// its exact heading style one indent level deeper.
 pub(crate) fn header_line(theme: &crate::output::Theme, frame: &SectionFrame) -> String {
-    frame
-        .styled_name
-        .clone()
-        .unwrap_or_else(|| theme.header.apply_to(&frame.name).to_string())
+    match &frame.styled_name {
+        Some(styled) => styled.clone(),
+        None if frame.header_depth == 0 => theme.header.apply_to(&frame.name).to_string(),
+        None => theme.secondary.apply_to(&frame.name).to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -490,6 +498,76 @@ mod tests {
         assert!(
             heading < action,
             "the phase heading must render before any action inside it: {out:?}"
+        );
+    }
+
+    /// A section nested inside another open section (a subsection, whether
+    /// reached through `Doc::subsection` or by nesting `SectionGuard::section`
+    /// calls) paints `theme.secondary`, not `theme.header` — the two must read
+    /// apart from each other, or a reader cannot tell a subsection's heading
+    /// from the section that owns it.
+    #[test]
+    fn nested_section_header_uses_secondary_not_header() {
+        use crate::output::Theme;
+
+        let theme = Theme::from_preset("dracula");
+        let colored = theme.clone().with_colors(true);
+        let expected_secondary = colored.secondary.clone().apply_to("Child").to_string();
+        let header_styled = colored.header.apply_to("Child").to_string();
+        assert_ne!(
+            expected_secondary, header_styled,
+            "the fixture theme must actually distinguish the two slots, or this test proves nothing"
+        );
+
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(colored, Verbosity::Normal);
+        r.render_section_open("Parent", false);
+        r.render_section_open("Child", false);
+        r.flush_pending_section_headers(&sink);
+        r.write_line(&sink, 2, "leaf");
+        r.render_section_close(&sink);
+        r.render_section_close(&sink);
+
+        // raw-capture-ok: asserting the exact styled runs reach the renderer unrestyled — captured_text would strip the ANSI this test exists to check
+        let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            raw.contains(&expected_secondary),
+            "the nested section's header must be theme.secondary: {raw:?}"
+        );
+        assert!(
+            !raw.contains(&header_styled),
+            "the nested section's header must not fall back to theme.header: {raw:?}"
+        );
+    }
+
+    /// The top-level section (`header_depth == 0`) keeps `theme.header`
+    /// regardless of how many subsections it later opens — the depth check
+    /// reads the SECTION's own `header_depth`, not some global "have we
+    /// opened a subsection yet" flag.
+    #[test]
+    fn top_level_section_header_stays_theme_header_even_after_a_subsection_closes() {
+        use crate::output::Theme;
+
+        let theme = Theme::from_preset("dracula");
+        let colored = theme.clone().with_colors(true);
+        let expected_header = colored.header.apply_to("Parent").to_string();
+
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(colored, Verbosity::Normal);
+        r.render_section_open("Parent", false);
+        r.render_section_open("Child", false);
+        r.flush_pending_section_headers(&sink);
+        r.write_line(&sink, 2, "leaf");
+        r.render_section_close(&sink);
+        r.render_section_close(&sink);
+
+        // raw-capture-ok: asserting the exact styled run reaches the renderer unrestyled — captured_text would strip the ANSI this test exists to check
+        let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            raw.contains(&expected_header),
+            "the top-level section's header must stay theme.header: {raw:?}"
         );
     }
 }
