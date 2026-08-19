@@ -101,21 +101,114 @@ fn no_subscriber_writes_straight_to_stderr() {
     );
 }
 
-/// The code half of a line: everything before a `//`, so prose naming both
-/// halves of the rule (this fence's own doc, the rule text quoted in comments)
-/// is never read as a wiring.
-fn code_half(line: &str) -> &str {
-    line.split("//").next().unwrap_or(line)
+/// Blank the bodies of string and char literals on one line, byte-for-byte
+/// (each literal-interior byte becomes a space, quotes stay), so byte
+/// positions found on the blanked line index the raw line exactly. Handles
+/// `"…"` with escapes, `r"…"`/`r#"…"#` raw strings, and char literals —
+/// discriminated from lifetimes by closing-quote proximity, the same test
+/// `audit.sh`'s `strip_strings` uses. Line-scoped by construction: a literal
+/// that spans lines has only its first line blanked, and its interior lines
+/// are read as code — the same bound every fence in this file already lives
+/// with.
+fn blank_string_literals(line: &str) -> String {
+    let bytes = line.as_bytes();
+    let mut out = bytes.to_vec();
+    let is_ident = |b: u8| b == b'_' || b.is_ascii_alphanumeric();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                let mut j = i + 1;
+                while j < bytes.len() && bytes[j] != b'"' {
+                    if bytes[j] == b'\\' && j + 1 < bytes.len() {
+                        out[j] = b' ';
+                        out[j + 1] = b' ';
+                        j += 2;
+                    } else {
+                        out[j] = b' ';
+                        j += 1;
+                    }
+                }
+                i = j + 1;
+            }
+            b'r' if i == 0 || !is_ident(bytes[i - 1]) => {
+                let mut hashes = 0;
+                let mut j = i + 1;
+                while j < bytes.len() && bytes[j] == b'#' {
+                    hashes += 1;
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j] == b'"' {
+                    let mut k = j + 1;
+                    while k < bytes.len() {
+                        if bytes[k] == b'"'
+                            && bytes[k + 1..].len() >= hashes
+                            && bytes[k + 1..k + 1 + hashes].iter().all(|&b| b == b'#')
+                        {
+                            break;
+                        }
+                        out[k] = b' ';
+                        k += 1;
+                    }
+                    i = (k + 1 + hashes).min(bytes.len());
+                } else {
+                    i += 1;
+                }
+            }
+            b'\'' => {
+                // A char literal's body is one escape or exactly one char —
+                // a single ASCII byte, or 2-4 non-ASCII bytes — and a
+                // lifetime never closes. Requiring that shape (not mere
+                // closing-quote proximity) keeps `<'a>('x')` from blanking
+                // the paren between two quotes. Escapes scan a bounded
+                // window so `'\u{2764}'` still blanks.
+                let close = if bytes.get(i + 1) == Some(&b'\\') {
+                    (i + 3..bytes.len().min(i + 13)).find(|&k| bytes[k] == b'\'')
+                } else {
+                    (i + 2..bytes.len().min(i + 6))
+                        .find(|&k| bytes[k] == b'\'')
+                        .filter(|&k| k == i + 2 || bytes[i + 1..k].iter().all(|&b| b >= 0x80))
+                };
+                match close {
+                    Some(k) => {
+                        for b in &mut out[i + 1..k] {
+                            *b = b' ';
+                        }
+                        i = k + 1;
+                    }
+                    None => i += 1,
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    // Every replaced byte is ASCII space and quote/escape bytes are ASCII, so
+    // the buffer is valid UTF-8 by construction.
+    String::from_utf8(out).unwrap_or_else(|_| line.to_string())
+}
+
+/// The code half of a line: everything before a comment-opening `//`, judged
+/// on the literal-blanked line so a `//` inside a string (a URL in an
+/// argument) cannot truncate the code half, and so parens or the word
+/// `stderr` inside a literal cannot join a call's argument text.
+fn code_half(line: &str) -> String {
+    let blanked = blank_string_literals(line);
+    match blanked.find("//") {
+        Some(pos) => blanked[..pos].to_string(),
+        None => blanked,
+    }
 }
 
 /// Whether the call opened on `lines[at]` is exempted by a
 /// `// stderr-writer-ok: <why>` marker on its own line or the line above, with
-/// a reason written after it. A call cannot exempt itself by naming the marker
-/// inside its own string literal, because only the comment half is read.
+/// a reason written after it. The comment start is located on the
+/// literal-blanked line and the marker read from the true comment, so a line
+/// cannot claim the hatch by carrying the marker inside a string literal.
 fn stderr_writer_hatched(lines: &[&str], at: usize) -> bool {
     let marked = |line: &str| {
-        line.split_once("//")
-            .and_then(|(_, comment)| comment.split_once("stderr-writer-ok:"))
+        blank_string_literals(line)
+            .find("//")
+            .and_then(|pos| line[pos + 2..].split_once("stderr-writer-ok:"))
             .is_some_and(|(_, why)| !why.trim().is_empty())
     };
     marked(lines[at]) || (at > 0 && marked(lines[at - 1]))
@@ -134,9 +227,12 @@ fn writer_argument(lines: &[&str], at: usize, from: usize) -> String {
     for (offset, line) in lines[at..].iter().take(MAX_LINES).enumerate() {
         let code = code_half(line);
         let chars = if offset == 0 {
+            // `from` was found on the same literal-blanked rendering this
+            // call re-derives, and blanking is byte-length preserving, so the
+            // index lands where it was found.
             &code[from.min(code.len())..]
         } else {
-            code
+            code.as_str()
         };
         for c in chars.chars() {
             match c {
@@ -191,6 +287,14 @@ fn the_stderr_fence_recognizes_every_spelling() {
         "        .with_writer(|| io::stderr()).with_ansi(false)",
         // rustfmt splits a long call; the argument is still the raw stream.
         "        .with_writer(\n            std::io::stderr,\n        )",
+        // A `//` inside a string literal is not a comment: neither a URL
+        // before the call nor one inside its arguments hides the wiring.
+        "        connect(\"https://x.test//hook\").with_writer(io::stderr)",
+        "        .with_writer(tee(\"https://x.test//hook\", io::stderr))",
+        // The marker inside a string literal is not a hatch — on the call
+        // line or on the line above it.
+        "        .with_writer(io::stderr).named(\"// stderr-writer-ok: no\")",
+        "        let m = \"// stderr-writer-ok: no\";\n        .with_writer(io::stderr)",
     ] {
         assert!(
             !stderr_writer_offenders(offender).is_empty(),
@@ -208,6 +312,9 @@ fn the_stderr_fence_recognizes_every_spelling() {
         // The hatch, on the call line and on the line above it.
         "        .with_writer(stderr_capture.clone()) // stderr-writer-ok: test capture, not the stream",
         "        // stderr-writer-ok: test capture, not the stream\n        .with_writer(stderr_capture.clone())",
+        // `stderr` inside a string literal is a name, not the stream.
+        "        .with_writer(file_writer(\"stderr.log\"))",
+        "        .with_writer(rotating(r\"logs\\stderr\", writer.clone()))",
     ] {
         assert!(
             stderr_writer_offenders(allowed).is_empty(),

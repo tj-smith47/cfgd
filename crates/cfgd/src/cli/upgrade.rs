@@ -231,7 +231,10 @@ pub fn cmd_upgrade(
             ("verified", serde_json::json!(true)),
             (
                 "installedPath",
-                serde_json::json!(cfgd_core::to_posix_string(&report.installed_path)),
+                // fs-key fold: consumers reopen this value as a real file
+                // path, and a backslash is a legal POSIX filename character,
+                // so the fold must be Windows-only and POSIX-exact.
+                serde_json::json!(cfgd_core::to_posix_fs_key(&report.installed_path)),
             ),
             (
                 "verificationMode",
@@ -537,6 +540,55 @@ mod tests {
             json["daemonTerminated"], false,
             "the payload still states the fact when it is false: {json}"
         );
+    }
+
+    /// The payload's `installedPath` is serialized AND reopened as a real file
+    /// path by consumers, so it takes the fs-key fold: Windows-only, where `\`
+    /// cannot occur in a filename and the substitution is reversible. On POSIX
+    /// a backslash is a legal filename byte and the value must stay exact —
+    /// which also means the behavioral half of this pin only discriminates
+    /// between the two folds on Windows; the winserver run is what gives it
+    /// its teeth there, and the source pin is what guards the call site here.
+    #[test]
+    fn the_installed_path_payload_takes_the_fs_key_fold() {
+        let source = include_str!("upgrade.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map(|(before, _)| before)
+            .unwrap_or(source);
+        // Split so this test's own literals are not what it counts.
+        let unconditional = format!("to_posix_{}", "string(");
+        assert_eq!(
+            production.matches(unconditional.as_str()).count(),
+            0,
+            "installedPath names a real file consumers reopen; the unconditional \
+             comparison fold renames it on POSIX where a backslash is a legal \
+             filename byte"
+        );
+        let fs_key = format!("to_posix_{}", "fs_key(");
+        assert_eq!(
+            production.matches(fs_key.as_str()).count(),
+            1,
+            "the installedPath payload entry takes the fs-key fold"
+        );
+
+        let path = std::path::Path::new(r"C:\Program Files\cfgd\cfgd.exe");
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(upgraded_doc(
+            "v9.9.0",
+            "C:/Program Files/cfgd/cfgd.exe".to_string(),
+            false,
+            [(
+                "installedPath",
+                serde_json::json!(cfgd_core::to_posix_fs_key(path)),
+            )],
+        ));
+        let json = cap.json().expect("the doc carries a payload");
+        if cfg!(windows) {
+            assert_eq!(json["installedPath"], "C:/Program Files/cfgd/cfgd.exe");
+        } else {
+            assert_eq!(json["installedPath"], r"C:\Program Files\cfgd\cfgd.exe");
+        }
     }
 
     fn current_version_tag() -> String {
