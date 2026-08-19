@@ -365,7 +365,7 @@ mod tests {
         );
     }
 
-    /// QP9 depth fix: the multi-target loop's `target:<t>` owner header used
+    /// The multi-target loop's `target:<t>` owner header used
     /// to have nothing under it at depth 0 — a bare top-level spinner had no
     /// owner to nest under. It now opens via `printer.section_owner(&OwnerLabel)`
     /// per platform, so a build failure's settle line nests one level deeper

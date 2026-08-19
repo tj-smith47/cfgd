@@ -483,7 +483,7 @@ mod tests {
         assert!(out.contains("  ✓ done"), "got: {out:?}");
     }
 
-    /// Deliberate ruling for QP9: an abandoned spinner settles `Role::Skipped`
+    /// Deliberate design choice: an abandoned spinner settles `Role::Skipped`
     /// (the muted `—` glyph) with an `(interrupted)` suffix — neither `✓` nor
     /// `✗`, because Drop cannot know which the abandoned work was heading
     /// toward, and visibly distinct from the running frame it replaces. Must
@@ -593,7 +593,7 @@ mod tests {
         assert!(!out.contains('✗'), "Drop must never claim failure: {out:?}");
     }
 
-    /// QP9-review W3: the two tests above prove the settled STATUS LINE, but
+    /// The two tests above prove the settled STATUS LINE, but
     /// both build their bar via `IndProgressBar::hidden()`, which can never
     /// paint — so neither proves the doc's actual headline claim ("instead
     /// of leaving its last paint on screen forever"). `for_test_live_terminal`

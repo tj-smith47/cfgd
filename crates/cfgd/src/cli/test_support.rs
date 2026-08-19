@@ -3,11 +3,11 @@
 
 /// Assert that `needle`'s line sits exactly one section level (2 spaces —
 /// see `Renderer::indent_prefix`) deeper than `header`'s own line: the shape
-/// every QP9 depth fix must hold, a settled action line nesting DIRECTLY
+/// every depth-nested spinner must hold, a settled action line nesting DIRECTLY
 /// under the section/owner header that introduced it, not merely somewhere
 /// deeper than it. `output` is ANSI-stripped human text.
 ///
-/// Six call sites shared this block by copy before QP9 round 1 consolidated
+/// Six call sites shared this block by copy before this helper consolidated
 /// them — three in-crate (`cli/checkin.rs` twice, `cli/module/build.rs`,
 /// `cli/module/push_pull.rs`) and two integration-test copies (their sibling
 /// in `tests/common::assert_nests_under` covers those, since an integration

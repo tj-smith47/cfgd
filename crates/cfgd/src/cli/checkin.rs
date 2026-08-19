@@ -450,7 +450,11 @@ spec: {}
         }
     }
 
-    #[cfg(unix)]
+    // Linux-only because the fixture's drift source is the `gsettings`
+    // configurator, which the registry registers only on Linux — on macOS
+    // the declared drift has nothing to diff it, so the drift POST this
+    // test counts never fires.
+    #[cfg(target_os = "linux")]
     #[test]
     #[serial_test::serial]
     fn checkin_diffs_the_machine_once_for_both_its_compliance_snapshot_and_its_drift_report() {
@@ -532,12 +536,13 @@ spec:
         );
     }
 
-    /// QP9 depth fix: `client.report_drift` narrates through a bare
-    /// `&Printer`, so its drift spinner used to render at depth 0
-    /// unconditionally. It now runs inside a real `printer.section("Drift")`
-    /// plus `depth_inheritance()`, so its settled line nests one level
-    /// deeper than the section header instead of sitting flush with it.
-    #[cfg(unix)]
+    /// `client.report_drift` narrates through a bare `&Printer`, so its
+    /// drift spinner used to render at depth 0 unconditionally. It now runs
+    /// inside a real `printer.section("Drift")` plus `depth_inheritance()`,
+    /// so its settled line nests one level deeper than the section header
+    /// instead of sitting flush with it. Linux-only: the fixture's drift
+    /// source is the `gsettings` configurator, registered only on Linux.
+    #[cfg(target_os = "linux")]
     #[test]
     #[serial_test::serial]
     fn cmd_checkin_drift_settle_line_nests_under_the_drift_section_header() {
@@ -608,7 +613,10 @@ spec:
         crate::cli::test_support::assert_nests_under(&human, "Drift", "drift items reported");
     }
 
-    #[cfg(unix)]
+    // Linux-only like the drift tests above: the "never scanned" negative is
+    // judged on the gsettings shim's log, and on a host that never registers
+    // the gsettings configurator it would pass vacuously.
+    #[cfg(target_os = "linux")]
     #[test]
     #[serial_test::serial]
     fn a_checkin_whose_gateway_call_fails_never_diffs_the_machine() {
@@ -724,7 +732,7 @@ spec:
         );
     }
 
-    /// QP9 depth fix: `client.checkin` narrates through a bare `&Printer`
+    /// `client.checkin` narrates through a bare `&Printer`
     /// (`status_simple`), so its gateway spinner used to render at depth 0
     /// unconditionally. It now runs inside a real `printer.section("Gateway")`
     /// plus `depth_inheritance()`, so its settled line nests one level

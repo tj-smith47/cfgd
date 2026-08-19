@@ -4468,7 +4468,7 @@ fn git_checkout_detached_pins_to_tag_then_errors_on_bad_ref() {
     );
 }
 
-/// QP9 LEAK-site fix, representative of the "hoist" shape (the other site is
+/// Representative of the "hoist" shape (the other site is
 /// `modules/git.rs`'s fetch, same reasoning). `fetch_source`'s libgit2
 /// fallback used to create its spinner BEFORE `Repository::open`/
 /// `find_remote`, so a failure there abandoned an already-running spinner —

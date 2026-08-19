@@ -1437,7 +1437,7 @@ fn fetch_latest_release_from_with_printer_on_error_still_returns_err() {
     );
 }
 
-/// QP9 LEAK-site fix, representative of the "match-once" shape shared by
+/// Representative of the "match-once" shape shared by
 /// `upgrade/mod.rs`'s three spinner sites (`github_get`, the checksum-verify
 /// spinner in `download_and_install_to`, and its extract spinner — same
 /// reasoning at each). `github_get` used to run its request under the
@@ -4715,7 +4715,7 @@ fn write_version_cache_errors_when_cache_dir_path_is_blocked_by_a_file() {
     );
 }
 
-/// QP9-review B1 fix: `download_with_progress_bar` (the arm of
+/// `download_with_progress_bar` (the arm of
 /// `download_to_file` that runs when a `content-length` is known) used to
 /// run its chunked read/write loop under two early `?`s, so an IO failure
 /// mid-download abandoned `pb` to `Drop` — the error detail never reached a

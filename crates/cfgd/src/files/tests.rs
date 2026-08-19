@@ -290,7 +290,7 @@ fn apply_creates_files() {
     assert_eq!(fs::read_to_string(&target).unwrap(), "hello world");
 }
 
-/// QP9 LEAK-site fix: `apply`'s loop used to run each `FileAction` under its
+/// `apply`'s loop used to run each `FileAction` under its
 /// own early `?`, so an action that failed mid-loop (here, a target whose
 /// parent is a regular file — `ensure_target_writable` returns `ENOTDIR`)
 /// abandoned the "Applying files" progress bar without a `finish()` call.

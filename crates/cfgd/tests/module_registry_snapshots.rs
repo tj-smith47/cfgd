@@ -392,7 +392,7 @@ fn module_add_happy_json() {
     assert!(json["integrity"].as_str().is_some());
 }
 
-/// QP9 depth fix: `cmd_module_add_remote`'s fetch spinner is bound directly
+/// `cmd_module_add_remote`'s fetch spinner is bound directly
 /// to its own `Fetch` section (`fetch_sec.spinner(...)`), so the settled
 /// line must nest one level deeper than the section header instead of
 /// sitting flush with it.

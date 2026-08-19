@@ -297,7 +297,7 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
     );
 }
 
-/// QP9 LEAK-site fix, representative of the "missing else arm" shape at
+/// Representative of the "missing else arm" shape at
 /// `cli/sync.rs`'s per-source loop. The sibling arm this fix added — `Ok(())`
 /// from `load_source` but the source absent from the cache — is structurally
 /// unreachable through the real `SourceManager` (every success path inserts

@@ -1473,7 +1473,7 @@ pub fn workflow_empty_test_setup() -> (tempfile::TempDir, tempfile::TempDir) {
 
 /// Assert that `needle`'s line sits exactly one section level (2 spaces —
 /// see `Renderer::indent_prefix`) deeper than `header`'s own line: the shape
-/// every QP9 depth fix must hold, a settled action line nesting DIRECTLY
+/// every depth-nested spinner must hold, a settled action line nesting DIRECTLY
 /// under the section/owner header that introduced it, not merely somewhere
 /// deeper than it. `output` is ANSI-stripped human text.
 ///

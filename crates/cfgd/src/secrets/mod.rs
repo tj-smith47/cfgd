@@ -146,7 +146,7 @@ fn resolve_single_ref(
         for provider in providers {
             if provider.name() == provider_name {
                 // The availability probe is a PATH walk, memoized by
-                // `command_path` since QP1 — the repeat cost of asking it per
+                // `command_path` — the repeat cost of asking it per
                 // reference is one hash lookup, so it stays where it is and the
                 // error it raises keeps naming the reference that hit it.
                 if !provider.is_available() {

@@ -456,7 +456,7 @@ mod tests {
         assert!(matches!(result, Err(OciError::ManifestNotFound { .. })));
     }
 
-    /// QP9 LEAK-site fix, representative of the "inner-fn" shape (the other
+    /// Representative of the "inner-fn" shape (the other
     /// site is `oci/pack.rs`, same reasoning). `pull_module` used to create
     /// its spinner and then run every fallible step under its own early `?`,
     /// so a manifest 404 abandoned an already-running spinner — Drop then

@@ -171,7 +171,7 @@ fn search_happy_human() {
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "module_search/happy.json");
 }
 
-/// QP9 depth fix: `cmd_module_search`'s per-source loop used to run a bare
+/// `cmd_module_search`'s per-source loop used to run a bare
 /// top-level spinner with no owner to attribute a search to when several
 /// registries run in sequence. It now opens a `registry:<name>` owner group
 /// per source (the same idiom `cli/sync.rs` uses per source), so the settled

@@ -814,7 +814,7 @@ mod tests {
             (server, registry)
         }
 
-        /// QP9 depth fix: `cmd_module_push`'s push spinner used to render at
+        /// `cmd_module_push`'s push spinner used to render at
         /// depth 0 unconditionally (a bare `printer.spinner()` call inside
         /// `push_module`, a library fn with no `SectionGuard` of its own).
         /// It now runs inside a real `printer.section("Push")` plus
@@ -1317,7 +1317,7 @@ spec:
         );
     }
 
-    /// QP9 round-1 fix: `cmd_module_pull` called `pull_module` on a bare
+    /// `cmd_module_pull` called `pull_module` on a bare
     /// `printer` with no section wrapping it, while `cmd_module_push` (see
     /// `push_settle_line_nests_under_the_push_section_header` below) already
     /// opened `printer.section("Push")` around the matching `push_module`
