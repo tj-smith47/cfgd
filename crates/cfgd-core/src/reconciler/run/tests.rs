@@ -951,7 +951,7 @@ fn execute_on_a_backups_run_reports_the_work_it_did() {
 // --- pseudo-phase ---
 
 #[test]
-fn pseudo_phase_renders_a_bare_heading_with_owner_groups_under_it() {
+fn pseudo_phase_renders_the_same_phase_heading_treatment_as_a_real_phase() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     {
         let phase = pseudo_phase(&printer, BACKUPS_PHASE_LABEL);
@@ -962,8 +962,9 @@ fn pseudo_phase_renders_a_bare_heading_with_owner_groups_under_it() {
     let out = crate::test_helpers::captured_text(&buf);
 
     assert!(
-        out.starts_with("Backups\n"),
-        "a pseudo-phase heading renders bare, with no `Phase: ` prefix: {out:?}"
+        out.starts_with("Phase: Backups\n"),
+        "a pseudo-phase heading renders through PhaseLabel, exactly like a \
+         planned reconciler phase: {out:?}"
     );
     assert!(
         out.contains("\n  backup:docs\n    ✓ snapshot notes.txt\n"),
@@ -971,14 +972,18 @@ fn pseudo_phase_renders_a_bare_heading_with_owner_groups_under_it() {
     );
 }
 
+/// The raw constants stay bare names, not pre-formatted headings — `PhaseLabel`
+/// is what adds the `Phase: ` prefix at render time (see the test above), so a
+/// constant that baked the prefix in would double it.
 #[test]
-fn hooks_and_backups_labels_are_distinct_and_carry_no_phase_prefix() {
+fn hooks_and_backups_labels_are_distinct_bare_names() {
     assert_eq!(HOOKS_PHASE_LABEL, "Drift Hooks");
     assert_eq!(BACKUPS_PHASE_LABEL, "Backups");
     for label in [HOOKS_PHASE_LABEL, BACKUPS_PHASE_LABEL] {
         assert!(
             !label.starts_with("Phase: "),
-            "{label} must not wear the PhaseName prefix"
+            "{label} must be the bare name PhaseLabel::new(...) takes, not a \
+             pre-formatted heading"
         );
     }
 }

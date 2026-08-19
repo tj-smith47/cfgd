@@ -3,7 +3,7 @@ Backup
   Profile  withbackups
   Actions  1 planned
 
-Backups
+Phase: Backups
   backup:docs
     ✓ snapshot notes.txt.<TIMESTAMP> — 12 B
 

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::backup::BackupUnit;
 use crate::errors::Result;
-use crate::output::{OwnerLabel, Printer, Role, SectionGuard, measure_width};
+use crate::output::{OwnerLabel, PhaseLabel, Printer, Role, SectionGuard, measure_width};
 use crate::pluralize;
 use crate::state::{ApplyStatus, StateStore};
 
@@ -783,8 +783,11 @@ impl PseudoPhase<'_> {
 }
 
 /// Open a pseudo-phase heading ([`HOOKS_PHASE_LABEL`], [`BACKUPS_PHASE_LABEL`])
-/// as a section, for work that surrounds a run without being planned. Held
-/// across execution so each item's status lands under its owner.
+/// as a section, for work that surrounds a run without being planned. Styled
+/// exactly like a real reconciler phase (`Phase: <name>`, via [`PhaseLabel`])
+/// so the two are visually one family — a reader should not be able to tell
+/// from styling alone that this phase was never planned. Held across
+/// execution so each item's status lands under its owner.
 ///
 /// A free function, not an [`ApplyRun`] associated function: the daemon's two
 /// `onDrift` arms open a `Drift Hooks` phase around a tick that constructs no
@@ -793,7 +796,7 @@ impl PseudoPhase<'_> {
 #[must_use = "the pseudo-phase closes when the PseudoPhase is dropped; bind it"]
 pub fn pseudo_phase<'p>(printer: &'p Printer, label: &str) -> PseudoPhase<'p> {
     PseudoPhase {
-        section: printer.section(label),
+        section: printer.section_phase(&PhaseLabel::new(label)),
         _inherit: printer.depth_inheritance(),
     }
 }

@@ -18090,7 +18090,7 @@ mod backup_timers {
         let plain = crate::output::strip_ansi(human);
         let block: Vec<&str> = plain
             .lines()
-            .skip_while(|line| line.trim() != "Backups")
+            .skip_while(|line| line.trim() != "Phase: Backups")
             // The rollup opens the run's closing block and names the surface
             // that dispatched it (`Apply complete` / `Backup complete`), which
             // is the one line the group's grammar is deliberately not compared

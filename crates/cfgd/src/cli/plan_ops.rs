@@ -4,7 +4,7 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::{FileStrategy, LOCAL_LAYER};
 use cfgd_core::manager_family;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, PhaseLabel, Printer, Role};
 
 // --- Plan output rendering ---
 
@@ -711,7 +711,7 @@ pub(in crate::cli) fn display_plan_preview(
     // surface them separately so a preview doesn't silently omit work a real
     // (non-dry-run) apply would do.
     if !pending_backups.is_empty() {
-        let section = printer.section("Backups (run on apply)");
+        let section = printer.section_phase(&PhaseLabel::new("Backups (run on apply)"));
         for name in pending_backups {
             section.status_simple(Role::Info, name);
         }

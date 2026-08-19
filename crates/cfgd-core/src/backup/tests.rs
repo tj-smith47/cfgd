@@ -2590,7 +2590,7 @@ fn render_backup_run(h: &Harness, specs: &[&BackupSpec]) -> (String, crate::stat
 fn rendered_item_lines(human: &str) -> Vec<String> {
     human
         .lines()
-        .skip_while(|line| line.trim() != "Backups")
+        .skip_while(|line| line.trim() != "Phase: Backups")
         .skip(1)
         // The rollup begins at the first unindented line: every item lives
         // under an owner group and is indented, and only the phase heading
