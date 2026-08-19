@@ -226,7 +226,12 @@ filter.
   be live for anything the printer's construction logs) and calls `attach(&printer)`
   once the process printer exists; an unattached writer, and one attached to a
   printer with no live region, writes plain stderr. Never wire a subscriber to
-  `std::io::stderr` in the cfgd binary again.
+  `std::io::stderr` in the cfgd binary again — the `no_subscriber_writes_straight_to_stderr`
+  fence rejects any `with_writer(…)` whose argument names `stderr`, in any
+  spelling and across the lines rustfmt splits it onto. A writer legitimately
+  NAMED for stderr (a test capture) takes the marker hatch every sibling gate
+  carries: `// stderr-writer-ok: <why>` on the call line or the line above it,
+  reason required.
 - **`crates/cfgd/src/main.rs::tracing_filter_for(quiet, verbose, daemon)`** — the
   default filter. A command defaults to `warn`; the flags keep the meanings they
   document (`-v` = `debug`, `-vv` = `trace`) and `--quiet` is `error`, so only

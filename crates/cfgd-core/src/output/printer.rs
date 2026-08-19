@@ -437,6 +437,12 @@ impl Printer {
     /// deprecation diagnostic reaches the user even under `-o json` / `--jsonpath`.
     /// It writes only to `sink_stderr`, never to `sink_stdout`, keeping the
     /// `-o` data channel pure.
+    ///
+    /// Keeps the top-level structural assert that [`Printer::alert`] gives up:
+    /// a deprecation is drained at the command boundary that owns the terminal
+    /// (`CfgdConfig.deprecations`, drained once per command), so reaching one
+    /// from inside an open section means the drain moved, not that the notice
+    /// was discovered there.
     pub fn deprecation(&self, msg: impl Into<String>) {
         let depth = self.renderer.enforce_structural_top_level(0);
         self.renderer
@@ -1241,6 +1247,46 @@ mod tests {
         assert!(
             line.starts_with("  "),
             "the alert renders at the open section's depth, not at column 0: {line:?}"
+        );
+    }
+
+    /// The indent is half the claim; the other half is that an in-section alert
+    /// still goes through the live region. The depth change is what made this
+    /// call reachable mid-composition, where a spinner is exactly what is on
+    /// screen — a raw write there strands the spinner's last paint for the rest
+    /// of the session. Read from the emulated screen, the only capture that can
+    /// see a paint the region never took back.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn an_in_section_alert_does_not_strand_the_live_region() {
+        let (printer, screen) = Printer::for_test_live_terminal(24, 100);
+        let section = printer.section("Sources");
+        // A spinner is a non-structural emit and needs the guard to render
+        // inside a section; the alert deliberately needs no such arrangement.
+        let inherit = printer.depth_inheritance();
+        let sp = printer.spinner("Composing sources");
+        // Joins the steady-tick thread, so this thread is the only writer and
+        // the bar has already painted one frame — no sleep, no race.
+        sp.bar.disable_steady_tick();
+        printer.alert("source 'team': --allow-unsigned bypassed requireSignedCommits");
+        sp.finish_ok("Composed sources");
+        drop(inherit);
+        drop(section);
+        printer.flush();
+
+        let held = screen.contents();
+        assert!(
+            !held.contains("Composing sources"),
+            "the running spinner's paint was stranded on the terminal: {held:?}"
+        );
+        assert_eq!(
+            held.matches("bypassed requireSignedCommits").count(),
+            1,
+            "the alert must land exactly once: {held:?}"
+        );
+        assert!(
+            held.contains("Composed sources"),
+            "the settled line went missing: {held:?}"
         );
     }
 

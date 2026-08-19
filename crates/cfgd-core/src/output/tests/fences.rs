@@ -66,6 +66,12 @@ fn suspend_is_never_called() {
 /// the last paint of whatever bar was on screen is left stranded behind it.
 /// `output::LiveTracingWriter` is the writer every subscriber in the workspace
 /// takes, because it routes each event through the printer's `MultiProgress`.
+///
+/// Hatch, read like every sibling gate's (`tracing-ok:`, `native-ok:`,
+/// `spawn-blocking-ok:`): mark the call line or the line above it with
+/// `// stderr-writer-ok: <why>`. A capture writer legitimately NAMED for stderr
+/// is the shape that needs it, and a gate with no hatch is one somebody
+/// eventually silences by widening the writer's name instead.
 #[test]
 fn no_subscriber_writes_straight_to_stderr() {
     let mut offenders = Vec::new();
@@ -76,38 +82,105 @@ fn no_subscriber_writes_straight_to_stderr() {
         let Ok(body) = std::fs::read_to_string(&path) else {
             continue;
         };
-        for (i, line) in body.lines().enumerate() {
-            if wires_a_writer_at_stderr(line) {
-                offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
-            }
+        for line_no in stderr_writer_offenders(&body) {
+            let line = body.lines().nth(line_no).unwrap_or_default();
+            offenders.push(format!(
+                "{}:{}: {}",
+                path.display(),
+                line_no + 1,
+                line.trim()
+            ));
         }
     }
     assert!(
         offenders.is_empty(),
         "a subscriber writing straight to stderr strands the live region; take \
-         output::LiveTracingWriter instead:\n{}",
+         output::LiveTracingWriter instead (or mark the line \
+         `// stderr-writer-ok: <why>`):\n{}",
         offenders.join("\n")
     );
 }
 
-/// Whether `line` hands a subscriber the raw stderr stream.
-///
-/// Judged on the code half of the line only, so prose naming both halves of the
-/// rule (this fence's own doc comment, the rule text quoted elsewhere) is not
-/// read as a wiring. Any spelling that reaches the stream counts: a path
-/// (`std::io::stderr`), an import (`use std::io::stderr;` then bare `stderr`),
-/// or a closure around either. The first cut pinned the two fully-qualified
-/// forms and let every other spelling of the same mistake through.
-fn wires_a_writer_at_stderr(line: &str) -> bool {
-    let code = line.split("//").next().unwrap_or(line);
-    let squashed: String = code.chars().filter(|c| !c.is_whitespace()).collect();
-    squashed.contains("with_writer(") && squashed.contains("stderr")
+/// The code half of a line: everything before a `//`, so prose naming both
+/// halves of the rule (this fence's own doc, the rule text quoted in comments)
+/// is never read as a wiring.
+fn code_half(line: &str) -> &str {
+    line.split("//").next().unwrap_or(line)
+}
+
+/// Whether the call opened on `lines[at]` is exempted by a
+/// `// stderr-writer-ok: <why>` marker on its own line or the line above, with
+/// a reason written after it. A call cannot exempt itself by naming the marker
+/// inside its own string literal, because only the comment half is read.
+fn stderr_writer_hatched(lines: &[&str], at: usize) -> bool {
+    let marked = |line: &str| {
+        line.split_once("//")
+            .and_then(|(_, comment)| comment.split_once("stderr-writer-ok:"))
+            .is_some_and(|(_, why)| !why.trim().is_empty())
+    };
+    marked(lines[at]) || (at > 0 && marked(lines[at - 1]))
+}
+
+/// The argument text of the `with_writer(` opened at `from` on `lines[at]`, up
+/// to its matching close paren — across lines, because rustfmt splits a long
+/// call and a line-scoped read would see `with_writer(` and `std::io::stderr`
+/// as two unrelated lines. Bounded at a few lines so a stray unbalanced paren
+/// cannot swallow the rest of the file and pair the call with an unrelated
+/// `stderr` far below it.
+fn writer_argument(lines: &[&str], at: usize, from: usize) -> String {
+    const MAX_LINES: usize = 6;
+    let mut depth = 1usize;
+    let mut arg = String::new();
+    for (offset, line) in lines[at..].iter().take(MAX_LINES).enumerate() {
+        let code = code_half(line);
+        let chars = if offset == 0 {
+            &code[from.min(code.len())..]
+        } else {
+            code
+        };
+        for c in chars.chars() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return arg;
+                    }
+                }
+                _ => {}
+            }
+            arg.push(c);
+        }
+    }
+    arg
+}
+
+/// Line numbers (0-based) of every `with_writer(` in `source` handed the raw
+/// stderr stream. Any spelling reaches it: a path (`std::io::stderr`), an
+/// import (`use std::io::stderr;` then bare `stderr`), or a closure around
+/// either — the first cut pinned two fully-qualified forms and let the rest
+/// through.
+fn stderr_writer_offenders(source: &str) -> Vec<usize> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut offenders = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let code = code_half(line);
+        let Some(pos) = code.find("with_writer(") else {
+            continue;
+        };
+        let arg = writer_argument(&lines, i, pos + "with_writer(".len());
+        let squashed: String = arg.chars().filter(|c| !c.is_whitespace()).collect();
+        if squashed.contains("stderr") && !stderr_writer_hatched(&lines, i) {
+            offenders.push(i);
+        }
+    }
+    offenders
 }
 
 /// The fence above is only as wide as its predicate, and a predicate that
 /// recognizes one spelling of a mistake is a fence somebody walks around
 /// without noticing. Every way the workspace could reach the raw stream is
-/// pinned here, together with the wiring that is correct.
+/// pinned here, together with the wirings that are correct and the hatch.
 #[test]
 fn the_stderr_fence_recognizes_every_spelling() {
     for offender in [
@@ -116,9 +189,11 @@ fn the_stderr_fence_recognizes_every_spelling() {
         "        .with_writer(stderr)",
         "        .with_writer(|| std::io::stderr())",
         "        .with_writer(|| io::stderr()).with_ansi(false)",
+        // rustfmt splits a long call; the argument is still the raw stream.
+        "        .with_writer(\n            std::io::stderr,\n        )",
     ] {
         assert!(
-            wires_a_writer_at_stderr(offender),
+            !stderr_writer_offenders(offender).is_empty(),
             "the fence must recognize this wiring: {offender:?}"
         );
     }
@@ -127,12 +202,24 @@ fn the_stderr_fence_recognizes_every_spelling() {
         "        .with_writer(LiveTracingWriter::new())",
         "/// Never wire a subscriber to `with_writer` at stderr again.",
         "        let mut err = io::stderr().lock();",
+        // The argument ends at its own close paren: a later, unrelated stderr
+        // read is not this call's.
+        "        .with_writer(writer.clone())\n        let e = io::stderr();",
+        // The hatch, on the call line and on the line above it.
+        "        .with_writer(stderr_capture.clone()) // stderr-writer-ok: test capture, not the stream",
+        "        // stderr-writer-ok: test capture, not the stream\n        .with_writer(stderr_capture.clone())",
     ] {
         assert!(
-            !wires_a_writer_at_stderr(allowed),
-            "the fence must not flag this line: {allowed:?}"
+            stderr_writer_offenders(allowed).is_empty(),
+            "the fence must not flag this: {allowed:?}"
         );
     }
+    // A marker with no reason after it is not a hatch.
+    assert!(
+        !stderr_writer_offenders("        .with_writer(io::stderr) // stderr-writer-ok:")
+            .is_empty(),
+        "a marker with no reason must not exempt the call"
+    );
 }
 
 /// Extract the body of every `struct Emitting` / `impl … Emitting` region in
