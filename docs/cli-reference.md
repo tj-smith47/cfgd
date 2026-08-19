@@ -533,16 +533,18 @@ cfgd status                                 # human-readable table
 cfgd status -o json                         # full status as JSON
 cfgd status -o jsonpath='{.drift}'          # extract drift events
 cfgd status --module nvim                   # status for a single module (no profile required)
+cfgd status --scan                          # live scan of this machine right now
+cfgd status --scan --module nvim            # live scan of one module
 cfgd status --module nvim --exit-code       # live scan: exit 5 if the module has drifted
 ```
 
 `cfgd status` (fleet-wide and `--module`) is a fast RECORDED-drift dashboard by
-default: it reads what a prior `apply`/`diff`/`verify`/daemon run already wrote to
-state, so on a host with no daemon and no prior scan it reports no drift however far
-the machine has actually drifted. `-o json`'s `drift` array and `driftCheckedLive`
-flag say which of those two you are holding — `driftCheckedLive: false` means
-`drift` is only what was previously recorded, not a claim about the machine right
-now:
+default: it reads what a prior `apply`/`diff`/`verify`/`status --scan`/daemon run
+already wrote to state, so on a host with no daemon and no prior scan it reports no
+drift however far the machine has actually drifted. `-o json`'s `drift` array and
+`driftCheckedLive` flag say which of those two you are holding —
+`driftCheckedLive: false` means `drift` is only what was previously recorded, not a
+claim about the machine right now:
 
 ```jsonc
 {
@@ -551,13 +553,22 @@ now:
 }
 ```
 
-`--exit-code` / `-e` runs the same live, read-only scan `diff`/`verify` do —
-`driftCheckedLive` flips to `true`, `drift` reflects what that scan actually found,
-and the command exits `5` if it is non-empty (see [Exit Codes](#exit-codes)). The
-live scan costs real time (each run is a full package/file check — roughly 10-15s
-per module in a typical container), so reach for it in CI gating, not in an
-interactive dashboard refresh. `status --module <name> --exit-code` scans that
-module's own files and missing packages only — it does not evaluate the module's
+The recorded dashboard's header carries a `Last Scan` row: how long ago the shown
+state was last checked against the machine (`never` when it never has been). Once
+that age passes the daemon's default reconcile interval the header adds a hint
+pointing at `--scan`, so a stale dashboard says so rather than reading as a clean
+machine. `-o json` carries the same fact as `lastScanAt` (an ISO 8601 timestamp,
+absent when there has been no scan).
+
+`--scan` performs the live, read-only scan `diff`/`verify` do and folds its findings
+into the display — `driftCheckedLive` flips to `true` and `drift` reflects what the
+scan actually found. It composes with `--module` (scanning that one module) and with
+`--exit-code`. `--exit-code` / `-e` implies `--scan` and additionally exits `5` when
+the scan found drift (see [Exit Codes](#exit-codes)); `--scan` on its own never
+changes the exit code. The live scan costs real time (each run is a full
+package/file check — roughly 10-15s per module in a typical container), so reach for
+it deliberately rather than in an interactive dashboard refresh. `status --module
+<name> --scan` scans that module's own files and missing packages only — it does not evaluate the module's
 system-config contribution (`effective_system_map` folds that into the
 profile-wide scan) or manager drift, matching the scope of `cfgd diff --module`.
 

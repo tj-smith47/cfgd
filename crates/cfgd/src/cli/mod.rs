@@ -647,13 +647,16 @@ pub enum Command {
 
     /// Show configuration status and drift
     #[command(
-        long_about = "Show apply status, drift, and pending decisions.\n\nThe display reflects recorded drift (from the daemon or a prior verify/diff).\n--exit-code instead performs a live, read-only drift scan so CI gating works\neven on a host with no daemon and no prior scan:\n  0  no drift detected\n  1  runtime error\n  5  drift detected\n\nExamples:\n  cfgd status\n  cfgd status --module nettools\n  cfgd status --exit-code"
+        long_about = "Show apply status, drift, and pending decisions.\n\nThe display reflects recorded drift (from the daemon or a prior verify/diff/status --scan).\n--scan instead performs a live, read-only drift scan of this machine right now and\nfolds its findings into the display. --exit-code implies --scan (so CI gating works\neven on a host with no daemon and no prior scan) and additionally exits:\n  0  no drift detected\n  1  runtime error\n  5  drift detected\n\nExamples:\n  cfgd status\n  cfgd status --module nettools\n  cfgd status --scan\n  cfgd status --scan --module nettools\n  cfgd status --exit-code"
     )]
     Status {
         /// Show status for a specific module (no profile required)
         #[arg(long)]
         module: Option<String>,
-        /// Exit 5 when drift is detected (for CI gating)
+        /// Perform a live, read-only drift scan and fold its findings into the display
+        #[arg(long)]
+        scan: bool,
+        /// Exit 5 when drift is detected (for CI gating); implies --scan
         #[arg(long = "exit-code", short = 'e')]
         exit_code: bool,
     },
@@ -2283,9 +2286,11 @@ pub fn execute(
     match command {
         Command::Apply(args) => apply::cmd_apply(cli, printer, args),
         Command::Plan(args) => plan::cmd_plan(cli, printer, args),
-        Command::Status { module, exit_code } => {
-            status::cmd_status(cli, printer, module.as_deref(), *exit_code)
-        }
+        Command::Status {
+            module,
+            scan,
+            exit_code,
+        } => status::cmd_status(cli, printer, module.as_deref(), *exit_code, *scan),
         Command::Diff { module, exit_code } => {
             diff::cmd_diff(cli, printer, module.as_deref(), *exit_code)
         }

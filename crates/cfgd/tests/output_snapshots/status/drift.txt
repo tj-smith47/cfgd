@@ -1,6 +1,9 @@
 Status
-  Config   /etc/cfgd/cfgd.yaml
-  Profile  default
+  Config     /etc/cfgd/cfgd.yaml
+  Profile    default
+  Last Scan  2h ago
+
+→ Run `cfgd status --scan` for a live check
 
 Last Apply
   Time     2026-05-14T11:30:00Z

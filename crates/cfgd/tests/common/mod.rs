@@ -145,6 +145,7 @@ pub fn cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli
         scope_arg: cfgd::cli::ScopeArg::User,
         command: Some(Command::Status {
             module: None,
+            scan: false,
             exit_code: false,
         }),
     }

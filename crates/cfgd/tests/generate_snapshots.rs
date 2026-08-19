@@ -65,6 +65,7 @@ fn cli_for(config_dir: &Path) -> cfgd::cli::Cli {
         scope_arg: cfgd::cli::ScopeArg::User,
         command: Some(cfgd::cli::Command::Status {
             module: None,
+            scan: false,
             exit_code: false,
         }),
     }

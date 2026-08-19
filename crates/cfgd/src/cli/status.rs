@@ -33,10 +33,18 @@ pub struct StatusOutput {
     /// Whether `drift` is the verdict of a LIVE scan of this machine or the
     /// events something previously recorded. Plain `status` is the fast
     /// recorded-drift dashboard, so on a host with no daemon its `drift` is
-    /// empty however far the machine has drifted; only `--exit-code` scans.
+    /// empty however far the machine has drifted; only `--scan` (and
+    /// `--exit-code`, which implies it) scans.
     /// A consumer differencing an empty list needs to know which of those two
     /// it is holding, and the human line says the same thing in words.
     pub drift_checked_live: bool,
+    /// When this machine was last scanned for live drift (`--scan`,
+    /// `--exit-code`, `diff`, `verify`, or a daemon reconcile tick) — `None`
+    /// when it never has been. Read BEFORE this invocation's own scan (if
+    /// any), so it always describes the RECORDED state's staleness rather
+    /// than the scan this very command may be about to perform.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_scan_at: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -131,6 +139,12 @@ fn render_drift_section(
     }
 }
 
+/// The recorded-state header's staleness threshold: a daemon's default
+/// reconcile interval. Past this age, the recorded drift a plain `cfgd status`
+/// shows could easily be older than a live daemon would ever let it get, so
+/// the header hints at `--scan` instead of leaving the reader to guess.
+const SCAN_STALENESS_SECS: i64 = cfgd_core::daemon::DEFAULT_RECONCILE_SECS as i64;
+
 /// Build the fleet-wide `cfgd status` Doc. Caller supplies the precomputed
 /// payload and the configured `SourceSpec` list so the renderer can show
 /// "not yet fetched" rows for sources without state records.
@@ -139,11 +153,32 @@ pub fn build_fleet_status_doc(
     configured_sources: &[String],
     config_path: &Path,
     profile_name: &str,
+    now: &str,
 ) -> Doc {
     let mut doc = Doc::new()
         .heading("Status")
         .kv("Config", config_path.display_posix())
         .kv("Profile", profile_name);
+
+    // Only the recorded-state dashboard needs a staleness signal: a `--scan`/
+    // `--exit-code` run just checked the machine itself, so its Drift section
+    // already speaks for how current the display is.
+    if !output.drift_checked_live {
+        match &output.last_scan_at {
+            Some(ts) => {
+                let age = cfgd_core::humanize_age_since(ts, now).unwrap_or_else(|| ts.clone());
+                doc = doc.kv("Last Scan", &age);
+                if cfgd_core::is_stale_since(ts, now, SCAN_STALENESS_SECS) {
+                    doc = doc.hint("Run `cfgd status --scan` for a live check");
+                }
+            }
+            None => {
+                doc = doc
+                    .kv("Last Scan", "never")
+                    .hint("Run `cfgd status --scan` for a live check");
+            }
+        }
+    }
 
     match &output.last_apply {
         Some(last) => {
@@ -311,16 +346,26 @@ pub(super) fn cmd_status(
     printer: &Printer,
     module_filter: Option<&str>,
     exit_code: bool,
+    scan: bool,
 ) -> anyhow::Result<()> {
+    // `--exit-code` implies the live scan `--scan` names explicitly: a CI
+    // gate has to reflect reality regardless of whether the caller also asked
+    // to see it. `exit_code` alone still decides whether the run EXITS
+    // nonzero on drift — `--scan` on its own never changes the exit code.
+    let do_scan = exit_code || scan;
     let ctx = RunContext::new(cli, printer);
     if let Some(mod_name) = module_filter {
-        return cmd_status_module(&ctx, mod_name, exit_code);
+        return cmd_status_module(&ctx, mod_name, exit_code, do_scan);
     }
 
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     let state = ctx.state()?;
 
     let last_apply = state.last_apply()?;
+    // Read before this run's own scan (if any) overwrites it: the header's
+    // staleness signal is about what the RECORDED state was last checked
+    // against, not about the scan this very invocation is about to perform.
+    let last_scan_at = state.last_scan_at()?;
     let drift_events = state.unresolved_drift()?;
     let source_records = if !cfg.spec.sources.is_empty() {
         state.config_sources()?
@@ -349,14 +394,14 @@ pub(super) fn cmd_status(
         false,
         composition::ConstraintMode::Report,
     )?;
-    // Taken ONLY for the `-e` live scan below, the one half that reads a
-    // registry: a plain `cfgd status` is an offline dashboard, and building a
-    // registry it never reads would construct every package manager and
-    // configurator the host supports for nothing. Taken here rather than at the
-    // scan because the two field moves below are partial moves out of `desired`,
-    // which block the `&mut self` the accessor needs — and `Some` exactly when
-    // `exit_code`, so the scan below can bind it instead of re-testing the flag.
-    let registry = exit_code.then(|| desired.take_registry(cfg));
+    // Taken ONLY for the live scan below, the one half that reads a registry: a
+    // plain `cfgd status` is an offline dashboard, and building a registry it
+    // never reads would construct every package manager and configurator the
+    // host supports for nothing. Taken here rather than at the scan because the
+    // two field moves below are partial moves out of `desired`, which block
+    // the `&mut self` the accessor needs — and `Some` exactly when `do_scan`,
+    // so the scan below can bind it instead of re-testing the flag.
+    let registry = do_scan.then(|| desired.take_registry(cfg));
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
 
@@ -435,17 +480,21 @@ pub(super) fn cmd_status(
         classification_degraded: classification_degraded.is_some(),
         classification_degraded_code: classification_degraded.as_ref().map(|(c, _)| *c),
         classification_degraded_reason: classification_degraded.map(|(_, r)| r),
-        drift_checked_live: exit_code,
+        drift_checked_live: do_scan,
+        last_scan_at,
     };
 
-    // Plain `status` (no --exit-code) keeps the fast RECORDED-drift dashboard by
-    // deliberate design. The --exit-code gate, however, must reflect REALITY: a
-    // host with no daemon and no prior scan has zero recorded events even when a
-    // managed file was just edited out-of-band. So in `-e` mode run the LIVE,
-    // read-only scan (never recording — the same checks `diff`/`verify` run)
+    // Plain `status` (no --scan/--exit-code) keeps the fast RECORDED-drift
+    // dashboard by deliberate design. `--scan` (and `--exit-code`, which
+    // implies it), however, must reflect REALITY: a host with no daemon and no
+    // prior scan has zero recorded events even when a managed file was just
+    // edited out-of-band. So when scanning, run the LIVE, read-only scan
+    // (never recording drift rows — the same checks `diff`/`verify` run, though
+    // it DOES stamp the last-scan timestamp this header reads back next time)
     // BEFORE emitting, fold its findings into the displayed Drift section, then
-    // exit 5 if any drift. This keeps the human verdict and the exit code in
-    // agreement instead of printing "No drift detected" alongside exit 5.
+    // exit 5 if `--exit-code` asked for it and any drift was found. This keeps
+    // the human verdict and the exit code in agreement instead of printing "No
+    // drift detected" alongside exit 5.
     let live_drift = if let Some(mut registry) = registry {
         ctx.resolve_manifest_packages(&mut resolved.merged.packages)?;
         registry.set_system_config_dir(&config_dir);
@@ -459,6 +508,7 @@ pub(super) fn cmd_status(
             &cfgd_installed,
             &pkg_cx,
         )?;
+        state.record_scan();
         for r in &drift {
             output.drift.push(super::live_drift::drift_event_from(r));
         }
@@ -472,6 +522,7 @@ pub(super) fn cmd_status(
         &configured_source_names,
         &cli.config,
         profile_name,
+        &cfgd_core::utc_now_iso8601(),
     ));
 
     if exit_code && !live_drift.is_empty() {
@@ -485,6 +536,7 @@ pub(super) fn cmd_status_module(
     ctx: &RunContext<'_>,
     mod_name: &str,
     exit_code: bool,
+    do_scan: bool,
 ) -> anyhow::Result<()> {
     let cli = ctx.cli();
     let printer = ctx.printer();
@@ -526,12 +578,12 @@ pub(super) fn cmd_status_module(
     // deliberate gate as the profile-wide command: plain `status --module`
     // stays a fast recorded-only dashboard (this module surface has no
     // recorded drift rows of its own to fall back to — module drift is only
-    // ever LIVE), and only `--exit-code` pays for a real scan of the file
-    // content and installed packages. Without this, a module that was
-    // sabotaged out-of-band read as clean forever, because "Deployed Files"
-    // below only checks presence.
+    // ever LIVE), and only `--scan`/`--exit-code` (which implies `--scan`)
+    // pays for a real scan of the file content and installed packages.
+    // Without this, a module that was sabotaged out-of-band read as clean
+    // forever, because "Deployed Files" below only checks presence.
     let mut drift: Vec<cfgd_core::state::DriftEvent> = Vec::new();
-    if exit_code {
+    if do_scan {
         let platform = Platform::current();
         // Deliberately the config-FREE registry: a module resolves against the
         // managers it declares and cannot reach the profile's `packages.custom`,
@@ -550,37 +602,44 @@ pub(super) fn cmd_status_module(
         )?;
         let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
         let fm = CfgdFileManager::new(config_dir, &resolved)?;
-        for r in super::live_drift::module_file_verify_results(
-            &fm,
-            config_dir,
-            &resolved,
-            &resolved_modules,
-        )?
-        .into_iter()
-        .filter(|r| !r.matches)
-        {
-            drift.push(super::live_drift::drift_event_from(&r));
-        }
-
-        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
-        for resolved_module in &resolved_modules {
-            for pkg in &resolved_module.packages {
-                if let Some(pd) = super::diff::package_missing_drift(pkg, &mgr_map, &pkg_cx) {
-                    drift.push(super::live_drift::drift_event_from(
-                        &cfgd_core::reconciler::VerifyResult {
-                            resource_type: "package".to_string(),
-                            resource_id: super::diff::package_resource_id(
-                                &pd.manager,
-                                &pd.packages,
-                            ),
-                            matches: false,
-                            expected: "installed".to_string(),
-                            actual: "missing".to_string(),
-                        },
-                    ));
+        // One spinner across this module's live scan, narrated per pass.
+        printer.narrate(
+            format!("Scanning module '{mod_name}': files"),
+            |sp| -> anyhow::Result<()> {
+                let file_results = super::live_drift::module_file_verify_results(
+                    &fm,
+                    config_dir,
+                    &resolved,
+                    &resolved_modules,
+                )?;
+                for r in file_results.into_iter().filter(|r| !r.matches) {
+                    drift.push(super::live_drift::drift_event_from(&r));
                 }
-            }
-        }
+
+                sp.set_message(format!("Scanning module '{mod_name}': packages"));
+                let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
+                for resolved_module in &resolved_modules {
+                    for pkg in &resolved_module.packages {
+                        if let Some(pd) = super::diff::package_missing_drift(pkg, &mgr_map, &pkg_cx)
+                        {
+                            drift.push(super::live_drift::drift_event_from(
+                                &cfgd_core::reconciler::VerifyResult {
+                                    resource_type: "package".to_string(),
+                                    resource_id: super::diff::package_resource_id(
+                                        &pd.manager,
+                                        &pd.packages,
+                                    ),
+                                    matches: false,
+                                    expected: "installed".to_string(),
+                                    actual: "missing".to_string(),
+                                },
+                            ));
+                        }
+                    }
+                }
+                Ok(())
+            },
+        )?;
     }
 
     let output = ModuleStatus {
@@ -635,6 +694,7 @@ mod tests {
             classification_degraded_code: None,
             classification_degraded_reason: None,
             drift_checked_live: false,
+            last_scan_at: None,
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["lastApply"]["status"], serde_json::json!("inProgress"));
@@ -686,6 +746,7 @@ mod tests {
             classification_degraded_code: None,
             classification_degraded_reason: None,
             drift_checked_live: false,
+            last_scan_at: None,
         };
 
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
@@ -694,6 +755,7 @@ mod tests {
             &[],
             std::path::Path::new("/etc/cfgd/cfgd.yaml"),
             "default",
+            "2026-05-12T14:30:25Z",
         ));
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -709,6 +771,70 @@ mod tests {
         assert!(
             out.contains("0 pkgs, 0 files,"),
             "zero keeps the plural: {out}"
+        );
+    }
+
+    /// The recorded-state header says when the shown state was last checked
+    /// against the machine, and hints at `--scan` once that answer is old
+    /// enough to be misleading. The threshold is the daemon's default
+    /// reconcile interval: past it, the dashboard is showing something a live
+    /// daemon would never have let get this stale.
+    ///
+    /// A run that DID scan says nothing here — its Drift section already
+    /// speaks for how current the display is — which is the branch that keeps
+    /// `--scan`'s own output from carrying a hint pointing back at itself.
+    #[test]
+    fn status_header_dates_the_recorded_state_and_hints_when_it_is_stale() {
+        fn header(last_scan_at: Option<&str>, checked_live: bool) -> String {
+            let output = StatusOutput {
+                last_apply: None,
+                drift: Vec::new(),
+                sources: Vec::new(),
+                pending_decisions: Vec::new(),
+                modules: Vec::new(),
+                managed_resources: Vec::new(),
+                warnings: Vec::new(),
+                classification_degraded: false,
+                classification_degraded_code: None,
+                classification_degraded_reason: None,
+                drift_checked_live: checked_live,
+                last_scan_at: last_scan_at.map(str::to_string),
+            };
+            let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+            printer.emit(build_fleet_status_doc(
+                &output,
+                &[],
+                std::path::Path::new("/etc/cfgd/cfgd.yaml"),
+                "default",
+                // Pinned, never the wall clock: the age is a rendered value.
+                "2026-05-14T10:05:00Z",
+            ));
+            drop(printer);
+            cfgd_core::test_helpers::captured_text(&buf)
+        }
+
+        let hint = "cfgd status --scan";
+
+        // Exactly at the threshold is not yet stale — `is_stale_since` is
+        // "more than", so the boundary belongs to the fresh side and a daemon
+        // reconciling on schedule never trips the hint.
+        let fresh = header(Some("2026-05-14T10:00:00Z"), false);
+        assert!(fresh.contains("Last Scan"), "no age row: {fresh}");
+        assert!(fresh.contains("5m ago"), "wrong age rendered: {fresh}");
+        assert!(!fresh.contains(hint), "a fresh scan must not hint: {fresh}");
+
+        let stale = header(Some("2026-05-14T08:00:00Z"), false);
+        assert!(stale.contains("2h ago"), "wrong age rendered: {stale}");
+        assert!(stale.contains(hint), "a stale scan must hint: {stale}");
+
+        let never = header(None, false);
+        assert!(never.contains("never"), "no never row: {never}");
+        assert!(never.contains(hint), "an unscanned host must hint: {never}");
+
+        let scanned = header(Some("2026-05-14T08:00:00Z"), true);
+        assert!(
+            !scanned.contains("Last Scan") && !scanned.contains(hint),
+            "a run that just scanned must not date or hint at itself: {scanned}"
         );
     }
 
@@ -734,6 +860,7 @@ mod tests {
                 "source 'acme': cached config is unreadable".to_string(),
             ),
             drift_checked_live: false,
+            last_scan_at: None,
         };
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["classificationDegraded"], serde_json::json!(true));
@@ -841,7 +968,7 @@ mod tests {
         let cli = test_cli_for(dir.path().join("nope.yaml"), state_dir.path());
         let (printer, _) = test_printers();
 
-        let err = cmd_status(&cli, &printer, None, false).unwrap_err();
+        let err = cmd_status(&cli, &printer, None, false, false).unwrap_err();
         let msg = err.to_string().to_lowercase();
         assert!(
             msg.contains("not found") || msg.contains("nope.yaml"),
@@ -855,7 +982,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false).unwrap();
+        cmd_status(&cli, &printer, None, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -889,7 +1016,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false).unwrap();
+        cmd_status(&cli, &printer, None, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -928,7 +1055,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false).unwrap();
+        cmd_status(&cli, &printer, None, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -963,7 +1090,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false).unwrap();
+        cmd_status(&cli, &printer, None, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -987,7 +1114,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false).unwrap();
+        cmd_status(&cli, &printer, None, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1018,7 +1145,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false).unwrap();
+        cmd_status(&cli, &printer, None, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1044,7 +1171,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false).unwrap();
+        cmd_status(&cli, &printer, None, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1070,7 +1197,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, _) = test_printers();
 
-        let res = cmd_status(&cli, &printer, None, false);
+        let res = cmd_status(&cli, &printer, None, false, false);
         assert!(res.is_ok(), "exit_code=false must return Ok, got: {res:?}");
     }
 
@@ -1083,7 +1210,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, _) = test_printers();
 
-        let res = cmd_status(&cli, &printer, None, true);
+        let res = cmd_status(&cli, &printer, None, true, true);
         assert!(
             res.is_ok(),
             "exit_code=true with no drift must return Ok, got: {res:?}"
@@ -1105,7 +1232,7 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false).unwrap();
+        cmd_status(&cli, &printer, None, false, false).unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -1138,7 +1265,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, Some("test-mod"), false).unwrap();
+        cmd_status(&cli, &printer, Some("test-mod"), false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1166,7 +1293,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status_module(&RunContext::new(&cli, &printer), "ghost", false).unwrap();
+        cmd_status_module(&RunContext::new(&cli, &printer), "ghost", false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1190,7 +1317,7 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status_module(&RunContext::new(&cli, &printer), "ghost", false).unwrap();
+        cmd_status_module(&RunContext::new(&cli, &printer), "ghost", false, false).unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -1225,7 +1352,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false).unwrap();
+        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1252,7 +1379,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false).unwrap();
+        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1299,7 +1426,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false).unwrap();
+        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1332,7 +1459,7 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false).unwrap();
+        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, false).unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -1382,7 +1509,7 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        let res = cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", true);
+        let res = cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", true, true);
         assert!(
             res.is_ok(),
             "exit_code=true with a converged module must return Ok, got: {res:?}"

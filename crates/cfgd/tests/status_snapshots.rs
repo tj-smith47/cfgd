@@ -27,6 +27,12 @@ use pretty_assertions::assert_eq;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
+/// Pinned "now" for every status render: the header's last-scan age is a
+/// rendered value, so reading the wall clock here would re-date the golden on
+/// every run. `clean_output`'s scan is 5m old (exactly the staleness
+/// threshold, so no hint); the drift fixtures' are 2h old, which does hint.
+const NOW: &str = "2026-05-14T10:05:00Z";
+
 fn clean_output() -> StatusOutput {
     StatusOutput {
         last_apply: Some(ApplyRecord {
@@ -66,6 +72,7 @@ fn clean_output() -> StatusOutput {
         classification_degraded_code: None,
         classification_degraded_reason: None,
         drift_checked_live: false,
+        last_scan_at: Some("2026-05-14T10:00:00Z".into()),
     }
 }
 
@@ -135,6 +142,7 @@ fn drift_output() -> StatusOutput {
         classification_degraded_code: None,
         classification_degraded_reason: None,
         drift_checked_live: false,
+        last_scan_at: Some("2026-05-14T08:00:00Z".into()),
     }
 }
 
@@ -167,6 +175,7 @@ fn status_clean_human() {
         &[],
         Path::new("/etc/cfgd/cfgd.yaml"),
         "default",
+        NOW,
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "status/clean.txt");
@@ -181,6 +190,7 @@ fn status_clean_json() {
         &[],
         Path::new("/etc/cfgd/cfgd.yaml"),
         "default",
+        NOW,
     ));
     drop(printer);
     let expected = serde_json::to_value(&output).unwrap();
@@ -202,6 +212,7 @@ fn status_drift_human() {
         &sources,
         Path::new("/etc/cfgd/cfgd.yaml"),
         "default",
+        NOW,
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "status/drift.txt");
@@ -217,6 +228,7 @@ fn status_drift_json() {
         &sources,
         Path::new("/etc/cfgd/cfgd.yaml"),
         "default",
+        NOW,
     ));
     drop(printer);
     let expected = serde_json::to_value(&output).unwrap();

@@ -550,6 +550,7 @@ fn test_cli(dir: &Path) -> super::super::Cli {
         scope_arg: crate::cli::ScopeArg::User,
         command: Some(super::super::Command::Status {
             module: None,
+            scan: false,
             exit_code: false,
         }),
     }
@@ -2965,6 +2966,7 @@ mod profile_update_module_cleanup {
             scope_arg: crate::cli::ScopeArg::User,
             command: Some(super::super::Command::Status {
                 module: None,
+                scan: false,
                 exit_code: false,
             }),
         }

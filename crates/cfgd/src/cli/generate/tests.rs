@@ -1055,6 +1055,7 @@ mod cmd_generate_mockito {
         super::super::super::Cli {
             command: Some(super::super::super::Command::Status {
                 module: None,
+                scan: false,
                 exit_code: false,
             }),
             config: config_path,
@@ -1561,6 +1562,7 @@ mod cmd_generate_mockito {
         let cli = super::super::super::Cli {
             command: Some(super::super::super::Command::Status {
                 module: None,
+                scan: false,
                 exit_code: false,
             }),
             config: repo_root.join("cfgd.yaml"),
@@ -1850,6 +1852,7 @@ mod cmd_generate_mockito {
         let cli = super::super::super::Cli {
             command: Some(super::super::super::Command::Status {
                 module: None,
+                scan: false,
                 exit_code: false,
             }),
             config: repo_root.join("cfgd.yaml"),

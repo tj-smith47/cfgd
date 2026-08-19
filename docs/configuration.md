@@ -530,7 +530,7 @@ standard script timeout.
 
 **The filter must be a pure stdin → stdout transform.** cfgd decides whether a
 `Patch` file has converged by *running* it, so every read-only command executes
-it too — `cfgd plan`, `cfgd diff`, `cfgd verify`, `cfgd status --exit-code`,
+it too — `cfgd plan`, `cfgd diff`, `cfgd verify`, `cfgd status --scan`,
 `cfgd apply --dry-run`, and a compliance snapshot. A filter that installs
 packages, writes files, or takes a lock will do so on a command the user expects
 to change nothing, and a slow one makes every one of those commands slow. Write
@@ -548,7 +548,7 @@ What the failure *does* depends on what the command is for:
 | Command class | Commands | A failure means |
 |---|---|---|
 | Builds an action list | `cfgd plan`, `cfgd apply`, `cfgd apply --dry-run` | the command aborts with the error — the same shape as a missing or unreadable `source` on the other strategies. An action list that quietly dropped a file cfgd could not evaluate would misstate what apply is about to do |
-| Reports state | `cfgd diff`, `cfgd verify`, `cfgd status --exit-code`, `cfgd compliance` | that one file is reported as drifted — a `Warning` row in a compliance snapshot — with the error as its detail, and every other file, package and system result is still reported. One broken filter never blinds the whole report |
+| Reports state | `cfgd diff`, `cfgd verify`, `cfgd status --scan`, `cfgd compliance` | that one file is reported as drifted — a `Warning` row in a compliance snapshot — with the error as its detail, and every other file, package and system result is still reported. One broken filter never blinds the whole report |
 
 Where the evaluation happens depends on who declares the file, because the merge
 is computed from the target's *current* bytes:

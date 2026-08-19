@@ -269,6 +269,7 @@ spec:
     let cli = super::Cli {
         command: Some(super::Command::Status {
             module: None,
+            scan: false,
             exit_code: false,
         }),
         config: config_dir.path().join("cfgd.yaml"),
@@ -319,6 +320,7 @@ fn test_cli(dir: &std::path::Path) -> super::Cli {
     super::Cli {
         command: Some(super::Command::Status {
             module: None,
+            scan: false,
             exit_code: false,
         }),
         config: dir.join("cfgd.yaml"),
