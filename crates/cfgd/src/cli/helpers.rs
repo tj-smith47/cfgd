@@ -1014,18 +1014,15 @@ fn display_and_persist_conflicts(
     }
     let guard = printer.section("Source Conflicts");
     for conflict in &result.conflicts {
-        let details = reword_conflict_arrow_for_display(&conflict.details);
-        match conflict.resolution_type {
-            composition::ResolutionType::Locked => {
-                guard.status_simple(Role::Warn, &details);
-            }
+        let role = match conflict.resolution_type {
+            composition::ResolutionType::Locked => Role::Warn,
             composition::ResolutionType::Required
             | composition::ResolutionType::Rejected
-            | composition::ResolutionType::Override => {
-                guard.status_simple(Role::Info, &details);
-            }
-            composition::ResolutionType::Default => {}
-        }
+            | composition::ResolutionType::Override => Role::Info,
+            // A default resolution settled itself; nothing to tell the operator.
+            composition::ResolutionType::Default => continue,
+        };
+        guard.status_simple(role, reword_conflict_arrow_for_display(&conflict.details));
     }
     drop(guard);
 

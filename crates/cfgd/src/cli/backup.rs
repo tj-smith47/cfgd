@@ -381,6 +381,24 @@ pub fn run_backup_restore(
 
     let outcome = cfgd_core::backup::restore_backup(&unit, state, printer, selected, args.to)?;
 
+    let (role, subject, detail) = restore_status_parts(&outcome);
+    printer.status(role, subject).detail(detail);
+    // `hint`, not `note`: where the overwritten data went is the one thing an
+    // operator needs after a restore they regret, and `note` is Verbose-only.
+    if let Some(safety) = &outcome.safety_snapshot {
+        printer.hint(format!("previous contents saved to {safety}"));
+    }
+
+    printer.emit(Doc::new().with_data(BackupRestoreOutput::from(&outcome)));
+    Ok(Some(outcome))
+}
+
+/// Compose the restore's status line: role, subject, detail.
+///
+/// Split out from the caller so BOTH arms are reachable without staging a real
+/// restore failure: only a successful restore is easy to drive, so the error
+/// arm's glue had been rewritten repeatedly with no golden able to go red.
+fn restore_status_parts(outcome: &cfgd_core::backup::RestoreOutcome) -> (Role, String, String) {
     // The same three-way split `backup run` renders: a clean restore is Ok, a
     // completed restore whose hooks failed is Warn (the data is back, but
     // something needs attention), and a restore that did not happen is Fail.
@@ -402,31 +420,20 @@ pub fn run_backup_restore(
     // phrase describing the restore, not a `Label: value` pair the snapshot
     // name has a field called "into" — `.qualifier` would misread it as one.
     let into_detail = format!("into {}", outcome.restored_to);
-    match &outcome.error {
-        Some(e) => {
-            // ": ", not " — ": the renderer's own subject↔detail glue is
-            // already " — " (applied once, ahead of this whole string), so
-            // reusing it here inside the detail would render two identical
-            // em-dashes at different semantic levels with no way to tell
-            // which one is the renderer's. No composer exists for a detail
-            // with two parts; the two are joined as a single sentence instead.
-            printer.status(role, subject).detail(format!(
-                "{into_detail}: {}",
-                cfgd_core::output::collapse_to_subject_line(e)
-            ));
-        }
-        None => {
-            printer.status(role, subject).detail(into_detail);
-        }
-    }
-    // `hint`, not `note`: where the overwritten data went is the one thing an
-    // operator needs after a restore they regret, and `note` is Verbose-only.
-    if let Some(safety) = &outcome.safety_snapshot {
-        printer.hint(format!("previous contents saved to {safety}"));
-    }
-
-    printer.emit(Doc::new().with_data(BackupRestoreOutput::from(&outcome)));
-    Ok(Some(outcome))
+    let detail = match &outcome.error {
+        // ": ", not " — ": the renderer's own subject/detail glue is already
+        // " — " (applied once, ahead of this whole string), so reusing it here
+        // inside the detail would render two identical em-dashes at different
+        // semantic levels with no way to tell which one is the renderer's. No
+        // composer exists for a detail with two parts; the two are joined as a
+        // single sentence instead.
+        Some(e) => format!(
+            "{into_detail}: {}",
+            cfgd_core::output::collapse_to_subject_line(e)
+        ),
+        None => into_detail,
+    };
+    (role, subject, detail)
 }
 
 /// Ask before overwriting live data.
@@ -592,4 +599,49 @@ pub fn run_backup_run(
         .collect();
     printer.emit(Doc::new().with_data(&outputs));
     Ok(BackupRunOutcome { reports })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cfgd_core::backup::RestoreOutcome;
+
+    fn outcome(error: Option<&str>, restored: bool) -> RestoreOutcome {
+        RestoreOutcome {
+            name: "docs".to_string(),
+            snapshot: "notes.txt.20260101T000000Z".to_string(),
+            restored_to: "/home/u/notes.txt".to_string(),
+            restored,
+            size_bytes: 12,
+            safety_snapshot: None,
+            error: error.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn restore_detail_joins_the_failure_to_the_destination_without_a_second_em_dash() {
+        let (role, subject, detail) = restore_status_parts(&outcome(Some("hook exited 1"), true));
+        assert_eq!(role, Role::Warn);
+        assert!(
+            subject.starts_with("backup:docs restored from"),
+            "{subject}"
+        );
+        assert_eq!(detail, "into /home/u/notes.txt: hook exited 1");
+        // The renderer supplies the one " — " between subject and detail; a
+        // second one inside the detail would read as the same separator twice.
+        assert!(!detail.contains(" — "), "{detail}");
+    }
+
+    #[test]
+    fn restore_detail_is_the_destination_alone_when_nothing_failed() {
+        let (role, _subject, detail) = restore_status_parts(&outcome(None, true));
+        assert_eq!(role, Role::Ok);
+        assert_eq!(detail, "into /home/u/notes.txt");
+    }
+
+    #[test]
+    fn a_restore_that_did_not_happen_reports_fail() {
+        let (role, _subject, _detail) = restore_status_parts(&outcome(Some("target busy"), false));
+        assert_eq!(role, Role::Fail);
+    }
 }
