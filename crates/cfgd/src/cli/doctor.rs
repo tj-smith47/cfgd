@@ -583,9 +583,11 @@ fn build_config_top(doc: Doc, cfg: &DoctorConfigCheck) -> Doc {
 
 fn build_tools_section(s: SectionBuilder, git_available: bool) -> SectionBuilder {
     if git_available {
-        s.status(Role::Ok, "git: found")
+        s.status_with(Role::Ok, "git", |f| f.qualifier("found"))
     } else {
-        s.status(Role::Fail, "git: not found — install git to use cfgd")
+        s.status_with(Role::Fail, "git", |f| {
+            f.qualifier("not found — install git to use cfgd")
+        })
     }
 }
 
@@ -621,7 +623,7 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
         (true, Some(path)) => {
             s.status_with(Role::Ok, ".sops.yaml", |f| f.qualifier(path.to_string()))
         }
-        (true, None) => s.status(Role::Ok, ".sops.yaml: present"),
+        (true, None) => s.status_with(Role::Ok, ".sops.yaml", |f| f.qualifier("present")),
         (false, _) => s.status_with(Role::Warn, ".sops.yaml", |f| {
             f.qualifier("not found — will be generated on 'cfgd init'")
         }),
@@ -653,8 +655,8 @@ fn build_managers_section(s: SectionBuilder, managers: &[DoctorManagerCheck]) ->
                     Some(method) => format!("can auto-bootstrap via {}", method),
                     None => "can auto-bootstrap".into(),
                 };
-                s.status_with(Role::Warn, format!("{}: not found", m.name), |sf| {
-                    sf.detail(detail)
+                s.status_with(Role::Warn, m.name.clone(), |sf| {
+                    sf.qualifier("not found").detail(detail)
                 })
             } else {
                 s.status_with(Role::Fail, m.name.clone(), |sf| {
