@@ -646,6 +646,62 @@ impl Printer {
         }
     }
 
+    /// Run `work` under a spinner that narrates its own steps, settling it on
+    /// every exit path.
+    ///
+    /// `running` labels the first animated frame; `work` receives the live
+    /// spinner and renames it per step with [`Spinner::set_message`], so the
+    /// line always names the manager being enumerated, the source being
+    /// fetched, the probe being run — real state, never decoration.
+    ///
+    /// A success retires the bar SILENTLY. Narration is live-region-only: the
+    /// permanent output of a successful run is byte-identical to the same run
+    /// before the spinner existed, which is what lets every golden in the
+    /// suite stay a golden. A failure settles `Fail` at whatever step was
+    /// running, because that is the one fact the propagated error does not
+    /// carry — and it carries no detail of its own, since the error itself is
+    /// about to be rendered at the CLI boundary.
+    ///
+    /// The settle discipline is the whole point: a caller that opens a spinner
+    /// by hand and hits an early `?` between creation and its matching finish
+    /// abandons it to `Drop`, which can only report the generic
+    /// `(interrupted)` because it cannot know whether the work succeeded. Here
+    /// the match is written once and no call site can forget it.
+    ///
+    /// Correct at ANY depth. The wait it wraps is reached from a top-level
+    /// command AND from library code several frames inside a section a caller
+    /// opened — `PackageContext::installed_for` is narrated once and asked
+    /// from `cfgd diff`'s open Packages section, from `verify`'s scan and from
+    /// a bare `status` — so the bar is opened under a
+    /// [`Printer::depth_inheritance`] guard held for the whole wait. Without
+    /// it the spinner is a depth-0 non-structural emit, which trips the
+    /// top-level structural assert the moment any caller has a section open.
+    /// The guard is the narrow tool for exactly this: it relaxes status /
+    /// hint / note / spinner / run to the innermost open section's depth and
+    /// leaves every structural emit's assert armed, and nothing this function
+    /// emits is structural.
+    ///
+    /// [`Spinner::set_message`]: super::spinner::Spinner::set_message
+    pub fn narrate<T, E>(
+        &self,
+        running: impl Into<String>,
+        work: impl FnOnce(&mut super::spinner::Spinner<'_>) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let _inherit = self.depth_inheritance();
+        let mut sp = self.spinner(running);
+        match work(&mut sp) {
+            Ok(value) => {
+                sp.finish_silent();
+                Ok(value)
+            }
+            Err(e) => {
+                let step = sp.message.clone();
+                let _ = sp.finish_fail(step);
+                Err(e)
+            }
+        }
+    }
+
     #[must_use]
     pub fn progress_bar(
         &self,
@@ -1950,5 +2006,197 @@ mod tests {
         let out = crate::test_helpers::captured_text(&buf);
         assert!(out.starts_with("profile:work\n"), "got: {out:?}");
         assert!(out.contains("\n  - installed ripgrep\n"), "got: {out:?}");
+    }
+
+    /// Every narrated wait in the workspace goes through `Printer::narrate`,
+    /// so the settle discipline is proven once here rather than once per call
+    /// site: the sites differ only in what they narrate, never in how the bar
+    /// is opened, renamed or retired.
+    ///
+    /// A successful wait must leave NOTHING behind. Narration is
+    /// live-region-only by contract — that is what lets every golden in the
+    /// suite keep describing a run as if no spinner had ever existed — so a
+    /// success that committed even one line would move goldens across the
+    /// whole product.
+    #[test]
+    fn narrate_commits_nothing_when_the_work_succeeds() {
+        let (printer, buf) = Printer::for_test_live_scrollback();
+        let out: Result<u8, std::io::Error> = printer.narrate("Scanning packages", |sp| {
+            sp.set_message("Enumerating apt");
+            sp.set_message("Enumerating brew");
+            Ok(7)
+        });
+        printer.flush();
+        assert_eq!(out.ok(), Some(7));
+
+        let committed = crate::test_helpers::captured_text(&buf);
+        assert_eq!(
+            committed, "",
+            "a successful narrated wait committed a permanent line: {committed:?}"
+        );
+    }
+
+    /// A failure settles `Fail` at the step that was actually running, and the
+    /// live region is left holding nothing — neither the opening label, nor an
+    /// earlier step, nor `Drop`'s generic `(interrupted)` record.
+    ///
+    /// Read from the emulated screen: it is the only capture that can see a
+    /// line the region painted and never took back. The hidden target draws
+    /// nothing at all, and the recording buffer holds every repaint, where one
+    /// paint too many is indistinguishable from one repaint too many.
+    #[test]
+    fn narrate_settles_fail_at_the_last_step_and_strands_no_running_line() {
+        let (printer, screen) = Printer::for_test_live_terminal(24, 100);
+        let out: Result<(), std::io::Error> = printer.narrate("Scanning packages", |sp| {
+            // Joins the steady-tick thread, so this thread is the only writer
+            // and the bar has already painted a frame — no sleep, no race.
+            sp.bar.disable_steady_tick();
+            sp.set_message("Enumerating apt");
+            sp.set_message("Enumerating brew");
+            Err(std::io::Error::other("brew exploded"))
+        });
+        printer.flush();
+        assert!(out.is_err(), "the closure's error must propagate");
+
+        let held = screen.contents();
+        assert_eq!(
+            held.matches("Enumerating brew").count(),
+            1,
+            "the failing step must be on screen exactly once: {held:?}"
+        );
+        for gone in ["Scanning packages", "Enumerating apt", "(interrupted)"] {
+            assert!(
+                !held.contains(gone),
+                "{gone:?} was stranded on the terminal: {held:?}"
+            );
+        }
+        let line = held
+            .lines()
+            .find(|l| l.contains("Enumerating brew"))
+            .unwrap_or_default();
+        assert!(
+            line.contains(Theme::default().icon_fail.as_str()),
+            "the settled step is not a Fail line: {line:?}"
+        );
+        assert!(
+            !line.contains("brew exploded"),
+            "the settle must carry no detail — the error is rendered at the \
+             CLI boundary and would print twice: {line:?}"
+        );
+    }
+
+    /// The per-step renames reach the terminal in the order the work made
+    /// them, so the line always names the step actually running rather than
+    /// the one the wait opened with.
+    ///
+    /// `for_test_with_live_bars` is the constructor that can answer this: it
+    /// records every paint in the order it was made, where the emulated screen
+    /// holds only the last one and the hidden target holds none.
+    #[test]
+    fn narrate_paints_each_step_in_the_order_the_work_named_it() {
+        let (printer, buf) = Printer::for_test_with_live_bars();
+        let steps = ["Checking files", "Checking packages", "Checking system"];
+        let out: Result<(), std::io::Error> = printer.narrate("Verifying", |sp| {
+            sp.bar.disable_steady_tick();
+            for step in steps {
+                sp.set_message(step);
+            }
+            Ok(())
+        });
+        printer.flush();
+        assert!(out.is_ok());
+
+        let painted = crate::test_helpers::captured_text(&buf);
+        let mut cursor = 0usize;
+        for step in steps {
+            let at = painted[cursor..].find(step).unwrap_or_else(|| {
+                panic!("{step:?} never painted, or painted out of order: {painted:?}")
+            });
+            cursor += at + step.len();
+        }
+    }
+
+    /// `Quiet` — what a `-o json` run derives, and what a command hands its
+    /// library work — narrates nothing at all: the bar is hidden, so no step
+    /// ever reaches the terminal and the structured channel stays pure.
+    #[test]
+    fn narrate_under_quiet_paints_no_step() {
+        let (printer, buf) = Printer::for_test_at(Verbosity::Quiet);
+        let out: Result<(), std::io::Error> = printer.narrate("Collecting snapshot", |sp| {
+            assert!(sp.bar.is_hidden(), "Quiet must yield a hidden bar");
+            sp.set_message("Checking packages");
+            Ok(())
+        });
+        printer.flush();
+        assert!(out.is_ok());
+
+        let captured = crate::test_helpers::captured_text(&buf);
+        assert_eq!(
+            captured, "",
+            "a Quiet narrated wait wrote to the terminal: {captured:?}"
+        );
+    }
+
+    /// A narrated wait reached from INSIDE an open section renders at that
+    /// section's depth instead of tripping the top-level structural assert.
+    ///
+    /// This is not a theoretical arrangement: `PackageContext::installed_for`
+    /// narrates the per-manager enumeration once, and `cfgd diff` asks it from
+    /// inside its open Packages section while a bare `status` asks it at top
+    /// level. A `narrate` that opened its bar at a hard depth 0 panicked the
+    /// first caller in a debug build.
+    #[test]
+    fn narrate_renders_inside_a_section_its_caller_opened() {
+        let (printer, screen) = Printer::for_test_live_terminal(24, 100);
+        let section = printer.section("Packages");
+        // Read from INSIDE the wait: `narrate` clears its own bar on the way
+        // out, so after it returns there is nothing left on screen to place.
+        let mut running = String::new();
+        let out: Result<(), std::io::Error> = printer.narrate("Enumerating apt packages", |sp| {
+            // Joins the steady-tick thread, so this thread is the only writer
+            // and the bar has already painted a frame — no sleep, no race.
+            sp.bar.disable_steady_tick();
+            running = screen.contents();
+            Ok(())
+        });
+        assert!(out.is_ok());
+        drop(section);
+        printer.flush();
+
+        let line = running
+            .lines()
+            .find(|l| l.contains("Enumerating apt packages"))
+            .unwrap_or_default();
+        assert!(
+            line.starts_with("  ") && !line.starts_with("   "),
+            "the wait did not paint in the section's glyph column: {line:?}"
+        );
+    }
+
+    /// A `Quiet` FAILURE still settles its one `Fail` line, because `Fail` is
+    /// the single role the renderer shows at `Quiet` — the step that was
+    /// running is the one fact the propagated error does not carry, and a
+    /// silent Quiet failure would drop it. It lands on stderr like every other
+    /// status, so a `-o json` run's data channel is untouched.
+    #[test]
+    fn narrate_under_quiet_still_settles_the_failing_step() {
+        let (printer, stdout, stderr) = Printer::for_test_split_streams(Verbosity::Quiet);
+        let out: Result<(), std::io::Error> = printer.narrate("Collecting snapshot", |sp| {
+            sp.set_message("Checking packages");
+            Err(std::io::Error::other("nope"))
+        });
+        printer.flush();
+        assert!(out.is_err());
+
+        assert_eq!(
+            crate::test_helpers::captured_text(&stdout),
+            "",
+            "the data channel must stay pure"
+        );
+        let diagnostics = crate::test_helpers::captured_text(&stderr);
+        assert!(
+            diagnostics.contains("Checking packages"),
+            "the failing step went unreported: {diagnostics:?}"
+        );
     }
 }

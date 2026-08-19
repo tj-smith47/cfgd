@@ -141,13 +141,14 @@ impl<'p> Spinner<'p> {
 
     /// Retire the bar without printing a status line of its own.
     ///
-    /// For a caller that collapses several concurrent spinners into one
-    /// combined status line elsewhere — each lane's own spinner must vanish
-    /// silently, or every lane would print its own line on top of the one
-    /// summary line describing all of them.
+    /// For a caller whose outcome line is written by someone else: several
+    /// concurrent spinners collapsed into one combined status line (each
+    /// lane's own spinner must vanish, or every lane prints on top of the one
+    /// summary describing all of them), or a narrated wait whose result is
+    /// rendered after it — a backup snapshot's row, a restore's status line.
     /// Suppresses `Drop`'s `Role::Skipped` "(interrupted)" settle, the same
     /// way an explicit `finish_*` does.
-    pub(crate) fn finish_silent(mut self) {
+    pub fn finish_silent(mut self) {
         self.bar.finish_and_clear();
         self.finished = true;
     }
