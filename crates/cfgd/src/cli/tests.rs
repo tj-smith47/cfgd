@@ -17721,7 +17721,7 @@ fn build_doctor_doc_git_missing_emits_fail_status() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("git: not found"),
+        text.contains("git: not found — install git to use cfgd"),
         "should mention git missing, got: {text}"
     );
     assert!(
@@ -17738,7 +17738,9 @@ fn build_doctor_doc_sops_missing_emits_warn() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("sops: not found"),
+        text.contains(
+            "sops: not found — required for secrets (https://github.com/getsops/sops#install)"
+        ),
         "should warn about missing sops, got: {text}"
     );
 }
@@ -17751,7 +17753,9 @@ fn build_doctor_doc_age_key_missing_with_path_emits_warn() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("age key: not found at") && text.contains("cfgd init"),
+        text.contains(
+            "age key: not found at /home/user/.config/cfgd/keys/age.key — run 'cfgd init' to generate"
+        ),
         "should warn about missing age key and suggest cfgd init, got: {text}"
     );
 }
@@ -17777,7 +17781,7 @@ fn build_doctor_doc_sops_config_missing_emits_warn() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains(".sops.yaml: not found"),
+        text.contains(".sops.yaml: not found — will be generated on 'cfgd init'"),
         "should warn about missing .sops.yaml, got: {text}"
     );
 }
@@ -17792,7 +17796,7 @@ fn build_doctor_doc_provider_unavailable_emits_info() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("1password") && text.contains("not installed"),
+        text.contains("provider 1password: not installed (optional)"),
         "should show unavailable provider as info, got: {text}"
     );
 }
@@ -17810,12 +17814,8 @@ fn build_doctor_doc_manager_declared_unavailable_can_bootstrap_emits_warn() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("brew") && text.contains("not found"),
-        "should show brew not found, got: {text}"
-    );
-    assert!(
-        text.contains("auto-bootstrap") && text.contains("curl"),
-        "should mention auto-bootstrap method, got: {text}"
+        text.contains("brew: not found — can auto-bootstrap via curl"),
+        "should show brew not found with its bootstrap method, got: {text}"
     );
 }
 
@@ -17832,7 +17832,7 @@ fn build_doctor_doc_manager_declared_unavailable_no_bootstrap_emits_fail() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("apt") && text.contains("not found") && text.contains("declared in config"),
+        text.contains("apt: not found — declared in config but not available"),
         "should show apt declared but not available fail, got: {text}"
     );
     assert!(
@@ -18167,7 +18167,7 @@ fn build_doctor_doc_provider_available_emits_ok() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("bitwarden") && text.contains("available"),
+        text.contains("provider bitwarden: available"),
         "should show available provider as ok, got: {text}"
     );
 }
@@ -18185,7 +18185,7 @@ fn build_doctor_doc_manager_can_bootstrap_no_method_emits_generic_hint() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("nix") && text.contains("auto-bootstrap"),
+        text.contains("nix: not found — can auto-bootstrap"),
         "should show generic auto-bootstrap hint when method is None, got: {text}"
     );
 }
