@@ -60,18 +60,25 @@ pub(super) fn collect_and_store_compliance_snapshot<'a>(
     let sources: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
 
     let state = ctx.state()?;
-    let mut snapshot = cfgd_core::compliance::collect_snapshot(
-        profile_name,
-        &resolved.merged,
-        &resolved_modules,
-        config_dir,
-        &registry,
-        &scope,
-        &sources,
-        &quiet_printer,
-        state,
-        None,
-    )?;
+    // Narrated through the OWNING printer, not `quiet_printer`: the quiet one
+    // exists to keep the collection's own chatter out of the snapshot run, and
+    // routing the wait through it would suppress the wait too — while a real
+    // `-o json` or `--quiet` invocation still shows nothing, because the owning
+    // printer suppresses spinners at that verbosity itself.
+    let mut snapshot = printer.narrate("Collecting compliance checks", |_| {
+        cfgd_core::compliance::collect_snapshot(
+            profile_name,
+            &resolved.merged,
+            &resolved_modules,
+            config_dir,
+            &registry,
+            &scope,
+            &sources,
+            &quiet_printer,
+            state,
+            None,
+        )
+    })?;
 
     // Fold the Report-mode source-constraint violations into the snapshot as
     // Violation checks so they appear in the `checks` array and bump

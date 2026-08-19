@@ -17,7 +17,11 @@ pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 /// verdict passed. Kept separate from the process-exit wrapper so it stays
 /// unit-testable.
 pub(crate) fn run_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<bool> {
-    let (output, extras) = collect_doctor_output(cli, printer)?;
+    // One spinner across every probe, renamed per group: doctor shells out to
+    // git, sops and each package manager before it prints anything at all.
+    let (output, extras) = printer.narrate("Probing: config", |sp| {
+        collect_doctor_output(cli, printer, sp)
+    })?;
     let passed = all_passed(&output);
     printer.emit(build_doctor_doc(&output, &extras));
     Ok(passed)
@@ -91,6 +95,7 @@ fn package_is_installed(
 fn collect_doctor_output(
     cli: &Cli,
     printer: &Printer,
+    sp: &mut cfgd_core::output::Spinner<'_>,
 ) -> anyhow::Result<(DoctorOutput, DoctorExtras)> {
     let ctx = RunContext::new(cli, printer);
     let (config_check, loaded_cfg) = if cli.config.exists() {
@@ -145,6 +150,7 @@ fn collect_doctor_output(
         )
     };
 
+    sp.set_message("Probing: tools");
     let git_available = cfgd_core::command_available("git");
 
     let config_dir = config_dir(cli);
@@ -184,6 +190,7 @@ fn collect_doctor_output(
     } else {
         build_registry()
     };
+    sp.set_message("Probing: package managers");
     let all_managers = registry.package_managers();
 
     let declared_managers: Vec<String> = if let Some(ref pkgs) = resolved_packages {
@@ -278,6 +285,7 @@ fn collect_doctor_output(
         .unwrap_or_default();
 
     let cache_base = module_cache_dir(cli).unwrap_or_default();
+    sp.set_message("Probing: modules");
     let all_modules =
         modules::load_all_modules(&config_dir, &cache_base, &[], printer).unwrap_or_default();
 
@@ -390,6 +398,7 @@ fn collect_doctor_output(
     // the run's context, which opens that exact store and does NOT memoize a
     // failure, so a refused open is still re-attempted and still reported here
     // rather than being answered from a cached error.
+    sp.set_message("Probing: state store");
     let state_store = match ctx.state() {
         Ok(_) => DoctorStateStore {
             accessible: true,
@@ -401,6 +410,7 @@ fn collect_doctor_output(
         },
     };
 
+    sp.set_message("Probing: profiles");
     let profiles_dir_path = profiles_dir(cli);
     // One ambiguity-tolerant walk feeds both the System count and the
     // per-profile layout checks, so the two can never disagree on what counts

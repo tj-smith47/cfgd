@@ -282,10 +282,20 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
     // `Role::Fail` line, and that line reaches this printer's own sink, not a
     // discarded one, so it would sit beside the `-o json` payload every time
     // the machine were offline.
-    if let Err(e) = mgr.load_source_cached(source_spec, &silent_printer) {
-        printer
-            .status(Role::Warn, "Failed to load source manifest")
-            .qualifier(cfgd_core::output::collapse_to_subject_line(&e));
+    // The spinner runs on the OWNING printer, not `silent_printer`: the quiet
+    // one exists to keep the load's own chatter out of a `-o json` payload, and
+    // routing the wait through it would suppress the wait too. A cached load
+    // still verifies the manifest's signature, which is a cosign subprocess.
+    // Silent on success and the same single Warn on failure, so the permanent
+    // output either way is what it was before the spinner existed.
+    let load_spinner = printer.spinner(format!("Loading source '{name}'"));
+    match mgr.load_source_cached(source_spec, &silent_printer) {
+        Ok(()) => load_spinner.finish_silent(),
+        Err(e) => {
+            let _ = load_spinner
+                .finish_warn("Failed to load source manifest")
+                .qualifier(cfgd_core::output::collapse_to_subject_line(&e));
+        }
     }
     let manifest = mgr.get(name).map(|c| &c.manifest);
 

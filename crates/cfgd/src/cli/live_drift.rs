@@ -130,6 +130,30 @@ pub(super) fn live_drift_results(
     cfgd_installed: &std::collections::HashSet<String>,
     cx: &cfgd_core::providers::PackageContext<'_>,
 ) -> anyhow::Result<Vec<VerifyResult>> {
+    // One spinner across the whole scan, narrated per pass via `set_message`.
+    cx.printer.narrate("Scanning: profile files", |sp| {
+        live_drift_results_inner(
+            config_dir,
+            resolved,
+            registry,
+            modules,
+            cfgd_installed,
+            cx,
+            sp,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn live_drift_results_inner(
+    config_dir: &std::path::Path,
+    resolved: &ResolvedProfile,
+    registry: &ProviderRegistry,
+    modules: &[ResolvedModule],
+    cfgd_installed: &std::collections::HashSet<String>,
+    cx: &cfgd_core::providers::PackageContext<'_>,
+    sp: &mut cfgd_core::output::Spinner<'_>,
+) -> anyhow::Result<Vec<VerifyResult>> {
     let mut drift = Vec::new();
 
     // One file manager for both file halves of the scan.
@@ -143,6 +167,7 @@ pub(super) fn live_drift_results(
     );
 
     // Module files: content-aware comparison for each resolved module.
+    sp.set_message("Scanning: module files");
     drift.extend(
         module_file_verify_results(&fm, config_dir, resolved, modules)?
             .into_iter()
@@ -150,6 +175,7 @@ pub(super) fn live_drift_results(
     );
 
     // Packages: any non-Skip action means the installed set diverges from desired.
+    sp.set_message("Scanning: packages");
     let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
         .package_managers()
         .iter()
@@ -167,6 +193,7 @@ pub(super) fn live_drift_results(
     // the same signal `diff`'s `cfgd:managers` group renders, from the same
     // planner, so `verify`/`status -e` cannot disagree with `diff` about
     // whether a missing manager is live drift.
+    sp.set_message("Scanning: managers");
     for ma in manager_drift_actions(cfgd_core::reconciler::plan_managers(
         registry,
         &pkg_actions,
@@ -178,6 +205,7 @@ pub(super) fn live_drift_results(
     // System: any configurator reporting a non-empty diff is drift. The desired
     // map combines profile and module system config so module system tweaks
     // surface here exactly as they do on the write path.
+    sp.set_message("Scanning: system");
     let system = cfgd_core::effective::effective_system_map(&resolved.merged, modules);
     for configurator in &registry.available_system_configurators() {
         if let Some(desired) = system.get(configurator.name()) {

@@ -238,7 +238,15 @@ pub fn run_backup(
     // meant to put it in, so a snapshot of it would be untrustworthy.
     let copy = match pre_error {
         Some(_) => None,
-        None => Some(take_snapshot(unit, &source)),
+        None => {
+            // Retired silently on BOTH outcomes: the snapshot's own line is
+            // rendered after this function returns, so a settled spinner here
+            // would print a second row for the same copy.
+            let sp = printer.spinner(format!("Snapshotting {}", spec.name));
+            let taken = take_snapshot(unit, &source);
+            sp.finish_silent();
+            Some(taken)
+        }
     };
     // No snapshot item here: the snapshot's LINE is rendered after this
     // function returns — by `report_backup_record` on a recorded run, or by

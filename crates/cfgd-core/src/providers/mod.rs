@@ -292,8 +292,15 @@ impl<'a> PackageContext<'a> {
         self.enumerations
             .get()
             .get_or_enumerate(manager.name(), || {
-                let listed = manager.installed_packages_with_versions(self)?;
-                Ok(InstalledPackages::from_listing(manager, listed))
+                // Only reached on a cache miss, so a converged run that hits
+                // the memo for every manager it asks about narrates nothing —
+                // exactly the silence a fast run should have.
+                let name = manager.name();
+                self.printer
+                    .narrate(format!("Enumerating {name} packages"), |_| {
+                        let listed = manager.installed_packages_with_versions(self)?;
+                        Ok(InstalledPackages::from_listing(manager, listed))
+                    })
             })
     }
 

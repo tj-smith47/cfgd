@@ -313,7 +313,11 @@ pub fn restore_backup(
 
     let snapshot_kind = payload_kind(&name, &snapshot.path)?;
     check_target_kind(&name, &target, snapshot_kind)?;
-    let staged = stage_snapshot(&name, &snapshot, &target)?;
+    // Narrated: extracting an archive snapshot is the restore's first
+    // multi-second wait and prints nothing of its own until it is done.
+    let staged = printer.narrate(format!("Restoring {name}: staging snapshot"), |_| {
+        stage_snapshot(&name, &snapshot, &target)
+    })?;
 
     let mut failures: Vec<String> = Vec::new();
     // A restore renders no owner group and rolls nothing up, so its hook items
@@ -337,13 +341,18 @@ pub fn restore_backup(
     let mut overlay = None;
     let mut fatal = None;
     if pre_error.is_none() {
+        // Retired silently: every outcome below already has its own line —
+        // the restore status, or the fatal error the caller renders.
+        let mut sp = printer.spinner(format!("Restoring {name}: safety snapshot"));
         match take_safety_backup(unit, store, printer, &target, &mut failures) {
             Ok(taken) => {
                 safety = taken;
+                sp.set_message(format!("Restoring {name}: overlaying files"));
                 overlay = Some(overlay_restore(&name, &staged.payload, &target));
             }
             Err(e) => fatal = Some(e),
         }
+        sp.finish_silent();
     }
 
     let post_error = super::run_hooks(

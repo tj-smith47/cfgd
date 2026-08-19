@@ -87,39 +87,53 @@ pub fn cmd_verify(
     // sharing the context is what makes that one enumeration per manager for
     // the whole command instead of one per half.
     let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
-    let mut results = reconciler::verify(&resolved, &registry, state, &resolved_modules, &pkg_cx)?;
-    // The reconciler cannot reach the file manager (crate boundary), so it no
-    // longer checks managed files. Fold in content-aware file results here so a
-    // file whose bytes drifted out-of-band fails verification and drives
-    // `verify --exit-code` to 5. Module-filter runs (empty merged profile) have
-    // no managed files, so the profile-file fold is a no-op for them.
-    // ONE file manager for both folds: each construction rebuilds the template
-    // context and the full secret-provider set, and both halves check the same
-    // profile.
-    let fm = CfgdFileManager::new(config_dir, &resolved)?;
-    results.extend(super::live_drift::file_verify_results(&fm, &resolved)?);
-    // Module files are content-aware here (not in the reconciler, which is
-    // presence-blind across the crate boundary): a byte-tampered module file
-    // fails verification for both the full and `--module` paths.
-    results.extend(super::live_drift::module_file_verify_results(
-        &fm,
-        config_dir,
-        &resolved,
-        &resolved_modules,
-    )?);
-    // Managers: the reconciler's own `verify` only walks
-    // `available_package_managers`, so a manager the plan would provision or
-    // refuse contributes no row there — the same gap `diff` and `status -e`
-    // close via `plan_managers`. Fold that half in here too, so `verify -e`
-    // cannot report clean on a host `diff`/`status -e` both flag as drifted.
-    let cfgd_installed = cfgd_installed_packages(state)?;
-    results.extend(super::live_drift::manager_verify_results(
-        &resolved,
-        &registry,
-        &resolved_modules,
-        &cfgd_installed,
-        &pkg_cx,
-    )?);
+    // One spinner across all four passes, renamed per pass: they run back to
+    // back with no output of their own, and a package enumeration inside the
+    // first can take seconds.
+    let results = printer.narrate("Verifying: resources", |sp| -> anyhow::Result<_> {
+        let mut results =
+            reconciler::verify(&resolved, &registry, state, &resolved_modules, &pkg_cx)?;
+        // The reconciler cannot reach the file manager (crate boundary), so it no
+        // longer checks managed files. Fold in content-aware file results here so a
+        // file whose bytes drifted out-of-band fails verification and drives
+        // `verify --exit-code` to 5. Module-filter runs (empty merged profile) have
+        // no managed files, so the profile-file fold is a no-op for them.
+        // ONE file manager for both folds: each construction rebuilds the template
+        // context and the full secret-provider set, and both halves check the same
+        // profile.
+        sp.set_message("Verifying: profile files");
+        let fm = CfgdFileManager::new(config_dir, &resolved)?;
+        results.extend(super::live_drift::file_verify_results(&fm, &resolved)?);
+        // Module files are content-aware here (not in the reconciler, which is
+        // presence-blind across the crate boundary): a byte-tampered module file
+        // fails verification for both the full and `--module` paths.
+        sp.set_message("Verifying: module files");
+        results.extend(super::live_drift::module_file_verify_results(
+            &fm,
+            config_dir,
+            &resolved,
+            &resolved_modules,
+        )?);
+        // Managers: the reconciler's own `verify` only walks
+        // `available_package_managers`, so a manager the plan would provision or
+        // refuse contributes no row there — the same gap `diff` and `status -e`
+        // close via `plan_managers`. Fold that half in here too, so `verify -e`
+        // cannot report clean on a host `diff`/`status -e` both flag as drifted.
+        sp.set_message("Verifying: package managers");
+        let cfgd_installed = cfgd_installed_packages(state)?;
+        results.extend(super::live_drift::manager_verify_results(
+            &resolved,
+            &registry,
+            &resolved_modules,
+            &cfgd_installed,
+            &pkg_cx,
+        )?);
+        Ok(results)
+    })?;
+    // This command just checked the machine itself, whatever it found — the
+    // recorded-state `status` header dates its display from here, and a scan
+    // that finds nothing is exactly the one a clean host has no other record of.
+    state.record_scan();
     let pass_count = results.iter().filter(|r| r.matches).count();
     let fail_count = results.iter().filter(|r| !r.matches).count();
     let has_drift = fail_count > 0;

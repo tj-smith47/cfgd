@@ -960,8 +960,24 @@ pub fn install_release(
     // applied upgrade (no second prompt). Gated by the effective skills policy;
     // project scope is never touched. Best-effort — a refresh failure must not
     // unwind a binary upgrade that already succeeded.
+    // Narrated because the tail runs after the download's own progress bar has
+    // gone and before the caller emits anything: a skill refresh reads and
+    // rewrites files and a daemon restart waits on a process. Retired
+    // silently on every outcome — both call sites emit `upgraded_doc` the
+    // moment this returns, and a settled line here would sit above it saying
+    // the same thing twice.
+    let mut tail = printer.map(|p| p.spinner("Finalizing install"));
+    if let Some(s) = tail.as_mut() {
+        s.set_message("Refreshing skills");
+    }
     let skill_refresh = refresh_user_scope_skills(cfg, cfgd_version);
+    if let Some(s) = tail.as_mut() {
+        s.set_message("Restarting daemon");
+    }
     let daemon_terminated = terminate_daemon_if_running();
+    if let Some(s) = tail {
+        s.finish_silent();
+    }
     Ok(AppliedUpdate {
         report,
         daemon_terminated,

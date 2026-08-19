@@ -196,12 +196,16 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
             break;
         }
         turn += 1;
-        let response = client.send_message(
-            conversation.messages(),
-            conversation.system_prompt(),
-            &tool_defs,
-            8192,
-        )?;
+        // The API round-trip is the loop's only wait, and it prints nothing
+        // until the model's first text block arrives.
+        let response = printer.narrate(format!("Thinking (turn {turn})"), |_| {
+            client.send_message(
+                conversation.messages(),
+                conversation.system_prompt(),
+                &tool_defs,
+                8192,
+            )
+        })?;
 
         tracing::debug!(
             id = %response.id,
@@ -428,7 +432,9 @@ fn cmd_generate_scan_only(printer: &Printer, args: &GenerateArgs) -> anyhow::Res
         })
         .unwrap_or_else(|| "zsh".to_string());
 
-    let dotfiles = generate::scan::scan_dotfiles(&home_path)?;
+    let dotfiles = printer.narrate("Scanning dotfiles", |_| {
+        generate::scan::scan_dotfiles(&home_path)
+    })?;
     let tool_set: std::collections::HashSet<String> = dotfiles
         .iter()
         .filter_map(|e| e.tool_guess.clone())
@@ -448,7 +454,9 @@ fn cmd_generate_scan_only(printer: &Printer, args: &GenerateArgs) -> anyhow::Res
         }
     }
 
-    let shell_result = generate::scan::scan_shell_config(&detected_shell, &home_path)?;
+    let shell_result = printer.narrate(format!("Scanning {detected_shell} config"), |_| {
+        generate::scan::scan_shell_config(&detected_shell, &home_path)
+    })?;
     {
         let sec = printer.section(format!("Scanning {detected_shell} Config"));
         if !shell_result.aliases.is_empty() {
