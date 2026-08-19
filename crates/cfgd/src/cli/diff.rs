@@ -213,7 +213,7 @@ pub fn cmd_diff(
                         for drift in &drifts {
                             sys_group
                                 .status(Role::Warn, format!("{}.{}", key, drift.key))
-                                .detail(format!("want {}, have {}", drift.expected, drift.actual));
+                                .drift(&drift.expected, &drift.actual);
                             diff_payload.system.push(SystemDriftOutput {
                                 key: format!("{}.{}", key, drift.key),
                                 expected: drift.expected.clone(),

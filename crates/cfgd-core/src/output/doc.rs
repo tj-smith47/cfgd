@@ -45,6 +45,14 @@ impl StatusFields {
         self.detail = s.map(|x| x.to_string());
         self
     }
+    /// A planned-vs-actual mismatch's detail slot: `want: <expected>, have:
+    /// <actual>`, composed through [`super::drift_detail`] — the same
+    /// canonical spelling `StatusBuilder::drift` composes for the streaming
+    /// path, so the Doc and streaming renders of one mismatch never diverge.
+    pub fn drift(self, expected: impl std::fmt::Display, actual: impl std::fmt::Display) -> Self {
+        self.detail(super::drift_detail(expected, actual))
+    }
+
     pub fn duration(mut self, d: Duration) -> Self {
         self.duration = Some(d);
         self
@@ -625,6 +633,24 @@ mod tests {
             let l = label.as_ref().unwrap();
             assert!(matches!(l.role, Role::Secondary));
             assert_eq!(l.text, "source-a");
+        } else {
+            panic!("expected Status");
+        }
+    }
+
+    /// `StatusFields::drift` composes the same `want: X, have: Y` spelling
+    /// as the streaming `StatusBuilder::drift` — proven directly against
+    /// `super::super::drift_detail`, not re-derived.
+    #[test]
+    fn doc_status_with_drift_composes_the_detail_slot() {
+        let d = Doc::new().status_with(Role::Warn, "sysctl.net.ipv4.ip_forward", |f| {
+            f.drift("1", "0")
+        });
+        if let Component::Status { detail, .. } = &d.children[0] {
+            assert_eq!(
+                detail.as_deref(),
+                Some(super::super::drift_detail("1", "0").as_str())
+            );
         } else {
             panic!("expected Status");
         }

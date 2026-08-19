@@ -818,8 +818,8 @@ fn collect_system_checks_with_drift_violation() {
     let checks = collect_system_checks(&profile, &[], &registry).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Violation);
-    assert!(checks[0].detail.as_deref().unwrap().contains("expected 1"));
-    assert!(checks[0].detail.as_deref().unwrap().contains("actual 0"));
+    assert!(checks[0].detail.as_deref().unwrap().contains("want: 1"));
+    assert!(checks[0].detail.as_deref().unwrap().contains("have: 0"));
 }
 
 #[test]

@@ -98,6 +98,17 @@ impl<'p> StatusBuilder<'p> {
         self
     }
 
+    /// A planned-vs-actual mismatch's detail slot: `want: <expected>, have:
+    /// <actual>`, composed through [`super::drift_detail`] so the spelling
+    /// can never drift between this and `doc::StatusFields::drift`. Always
+    /// the detail slot, never baked into the subject — the subject is what
+    /// the padding column and the marker/label composition key off, and a
+    /// drift-report subject that embeds its own mismatch text is invisible
+    /// to both.
+    pub fn drift(self, expected: impl std::fmt::Display, actual: impl std::fmt::Display) -> Self {
+        self.detail(super::drift_detail(expected, actual))
+    }
+
     pub fn duration(mut self, d: Duration) -> Self {
         self.duration = Some(d);
         self
@@ -224,6 +235,23 @@ mod tests {
         let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("✗ /tmp/foo — permission denied"), "got: {s:?}");
         assert!(s.contains("(2.5s)"), "got: {s:?}");
+    }
+
+    /// `StatusBuilder::drift` lands in the detail slot (after the em-dash),
+    /// never baked into the subject — proves the composed detail is exactly
+    /// [`super::super::drift_detail`]'s output, not a re-derived spelling.
+    #[test]
+    fn drift_composes_want_have_in_the_detail_slot() {
+        let (r, buf) = build();
+        let sink = sink_for(&buf);
+        let b = StatusBuilder::new(r, sink, 0, Role::Warn, "sysctl.net.ipv4.ip_forward")
+            .drift("1", "0");
+        drop(b);
+        let s = crate::test_helpers::captured_text(&buf);
+        assert!(
+            s.contains("sysctl.net.ipv4.ip_forward — want: 1, have: 0"),
+            "got: {s:?}"
+        );
     }
 
     /// API-contract test for `StatusBuilder::label`. The label is appended at

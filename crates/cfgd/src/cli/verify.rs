@@ -158,7 +158,7 @@ pub fn build_verify_doc(output: &VerifyOutput) -> Doc {
                 s.status_with(
                     Role::Fail,
                     format!("{} {}", r.resource_type, r.resource_id),
-                    |sf| sf.detail(format!("want: {}, have: {}", r.expected, r.actual)),
+                    |sf| sf.drift(&r.expected, &r.actual),
                 )
             }
         })

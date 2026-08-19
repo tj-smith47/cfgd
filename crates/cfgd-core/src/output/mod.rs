@@ -156,6 +156,20 @@ pub fn collapse_to_subject_line(err: impl std::fmt::Display) -> String {
     out
 }
 
+/// The ONE spelling of a planned-vs-actual mismatch: `want: <expected>,
+/// have: <actual>`. [`super::status_builder::StatusBuilder::drift`] and
+/// `doc::StatusFields::drift` both compose their detail slot through this,
+/// and so does [`super::compliance::system_checks_from_diffs`]'s `detail`
+/// field — three producers that would otherwise drift (three different
+/// spellings were observed: `want {}, have {}` with no colon, `expected {},
+/// actual {}`, and this canonical form baked straight into a status
+/// subject instead of the detail slot). Display-only: a `-o json` payload
+/// keeps its own `expected`/`actual` fields under their own names: this
+/// never touches serialization, only what a human reads.
+pub fn drift_detail(expected: impl std::fmt::Display, actual: impl std::fmt::Display) -> String {
+    format!("want: {expected}, have: {actual}")
+}
+
 /// Rendered width cap for [`condense_script_label`], in `char`s.
 ///
 /// Eighty columns is the terminal width a status subject can assume without
@@ -237,6 +251,40 @@ pub mod test_capture;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod drift_detail_tests {
+    use super::drift_detail;
+
+    #[test]
+    fn composes_the_canonical_want_have_spelling() {
+        assert_eq!(drift_detail("1.2.3", "1.2.0"), "want: 1.2.3, have: 1.2.0");
+    }
+
+    /// `String`, `&str` and `&String` all reach it unchanged (`impl
+    /// Display` rather than `impl Into<String>`) — every producer call
+    /// site holds a different one of the three.
+    #[test]
+    fn accepts_string_and_str_and_ref_string_uniformly() {
+        let owned = String::from("present");
+        assert_eq!(
+            drift_detail(owned.clone(), "absent"),
+            drift_detail(owned.as_str(), "absent")
+        );
+        assert_eq!(
+            drift_detail(&owned, "absent"),
+            drift_detail(owned, "absent")
+        );
+    }
+
+    #[test]
+    fn a_question_mark_placeholder_composes_like_any_other_value() {
+        // status.rs's drift event renders `?` when a value was never
+        // recorded (`Option::as_deref().unwrap_or("?")`) — the composer
+        // does not special-case it.
+        assert_eq!(drift_detail("?", "present"), "want: ?, have: present");
+    }
+}
 
 #[cfg(test)]
 mod collapse_tests {

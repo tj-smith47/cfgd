@@ -685,10 +685,7 @@ pub fn system_checks_from_diffs(diffs: &[SystemDiff]) -> Vec<ComplianceCheck> {
                         category: "system".into(),
                         key: Some(crate::reconciler::system_resource_key(key, &drift.key)),
                         status: ComplianceStatus::Violation,
-                        detail: Some(format!(
-                            "expected {}, actual {}",
-                            drift.expected, drift.actual
-                        )),
+                        detail: Some(crate::output::drift_detail(&drift.expected, &drift.actual)),
                         value: Some(drift.actual.clone()),
                         ..Default::default()
                     });

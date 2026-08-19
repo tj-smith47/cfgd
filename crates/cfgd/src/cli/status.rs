@@ -106,13 +106,9 @@ fn render_drift_section(
                     } else {
                         event.resource_id.clone()
                     };
-                let subject = format!(
-                    "{} {} — want: {}, have: {}",
-                    event.resource_type,
-                    display_id,
-                    event.expected.as_deref().unwrap_or("?"),
-                    event.actual.as_deref().unwrap_or("?"),
-                );
+                let subject = format!("{} {}", event.resource_type, display_id);
+                let expected = event.expected.as_deref().unwrap_or("?");
+                let actual = event.actual.as_deref().unwrap_or("?");
                 if event.source != LOCAL_LAYER {
                     // Source attribution renders in `secondary` (pink/magenta)
                     // at end-of-subject; the StatusBuilder API guarantees the
@@ -123,10 +119,10 @@ fn render_drift_section(
                     // three surfaces that name a source.
                     let label_text = Owner::source(&event.source).token();
                     s.status_with(Role::Warn, subject, |f| {
-                        f.label(Role::Secondary, label_text)
+                        f.drift(expected, actual).label(Role::Secondary, label_text)
                     })
                 } else {
-                    s.status(Role::Warn, subject)
+                    s.status_with(Role::Warn, subject, |f| f.drift(expected, actual))
                 }
             })
         })
