@@ -174,7 +174,7 @@ pub fn cmd_diff(
         )?;
         // Same planner the Prerequisites phase runs, so a manager `diff` calls
         // out as drift is exactly the one `apply` would provision or refuse —
-        // and the same predicate `verify`/`status -e` share via
+        // and the same predicate `verify`/`status --scan` share via
         // `manager_drift_actions`, so no second membership rule can drift out
         // of sync with the reconciler's.
         let manager_actions: Vec<ManagerAction> = super::live_drift::manager_drift_actions(
@@ -504,7 +504,7 @@ pub(super) fn print_package_drift(
         if *owner == managers_owner {
             for ma in manager_actions {
                 // The line's words come from the one derivation `verify` and
-                // `status -e` fold into their own rows, so the two surfaces
+                // `status --scan` fold into their own rows, so the two surfaces
                 // cannot describe one unprovisionable manager two ways.
                 let Some(phrase) = super::live_drift::manager_drift_phrase(ma) else {
                     continue;

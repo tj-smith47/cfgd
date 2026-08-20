@@ -127,14 +127,32 @@ fn last_scan_at_is_none_before_the_first_scan() {
 #[test]
 fn record_scan_upserts_the_single_row() {
     let store = StateStore::open_in_memory().unwrap();
-    store.record_scan();
-    let first = store.last_scan_at().unwrap().expect("scan recorded");
+    // Seeded with a value no clock will ever produce, so the assertions below
+    // turn on whether the UPSERT replaced it — two back-to-back
+    // `record_scan()` calls could not: `utc_now_iso8601` is second-resolution,
+    // so they usually stamp the same string and every comparison between them
+    // holds whether or not the second write landed at all.
+    store
+        .conn
+        .execute(
+            "INSERT INTO last_scan (id, timestamp) VALUES (1, '2000-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
 
-    // A second scan overwrites the same row rather than accumulating one per
-    // call — `last_scan` holds exactly one machine-wide timestamp.
-    store.record_scan();
-    let second = store.last_scan_at().unwrap().expect("scan recorded");
-    assert!(second >= first);
+    let stamped = store.record_scan();
+    assert_ne!(stamped, "2000-01-01T00:00:00Z");
+    assert_eq!(
+        store.last_scan_at().unwrap().as_deref(),
+        Some(stamped.as_str()),
+        "the scan did not replace the row already holding id = 1"
+    );
+
+    let rows: i64 = store
+        .conn
+        .query_row("SELECT COUNT(*) FROM last_scan", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 1, "last_scan holds exactly one machine-wide row");
 }
 
 #[test]

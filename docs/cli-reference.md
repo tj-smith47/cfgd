@@ -560,17 +560,21 @@ pointing at `--scan`, so a stale dashboard says so rather than reading as a clea
 machine. `-o json` carries the same fact as `lastScanAt` (an ISO 8601 timestamp,
 absent when there has been no scan).
 
-`--scan` performs the live, read-only scan `diff`/`verify` do and folds its findings
-into the display — `driftCheckedLive` flips to `true` and `drift` reflects what the
-scan actually found. It composes with `--module` (scanning that one module) and with
-`--exit-code`. `--exit-code` / `-e` implies `--scan` and additionally exits `5` when
-the scan found drift (see [Exit Codes](#exit-codes)); `--scan` on its own never
-changes the exit code. The live scan costs real time (each run is a full
-package/file check — roughly 10-15s per module in a typical container), so reach for
-it deliberately rather than in an interactive dashboard refresh. `status --module
-<name> --scan` scans that module's own files and missing packages only — it does not evaluate the module's
-system-config contribution (`effective_system_map` folds that into the
-profile-wide scan) or manager drift, matching the scope of `cfgd diff --module`.
+`--scan` performs the live, read-only scan `diff`/`verify` do and folds its
+findings into the display: `driftCheckedLive` flips to `true` and `drift`
+reflects what the scan actually found. A fleet-wide `--scan` also records the
+scan, so its `lastScanAt` is the stamp this run wrote; `--scan --module` does
+not record one, because a single module's check is not evidence the machine was
+scanned. It composes with `--module` (scanning that one module) and with
+`--exit-code`. `--exit-code` / `-e` implies `--scan` and additionally exits `5`
+when the scan found drift (see [Exit Codes](#exit-codes)); `--scan` on its own
+never changes the exit code. The live scan costs real time (each run is a full
+package/file check, roughly 10-15s per module in a typical container), so reach
+for it deliberately rather than in an interactive dashboard refresh.
+`status --module <name> --scan` scans that module's own files and missing
+packages only: it does not evaluate the module's system-config contribution
+(`effective_system_map` folds that into the profile-wide scan) or manager
+drift, matching the scope of `cfgd diff --module`.
 
 `pendingDecisions` lists the same rows `cfgd decide` offers, including
 classified-but-unrecorded items with `id: 0` (see [`cfgd plan`](#cfgd-plan)).

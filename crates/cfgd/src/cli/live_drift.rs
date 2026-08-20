@@ -116,12 +116,12 @@ pub(super) fn module_file_verify_results(
 /// Non-matching live verify results across every category the live scan covers
 /// (profile files, module files, packages, system). Read-only: this performs a
 /// live scan (the same checks `diff` runs) but never writes to the `drift_events`
-/// table, so a `status --exit-code` call stays a non-recording dashboard query.
+/// table, so a `status --scan` call stays a non-recording dashboard query.
 ///
 /// Only divergent results are returned — the caller treats a non-empty vector as
 /// "drift detected" and renders each entry. This is the single source of truth
-/// for both the `status -e` exit gate and its rendered Drift section, so the
-/// human verdict can never contradict the exit code.
+/// for both `status --scan`'s rendered Drift section and the `-e` exit gate, so
+/// the human verdict can never contradict the exit code.
 pub(super) fn live_drift_results(
     config_dir: &std::path::Path,
     resolved: &ResolvedProfile,
@@ -191,7 +191,7 @@ fn live_drift_results_inner(
 
     // Managers: a manager the plan would provision or refuse is itself drift —
     // the same signal `diff`'s `cfgd:managers` group renders, from the same
-    // planner, so `verify`/`status -e` cannot disagree with `diff` about
+    // planner, so `verify`/`status --scan` cannot disagree with `diff` about
     // whether a missing manager is live drift.
     sp.set_message("Scanning: managers");
     for ma in manager_drift_actions(cfgd_core::reconciler::plan_managers(
@@ -285,7 +285,7 @@ pub(in crate::cli) fn manager_drift_actions(actions: Vec<Action>) -> Vec<Manager
 ///
 /// Two surfaces say this fact and they must say it the same way — `diff` as a
 /// status line (`<manager>: not installed` with the detail after it) and
-/// `verify` / `status -e` folded into a [`VerifyResult::actual`]. Derived here
+/// `verify` / `status --scan` folded into a [`VerifyResult::actual`]. Derived here
 /// rather than at each of them, because a reader matching a `verify` row
 /// against the `diff` that explains it is matching the same words.
 pub(in crate::cli) struct ManagerDriftPhrase {
@@ -824,7 +824,7 @@ mod tests {
     #[test]
     fn live_drift_results_includes_a_provisionable_manager() {
         // A missing manager the plan CAN self-heal must still surface as live
-        // drift — otherwise `verify`/`status -e` say "converged" on a host
+        // drift — otherwise `verify`/`status --scan` say "converged" on a host
         // `apply` would still change, the same gap `diff` closed for its own
         // `cfgd:managers` group.
         let dir = tempfile::tempdir().unwrap();
@@ -1036,7 +1036,7 @@ mod tests {
 
     /// One unprovisionable manager, read on both surfaces that report it.
     ///
-    /// `diff` renders a status line and `verify`/`status -e` a `VerifyResult`,
+    /// `diff` renders a status line and `verify`/`status --scan` a `VerifyResult`,
     /// and the two used to word the same fact differently (`cannot bootstrap:
     /// <reason>` against `not installed (cannot bootstrap — <reason>)`), so a
     /// reader matching a verify row against the diff explaining it met two

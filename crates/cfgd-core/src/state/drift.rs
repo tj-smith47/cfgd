@@ -129,7 +129,11 @@ impl StateStore {
     /// run's header its age line rather than fail the run that found it. The
     /// warning lives here so the four cannot drift into four policies and
     /// four spellings of the same message.
-    pub fn record_scan(&self) {
+    ///
+    /// Returns the timestamp it stamped, so a caller rendering a payload in
+    /// the same breath can describe THIS scan rather than re-reading the row
+    /// or reporting the previous one.
+    pub fn record_scan(&self) -> String {
         let timestamp = crate::utc_now_iso8601();
         let written = self.conn.execute(
             "INSERT INTO last_scan (id, timestamp) VALUES (1, ?1)
@@ -139,6 +143,7 @@ impl StateStore {
         if let Err(e) = written {
             tracing::warn!(error = %e, "failed to record scan timestamp");
         }
+        timestamp
     }
 
     /// The timestamp of the most recent [`record_scan`], `None` if this

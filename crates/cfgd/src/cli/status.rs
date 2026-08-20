@@ -40,9 +40,13 @@ pub struct StatusOutput {
     pub drift_checked_live: bool,
     /// When this machine was last scanned for live drift (`--scan`,
     /// `--exit-code`, `diff`, `verify`, or a daemon reconcile tick) — `None`
-    /// when it never has been. Read BEFORE this invocation's own scan (if
-    /// any), so it always describes the RECORDED state's staleness rather
-    /// than the scan this very command may be about to perform.
+    /// when it never has been.
+    ///
+    /// A scanning run reports its OWN scan here, so the field always describes
+    /// the `drift` array beside it. The recorded-state header's age line is
+    /// computed from the value read BEFORE any scan, because that line exists
+    /// to date state the run did NOT check — and it renders only on the
+    /// non-scanning branch, where the two values are the same.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_scan_at: Option<String>,
 }
@@ -66,7 +70,8 @@ pub struct ModuleStatus {
     pub status: String,
     pub last_applied: Option<String>,
     /// Live drift found for this module's files and packages. Always empty
-    /// unless `--exit-code` requested the live scan — see `drift_checked_live`.
+    /// unless `--scan` (or `--exit-code`, which implies it) requested the live
+    /// scan — see `drift_checked_live`.
     pub drift: Vec<cfgd_core::state::DriftEvent>,
     /// Whether `drift` is the verdict of a live scan of this module or just
     /// an unchecked empty default. Mirrors `StatusOutput::drift_checked_live`
@@ -508,7 +513,11 @@ pub(super) fn cmd_status(
             &cfgd_installed,
             &pkg_cx,
         )?;
-        state.record_scan();
+        // The payload's `lastScanAt` must describe the scan that PRODUCED it,
+        // or a consumer pairing it with `driftCheckedLive: true` reads
+        // "scanned live, last scanned two hours ago". The header row read the
+        // pre-scan value above and is not rendered on this branch anyway.
+        output.last_scan_at = Some(state.record_scan());
         for r in &drift {
             output.drift.push(super::live_drift::drift_event_from(r));
         }
@@ -582,6 +591,10 @@ pub(super) fn cmd_status_module(
     // pays for a real scan of the file content and installed packages.
     // Without this, a module that was sabotaged out-of-band read as clean
     // forever, because "Deployed Files" below only checks presence.
+    // Deliberately no `record_scan` below, unlike the fleet-wide path and the
+    // sibling scans in `diff`/`verify`: the stamp dates the FLEET-wide
+    // dashboard's header, and one module's files and packages are not evidence
+    // the machine was checked.
     let mut drift: Vec<cfgd_core::state::DriftEvent> = Vec::new();
     if do_scan {
         let platform = Platform::current();
@@ -649,7 +662,7 @@ pub(super) fn cmd_status_module(
         depends: module.spec.depends.clone(),
         status,
         last_applied,
-        drift_checked_live: exit_code,
+        drift_checked_live: do_scan,
         drift,
     };
 
@@ -1476,15 +1489,24 @@ mod tests {
         assert!(parsed["depends"].is_array());
     }
 
-    // The drift-catching, exit(5) branch is proven by the real subprocess in
-    // `tests/cli_integration.rs::status_module_exit_code_catches_module_file_drift`
-    // — `process::exit` cannot be exercised in-process. This test proves the
-    // complementary path: a converged module's live scan finds nothing, so
-    // `--exit-code` must return Ok rather than calling `process::exit`.
-    #[test]
-    fn cmd_status_module_exit_code_true_no_drift_returns_ok() {
+    /// A module whose one declared file already matches its deployed copy, so
+    /// a live scan of it finds nothing and the only thing left to observe is
+    /// what the payload SAYS about having scanned.
+    ///
+    /// Held as a struct rather than returned loose because every field is a
+    /// live guard: dropping a `TempDir` deletes the tree the run is reading,
+    /// and dropping the home guard hands the run the real `$HOME`.
+    struct ConvergedModuleEnv {
+        config_path: std::path::PathBuf,
+        state_dir: tempfile::TempDir,
+        _config_dir: tempfile::TempDir,
+        _target_dir: tempfile::TempDir,
+        _home: cfgd_core::TestHomeGuard,
+    }
+
+    fn converged_module_env() -> ConvergedModuleEnv {
         let tmp_home = tempfile::tempdir().unwrap();
-        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let home = cfgd_core::with_test_home_guard(tmp_home.path());
         let config_dir = tempfile::tempdir().unwrap();
         let state_dir = tempfile::tempdir().unwrap();
         let target_dir = tempfile::tempdir().unwrap();
@@ -1505,7 +1527,55 @@ mod tests {
         );
         std::fs::write(mod_dir.join("module.yaml"), module_yaml).unwrap();
 
-        let mut cli = test_cli_for(config_path, state_dir.path());
+        ConvergedModuleEnv {
+            config_path,
+            state_dir,
+            _config_dir: config_dir,
+            _target_dir: target_dir,
+            _home: home,
+        }
+    }
+
+    /// `--scan` without `-e` scans, and the payload must say so.
+    ///
+    /// The two flags are separate now, and every other module test passes them
+    /// together — which is exactly the pairing under which a payload reporting
+    /// the WRONG one of the two still reads correct. A consumer differencing
+    /// an empty `drift` array has only this flag to tell "checked, and the
+    /// machine is clean" from "never checked".
+    #[test]
+    fn cmd_status_module_scan_without_exit_code_reports_the_scan_it_ran() {
+        let env = converged_module_env();
+        let mut cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
+        cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+        let (printer, buf) = test_printers_json();
+
+        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, true).unwrap();
+        drop(printer);
+
+        let captured = cfgd_core::test_helpers::captured_text(&buf);
+        let parsed: serde_json::Value = serde_json::from_str(captured.trim())
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {captured}"));
+        assert_eq!(
+            parsed["driftCheckedLive"], true,
+            "`--scan` ran the live scan, so the payload must not report otherwise: {parsed}"
+        );
+        assert_eq!(
+            parsed["drift"],
+            serde_json::json!([]),
+            "a converged module's live scan must find nothing, got: {parsed}"
+        );
+    }
+
+    // The drift-catching, exit(5) branch is proven by the real subprocess in
+    // `tests/cli_integration.rs::status_module_exit_code_catches_module_file_drift`
+    // — `process::exit` cannot be exercised in-process. This test proves the
+    // complementary path: a converged module's live scan finds nothing, so
+    // `--exit-code` must return Ok rather than calling `process::exit`.
+    #[test]
+    fn cmd_status_module_exit_code_true_no_drift_returns_ok() {
+        let env = converged_module_env();
+        let mut cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
