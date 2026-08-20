@@ -140,7 +140,9 @@ fn record_scan_upserts_the_single_row() {
         )
         .unwrap();
 
-    let stamped = store.record_scan();
+    let stamped = store
+        .record_scan()
+        .expect("the upsert must report its stamp");
     assert_ne!(stamped, "2000-01-01T00:00:00Z");
     assert_eq!(
         store.last_scan_at().unwrap().as_deref(),
@@ -153,6 +155,22 @@ fn record_scan_upserts_the_single_row() {
         .query_row("SELECT COUNT(*) FROM last_scan", [], |r| r.get(0))
         .unwrap();
     assert_eq!(rows, 1, "last_scan holds exactly one machine-wide row");
+}
+
+#[test]
+fn record_scan_reports_no_stamp_when_the_write_is_refused() {
+    let store = StateStore::open_in_memory().unwrap();
+    // Removing the table is the one refusal reachable without a second
+    // process holding the file, and it drives the same swallowed-error arm a
+    // locked or corrupt store would: the run must not fail, and the caller
+    // must be told the stamp it would have rendered was never persisted.
+    store.conn.execute("DROP TABLE last_scan", []).unwrap();
+
+    assert_eq!(
+        store.record_scan(),
+        None,
+        "a refused write reported a timestamp no row holds"
+    );
 }
 
 #[test]

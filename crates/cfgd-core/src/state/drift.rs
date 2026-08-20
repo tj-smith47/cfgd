@@ -132,8 +132,12 @@ impl StateStore {
     ///
     /// Returns the timestamp it stamped, so a caller rendering a payload in
     /// the same breath can describe THIS scan rather than re-reading the row
-    /// or reporting the previous one.
-    pub fn record_scan(&self) -> String {
+    /// or reporting the previous one — and `None` when the write was refused,
+    /// because a stamp no row holds would report the machine as scanned more
+    /// recently than the store can prove and then go backwards on the next
+    /// run that reads the row instead. A caller that ignores the value is
+    /// unaffected either way.
+    pub fn record_scan(&self) -> Option<String> {
         let timestamp = crate::utc_now_iso8601();
         let written = self.conn.execute(
             "INSERT INTO last_scan (id, timestamp) VALUES (1, ?1)
@@ -142,8 +146,9 @@ impl StateStore {
         );
         if let Err(e) = written {
             tracing::warn!(error = %e, "failed to record scan timestamp");
+            return None;
         }
-        timestamp
+        Some(timestamp)
     }
 
     /// The timestamp of the most recent [`record_scan`], `None` if this

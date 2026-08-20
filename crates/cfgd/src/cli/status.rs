@@ -515,9 +515,13 @@ pub(super) fn cmd_status(
         )?;
         // The payload's `lastScanAt` must describe the scan that PRODUCED it,
         // or a consumer pairing it with `driftCheckedLive: true` reads
-        // "scanned live, last scanned two hours ago". The header row read the
-        // pre-scan value above and is not rendered on this branch anyway.
-        output.last_scan_at = Some(state.record_scan());
+        // "scanned live, last scanned two hours ago". A refused write leaves
+        // the pre-scan value read above standing, so the field never names a
+        // stamp the store does not hold. The header row read that same value
+        // and is not rendered on this branch anyway.
+        if let Some(stamped) = state.record_scan() {
+            output.last_scan_at = Some(stamped);
+        }
         for r in &drift {
             output.drift.push(super::live_drift::drift_event_from(r));
         }
