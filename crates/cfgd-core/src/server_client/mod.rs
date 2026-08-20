@@ -177,11 +177,12 @@ impl ServerClient {
     /// narration lives here rather than at five call sites that cannot see
     /// either. `label` is the caller's words for what it is asking for.
     ///
-    /// Narrated SILENTLY: every caller already printed a permanent line
-    /// naming this same request before calling, so a settled line here would
-    /// say it a second time. `label` is that caller's words, and the bar
-    /// carries only the WAITING half of them, so the two lines on screen do
-    /// not read as one sentence printed twice.
+    /// Narrated SILENTLY: the caller prints a permanent line naming this
+    /// request before it calls, and the command around it settles the verdict
+    /// once the answer is in, so a settled line here would be a third
+    /// statement of one round-trip. `label` is the caller's words, and the
+    /// bar carries only the WAITING half of them, so the standing line and
+    /// the live one beneath it do not read as one sentence printed twice.
     fn post_with_retry(
         &self,
         path: &str,

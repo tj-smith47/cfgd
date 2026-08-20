@@ -65,7 +65,8 @@ fn checkin_happy_json() {
 
 /// Drift > 0, report succeeded — the streaming "Drift report" section closes
 /// with an Ok status carrying the count. Mirrors production's real section
-/// shape (`printer.section("Drift")`, spinner nested inside it) — see
+/// shape (`printer.section("Drift")`, the outcome written on the section
+/// itself while the wait is narrated a layer down) — see
 /// `cmd_checkin_drift_settle_line_nests_under_the_drift_section_header` in
 /// `cli/checkin.rs`, which asserts the settled line renders deeper than the
 /// `Drift` header for the real command.
@@ -77,8 +78,7 @@ fn checkin_drift_reported_human() {
     printer.kv("Config changed", "false");
     {
         let drift_sec = printer.section("Drift");
-        let sp = drift_sec.spinner("Reporting drift");
-        sp.finish_ok("3 drift items reported");
+        drift_sec.status_simple(Role::Ok, "3 drift items reported");
     }
     printer.emit(build_checkin_doc(&CheckinOutput {
         server_status: "ok".to_string(),

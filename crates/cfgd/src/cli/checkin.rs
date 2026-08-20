@@ -115,20 +115,25 @@ pub fn cmd_checkin(
         // `client.checkin` narrates through the bare `&Printer` it's handed
         // (`status_simple("Checking in with device gateway")`) rather than a
         // bound `SectionGuard`, so it needs a real section to inherit depth
-        // from — without one both it and the spinner render at depth 0
-        // whatever else this command has already printed.
+        // from — without one that line renders at depth 0 whatever else this
+        // command has already printed.
+        //
+        // No bar of its own: the round-trip is narrated one layer down under
+        // the same label, and two spinners animating for one request read as
+        // two requests. What this section owns is the VERDICT.
         let gateway_sec = printer.section("Gateway");
         let _inherit = printer.depth_inheritance();
-        let sp = gateway_sec.spinner("Posting to gateway");
         let result = client
             .checkin(&config_hash, compliance_summary, printer)
             .context("checkin to gateway failed");
         match &result {
             Ok(resp) => {
-                sp.finish_ok(format!("server status: {}", resp.status));
+                gateway_sec.status_simple(Role::Ok, format!("server status: {}", resp.status));
             }
             Err(e) => {
-                sp.finish_fail("Checkin failed").detail(format!("{e:#}"));
+                gateway_sec
+                    .status(Role::Fail, "Checkin failed")
+                    .detail(format!("{e:#}"));
             }
         }
         result?
@@ -158,21 +163,26 @@ pub fn cmd_checkin(
     let all_drifts = cfgd_core::compliance::system_drifts(system_diffs.get_or_init(diff_system));
 
     let drift_status = if !all_drifts.is_empty() {
-        // Same reasoning as the gateway checkin above: `client.report_drift`
-        // narrates through the bare `&Printer` it's handed, so it needs a
-        // real section to inherit depth from.
+        // Same reasoning as the gateway checkin above, both halves:
+        // `client.report_drift` narrates through the bare `&Printer` it's
+        // handed and so needs a real section to inherit depth from, and the
+        // wait itself is narrated one layer down, so this section writes only
+        // the outcome.
         let drift_sec = printer.section("Drift");
         let _inherit = printer.depth_inheritance();
-        let sp = drift_sec.spinner("Reporting drift");
         let res = client
             .report_drift(&all_drifts, printer)
             .context("drift report to gateway failed");
         match &res {
             Ok(()) => {
-                sp.finish_ok(format!("{} drift items reported", all_drifts.len()));
+                drift_sec.status_simple(
+                    Role::Ok,
+                    format!("{} drift items reported", all_drifts.len()),
+                );
             }
             Err(e) => {
-                sp.finish_fail("Drift report failed")
+                drift_sec
+                    .status(Role::Fail, "Drift report failed")
                     .detail(format!("{e:#}"));
             }
         }
