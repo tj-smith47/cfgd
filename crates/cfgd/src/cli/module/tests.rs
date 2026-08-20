@@ -5025,10 +5025,16 @@ fn print_module_review_summary_shows_control_characters_on_every_row() {
         );
         let payload = &row[row.find(marker).unwrap_or(0)..];
         assert!(
-            !payload.contains('\r') && !payload.contains('\u{1b}'),
-            "row {marker:?} carries a live control byte: {row:?}"
+            !payload.contains('\r'),
+            "row {marker:?} carries a live carriage return: {row:?}"
         );
     }
+    // raw-capture-ok: the claim is that no erase sequence survived anywhere on the screen, and a stripping read removes exactly what it looks for
+    let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(
+        !raw.contains("\u{1b}[2K"),
+        "a live erase sequence reached the approval screen: {raw:?}"
+    );
 }
 
 /// The heading and the two trailing rows, which the per-row sweep above
@@ -5061,10 +5067,16 @@ fn print_module_review_summary_shows_control_characters_in_heading_and_trailer()
         );
         let payload = &row[row.find(marker).unwrap_or(0)..];
         assert!(
-            !payload.contains('\r') && !payload.contains('\u{1b}'),
-            "row {marker:?} carries a live control byte: {row:?}"
+            !payload.contains('\r'),
+            "row {marker:?} carries a live carriage return: {row:?}"
         );
     }
+    // raw-capture-ok: the claim is that no erase sequence survived anywhere on the screen, and a stripping read removes exactly what it looks for
+    let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(
+        !raw.contains("\u{1b}[2K"),
+        "a live erase sequence reached the approval screen: {raw:?}"
+    );
 }
 
 #[test]
