@@ -281,7 +281,7 @@ impl Printer {
         let multi =
             indicatif::MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden());
         (
-            Self::live_capture(multi, Arc::new(StringSink(buf.clone()))),
+            Self::live_capture(multi, Arc::new(StringSink(buf.clone())), Verbosity::Normal),
             buf,
         )
     }
@@ -302,7 +302,7 @@ impl Printer {
                 Box::new(RecordingTerm { drawn: buf.clone() }),
             ));
         (
-            Self::live_capture(multi, Arc::new(StringSink(buf.clone()))),
+            Self::live_capture(multi, Arc::new(StringSink(buf.clone())), Verbosity::Normal),
             buf,
         )
     }
@@ -327,12 +327,27 @@ impl Printer {
     /// exactly as they do on a tty.
     #[cfg(test)]
     pub(crate) fn for_test_live_terminal(rows: u16, cols: u16) -> (Self, LiveScreen) {
+        Self::for_test_live_terminal_at(Verbosity::Normal, rows, cols)
+    }
+
+    /// The same emulated screen at a chosen verbosity — the only capture that
+    /// can state what a `Quiet` run leaves on a terminal that really does have
+    /// a live region. Every other capture pins `live_region: false`, so a bar
+    /// built through one is hidden whatever the verbosity says, and a test
+    /// asserting `Quiet` painted nothing would pass with the verbosity gate
+    /// removed entirely.
+    #[cfg(test)]
+    pub(crate) fn for_test_live_terminal_at(
+        verbosity: Verbosity,
+        rows: u16,
+        cols: u16,
+    ) -> (Self, LiveScreen) {
         let term = indicatif::InMemoryTerm::new(rows, cols);
         let multi = indicatif::MultiProgress::with_draw_target(
             indicatif::ProgressDrawTarget::term_like(Box::new(term.clone())),
         );
         (
-            Self::live_capture(multi, Arc::new(TermSink(term.clone()))),
+            Self::live_capture(multi, Arc::new(TermSink(term.clone())), verbosity),
             LiveScreen(term),
         )
     }
@@ -342,13 +357,17 @@ impl Printer {
     /// once so a new field cannot be added to one of them and forgotten in the
     /// others — they would then disagree about `colors` or `live_region` and
     /// the tests reading them would be describing different printers.
-    fn live_capture(multi: indicatif::MultiProgress, sink: Arc<dyn Writer>) -> Self {
+    fn live_capture(
+        multi: indicatif::MultiProgress,
+        sink: Arc<dyn Writer>,
+        verbosity: Verbosity,
+    ) -> Self {
         Printer {
             // Stamped explicitly, like every theme a Printer renders through:
             // the field below and the theme must never be able to disagree.
             renderer: Arc::new(Renderer::with_bars(
                 Theme::default().with_colors(false),
-                Verbosity::Normal,
+                verbosity,
                 multi.clone(),
             )),
             output_format: OutputFormat::Table,

@@ -662,6 +662,15 @@ impl Printer {
     /// carry — and it carries no detail of its own, since the error itself is
     /// about to be rendered at the CLI boundary.
     ///
+    /// That last clause is a PRECONDITION on the caller, not a description:
+    /// only wrap work whose `Err` really does propagate to the boundary. A
+    /// caller that swallows the error and reports it in its own words gets the
+    /// same fact twice — and because `Fail` is the one role that survives
+    /// `Verbosity::Quiet`, the second copy lands on stderr even under
+    /// `-o json`. Such a wait builds its bar by hand and ends it with
+    /// [`Spinner::finish_silent`] on both arms instead, leaving the outcome
+    /// line to whoever owns it.
+    ///
     /// The settle discipline is the whole point: a caller that opens a spinner
     /// by hand and hits an early `?` between creation and its matching finish
     /// abandons it to `Drop`, which can only report the generic
@@ -670,25 +679,30 @@ impl Printer {
     ///
     /// Correct at ANY depth. The wait it wraps is reached from a top-level
     /// command AND from library code several frames inside a section a caller
-    /// opened — `PackageContext::installed_for` is narrated once and asked
-    /// from `cfgd diff`'s open Packages section, from `verify`'s scan and from
-    /// a bare `status` — so the bar is opened under a
-    /// [`Printer::depth_inheritance`] guard held for the whole wait. Without
-    /// it the spinner is a depth-0 non-structural emit, which trips the
-    /// top-level structural assert the moment any caller has a section open.
-    /// The guard is the narrow tool for exactly this: it relaxes status /
-    /// hint / note / spinner / run to the innermost open section's depth and
-    /// leaves every structural emit's assert armed, and nothing this function
-    /// emits is structural.
+    /// opened, so the bar is CONSTRUCTED under a
+    /// [`Printer::depth_inheritance`] guard. Without it the spinner is a
+    /// depth-0 non-structural emit, which trips the top-level structural
+    /// assert the moment any caller has a section open.
+    ///
+    /// The guard covers the construction and nothing else, deliberately. It
+    /// is a counter on the SHARED renderer, so while it is alive the assert
+    /// that catches a misplaced top-level emit is disarmed for every emit on
+    /// every thread — and the bodies wrapped here are whole commands. It is
+    /// not needed for any longer: `spinner` reads the ambient depth once and
+    /// stores it, and both `set_message` and every `finish_*` render from
+    /// that stored field rather than re-reading the renderer.
     ///
     /// [`Spinner::set_message`]: super::spinner::Spinner::set_message
+    /// [`Spinner::finish_silent`]: super::spinner::Spinner::finish_silent
     pub fn narrate<T, E>(
         &self,
         running: impl Into<String>,
         work: impl FnOnce(&mut super::spinner::Spinner<'_>) -> Result<T, E>,
     ) -> Result<T, E> {
-        let _inherit = self.depth_inheritance();
-        let mut sp = self.spinner(running);
+        let mut sp = {
+            let _inherit = self.depth_inheritance();
+            self.spinner(running)
+        };
         match work(&mut sp) {
             Ok(value) => {
                 sp.finish_silent();
@@ -2036,6 +2050,45 @@ mod tests {
         );
     }
 
+    /// A bar paints the moment it is opened, so a wait that returns straight
+    /// away flashes its label and takes it back. Both halves are pinned here:
+    /// the label is on the terminal while the work runs, and the screen holds
+    /// nothing once the wait ends.
+    ///
+    /// The flash is the accepted behaviour rather than an oversight. Deferring
+    /// the first paint until a bar has outlived a threshold needs something to
+    /// paint it once the threshold passes, and a spinner's only hooks are
+    /// `set_message` and `finish_*` — which the waits that most need narrating
+    /// (one blocking probe, one network round-trip) do not call for seconds at
+    /// a time. A hook-checked delay would therefore silence the longest waits
+    /// to spare the shortest a flicker, and a timer thread per bar buys back
+    /// the flicker at the price of a thread per wait. Nothing is stranded and
+    /// no permanent line is written either way, which is what this asserts.
+    #[test]
+    fn narrate_paints_at_once_and_clears_a_wait_that_returns_immediately() {
+        let (printer, screen) = Printer::for_test_live_terminal(24, 100);
+        let out: Result<(), std::io::Error> = printer.narrate("Enumerating apt packages", |sp| {
+            // Joins the steady-tick thread, so this thread is the only writer
+            // and whatever is on screen was painted by the construction above.
+            sp.bar.disable_steady_tick();
+            assert!(
+                screen.contents().contains("Enumerating apt packages"),
+                "the label must be on the terminal before the work returns: {:?}",
+                screen.contents()
+            );
+            Ok(())
+        });
+        printer.flush();
+        assert!(out.is_ok());
+
+        let held = screen.contents();
+        assert_eq!(
+            held.trim(),
+            "",
+            "an instant wait left its flashed label behind: {held:?}"
+        );
+    }
+
     /// A failure settles `Fail` at the step that was actually running, and the
     /// live region is left holding nothing — neither the opening label, nor an
     /// earlier step, nor `Drop`'s generic `(interrupted)` record.
@@ -2119,9 +2172,23 @@ mod tests {
     /// `Quiet` — what a `-o json` run derives, and what a command hands its
     /// library work — narrates nothing at all: the bar is hidden, so no step
     /// ever reaches the terminal and the structured channel stays pure.
+    ///
+    /// Read through the emulated screen at `Quiet`, the ONE capture that can
+    /// state this. Every other constructor pins `live_region: false`, so its
+    /// bar is hidden for a reason that has nothing to do with the verbosity —
+    /// the claim would hold with the `Quiet` gate deleted outright, which is
+    /// the definition of a test that cannot go red.
     #[test]
     fn narrate_under_quiet_paints_no_step() {
-        let (printer, buf) = Printer::for_test_at(Verbosity::Quiet);
+        let (printer, screen) = Printer::for_test_live_terminal_at(Verbosity::Quiet, 24, 100);
+        assert!(
+            printer.live_region,
+            "the capture must own a real live region, or the claim below is vacuous"
+        );
+        assert!(
+            !printer.live_bars(),
+            "Quiet must be what closes the region here, nothing else"
+        );
         let out: Result<(), std::io::Error> = printer.narrate("Collecting snapshot", |sp| {
             assert!(sp.bar.is_hidden(), "Quiet must yield a hidden bar");
             sp.set_message("Checking packages");
@@ -2130,10 +2197,11 @@ mod tests {
         printer.flush();
         assert!(out.is_ok());
 
-        let captured = crate::test_helpers::captured_text(&buf);
+        let held = screen.contents();
         assert_eq!(
-            captured, "",
-            "a Quiet narrated wait wrote to the terminal: {captured:?}"
+            held.trim(),
+            "",
+            "a Quiet narrated wait painted on the terminal: {held:?}"
         );
     }
 
