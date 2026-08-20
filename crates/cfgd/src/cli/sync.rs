@@ -127,7 +127,16 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                             {
                                 let perm_sec = owner.section("Permission Changes");
                                 for change in &perm_changes {
-                                    perm_sec.bullet(change.description.clone());
+                                    // The confirm below approves exactly the
+                                    // text on this row, so the row escapes
+                                    // rather than leaving it to the renderer's
+                                    // fold, which STRIPS: the module review
+                                    // screen's policy, applied to the other
+                                    // surface that asks a yes/no about a
+                                    // remote's own words.
+                                    perm_sec.bullet(cfgd_core::escape_control_chars(
+                                        &change.description,
+                                    ));
                                 }
                             }
                             match printer.prompt_confirm("Accept permission changes?") {

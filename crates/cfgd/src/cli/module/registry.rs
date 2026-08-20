@@ -555,8 +555,17 @@ pub(super) fn print_module_review_summary(
     // apply tree, so the thing being approved is named once, one way.
     let mod_sec = printer.section_owner(&cfgd_core::output::OwnerLabel::new("module", module_name));
 
+    // Every row below carries text the remote module wrote, and escapes it
+    // rather than leaving it to the renderer's `cursor_safe` fold, for the
+    // reason spelled out on `review_entry`: the fold STRIPS an ANSI sequence
+    // and this screen has to SHOW it. One screen, one answer — a `\x1b[2K`
+    // that is visible in the Aliases list and invisible in the Files list
+    // tells the operator two different stories about the same module.
     if !module.spec.depends.is_empty() {
-        mod_sec.kv("Dependencies", module.spec.depends.join(", "));
+        mod_sec.kv(
+            "Dependencies",
+            cfgd_core::escape_control_chars(&module.spec.depends.join(", ")),
+        );
     }
 
     if !module.spec.packages.is_empty() {
@@ -567,19 +576,22 @@ pub(super) fn print_module_review_summary(
                 .as_ref()
                 .map(|v| format!(" (min: {})", v))
                 .unwrap_or_default();
-            pkgs_sec.bullet(format!("{}{}", pkg.name, ver));
+            pkgs_sec.bullet(cfgd_core::escape_control_chars(&format!(
+                "{}{}",
+                pkg.name, ver
+            )));
         }
     }
 
     if !module.spec.files.is_empty() {
         let files_sec = mod_sec.section("Files");
         for file in &module.spec.files {
-            files_sec.bullet(format!(
+            files_sec.bullet(cfgd_core::escape_control_chars(&format!(
                 "{} {} {}",
                 file.source,
                 printer.arrow(),
                 file.target
-            ));
+            )));
         }
     }
 

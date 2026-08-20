@@ -209,7 +209,7 @@ impl<'p> LiveRow<'p> {
             .renderer
             .theme
             .muted
-            .apply_to(format!("… {text}"))
+            .apply_to(format!("… {}", super::cursor_safe(text)))
             .to_string();
         self.bar.disable_steady_tick();
         self.bar.set_style(plain_style());

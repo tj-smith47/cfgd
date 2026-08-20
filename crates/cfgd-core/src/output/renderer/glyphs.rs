@@ -10,7 +10,11 @@ use crate::output::{Role, Theme, cursor_safe};
 /// (buffered Doc tree) so the two paths stay byte-identical.
 fn compose_subject_with_label(theme: &Theme, subject: &str, label: &StatusLabel) -> String {
     let (_, style) = role_glyph(theme, label.role);
-    let styled = style.apply_to(&label.text).to_string();
+    // Folded before the renderer's own style wraps it, same ordering as the
+    // qualifier below: the text is a caller's (an owner token built from a
+    // drift event's source name), and a foreign reset inside it would close
+    // the span the renderer opened around it.
+    let styled = style.apply_to(cursor_safe(&label.text)).to_string();
     format!("{subject} {styled}")
 }
 
@@ -43,7 +47,7 @@ fn compose_subject_with_qualifier(theme: &Theme, subject: &str, qualifier: &str)
 /// and the body is not, which is the whole of the mapping.
 fn compose_subject_with_marker(theme: &Theme, subject: &str, marker: &StatusLabel) -> String {
     let (_, style) = role_glyph(theme, marker.role);
-    let styled = style.apply_to(&marker.text).to_string();
+    let styled = style.apply_to(cursor_safe(&marker.text)).to_string();
     format!("{styled} {subject}")
 }
 

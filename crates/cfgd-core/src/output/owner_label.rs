@@ -60,7 +60,15 @@ impl OwnerLabel {
     /// the heading slot, then this token's own three slots. `plain` mirrors
     /// `format!("{prefix} {}", self.plain())`.
     pub(crate) fn styled_with_prefix(&self, theme: &Theme, prefix: &str) -> String {
-        format!("{} {}", theme.header.apply_to(prefix), self.styled(theme))
+        // The prefix is folded like the token's own two slots, for the same
+        // reason and on the same terms: every production caller passes a
+        // literal or an id it formatted itself, and the slot must not be the
+        // one way in for a caller that does not.
+        format!(
+            "{} {}",
+            theme.header.apply_to(super::cursor_safe(prefix)),
+            self.styled(theme)
+        )
     }
 }
 

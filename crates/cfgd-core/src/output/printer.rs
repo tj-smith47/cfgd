@@ -398,17 +398,25 @@ impl Printer {
             self.renderer
                 .render_heading(self.sink_stderr.as_ref(), &text.into());
         } else {
-            let styled = self
-                .renderer
-                .theme
-                .header
-                .apply_to(super::cursor_safe(&text.into()))
-                .to_string();
+            let styled = heading_fallback_line(&self.renderer.theme, &text.into());
             self.renderer
                 .write_line(self.sink_stderr.as_ref(), depth, &styled);
         }
     }
+}
 
+/// The line [`Printer::heading`] writes on its re-route branch — a heading
+/// asked for at column 0 while a section is open.
+///
+/// A free function rather than three inline statements because the branch
+/// itself is behind a `debug_assert!(false)` and so cannot be entered from a
+/// test build at all: without this seam the fold on it would be provable only
+/// by reading it, which is how a slot ends up unfolded in the first place.
+pub(super) fn heading_fallback_line(theme: &super::Theme, text: &str) -> String {
+    theme.header.apply_to(super::cursor_safe(text)).to_string()
+}
+
+impl Printer {
     /// Top-level `Label: value` heading (`Status: dev-tools`), styled through
     /// [`super::TitleLabel`]'s three slots instead of `heading`'s single
     /// `theme.header` coat.

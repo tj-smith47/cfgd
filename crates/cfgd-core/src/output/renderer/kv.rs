@@ -15,8 +15,22 @@
 //! The rule that keeps it safe is structural rather than remembered: the block
 //! is built by a collector holding `&mut RenderState`, which can reach neither
 //! the state lock nor a sink, so it cannot become a second exit.
+use unicode_width::UnicodeWidthStr;
+
 use super::{Emitting, Renderer, Writer, indent_prefix};
 use crate::output::{KvPair, Verbosity, cursor_safe};
+
+/// `text` followed by enough spaces to reach `width` TERMINAL COLUMNS.
+///
+/// `format!("{:<width$}", …)` pads by char count, which over-pads a
+/// multi-byte key and under-pads a zero-width one — the key column is
+/// measured in columns (the same measure `render_table` pads by), so it has
+/// to be filled in columns or every value after a non-ASCII key sits one
+/// position off.
+fn pad_to_width(text: &str, width: usize) -> String {
+    let pad = width.saturating_sub(UnicodeWidthStr::width(text));
+    format!("{text}{}", " ".repeat(pad))
+}
 
 const KEY_WIDTH_CAP: usize = 24;
 /// Gap inserted between the (padded) key column and the value.
@@ -104,16 +118,13 @@ impl Emitting<'_> {
             .collect();
         let key_col = rows
             .iter()
-            .map(|(k, _)| k.len())
+            .map(|(k, _)| UnicodeWidthStr::width(k.as_str()))
             .max()
             .unwrap_or(0)
             .min(KEY_WIDTH_CAP);
         for (k, v) in &rows {
-            if k.len() <= KEY_WIDTH_CAP {
-                let key = self
-                    .theme
-                    .secondary
-                    .apply_to(format!("{:<width$}", k, width = key_col));
+            if UnicodeWidthStr::width(k.as_str()) <= KEY_WIDTH_CAP {
+                let key = self.theme.secondary.apply_to(pad_to_width(k, key_col));
                 self.out
                     .push(format!("{}{}{}{}", prefix, key, KEY_VALUE_GAP, v));
             } else {
@@ -171,12 +182,13 @@ impl Emitting<'_> {
             .iter()
             .map(|(k, v)| (cursor_safe(k), cursor_safe(v)))
             .collect();
-        let key_col = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+        let key_col = rows
+            .iter()
+            .map(|(k, _)| UnicodeWidthStr::width(k.as_str()))
+            .max()
+            .unwrap_or(0);
         for (k, v) in &rows {
-            let key = self
-                .theme
-                .secondary
-                .apply_to(format!("{:<width$}", k, width = key_col));
+            let key = self.theme.secondary.apply_to(pad_to_width(k, key_col));
             self.out.push(format!("{}{} — {}", prefix, key, v));
         }
         self.mark_top_level_group(super::TopGroup::KvBlock);

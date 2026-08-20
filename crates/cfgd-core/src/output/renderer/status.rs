@@ -264,7 +264,12 @@ impl Renderer {
             detail_tail.extend(lines.map(paint));
         }
         if let Some(target) = f.target {
-            let dim = self.theme.muted.apply_to(format!(" ({})", target.posix()));
+            // A path is as caller-supplied as the subject beside it, and the
+            // parentheses are the renderer's — fold before they wrap it.
+            let dim = self
+                .theme
+                .muted
+                .apply_to(format!(" ({})", cursor_safe(&target.posix().to_string())));
             line.push_str(&dim.to_string());
         }
         if let Some(d) = f.duration {

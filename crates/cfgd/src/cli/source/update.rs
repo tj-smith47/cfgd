@@ -121,7 +121,13 @@ pub(crate) fn run_source_update(
                     if !perm_changes.is_empty() {
                         let perm_sec = source_sec.section("Permission Changes");
                         for change in &perm_changes {
-                            perm_sec.status_simple(Role::Warn, change.description.clone());
+                            // Shown rather than stripped, the module review
+                            // screen's policy: the confirm below approves
+                            // exactly the text on this row.
+                            perm_sec.status_simple(
+                                Role::Warn,
+                                cfgd_core::escape_control_chars(&change.description),
+                            );
                         }
                     }
 

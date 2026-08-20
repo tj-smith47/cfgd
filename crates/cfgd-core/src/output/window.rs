@@ -94,10 +94,11 @@ impl<'p> OutputWindow<'p> {
             // No window to hold the label, so the step announces itself the way
             // `run_streaming` does: a Running status, then its lines.
             //
-            // The label is caller-supplied — a module's own `run:` script body
-            // reaches it — and this arm fires exactly when there is no bar to
-            // hold it, so an unfolded escape lands in a redirected log the
-            // operator reads later. Same fold every other subject slot takes.
+            // Routed through `finalize_subject` like every other status
+            // subject rather than written straight into the fields — the fold
+            // it applies is idempotent over the label `compose_in_flight_subject`
+            // already handed back, and going through it is what keeps this arm
+            // rendering the same bytes as the settled line that replaces it.
             let announced = finalize_subject(&spinner.renderer.theme, &label, None, None, None);
             spinner.renderer.render_status(
                 spinner.sink.as_ref(),
@@ -163,7 +164,7 @@ impl<'p> OutputWindow<'p> {
             msg.push_str(&indent);
             msg.push_str(&self.spinner.renderer.theme.muted.apply_to(line).to_string());
         }
-        self.spinner.set_message(msg);
+        self.spinner.set_composed_message(msg);
     }
 
     /// Collapse the window and replace it with a single Status in `role`.
