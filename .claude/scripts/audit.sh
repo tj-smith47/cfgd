@@ -674,6 +674,10 @@ log_section "DRY — Duplicated Function Definitions"
 # one fluent method surface (output-module.md), so a method name shared across
 # those builders is intentional API symmetry, not duplicated logic.
 #
+# `len` and `is_empty` are excluded together: clippy's `len_without_is_empty`
+# requires a type offering one to offer the other, so any collection-shaped
+# type in the workspace defines both, and excusing only half of the pair makes
+# the gate fire on the idiom it forced.
 # ALLOWED_FN_PAIRS excuses one *specific* definition rather than a bare name, so
 # the name keeps its budget: `is_clean` is deliberately shared by the two backup
 # outcome types (BackupRunRecord, RestoreOutcome) which answer the exit-code
@@ -750,7 +754,7 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "resolved_prefix" && $2 != "record_resolved_prefix" && \
         $2 != "run_migrations" && $2 != "request_challenge" && $2 != "path_dirs" && \
         $2 != "created_path_dirs" && \
-        $2 != "package_aliases" && $2 != "is_empty" && $2 != "expecting" && \
+        $2 != "package_aliases" && $2 != "is_empty" && $2 != "len" && $2 != "expecting" && \
         $2 != "error" && $2 != "enroll_info" && $2 != "parse" && \
         $2 != "cmd_status" && \
         $2 != "terminate_process" && $2 != "set_file_permissions" && \

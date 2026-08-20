@@ -181,7 +181,7 @@ pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> R
     if !crate::command_available("launchctl") {
         printer
             .status(Role::Warn, "launchctl not found")
-            .detail("daemon installed but not started");
+            .detail(super::INSTALLED_NOT_STARTED);
         printer.hint("Start it later from a GUI login session with: cfgd daemon install");
         return Ok(false);
     }

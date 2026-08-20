@@ -207,7 +207,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
         };
         printer
             .status(Role::Warn, "systemctl not found")
-            .detail("daemon installed but not started");
+            .detail(super::INSTALLED_NOT_STARTED);
         printer.hint(format!("Start it later with: {}", hint_cmd));
         return Ok(false);
     }
@@ -230,7 +230,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
                         Role::Warn,
                         "no user session bus (XDG_RUNTIME_DIR unset and /run/user/<uid> absent)",
                     )
-                    .detail("daemon installed but not started");
+                    .detail(super::INSTALLED_NOT_STARTED);
                 printer.hint(
                     "Enable lingering so the user service can run without an active login: loginctl enable-linger $USER, then re-run cfgd daemon install",
                 );

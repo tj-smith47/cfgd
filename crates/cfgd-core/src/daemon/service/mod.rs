@@ -31,6 +31,16 @@ pub use windows::service_binpath_argv;
 // --- Service Management ---
 // launchd on macOS, systemd on Linux, Windows Service on Windows.
 
+/// The detail line every platform's start path shows when the unit landed on
+/// disk but nothing is running yet.
+///
+/// Three start paths reach it — systemd with no `systemctl`, systemd with no
+/// user session bus, launchd with no `launchctl` — and each pairs it with its
+/// own subject and its own hint. Only the middle clause, the state of the
+/// machine, is shared, and a user comparing two hosts must read the same
+/// words for the same state.
+pub(crate) const INSTALLED_NOT_STARTED: &str = "daemon installed but not started";
+
 /// The `--state-dir` / `--runtime-dir` tokens an installed service must carry,
 /// in a fixed order, for whichever of the two were set.
 ///
