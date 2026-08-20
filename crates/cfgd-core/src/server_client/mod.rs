@@ -170,13 +170,59 @@ impl ServerClient {
         req
     }
 
-    /// Send a POST request with exponential backoff on network failures.
-    fn post_with_retry(&self, path: &str, body_json: &str) -> std::result::Result<String, String> {
+    /// Send a POST request with exponential backoff, narrating the wait.
+    ///
+    /// The one place every gateway round-trip blocks, and the only one that
+    /// knows an attempt failed and a backoff is being slept off — so the
+    /// narration lives here rather than at five call sites that cannot see
+    /// either. `label` is the caller's words for what it is asking for.
+    ///
+    /// Retired SILENTLY on both arms: every caller already owns the outcome
+    /// line (a `status_simple` before, a mapped error after, and at `checkin`
+    /// a `SectionGuard` spinner that settles the verdict itself), so a settled
+    /// line here would state the same result a second time.
+    fn post_with_retry(
+        &self,
+        path: &str,
+        body_json: &str,
+        printer: &Printer,
+        label: &str,
+    ) -> std::result::Result<String, String> {
+        // The guard is what lets the bar open at the ambient depth: `checkin`
+        // and the drift report call this from inside an open section. It
+        // covers the construction alone, the only part that reads the
+        // renderer's depth.
+        let mut sp = {
+            let _inherit = printer.depth_inheritance();
+            printer.spinner(label)
+        };
+        // No `?` between the bar and its finish, so no path can abandon it to
+        // `Drop`'s `(interrupted)` record.
+        let out = self.post_attempts(path, body_json, label, &mut sp);
+        sp.finish_silent();
+        out
+    }
+
+    fn post_attempts(
+        &self,
+        path: &str,
+        body_json: &str,
+        label: &str,
+        sp: &mut crate::output::Spinner<'_>,
+    ) -> std::result::Result<String, String> {
         let retry = crate::retry::BackoffConfig::DEFAULT_TRANSIENT;
         let mut last_err = String::new();
         for attempt in 0..retry.max_attempts {
             let delay = retry.delay_for_attempt(attempt);
             if !delay.is_zero() {
+                // Named only from the second attempt on: the opening label
+                // already describes the first, and a "(attempt 1 of 4)" on a
+                // request that will succeed reads as a problem.
+                sp.set_message(format!(
+                    "{label} (attempt {} of {})",
+                    attempt + 1,
+                    retry.max_attempts
+                ));
                 std::thread::sleep(delay);
             }
 
@@ -252,10 +298,13 @@ impl ServerClient {
             )))
         })?;
 
-        printer.status_simple(Role::Info, "Checking in with device gateway");
+        // One binding for the permanent line and the bar beneath it: the
+        // two name the same request and must never drift apart.
+        let label = "Checking in with device gateway";
+        printer.status_simple(Role::Info, label);
 
         let response_body = self
-            .post_with_retry("/api/v1/checkin", &body_json)
+            .post_with_retry("/api/v1/checkin", &body_json, printer, label)
             .map_err(|e| {
                 CfgdError::Io(std::io::Error::new(
                     std::io::ErrorKind::ConnectionRefused,
@@ -300,7 +349,13 @@ impl ServerClient {
             format!("Reporting {} drift events to device gateway", drifts.len()),
         );
 
-        self.post_with_retry(&path, &body_json).map_err(|e| {
+        self.post_with_retry(
+            &path,
+            &body_json,
+            printer,
+            "Reporting drift to device gateway",
+        )
+        .map_err(|e| {
             CfgdError::Io(std::io::Error::new(
                 std::io::ErrorKind::ConnectionRefused,
                 format!("device gateway drift report failed: {}", e),
@@ -330,10 +385,13 @@ impl ServerClient {
             )))
         })?;
 
-        printer.status_simple(Role::Info, "Enrolling device with device gateway");
+        // One binding for the permanent line and the bar beneath it: the
+        // two name the same request and must never drift apart.
+        let label = "Enrolling device with device gateway";
+        printer.status_simple(Role::Info, label);
 
         let response_body = self
-            .post_with_retry("/api/v1/enroll", &body_json)
+            .post_with_retry("/api/v1/enroll", &body_json, printer, label)
             .map_err(|e| {
                 CfgdError::Io(std::io::Error::new(
                     std::io::ErrorKind::ConnectionRefused,
@@ -395,10 +453,13 @@ impl ServerClient {
             )))
         })?;
 
-        printer.status_simple(Role::Info, "Requesting enrollment challenge");
+        // One binding for the permanent line and the bar beneath it: the
+        // two name the same request and must never drift apart.
+        let label = "Requesting enrollment challenge";
+        printer.status_simple(Role::Info, label);
 
         let response_body = self
-            .post_with_retry("/api/v1/enroll/challenge", &body_json)
+            .post_with_retry("/api/v1/enroll/challenge", &body_json, printer, label)
             .map_err(|e| {
                 CfgdError::Io(std::io::Error::new(
                     std::io::ErrorKind::ConnectionRefused,
@@ -435,10 +496,13 @@ impl ServerClient {
             )))
         })?;
 
-        printer.status_simple(Role::Info, "Submitting signed challenge for verification");
+        // One binding for the permanent line and the bar beneath it: the
+        // two name the same request and must never drift apart.
+        let label = "Submitting signed challenge for verification";
+        printer.status_simple(Role::Info, label);
 
         let response_body = self
-            .post_with_retry("/api/v1/enroll/verify", &body_json)
+            .post_with_retry("/api/v1/enroll/verify", &body_json, printer, label)
             .map_err(|e| {
                 CfgdError::Io(std::io::Error::new(
                     std::io::ErrorKind::ConnectionRefused,
