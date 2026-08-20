@@ -2,7 +2,7 @@
 //! to `&Printer`, and Drop closes the section.
 use std::sync::Arc;
 
-use super::renderer::{Renderer, StatusFields, Table, Writer};
+use super::renderer::{Renderer, StatusFields, Table, Writer, finalize_subject};
 use super::{Printer, Role};
 
 /// Open section. Holds a reference to Printer and the renderer's depth.
@@ -134,8 +134,16 @@ impl<'p> SectionGuard<'p> {
 
     /// Status with no extra fields. For chained detail/duration/target, use
     /// `status` for the chainable builder.
+    ///
+    /// The subject is finalized exactly as the builder path finalizes its own
+    /// — no marker, no qualifier, no label, which is what "simple" means — so
+    /// the two produce the same bytes for the same string. That is also the
+    /// only sanitation this slot gets: a subject can be a gateway-supplied or
+    /// tool-supplied value, and a `\x1b[2K` inside one erases the line it is
+    /// being written to, while any foreign escape mis-measures the alignment
+    /// column the section pads against.
     pub fn status_simple(&self, role: Role, subject: impl Into<String>) -> &Self {
-        let subject = subject.into();
+        let subject = finalize_subject(&self.renderer.theme, &subject.into(), None, None, None);
         self.renderer.render_status(
             self.sink.as_ref(),
             self.depth,
@@ -618,6 +626,32 @@ mod tests {
         assert!(
             out.contains("✓ bare\n"),
             "a subject with no trailing content must not be padded: {out:?}"
+        );
+    }
+
+    /// A status subject is as untrusted as a status detail: a gateway's JSON
+    /// field and a tool's captured stderr both land in one, and the renderer
+    /// strips the detail slot already. An escape left in the subject erases
+    /// the very line being written (`ESC[2K`) and measures zero columns, so
+    /// the section pads every following line against a width that is not
+    /// there.
+    #[test]
+    fn section_status_subject_is_stripped_of_foreign_escapes() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let sec = p.section("Gateway");
+            sec.status_simple(Role::Ok, "server status: \x1b[2Kok\x1b[31m");
+        }
+        p.flush();
+        // raw-capture-ok: the claim IS that no escape survives, and captured_text strips exactly what this test looks for
+        let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            !raw.contains("\x1b[2K") && !raw.contains("\x1b[31m"),
+            "a foreign escape reached the terminal: {raw:?}"
+        );
+        assert!(
+            strip_ansi(&raw).contains("server status: ok"),
+            "stripping must keep the visible text: {raw:?}"
         );
     }
 

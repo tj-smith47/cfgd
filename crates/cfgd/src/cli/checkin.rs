@@ -139,7 +139,12 @@ pub fn cmd_checkin(
         result?
     };
 
-    printer.kv("Server status", &resp.status);
+    // The status line above is sanitized by the renderer's status-subject
+    // slot; a kv VALUE is not, because that slot deliberately carries
+    // caller-composed styling (`Printer::muted`). This value is the gateway's
+    // own string, so it is stripped here — the same fold, so one response
+    // renders one way in both places.
+    printer.kv("Server status", cfgd_core::output::strip_ansi(&resp.status));
     printer.kv("Config changed", resp.config_changed.to_string());
 
     if let Some(ref desired) = resp.desired_config {
@@ -543,6 +548,59 @@ spec:
             shim.argv_lines_naming("org.gnome.cfgd-checkin"),
             vec!["list-recursively org.gnome.cfgd-checkin"],
             "the compliance snapshot and the drift report share one diff pass"
+        );
+    }
+
+    /// Every string in a gateway response is remote input, and two of this
+    /// command's lines echo `status` verbatim — a status subject and a kv
+    /// row. An `ESC[2K` in either erases the line it is written on, so what a
+    /// user reads is not what the gateway sent. The two slots sanitize in
+    /// different places (the renderer owns the subject; a kv value carries
+    /// caller-composed styling, so the call site owns it), which is exactly
+    /// why the assertion covers the whole rendered command rather than one
+    /// line of it.
+    #[test]
+    #[serial_test::serial]
+    fn a_gateway_status_carrying_escapes_cannot_repaint_the_terminal() {
+        let config_dir = make_test_config_dir();
+        let state_dir = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(config_dir.path());
+        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+
+        let mut server = mockito::Server::new();
+        let checkin = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_body(r#"{"status":"\u001b[2Kok\u001b[31m","configChanged":false}"#)
+            .create();
+
+        let cli = test_cli_for(config_dir.path(), state_dir.path());
+        let (printer, cap) = Printer::for_test_doc();
+        let result = cmd_checkin(
+            &cli,
+            &printer,
+            &server.url(),
+            Some("test-key"),
+            Some("dev-1"),
+        );
+        drop(printer);
+
+        assert!(result.is_ok(), "cmd_checkin should succeed: {result:?}");
+        checkin.assert();
+
+        let human = cap.human();
+        assert!(
+            !human.contains("\x1b[2K") && !human.contains("\x1b[31m"),
+            "a gateway escape reached the terminal: {human:?}"
+        );
+        let plain = cfgd_core::output::strip_ansi(&human);
+        assert!(
+            plain.contains("server status: ok"),
+            "the verdict line must still name the status: {plain:?}"
+        );
+        assert!(
+            plain.contains("Server status"),
+            "the kv row must still render: {plain:?}"
         );
     }
 

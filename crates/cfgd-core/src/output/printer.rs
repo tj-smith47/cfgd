@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use console::Term;
 
-use super::renderer::{Renderer, StatusFields, Table, Writer};
+use super::renderer::{Renderer, StatusFields, Table, Writer, finalize_subject};
 use super::{OutputFormat, Role, Theme, Verbosity};
 
 /// One canned prompt response. Used by tests to drive prompt_* past
@@ -568,9 +568,17 @@ impl Printer {
 
     /// Status with no extra fields. For detail/duration/target, use the builder
     /// returned by the binding helper `status` (see status_builder.rs).
+    ///
+    /// The subject is finalized exactly as the builder path finalizes its own
+    /// — no marker, no qualifier, no label, which is what "simple" means — so
+    /// the two produce the same bytes for the same string. That is also the
+    /// only sanitation this slot gets: a subject can be a gateway-supplied or
+    /// tool-supplied value, and a `\x1b[2K` inside one erases the line it is
+    /// being written to, while any foreign escape mis-measures every column
+    /// downstream of it.
     pub fn status_simple(&self, role: Role, subject: impl Into<String>) {
         let depth = self.renderer.inherit_depth();
-        let subject = subject.into();
+        let subject = finalize_subject(&self.renderer.theme, &subject.into(), None, None, None);
         self.renderer.render_status(
             self.sink_stderr.as_ref(),
             depth,
@@ -1020,6 +1028,26 @@ mod tests {
 
     use crate::test_helpers::EnvVarGuard;
     use serial_test::serial;
+
+    /// The top-level counterpart of the section-guard case: the same subject
+    /// slot, the same untrusted sources (a gateway JSON field, a tool's
+    /// captured stderr), and the same erasure if an escape survives it.
+    #[test]
+    fn top_level_status_subject_is_stripped_of_foreign_escapes() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        p.status_simple(Role::Ok, "Enrolled as user '\x1b[2Kroot\x1b[31m'");
+        p.flush();
+        // raw-capture-ok: the claim IS that no escape survives, and captured_text strips exactly what this test looks for
+        let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            !raw.contains("\x1b[2K") && !raw.contains("\x1b[31m"),
+            "a foreign escape reached the terminal: {raw:?}"
+        );
+        assert!(
+            crate::output::strip_ansi(&raw).contains("Enrolled as user 'root'"),
+            "stripping must keep the visible text: {raw:?}"
+        );
+    }
 
     /// A quiet library sink derived from a printer that has a spinner running
     /// must clear and repaint that spinner around its own line, not write over
