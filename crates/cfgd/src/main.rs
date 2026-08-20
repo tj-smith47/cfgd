@@ -283,6 +283,11 @@ fn main() -> anyhow::Result<()> {
             .with_env_filter(cfgd_core::tracing_env_filter(filter))
             .with_target(false)
             .without_time()
+            // The writer folds every event, and the fold strips ANSI: colours the
+            // formatter emitted would be eaten anyway, and left on they would
+            // also paint SGR into a redirected stderr, which the formatter
+            // decides without asking whether anything is a terminal.
+            .with_ansi(false)
             .with_writer(tracing_writer.clone())
             .init();
     }

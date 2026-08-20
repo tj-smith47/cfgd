@@ -31,7 +31,17 @@ fn init_tracing() {
     use tracing_subscriber::util::SubscriberInitExt;
 
     let env_filter = cfgd_core::tracing_env_filter("info");
-    let fmt_layer = tracing_subscriber::fmt::layer();
+    // Through cfgd-core's folding writer rather than the default stdout
+    // handle: an event's fields carry text the operator did not author — a
+    // device's reported hostname, a `MachineConfig`'s name, a gateway
+    // request's error — and a `\r` or an `ESC [ 2 K` among them repaints the
+    // line describing it for anyone reading `kubectl logs` in a terminal. The
+    // writer folds every event, and the fold strips ANSI, so the formatter's
+    // own colours come off with it. Logs land on stderr, which is where this
+    // binary's diagnostics belong and which `kubectl logs` reads all the same.
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(cfgd_core::output::LiveTracingWriter::new());
 
     // Capture any OTel-init failure so we can emit it via `tracing::warn!`
     // AFTER the fmt subscriber is up — avoids an `eprintln!` in an operator

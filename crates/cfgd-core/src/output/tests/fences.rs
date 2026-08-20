@@ -64,8 +64,11 @@ fn suspend_is_never_called() {
 /// A tracing subscriber wired straight to `std::io::stderr` writes past the
 /// live region: every event lands on the stream indicatif is repainting, and
 /// the last paint of whatever bar was on screen is left stranded behind it.
-/// `output::LiveTracingWriter` is the writer every subscriber in the workspace
-/// takes, because it routes each event through the printer's `MultiProgress`.
+/// `output::LiveTracingWriter` is the writer every subscriber that writes a
+/// plain-text line takes, because it routes each event through the printer's
+/// `MultiProgress` and folds it on the way (the one exception is cfgd-csi's
+/// JSON log line, whose serializer is its own sanitizer — see the fence
+/// below).
 ///
 /// Hatch, read like every sibling gate's (`tracing-ok:`, `native-ok:`,
 /// `spawn-blocking-ok:`): mark the call line or the line above it with
@@ -99,6 +102,114 @@ fn no_subscriber_writes_straight_to_stderr() {
          `// stderr-writer-ok: <why>`):\n{}",
         offenders.join("\n")
     );
+}
+
+/// A `tracing_subscriber::fmt` subscriber that names no writer takes the
+/// builder's default, which is the raw process stream — and the raw stream is
+/// a terminal writer that passes no renderer, so every event lands on it
+/// unfolded. That is how two server binaries kept writing module names, device
+/// hostnames and remote error text straight at a terminal while the fence
+/// above (which only reads `with_writer` arguments) saw nothing to judge.
+///
+/// Hatch: `// default-writer-ok: <why>` on the construction line or the line
+/// above. The shape that needs it is a formatter whose own serializer is the
+/// sanitizer — a JSON log line, where folding would emit `\xNN` inside a
+/// string and cost the consumer a parseable payload.
+#[test]
+fn no_subscriber_takes_the_default_writer() {
+    let mut offenders = Vec::new();
+    for path in workspace_rust_files() {
+        if path.ends_with(Path::new("output/tests/fences.rs")) {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for line_no in default_writer_offenders(&body) {
+            let line = body.lines().nth(line_no).unwrap_or_default();
+            offenders.push(format!(
+                "{}:{}: {}",
+                path.display(),
+                line_no + 1,
+                line.trim()
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a subscriber with no writer takes the raw process stream unfolded; \
+         name output::LiveTracingWriter (or mark the line \
+         `// default-writer-ok: <why>`):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Line numbers (0-based) of every `tracing_subscriber::fmt` construction in
+/// `source` whose statement names no writer. The statement is read to its
+/// terminating `;`, because rustfmt splits a builder chain across lines and a
+/// line-scoped read would judge the constructor alone.
+fn default_writer_offenders(source: &str) -> Vec<usize> {
+    const MAX_LINES: usize = 16;
+    let lines: Vec<&str> = source.lines().collect();
+    let mut offenders = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let code = code_half(line);
+        if !code.contains("tracing_subscriber::fmt()")
+            && !code.contains("tracing_subscriber::fmt::layer()")
+        {
+            continue;
+        }
+        let mut names_writer = false;
+        for candidate in lines[i..].iter().take(MAX_LINES) {
+            let chain = code_half(candidate);
+            if chain.contains("with_writer(") || chain.contains("with_test_writer(") {
+                names_writer = true;
+                break;
+            }
+            if chain.contains(';') {
+                break;
+            }
+        }
+        if !names_writer && !hatched(&lines, i, "default-writer-ok:") {
+            offenders.push(i);
+        }
+    }
+    offenders
+}
+
+/// The same obligation the stderr fence carries: a predicate that recognizes
+/// one spelling is a fence somebody walks around. Both constructors, the
+/// split-chain read, the hatch, and the wirings that are already correct.
+#[test]
+fn the_default_writer_fence_recognizes_every_spelling() {
+    for offender in [
+        "    tracing_subscriber::fmt().json().init();",
+        "    let l = tracing_subscriber::fmt::layer();",
+        // A chain split over lines, with the writer named nowhere in it.
+        "    tracing_subscriber::fmt()\n        .with_target(false)\n        .without_time()\n        .init();",
+        // A later statement's writer does not cover this one.
+        "    tracing_subscriber::fmt().init();\n    other.with_writer(x);",
+        // A marker with no reason after it is not a hatch.
+        "    // default-writer-ok:\n    tracing_subscriber::fmt().init();",
+    ] {
+        assert!(
+            !default_writer_offenders(offender).is_empty(),
+            "the fence must recognize this wiring: {offender:?}"
+        );
+    }
+    for allowed in [
+        "    tracing_subscriber::fmt()\n        .with_writer(tracing_writer.clone())\n        .init();",
+        "    let l = tracing_subscriber::fmt::layer()\n        .with_writer(LiveTracingWriter::new());",
+        "    tracing_subscriber::fmt().with_test_writer().finish();",
+        "    // default-writer-ok: the JSON serializer is the sanitizer here\n    tracing_subscriber::fmt().json().init();",
+        // The constructor named inside a string literal is a name, not a call.
+        "    let s = \"tracing_subscriber::fmt()\";",
+    ] {
+        assert!(
+            default_writer_offenders(allowed).is_empty(),
+            "the fence must not flag this: {allowed:?}"
+        );
+    }
 }
 
 /// Blank the bodies of string and char literals on one line, byte-for-byte
@@ -199,16 +310,15 @@ fn code_half(line: &str) -> String {
     }
 }
 
-/// Whether the call opened on `lines[at]` is exempted by a
-/// `// stderr-writer-ok: <why>` marker on its own line or the line above, with
-/// a reason written after it. The comment start is located on the
+/// Whether the construction on `lines[at]` is exempted by a `// <marker> <why>`
+/// comment on its own line or the line above, with a reason written after it. The comment start is located on the
 /// literal-blanked line and the marker read from the true comment, so a line
 /// cannot claim the hatch by carrying the marker inside a string literal.
-fn stderr_writer_hatched(lines: &[&str], at: usize) -> bool {
+fn hatched(lines: &[&str], at: usize, marker: &str) -> bool {
     let marked = |line: &str| {
         blank_string_literals(line)
             .find("//")
-            .and_then(|pos| line[pos + 2..].split_once("stderr-writer-ok:"))
+            .and_then(|pos| line[pos + 2..].split_once(marker))
             .is_some_and(|(_, why)| !why.trim().is_empty())
     };
     marked(lines[at]) || (at > 0 && marked(lines[at - 1]))
@@ -266,7 +376,7 @@ fn stderr_writer_offenders(source: &str) -> Vec<usize> {
         };
         let arg = writer_argument(&lines, i, pos + "with_writer(".len());
         let squashed: String = arg.chars().filter(|c| !c.is_whitespace()).collect();
-        if squashed.contains("stderr") && !stderr_writer_hatched(&lines, i) {
+        if squashed.contains("stderr") && !hatched(&lines, i, "stderr-writer-ok:") {
             offenders.push(i);
         }
     }

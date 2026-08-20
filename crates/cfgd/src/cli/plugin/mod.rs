@@ -206,6 +206,9 @@ pub fn plugin_main() -> anyhow::Result<()> {
         .with_env_filter(cfgd_core::tracing_env_filter("warn"))
         .with_target(false)
         .without_time()
+        // Same reason as the primary CLI: the writer folds every event, and the
+        // fold strips ANSI.
+        .with_ansi(false)
         .with_writer(tracing_writer.clone())
         .init();
 

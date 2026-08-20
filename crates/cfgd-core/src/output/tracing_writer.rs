@@ -11,6 +11,14 @@
 //! that survive it. Every write is routed through the same `MultiProgress` the
 //! renderer routes its own emissions through, so an event clears the bars,
 //! writes its line, and lets them repaint beneath it.
+//!
+//! It is also a terminal writer that passes no renderer, so it carries the
+//! renderer's fold itself: every event is folded through
+//! [`super::cursor_safe`] before either destination sees it. A subscriber
+//! wiring this writer therefore has to disable the formatter's own colours
+//! (`.with_ansi(false)`) — the fold strips ANSI, so SGR the formatter emitted
+//! would be eaten, and the level tint is not worth a second sanitation policy
+//! that has to tell an `ESC [ 0 m` from an `ESC [ 2 K`.
 
 use std::io::{self, Write};
 use std::sync::{Arc, RwLock};
@@ -92,15 +100,33 @@ pub struct LiveTracingSink {
 
 impl LiveTracingSink {
     fn emit(&mut self) {
+        self.emit_with(&mut io::stderr().lock());
+    }
+
+    /// The emission itself, with the fall-through destination supplied rather
+    /// than opened, so the arm that runs when there is no live region — or
+    /// when the region's terminal has just refused the write — can be read
+    /// back instead of landing on the process's own stderr.
+    fn emit_with(&mut self, fallback: &mut dyn Write) {
         if self.buf.is_empty() {
             return;
         }
         let bytes = std::mem::take(&mut self.buf);
+        // Both arms below write the SAME folded text, because both are
+        // terminal writers and neither passes a renderer. An event's fields
+        // carry strings cfgd did not author — a module-declared file target, a
+        // source name, a remote API's parse error — and a `\r` or an
+        // `ESC [ 2 K` among them repaints or erases the line describing it.
+        // `tracing_subscriber` escapes ESC and the C1 range inside the message
+        // field alone, so `\r` and every `%`-formatted field value walk
+        // through it untouched; the fold is what makes the whole line safe.
+        // The subscribers wiring this writer pass `.with_ansi(false)`, so
+        // there is no formatter SGR left for the fold to strip.
+        let folded = super::cursor_safe(&String::from_utf8_lossy(&bytes));
         if let Some(route) = &self.route {
-            let text = String::from_utf8_lossy(&bytes);
             // `println` supplies the line ending itself, and a trailing one
             // here would draw a blank row into the region on every event.
-            match route.bars.println(text.trim_end_matches(['\r', '\n'])) {
+            match route.bars.println(folded.trim_end_matches('\n')) {
                 Ok(()) => {
                     route.live.note_route_success();
                     return;
@@ -116,9 +142,8 @@ impl LiveTracingSink {
         // No region, or the region's terminal just refused the write: the
         // event still has to reach the user, so fall through to the stream the
         // subscriber wrote before any of this existed.
-        let mut err = io::stderr().lock();
-        let _ = err.write_all(&bytes);
-        let _ = err.flush();
+        let _ = fallback.write_all(folded.as_bytes());
+        let _ = fallback.flush();
     }
 }
 
@@ -197,6 +222,104 @@ mod tests {
         assert!(
             held.contains("Fetched module index"),
             "the settled line went missing: {held:?}"
+        );
+    }
+
+    /// A `tracing` event carries strings cfgd did not author, and this writer
+    /// is a terminal writer that passes no renderer: an unfolded `\r` walks
+    /// the cursor back to column zero and an unfolded `ESC [ 2 K` erases the
+    /// row, so what the region ends up holding is the tail of the event
+    /// wearing the head's place.
+    ///
+    /// Read off the EMULATED SCREEN, which executes both, because a buffer
+    /// capture would show the bytes rather than what they did. The fold is the
+    /// DISPLAY policy, so the escape sequence is stripped and the lone `\r`
+    /// is escaped into view — a routed event is not a screen anyone approves
+    /// from.
+    #[test]
+    fn a_hostile_event_cannot_repaint_the_region_it_lands_in() {
+        let (printer, screen) = Printer::for_test_live_terminal(24, 120);
+        printer.status_simple(super::super::Role::Info, "an earlier line");
+        let writer = LiveTracingWriter::new();
+        writer.attach(&printer);
+        writer
+            .make_writer()
+            .write_all(b"WARN cannot read ~/evil\r\x1b[2Kmodules/a for hashing\n")
+            .expect("the sink buffers, so a write cannot fail");
+        printer.flush();
+
+        let held = screen.contents();
+        let row = held
+            .lines()
+            .find(|l| l.contains("cannot read"))
+            .unwrap_or_else(|| panic!("the event never landed; screen holds: {held:?}"));
+        assert_eq!(
+            row.trim_end(),
+            "WARN cannot read ~/evil\\x0dmodules/a for hashing",
+            "the event's control characters acted instead of showing: {held:?}"
+        );
+        assert!(
+            held.contains("an earlier line"),
+            "the event took a line that was already on screen with it: {held:?}"
+        );
+    }
+
+    /// The same guarantee on the arm that runs when there is no live region to
+    /// route through — an unattached writer, and a region whose terminal has
+    /// latched. Both fall through to the stream, and the stream is a terminal
+    /// too.
+    #[test]
+    fn the_fall_through_arm_writes_the_same_folded_line() {
+        let mut sink = LiveTracingSink {
+            route: None,
+            buf: Vec::new(),
+        };
+        sink.write_all(b"WARN cannot read ~/evil\r\x1b[2Kmodules/a for hashing\n")
+            .expect("the sink buffers, so a write cannot fail");
+        let mut fallback = Vec::new();
+        sink.emit_with(&mut fallback);
+        assert_eq!(
+            String::from_utf8_lossy(&fallback),
+            "WARN cannot read ~/evil\\x0dmodules/a for hashing\n",
+            "the fall-through arm wrote bytes that can move a cursor"
+        );
+    }
+
+    /// A CRLF the formatter or a Windows-captured message brought with it is
+    /// ONE line break, not a cursor move followed by one — and the trailing
+    /// newline still comes off before the region draws the row, or every event
+    /// leaves a blank line under itself.
+    #[test]
+    fn a_line_ending_survives_the_fold_as_a_line_ending() {
+        let mut sink = LiveTracingSink {
+            route: None,
+            buf: Vec::new(),
+        };
+        sink.write_all(b"WARN a windows message\r\n")
+            .expect("the sink buffers, so a write cannot fail");
+        let mut fallback = Vec::new();
+        sink.emit_with(&mut fallback);
+        assert_eq!(
+            String::from_utf8_lossy(&fallback),
+            "WARN a windows message\n",
+            "a CRLF was rendered as a visible escape instead of a line break"
+        );
+
+        let (printer, screen) = Printer::for_test_live_terminal(24, 120);
+        let writer = LiveTracingWriter::new();
+        writer.attach(&printer);
+        writer
+            .make_writer()
+            .write_all(b"WARN a windows message\r\n")
+            .expect("the sink buffers, so a write cannot fail");
+        printer.flush();
+        let held = screen.contents();
+        assert_eq!(
+            held.lines()
+                .filter(|l| l.contains("a windows message"))
+                .count(),
+            1,
+            "the event landed more than once: {held:?}"
         );
     }
 
