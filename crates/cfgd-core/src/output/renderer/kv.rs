@@ -224,6 +224,41 @@ mod tests {
         assert!(out.contains("LongerKey  2"), "got: {out:?}");
     }
 
+    /// The key column is measured and filled in TERMINAL COLUMNS, not bytes
+    /// or chars. `"Größe"` is 6 bytes and 5 columns, so a byte-measured
+    /// column pads it one position too far and pushes every value in the
+    /// block out of line with the ones above it.
+    #[test]
+    fn kv_block_aligns_a_multibyte_key_by_columns_not_bytes() {
+        let (r, sink, buf) = capture();
+        r.render_kv_block(
+            &sink,
+            0,
+            &[KvPair::new("Größe", "1"), KvPair::new("ID", "2")],
+        );
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(out.contains("Größe  1"), "got: {out:?}");
+        assert!(out.contains("ID     2"), "got: {out:?}");
+    }
+
+    /// `command_list` pads through the same helper and takes its width from
+    /// the same measure.
+    #[test]
+    fn command_list_aligns_a_multibyte_command_by_columns_not_bytes() {
+        let (r, sink, buf) = capture();
+        r.render_command_list(
+            &sink,
+            0,
+            &[
+                ("größe".to_string(), "one".to_string()),
+                ("ls".to_string(), "two".to_string()),
+            ],
+        );
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(out.contains("größe — one"), "got: {out:?}");
+        assert!(out.contains("ls    — two"), "got: {out:?}");
+    }
+
     #[test]
     fn buffered_kvs_coalesce_into_one_block() {
         let (r, sink, buf) = capture();
