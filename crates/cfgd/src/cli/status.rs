@@ -1234,6 +1234,42 @@ mod tests {
         );
     }
 
+    /// A scan the store refuses to record must leave `lastScanAt` naming the
+    /// stamp the row still holds, never the one this run tried to write.
+    ///
+    /// The store half of that contract is pinned in cfgd-core; the harm lives
+    /// here, on the payload: a stamp no row holds reports the machine as
+    /// scanned more recently than anything can prove, and the next run that
+    /// reads the row sends the dashboard backwards.
+    #[test]
+    fn cmd_status_scan_keeps_the_recorded_stamp_when_the_write_is_refused() {
+        let (_cfg_dir, state_dir, config_path) = setup_env();
+        let frozen = "2000-01-01T00:00:00Z";
+        {
+            let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
+            store.freeze_last_scan_at(frozen).unwrap();
+        }
+
+        let mut cli = test_cli_for(config_path, state_dir.path());
+        cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+        let (printer, buf) = test_printers_json();
+
+        cmd_status(&cli, &printer, None, false, true).unwrap();
+        drop(printer);
+
+        let captured = cfgd_core::test_helpers::captured_text(&buf);
+        let parsed: serde_json::Value = serde_json::from_str(captured.trim())
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {captured}"));
+        assert_eq!(
+            parsed["driftCheckedLive"], true,
+            "`--scan` ran the live scan, so the payload must say so: {parsed}"
+        );
+        assert_eq!(
+            parsed["lastScanAt"], frozen,
+            "a refused write must leave the stored stamp standing: {parsed}"
+        );
+    }
+
     #[test]
     fn cmd_status_json_output_emits_expected_shape() {
         let (_cfg_dir, state_dir, config_path) = setup_env();

@@ -151,6 +151,35 @@ impl StateStore {
         Some(timestamp)
     }
 
+    /// Pin the recorded scan stamp at `timestamp` and refuse every later
+    /// write to it, so a crate that cannot reach the connection can still
+    /// drive the refused-write branch of [`record_scan`] and see what its own
+    /// fallback renders.
+    ///
+    /// A pair of `RAISE(ABORT)` triggers is the one refusal that is selective:
+    /// dropping the table would also fail the read a caller makes before it
+    /// scans, and a read-only database file refuses nothing to a process
+    /// running as root. Both the INSERT and the UPDATE half are installed
+    /// because the write is an upsert and either half can be the one that
+    /// lands.
+    ///
+    /// [`record_scan`]: StateStore::record_scan
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn freeze_last_scan_at(&self, timestamp: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO last_scan (id, timestamp) VALUES (1, ?1)
+                 ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp",
+            params![timestamp],
+        )?;
+        self.conn.execute_batch(
+            "CREATE TRIGGER cfgd_frozen_last_scan_insert BEFORE INSERT ON last_scan
+                 BEGIN SELECT RAISE(ABORT, 'last_scan is frozen'); END;
+             CREATE TRIGGER cfgd_frozen_last_scan_update BEFORE UPDATE ON last_scan
+                 BEGIN SELECT RAISE(ABORT, 'last_scan is frozen'); END;",
+        )?;
+        Ok(())
+    }
+
     /// The timestamp of the most recent [`record_scan`], `None` if this
     /// machine has never been scanned.
     ///

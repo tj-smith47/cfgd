@@ -158,6 +158,19 @@ fn record_scan_upserts_the_single_row() {
 }
 
 #[test]
+fn freezing_the_scan_stamp_refuses_the_write_and_keeps_the_row_readable() {
+    let store = StateStore::open_in_memory().unwrap();
+    store.freeze_last_scan_at("2000-01-01T00:00:00Z").unwrap();
+
+    assert_eq!(store.record_scan(), None, "a frozen row accepted a write");
+    assert_eq!(
+        store.last_scan_at().unwrap().as_deref(),
+        Some("2000-01-01T00:00:00Z"),
+        "the read a caller makes before it scans must still answer"
+    );
+}
+
+#[test]
 fn record_scan_reports_no_stamp_when_the_write_is_refused() {
     let store = StateStore::open_in_memory().unwrap();
     // Removing the table is the one refusal reachable without a second
