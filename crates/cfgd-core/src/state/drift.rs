@@ -154,7 +154,10 @@ impl StateStore {
     /// Pin the recorded scan stamp at `timestamp` and refuse every later
     /// write to it, so a crate that cannot reach the connection can still
     /// drive the refused-write branch of [`record_scan`] and see what its own
-    /// fallback renders.
+    /// fallback renders. Reached as
+    /// [`crate::test_helpers::freeze_last_scan_at`], the crate's surface for
+    /// every test-only affordance; crate-visible here so the shipped type
+    /// carries no public method a reader could mistake for product API.
     ///
     /// A pair of `RAISE(ABORT)` triggers is the one refusal that is selective:
     /// dropping the table would also fail the read a caller makes before it
@@ -163,9 +166,17 @@ impl StateStore {
     /// because the write is an upsert and either half can be the one that
     /// lands.
     ///
+    /// Repeatable, and re-pinnable at a new stamp: the triggers are dropped
+    /// before the seed and re-created after it, so the seed itself is not
+    /// refused by the freeze a previous call installed.
+    ///
     /// [`record_scan`]: StateStore::record_scan
     #[cfg(any(test, feature = "test-helpers"))]
-    pub fn freeze_last_scan_at(&self, timestamp: &str) -> Result<()> {
+    pub(crate) fn freeze_last_scan_at(&self, timestamp: &str) -> Result<()> {
+        self.conn.execute_batch(
+            "DROP TRIGGER IF EXISTS cfgd_frozen_last_scan_insert;
+             DROP TRIGGER IF EXISTS cfgd_frozen_last_scan_update;",
+        )?;
         self.conn.execute(
             "INSERT INTO last_scan (id, timestamp) VALUES (1, ?1)
                  ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp",

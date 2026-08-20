@@ -3355,6 +3355,25 @@ pub fn seed_stale_skill(
     path
 }
 
+/// Pin `store`'s recorded scan stamp at `timestamp` and refuse every later
+/// write to it, so a caller can drive the refused-write branch of
+/// [`crate::state::StateStore::record_scan`] and see what its own fallback
+/// renders.
+///
+/// A file-level refusal rather than a connection-level one, because the
+/// consumer of that refusal opens its OWN store from the same state directory
+/// and nothing on this connection reaches it. The row stays READABLE — the
+/// refusal is a pair of `RAISE(ABORT)` triggers, not a dropped table — since
+/// the value a caller must show is the one already recorded.
+///
+/// Repeatable, and re-pinnable at a new stamp.
+pub fn freeze_last_scan_at(
+    store: &crate::state::StateStore,
+    timestamp: &str,
+) -> crate::errors::Result<()> {
+    store.freeze_last_scan_at(timestamp)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

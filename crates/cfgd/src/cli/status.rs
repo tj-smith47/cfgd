@@ -1247,7 +1247,7 @@ mod tests {
         let frozen = "2000-01-01T00:00:00Z";
         {
             let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
-            store.freeze_last_scan_at(frozen).unwrap();
+            cfgd_core::test_helpers::freeze_last_scan_at(&store, frozen).unwrap();
         }
 
         let mut cli = test_cli_for(config_path, state_dir.path());

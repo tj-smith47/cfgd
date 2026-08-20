@@ -160,13 +160,34 @@ fn record_scan_upserts_the_single_row() {
 #[test]
 fn freezing_the_scan_stamp_refuses_the_write_and_keeps_the_row_readable() {
     let store = StateStore::open_in_memory().unwrap();
-    store.freeze_last_scan_at("2000-01-01T00:00:00Z").unwrap();
+    crate::test_helpers::freeze_last_scan_at(&store, "2000-01-01T00:00:00Z").unwrap();
 
     assert_eq!(store.record_scan(), None, "a frozen row accepted a write");
     assert_eq!(
         store.last_scan_at().unwrap().as_deref(),
         Some("2000-01-01T00:00:00Z"),
         "the read a caller makes before it scans must still answer"
+    );
+}
+
+/// A seam a fixture may reach twice — a store frozen during setup and
+/// re-pinned by the body — must not fail the second call, and must answer
+/// with the stamp the second call named.
+#[test]
+fn refreezing_the_scan_stamp_repins_it_rather_than_failing() {
+    let store = StateStore::open_in_memory().unwrap();
+    crate::test_helpers::freeze_last_scan_at(&store, "2000-01-01T00:00:00Z").unwrap();
+    crate::test_helpers::freeze_last_scan_at(&store, "2001-02-03T04:05:06Z").unwrap();
+
+    assert_eq!(
+        store.last_scan_at().unwrap().as_deref(),
+        Some("2001-02-03T04:05:06Z"),
+        "the second freeze must own the pinned stamp"
+    );
+    assert_eq!(
+        store.record_scan(),
+        None,
+        "re-freezing must leave the refusal in place"
     );
 }
 
