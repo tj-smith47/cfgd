@@ -1,4 +1,4 @@
-//! Shared live-drift detection for the `verify` and `status --exit-code` paths.
+//! Shared live-drift detection for the `verify` and `status --scan` paths.
 //!
 //! Both commands must answer "does the real machine state diverge from the
 //! resolved profile *right now*?" using the same engine the `diff` command
@@ -45,7 +45,7 @@ pub(super) fn drift_event_from(r: &VerifyResult) -> cfgd_core::state::DriftEvent
 ///
 /// Takes the file manager rather than building one: this and
 /// [`module_file_verify_results`] run back to back on every `verify` and every
-/// `status --exit-code`, over the same profile, and each construction rebuilds
+/// `status --scan`, over the same profile, and each construction rebuilds
 /// the template context and the whole secret-provider set.
 pub(super) fn file_verify_results(
     fm: &CfgdFileManager,
@@ -622,7 +622,7 @@ mod tests {
     fn module_file_verify_results_patch_reports_drift_and_convergence() {
         // A `Patch` module file has no source to compare against, so its
         // verify result comes from re-evaluating the merge over the target.
-        // Covers both `cfgd status --exit-code` and `cfgd verify`, which share
+        // Covers both `cfgd status --scan` and `cfgd verify`, which share
         // this function.
         let dir = tempfile::tempdir().unwrap();
         let drifted = dir.path().join("drifted.json");
@@ -670,7 +670,7 @@ mod tests {
 
     #[test]
     fn module_file_verify_results_reports_an_unevaluable_patch_as_drift() {
-        // `cfgd verify` / `status --exit-code` scan every resource: a target
+        // `cfgd verify` / `status --scan` scan every resource: a target
         // cfgd cannot parse is drift, not a reason to abort and hide the rest.
         let dir = tempfile::tempdir().unwrap();
         let broken = dir.path().join("broken.json");

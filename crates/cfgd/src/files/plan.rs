@@ -617,7 +617,7 @@ impl super::CfgdFileManager {
         }
 
         // Same directory guard as `diff_one` — see its comment. `verify`,
-        // `status --exit-code` and compliance all resolve through this
+        // `status --scan` and compliance all resolve through this
         // function, so a module's directory-strategy files (a whole `lua/`
         // tree deployed by symlink OR copy) would otherwise crash every one of
         // them with "Is a directory" the instant either side is one.
@@ -782,7 +782,7 @@ impl super::CfgdFileManager {
 /// Script-execution binding for a module-deployed `Patch` file: a relative
 /// `patch.script` resolves against the *module's* directory, and the filter
 /// sees the module's `CFGD_MODULE_*` metadata and declared env. Used by the
-/// read-only paths (`diff`, `verify`, `status --exit-code`), hence
+/// read-only paths (`diff`, `verify`, `status --scan`), hence
 /// `CFGD_CONTEXT=reconcile`.
 pub(crate) fn module_patch_binding(
     config_dir: &Path,
