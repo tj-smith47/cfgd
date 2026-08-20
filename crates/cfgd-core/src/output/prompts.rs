@@ -44,6 +44,23 @@ fn shown(text: &str) -> String {
     crate::escape_control_chars(text)
 }
 
+/// The fold a prompt applies to a DEFAULT, which is a different slot from the
+/// text a prompt shows.
+///
+/// A message is text being shown, so [`shown`] escapes it and hides none of
+/// it. A default is a value cfgd is PROPOSING: `inquire` pre-fills it into the
+/// editable buffer and hands it straight back as the answer when the user
+/// presses enter. Escaping it would write `\x0d` into the value instead of
+/// merely showing it, and leaving it raw lets a proposal repaint the line
+/// offering it — a directory basename may legally carry a `\r`, and one is
+/// offered as the default source name. Dropping the character is the only
+/// resolution under which what is DRAWN and what is RETURNED are the same
+/// string. An `ESC` goes with the rest, leaving its payload (`[2K`) standing
+/// as ordinary visible text rather than as a sequence.
+fn proposed(default: &str) -> String {
+    default.chars().filter(|c| !c.is_control()).collect()
+}
+
 /// True when the current process can interact with a human — stdin is a TTY.
 /// Windows' `inquire` doesn't self-reject the non-TTY case, so the explicit
 /// gate goes here.
@@ -123,13 +140,8 @@ impl Printer {
         if !self.can_prompt() {
             return Err(non_interactive_err(self.is_structured(), message));
         }
-        // The message is escaped; `default` is not. It is pre-filled into the
-        // editable buffer and comes back as the answer when the user presses
-        // enter, so escaping it would write the escape into the value rather
-        // than merely show it. Every caller supplies a literal or a name taken
-        // from the local filesystem.
         inquire::Text::new(&shown(message))
-            .with_default(default)
+            .with_default(&proposed(default))
             .prompt()
     }
 
@@ -185,6 +197,30 @@ mod tests {
         assert_eq!(drawn.len(), options.len());
         assert_eq!(drawn[1], "plain", "an untouched option must not move");
         assert!(drawn[0].contains("\\x0d") && drawn[2].contains("\\x1b[2K"));
+    }
+
+    /// The DEFAULT is a proposal, not a display, and the two slots are folded
+    /// differently for that reason: `inquire` pre-fills it into the editable
+    /// buffer and hands it back as the answer, so a `\r` left in it repaints
+    /// the line offering it and an escaped copy would put `\x0d` into the
+    /// value the user accepts. Dropping the control characters is what makes
+    /// the drawn string and the returned string the same string.
+    #[test]
+    fn a_proposed_default_carries_no_control_character_either_way() {
+        let cleaned = proposed("my\rconfig\x1b[2K");
+        assert_eq!(
+            cleaned, "myconfig[2K",
+            "the escape's payload must stand as visible text, not as a sequence"
+        );
+        assert!(
+            !cleaned.contains('\r') && !cleaned.contains('\u{1b}'),
+            "a proposed value must not be able to move a cursor: {cleaned:?}"
+        );
+        assert_eq!(
+            proposed("acme-config"),
+            "acme-config",
+            "an ordinary basename must reach the prompt untouched"
+        );
     }
 
     #[test]
