@@ -37,13 +37,18 @@ impl TitleLabel {
     /// in the separator slot (`Role::Warn`, the slot the owner token's colon
     /// takes), and ` <value>` in the accent slot.
     pub(crate) fn styled(&self, theme: &Theme) -> String {
+        // The value slot names something the caller supplied (a profile, a
+        // module), so it is folded before the accent coat goes on.
+        // [`Self::plain`] is deliberately NOT folded: that form is what a
+        // `-o json` reader's `heading` field carries, and a payload stays
+        // byte-exact.
         let label = theme.header.apply_to(&self.label);
         let (_, separator) = super::renderer::role_glyph(theme, Role::Warn);
         let (_, accent) = super::renderer::role_glyph(theme, Role::Accent);
         format!(
             "{label}{}{}",
             separator.apply_to(":"),
-            accent.apply_to(format!(" {}", self.value))
+            accent.apply_to(format!(" {}", super::cursor_safe(&self.value)))
         )
     }
 }

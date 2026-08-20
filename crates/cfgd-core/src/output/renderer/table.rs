@@ -2,7 +2,7 @@ use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
 
 use super::{Renderer, Writer, role_glyph};
-use crate::output::{Role, Verbosity};
+use crate::output::{Role, Verbosity, cursor_safe};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Table {
@@ -60,11 +60,22 @@ impl Renderer {
             return;
         }
         let cols = t.headers.len();
+        // Headers and cells name things cfgd did not author — a module's alias
+        // command, a remote source's description — and are folded BEFORE the
+        // column widths are taken, never after: a width measured over a `\t`
+        // or a `\r` describes text that is no longer what renders, and
+        // mis-sizes every column after it.
+        let headers: Vec<String> = t.headers.iter().map(|h| cursor_safe(h)).collect();
+        let rows: Vec<Vec<String>> = t
+            .rows
+            .iter()
+            .map(|row| row.iter().map(|c| cursor_safe(c)).collect())
+            .collect();
         let mut widths = vec![0usize; cols];
-        for (i, h) in t.headers.iter().enumerate() {
+        for (i, h) in headers.iter().enumerate() {
             widths[i] = UnicodeWidthStr::width(h.as_str());
         }
-        for row in &t.rows {
+        for row in &rows {
             for (i, cell) in row.iter().enumerate().take(cols) {
                 widths[i] = widths[i].max(UnicodeWidthStr::width(cell.as_str()));
             }
@@ -75,8 +86,7 @@ impl Renderer {
         // Each cell is styled on its own: styling the joined row instead
         // would wrap the "  " inter-column gap in the same SGR span, so a
         // reader selecting just the gap copies an empty styled run.
-        let header_line: String = t
-            .headers
+        let header_line: String = headers
             .iter()
             .enumerate()
             .map(|(i, h)| {
@@ -100,7 +110,7 @@ impl Renderer {
         // Data rows. Padding runs against the plain string so widths stay
         // honest; per-cell roles re-style the padded cell post-hoc.
         let empty_roles: Vec<Option<Role>> = Vec::new();
-        for (row_idx, row) in t.rows.iter().enumerate() {
+        for (row_idx, row) in rows.iter().enumerate() {
             let roles_for_row = t.row_roles.get(row_idx).unwrap_or(&empty_roles);
             let line: String = row
                 .iter()
@@ -325,14 +335,13 @@ mod tests {
     }
 
     #[test]
-    fn table_does_not_panic_on_tab_or_control_chars_in_cells() {
-        // unicode_width::width treats \t and other C0 control codes as 0
-        // display cells. Lock in the current "tab/control = 0 width" outcome:
-        // the renderer must complete without panic or NaN widths, both rows
-        // must appear in the output, and the second-column value columns must
-        // align by display width across rows (the tab-bearing row's "0-width
-        // tab" + "b" column ends up shorter than "plain", padding makes up
-        // the difference).
+    fn table_renders_control_chars_in_cells_visibly_and_still_aligns() {
+        // A control character in a cell is folded to its visible `\xNN` form
+        // before the column widths are taken, so it occupies the columns it
+        // shows and the next column still lines up. Measuring first would size
+        // the column against text that no longer renders — `unicode_width`
+        // gives a raw `\t` zero cells, and the four the escape really takes
+        // would push every later column out by four.
         let buf = Arc::new(Mutex::new(String::new()));
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Normal);
@@ -343,6 +352,10 @@ mod tests {
         let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("ok"), "missing ok row: {out:?}");
         assert!(out.contains("yep"), "missing yep row: {out:?}");
+        assert!(
+            out.contains("a\\x09b\\x0bc"),
+            "the cell's control characters must render as visible escapes: {out:?}"
+        );
         let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
         let ok_line = lines
             .iter()

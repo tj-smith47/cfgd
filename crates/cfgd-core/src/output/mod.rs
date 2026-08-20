@@ -127,8 +127,9 @@ pub fn strip_ansi(s: &str) -> String {
 /// Fold caller-supplied text into a form that cannot move the terminal cursor.
 ///
 /// The ONE sanitation every renderer slot that carries text cfgd did not author
-/// applies — a status subject, its qualifier, its detail, a kv key or value.
-/// The guarantee is narrow and total: what comes back occupies exactly the
+/// applies — a status subject, its qualifier, its detail, an advisory, a kv key
+/// or value, a bullet, a hint, a note, a code-block line, a table cell, a
+/// heading and a section name. The guarantee is narrow and total: what comes back occupies exactly the
 /// columns it displays, on the line the renderer put it on. Nothing in it can
 /// reposition the cursor, erase what is already on screen, or repaint the
 /// description of the very thing an operator is being asked to approve.
@@ -145,10 +146,16 @@ pub fn strip_ansi(s: &str) -> String {
 /// computed in terminal columns and a tab jumps to a stop that count cannot
 /// predict, which mis-pads every field after it.
 ///
+/// A `\r` that immediately precedes a `\n` is part of that line break rather
+/// than a cursor move, so a CRLF collapses to the exempt `\n` instead of
+/// rendering a visible `\x0d` at the end of every line of a Windows-captured
+/// message. A LONE `\r` is still escaped — that one is precisely the repaint
+/// this fold exists to stop.
+///
 /// Renderer-owned styling is applied AFTER this fold, never before, or the
 /// fold eats the renderer's own SGR (see `finalize_subject`).
 pub fn cursor_safe(s: &str) -> String {
-    crate::escape_control_chars_except_newline(&strip_ansi(s))
+    crate::escape_control_chars_except_newline(&strip_ansi(s).replace("\r\n", "\n"))
 }
 
 /// The rendered column width of `text`, in terminal columns.

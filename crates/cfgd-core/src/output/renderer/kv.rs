@@ -164,8 +164,15 @@ impl Emitting<'_> {
             return;
         }
         let prefix = self.open_aligned_block(depth);
-        let key_col = pairs.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
-        for (k, v) in pairs {
+        // Folded before the key column is measured, for the same reason
+        // `render_kv_block` folds: the width has to describe the text that
+        // actually renders.
+        let rows: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, v)| (cursor_safe(k), cursor_safe(v)))
+            .collect();
+        let key_col = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+        for (k, v) in &rows {
             let key = self
                 .theme
                 .secondary

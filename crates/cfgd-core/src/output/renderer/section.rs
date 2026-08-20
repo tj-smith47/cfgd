@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use super::{Renderer, Writer};
 use crate::output::theme::ThemedStyle;
-use crate::output::{Role, Verbosity};
+use crate::output::{Role, Verbosity, cursor_safe};
 
 /// A Status emission deferred until section close so subjects can be right-
 /// padded to a common column. Buffered per section frame.
@@ -77,7 +77,11 @@ impl Renderer {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let header_depth = s.depth();
         s.section_stack.push(SectionFrame {
-            name: name.into(),
+            // A section can be headed by a name a module or a remote source
+            // supplied. `styled_name` carries its own fold from the composer
+            // that painted it, because folding a styled string here would eat
+            // the renderer's own SGR.
+            name: cursor_safe(name),
             styled_name,
             keep_when_empty,
             empty_state: None,
@@ -139,7 +143,7 @@ impl Renderer {
     pub(crate) fn render_section_empty_state(&self, text: &str) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(top) = s.section_stack.last_mut() {
-            top.empty_state = Some(text.into());
+            top.empty_state = Some(cursor_safe(text));
         }
     }
 

@@ -97,16 +97,16 @@ impl<'p> SectionGuard<'p> {
     /// Append a tight, copy-pasteable block of verbatim lines (e.g. the full
     /// body of a security-review script preview, one entry per source line).
     /// Mirrors `Doc::code_block`: each entry must already be one physical
-    /// line (`render_code_block`'s `write_line` calls debug_assert on `\n`),
-    /// but a stray `\r` — which `str::lines()` upstream wouldn't have
-    /// stripped unless paired with `\n` — is scrubbed here regardless, so
-    /// unlike `bullet` this stays the correct sink for content whose line
-    /// count isn't controlled by the caller.
+    /// line (`render_code_block`'s `write_line` calls debug_assert on `\n`).
+    ///
+    /// A stray `\r` — which `str::lines()` upstream wouldn't have removed
+    /// unless paired with `\n` — used to be scrubbed here. The renderer folds
+    /// every code-block line through [`crate::output::cursor_safe`] now, which
+    /// ESCAPES it instead: a preview of a script an operator is about to
+    /// approve has to show the byte that is in it, at the length it really is,
+    /// rather than quietly rendering as if it were not there.
     pub fn code_block(&self, lines: impl IntoIterator<Item = impl Into<String>>) -> &Self {
-        let lines: Vec<String> = lines
-            .into_iter()
-            .map(|l| l.into().chars().filter(|&c| c != '\r').collect())
-            .collect();
+        let lines: Vec<String> = lines.into_iter().map(Into::into).collect();
         self.renderer
             .render_code_block(self.sink.as_ref(), self.depth, &lines);
         self

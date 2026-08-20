@@ -14,7 +14,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 
-use super::{Theme, Verbosity};
+use super::{Theme, Verbosity, cursor_safe};
 
 mod glyphs;
 pub mod kv;
@@ -775,7 +775,7 @@ impl Renderer {
 
     /// Heading: bold styled by Theme::header. No `=== ===` decoration. Always depth 0.
     pub fn render_heading(&self, w: &dyn Writer, text: &str) {
-        let styled = self.theme.header.apply_to(text).to_string();
+        let styled = self.theme.header.apply_to(cursor_safe(text)).to_string();
         self.render_heading_styled(w, &styled);
     }
 
@@ -807,7 +807,7 @@ impl Renderer {
         // The marker is structure, the text is content: muting the dash gives
         // a run of bullets a scan column instead of leaving every character on
         // the line at the terminal's default with nothing to read against.
-        let body = format!("{}{text}", self.theme.muted.apply_to("- "));
+        let body = format!("{}{}", self.theme.muted.apply_to("- "), cursor_safe(text));
         self.emit_with(w, |e| {
             e.flush_section_headers();
             e.open_top_group(TopGroup::Bullet);
@@ -826,7 +826,7 @@ impl Renderer {
         if self.verbosity == Verbosity::Quiet {
             return;
         }
-        let body = self.theme.muted.apply_to(text).to_string();
+        let body = self.theme.muted.apply_to(cursor_safe(text)).to_string();
         self.emit_with(w, |e| {
             e.flush_section_headers();
             // Streamed output is the body of the line that just announced the
@@ -848,7 +848,7 @@ impl Renderer {
             .theme
             .muted
             .apply_to(format!("{} ", self.theme.icon_arrow));
-        let body = format!("{}{}", arrow, self.theme.muted.apply_to(text));
+        let body = format!("{}{}", arrow, self.theme.muted.apply_to(cursor_safe(text)));
         self.emit_with(w, |e| {
             e.flush_section_headers();
             e.open_top_group(TopGroup::Hint);
@@ -870,7 +870,7 @@ impl Renderer {
         }
         let bodies: Vec<String> = lines
             .iter()
-            .map(|l| self.theme.muted.apply_to(l).to_string())
+            .map(|l| self.theme.muted.apply_to(cursor_safe(l)).to_string())
             .collect();
         self.emit_with(w, |e| {
             e.flush_section_headers();
@@ -887,7 +887,7 @@ impl Renderer {
         if self.verbosity != Verbosity::Verbose {
             return;
         }
-        let bodies: Vec<String> = text
+        let bodies: Vec<String> = cursor_safe(text)
             .lines()
             .map(|l| self.theme.muted.apply_to(l).to_string())
             .collect();

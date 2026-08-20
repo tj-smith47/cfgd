@@ -398,8 +398,12 @@ impl Printer {
             self.renderer
                 .render_heading(self.sink_stderr.as_ref(), &text.into());
         } else {
-            let text = text.into();
-            let styled = self.renderer.theme.header.apply_to(&text).to_string();
+            let styled = self
+                .renderer
+                .theme
+                .header
+                .apply_to(super::cursor_safe(&text.into()))
+                .to_string();
             self.renderer
                 .write_line(self.sink_stderr.as_ref(), depth, &styled);
         }

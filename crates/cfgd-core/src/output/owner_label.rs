@@ -39,9 +39,14 @@ impl OwnerLabel {
     /// [`Self::plain`] here would strip that attribute from the owner token
     /// alone, while every other themed element on the same screen kept it.
     pub(crate) fn styled(&self, theme: &Theme) -> String {
+        // A `kind` and a `name` can both come from a module document a remote
+        // source shipped, so each slot's text is folded before its own coat
+        // goes on — [`Self::plain`] is deliberately NOT folded, because that
+        // form is what the structured payload carries and a payload stays
+        // byte-exact.
         let paint = |role: Role, text: &str| {
             let (_, style) = super::renderer::role_glyph(theme, role);
-            style.apply_to(text).to_string()
+            style.apply_to(super::cursor_safe(text)).to_string()
         };
         format!(
             "{}{}{}",

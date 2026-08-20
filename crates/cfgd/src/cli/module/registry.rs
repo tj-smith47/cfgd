@@ -504,6 +504,14 @@ pub(super) fn has_second_non_empty_line(body: &str) -> bool {
 /// being approved, while a raw `\r` or `\x1b[` sequence would let the value
 /// repaint the lines describing it.
 ///
+/// The escaping stays HERE rather than being left to the renderer's own
+/// `cursor_safe` fold, which every slot below applies and which would make it
+/// redundant everywhere else. The fold STRIPS an ANSI sequence; this surface
+/// has to SHOW it. A value carrying `\x1b[2K` is approved and then written to
+/// disk with those bytes in it, so an operator who never saw them on the
+/// review screen approved something other than what they read. The fold sees
+/// no control character left to act on afterwards, so the two agree.
+///
 /// Renders nothing when `body` holds no non-empty line; a caller whose section
 /// header has already promised an entry handles that case itself.
 ///
