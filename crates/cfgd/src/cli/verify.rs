@@ -116,9 +116,9 @@ pub fn cmd_verify(
         )?);
         // Managers: the reconciler's own `verify` only walks
         // `available_package_managers`, so a manager the plan would provision or
-        // refuse contributes no row there — the same gap `diff` and `status -e`
+        // refuse contributes no row there — the same gap `diff` and `status --scan`
         // close via `plan_managers`. Fold that half in here too, so `verify -e`
-        // cannot report clean on a host `diff`/`status -e` both flag as drifted.
+        // cannot report clean on a host `diff`/`status --scan` both flag as drifted.
         sp.set_message("Verifying: package managers");
         let cfgd_installed = cfgd_installed_packages(state)?;
         results.extend(super::live_drift::manager_verify_results(
@@ -130,10 +130,15 @@ pub fn cmd_verify(
         )?);
         Ok(results)
     })?;
-    // This command just checked the machine itself, whatever it found — the
-    // recorded-state `status` header dates its display from here, and a scan
-    // that finds nothing is exactly the one a clean host has no other record of.
-    state.record_scan();
+    // A FLEET-wide verify just checked the machine itself, whatever it found —
+    // the recorded-state `status` header dates its display from here, and a
+    // scan that finds nothing is exactly the one a clean host has no other
+    // record of. A `--module` run checked one module's files and packages and
+    // must not re-date the whole dashboard, the same rule `diff --module` and
+    // `status --scan --module` follow.
+    if module_filter.is_none() {
+        state.record_scan();
+    }
     let pass_count = results.iter().filter(|r| r.matches).count();
     let fail_count = results.iter().filter(|r| !r.matches).count();
     let has_drift = fail_count > 0;
@@ -266,6 +271,70 @@ mod tests {
                 )
             ),
             "expected DependencyCycle, got: {cfgd_err}"
+        );
+    }
+
+    /// The machine-wide "last scan" stamp is written by a fleet-wide verify
+    /// and by nothing narrower.
+    ///
+    /// That stamp is the sole input to the recorded `status` header's age line
+    /// and to its `--scan` hint, so a run that checked ONE module's files and
+    /// packages must leave it alone — the rule `diff --module` and
+    /// `status --scan --module` already follow. Both arms run against the same
+    /// fixture and the same state store, so the only thing separating them is
+    /// the filter.
+    #[test]
+    #[serial]
+    fn cmd_verify_stamps_the_machine_scan_only_when_it_checked_the_machine() {
+        use crate::cli::helpers::tests::{make_cli, quiet_printer};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        let mod_dir = tmp.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec: {}\n",
+        )
+        .unwrap();
+
+        let state_dir = tmp.path().join("state");
+        let mut cli = make_cli(config_path);
+        cli.state_dir = Some(state_dir.clone());
+        cli.cache_dir = Some(tmp.path().join("cache"));
+        let printer = quiet_printer();
+
+        cmd_verify(&cli, &printer, Some("test-mod"), false).unwrap();
+        let stamp_after_module = open_state_store(Some(&state_dir), cfgd_core::Scope::User)
+            .unwrap()
+            .last_scan_at()
+            .unwrap();
+        assert_eq!(
+            stamp_after_module, None,
+            "one module's verify re-dated the whole dashboard"
+        );
+
+        cmd_verify(&cli, &printer, None, false).unwrap();
+        let stamp_after_fleet = open_state_store(Some(&state_dir), cfgd_core::Scope::User)
+            .unwrap()
+            .last_scan_at()
+            .unwrap();
+        assert!(
+            stamp_after_fleet.is_some(),
+            "a fleet-wide verify checked the machine and must date the dashboard"
         );
     }
 
