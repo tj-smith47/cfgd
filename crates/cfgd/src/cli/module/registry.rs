@@ -552,15 +552,20 @@ pub(super) fn print_module_review_summary(
     integrity: &str,
 ) {
     // The review heads the module with the same token its actions carry in an
-    // apply tree, so the thing being approved is named once, one way.
-    let mod_sec = printer.section_owner(&cfgd_core::output::OwnerLabel::new("module", module_name));
+    // apply tree, so the thing being approved is named once, one way. The name
+    // is the remote document's own `metadata.name`, escaped here for the same
+    // reason every row below is: this is the row that NAMES the thing being
+    // approved, so it is the last one that may hide an escape.
+    let heading = cfgd_core::escape_control_chars(module_name);
+    let mod_sec = printer.section_owner(&cfgd_core::output::OwnerLabel::new("module", &heading));
 
-    // Every row below carries text the remote module wrote, and escapes it
-    // rather than leaving it to the renderer's `cursor_safe` fold, for the
-    // reason spelled out on `review_entry`: the fold STRIPS an ANSI sequence
-    // and this screen has to SHOW it. One screen, one answer — a `\x1b[2K`
-    // that is visible in the Aliases list and invisible in the Files list
-    // tells the operator two different stories about the same module.
+    // The heading above and every row below carry text the remote module
+    // wrote, and escape it rather than leaving it to the renderer's
+    // `cursor_safe` fold, for the reason spelled out on `review_entry`: the
+    // fold STRIPS an ANSI sequence and this screen has to SHOW it. One screen,
+    // one answer — a `\x1b[2K` that is visible in the Aliases list and
+    // invisible in the Files list tells the operator two different stories
+    // about the same module.
     if !module.spec.depends.is_empty() {
         mod_sec.kv(
             "Dependencies",
@@ -639,8 +644,12 @@ pub(super) fn print_module_review_summary(
         }
     }
 
-    mod_sec.kv("Commit", commit);
-    mod_sec.kv("Integrity", integrity);
+    // cfgd derives both of these itself, so neither is a likely carrier — but
+    // "every row on this screen escapes" is a rule an operator can check by
+    // looking, and two rows that quietly fold are two rows that tell a
+    // different story than the ones above them.
+    mod_sec.kv("Commit", cfgd_core::escape_control_chars(commit));
+    mod_sec.kv("Integrity", cfgd_core::escape_control_chars(integrity));
 }
 
 /// Filter a registry-module list by case-insensitive substring match on

@@ -17,6 +17,22 @@ use super::OutputFormat;
 use super::doc::Doc;
 use super::renderer::Writer;
 use crate::PathDisplayExt;
+use crate::output::cursor_safe;
+
+/// Write one human diagnostic to the stderr sink, folded through
+/// [`cursor_safe`].
+///
+/// Every message that reaches this channel quotes something cfgd did not
+/// author — a remote's clone failure echoed by `error_doc`, a template the
+/// user typed, tera's own report of a render that touched remote data — and
+/// it reaches the terminal without passing the renderer, which is where every
+/// other display slot is folded. A `\r` in a git error would otherwise repaint
+/// the line describing the failure. The payload beside it is untouched: this
+/// is the human half of the channel, never the `-o` data half, which goes to
+/// `sink_stdout` byte-exact.
+fn write_diagnostic(sink_stderr: &dyn Writer, msg: &str) {
+    sink_stderr.write_line(&cursor_safe(msg));
+}
 
 /// Validate that a jsonpath expression is structurally well-formed without
 /// applying it to any data. Returns `Err(message)` for malformed input so the
@@ -337,7 +353,7 @@ pub(crate) fn emit_structured(
         )
         && let Some(msg) = doc.error_message()
     {
-        sink_stderr.write_line(msg);
+        write_diagnostic(sink_stderr, msg);
     }
     match format {
         OutputFormat::Table | OutputFormat::Wide => false,
@@ -392,11 +408,14 @@ pub(crate) fn emit_structured(
             match std::fs::read_to_string(&path) {
                 Ok(tmpl) => render_template_to(sink_stdout, sink_stderr, output_error, doc, &tmpl),
                 Err(e) => {
-                    sink_stderr.write_line(&format!(
-                        "failed to read template file '{}': {}",
-                        path.posix(),
-                        clean_io_reason(&e)
-                    ));
+                    write_diagnostic(
+                        sink_stderr,
+                        &format!(
+                            "failed to read template file '{}': {}",
+                            path.posix(),
+                            clean_io_reason(&e)
+                        ),
+                    );
                     output_error.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
             }
@@ -421,12 +440,12 @@ fn render_template_to(
     let mut tera = tera::Tera::default();
     let tmpl_name = "__inline__";
     if let Err(e) = tera.add_raw_template(tmpl_name, template) {
-        sink_stderr.write_line(&format!("invalid template: {e}"));
+        write_diagnostic(sink_stderr, &format!("invalid template: {e}"));
         output_error.store(true, std::sync::atomic::Ordering::Relaxed);
         return;
     }
     let fail = |msg: String| {
-        sink_stderr.write_line(&msg);
+        write_diagnostic(sink_stderr, &msg);
         output_error.store(true, std::sync::atomic::Ordering::Relaxed);
     };
     match v {
@@ -996,6 +1015,58 @@ mod tests {
         assert!(handled);
         assert_eq!(take(&stdout_buf), "selected\n");
         assert_eq!(stderr, "template boom\n");
+    }
+
+    /// Read the stderr buffer WITHOUT stripping, so an escape that survived
+    /// the fold is visible to the assertion rather than removed by the read.
+    fn raw(buf: &Arc<Mutex<String>>) -> String {
+        // raw-capture-ok: a stripping read would delete the very escapes the assertion looks for
+        buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Drive `emit_structured` and hand back the RAW stderr bytes.
+    fn emit_raw_stderr(doc: &Doc, fmt: &OutputFormat) -> String {
+        let (_stdout_buf, stdout) = capture();
+        let stderr_buf = Arc::new(Mutex::new(String::new()));
+        let stderr = StringSink(stderr_buf.clone());
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        emit_structured(&stdout, &stderr, &flag, doc, fmt, false);
+        raw(&stderr_buf)
+    }
+
+    /// The stderr echo reaches the terminal without passing the renderer, so
+    /// it is folded here or nowhere. `cli_error` puts a remote's own failure
+    /// text in that slot, so `cfgd module add <url> -o name` would otherwise
+    /// let the remote repaint the line describing its failure.
+    #[test]
+    fn emit_structured_folds_the_stderr_echo_of_a_hostile_error_message() {
+        let message = "clone failed: \r\x1b[2Keverything is fine";
+        let doc = crate::output::error_doc("acme", "clone_failed", message, serde_json::json!({}));
+        let stderr = emit_raw_stderr(&doc, &OutputFormat::Name);
+        assert_eq!(
+            stderr, "clone failed: \\x0deverything is fine\n",
+            "the echo must neither move the cursor nor erase its own line"
+        );
+        assert_eq!(
+            doc.error_message(),
+            Some(message),
+            "the fold is display-only — the doc a payload is built from stays byte-exact"
+        );
+    }
+
+    /// The same channel's other messages, which quote a value the reader
+    /// typed on the command line.
+    #[test]
+    fn emit_structured_folds_the_template_file_read_diagnostic() {
+        let doc = doc_with(serde_json::json!({"name": "x"}));
+        let stderr = emit_raw_stderr(
+            &doc,
+            &OutputFormat::TemplateFile("/no/such\r\x1b[2K/template".into()),
+        );
+        assert!(
+            stderr.contains("\\x0d") && !stderr.contains('\r') && !stderr.contains('\u{1b}'),
+            "the quoted path must be shown, not obeyed: {stderr:?}"
+        );
     }
 
     /// The stderr echo is gated on `Doc::is_error` — a normal success doc

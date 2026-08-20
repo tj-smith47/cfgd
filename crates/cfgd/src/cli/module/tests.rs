@@ -5031,6 +5031,42 @@ fn print_module_review_summary_shows_control_characters_on_every_row() {
     }
 }
 
+/// The heading and the two trailing rows, which the per-row sweep above
+/// cannot reach: the heading NAMES the module being approved, and `Commit` /
+/// `Integrity` close the screen. A screen whose first and last lines quietly
+/// strip what its middle shows is the same two-stories problem one row over.
+#[test]
+fn print_module_review_summary_shows_control_characters_in_heading_and_trailer() {
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let poison = "harmless\r\x1b[2Kevil";
+    let module = make_loaded_module("m", config::ModuleSpec::default());
+    super::registry::print_module_review_summary(
+        &printer,
+        &format!("mod-{poison}"),
+        &module,
+        &format!("commit-{poison}"),
+        &format!("sha256-{poison}"),
+    );
+    drop(printer);
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+    for marker in ["module:mod-", "commit-", "sha256-"] {
+        let row = out
+            .lines()
+            .find(|l| l.contains(marker))
+            .unwrap_or_else(|| panic!("row {marker:?} missing; screen holds: {out}"));
+        assert!(
+            row.contains("\\x0d") && row.contains("\\x1b[2K"),
+            "row {marker:?} hid what it is asking the operator to approve: {row:?}"
+        );
+        let payload = &row[row.find(marker).unwrap_or(0)..];
+        assert!(
+            !payload.contains('\r') && !payload.contains('\u{1b}'),
+            "row {marker:?} carries a live control byte: {row:?}"
+        );
+    }
+}
+
 #[test]
 fn print_module_review_summary_shows_a_padded_value_untrimmed() {
     // The user is approving the exact text that will be written into their

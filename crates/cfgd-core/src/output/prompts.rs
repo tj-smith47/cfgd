@@ -29,6 +29,21 @@ fn non_interactive_err(structured: bool, prompt: &str) -> inquire::InquireError 
     inquire::InquireError::Custom(format!("refusing to prompt for '{prompt}': {reason}").into())
 }
 
+/// The one fold every prompt applies to the text it draws.
+///
+/// `inquire` writes straight to the terminal without passing the renderer, so
+/// nothing else sanitizes a prompt's message or its option list — and both
+/// routinely carry text cfgd did not author: a remote source manifest's
+/// profile names, a module name, a file path a plan is asking about.
+///
+/// It ESCAPES rather than folding through `cursor_safe`, because a prompt is a
+/// pre-approval surface: the fold strips an ANSI sequence, and an operator
+/// answering "yes" to a value they never saw has approved something other than
+/// what they read.
+fn shown(text: &str) -> String {
+    crate::escape_control_chars(text)
+}
+
 /// True when the current process can interact with a human — stdin is a TTY.
 /// Windows' `inquire` doesn't self-reject the non-TTY case, so the explicit
 /// gate goes here.
@@ -61,7 +76,9 @@ impl Printer {
         if !self.can_prompt() {
             return Err(non_interactive_err(self.is_structured(), message));
         }
-        inquire::Confirm::new(message).with_default(false).prompt()
+        inquire::Confirm::new(&shown(message))
+            .with_default(false)
+            .prompt()
     }
 
     pub fn prompt_select<'a>(
@@ -84,11 +101,13 @@ impl Printer {
         if options.is_empty() {
             return Err(inquire::InquireError::Custom("no options available".into()));
         }
-        let chosen = inquire::Select::new(message, options.to_vec()).prompt()?;
-        Ok(options
-            .iter()
-            .find(|o| **o == chosen)
-            .unwrap_or(&options[0]))
+        // The list is drawn escaped, so the selection comes back by INDEX
+        // rather than by value: matching the drawn string against the raw
+        // options would miss exactly the option that carried a control
+        // character, and silently answer with the first one instead.
+        let shown_options: Vec<String> = options.iter().map(|o| shown(o)).collect();
+        let chosen = inquire::Select::new(&shown(message), shown_options).raw_prompt()?;
+        Ok(options.get(chosen.index).unwrap_or(&options[0]))
     }
 
     pub fn prompt_text(
@@ -104,7 +123,14 @@ impl Printer {
         if !self.can_prompt() {
             return Err(non_interactive_err(self.is_structured(), message));
         }
-        inquire::Text::new(message).with_default(default).prompt()
+        // The message is escaped; `default` is not. It is pre-filled into the
+        // editable buffer and comes back as the answer when the user presses
+        // enter, so escaping it would write the escape into the value rather
+        // than merely show it. Every caller supplies a literal or a name taken
+        // from the local filesystem.
+        inquire::Text::new(&shown(message))
+            .with_default(default)
+            .prompt()
     }
 
     pub(crate) fn pop_prompt_answer(&self) -> Option<PromptAnswer> {
@@ -131,6 +157,34 @@ mod tests {
         );
         let r = p.prompt_confirm("really?");
         assert!(r.is_err());
+    }
+
+    /// `inquire` draws to the terminal itself, so nothing downstream folds a
+    /// prompt's message or its option list — the escape here is the only one
+    /// they get. It ESCAPES (a pre-approval surface shows what it is asking
+    /// about) rather than folding, so the ANSI stays visible as text.
+    #[test]
+    fn drawn_prompt_text_shows_control_characters_instead_of_obeying_them() {
+        let drawn = shown("profile\r\x1b[2Kevil");
+        assert_eq!(drawn, "profile\\x0d\\x1b[2Kevil");
+        assert!(!drawn.contains('\r') && !drawn.contains('\u{1b}'));
+    }
+
+    /// The drawn list is escaped but the ANSWER is the caller's own option,
+    /// byte-exact — which is why the selection comes back by index. Matching
+    /// the drawn string against the raw list would miss precisely the option
+    /// that carried a control character.
+    #[test]
+    fn escaping_the_drawn_options_preserves_their_order_and_count() {
+        let options = [
+            "a\rb".to_string(),
+            "plain".to_string(),
+            "c\x1b[2K".to_string(),
+        ];
+        let drawn: Vec<String> = options.iter().map(|o| shown(o)).collect();
+        assert_eq!(drawn.len(), options.len());
+        assert_eq!(drawn[1], "plain", "an untouched option must not move");
+        assert!(drawn[0].contains("\\x0d") && drawn[2].contains("\\x1b[2K"));
     }
 
     #[test]
