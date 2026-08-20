@@ -124,6 +124,33 @@ pub fn strip_ansi(s: &str) -> String {
     out
 }
 
+/// Fold caller-supplied text into a form that cannot move the terminal cursor.
+///
+/// The ONE sanitation every renderer slot that carries text cfgd did not author
+/// applies — a status subject, its qualifier, its detail, a kv key or value.
+/// The guarantee is narrow and total: what comes back occupies exactly the
+/// columns it displays, on the line the renderer put it on. Nothing in it can
+/// reposition the cursor, erase what is already on screen, or repaint the
+/// description of the very thing an operator is being asked to approve.
+///
+/// [`strip_ansi`] alone does not give that. It consumes sequences introduced by
+/// `ESC`, so a lone `\r`, a `\x08`, or a C1 `U+009B` walks straight through it
+/// and still repaints the line it is written on. [`crate::escape_control_chars`]
+/// alone does not give it either: it escapes `\n`, which the status slot lays
+/// out as an indented continuation line, so a two-sentence brew caveat would
+/// render a literal `\x0a` down the middle.
+///
+/// So: strip the escape sequences, then escape every control character that
+/// survives EXCEPT `\n`. A tab is escaped with the rest — column alignment is
+/// computed in terminal columns and a tab jumps to a stop that count cannot
+/// predict, which mis-pads every field after it.
+///
+/// Renderer-owned styling is applied AFTER this fold, never before, or the
+/// fold eats the renderer's own SGR (see `finalize_subject`).
+pub fn cursor_safe(s: &str) -> String {
+    crate::escape_control_chars_except_newline(&strip_ansi(s))
+}
+
 /// The rendered column width of `text`, in terminal columns.
 ///
 /// The ONE width measurement available outside the renderer, so a caller that

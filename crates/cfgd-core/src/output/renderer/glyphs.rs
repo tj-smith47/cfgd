@@ -1,6 +1,6 @@
 use crate::output::component::StatusLabel;
 use crate::output::theme::ThemedStyle;
-use crate::output::{Role, Theme, strip_ansi};
+use crate::output::{Role, Theme, cursor_safe};
 
 /// Compose a `subject` with a trailing styled `label`, separated by one ASCII
 /// space. The label always lands at end-of-subject so the inner SGR reset
@@ -29,7 +29,7 @@ fn compose_subject_with_qualifier(theme: &Theme, subject: &str, qualifier: &str)
     // the renderer-owned muted span, or a foreign `\x1b[0m` inside it closes
     // the span early and everything the renderer writes after paints in
     // whatever colour the foreign escape last set.
-    let sanitized_qualifier = strip_ansi(qualifier);
+    let sanitized_qualifier = cursor_safe(qualifier);
     let muted = theme.muted.apply_to(format!(" {sanitized_qualifier}"));
     format!("{subject}{}{muted}", colon_style.apply_to(":"))
 }
@@ -52,9 +52,10 @@ fn compose_subject_with_marker(theme: &Theme, subject: &str, marker: &StatusLabe
 /// The subject may carry foreign ANSI from a captured error string
 /// (`format!("sync failed for {url}: {e}")`); a stray `\x1b[0m` would
 /// prematurely close the role styling at the inner reset, and foreign color
-/// escapes would paint trailing characters until the next reset. Strip ANSI
-/// from the subject FIRST, then add the legitimate (renderer-controlled)
-/// segments so they survive sanitation.
+/// escapes would paint trailing characters until the next reset — and a bare
+/// `\r` no escape sequence introduced would repaint the line the subject is
+/// written on. [`cursor_safe`] closes both. Fold the subject FIRST, then add
+/// the legitimate (renderer-controlled) segments so they survive sanitation.
 pub(crate) fn finalize_subject(
     theme: &Theme,
     subject: &str,
@@ -62,7 +63,7 @@ pub(crate) fn finalize_subject(
     qualifier: Option<&str>,
     label: Option<&StatusLabel>,
 ) -> String {
-    let sanitized = strip_ansi(subject);
+    let sanitized = cursor_safe(subject);
     let qualified = match qualifier {
         Some(q) => compose_subject_with_qualifier(theme, &sanitized, q),
         None => sanitized,

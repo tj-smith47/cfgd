@@ -28,6 +28,7 @@ use std::collections::VecDeque;
 use std::marker::PhantomData;
 
 use super::renderer::StatusFields;
+use super::renderer::finalize_subject;
 use super::renderer::indent_prefix;
 use super::renderer::wrap::{available_width, clamp as clamp_line};
 use super::spinner::Spinner;
@@ -92,12 +93,18 @@ impl<'p> OutputWindow<'p> {
         if announce && !windowed && spinner.renderer.verbosity != Verbosity::Quiet {
             // No window to hold the label, so the step announces itself the way
             // `run_streaming` does: a Running status, then its lines.
+            //
+            // The label is caller-supplied — a module's own `run:` script body
+            // reaches it — and this arm fires exactly when there is no bar to
+            // hold it, so an unfolded escape lands in a redirected log the
+            // operator reads later. Same fold every other subject slot takes.
+            let announced = finalize_subject(&spinner.renderer.theme, &label, None, None, None);
             spinner.renderer.render_status(
                 spinner.sink.as_ref(),
                 spinner.depth,
                 &StatusFields {
                     role: Role::Running,
-                    subject: &label,
+                    subject: &announced,
                     detail: None,
                     duration: None,
                     target: None,

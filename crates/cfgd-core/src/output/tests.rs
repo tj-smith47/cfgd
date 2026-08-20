@@ -10,6 +10,8 @@
 mod baseline;
 #[cfg(feature = "test-helpers")]
 mod corners;
+#[cfg(feature = "test-helpers")]
+mod cursor_safe_slots;
 mod fences;
 #[cfg(feature = "test-helpers")]
 mod indent;

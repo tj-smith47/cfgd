@@ -35,12 +35,26 @@ impl<'p> SectionGuard<'p> {
         K: Into<String>,
         V: Into<String>,
     {
-        let pairs: Vec<(String, String)> = pairs
+        let pairs: Vec<crate::output::KvPair> = pairs
             .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
+            .map(|(k, v)| crate::output::KvPair::new(k, v))
             .collect();
         self.renderer
             .render_kv_block(self.sink.as_ref(), self.depth, &pairs);
+        self
+    }
+
+    /// `kv_block` over rows built by hand, so a row can carry an annotation
+    /// ([`crate::output::KvPair::annotated`]) beside its value.
+    ///
+    /// The annotation slot is the ONE way styling reaches a kv value: every
+    /// key and value the renderer receives is folded through
+    /// [`crate::output::cursor_safe`], which would eat a coat a caller painted
+    /// on itself. Reach for `kv_block` when no row needs one.
+    pub fn kv_rows(&self, rows: impl IntoIterator<Item = crate::output::KvPair>) -> &Self {
+        let rows: Vec<crate::output::KvPair> = rows.into_iter().collect();
+        self.renderer
+            .render_kv_block(self.sink.as_ref(), self.depth, &rows);
         self
     }
 

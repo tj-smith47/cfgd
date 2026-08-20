@@ -4,7 +4,7 @@ use std::time::Duration;
 use super::{Renderer, Writer, role_glyph};
 use crate::PathDisplayExt;
 use crate::output::theme::ThemedStyle;
-use crate::output::{Role, Verbosity, strip_ansi};
+use crate::output::{Role, Verbosity, cursor_safe};
 
 /// Inputs to a single Status line. Builders convert to this for rendering.
 pub struct StatusFields<'a> {
@@ -245,10 +245,11 @@ impl Renderer {
         let mut detail_tail: Vec<String> = Vec::new();
         if let Some(detail) = f.detail {
             // Sanitize at the renderer boundary: detail may carry embedded ANSI
-            // escapes. A stray `\x1b[0m` would prematurely terminate the role
-            // styling above; foreign color escapes would paint subsequent
-            // terminal output until the next reset.
-            let clean = strip_ansi(detail);
+            // escapes and bare control bytes. A stray `\x1b[0m` would
+            // prematurely terminate the role styling above; foreign color
+            // escapes would paint subsequent terminal output until the next
+            // reset; a `\r` would repaint the line it lands on.
+            let clean = cursor_safe(detail);
             let mut lines = clean.lines();
             line.push_str(" — ");
             // Continuation lines take the same style, so a wrapped detail
@@ -329,7 +330,7 @@ impl Renderer {
             line.push_str(&style.apply_to(icon).to_string());
             line.push(' ');
         }
-        line.push_str(&style.apply_to(strip_ansi(subject)).to_string());
+        line.push_str(&style.apply_to(cursor_safe(subject)).to_string());
         self.write_line(w, depth, &line);
     }
 }

@@ -461,9 +461,9 @@ impl Printer {
         V: Into<String>,
     {
         let depth = self.renderer.enforce_structural_top_level(0);
-        let pairs: Vec<(String, String)> = pairs
+        let pairs: Vec<crate::output::KvPair> = pairs
             .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
+            .map(|(k, v)| crate::output::KvPair::new(k, v))
             .collect();
         self.renderer
             .render_kv_block(self.sink_stderr.as_ref(), depth, &pairs);
@@ -554,16 +554,6 @@ impl Printer {
     #[must_use = "inheritance ends when the guard drops; bind it"]
     pub fn depth_inheritance(&self) -> super::renderer::DepthInheritGuard<'_> {
         super::renderer::DepthInheritGuard::acquire(&self.renderer)
-    }
-
-    /// `theme.muted` applied to `text` — the one way a caller composes a
-    /// subordinate fragment into a value the renderer receives as a single
-    /// string (a kv row whose tail qualifies its head, and which therefore has
-    /// no field of its own to carry a style). A colour-disabled stream answers
-    /// the text unchanged, because `ThemedStyle` decides that and not the
-    /// caller. Never reach for `console` to do this at a call site.
-    pub fn muted(&self, text: &str) -> String {
-        self.renderer.theme.muted.apply_to(text).to_string()
     }
 
     /// Status with no extra fields. For detail/duration/target, use the builder

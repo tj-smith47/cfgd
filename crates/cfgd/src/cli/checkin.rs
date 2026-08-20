@@ -139,12 +139,12 @@ pub fn cmd_checkin(
         result?
     };
 
-    // The status line above is sanitized by the renderer's status-subject
-    // slot; a kv VALUE is not, because that slot deliberately carries
-    // caller-composed styling (`Printer::muted`). This value is the gateway's
-    // own string, so it is stripped here — the same fold, so one response
-    // renders one way in both places.
-    printer.kv("Server status", cfgd_core::output::strip_ansi(&resp.status));
+    // The gateway's own string reaches two display slots — the status subject
+    // above and this kv value — and both fold it through `cursor_safe` at the
+    // renderer, so one response renders one way in both places and neither can
+    // repaint the line describing it. The `-o json` payload below carries the
+    // response verbatim; the fold is display-only.
+    printer.kv("Server status", &resp.status);
     printer.kv("Config changed", resp.config_changed.to_string());
 
     if let Some(ref desired) = resp.desired_config {

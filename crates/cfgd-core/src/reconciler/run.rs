@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::backup::BackupUnit;
 use crate::errors::Result;
-use crate::output::{OwnerLabel, PhaseLabel, Printer, Role, SectionGuard, measure_width};
+use crate::output::{KvPair, OwnerLabel, PhaseLabel, Printer, Role, SectionGuard, measure_width};
 use crate::pluralize;
 use crate::state::{ApplyStatus, StateStore};
 
@@ -320,12 +320,12 @@ impl<'a> ApplyRun<'a> {
     /// [`ApplyRun::pending_backup_count`] for what the engine can enumerate
     /// ahead of the run.
     pub fn header(&self, printer: &Printer) {
-        let mut rows: Vec<(String, String)> = Vec::new();
+        let mut rows: Vec<KvPair> = Vec::new();
         if let Some(path) = self.ctx.config_path {
-            rows.push(("Config".to_string(), crate::to_posix_string(path)));
+            rows.push(KvPair::new("Config", crate::to_posix_string(path)));
         }
         if let Some(profile) = self.ctx.profile {
-            rows.push(("Profile".to_string(), profile.to_string()));
+            rows.push(KvPair::new("Profile", profile.to_string()));
         }
         // A platform-gated module contributed no work, so it leaves the name
         // list and returns as an annotation on it. That annotation IS the
@@ -343,22 +343,18 @@ impl<'a> ApplyRun<'a> {
             .map(|(name, reason)| format!("{name} skipped: {reason}"))
             .collect::<Vec<_>>()
             .join(", ");
-        let modules_row = match (names.is_empty(), annotation.is_empty()) {
-            (_, true) => names.join(", "),
-            // Every module gated off: the parentheses would enclose the whole
-            // value, so the annotation stands alone as the row.
-            (true, false) => printer.muted(&annotation),
-            (false, false) => format!(
-                "{} {}",
+        // The names and the annotation travel in separate slots: the renderer
+        // owns the muted coat and the parentheses, and folds the names — which
+        // are module-supplied — the way it folds every other value.
+        if !(names.is_empty() && annotation.is_empty()) {
+            rows.push(KvPair::annotated(
+                "Modules",
                 names.join(", "),
-                printer.muted(&format!("({annotation})"))
-            ),
-        };
-        if !modules_row.is_empty() {
-            rows.push(("Modules".to_string(), modules_row));
+                annotation.clone(),
+            ));
         }
         if let Some(trigger) = self.ctx.trigger {
-            rows.push(("Trigger".to_string(), trigger.to_string()));
+            rows.push(KvPair::new("Trigger", trigger.to_string()));
         }
         // The `Phases` row names exactly the blocks the tree will print, so it
         // is read off the tree rather than recomputed from the plan.
@@ -370,12 +366,12 @@ impl<'a> ApplyRun<'a> {
             .map(|(phase, _)| phase.name.display_name())
             .collect();
         if !phases.is_empty() {
-            rows.push(("Phases".to_string(), phases.join(", ")));
+            rows.push(KvPair::new("Phases", phases.join(", ")));
         }
         if !self.preview_only {
             let planned = self.planned_count();
             if planned > 0 {
-                rows.push(("Actions".to_string(), format!("{planned} planned")));
+                rows.push(KvPair::new("Actions", format!("{planned} planned")));
             }
         }
 
@@ -388,7 +384,7 @@ impl<'a> ApplyRun<'a> {
             // indent as the rows they follow, which only a section's depth
             // gives.
             let head = printer.section(self.ctx.title.as_str());
-            head.kv_block(rows);
+            head.kv_rows(rows);
             for warning in warnings {
                 printer.alert(warning);
             }

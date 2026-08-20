@@ -315,11 +315,28 @@ pub fn posix_single_quoted(value: &str) -> String {
 /// real escape from the literal text `\x1b` — and both of those render
 /// identically inert, so the ambiguity costs nothing.
 pub fn escape_control_chars(s: &str) -> String {
+    escape_controls(s, |_| false)
+}
+
+/// [`escape_control_chars`] with `\n` left intact.
+///
+/// The form a slot needs when an embedded newline is legitimate structure it
+/// lays out itself — the status subject renders one as an indented
+/// continuation line, so escaping it would print `\x0a` in the middle of every
+/// multi-sentence caveat. `\t` is NOT exempt: alignment is computed in columns
+/// and a tab jumps to a terminal tab stop the column count cannot predict, so
+/// a tabbed value mis-pads every field after it.
+pub(crate) fn escape_control_chars_except_newline(s: &str) -> String {
+    escape_controls(s, |c| c == '\n')
+}
+
+/// Render every control character `keep` does not exempt as visible `\xNN`.
+fn escape_controls(s: &str, keep: impl Fn(char) -> bool) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         // Unicode Cc covers C1 (U+0080..U+009F) as well as C0, which matters:
         // a terminal decoding UTF-8 still acts on U+009B as CSI.
-        if c.is_control() {
+        if c.is_control() && !keep(c) {
             out.push_str(&format!("\\x{:02x}", c as u32));
         } else {
             out.push(c);

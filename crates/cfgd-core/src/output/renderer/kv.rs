@@ -16,7 +16,7 @@
 //! is built by a collector holding `&mut RenderState`, which can reach neither
 //! the state lock nor a sink, so it cannot become a second exit.
 use super::{Emitting, Renderer, Writer, indent_prefix};
-use crate::output::Verbosity;
+use crate::output::{KvPair, Verbosity, cursor_safe};
 
 const KEY_WIDTH_CAP: usize = 24;
 /// Gap inserted between the (padded) key column and the value.
@@ -28,12 +28,12 @@ impl Renderer {
     /// `flush_kv_buffer`.
     pub(crate) fn render_kv(&self, key: &str, value: &str) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        s.kv_buffer.push((key.into(), value.into()));
+        s.kv_buffer.push(KvPair::new(key, value));
     }
 
     /// Render a KvBlock immediately. Public crate entry — callers passing a
     /// pre-built block (e.g. the Doc render path) reach the renderer here.
-    pub(crate) fn render_kv_block(&self, w: &dyn Writer, depth: usize, pairs: &[(String, String)]) {
+    pub(crate) fn render_kv_block(&self, w: &dyn Writer, depth: usize, pairs: &[KvPair]) {
         self.emit_with(w, |e| e.render_kv_block(depth, pairs));
     }
 
@@ -87,18 +87,28 @@ impl Emitting<'_> {
     }
 
     /// Collect one aligned kv block at `depth`.
-    pub(crate) fn render_kv_block(&mut self, depth: usize, pairs: &[(String, String)]) {
+    pub(crate) fn render_kv_block(&mut self, depth: usize, pairs: &[KvPair]) {
         if self.verbosity == Verbosity::Quiet || pairs.is_empty() {
             return;
         }
         let prefix = self.open_aligned_block(depth);
-        let key_col = pairs
+        // Both halves of a row name things cfgd did not author — a gateway's
+        // device id, a source manifest's description, a module's own file
+        // paths — so both are folded here rather than at the call sites.
+        // Sanitizing at the renderer is what makes it uniform: a row cannot be
+        // added to this surface in an unfolded state, and the annotation slot
+        // below is the only way styling reaches a value.
+        let rows: Vec<(String, String)> = pairs
+            .iter()
+            .map(|p| (cursor_safe(&p.key), self.compose_kv_value(p)))
+            .collect();
+        let key_col = rows
             .iter()
             .map(|(k, _)| k.len())
             .max()
             .unwrap_or(0)
             .min(KEY_WIDTH_CAP);
-        for (k, v) in pairs {
+        for (k, v) in &rows {
             if k.len() <= KEY_WIDTH_CAP {
                 let key = self
                     .theme
@@ -115,6 +125,26 @@ impl Emitting<'_> {
             }
         }
         self.mark_top_level_group(super::TopGroup::KvBlock);
+    }
+
+    /// The rendered value column of one row: the folded value, plus the
+    /// annotation in the renderer's own muted coat when the row carries one.
+    ///
+    /// An annotation with no value of its own stands alone as the row —
+    /// parenthesising it would enclose the whole column and read as an aside
+    /// about nothing.
+    fn compose_kv_value(&self, pair: &KvPair) -> String {
+        let value = cursor_safe(&pair.value);
+        let Some(annotation) = pair.annotation.as_deref().filter(|a| !a.is_empty()) else {
+            return value;
+        };
+        let annotation = cursor_safe(annotation);
+        if value.is_empty() {
+            self.theme.muted.apply_to(annotation).to_string()
+        } else {
+            let note = self.theme.muted.apply_to(format!("({annotation})"));
+            format!("{value} {note}")
+        }
     }
 
     /// Collect one aligned "command — description" block at `depth`.
@@ -152,7 +182,7 @@ mod tests {
 
     use super::super::{Renderer, StringSink};
 
-    use crate::output::{Theme, Verbosity};
+    use crate::output::{KvPair, Theme, Verbosity};
 
     fn capture() -> (Renderer, StringSink, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
@@ -167,7 +197,7 @@ mod tests {
         r.render_kv_block(
             &sink,
             0,
-            &[("Foo".into(), "1".into()), ("LongerKey".into(), "2".into())],
+            &[KvPair::new("Foo", "1"), KvPair::new("LongerKey", "2")],
         );
         let out = crate::test_helpers::captured_text(&buf);
         // "Foo" padded to LongerKey.len() (= 9) + "  " gap + value.
@@ -190,7 +220,7 @@ mod tests {
     fn long_key_wraps_value_to_next_line() {
         let (r, sink, buf) = capture();
         let long = "x".repeat(30);
-        r.render_kv_block(&sink, 0, &[(long.clone(), "value".into())]);
+        r.render_kv_block(&sink, 0, &[KvPair::new(long.clone(), "value")]);
         let out = crate::test_helpers::captured_text(&buf);
         let lines: Vec<&str> = out.lines().collect();
         assert!(lines.len() >= 2, "expected wrapped output, got {out:?}");
@@ -203,7 +233,7 @@ mod tests {
         let buf = Arc::new(Mutex::new(String::new()));
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Quiet);
-        r.render_kv_block(&sink, 0, &[("Foo".into(), "1".into())]);
+        r.render_kv_block(&sink, 0, &[KvPair::new("Foo", "1")]);
         assert!(crate::test_helpers::captured_text(&buf).is_empty());
     }
 
@@ -219,7 +249,7 @@ mod tests {
             Theme::from_preset("dracula").with_colors(true),
             Verbosity::Normal,
         );
-        r.render_kv_block(&sink, 0, &[("Profile".into(), "work".into())]);
+        r.render_kv_block(&sink, 0, &[KvPair::new("Profile", "work")]);
         // raw-capture-ok: asserting on the raw secondary-slot SGR bytes themselves — captured_text would strip the ANSI this test exists to check
         let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
@@ -231,6 +261,57 @@ mod tests {
         assert!(
             !out.contains(&theme.header.apply_to("Profile").to_string()),
             "key is still painted with the header slot: {out:?}"
+        );
+    }
+
+    /// The annotation is the renderer's, not the caller's: it lands
+    /// parenthesised after the value, in the muted coat, from a slot of its
+    /// own — so the value beside it can be folded unconditionally.
+    #[test]
+    fn an_annotation_renders_parenthesised_after_its_value() {
+        let (r, sink, buf) = capture();
+        r.render_kv_block(
+            &sink,
+            0,
+            &[KvPair::annotated(
+                "Modules",
+                "nvim, zsh",
+                "tmux skipped: linux",
+            )],
+        );
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("Modules  nvim, zsh (tmux skipped: linux)"),
+            "got: {out:?}"
+        );
+    }
+
+    /// With no value of its own the annotation stands alone: parentheses
+    /// around the whole column would read as an aside about nothing.
+    #[test]
+    fn an_annotation_with_no_value_stands_alone_unparenthesised() {
+        let (r, sink, buf) = capture();
+        r.render_kv_block(&sink, 0, &[KvPair::annotated("Modules", "", "all skipped")]);
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(out.contains("Modules  all skipped"), "got: {out:?}");
+        assert!(!out.contains('('), "got: {out:?}");
+    }
+
+    /// The annotation slot takes the muted coat wherever the value sits, so a
+    /// row cannot be annotated in one weight beside a row annotated in another.
+    #[test]
+    #[serial_test::serial]
+    fn an_annotation_is_painted_muted_by_the_renderer() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let r = Renderer::new(theme.clone(), Verbosity::Normal);
+        r.render_kv_block(&sink, 0, &[KvPair::annotated("Modules", "nvim", "skipped")]);
+        // raw-capture-ok: the claim IS the muted SGR the renderer wraps the annotation in, which captured_text would strip
+        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            out.contains(&theme.muted.apply_to("(skipped)").to_string()),
+            "annotation is not painted with the muted slot: {out:?}"
         );
     }
 

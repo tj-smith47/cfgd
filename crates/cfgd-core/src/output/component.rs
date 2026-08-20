@@ -108,6 +108,17 @@ pub struct StatusLabel {
 pub struct KvPair {
     pub key: String,
     pub value: String,
+    /// A trailing note ABOUT the value, styled by the renderer and never by
+    /// the caller (`(3 modules skipped: unsupported platform)`).
+    ///
+    /// The slot exists so a row that wants an annotation does not have to
+    /// paint one into `value` itself: the renderer folds every key and value
+    /// through [`crate::output::cursor_safe`], which would eat a caller's own
+    /// SGR, and a value slot that sometimes carries styling cannot be folded
+    /// at all. Split in two, the untrusted half is always folded and the
+    /// styled half is always the renderer's — neither can be the other.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<String>,
 }
 
 impl KvPair {
@@ -115,6 +126,20 @@ impl KvPair {
         Self {
             key: k.into(),
             value: v.into(),
+            annotation: None,
+        }
+    }
+
+    /// A pair whose value carries a trailing renderer-styled note.
+    pub fn annotated(
+        k: impl Into<String>,
+        v: impl Into<String>,
+        annotation: impl Into<String>,
+    ) -> Self {
+        Self {
+            key: k.into(),
+            value: v.into(),
+            annotation: Some(annotation.into()),
         }
     }
 }

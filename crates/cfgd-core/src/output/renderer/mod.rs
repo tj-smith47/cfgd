@@ -79,7 +79,7 @@ pub(crate) struct RenderState {
     /// True until the first emission lands; suppresses leading blank.
     leading: bool,
     /// Buffered kvs awaiting a non-kv emission to flush as one aligned block.
-    kv_buffer: Vec<(String, String)>,
+    kv_buffer: Vec<crate::output::KvPair>,
     pub(crate) section_stack: Vec<crate::output::renderer::section::SectionFrame>,
     /// True iff the most recent emission was a top-level heading and no other
     /// emission has happened since. Consumed by the next top-level kv_block,
