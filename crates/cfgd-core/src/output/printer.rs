@@ -663,13 +663,14 @@ impl Printer {
     /// about to be rendered at the CLI boundary.
     ///
     /// That last clause is a PRECONDITION on the caller, not a description:
-    /// only wrap work whose `Err` really does propagate to the boundary. A
-    /// caller that swallows the error and reports it in its own words gets the
-    /// same fact twice — and because `Fail` is the one role that survives
-    /// `Verbosity::Quiet`, the second copy lands on stderr even under
-    /// `-o json`. Such a wait builds its bar by hand and ends it with
-    /// [`Spinner::finish_silent`] on both arms instead, leaving the outcome
-    /// line to whoever owns it.
+    /// only wrap work whose failure is not reported by anybody else. Three
+    /// shapes break it, and each would print the same fact twice — once here
+    /// and once from whoever owns the outcome. The caller swallows the `Err`
+    /// and words it; the caller already emitted a permanent line naming this
+    /// same wait; or the site settles its own outcome afterwards. Because
+    /// `Fail` is the one role that survives `Verbosity::Quiet`, the duplicate
+    /// lands on stderr even under `-o json`. Any of the three reaches for
+    /// [`Printer::narrate_silent`] instead.
     ///
     /// The settle discipline is the whole point: a caller that opens a spinner
     /// by hand and hits an early `?` between creation and its matching finish
@@ -677,32 +678,17 @@ impl Printer {
     /// `(interrupted)` because it cannot know whether the work succeeded. Here
     /// the match is written once and no call site can forget it.
     ///
-    /// Correct at ANY depth. The wait it wraps is reached from a top-level
-    /// command AND from library code several frames inside a section a caller
-    /// opened, so the bar is CONSTRUCTED under a
-    /// [`Printer::depth_inheritance`] guard. Without it the spinner is a
-    /// depth-0 non-structural emit, which trips the top-level structural
-    /// assert the moment any caller has a section open.
-    ///
-    /// The guard covers the construction and nothing else, deliberately. It
-    /// is a counter on the SHARED renderer, so while it is alive the assert
-    /// that catches a misplaced top-level emit is disarmed for every emit on
-    /// every thread — and the bodies wrapped here are whole commands. It is
-    /// not needed for any longer: `spinner` reads the ambient depth once and
-    /// stores it, and both `set_message` and every `finish_*` render from
-    /// that stored field rather than re-reading the renderer.
+    /// Correct at ANY depth: the bar is opened through
+    /// [`Printer::narration_bar`], which carries the depth-inheritance guard.
     ///
     /// [`Spinner::set_message`]: super::spinner::Spinner::set_message
-    /// [`Spinner::finish_silent`]: super::spinner::Spinner::finish_silent
+    /// [`Printer::narrate_silent`]: Printer::narrate_silent
     pub fn narrate<T, E>(
         &self,
         running: impl Into<String>,
         work: impl FnOnce(&mut super::spinner::Spinner<'_>) -> Result<T, E>,
     ) -> Result<T, E> {
-        let mut sp = {
-            let _inherit = self.depth_inheritance();
-            self.spinner(running)
-        };
+        let mut sp = self.narration_bar(running);
         match work(&mut sp) {
             Ok(value) => {
                 sp.finish_silent();
@@ -714,6 +700,54 @@ impl Printer {
                 Err(e)
             }
         }
+    }
+
+    /// [`Printer::narrate`] for a wait whose OUTCOME LINE belongs to somebody
+    /// else: the bar is retired SILENTLY on both arms, so nothing here can
+    /// state a result a second time.
+    ///
+    /// It exists because the alternative — a `Fail` settle stacked under a
+    /// line that already says the same thing — survives `Verbosity::Quiet`
+    /// and so lands beside a `-o json` payload carrying the identical fact.
+    /// The three shapes that need it are listed on `narrate`; production
+    /// currently holds two, both of them waits asked from INSIDE a section
+    /// their caller opened: a package manager's enumeration, whose five
+    /// callers each render their own row, and a device-gateway round-trip,
+    /// whose callers each print a permanent line naming the request first.
+    ///
+    /// The settle discipline is the reason to reach for this rather than a
+    /// hand-built bar: an early `?` between a bar's creation and its matching
+    /// finish abandons it to `Drop`, which can only report the generic
+    /// `(interrupted)`. Here the finish is written once and no call site can
+    /// skip it.
+    pub fn narrate_silent<T, E>(
+        &self,
+        running: impl Into<String>,
+        work: impl FnOnce(&mut super::spinner::Spinner<'_>) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let mut sp = self.narration_bar(running);
+        let out = work(&mut sp);
+        sp.finish_silent();
+        out
+    }
+
+    /// Open a narrated wait's bar at whatever depth the caller is standing at.
+    ///
+    /// The guard is what makes a narrated wait correct at any depth: without
+    /// it the spinner is a depth-0 non-structural emit, which trips the
+    /// top-level structural assert the moment any caller has a section open —
+    /// and both `narrate_silent` sites are asked from inside one.
+    ///
+    /// It covers the construction and nothing else, deliberately. The guard
+    /// is a counter on the SHARED renderer, so while it is alive the assert
+    /// that catches a misplaced top-level emit is disarmed for every emit on
+    /// every thread, and the bodies these wrappers cover are whole commands.
+    /// Nothing longer is needed: `spinner` reads the ambient depth once and
+    /// stores it, and both `set_message` and every `finish_*` render from
+    /// that stored field rather than re-reading the renderer.
+    fn narration_bar(&self, running: impl Into<String>) -> super::spinner::Spinner<'_> {
+        let _inherit = self.depth_inheritance();
+        self.spinner(running)
     }
 
     #[must_use]
@@ -2055,15 +2089,15 @@ mod tests {
     /// the label is on the terminal while the work runs, and the screen holds
     /// nothing once the wait ends.
     ///
-    /// The flash is the accepted behaviour rather than an oversight. Deferring
-    /// the first paint until a bar has outlived a threshold needs something to
-    /// paint it once the threshold passes, and a spinner's only hooks are
-    /// `set_message` and `finish_*` — which the waits that most need narrating
-    /// (one blocking probe, one network round-trip) do not call for seconds at
-    /// a time. A hook-checked delay would therefore silence the longest waits
-    /// to spare the shortest a flicker, and a timer thread per bar buys back
-    /// the flicker at the price of a thread per wait. Nothing is stranded and
-    /// no permanent line is written either way, which is what this asserts.
+    /// The flash is the accepted behaviour rather than an oversight. indicatif
+    /// hands cfgd no timer callback — the steady tick drives its own redraw
+    /// internally and never calls back — so deferring the first paint until a
+    /// bar outlives a threshold needs a trigger cfgd owns, and it owns only
+    /// two: `set_message` and `finish_*`. The waits that most need narrating
+    /// (one blocking probe, one network round-trip) fire neither for seconds
+    /// at a time, so a hook-checked reveal would silence the longest waits to
+    /// spare the shortest a flicker. Nothing is stranded and no permanent line
+    /// is written either way, which is what this asserts.
     #[test]
     fn narrate_paints_at_once_and_clears_a_wait_that_returns_immediately() {
         let (printer, screen) = Printer::for_test_live_terminal(24, 100);
@@ -2208,10 +2242,11 @@ mod tests {
     /// A narrated wait reached from INSIDE an open section renders at that
     /// section's depth instead of tripping the top-level structural assert.
     ///
-    /// This is not a theoretical arrangement: `PackageContext::installed_for`
-    /// narrates the per-manager enumeration once, and `cfgd diff` asks it from
-    /// inside its open Packages section while a bare `status` asks it at top
-    /// level. A `narrate` that opened its bar at a hard depth 0 panicked the
+    /// This is not a theoretical arrangement, and both wrappers open their bar
+    /// through the same guarded constructor: `PackageContext::installed_for`
+    /// narrates the per-manager enumeration silently, and `cfgd diff` asks it
+    /// from inside its open Packages section while a bare `status` asks it at
+    /// top level. A wrapper that opened its bar at a hard depth 0 panicked the
     /// first caller in a debug build.
     #[test]
     fn narrate_renders_inside_a_section_its_caller_opened() {
@@ -2238,6 +2273,63 @@ mod tests {
         assert!(
             line.starts_with("  ") && !line.starts_with("   "),
             "the wait did not paint in the section's glyph column: {line:?}"
+        );
+    }
+
+    /// The silent wrapper is the one production actually reaches from inside a
+    /// section, so it is placed here too rather than being inferred from its
+    /// sibling: both open their bar through the same guarded constructor, and
+    /// a change that dropped the guard from only one of them would leave this
+    /// pair disagreeing instead of both passing.
+    #[test]
+    fn narrate_silent_renders_inside_a_section_its_caller_opened() {
+        let (printer, screen) = Printer::for_test_live_terminal(24, 100);
+        let section = printer.section("Packages");
+        let mut running = String::new();
+        let out: Result<(), std::io::Error> =
+            printer.narrate_silent("Enumerating apt packages", |sp| {
+                sp.bar.disable_steady_tick();
+                running = screen.contents();
+                Ok(())
+            });
+        assert!(out.is_ok());
+        drop(section);
+        printer.flush();
+
+        let line = running
+            .lines()
+            .find(|l| l.contains("Enumerating apt packages"))
+            .unwrap_or_default();
+        assert!(
+            line.starts_with("  ") && !line.starts_with("   "),
+            "the wait did not paint in the section's glyph column: {line:?}"
+        );
+    }
+
+    /// A silent wait says nothing on EITHER arm: the failure belongs to
+    /// whoever already named the request, and the `Err` still reaches them.
+    ///
+    /// The failing half is what separates this from `narrate` — a `Fail`
+    /// settle survives `Verbosity::Quiet` and would land beside a `-o json`
+    /// payload carrying the identical fact — so it is read from the emulated
+    /// screen, the only capture that can see a line the region drew and never
+    /// took back.
+    #[test]
+    fn narrate_silent_leaves_no_line_on_either_arm() {
+        let (printer, screen) = Printer::for_test_live_terminal(24, 100);
+        let out: Result<(), std::io::Error> = printer.narrate_silent("Enumerating apt", |sp| {
+            sp.bar.disable_steady_tick();
+            sp.set_message("Enumerating brew");
+            Err(std::io::Error::other("brew exploded"))
+        });
+        printer.flush();
+        assert!(out.is_err(), "the closure's error must still propagate");
+
+        let held = screen.contents();
+        assert_eq!(
+            held.trim(),
+            "",
+            "a silent wait settled a line its caller already owns: {held:?}"
         );
     }
 

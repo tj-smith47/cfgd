@@ -177,10 +177,11 @@ impl ServerClient {
     /// narration lives here rather than at five call sites that cannot see
     /// either. `label` is the caller's words for what it is asking for.
     ///
-    /// Retired SILENTLY on both arms: every caller already owns the outcome
-    /// line (a `status_simple` before, a mapped error after, and at `checkin`
-    /// a `SectionGuard` spinner that settles the verdict itself), so a settled
-    /// line here would state the same result a second time.
+    /// Narrated SILENTLY: every caller already printed a permanent line
+    /// naming this same request before calling, so a settled line here would
+    /// say it a second time. `label` is that caller's words, and the bar
+    /// carries only the WAITING half of them, so the two lines on screen do
+    /// not read as one sentence printed twice.
     fn post_with_retry(
         &self,
         path: &str,
@@ -188,21 +189,15 @@ impl ServerClient {
         printer: &Printer,
         label: &str,
     ) -> std::result::Result<String, String> {
-        // The guard is what lets the bar open at the ambient depth: `checkin`
-        // and the drift report call this from inside an open section. It
-        // covers the construction alone, the only part that reads the
-        // renderer's depth.
-        let mut sp = {
-            let _inherit = printer.depth_inheritance();
-            printer.spinner(label)
-        };
-        // No `?` between the bar and its finish, so no path can abandon it to
-        // `Drop`'s `(interrupted)` record.
-        let out = self.post_attempts(path, body_json, label, &mut sp);
-        sp.finish_silent();
-        out
+        printer.narrate_silent(format!("{label}: waiting for response"), |sp| {
+            self.post_attempts(path, body_json, label, sp)
+        })
     }
 
+    /// The retry ladder itself, split out so `post_with_retry` reads as the
+    /// one narrated wait it is: every arm below either returns or falls
+    /// through to the next attempt, and the wrapper's finish is the same on
+    /// all of them.
     fn post_attempts(
         &self,
         path: &str,
@@ -216,10 +211,10 @@ impl ServerClient {
             let delay = retry.delay_for_attempt(attempt);
             if !delay.is_zero() {
                 // Named only from the second attempt on: the opening label
-                // already describes the first, and a "(attempt 1 of 4)" on a
-                // request that will succeed reads as a problem.
+                // already covers the first, and "attempt 1 of 3" on a request
+                // that will succeed reads as a problem.
                 sp.set_message(format!(
-                    "{label} (attempt {} of {})",
+                    "{label}: retrying, attempt {} of {}",
                     attempt + 1,
                     retry.max_attempts
                 ));
@@ -344,23 +339,18 @@ impl ServerClient {
         })?;
 
         let path = format!("/api/v1/devices/{}/drift", self.device_id);
-        printer.status_simple(
-            Role::Info,
-            format!("Reporting {} drift events to device gateway", drifts.len()),
-        );
+        // One binding for the permanent line and the bar beneath it: the two
+        // name the same request and must never drift apart.
+        let label = format!("Reporting {} drift events to device gateway", drifts.len());
+        printer.status_simple(Role::Info, label.clone());
 
-        self.post_with_retry(
-            &path,
-            &body_json,
-            printer,
-            "Reporting drift to device gateway",
-        )
-        .map_err(|e| {
-            CfgdError::Io(std::io::Error::new(
-                std::io::ErrorKind::ConnectionRefused,
-                format!("device gateway drift report failed: {}", e),
-            ))
-        })?;
+        self.post_with_retry(&path, &body_json, printer, &label)
+            .map_err(|e| {
+                CfgdError::Io(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    format!("device gateway drift report failed: {}", e),
+                ))
+            })?;
 
         Ok(())
     }

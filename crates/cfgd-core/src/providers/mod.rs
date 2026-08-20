@@ -296,34 +296,22 @@ impl<'a> PackageContext<'a> {
                 // the memo for every manager it asks about narrates nothing —
                 // exactly the silence a fast run should have.
                 //
-                // Built by hand rather than through `Printer::narrate`, whose
-                // failure settle assumes the `Err` reaches the CLI boundary and
-                // is rendered there. Here it does not: five callers swallow it
-                // and say so themselves (a `Warning` compliance check, a
-                // `not installed` doctor row, a package-drift row, a
-                // `tracing::warn`), so a settled `Fail` line would report the
-                // same broken manager twice — and `Fail` is the one role that
-                // survives `Verbosity::Quiet`, so it would land beside a
-                // `-o json` payload carrying the identical fact. Retired
-                // silently on BOTH arms; the outcome line is the caller's.
-                //
-                // The guard is what `spinner` needs to open a bar at the
-                // ambient depth: this is asked from inside an open section
-                // (`cfgd diff`'s packages group) as well as at top level, and
-                // it covers the construction alone, which is the only part
-                // that reads the renderer's depth.
+                // Silent rather than `narrate`, whose failure settle assumes
+                // the `Err` reaches the CLI boundary and is rendered there.
+                // Here it does not: five callers swallow it and say so
+                // themselves (a `Warning` compliance check, a `not installed`
+                // doctor row, a package-drift row, a `tracing::warn`), so a
+                // settled `Fail` line would report the same broken manager
+                // twice — and `Fail` is the one role that survives
+                // `Verbosity::Quiet`, so it would land beside a `-o json`
+                // payload carrying the identical fact.
                 let name = manager.name();
-                let sp = {
-                    let _inherit = self.printer.depth_inheritance();
-                    self.printer.spinner(format!("Enumerating {name} packages"))
-                };
-                // No `?` between the bar and its finish, so no arm can abandon
-                // it to `Drop`'s `(interrupted)` record.
-                let out = manager
-                    .installed_packages_with_versions(self)
-                    .map(|listed| InstalledPackages::from_listing(manager, listed));
-                sp.finish_silent();
-                out
+                self.printer
+                    .narrate_silent(format!("Enumerating {name} packages"), |_| {
+                        manager
+                            .installed_packages_with_versions(self)
+                            .map(|listed| InstalledPackages::from_listing(manager, listed))
+                    })
             })
     }
 
