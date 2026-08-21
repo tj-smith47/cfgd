@@ -1235,6 +1235,120 @@ mod mock_kube {
         assert_eq!(json["operator"], "unknown (forbidden)");
         assert_eq!(json["csi"], "unknown (forbidden)");
     }
+
+    // --- -o yaml round-trips -o json (the global `-o` format flag is shared
+    // with the main CLI's parser; `DocCapture::json()` reads the Doc's data
+    // directly and so cannot prove the *requested* format's own serializer
+    // agrees — these drive the real stdout stream through `emit_structured`
+    // for both formats and compare the parsed values) ---
+
+    fn status_module_list_response(req: http::Request<kube::client::Body>) -> Response<Body> {
+        let path = req.uri().path().to_string();
+        if path.contains("/modules") {
+            json_response(
+                200,
+                &serde_json::json!({
+                    "apiVersion": "cfgd.io/v1alpha1",
+                    "kind": "ModuleList",
+                    "metadata": {"resourceVersion": "1234"},
+                    "items": [{
+                        "apiVersion": "cfgd.io/v1alpha1",
+                        "kind": "Module",
+                        "metadata": {"name": "nettools"},
+                        "spec": {"ociArtifact": "ghcr.io/cfgd/nettools:1.0.0"},
+                        "status": {"verified": true}
+                    }]
+                }),
+            )
+        } else {
+            json_response(404, &serde_json::json!({"message": "not found"}))
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cmd_status_yaml_round_trips_json_payload() {
+        let (json_printer, json_buf) =
+            Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        cmd_status_async(
+            &json_printer,
+            Some(mock_client(status_module_list_response)),
+        )
+        .await
+        .expect("json-format status must succeed");
+        drop(json_printer);
+        let json: serde_json::Value =
+            // raw-capture-ok: parsing the exact rendered bytes is the round-trip claim itself
+            serde_json::from_str(&json_buf.lock().unwrap_or_else(|e| e.into_inner()))
+                .expect("json payload must parse");
+
+        let (yaml_printer, yaml_buf) =
+            Printer::for_test_with_format(cfgd_core::output::OutputFormat::Yaml);
+        cmd_status_async(
+            &yaml_printer,
+            Some(mock_client(status_module_list_response)),
+        )
+        .await
+        .expect("yaml-format status must succeed");
+        drop(yaml_printer);
+        let yaml: serde_json::Value =
+            // raw-capture-ok: parsing the exact rendered bytes is the round-trip claim itself
+            serde_yaml::from_str(&yaml_buf.lock().unwrap_or_else(|e| e.into_inner()))
+                .expect("yaml payload must parse");
+
+        assert_eq!(json, yaml, "-o yaml must carry the same values as -o json");
+        assert_eq!(yaml["modules"][0]["name"], "nettools");
+    }
+
+    fn version_only_response(req: http::Request<kube::client::Body>) -> Response<Body> {
+        let path = req.uri().path().to_string();
+        if path == "/version" || path == "/version/" {
+            json_response(200, &serde_json::json!({"major": "1", "minor": "29"}))
+        } else {
+            json_response(
+                200,
+                &serde_json::json!({
+                    "apiVersion": "apps/v1", "kind": "DeploymentList",
+                    "metadata": {"resourceVersion": "1"}, "items": []
+                }),
+            )
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cmd_version_yaml_round_trips_json_payload() {
+        let (json_printer, json_buf) =
+            Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        cmd_version_async(
+            &json_printer,
+            Some(mock_client(version_only_response)),
+            "cfgd-system",
+        )
+        .await
+        .expect("json-format version must succeed");
+        drop(json_printer);
+        let json: serde_json::Value =
+            // raw-capture-ok: parsing the exact rendered bytes is the round-trip claim itself
+            serde_json::from_str(&json_buf.lock().unwrap_or_else(|e| e.into_inner()))
+                .expect("json payload must parse");
+
+        let (yaml_printer, yaml_buf) =
+            Printer::for_test_with_format(cfgd_core::output::OutputFormat::Yaml);
+        cmd_version_async(
+            &yaml_printer,
+            Some(mock_client(version_only_response)),
+            "cfgd-system",
+        )
+        .await
+        .expect("yaml-format version must succeed");
+        drop(yaml_printer);
+        let yaml: serde_json::Value =
+            // raw-capture-ok: parsing the exact rendered bytes is the round-trip claim itself
+            serde_yaml::from_str(&yaml_buf.lock().unwrap_or_else(|e| e.into_inner()))
+                .expect("yaml payload must parse");
+
+        assert_eq!(json, yaml, "-o yaml must carry the same values as -o json");
+        assert_eq!(yaml["kubectl"], "1.29");
+    }
 }
 
 // ============================================================================
@@ -1549,6 +1663,64 @@ images:
             !manifest.contains("gome/server:abc"),
             "manifest must NOT still carry the old tag ref: {manifest}"
         );
+    }
+
+    #[test]
+    fn cmd_deploy_yaml_round_trips_json_payload() {
+        // `DocCapture::json()` (used above) reads the Doc's data directly and
+        // so cannot prove the *requested* format's own serializer agrees —
+        // this drives the real stdout stream through `emit_structured` for
+        // both formats and compares the parsed values.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lock_path = dir.path().join("cfgd-images.lock");
+        std::fs::write(
+            &lock_path,
+            "\
+images:
+  - reference: registry.jarvispro.io/gome/server:abc
+    digest: sha256:deadbeef
+    pinned: registry.jarvispro.io/gome/server@sha256:deadbeef
+    lockedAt: 2026-01-01T00:00:00Z
+",
+        )
+        .expect("write lockfile");
+        let manifest_path = dir.path().join("pod.yaml");
+        std::fs::write(&manifest_path, POD_TWO_VOLUMES).expect("write manifest");
+
+        let (json_printer, json_buf) =
+            Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        cmd_deploy(
+            &json_printer,
+            &[manifest_path.to_string_lossy().to_string()],
+            &lock_path.to_string_lossy(),
+            false,
+            "default",
+        )
+        .expect("json-format deploy must succeed");
+        drop(json_printer);
+        let json: serde_json::Value =
+            // raw-capture-ok: parsing the exact rendered bytes is the round-trip claim itself
+            serde_json::from_str(&json_buf.lock().unwrap_or_else(|e| e.into_inner()))
+                .expect("json payload must parse");
+
+        let (yaml_printer, yaml_buf) =
+            Printer::for_test_with_format(cfgd_core::output::OutputFormat::Yaml);
+        cmd_deploy(
+            &yaml_printer,
+            &[manifest_path.to_string_lossy().to_string()],
+            &lock_path.to_string_lossy(),
+            false,
+            "default",
+        )
+        .expect("yaml-format deploy must succeed");
+        drop(yaml_printer);
+        let yaml: serde_json::Value =
+            // raw-capture-ok: parsing the exact rendered bytes is the round-trip claim itself
+            serde_yaml::from_str(&yaml_buf.lock().unwrap_or_else(|e| e.into_inner()))
+                .expect("yaml payload must parse");
+
+        assert_eq!(json, yaml, "-o yaml must carry the same values as -o json");
+        assert_eq!(yaml["applied"], false);
     }
 
     #[test]

@@ -252,9 +252,9 @@ volumes:
       reference: registry.jarvispro.io/gome/server@sha256:3a7b9c4d...
 ```
 
-In `-o json` mode the rewritten manifest is returned as a `manifest` field alongside a
-`rewrites` array, so CI can consume the pin set programmatically. References not present in
-the lockfile are left untouched.
+In structured mode (`-o json` or `-o yaml`) the rewritten manifest is returned as a
+`manifest` field alongside a `rewrites` array, so CI can consume the pin set
+programmatically. References not present in the lockfile are left untouched.
 
 ## Signing and attestation
 
@@ -287,5 +287,6 @@ manifest and attaches the provenance in one invocation.
 | `sign_failed` | cosign sign step failed |
 | `attest_failed` | cosign attest step failed |
 
-In structured mode (`-o json`) every error carries `"artifact"` and the error kind so
-scripted consumers can route failures without parsing stderr. See [Error output](cli-reference.md#error-output).
+In structured mode (`-o json` or `-o yaml`) every error carries `"artifact"` and the error
+kind so scripted consumers can route failures without parsing stderr. See [Error
+output](cli-reference.md#error-output).
