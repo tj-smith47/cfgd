@@ -710,16 +710,18 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
             let label = OwnerLabel::new(group.owner.kind.as_str(), &group.owner.name);
             let owner_section = phase_section.section_owner(&label);
             for action in actions {
-                let item = action_display_subject(action).to_string();
+                let subject = action_display_subject(action);
                 // An unknown system key is almost always a typo, so it keeps
                 // its warning role instead of reading as ordinary planned work.
                 if matches!(
                     action,
                     Action::System(SystemAction::Skip { unknown: true, .. })
                 ) {
-                    owner_section.status_simple(Role::Warn, item);
+                    owner_section.status_simple(Role::Warn, subject.to_string());
+                } else if let Some(marker) = &subject.marker {
+                    owner_section.bullet_marker(marker.clone(), subject.body.clone());
                 } else {
-                    owner_section.bullet(item);
+                    owner_section.bullet(subject.body.clone());
                 }
             }
         }

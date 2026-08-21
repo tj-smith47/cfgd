@@ -839,6 +839,47 @@ fn preview_bullet_matches_the_execution_subject_for_a_condensed_script() {
     );
 }
 
+/// A planned script's marker (`run PostApply script:`) carries the same
+/// `Role::Accent` styling in the preview tree that `StatusBuilder::marker`
+/// gives it once the script actually runs — the two must read as the same
+/// kind of thing before and after execution, not plain text in the preview
+/// and styled only once the run starts.
+#[test]
+#[serial_test::serial]
+fn preview_bullet_styles_a_scripts_marker() {
+    use crate::output::{Role, Theme};
+
+    let body = "echo hello";
+    let plan = plan_of(vec![phase(
+        PhaseName::PostScripts,
+        vec![script_run(body, ScriptPhase::PostApply, "local")],
+    )]);
+    let theme = Theme::from_preset("dracula").with_colors(true);
+    let (printer, buf) = Printer::for_test_with_theme_colored(theme.clone(), Verbosity::Normal);
+    ApplyRun::new(ctx(RunTitle::Apply), &plan).preview(&printer);
+    drop(printer);
+    // raw-capture-ok: asserting the marker's exact styled run reaches the renderer unrestyled — captured_text would strip the ANSI this test exists to check
+    let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+
+    let (_, accent) = crate::output::renderer::role_glyph(&theme, Role::Accent);
+    let styled_marker = accent.apply_to("run postApply script:").to_string();
+    assert!(
+        raw.contains(&styled_marker),
+        "the marker must carry Role::Accent styling: {raw:?}"
+    );
+    // The body itself stays unstyled — only the marker is coloured.
+    assert!(
+        !raw.contains(&accent.apply_to(body).to_string()),
+        "the script body must not be styled like the marker: {raw:?}"
+    );
+
+    let plain = crate::output::strip_ansi(&raw);
+    assert!(
+        plain.contains("run postApply script: echo hello"),
+        "the stripped text must match the execution subject: {plain:?}"
+    );
+}
+
 // --- execute ---
 
 #[test]

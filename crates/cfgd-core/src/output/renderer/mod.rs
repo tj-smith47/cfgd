@@ -816,6 +816,31 @@ impl Renderer {
         });
     }
 
+    /// Bullet with a leading styled marker (`run PreApply script: <body>`),
+    /// the bullet counterpart of a status line's marker slot. Same dash and
+    /// depth as [`Self::render_bullet`]; the difference is the subject, built
+    /// through [`finalize_subject`] exactly as a status line's marker is, so a
+    /// planned script's marker in the preview tree carries the same
+    /// `Role::Accent` styling it gets once the script actually runs
+    /// (`StatusBuilder::marker`) instead of reading as plain body text.
+    pub fn render_bullet_marker(&self, w: &dyn Writer, depth: usize, marker: &str, body: &str) {
+        if self.verbosity == Verbosity::Quiet {
+            return;
+        }
+        let label = crate::output::component::StatusLabel {
+            role: crate::output::Role::Accent,
+            text: format!("{marker}:"),
+        };
+        let subject = finalize_subject(&self.theme, body, Some(&label), None, None);
+        let line = format!("{}{}", self.theme.muted.apply_to("- "), subject);
+        self.emit_with(w, |e| {
+            e.flush_section_headers();
+            e.open_top_group(TopGroup::Bullet);
+            e.push_line(depth, &line);
+            e.mark_top_level_group(TopGroup::Bullet);
+        });
+    }
+
     /// One line of live output from a child process, rendered dim and indented.
     /// Unlike a spinner message — which repaints a fixed window in place and so
     /// erases and rewrites the lines above it — this appends, letting output

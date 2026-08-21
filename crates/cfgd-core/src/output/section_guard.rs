@@ -23,6 +23,21 @@ impl<'p> SectionGuard<'p> {
         self
     }
 
+    /// A bullet with a leading styled marker — the plan-preview counterpart of
+    /// a status line's `.marker(...)`, for an action whose subject carries one
+    /// (a planned script). `marker` is unsuffixed; the renderer appends the
+    /// colon and styles it `Role::Accent`, matching the color a script's own
+    /// executed status line paints its marker in.
+    pub fn bullet_marker(&self, marker: impl Into<String>, body: impl Into<String>) -> &Self {
+        self.renderer.render_bullet_marker(
+            self.sink.as_ref(),
+            self.depth,
+            &marker.into(),
+            &body.into(),
+        );
+        self
+    }
+
     pub fn kv(&self, key: impl Into<String>, value: impl Into<String>) -> &Self {
         // Defer to the buffer so consecutive kvs at this depth coalesce.
         self.renderer.render_kv(&key.into(), &value.into());
