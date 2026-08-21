@@ -107,6 +107,11 @@ pub enum ModulePackagePresence {
     /// Nothing asked: no `--scan`, a `script` package with no manager to ask,
     /// or a manager this host does not have registered.
     NotScanned,
+    /// The module's own `platforms` gate rules this package out on this host,
+    /// so nothing was ever going to install it. Distinct from `NotScanned`,
+    /// which says nobody looked: here the answer is known and `cfgd module
+    /// show` renders the same words for the same package.
+    PlatformSkipped,
 }
 
 impl ModulePackagePresence {
@@ -114,7 +119,7 @@ impl ModulePackagePresence {
         match self {
             Self::Installed => Role::Ok,
             Self::NotInstalled => Role::Warn,
-            Self::NotScanned => Role::Info,
+            Self::NotScanned | Self::PlatformSkipped => Role::Info,
         }
     }
 
@@ -123,6 +128,7 @@ impl ModulePackagePresence {
             Self::Installed => "installed",
             Self::NotInstalled => cfgd_core::Absence::NotInstalled.as_str(),
             Self::NotScanned => NOT_SCANNED,
+            Self::PlatformSkipped => PLATFORM_SKIPPED,
         }
     }
 }
@@ -164,6 +170,11 @@ impl ModuleFilePresence {
 /// The one spelling of "cfgd did not ask", shared by both state vocabularies
 /// so a reader meets one phrase per report rather than one per section.
 const NOT_SCANNED: &str = "not scanned";
+
+/// The wording `cfgd module show` renders for a platform-gated package
+/// (`module/list_show.rs`); the two surfaces answer about one declared package
+/// and must say the same thing.
+const PLATFORM_SKIPPED: &str = "skipped (platform filter)";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -866,6 +877,16 @@ pub(super) fn cmd_status_module(
                 manager: Some(manager.clone()),
                 state: *state,
             },
+            // A package the module's own platform gate rules out never
+            // reaches the scan, so "nobody looked" would be a lie about a
+            // question that IS answered.
+            None if !cfgd_core::platform::Platform::current().matches_any(&p.platforms) => {
+                ModulePackageStatus {
+                    name: p.name.clone(),
+                    manager: None,
+                    state: ModulePackagePresence::PlatformSkipped,
+                }
+            }
             None => ModulePackageStatus {
                 name: p.name.clone(),
                 manager: None,
@@ -1766,6 +1787,55 @@ mod tests {
         assert!(
             output.contains("installed"),
             "should print state-store status, got: {output}"
+        );
+    }
+
+    /// A package the module's own `platforms` gate rules out is not "not
+    /// scanned" — nobody was ever going to look. `cfgd module show` says
+    /// `skipped (platform filter)` for the same package, and two surfaces
+    /// answering one question differently is the drift this pins.
+    #[test]
+    fn a_platform_gated_package_reads_skipped_not_unscanned() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let config_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = config_dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(profiles_dir.join("default.yaml"), PROFILE_WITH_MODULE_YAML).unwrap();
+        let mod_dir = config_dir.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        // `plan9` is no OS, distro or arch cfgd targets, so the gate closes on
+        // every host the suite runs on.
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: ripgrep\n    - name: plan9-only\n      platforms:\n        - plan9\n",
+        )
+        .unwrap();
+
+        let cli = test_cli_for(config_path, state_dir.path());
+        let (printer, buf) = test_printers();
+        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, false).unwrap();
+        drop(printer);
+
+        let output = cfgd_core::test_helpers::captured_text(&buf);
+        let gated = output
+            .lines()
+            .find(|l| l.contains("plan9-only"))
+            .unwrap_or_else(|| panic!("gated package must render a row, got:\n{output}"));
+        assert!(
+            gated.contains(PLATFORM_SKIPPED),
+            "gated package must read the platform-filter wording, got: {gated}"
+        );
+        let ungated = output
+            .lines()
+            .find(|l| l.contains("ripgrep"))
+            .unwrap_or_else(|| panic!("ungated package must render a row, got:\n{output}"));
+        assert!(
+            ungated.contains(NOT_SCANNED),
+            "an ungated package with no scan still reads not scanned, got: {ungated}"
         );
     }
 

@@ -594,10 +594,12 @@ Deployed Files
 Without `--scan` nothing has asked a manager and nothing has read a file's
 content, so every package row and every present file reads `not scanned`
 (absence is still definite: a file the module deployed and that is gone reads
-`missing` either way). A file the scan found drifted reads `drifted` here and
+`missing` either way). A package the module's own `platforms` gate rules out on
+this host reads `skipped (platform filter)` instead, the same words `cfgd module
+show` uses for it: nothing was ever going to install it, scan or no scan. A file the scan found drifted reads `drifted` here and
 `want:`/`have:` under `Drift`, never converged beside its own drift. `-o json`
 carries the same verdicts as `packageState[].state` (`installed`,
-`notInstalled`, `notScanned`) and `deployedFiles[].state` (`deployed`,
+`notInstalled`, `notScanned`, `platformSkipped`) and `deployedFiles[].state` (`deployed`,
 `drifted`, `missing`, `notScanned`). The header adds a count for each declared
 surface the module contributes (`Env`, `Aliases`, `Scripts`, `System`) so a
 phase that ran during `apply` is findable in the report; `cfgd module show`
