@@ -90,7 +90,12 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
     // Surface lib-side load failure with the same {"error": "load_failed", ...}
     // structured shape as the "Ok-but-no-cache-entry" fallback below, so both
     // load-failure paths look identical to structured consumers.
-    if let Err(e) = mgr.load_source(&spec, printer) {
+    // The clone is the wait. It retires silently on both arms because the
+    // failure below is already worded as its own line.
+    let load = printer.narrate_silent(format!("Fetching source:{source_name}"), |_| {
+        mgr.load_source(&spec, printer)
+    });
+    if let Err(e) = load {
         return Err(crate::cli::cli_error(
             &source_name,
             "load_failed",

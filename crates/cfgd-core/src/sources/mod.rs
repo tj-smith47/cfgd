@@ -248,24 +248,32 @@ impl SourceManager {
     /// returned when sources were specified but every one of them failed.
     pub fn load_sources(&mut self, sources: &[SourceSpec], printer: &Printer) -> Result<()> {
         let mut loaded = 0;
-        for spec in sources {
-            match self.load_source(spec, printer) {
-                Ok(()) => loaded += 1,
-                Err(e) if spec.sync.required => {
-                    return Err(SourceError::FetchFailed {
-                        name: spec.name.clone(),
-                        message: format!("required source failed to load: {e}"),
+        // Each source is a clone or a fetch over the network, which is the
+        // longest wait any composing command takes and the one that used to
+        // happen with nothing on screen. Narrated here rather than at the call
+        // sites, so every command that composes gets it from one place.
+        printer.narrate("Refreshing sources", |sp| -> Result<()> {
+            for spec in sources {
+                sp.set_message(format!("Refreshing source:{}", spec.name));
+                match self.load_source(spec, printer) {
+                    Ok(()) => loaded += 1,
+                    Err(e) if spec.sync.required => {
+                        return Err(SourceError::FetchFailed {
+                            name: spec.name.clone(),
+                            message: format!("required source failed to load: {e}"),
+                        }
+                        .into());
                     }
-                    .into());
-                }
-                Err(e) => {
-                    printer.status_simple(
-                        Role::Warn,
-                        format!("Failed to load source '{}': {}", spec.name, e),
-                    );
+                    Err(e) => {
+                        printer.status_simple(
+                            Role::Warn,
+                            format!("Failed to load source '{}': {}", spec.name, e),
+                        );
+                    }
                 }
             }
-        }
+            Ok(())
+        })?;
         if !sources.is_empty() && loaded == 0 {
             return Err(SourceError::GitError {
                 name: "all".to_string(),
@@ -289,10 +297,17 @@ impl SourceManager {
     /// signature fails still surfaces as an error (a broken desired-state config
     /// must be reported, not silently dropped).
     pub fn load_sources_cached(&mut self, sources: &[SourceSpec], printer: &Printer) -> Result<()> {
-        for spec in sources {
-            self.load_source_cached(spec, printer)?;
-        }
-        Ok(())
+        // No network here, but a cached checkout is still parsed, its manifest
+        // read and its signature verified per source — narrated for the same
+        // reason the refreshing loop is, and with the label that says which of
+        // the two a run is actually doing.
+        printer.narrate("Loading cached sources", |sp| -> Result<()> {
+            for spec in sources {
+                sp.set_message(format!("Loading source:{}", spec.name));
+                self.load_source_cached(spec, printer)?;
+            }
+            Ok(())
+        })
     }
 
     /// Load a single source from its on-disk cache without fetching. A

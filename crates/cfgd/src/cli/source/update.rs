@@ -98,7 +98,12 @@ pub(crate) fn run_source_update(
             None
         };
 
-        match mgr.load_source(source, printer) {
+        // The fetch is the wait; the caller words its own failure line just
+        // below, so the bar retires silently on both arms.
+        let load = printer.narrate_silent(format!("Fetching source:{}", source.name), |_| {
+            mgr.load_source(source, printer)
+        });
+        match load {
             Ok(()) => {
                 if let Some(cached) = mgr.get(&source.name) {
                     // Detect permission-expanding changes between old and new manifests

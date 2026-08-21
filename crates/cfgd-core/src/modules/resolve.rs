@@ -371,59 +371,68 @@ pub fn resolve_modules(
     })?;
 
     let mut resolved = Vec::new();
-    for name in &order {
-        let module = &all_modules[name];
+    // A module's own resolution is where this walk waits: a git file source
+    // is cloned or fetched here and every manifest is read off disk. Narrated
+    // per module at the one place every command's module walk goes through, so
+    // the wait names what it is waiting on rather than standing silent.
+    printer.narrate("Resolving modules", |sp| -> Result<()> {
+        for name in &order {
+            sp.set_message(format!("Resolving module:{name}"));
+            let module = &all_modules[name];
 
-        // Platform-gated out: emit a placeholder carrying the skip reason and
-        // empty contents. The visible Skip action is produced by plan_modules.
-        // Resolving packages/files here is wasteful and could error on the
-        // other platform's assets, so it is deliberately skipped.
-        if skipped.contains(name.as_str()) {
-            resolved.push(ResolvedModule::skipped(
-                name.clone(),
-                module.dir.clone(),
-                module.spec.depends.clone(),
-                format!(
-                    "platform not matched (requires: {})",
-                    module.spec.platforms.join(", ")
-                ),
-                module.origin.clone(),
-            ));
-            continue;
+            // Platform-gated out: emit a placeholder carrying the skip reason and
+            // empty contents. The visible Skip action is produced by plan_modules.
+            // Resolving packages/files here is wasteful and could error on the
+            // other platform's assets, so it is deliberately skipped.
+            if skipped.contains(name.as_str()) {
+                resolved.push(ResolvedModule::skipped(
+                    name.clone(),
+                    module.dir.clone(),
+                    module.spec.depends.clone(),
+                    format!(
+                        "platform not matched (requires: {})",
+                        module.spec.platforms.join(", ")
+                    ),
+                    module.origin.clone(),
+                ));
+                continue;
+            }
+
+            let packages = resolve_module_packages(module, platform, managers)?;
+            let files = resolve_module_files(module, cache_base, printer)?;
+
+            let scripts = module.spec.scripts.as_ref();
+            let pre_apply_scripts = scripts.map(|s| s.pre_apply.clone()).unwrap_or_default();
+            let post_apply_scripts = scripts.map(|s| s.post_apply.clone()).unwrap_or_default();
+            let pre_reconcile_scripts =
+                scripts.map(|s| s.pre_reconcile.clone()).unwrap_or_default();
+            let post_reconcile_scripts = scripts
+                .map(|s| s.post_reconcile.clone())
+                .unwrap_or_default();
+            let on_change_scripts = scripts.map(|s| s.on_change.clone()).unwrap_or_default();
+            let on_drift_scripts = scripts.map(|s| s.on_drift.clone()).unwrap_or_default();
+
+            resolved.push(ResolvedModule {
+                name: name.clone(),
+                packages,
+                files,
+                env: module.spec.env.clone(),
+                aliases: module.spec.aliases.clone(),
+                system: module.spec.system.clone(),
+                pre_apply_scripts,
+                post_apply_scripts,
+                pre_reconcile_scripts,
+                post_reconcile_scripts,
+                on_change_scripts,
+                on_drift_scripts,
+                depends: module.spec.depends.clone(),
+                dir: module.dir.clone(),
+                platform_skip_reason: None,
+                origin: module.origin.clone(),
+            });
         }
-
-        let packages = resolve_module_packages(module, platform, managers)?;
-        let files = resolve_module_files(module, cache_base, printer)?;
-
-        let scripts = module.spec.scripts.as_ref();
-        let pre_apply_scripts = scripts.map(|s| s.pre_apply.clone()).unwrap_or_default();
-        let post_apply_scripts = scripts.map(|s| s.post_apply.clone()).unwrap_or_default();
-        let pre_reconcile_scripts = scripts.map(|s| s.pre_reconcile.clone()).unwrap_or_default();
-        let post_reconcile_scripts = scripts
-            .map(|s| s.post_reconcile.clone())
-            .unwrap_or_default();
-        let on_change_scripts = scripts.map(|s| s.on_change.clone()).unwrap_or_default();
-        let on_drift_scripts = scripts.map(|s| s.on_drift.clone()).unwrap_or_default();
-
-        resolved.push(ResolvedModule {
-            name: name.clone(),
-            packages,
-            files,
-            env: module.spec.env.clone(),
-            aliases: module.spec.aliases.clone(),
-            system: module.spec.system.clone(),
-            pre_apply_scripts,
-            post_apply_scripts,
-            pre_reconcile_scripts,
-            post_reconcile_scripts,
-            on_change_scripts,
-            on_drift_scripts,
-            depends: module.spec.depends.clone(),
-            dir: module.dir.clone(),
-            platform_skip_reason: None,
-            origin: module.origin.clone(),
-        });
-    }
+        Ok(())
+    })?;
 
     Ok(resolved)
 }
