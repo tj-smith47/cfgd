@@ -1,10 +1,25 @@
 use serde::{Deserialize, Serialize};
 
+/// `spec.theme`: the active output preset and any per-color/icon overrides.
+///
+/// Accepts either a bare string (the preset name) or a mapping:
+///
+/// ```yaml
+/// theme: dracula
+/// # or
+/// theme:
+///   name: dracula
+///   overrides:
+///     header: "#ff0000"
+///     iconOk: "Y"
+/// ```
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThemeConfig {
+    /// Preset name (`default`, `dracula`, `solarized`, `minimal`, …). Default: `default`.
     #[serde(default = "default_theme_name")]
     pub name: String,
+    /// Per-color and per-icon overrides applied on top of the named preset.
     #[serde(default, skip_serializing_if = "ThemeOverrides::is_empty")]
     pub overrides: ThemeOverrides,
 }
@@ -79,27 +94,52 @@ pub struct ThemeOverrides {
     /// of the run tree is painted with. Presets that carry no palette
     /// foreground of their own leave it unset.
     pub primary: Option<String>,
+    /// Fills `Theme::header`, the style for a top-level heading. Hex color (`"#ff0000"`).
     pub header: Option<String>,
+    /// Fills `Theme::success`, the style for `Role::Ok` status lines. Hex color.
     pub success: Option<String>,
+    /// Fills `Theme::warning`, the style for `Role::Warn` status lines. Hex color.
     pub warning: Option<String>,
+    /// Fills `Theme::error`, the style for `Role::Fail` status lines. Hex color.
     pub error: Option<String>,
+    /// Fills `Theme::info`, the style for `Role::Info` status lines. Hex color.
     pub info: Option<String>,
+    /// Fills `Theme::muted`, the style for de-emphasized text (hints, notes,
+    /// qualifiers). Hex color.
     pub muted: Option<String>,
+    /// Fills `Theme::running`, the style for `Role::Running` status lines and
+    /// in-flight spinner labels. Hex color.
     pub running: Option<String>,
+    /// Fills `Theme::diff_add`, the style for an added diff line. Hex color.
     pub diff_add: Option<String>,
+    /// Fills `Theme::diff_remove`, the style for a removed diff line. Hex color.
     pub diff_remove: Option<String>,
+    /// Fills `Theme::diff_context`, the style for an unchanged diff context line.
+    /// Hex color.
     pub diff_context: Option<String>,
+    /// Fills `Theme::accent`, the style for `Role::Accent` status lines
+    /// ("attention without alarm"). Hex color.
     pub accent: Option<String>,
+    /// Fills `Theme::secondary`, the style for `Role::Secondary` status lines
+    /// (structural pivots, labels, identifiers). Hex color.
     pub secondary: Option<String>,
 
     // Icon overrides (8) — single glyphs (or short strings) for status roles.
+    /// Glyph for `Role::Ok` status lines. Default varies by preset (e.g. `✓`).
     pub icon_ok: Option<String>,
+    /// Glyph for `Role::Warn` status lines. Default varies by preset (e.g. `⚠`).
     pub icon_warn: Option<String>,
+    /// Glyph for `Role::Fail` status lines. Default varies by preset (e.g. `✗`).
     pub icon_fail: Option<String>,
+    /// Glyph for `Role::Pending` status lines. Default varies by preset.
     pub icon_pending: Option<String>,
+    /// Glyph for `Role::Running` status lines. Default varies by preset.
     pub icon_running: Option<String>,
+    /// Glyph for `Role::Skipped` status lines. Default varies by preset.
     pub icon_skipped: Option<String>,
+    /// Glyph rendered for an `old -> new` relationship (e.g. `→`).
     pub icon_arrow: Option<String>,
+    /// Glyph for `Role::Info` status lines. Default varies by preset.
     pub icon_info: Option<String>,
 }
 

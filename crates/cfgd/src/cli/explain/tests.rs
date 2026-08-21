@@ -185,6 +185,29 @@ fn explain_cmd_field_path() {
 }
 
 #[test]
+fn explain_cmd_field_descriptions_render_documented_ai_fields() {
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    cmd_explain(&printer, Some("Config.ai"), true).unwrap();
+    printer.flush();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        output.contains("The AI provider name. Default: `claude`."),
+        "expected AiConfig.provider rustdoc in output, got: {output}"
+    );
+    assert!(
+        output.contains("Name of the environment variable holding the API key."),
+        "expected AiConfig.api_key_env rustdoc in output, got: {output}"
+    );
+    // No leaked rustdoc intra-doc link markdown anywhere in a field description:
+    // schemars copies `///` text verbatim and cfgd explain prints it with no
+    // markdown renderer, so a `[`Type`]` link would show as literal brackets.
+    assert!(
+        !output.contains("[`"),
+        "field description leaked rustdoc link syntax, got: {output}"
+    );
+}
+
+#[test]
 fn explain_cmd_spec_prefix_stripped() {
     // "module.spec.packages" should produce identical output to "module.packages"
     let (printer_a, buf_a) = Printer::for_test_at(Verbosity::Normal);

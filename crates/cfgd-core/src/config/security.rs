@@ -2,6 +2,12 @@ use serde::{Deserialize, Serialize};
 
 use super::module::ModuleRegistryEntry;
 
+/// `spec.security`: source signature-verification settings.
+///
+/// ```yaml
+/// security:
+///   allowUnsigned: false
+/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SecurityConfig {
@@ -11,6 +17,16 @@ pub struct SecurityConfig {
     pub allow_unsigned: bool,
 }
 
+/// `spec.modules`: module registries and their security requirements.
+///
+/// ```yaml
+/// modules:
+///   registries:
+///     - name: acme
+///       url: https://github.com/acme/cfgd-modules
+///   security:
+///     requireSignatures: true
+/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModulesConfig {
@@ -23,6 +39,7 @@ pub struct ModulesConfig {
     pub security: Option<ModuleSecurityConfig>,
 }
 
+/// `spec.modules.security`: signature requirements for modules pulled from a registry.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleSecurityConfig {

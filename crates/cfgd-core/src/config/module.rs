@@ -12,19 +12,38 @@ use crate::errors::{ConfigError, Result};
 
 // --- Module ---
 
+/// A `module.yaml` document: a reusable, named bundle of packages/files/env/
+/// aliases/scripts/system settings a profile pulls in by name.
+///
+/// ```yaml
+/// apiVersion: cfgd.io/v1alpha1
+/// kind: Module
+/// metadata:
+///   name: nvim
+/// spec:
+///   packages:
+///     - name: neovim
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleDocument {
+    /// API group/version, e.g. `cfgd.io/v1alpha1`.
     pub api_version: String,
+    /// Document kind. Always `Module` for this file.
     pub kind: String,
+    /// Identifying metadata for this module.
     pub metadata: ModuleMetadata,
+    /// The module's declared surface.
     pub spec: ModuleSpec,
 }
 
+/// `metadata`: identifying information for a module.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleMetadata {
+    /// The module's name, referenced from a profile's `modules:` list.
     pub name: String,
+    /// A one-line human summary shown in `cfgd module list` / `cfgd module show`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// The module's own release version, as `MAJOR.MINOR.PATCH` with optional
@@ -84,9 +103,13 @@ fn module_version_error(value: &str) -> Option<String> {
     ))
 }
 
+/// `spec`: the declared surface of a module — everything it contributes to a
+/// profile that includes it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleSpec {
+    /// Names of other modules this one requires; cfgd resolves and applies them
+    /// first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends: Vec<String>,
 
@@ -98,18 +121,23 @@ pub struct ModuleSpec {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub platforms: Vec<String>,
 
+    /// Packages this module installs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub packages: Vec<ModulePackageEntry>,
 
+    /// Files this module deploys.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<ModuleFileEntry>,
 
+    /// Environment variables this module contributes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<EnvVar>,
 
+    /// Shell aliases this module contributes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<ShellAlias>,
 
+    /// Lifecycle scripts (`preApply`, `postApply`, …) this module runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scripts: Option<ScriptSpec>,
 
@@ -120,21 +148,39 @@ pub struct ModuleSpec {
     pub system: SystemSettings,
 }
 
+/// One entry of `spec.packages[]`: a package this module installs.
+///
+/// ```yaml
+/// packages:
+///   - name: neovim
+///     minVersion: "0.9"
+///     prefer: [brew, apt]
+/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModulePackageEntry {
+    /// The package name as the chosen manager knows it.
     #[serde(default)]
     pub name: String,
 
+    /// Minimum acceptable installed version, loosely parsed (`"1.2"`, `"1"`).
+    /// A version below this is treated as not satisfying the module.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_version: Option<String>,
 
+    /// Manager preference order for this package, overriding the profile's
+    /// default manager priority (e.g. `[brew, apt]`, or `[script]` to force the
+    /// install script below).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prefer: Vec<String>,
 
+    /// Manager-specific package name aliases (e.g. `{apt: "neovim", brew:
+    /// "neovim"}`) for a package named differently across managers.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub aliases: HashMap<String, String>,
 
+    /// Shell script to run instead of a manager install, selected via
+    /// `prefer: [script]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script: Option<String>,
 
@@ -158,20 +204,34 @@ pub struct ModulePackageEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creates: Option<String>,
 
+    /// Package managers to never use for this package, even if otherwise
+    /// available and preferred by the profile.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deny: Vec<String>,
 
+    /// Platform tags gating this package alone. Empty means install on every
+    /// platform the module itself is not already gated off of.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub platforms: Vec<String>,
 }
 
+/// One entry of `spec.files[]`: a file this module deploys.
+///
+/// ```yaml
+/// files:
+///   - source: files/init.lua
+///     target: ~/.config/nvim/init.lua
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleFileEntry {
-    /// Not required when `strategy` is `Patch`; required otherwise
+    /// Path to the source file, relative to the module directory. Not
+    /// required when `strategy` is `Patch`; required otherwise
     /// (enforced by `validate_module_file_entries`, not the JSON schema).
     #[serde(default)]
     pub source: String,
+    /// Destination path on the machine. A leading `~` expands to the home
+    /// directory.
     pub target: String,
     /// Per-file deployment strategy override. If None, uses the global default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -232,12 +292,28 @@ case_insensitive_enum!(ScriptShell {
     "cmd" => ScriptShell::Cmd,
 });
 
+/// A lifecycle script entry: either a bare command string, or a mapping for
+/// one that needs a timeout, shell, or guard condition.
+///
+/// ```yaml
+/// preApply: "echo starting"
+/// # or
+/// postApply:
+///   run: brew update
+///   timeout: 2m
+///   onlyIf: command -v brew
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum ScriptEntry {
+    /// A bare command string, run with the platform's default shell and no
+    /// timeout/guard.
     Simple(String),
     Full {
+        /// The command or script body to run.
         run: String,
+        /// Kill the script if it runs longer than this duration (`"30s"`, `"2m"`).
+        /// Unset means no timeout.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout: Option<String>,
         /// Kill the script if it produces no stdout/stderr output for this duration.
@@ -249,6 +325,8 @@ pub enum ScriptEntry {
             rename = "idleTimeout"
         )]
         idle_timeout: Option<String>,
+        /// Treat a non-zero exit as success and continue reconciliation instead
+        /// of failing the run. Default: `false`.
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
@@ -320,6 +398,7 @@ impl std::fmt::Display for ScriptEntry {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleLockfile {
+    /// Every locked remote module, one per module resolved from a registry.
     #[serde(default)]
     pub modules: Vec<ModuleLockEntry>,
 }

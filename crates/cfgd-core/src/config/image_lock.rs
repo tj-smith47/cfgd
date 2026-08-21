@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImagesLockfile {
+    /// Every locked image entry, one per packed tag reference.
     #[serde(default)]
     pub images: Vec<ImageLockEntry>,
 }

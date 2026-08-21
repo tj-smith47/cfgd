@@ -15,12 +15,27 @@ use crate::errors::Result;
 
 // --- Root Config (cfgd.yaml) ---
 
+/// The root `cfgd.yaml` document: a KRM-style envelope (`apiVersion`/`kind`/
+/// `metadata`/`spec`) around a machine's declared configuration.
+///
+/// ```yaml
+/// apiVersion: cfgd.io/v1alpha1
+/// kind: CfgdConfig
+/// metadata:
+///   name: my-machine
+/// spec:
+///   profile: work
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CfgdConfig {
+    /// API group/version, e.g. `cfgd.io/v1alpha1`. See `API_VERSION`.
     pub api_version: String,
+    /// Document kind. Always `CfgdConfig` for this file.
     pub kind: String,
+    /// Identifying metadata for this config document.
     pub metadata: ConfigMetadata,
+    /// The declared configuration.
     pub spec: ConfigSpec,
     /// Deprecation messages collected while parsing (e.g. legacy `theme.overrides.*`
     /// keys). Not part of the schema: never serialized, never compared. A command
@@ -65,30 +80,39 @@ impl CfgdConfig {
     }
 }
 
+/// `metadata`: identifying information for a `cfgd.yaml` document.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigMetadata {
+    /// A human-chosen name for this machine's config, shown in status output.
     pub name: String,
 }
 
+/// `spec`: the body of a `cfgd.yaml` document.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSpec {
+    /// Name of the active `ProfileSpec` to reconcile against.
     #[serde(default)]
     pub profile: Option<String>,
 
+    /// Git origins this config's changes may be pushed to / pulled from.
     #[serde(default)]
     pub origin: Vec<OriginSpec>,
 
+    /// Background reconcile-daemon settings.
     #[serde(default)]
     pub daemon: Option<DaemonConfig>,
 
+    /// Default secret backend and integrations.
     #[serde(default)]
     pub secrets: Option<SecretsConfig>,
 
+    /// Additional config sources this machine subscribes to.
     #[serde(default)]
     pub sources: Vec<SourceSpec>,
 
+    /// Output theme (preset + overrides).
     #[serde(default)]
     pub theme: Option<ThemeConfig>,
 
@@ -169,11 +193,11 @@ case_insensitive_enum!(UpdatePolicy {
     "Manual" => UpdatePolicy::Manual,
 });
 
-/// Per-skill update policy. Mirrors [`UpdatePolicy`] but adds `Inherit`, which
-/// defers to the binary-level [`UpdateConfig::policy`].
+/// Per-skill update policy. Mirrors `UpdatePolicy` but adds `Inherit`, which
+/// defers to the binary-level `update.policy`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub enum SkillUpdatePolicy {
-    /// Defer to the binary-level update policy ([`UpdateConfig::policy`]).
+    /// Defer to the binary-level update policy (`update.policy`).
     #[default]
     Inherit,
     /// Apply skill updates automatically without prompting.

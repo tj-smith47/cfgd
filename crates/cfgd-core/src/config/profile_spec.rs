@@ -244,60 +244,92 @@ where
 }
 // --- Profile ---
 
+/// A `profile.yaml` document: a named, inheritable bundle of everything cfgd
+/// reconciles for a machine — packages, files, env, aliases, system settings,
+/// scripts, and backups.
+///
+/// ```yaml
+/// apiVersion: cfgd.io/v1alpha1
+/// kind: Profile
+/// metadata:
+///   name: work
+/// spec:
+///   modules: [nvim, zsh]
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileDocument {
+    /// API group/version, e.g. `cfgd.io/v1alpha1`.
     pub api_version: String,
+    /// Document kind. Always `Profile` for this file.
     pub kind: String,
+    /// Identifying metadata for this profile.
     pub metadata: ProfileMetadata,
+    /// The profile's declared surface.
     pub spec: ProfileSpec,
 }
 
+/// `metadata`: identifying information for a profile.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileMetadata {
+    /// The profile's name, referenced by `spec.profile` in `cfgd.yaml` and by
+    /// `inherits:` in another profile.
     pub name: String,
 }
 
+/// `spec`: the declared surface of a profile.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileSpec {
+    /// Names of base profiles to merge under this one. Later fields in this
+    /// profile override an inherited base's; lists are unioned.
     #[serde(default)]
     pub inherits: Vec<String>,
 
+    /// Names of modules this profile includes.
     #[serde(default)]
     pub modules: Vec<String>,
 
+    /// Environment variables this profile sets.
     #[serde(default)]
     pub env: Vec<EnvVar>,
 
     /// How far `spec.env` exports reach across the current user's environment.
     /// Omitted means "inherit" (a parent layer's value survives); the resolved
-    /// default when no layer sets it is [`EnvScope::All`] — every standard user
+    /// default when no layer sets it is `EnvScope::All` — every standard user
     /// entry point cfgd can safely touch. Narrow it to `Login` or `Interactive`
     /// to opt out of the broader session surfaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_scope: Option<EnvScope>,
 
+    /// Shell aliases this profile sets.
     #[serde(default)]
     pub aliases: Vec<ShellAlias>,
 
+    /// Packages this profile installs, grouped by manager.
     #[serde(default)]
     pub packages: Option<PackagesSpec>,
 
+    /// Files this profile deploys.
     #[serde(default)]
     pub files: Option<FilesSpec>,
 
+    /// System configurator settings (`macosDefaults`, `systemd`, `sysctl`, …),
+    /// keyed by configurator name.
     #[serde(default)]
     #[schemars(with = "std::collections::BTreeMap<String, serde_json::Value>")]
     pub system: SystemSettings,
 
+    /// Secrets this profile resolves into files or environment variables.
     #[serde(default)]
     pub secrets: Vec<SecretSpec>,
 
+    /// Lifecycle scripts (`preApply`, `postApply`, …) this profile runs.
     #[serde(default)]
     pub scripts: Option<ScriptSpec>,
 
+    /// Declarative backup jobs this profile schedules.
     #[serde(default)]
     pub backups: Vec<BackupSpec>,
 }
@@ -329,45 +361,79 @@ case_insensitive_enum!(EnvScope {
     "Interactive" => EnvScope::Interactive,
 });
 
+/// `spec.packages`: packages to install, grouped by package manager.
+///
+/// Every manager field accepts either a bare list of names or (for the
+/// managers with their own options struct) a mapping:
+///
+/// ```yaml
+/// packages:
+///   brew:
+///     formulae: [ripgrep, fzf]
+///     casks: [alacritty]
+///   apt: [curl, git]
+///   cargo: [ripgrep]
+/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackagesSpec {
+    /// Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a
+    /// `BrewSpec` mapping.
     #[serde(default, deserialize_with = "list_or_struct")]
     pub brew: Option<BrewSpec>,
+    /// APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.
     #[serde(default, deserialize_with = "list_or_struct")]
     pub apt: Option<AptSpec>,
+    /// Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.
     #[serde(default, deserialize_with = "list_or_struct")]
     pub cargo: Option<CargoSpec>,
+    /// npm global packages. Accepts a bare list or an `NpmSpec` mapping.
     #[serde(default, deserialize_with = "list_or_struct")]
     pub npm: Option<NpmSpec>,
+    /// pipx-installed Python applications.
     #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub pipx: Vec<String>,
+    /// DNF packages (Fedora/RHEL).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub dnf: Vec<String>,
+    /// APK packages (Alpine).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub apk: Vec<String>,
+    /// Pacman packages (Arch).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub pacman: Vec<String>,
+    /// Zypper packages (openSUSE).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub zypper: Vec<String>,
+    /// Yum packages (legacy RHEL/CentOS).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub yum: Vec<String>,
+    /// pkg packages (FreeBSD).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub pkg: Vec<String>,
+    /// Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.
     #[serde(default, deserialize_with = "list_or_struct")]
     pub snap: Option<SnapSpec>,
+    /// Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.
     #[serde(default, deserialize_with = "list_or_struct")]
     pub flatpak: Option<FlatpakSpec>,
+    /// Nix packages (`nix-env` / `nix profile`).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub nix: Vec<String>,
+    /// Go packages (`go install`).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub go: Vec<String>,
+    /// Winget packages (Windows).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub winget: Vec<String>,
+    /// Chocolatey packages (Windows).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub chocolatey: Vec<String>,
+    /// Scoop packages (Windows).
     #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub scoop: Vec<String>,
+    /// User-defined package managers not built into cfgd, each with its own
+    /// check/install/uninstall commands.
     #[serde(default)]
     pub custom: Vec<CustomManagerSpec>,
 }
@@ -462,15 +528,28 @@ impl PackagesSpec {
     }
 }
 
+/// Homebrew package spec. Supports both list form (`brew: [ripgrep, fzf]`,
+/// mapped to `formulae`) and object form for taps/casks:
+///
+/// ```yaml
+/// brew:
+///   taps: [homebrew/cask-fonts]
+///   formulae: [ripgrep, fzf]
+///   casks: [alacritty]
+/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BrewSpec {
+    /// Path to a Brewfile to apply instead of (or alongside) the lists below.
     #[serde(default)]
     pub file: Option<String>,
+    /// Third-party taps to add before installing formulae/casks.
     #[serde(default)]
     pub taps: Vec<String>,
+    /// Homebrew formulae (CLI packages) to install.
     #[serde(default)]
     pub formulae: Vec<String>,
+    /// Homebrew casks (GUI applications) to install.
     #[serde(default)]
     pub casks: Vec<String>,
 }
@@ -486,11 +565,15 @@ impl FromPackageList for BrewSpec {
     }
 }
 
+/// APT package spec. Supports both list form (`apt: [curl, git]`) and object
+/// form (`apt: { file: packages.txt, packages: [...] }`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AptSpec {
+    /// Path to a package-list file to install from, one name per line.
     #[serde(default)]
     pub file: Option<String>,
+    /// APT package names to install.
     #[serde(default)]
     pub packages: Vec<String>,
 }
@@ -504,11 +587,15 @@ impl FromPackageList for AptSpec {
     }
 }
 
+/// npm package spec. Supports both list form (`npm: [pnpm]`, mapped to
+/// `global`) and object form.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NpmSpec {
+    /// Path to a `package.json` to install dependencies from.
     #[serde(default)]
     pub file: Option<String>,
+    /// Package names to install globally (`npm install -g`).
     #[serde(default)]
     pub global: Vec<String>,
 }
@@ -529,8 +616,10 @@ impl FromPackageList for NpmSpec {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CargoSpec {
+    /// Path to a `Cargo.toml` whose binaries to install instead of the list below.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
+    /// Crate names to install (`cargo install`).
     #[serde(default)]
     pub packages: Vec<String>,
 }
@@ -544,11 +633,15 @@ impl FromPackageList for CargoSpec {
     }
 }
 
+/// Snap package spec. Supports both list form (`snap: [spotify]`, mapped to
+/// `packages`) and object form for classic-confinement snaps.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SnapSpec {
+    /// Snap names installed with default (strict) confinement.
     #[serde(default)]
     pub packages: Vec<String>,
+    /// Snap names installed with `--classic` confinement.
     #[serde(default)]
     pub classic: Vec<String>,
 }
@@ -562,11 +655,16 @@ impl FromPackageList for SnapSpec {
     }
 }
 
+/// Flatpak package spec. Supports both list form (`flatpak: [org.gimp.GIMP]`,
+/// mapped to `packages`) and object form for a non-default remote.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FlatpakSpec {
+    /// Flatpak application ids to install.
     #[serde(default)]
     pub packages: Vec<String>,
+    /// Remote to install from (e.g. `flathub`). Falls back to Flatpak's
+    /// configured default remote when omitted.
     #[serde(default)]
     pub remote: Option<String>,
 }
@@ -580,25 +678,57 @@ impl FromPackageList for FlatpakSpec {
     }
 }
 
+/// A user-defined package manager under `spec.packages.custom[]`, driven
+/// entirely by shell commands.
+///
+/// ```yaml
+/// custom:
+///   - name: asdf
+///     check: "command -v asdf"
+///     listInstalled: "asdf list"
+///     install: "asdf install {package}"
+///     uninstall: "asdf uninstall {package}"
+///     packages: [nodejs]
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CustomManagerSpec {
+    /// Manager name, used in `prefer:`/`deny:` lists and status output.
     pub name: String,
+    /// Command that exits zero when this manager is available on the machine.
     pub check: String,
+    /// Command whose stdout lists installed package names, one per line.
     pub list_installed: String,
+    /// Command template to install a package; `{package}` is substituted.
     pub install: String,
+    /// Command template to uninstall a package; `{package}` is substituted.
     pub uninstall: String,
+    /// Command to refresh the manager's own package index/cache before installs.
     #[serde(default)]
     pub update: Option<String>,
+    /// Package names to install with this manager.
     #[serde(default)]
     pub packages: Vec<String>,
 }
 
+/// `spec.files`: files this profile deploys and their permission overrides.
+///
+/// ```yaml
+/// files:
+///   managed:
+///     - source: files/gitconfig
+///       target: ~/.gitconfig
+///   permissions:
+///     ~/.ssh/id_ed25519: "0600"
+/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FilesSpec {
+    /// Files to deploy.
     #[serde(default)]
     pub managed: Vec<ManagedFileSpec>,
+    /// Octal permission strings (`"0600"`) keyed by target path, applied after
+    /// deployment.
     #[serde(default)]
     pub permissions: HashMap<String, String>,
 }
@@ -739,6 +869,15 @@ pub struct EncryptionConstraint {
     pub mode: Option<EncryptionMode>,
 }
 
+/// One entry of `spec.files.managed[]`: a file this profile deploys.
+///
+/// ```yaml
+/// files:
+///   managed:
+///     - source: files/gitconfig
+///       target: ~/.gitconfig
+///       permissions: "644"
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedFileSpec {
@@ -746,6 +885,8 @@ pub struct ManagedFileSpec {
     /// (enforced by `validate_managed_file_specs`, not the JSON schema).
     #[serde(default)]
     pub source: String,
+    /// Destination path on the machine. A leading `~` expands to the home
+    /// directory.
     pub target: PathBuf,
     /// Per-file deployment strategy override. If None, uses the global default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -777,16 +918,35 @@ pub struct ManagedFileSpec {
 // would require a hand-written `oneOf`, which would drift from this struct —
 // the by-construction generation is the priority, runtime validation is the
 // backstop.
+/// One entry of `spec.secrets[]`: a secret resolved into a file or into
+/// environment variables. Exactly one of `target` / `envs` must be set.
+///
+/// ```yaml
+/// secrets:
+///   - source: op://Personal/GitHub/token
+///     envs: [GITHUB_TOKEN]
+///   - source: ssh_key
+///     target: ~/.ssh/id_ed25519
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SecretSpec {
+    /// Backend-specific reference to the secret (a 1Password `op://` URI, a
+    /// Vault path, a sops-encrypted file key, …).
     pub source: String,
+    /// File path to write the decrypted secret to. Mutually exclusive with `envs`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<PathBuf>,
+    /// Template rendered around the decrypted value before writing to `target`
+    /// (e.g. wrapping it in a config file's expected shape).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
+    /// Secret backend name to resolve `source` with. Falls back to
+    /// `spec.secrets.backend` from `cfgd.yaml` when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
+    /// Environment variable names to export the decrypted value under.
+    /// Mutually exclusive with `target`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub envs: Option<Vec<String>>,
 }
@@ -903,19 +1063,35 @@ pub fn validate_secret_specs(specs: &[SecretSpec]) -> Result<()> {
     Ok(())
 }
 
+/// `spec.scripts`: lifecycle hooks run at specific points in the reconcile cycle.
+///
+/// ```yaml
+/// scripts:
+///   preApply: "echo starting apply"
+///   postApply:
+///     - run: brew cleanup
+///       continueOnError: true
+///   onDrift: "notify-send 'cfgd: drift detected'"
+/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScriptSpec {
+    /// Run once before any action in an apply.
     #[serde(default)]
     pub pre_apply: Vec<ScriptEntry>,
+    /// Run once after every action in an apply completes.
     #[serde(default)]
     pub post_apply: Vec<ScriptEntry>,
+    /// Run once before a daemon reconcile tick begins.
     #[serde(default)]
     pub pre_reconcile: Vec<ScriptEntry>,
+    /// Run once after a daemon reconcile tick completes.
     #[serde(default)]
     pub post_reconcile: Vec<ScriptEntry>,
+    /// Run when the daemon detects drift, before any auto-apply decision.
     #[serde(default)]
     pub on_drift: Vec<ScriptEntry>,
+    /// Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).
     #[serde(default)]
     pub on_change: Vec<ScriptEntry>,
 }

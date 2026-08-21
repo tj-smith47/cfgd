@@ -2,15 +2,32 @@ use serde::{Deserialize, Serialize};
 
 use super::sync_secrets::{NotifyConfig, SyncConfig};
 
+/// `spec.daemon`: settings for `cfgd daemon`'s background reconcile loop.
+///
+/// ```yaml
+/// daemon:
+///   enabled: true
+///   reconcile:
+///     interval: 5m
+///     autoApply: false
+///   sync:
+///     autoPull: true
+///   notify:
+///     drift: true
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DaemonConfig {
+    /// Whether the daemon runs at all. Default: `false`.
     #[serde(default)]
     pub enabled: bool,
+    /// Drift-detection and auto-apply settings.
     #[serde(default)]
     pub reconcile: Option<ReconcileConfig>,
+    /// Automatic git push/pull settings.
     #[serde(default)]
     pub sync: Option<SyncConfig>,
+    /// How the daemon reports detected drift.
     #[serde(default)]
     pub notify: Option<NotifyConfig>,
     /// Mirror daemon log output into the Windows Event Log under the `cfgd`
@@ -22,15 +39,31 @@ pub struct DaemonConfig {
     pub windows_event_log: bool,
 }
 
+/// `spec.daemon.reconcile`: how often and how aggressively the daemon reconciles.
+///
+/// ```yaml
+/// reconcile:
+///   interval: 5m
+///   onChange: true
+///   autoApply: false
+///   driftPolicy: NotifyOnly
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReconcileConfig {
+    /// How often the daemon checks for drift, as a duration string. Default: `5m`.
     #[serde(default = "default_reconcile_interval")]
     pub interval: String,
+    /// Trigger an immediate reconcile when a watched file changes, in addition to
+    /// the timed interval. Default: `false`.
     #[serde(default)]
     pub on_change: bool,
+    /// Apply new/changed source-recommended modules automatically. Default:
+    /// `false`. Independent of `drift_policy`, which governs already-declared
+    /// drift instead.
     #[serde(default)]
     pub auto_apply: bool,
+    /// Auto-apply decisions for new/changed module recommendations.
     #[serde(default)]
     pub policy: Option<AutoApplyPolicyConfig>,
     /// Policy for daemon auto-reconciliation of detected drift.
@@ -50,17 +83,24 @@ pub struct ReconcileConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReconcilePatch {
+    /// Whether this patch targets a `Module` or a `Profile`.
     pub kind: ReconcilePatchKind,
+    /// Name of the module/profile this patch targets. Omitted to target every
+    /// entity of `kind`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Overrides the global reconcile interval for the targeted entity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interval: Option<String>,
+    /// Overrides the global `auto_apply` for the targeted entity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_apply: Option<bool>,
+    /// Overrides the global `drift_policy` for the targeted entity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drift_policy: Option<DriftPolicy>,
 }
 
+/// What a `ReconcilePatch` targets: `Module` or `Profile`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub enum ReconcilePatchKind {
     Module,
@@ -90,13 +130,26 @@ case_insensitive_enum!(DriftPolicy {
     "Prompt" => DriftPolicy::Prompt,
 });
 
+/// `spec.daemon.reconcile.policy`: what the daemon does when a source recommends
+/// a module change it did not previously know about.
+///
+/// ```yaml
+/// policy:
+///   newRecommended: Accept
+///   newOptional: Ignore
+///   lockedConflict: Notify
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutoApplyPolicyConfig {
+    /// Action for a newly recommended module. Default: `Notify`.
     #[serde(default = "default_policy_notify")]
     pub new_recommended: PolicyAction,
+    /// Action for a newly available optional module. Default: `Ignore`.
     #[serde(default = "default_policy_ignore")]
     pub new_optional: PolicyAction,
+    /// Action when a source's recommendation conflicts with a locked version.
+    /// Default: `Notify`.
     #[serde(default = "default_policy_notify")]
     pub locked_conflict: PolicyAction,
 }
@@ -111,6 +164,8 @@ impl Default for AutoApplyPolicyConfig {
     }
 }
 
+/// An `AutoApplyPolicyConfig` decision: `Notify` (record, don't act), `Accept`
+/// (apply automatically), `Reject` (never apply), or `Ignore` (skip entirely).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub enum PolicyAction {
     Notify,
