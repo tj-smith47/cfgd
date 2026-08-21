@@ -25,6 +25,153 @@ use super::types::{ModuleAction, ModuleActionKind, ReconcileContext};
 /// file that declares no strategy of its own under a global `fileStrategy: copy`
 /// answers "not a whole-content write" and is rewritten on every apply, which is
 /// the exact repetition this check exists to end.
+/// Whether a module file's deployment would leave `target` exactly as it
+/// already stands — the PLAN-time question, answered for every strategy the
+/// apply arm below can act on.
+///
+/// [`converged_content_file`] is its whole-content core; this adds the arms
+/// planning needs that apply's write-skip cannot answer: a `Symlink` entry is
+/// converged when the target is a link to this very source, a `Hardlink` when
+/// the two paths share an inode, and a directory source (deployed as
+/// remove-then-clone) when the trees are byte-identical BOTH ways — extras
+/// included, because a fresh deploy clears them. Every unanswerable case fails
+/// OPEN (`Patch`, whose merge runs the module's own pipeline; an unreadable
+/// path; an invalid declared mode): work is planned rather than silently
+/// dropped, and the apply arm decides.
+pub(super) fn planned_file_converged(
+    file: &crate::modules::ResolvedFile,
+    target: &std::path::Path,
+    strategy: crate::config::FileStrategy,
+) -> bool {
+    use crate::config::FileStrategy;
+    if strategy == FileStrategy::Patch {
+        return false;
+    }
+    let mode = match file.permissions {
+        Some(ref perm_str) => match crate::parse_octal_mode(perm_str) {
+            Ok(m) => Some(m),
+            Err(_) => return false,
+        },
+        None => None,
+    };
+    if strategy == FileStrategy::Symlink {
+        let Ok(meta) = target.symlink_metadata() else {
+            return false;
+        };
+        if !meta.file_type().is_symlink() {
+            return false;
+        }
+        let Ok(dest) = std::fs::read_link(target) else {
+            return false;
+        };
+        if dest != file.source {
+            return false;
+        }
+        // A declared mode is applied THROUGH the link, so it is judged on the
+        // followed metadata; a dangling link cannot answer and stays planned.
+        if let Some(declared) = mode {
+            let Ok(followed) = std::fs::metadata(target) else {
+                return false;
+            };
+            if crate::file_permissions_mode_full(&followed).is_some_and(|actual| actual != declared)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    if file.source.is_dir() {
+        // Every non-link strategy deploys a directory as remove-then-clone
+        // (`Hardlink` included — see the apply arm's `is_dir` branch).
+        let Ok(meta) = target.symlink_metadata() else {
+            return false;
+        };
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            return false;
+        }
+        if let Some(declared) = mode
+            && crate::file_permissions_mode_full(&meta).is_some_and(|actual| actual != declared)
+        {
+            return false;
+        }
+        return dir_trees_equal(&file.source, target);
+    }
+    if strategy == FileStrategy::Hardlink {
+        let Ok(meta) = target.symlink_metadata() else {
+            return false;
+        };
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            return false;
+        }
+        if let Some(declared) = mode
+            && crate::file_permissions_mode_full(&meta).is_some_and(|actual| actual != declared)
+        {
+            return false;
+        }
+        return crate::is_same_inode(&file.source, target);
+    }
+    converged_content_file(file, target, strategy, None, mode)
+}
+
+/// Whether `dst` already holds exactly the tree a fresh clone of `src` would
+/// produce: every non-symlink `src` entry present with identical bytes, and no
+/// extras — the deploy removes the target first, so anything the clone would
+/// not create is drift the deploy corrects. Symlinks under `src` are skipped
+/// to match `copy_dir_recursive`, and any unreadable entry answers false.
+fn dir_trees_equal(src: &std::path::Path, dst: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(src) else {
+        return false;
+    };
+    let mut expected: std::collections::BTreeSet<std::ffi::OsString> = Default::default();
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let Ok(ft) = entry.file_type() else {
+            return false;
+        };
+        if ft.is_symlink() {
+            continue;
+        }
+        let deployed = dst.join(entry.file_name());
+        expected.insert(entry.file_name());
+        let Ok(dmeta) = deployed.symlink_metadata() else {
+            return false;
+        };
+        if ft.is_dir() {
+            if dmeta.file_type().is_symlink()
+                || !dmeta.is_dir()
+                || !dir_trees_equal(&entry.path(), &deployed)
+            {
+                return false;
+            }
+        } else {
+            if !dmeta.is_file() {
+                return false;
+            }
+            let (Ok(want), Ok(have)) = (std::fs::read(entry.path()), std::fs::read(&deployed))
+            else {
+                return false;
+            };
+            if want != have {
+                return false;
+            }
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(dst) else {
+        return false;
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        if !expected.contains(&entry.file_name()) {
+            return false;
+        }
+    }
+    true
+}
+
 fn converged_content_file(
     file: &crate::modules::ResolvedFile,
     target: &std::path::Path,
@@ -139,7 +286,10 @@ impl<'a> super::Reconciler<'a> {
                 self.persist_bootstraps(exec.take_bootstrapped());
                 outcome
             }
-            ModuleActionKind::DeployFiles { files } => {
+            ModuleActionKind::DeployFiles {
+                files,
+                declared_total,
+            } => {
                 let mut deployed_any = false;
                 for file in files {
                     let target = expand_tilde(&file.target);
@@ -260,8 +410,11 @@ impl<'a> super::Reconciler<'a> {
                     self.record_module_file(action, &target, strategy, apply_id)?;
                 }
 
+                // Keyed on the DECLARED count, not the planned subset: this is
+                // the persisted `managed_resources` id, and a partial deploy
+                // must land on the same row every full deploy wrote.
                 Ok((
-                    format!("module:{}:files:{}", action.module_name, files.len()),
+                    format!("module:{}:files:{}", action.module_name, declared_total),
                     deployed_any,
                 ))
             }

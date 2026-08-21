@@ -548,16 +548,11 @@ impl<'a> super::Reconciler<'a> {
                 ),
             };
 
-            // Pre-scripts for this module
-            for script in pre_scripts {
-                actions.push(routed(
-                    module,
-                    ModuleActionKind::RunScript {
-                        script: script.clone(),
-                        phase: pre_phase.clone(),
-                    },
-                ));
-            }
+            // The module's own body, buffered so the lifecycle hooks can be
+            // gated on whether any of it survived elision: hooks exist to
+            // bracket work, and a converged module performs none.
+            let mut body: Vec<(PhaseName, Action)> = Vec::new();
+            let mut work = 0usize;
 
             // Packages: group by manager for efficient batch install
             let mut by_manager: HashMap<String, Vec<crate::modules::ResolvedPackage>> =
@@ -583,34 +578,39 @@ impl<'a> super::Reconciler<'a> {
             // needs the very `&dyn PackageManager` this lookup already found,
             // and re-`find`ing it there walked the registry a second time per
             // manager per module.
-            let mut manager_order: Vec<(u8, &String, Option<&dyn PackageManager>)> = by_manager
-                .keys()
-                .map(|mgr| {
-                    let found = self
-                        .registry
-                        .package_managers()
-                        .iter()
-                        .find(|m| m.name() == mgr.as_str());
-                    let class = match found {
-                        Some(m) if m.is_available() => 0, // available (native) first
-                        // Bootstrappable second — a manager with a plan to provision it.
-                        Some(m) if m.can_bootstrap() => 1,
-                        _ => 2, // unknown last
-                    };
-                    (class, mgr, found.map(|m| m.as_ref()))
-                })
-                .collect();
-            // `(class, name)`, not `class` alone: a key that ties on `class`
-            // would otherwise fall back to `HashMap::keys()`'s arbitrary,
-            // per-process order. Two managers in the same class (`cargo` and
-            // `npm`, both `0`) would then emit their `InstallPackages` actions
-            // in a different relative order on every run — the plan tree's
-            // bullet order, the `-o json` payload order, the journal
-            // `action_index`, and the phase's execution offer order all read
-            // from this `Vec`.
-            manager_order.sort_by(|a, b| (a.0, a.1.as_str()).cmp(&(b.0, b.1.as_str())));
+            let mut manager_order: Vec<(u8, bool, &String, Option<&dyn PackageManager>)> =
+                by_manager
+                    .keys()
+                    .map(|mgr| {
+                        let found = self
+                            .registry
+                            .package_managers()
+                            .iter()
+                            .find(|m| m.name() == mgr.as_str());
+                        let class = match found {
+                            Some(m) if m.is_available() => 0, // available (native) first
+                            // Bootstrappable second — a manager with a plan to provision it.
+                            Some(m) if m.can_bootstrap() => 1,
+                            _ => 2, // unknown last
+                        };
+                        // A source-registering manager's installs go ahead of
+                        // its class: a formula may only exist in the tap being
+                        // added by this very run.
+                        let sources_last = !found.is_some_and(|m| m.registers_family_sources());
+                        (class, sources_last, mgr, found.map(|m| m.as_ref()))
+                    })
+                    .collect();
+            // `(class, sources, name)`, not `class` alone: a key that ties on
+            // `class` would otherwise fall back to `HashMap::keys()`'s
+            // arbitrary, per-process order. Two managers in the same class
+            // (`cargo` and `npm`, both `0`) would then emit their
+            // `InstallPackages` actions in a different relative order on every
+            // run — the plan tree's bullet order, the `-o json` payload order,
+            // the journal `action_index`, and the phase's execution offer
+            // order all read from this `Vec`.
+            manager_order.sort_by(|a, b| (a.0, a.1, a.2.as_str()).cmp(&(b.0, b.1, b.2.as_str())));
 
-            for (class, mgr_name, mgr) in manager_order {
+            for (class, _, mgr_name, mgr) in manager_order {
                 let mut resolved = by_manager[mgr_name].clone();
                 // Only an AVAILABLE manager (class 0) can be asked what it
                 // holds; a bootstrappable or unknown one is planned in full,
@@ -627,7 +627,8 @@ impl<'a> super::Reconciler<'a> {
                 if resolved.is_empty() {
                     continue;
                 }
-                actions.push(routed(
+                work += 1;
+                body.push(routed(
                     module,
                     ModuleActionKind::InstallPackages { resolved },
                 ));
@@ -648,7 +649,7 @@ impl<'a> super::Reconciler<'a> {
                         {
                             // This module's FILE work cannot proceed — the skip
                             // stays attached to the phase that work belongs to.
-                            actions.push(routed_to(
+                            body.push(routed_to(
                                 module,
                                 PhaseName::Files,
                                 ModuleActionKind::Skip {
@@ -666,7 +667,7 @@ impl<'a> super::Reconciler<'a> {
                             match crate::is_file_encrypted(&file.source, &enc.backend) {
                                 Ok(true) => {}
                                 Ok(false) => {
-                                    actions.push(routed_to(
+                                    body.push(routed_to(
                                         module,
                                         PhaseName::Files,
                                         ModuleActionKind::Skip {
@@ -681,7 +682,7 @@ impl<'a> super::Reconciler<'a> {
                                     break;
                                 }
                                 Err(e) => {
-                                    actions.push(routed_to(
+                                    body.push(routed_to(
                                         module,
                                         PhaseName::Files,
                                         ModuleActionKind::Skip {
@@ -700,24 +701,69 @@ impl<'a> super::Reconciler<'a> {
                     }
                 }
                 if encryption_ok {
+                    // Diff each declared file against its deployed target and
+                    // plan only the entries a run would really write — the
+                    // file counterpart of `retain_uninstalled` above. A
+                    // converged entry is elided; all-converged elides the
+                    // action entirely, which is what lets a settled machine
+                    // read "nothing to do" instead of re-deploying (and
+                    // re-hooking) the same six files on every run.
+                    let declared_total = module.files.len();
+                    let files: Vec<crate::modules::ResolvedFile> = module
+                        .files
+                        .iter()
+                        .filter(|file| {
+                            let target = expand_tilde(&file.target);
+                            let strategy =
+                                file.strategy.unwrap_or(self.registry.default_file_strategy);
+                            !super::modules::planned_file_converged(file, &target, strategy)
+                        })
+                        .cloned()
+                        .collect();
+                    if !files.is_empty() {
+                        work += 1;
+                        body.push(routed(
+                            module,
+                            ModuleActionKind::DeployFiles {
+                                files,
+                                declared_total,
+                            },
+                        ));
+                    }
+                }
+            }
+
+            // Lifecycle hooks bracket the module's work, so they are planned
+            // only when some of it survived elision. A module that DECLARES
+            // packages or files and planned none of them is converged, and a
+            // converged module runs no hooks and renders nothing — the same
+            // rule the render states as "nothing to do". A module declaring
+            // NO work surfaces at all keeps its scripts: they are the whole of
+            // its content, and there is nothing for it to converge against.
+            let declares_work = !module.packages.is_empty() || !module.files.is_empty();
+            let runs_hooks = work > 0 || !declares_work;
+            if runs_hooks {
+                for script in pre_scripts {
                     actions.push(routed(
                         module,
-                        ModuleActionKind::DeployFiles {
-                            files: module.files.clone(),
+                        ModuleActionKind::RunScript {
+                            script: script.clone(),
+                            phase: pre_phase.clone(),
                         },
                     ));
                 }
             }
-
-            // Post-scripts for this module
-            for script in post_scripts {
-                actions.push(routed(
-                    module,
-                    ModuleActionKind::RunScript {
-                        script: script.clone(),
-                        phase: post_phase.clone(),
-                    },
-                ));
+            actions.append(&mut body);
+            if runs_hooks {
+                for script in post_scripts {
+                    actions.push(routed(
+                        module,
+                        ModuleActionKind::RunScript {
+                            script: script.clone(),
+                            phase: post_phase.clone(),
+                        },
+                    ));
+                }
             }
         }
 

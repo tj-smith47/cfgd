@@ -293,7 +293,7 @@ pub(in crate::cli) fn action_targets(action: &reconciler::Action) -> Vec<String>
             SecretAction::ResolveEnv { .. } | SecretAction::Skip { .. } => vec![],
         },
         reconciler::Action::Module(ma) => match &ma.kind {
-            reconciler::ModuleActionKind::DeployFiles { files } => {
+            reconciler::ModuleActionKind::DeployFiles { files, .. } => {
                 files.iter().map(|f| show(&f.target)).collect()
             }
             _ => vec![],
@@ -1244,7 +1244,7 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
 
                 // Module file actions
                 if let reconciler::Action::Module(ref mut ma) = actions[i]
-                    && let reconciler::ModuleActionKind::DeployFiles { ref mut files } = ma.kind
+                    && let reconciler::ModuleActionKind::DeployFiles { ref mut files, .. } = ma.kind
                 {
                     let module_name = ma.module_name.clone();
                     let mut j = 0;
@@ -1327,7 +1327,7 @@ fn prune_skipped_leftovers(plan: &mut reconciler::Plan, skipped: &[PathBuf]) {
             }
             reconciler::Action::Module(ma) => !matches!(
                 &ma.kind,
-                reconciler::ModuleActionKind::DeployFiles { files } if files.is_empty()
+                reconciler::ModuleActionKind::DeployFiles { files, .. } if files.is_empty()
             ),
             _ => true,
         });

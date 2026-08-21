@@ -193,7 +193,10 @@ fn module_has_drift_true_for_install_packages_action() {
 fn module_has_drift_true_for_deploy_files_and_run_script_actions() {
     let files_plan = module_drift_plan(module_action(
         "watched",
-        crate::reconciler::ModuleActionKind::DeployFiles { files: vec![] },
+        crate::reconciler::ModuleActionKind::DeployFiles {
+            files: vec![],
+            declared_total: 0,
+        },
     ));
     assert!(module_has_drift(&files_plan, "watched"));
 
@@ -1902,7 +1905,10 @@ fn a_per_module_tick_for_a_module_with_no_packages_plans_no_refresh() {
             packages_phase_of(vec![
                 Action::Module(ModuleAction {
                     module_name: "docs".to_string(),
-                    kind: ModuleActionKind::DeployFiles { files: Vec::new() },
+                    kind: ModuleActionKind::DeployFiles {
+                        files: Vec::new(),
+                        declared_total: 0,
+                    },
                     origin: None,
                 }),
                 install_of("cargo", &["ripgrep"]),
@@ -2100,11 +2106,16 @@ fn pending_file_decision_reaches_a_module_deployed_target_too() {
     };
     let deploy = crate::reconciler::Action::Module(crate::reconciler::ModuleAction {
         module_name: "shell".to_string(),
-        kind: crate::reconciler::ModuleActionKind::DeployFiles {
-            files: vec![
+        kind: {
+            let files = vec![
                 resolved_file(home.path().join(".zshrc")),
                 resolved_file(home.path().join(".bashrc")),
-            ],
+            ];
+            let declared_total = files.len();
+            crate::reconciler::ModuleActionKind::DeployFiles {
+                files,
+                declared_total,
+            }
         },
         origin: Some("acme".to_string()),
     });
@@ -2120,7 +2131,7 @@ fn pending_file_decision_reaches_a_module_deployed_target_too() {
         .actions()
         .filter_map(|action| match action {
             crate::reconciler::Action::Module(crate::reconciler::ModuleAction {
-                kind: crate::reconciler::ModuleActionKind::DeployFiles { files },
+                kind: crate::reconciler::ModuleActionKind::DeployFiles { files, .. },
                 ..
             }) => Some(files.iter().map(|f| f.target.clone()).collect::<Vec<_>>()),
             _ => None,
@@ -2145,8 +2156,8 @@ fn pending_file_decision_drops_a_module_deploy_action_it_empties() {
     );
     let deploy = crate::reconciler::Action::Module(crate::reconciler::ModuleAction {
         module_name: "shell".to_string(),
-        kind: crate::reconciler::ModuleActionKind::DeployFiles {
-            files: vec![crate::modules::ResolvedFile {
+        kind: {
+            let files = vec![crate::modules::ResolvedFile {
                 source: PathBuf::from("/src/file"),
                 target: home.path().join(".zshrc"),
                 is_git_source: false,
@@ -2154,7 +2165,12 @@ fn pending_file_decision_drops_a_module_deploy_action_it_empties() {
                 encryption: None,
                 permissions: None,
                 patch: None,
-            }],
+            }];
+            let declared_total = files.len();
+            crate::reconciler::ModuleActionKind::DeployFiles {
+                files,
+                declared_total,
+            }
         },
         origin: Some("acme".to_string()),
     });

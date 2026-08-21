@@ -196,7 +196,10 @@ fn module_run_script() -> Action {
 fn module_deploy_files() -> Action {
     Action::Module(ModuleAction {
         module_name: "dotfiles".to_string(),
-        kind: ModuleActionKind::DeployFiles { files: vec![] },
+        kind: ModuleActionKind::DeployFiles {
+            files: vec![],
+            declared_total: 0,
+        },
         origin: None,
     })
 }
@@ -415,6 +418,7 @@ fn action_targets_module_deploy_files_lists_every_file_others_empty() {
     let deploy = Action::Module(ModuleAction {
         module_name: "dotfiles".to_string(),
         kind: ModuleActionKind::DeployFiles {
+            declared_total: 2,
             files: vec![
                 cfgd_core::modules::ResolvedFile {
                     source: PathBuf::from("/m/.zshrc"),
@@ -2801,7 +2805,10 @@ fn unmanaged_prompt_skips_patch_module_files() {
     };
     let mut plan = one_phase_plan(vec![Action::Module(ModuleAction::local(
         "mymod".to_string(),
-        ModuleActionKind::DeployFiles { files: vec![file] },
+        ModuleActionKind::DeployFiles {
+            files: vec![file],
+            declared_total: 1,
+        },
     ))]);
 
     handle_unmanaged_file_targets(
@@ -2841,9 +2848,13 @@ fn module_copy_file(source: &Path, target: &Path) -> cfgd_core::modules::Resolve
 }
 
 fn module_deploy_plan(files: Vec<cfgd_core::modules::ResolvedFile>) -> Plan {
+    let declared_total = files.len();
     one_phase_plan(vec![Action::Module(ModuleAction::local(
         "mymod".to_string(),
-        ModuleActionKind::DeployFiles { files },
+        ModuleActionKind::DeployFiles {
+            files,
+            declared_total,
+        },
     ))])
 }
 
@@ -2853,7 +2864,7 @@ fn deployed_files(plan: &Plan) -> Vec<PathBuf> {
         .flat_map(|p| p.owned_actions())
         .filter_map(|(_, a)| match a {
             Action::Module(ma) => match &ma.kind {
-                ModuleActionKind::DeployFiles { files } => Some(files),
+                ModuleActionKind::DeployFiles { files, .. } => Some(files),
                 _ => None,
             },
             _ => None,

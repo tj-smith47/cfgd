@@ -383,7 +383,14 @@ pub enum ModuleActionKind {
     },
     /// Deploy files from a module.
     DeployFiles {
+        /// The files this run will actually write — the declared set minus the
+        /// entries whose deployed target already matches.
         files: Vec<crate::modules::ResolvedFile>,
+        /// How many files the module DECLARES, converged entries included.
+        /// The pair is what lets a render say `deploy init.lua (1 of 6 files)`
+        /// and the persisted `module:<name>:files:<n>` id keep naming the
+        /// declared set whatever subset survived elision.
+        declared_total: usize,
     },
     /// Run a module lifecycle script.
     RunScript {
@@ -807,7 +814,7 @@ impl Phase {
                         batch_survives(batched, resolved.len())
                     }
                     Action::Module(ModuleAction {
-                        kind: ModuleActionKind::DeployFiles { files },
+                        kind: ModuleActionKind::DeployFiles { files, .. },
                         ..
                     }) => {
                         let batched = files.len();

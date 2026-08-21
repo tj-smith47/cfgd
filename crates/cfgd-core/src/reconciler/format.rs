@@ -157,8 +157,10 @@ pub fn format_action_description(action: &Action) -> String {
                 let names: Vec<&str> = resolved.iter().map(|p| p.resolved_name.as_str()).collect();
                 format!("module:{}:packages:{}", ma.module_name, names.join(","))
             }
-            ModuleActionKind::DeployFiles { files } => {
-                format!("module:{}:files:{}", ma.module_name, files.len())
+            ModuleActionKind::DeployFiles { declared_total, .. } => {
+                // The DECLARED count, matching the apply-side description, so
+                // a partial deploy matches the row a full deploy recorded.
+                format!("module:{}:files:{}", ma.module_name, declared_total)
             }
             ModuleActionKind::RunScript { .. } => {
                 format!("module:{}:script", ma.module_name)
@@ -590,16 +592,31 @@ fn format_module_action_body(action: &ModuleAction) -> String {
                 .collect();
             parts.join("; ")
         }
-        ModuleActionKind::DeployFiles { files } => {
+        ModuleActionKind::DeployFiles {
+            files,
+            declared_total,
+        } => {
             let targets: Vec<String> = files.iter().map(|f| f.target.display_posix()).collect();
-            if targets.len() <= 3 {
-                format!("deploy {}", targets.join(", "))
+            let shown = if targets.len() <= 3 {
+                targets.join(", ")
             } else {
+                targets[..2].join(", ")
+            };
+            // A subset names its count against the DECLARED set, so "one file
+            // changed" (`deploy init.lua (1 of 6 files)`) and "nothing
+            // changed" (no action at all) can never render alike; a full
+            // deploy keeps the shape it always had.
+            if targets.len() < *declared_total {
                 format!(
-                    "deploy {} ({} files)",
-                    targets[..2].join(", "),
-                    targets.len()
+                    "deploy {} ({} of {} files)",
+                    shown,
+                    targets.len(),
+                    declared_total
                 )
+            } else if targets.len() <= 3 {
+                format!("deploy {shown}")
+            } else {
+                format!("deploy {} ({} files)", shown, targets.len())
             }
         }
         ModuleActionKind::RunScript { script, phase } => {

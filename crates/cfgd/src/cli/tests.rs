@@ -10000,7 +10000,10 @@ fn action_type_str_module_variants() {
     assert_eq!(
         super::action_type_str(&Action::Module(ModuleAction {
             module_name: "m".into(),
-            kind: ModuleActionKind::DeployFiles { files: vec![] },
+            kind: ModuleActionKind::DeployFiles {
+                files: vec![],
+                declared_total: 0
+            },
             origin: None,
         })),
         "deploy"
@@ -10201,7 +10204,10 @@ fn strip_scripts_removes_module_run_script_actions() {
                 &reconciler::Owner::profile("test"),
                 vec![reconciler::Action::Module(ModuleAction {
                     module_name: "m".into(),
-                    kind: ModuleActionKind::DeployFiles { files: vec![] },
+                    kind: ModuleActionKind::DeployFiles {
+                        files: vec![],
+                        declared_total: 0,
+                    },
                     origin: None,
                 })],
             ),

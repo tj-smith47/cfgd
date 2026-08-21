@@ -752,7 +752,7 @@ fn plan_module_with_files() {
         .expect("phase holds an action")
     {
         Action::Module(ma) => match &ma.kind {
-            ModuleActionKind::DeployFiles { files } => {
+            ModuleActionKind::DeployFiles { files, .. } => {
                 assert_eq!(files.len(), 1);
                 assert_eq!(files[0].target, PathBuf::from("/home/user/.config/nvim"));
             }
@@ -1299,8 +1299,8 @@ fn format_module_plan_items_files() {
         &Owner::profile("test"),
         vec![Action::Module(ModuleAction {
             module_name: "nvim".to_string(),
-            kind: ModuleActionKind::DeployFiles {
-                files: vec![ResolvedFile {
+            kind: {
+                let files = vec![ResolvedFile {
                     source: PathBuf::from("/cache/nvim/config"),
                     target: PathBuf::from("/home/user/.config/nvim"),
                     is_git_source: false,
@@ -1308,7 +1308,12 @@ fn format_module_plan_items_files() {
                     encryption: None,
                     permissions: None,
                     patch: None,
-                }],
+                }];
+                let declared_total = files.len();
+                ModuleActionKind::DeployFiles {
+                    files,
+                    declared_total,
+                }
             },
             origin: None,
         })],
@@ -6646,8 +6651,8 @@ fn format_action_description_env_write_and_inject() {
 fn format_action_description_module_deploy_files() {
     let action = Action::Module(ModuleAction {
         module_name: "nvim".into(),
-        kind: ModuleActionKind::DeployFiles {
-            files: vec![
+        kind: {
+            let files = vec![
                 crate::modules::ResolvedFile {
                     source: PathBuf::from("/src/a"),
                     target: PathBuf::from("/dst/a"),
@@ -6666,7 +6671,12 @@ fn format_action_description_module_deploy_files() {
                     permissions: None,
                     patch: None,
                 },
-            ],
+            ];
+            let declared_total = files.len();
+            ModuleActionKind::DeployFiles {
+                files,
+                declared_total,
+            }
         },
         origin: None,
     });
@@ -7156,7 +7166,10 @@ fn format_module_action_item_deploy_truncates_many_files() {
         .collect();
     let action = ModuleAction {
         module_name: "big".into(),
-        kind: ModuleActionKind::DeployFiles { files },
+        kind: ModuleActionKind::DeployFiles {
+            declared_total: files.len(),
+            files,
+        },
         origin: None,
     };
     let item = super::format_module_action_item(&action);
@@ -9271,8 +9284,8 @@ fn apply_module_deploy_files_creates_target() {
             &Owner::profile("test"),
             vec![Action::Module(ModuleAction {
                 module_name: "mymod".to_string(),
-                kind: ModuleActionKind::DeployFiles {
-                    files: vec![ResolvedFile {
+                kind: {
+                    let files = vec![ResolvedFile {
                         source: source_file.clone(),
                         target: target_file.clone(),
                         is_git_source: false,
@@ -9280,7 +9293,12 @@ fn apply_module_deploy_files_creates_target() {
                         encryption: None,
                         permissions: None,
                         patch: None,
-                    }],
+                    }];
+                    let declared_total = files.len();
+                    ModuleActionKind::DeployFiles {
+                        files,
+                        declared_total,
+                    }
                 },
                 origin: None,
             })],
@@ -9369,7 +9387,10 @@ fn apply_module_deploy_files_leaves_a_target_that_already_holds_the_source_bytes
             &Owner::profile("test"),
             vec![Action::Module(ModuleAction {
                 module_name: "mymod".to_string(),
-                kind: ModuleActionKind::DeployFiles { files: vec![file] },
+                kind: ModuleActionKind::DeployFiles {
+                    files: vec![file],
+                    declared_total: 1,
+                },
                 origin: None,
             })],
         )],
@@ -9464,7 +9485,10 @@ fn deploy_one_module_file_under_global_copy(
             &Owner::profile("test"),
             vec![Action::Module(ModuleAction {
                 module_name: "mymod".to_string(),
-                kind: ModuleActionKind::DeployFiles { files: vec![file] },
+                kind: ModuleActionKind::DeployFiles {
+                    files: vec![file],
+                    declared_total: 1,
+                },
                 origin: None,
             })],
         )],
@@ -9628,7 +9652,10 @@ fn apply_module_deploy_files_patch_merges_into_the_target() {
             &Owner::profile("test"),
             vec![Action::Module(ModuleAction {
                 module_name: "mymod".to_string(),
-                kind: ModuleActionKind::DeployFiles { files: vec![file] },
+                kind: ModuleActionKind::DeployFiles {
+                    files: vec![file],
+                    declared_total: 1,
+                },
                 origin: None,
             })],
         )],
@@ -9712,7 +9739,10 @@ fn deploy_patch_module_file(module_dir: &std::path::Path, target: &std::path::Pa
             &Owner::profile("test"),
             vec![Action::Module(ModuleAction {
                 module_name: "mymod".to_string(),
-                kind: ModuleActionKind::DeployFiles { files: vec![file] },
+                kind: ModuleActionKind::DeployFiles {
+                    files: vec![file],
+                    declared_total: 1,
+                },
                 origin: None,
             })],
         )],
@@ -9834,8 +9864,8 @@ fn apply_module_deploy_files_symlink_strategy() {
             &Owner::profile("test"),
             vec![Action::Module(ModuleAction {
                 module_name: "linkmod".to_string(),
-                kind: ModuleActionKind::DeployFiles {
-                    files: vec![ResolvedFile {
+                kind: {
+                    let files = vec![ResolvedFile {
                         source: source_file.clone(),
                         target: target_file.clone(),
                         is_git_source: false,
@@ -9843,7 +9873,12 @@ fn apply_module_deploy_files_symlink_strategy() {
                         encryption: None,
                         permissions: None,
                         patch: None,
-                    }],
+                    }];
+                    let declared_total = files.len();
+                    ModuleActionKind::DeployFiles {
+                        files,
+                        declared_total,
+                    }
                 },
                 origin: None,
             })],
@@ -10247,7 +10282,7 @@ fn plan_modules_encryption_always_with_copy_proceeds() {
     assert_eq!(actions.len(), 1);
     match &actions[0].1 {
         Action::Module(ma) => match &ma.kind {
-            ModuleActionKind::DeployFiles { files } => {
+            ModuleActionKind::DeployFiles { files, .. } => {
                 assert_eq!(files.len(), 1);
             }
             other => panic!("Expected DeployFiles, got {:?}", other),
@@ -11043,8 +11078,8 @@ fn format_action_description_module_install_multiple_packages() {
 fn format_action_description_module_deploy_two_files() {
     let action = Action::Module(ModuleAction {
         module_name: "nvim".to_string(),
-        kind: ModuleActionKind::DeployFiles {
-            files: vec![
+        kind: {
+            let files = vec![
                 ResolvedFile {
                     source: PathBuf::from("/src/init.lua"),
                     target: PathBuf::from("/home/.config/nvim/init.lua"),
@@ -11063,7 +11098,12 @@ fn format_action_description_module_deploy_two_files() {
                     permissions: None,
                     patch: None,
                 },
-            ],
+            ];
+            let declared_total = files.len();
+            ModuleActionKind::DeployFiles {
+                files,
+                declared_total,
+            }
         },
         origin: None,
     });
@@ -11590,8 +11630,8 @@ fn apply_module_deploy_files_hardlink_strategy() {
             &Owner::profile("test"),
             vec![Action::Module(ModuleAction {
                 module_name: "hardmod".to_string(),
-                kind: ModuleActionKind::DeployFiles {
-                    files: vec![ResolvedFile {
+                kind: {
+                    let files = vec![ResolvedFile {
                         source: source_file.clone(),
                         target: target_file.clone(),
                         is_git_source: false,
@@ -11599,7 +11639,12 @@ fn apply_module_deploy_files_hardlink_strategy() {
                         encryption: None,
                         permissions: None,
                         patch: None,
-                    }],
+                    }];
+                    let declared_total = files.len();
+                    ModuleActionKind::DeployFiles {
+                        files,
+                        declared_total,
+                    }
                 },
                 origin: None,
             })],
@@ -11691,8 +11736,8 @@ fn apply_module_deploy_files_copy_strategy() {
             &Owner::profile("test"),
             vec![Action::Module(ModuleAction {
                 module_name: "copymod".to_string(),
-                kind: ModuleActionKind::DeployFiles {
-                    files: vec![ResolvedFile {
+                kind: {
+                    let files = vec![ResolvedFile {
                         source: source_file.clone(),
                         target: target_file.clone(),
                         is_git_source: false,
@@ -11700,7 +11745,12 @@ fn apply_module_deploy_files_copy_strategy() {
                         encryption: None,
                         permissions: None,
                         patch: None,
-                    }],
+                    }];
+                    let declared_total = files.len();
+                    ModuleActionKind::DeployFiles {
+                        files,
+                        declared_total,
+                    }
                 },
                 origin: None,
             })],
@@ -11802,8 +11852,13 @@ fn apply_module_deploy_files_applies_permissions() {
             &Owner::profile("test"),
             vec![Action::Module(ModuleAction {
                 module_name: "permmod".to_string(),
-                kind: ModuleActionKind::DeployFiles {
-                    files: vec![file.clone()],
+                kind: {
+                    let files = vec![file.clone()];
+                    let declared_total = files.len();
+                    ModuleActionKind::DeployFiles {
+                        files,
+                        declared_total,
+                    }
                 },
                 origin: None,
             })],
@@ -11880,8 +11935,8 @@ fn apply_module_deploy_files_directory_copy_strategy() {
             &Owner::profile("test"),
             vec![Action::Module(ModuleAction {
                 module_name: "dirmod".to_string(),
-                kind: ModuleActionKind::DeployFiles {
-                    files: vec![ResolvedFile {
+                kind: {
+                    let files = vec![ResolvedFile {
                         source: source_dir.clone(),
                         target: target_dir.clone(),
                         is_git_source: false,
@@ -11889,7 +11944,12 @@ fn apply_module_deploy_files_directory_copy_strategy() {
                         encryption: None,
                         permissions: None,
                         patch: None,
-                    }],
+                    }];
+                    let declared_total = files.len();
+                    ModuleActionKind::DeployFiles {
+                        files,
+                        declared_total,
+                    }
                 },
                 origin: None,
             })],
@@ -11976,8 +12036,8 @@ fn apply_module_deploy_files_overwrites_existing_file() {
             &Owner::profile("test"),
             vec![Action::Module(ModuleAction {
                 module_name: "overmod".to_string(),
-                kind: ModuleActionKind::DeployFiles {
-                    files: vec![ResolvedFile {
+                kind: {
+                    let files = vec![ResolvedFile {
                         source: source_file.clone(),
                         target: target_file.clone(),
                         is_git_source: false,
@@ -11985,7 +12045,12 @@ fn apply_module_deploy_files_overwrites_existing_file() {
                         encryption: None,
                         permissions: None,
                         patch: None,
-                    }],
+                    }];
+                    let declared_total = files.len();
+                    ModuleActionKind::DeployFiles {
+                        files,
+                        declared_total,
+                    }
                 },
                 origin: None,
             })],
@@ -12060,8 +12125,8 @@ fn apply_module_on_change_script_runs_when_module_has_changes() {
             &Owner::profile("test"),
             vec![Action::Module(ModuleAction {
                 module_name: "changemod".to_string(),
-                kind: ModuleActionKind::DeployFiles {
-                    files: vec![ResolvedFile {
+                kind: {
+                    let files = vec![ResolvedFile {
                         source: source_file.clone(),
                         target: target_file.clone(),
                         is_git_source: false,
@@ -12069,7 +12134,12 @@ fn apply_module_on_change_script_runs_when_module_has_changes() {
                         encryption: None,
                         permissions: None,
                         patch: None,
-                    }],
+                    }];
+                    let declared_total = files.len();
+                    ModuleActionKind::DeployFiles {
+                        files,
+                        declared_total,
+                    }
                 },
                 origin: None,
             })],
@@ -12984,8 +13054,8 @@ fn format_module_action_item_source_delivered_shows_origin_suffix() {
         &Owner::profile("test"),
         vec![Action::Module(ModuleAction::with_origin(
             "nvim",
-            ModuleActionKind::DeployFiles {
-                files: vec![ResolvedFile {
+            {
+                let files = vec![ResolvedFile {
                     source: PathBuf::from("/cache/nvim/config"),
                     target: PathBuf::from("/home/user/.config/nvim"),
                     is_git_source: false,
@@ -12993,7 +13063,12 @@ fn format_module_action_item_source_delivered_shows_origin_suffix() {
                     encryption: None,
                     permissions: None,
                     patch: None,
-                }],
+                }];
+                let declared_total = files.len();
+                ModuleActionKind::DeployFiles {
+                    files,
+                    declared_total,
+                }
             },
             Some("acme".to_string()),
         ))],
@@ -13011,20 +13086,22 @@ fn format_module_action_item_local_has_no_origin_suffix() {
     let phase = Phase::from_actions(
         PhaseName::Files,
         &Owner::profile("test"),
-        vec![Action::Module(ModuleAction::local(
-            "nvim",
+        vec![Action::Module(ModuleAction::local("nvim", {
+            let files = vec![ResolvedFile {
+                source: PathBuf::from("/cache/nvim/config"),
+                target: PathBuf::from("/home/user/.config/nvim"),
+                is_git_source: false,
+                strategy: None,
+                encryption: None,
+                permissions: None,
+                patch: None,
+            }];
+            let declared_total = files.len();
             ModuleActionKind::DeployFiles {
-                files: vec![ResolvedFile {
-                    source: PathBuf::from("/cache/nvim/config"),
-                    target: PathBuf::from("/home/user/.config/nvim"),
-                    is_git_source: false,
-                    strategy: None,
-                    encryption: None,
-                    permissions: None,
-                    patch: None,
-                }],
-            },
-        ))],
+                files,
+                declared_total,
+            }
+        }))],
     );
     let items = plan_items(&phase);
     assert_eq!(items.len(), 1);
@@ -13049,7 +13126,10 @@ fn format_module_action_item_deploy_many_files_truncates() {
         &Owner::profile("test"),
         vec![Action::Module(ModuleAction {
             module_name: "big".into(),
-            kind: ModuleActionKind::DeployFiles { files },
+            kind: ModuleActionKind::DeployFiles {
+                declared_total: files.len(),
+                files,
+            },
             origin: None,
         })],
     );
@@ -15392,8 +15472,8 @@ fn apply_module_on_change_script_runs_when_module_changed() {
             &Owner::profile("test"),
             vec![Action::Module(ModuleAction {
                 module_name: "mymod".to_string(),
-                kind: ModuleActionKind::DeployFiles {
-                    files: vec![crate::modules::ResolvedFile {
+                kind: {
+                    let files = vec![crate::modules::ResolvedFile {
                         source: source.clone(),
                         target: target.clone(),
                         is_git_source: false,
@@ -15401,7 +15481,12 @@ fn apply_module_on_change_script_runs_when_module_changed() {
                         encryption: None,
                         permissions: None,
                         patch: None,
-                    }],
+                    }];
+                    let declared_total = files.len();
+                    ModuleActionKind::DeployFiles {
+                        files,
+                        declared_total,
+                    }
                 },
                 origin: None,
             })],
@@ -15530,8 +15615,8 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
             &Owner::profile("test"),
             vec![Action::Module(ModuleAction {
                 module_name: "skipmod".to_string(),
-                kind: ModuleActionKind::DeployFiles {
-                    files: vec![crate::modules::ResolvedFile {
+                kind: {
+                    let files = vec![crate::modules::ResolvedFile {
                         source: source.clone(),
                         target: target.clone(),
                         is_git_source: false,
@@ -15539,7 +15624,12 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
                         encryption: None,
                         permissions: None,
                         patch: None,
-                    }],
+                    }];
+                    let declared_total = files.len();
+                    ModuleActionKind::DeployFiles {
+                        files,
+                        declared_total,
+                    }
                 },
                 origin: None,
             })],
@@ -15815,8 +15905,8 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
             &Owner::profile("test"),
             vec![Action::Module(ModuleAction {
                 module_name: "gitmod".to_string(),
-                kind: ModuleActionKind::DeployFiles {
-                    files: vec![crate::modules::ResolvedFile {
+                kind: {
+                    let files = vec![crate::modules::ResolvedFile {
                         source: source.clone(),
                         target: target.clone(),
                         is_git_source: true,
@@ -15824,7 +15914,12 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
                         encryption: None,
                         permissions: None,
                         patch: None,
-                    }],
+                    }];
+                    let declared_total = files.len();
+                    ModuleActionKind::DeployFiles {
+                        files,
+                        declared_total,
+                    }
                 },
                 origin: None,
             })],
@@ -15907,8 +16002,8 @@ fn apply_module_on_change_failure_continues_with_default_continue_on_error() {
             &Owner::profile("test"),
             vec![Action::Module(ModuleAction {
                 module_name: "failmod".to_string(),
-                kind: ModuleActionKind::DeployFiles {
-                    files: vec![crate::modules::ResolvedFile {
+                kind: {
+                    let files = vec![crate::modules::ResolvedFile {
                         source: source.clone(),
                         target: target.clone(),
                         is_git_source: false,
@@ -15916,7 +16011,12 @@ fn apply_module_on_change_failure_continues_with_default_continue_on_error() {
                         encryption: None,
                         permissions: None,
                         patch: None,
-                    }],
+                    }];
+                    let declared_total = files.len();
+                    ModuleActionKind::DeployFiles {
+                        files,
+                        declared_total,
+                    }
                 },
                 origin: None,
             })],
@@ -15998,8 +16098,8 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
             &Owner::profile("test"),
             vec![Action::Module(ModuleAction {
                 module_name: "abortmod".to_string(),
-                kind: ModuleActionKind::DeployFiles {
-                    files: vec![crate::modules::ResolvedFile {
+                kind: {
+                    let files = vec![crate::modules::ResolvedFile {
                         source: source.clone(),
                         target: target.clone(),
                         is_git_source: false,
@@ -16007,7 +16107,12 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
                         encryption: None,
                         permissions: None,
                         patch: None,
-                    }],
+                    }];
+                    let declared_total = files.len();
+                    ModuleActionKind::DeployFiles {
+                        files,
+                        declared_total,
+                    }
                 },
                 origin: None,
             })],
@@ -18805,7 +18910,10 @@ fn owner_order_is_profile_first_in_every_phase() {
             vec![
                 Action::Module(ModuleAction {
                     module_name: "nvim".to_string(),
-                    kind: ModuleActionKind::DeployFiles { files: vec![] },
+                    kind: ModuleActionKind::DeployFiles {
+                        files: vec![],
+                        declared_total: 0,
+                    },
                     origin: None,
                 }),
                 Action::File(FileAction::Skip {
@@ -21601,7 +21709,10 @@ fn every_action_emits_exactly_one_line() {
     let actions = vec![
         Action::Module(ModuleAction {
             module_name: "nvim".to_string(),
-            kind: ModuleActionKind::DeployFiles { files: vec![] },
+            kind: ModuleActionKind::DeployFiles {
+                files: vec![],
+                declared_total: 0,
+            },
             origin: None,
         }),
         Action::Module(ModuleAction {
@@ -22213,7 +22324,10 @@ fn the_post_apply_snapshot_covers_only_the_files_the_run_touched() {
             &Owner::profile("test"),
             vec![Action::Module(ModuleAction {
                 module_name: "mymod".to_string(),
-                kind: ModuleActionKind::DeployFiles { files },
+                kind: ModuleActionKind::DeployFiles {
+                    declared_total: files.len(),
+                    files,
+                },
                 origin: None,
             })],
         )],
@@ -22524,5 +22638,285 @@ fn an_unavailable_manager_is_never_asked_what_it_holds() {
     assert!(
         items.contains("neovim") && items.contains("ripgrep"),
         "a manager that is not on the machine yet holds nothing, got:\n{items}"
+    );
+}
+
+// --- Module file convergence: the plan diffs deployed targets ---
+
+fn deployable_file(source: &Path, target: &Path) -> ResolvedFile {
+    ResolvedFile {
+        source: source.to_path_buf(),
+        target: target.to_path_buf(),
+        is_git_source: false,
+        // Explicit, because the registry default is `Symlink` and these
+        // fixtures deploy real content.
+        strategy: Some(FileStrategy::Copy),
+        encryption: None,
+        permissions: None,
+        patch: None,
+    }
+}
+
+/// A files-only module bracketed by lifecycle hooks, the shape whose converged
+/// runs must go silent.
+fn hooked_file_module(name: &str, files: Vec<ResolvedFile>) -> ResolvedModule {
+    let mut module = make_resolved_module(name);
+    module.packages.clear();
+    module.files = files;
+    module.pre_apply_scripts = vec![ScriptEntry::Simple("echo pre".to_string())];
+    module.post_apply_scripts = vec![ScriptEntry::Simple("echo post".to_string())];
+    module
+}
+
+fn plan_modules_only(modules: Vec<ResolvedModule>) -> Plan {
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    reconciler
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            modules,
+            ReconcileContext::Apply,
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_deployed_file_matching_its_source_is_elided_and_the_subset_names_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let tgt = dir.path().join("tgt");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&tgt).unwrap();
+    std::fs::write(src.join("init.lua"), "settled").unwrap();
+    std::fs::write(tgt.join("init.lua"), "settled").unwrap();
+    std::fs::write(src.join("keys.lua"), "changed upstream").unwrap();
+
+    let plan = plan_modules_only(vec![hooked_file_module(
+        "nvim",
+        vec![
+            deployable_file(&src.join("init.lua"), &tgt.join("init.lua")),
+            deployable_file(&src.join("keys.lua"), &tgt.join("keys.lua")),
+        ],
+    )]);
+
+    let files_phase = plan
+        .phases
+        .iter()
+        .find(|p| p.name == PhaseName::Files)
+        .expect("the changed file must still be planned");
+    let items = plan_items(files_phase).join("\n");
+    assert!(
+        items.contains("keys.lua") && !items.contains("init.lua"),
+        "only the changed file survives, got:\n{items}"
+    );
+    assert!(
+        items.contains("(1 of 2 files)"),
+        "a subset names its count against the declared set, got:\n{items}"
+    );
+
+    // A module that still has work runs its hooks around it.
+    for phase in [PhaseName::PreScripts, PhaseName::PostScripts] {
+        assert!(
+            plan.phases.iter().any(|p| p.name == phase && !p.is_empty()),
+            "a partially converged module still runs its {phase:?} hooks"
+        );
+    }
+}
+
+#[test]
+fn a_module_whose_files_all_match_plans_nothing_and_runs_no_hooks() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let tgt = dir.path().join("tgt");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&tgt).unwrap();
+    for name in ["init.lua", "keys.lua"] {
+        std::fs::write(src.join(name), "settled").unwrap();
+        std::fs::write(tgt.join(name), "settled").unwrap();
+    }
+
+    let plan = plan_modules_only(vec![hooked_file_module(
+        "nvim",
+        vec![
+            deployable_file(&src.join("init.lua"), &tgt.join("init.lua")),
+            deployable_file(&src.join("keys.lua"), &tgt.join("keys.lua")),
+        ],
+    )]);
+
+    assert!(
+        plan.is_empty(),
+        "a converged module plans no deploy and no hooks, got:\n{:?}",
+        all_plan_items(&plan)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_entry_is_converged_only_when_the_link_points_at_its_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("rc"), "x").unwrap();
+    std::fs::write(src.join("other"), "y").unwrap();
+    let good = dir.path().join("good-link");
+    let stale = dir.path().join("stale-link");
+    std::os::unix::fs::symlink(src.join("rc"), &good).unwrap();
+    std::os::unix::fs::symlink(src.join("other"), &stale).unwrap();
+
+    let mut correct = deployable_file(&src.join("rc"), &good);
+    correct.strategy = Some(FileStrategy::Symlink);
+    let mut repointed = deployable_file(&src.join("rc"), &stale);
+    repointed.strategy = Some(FileStrategy::Symlink);
+
+    let plan = plan_modules_only(vec![hooked_file_module("links", vec![correct, repointed])]);
+
+    let files_phase = plan
+        .phases
+        .iter()
+        .find(|p| p.name == PhaseName::Files)
+        .expect("the repointed link must still be planned");
+    let items = plan_items(files_phase).join("\n");
+    assert!(
+        items.contains("stale-link") && !items.contains("good-link"),
+        "a link already pointing at its source is converged, got:\n{items}"
+    );
+}
+
+#[test]
+fn a_directory_deploy_is_not_converged_while_the_target_holds_an_extra_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src-tree");
+    let tgt = dir.path().join("tgt-tree");
+    std::fs::create_dir_all(src.join("lua")).unwrap();
+    std::fs::write(src.join("lua/a.lua"), "a").unwrap();
+    std::fs::create_dir_all(tgt.join("lua")).unwrap();
+    std::fs::write(tgt.join("lua/a.lua"), "a").unwrap();
+
+    let entry = deployable_file(&src, &tgt);
+    let plan = plan_modules_only(vec![hooked_file_module("tree", vec![entry.clone()])]);
+    assert!(
+        plan.is_empty(),
+        "an identical tree is converged, got:\n{:?}",
+        all_plan_items(&plan)
+    );
+
+    // A deploy is remove-then-clone, so an extra deployed entry is drift the
+    // deploy corrects — the tree must be planned again.
+    std::fs::write(tgt.join("stray.lua"), "left behind").unwrap();
+    let plan = plan_modules_only(vec![hooked_file_module("tree", vec![entry])]);
+    assert!(
+        !plan.is_empty(),
+        "an extra deployed entry un-converges the tree"
+    );
+}
+
+#[test]
+fn a_manager_refresh_elides_when_no_install_for_its_family_survives() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("rc");
+    std::fs::write(&src, "changed").unwrap();
+    let mut module = make_resolved_module("dev");
+    module.files = vec![deployable_file(&src, &dir.path().join("deployed-rc"))];
+
+    let plan_against = |installed: &[&str]| {
+        let state = test_state();
+        let printer = test_printer();
+        let mut registry = ProviderRegistry::new();
+        // The test-helpers mock, because the refresh node exists only for a
+        // manager that keeps a local index, which the stub does not claim.
+        registry.add_package_manager(Box::new(
+            crate::test_helpers::MockPackageManager::new("brew").with_installed(installed),
+        ));
+        let cx = test_package_context(&printer, &state);
+        let reconciler = Reconciler::new(&registry, &state).diffing_installed(&cx);
+        reconciler
+            .plan(
+                &make_empty_resolved(),
+                Vec::new(),
+                Vec::new(),
+                vec![module.clone()],
+                ReconcileContext::Apply,
+            )
+            .unwrap()
+    };
+
+    // Control: a surviving brew install wants the index refreshed first.
+    let items = all_plan_items(&plan_against(&["neovim"])).join("\n");
+    assert!(
+        items.contains("refresh brew index"),
+        "a surviving install mints its manager's refresh, got:\n{items}"
+    );
+
+    // Every declared brew package is installed: the deploy still plans, but no
+    // brew action survives, so the prerequisite refresh goes with them.
+    let items = all_plan_items(&plan_against(&["neovim", "ripgrep"])).join("\n");
+    assert!(
+        items.contains("deploy"),
+        "the changed file still plans, got:\n{items}"
+    );
+    assert!(
+        !items.contains("refresh brew index"),
+        "a refresh with no surviving family install must elide, got:\n{items}"
+    );
+}
+
+#[test]
+fn module_tap_installs_order_before_formula_installs() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(crate::test_helpers::MockPackageManager::new(
+        "brew",
+    )));
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("brew-tap").registering_family_sources(),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    // Declared formula-first, so ordering cannot pass by declaration order.
+    let mut module = make_resolved_module("dev");
+    module.packages.push(ResolvedPackage {
+        canonical_name: "acme/tools".to_string(),
+        resolved_name: "acme/tools".to_string(),
+        manager: "brew-tap".to_string(),
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+        min_version: None,
+    });
+
+    let plan = reconciler
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let packages_phase = plan
+        .phases
+        .iter()
+        .find(|p| p.name == PhaseName::Packages)
+        .unwrap();
+    let managers: Vec<String> = packages_phase
+        .actions()
+        .filter_map(|a| match a {
+            Action::Module(ma) => match &ma.kind {
+                ModuleActionKind::InstallPackages { resolved } => Some(resolved[0].manager.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        managers,
+        vec!["brew-tap".to_string(), "brew".to_string()],
+        "the tap registers the source a formula may come from, so it installs first"
     );
 }
