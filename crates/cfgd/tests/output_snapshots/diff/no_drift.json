@@ -1,7 +1,9 @@
 {
+  "env": [],
   "files": [],
   "packages": [],
   "summary": {
+    "hasEnvDrift": false,
     "hasFileDrift": false,
     "hasPkgDrift": false,
     "hasSystemDrift": false,

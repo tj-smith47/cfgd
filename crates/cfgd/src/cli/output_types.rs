@@ -194,6 +194,11 @@ pub struct DiffOutput {
     /// "the machine is in sync".
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub system_errors: Vec<SystemCheckError>,
+    /// One record per declared env var or alias whose line in the primary
+    /// managed env file no longer matches what `spec.env`/`spec.aliases`
+    /// declares — the same per-item check `cfgd verify` persists as drift,
+    /// run here read-only.
+    pub env: Vec<EnvDriftOutput>,
     pub summary: DiffSummary,
 }
 
@@ -207,6 +212,7 @@ pub struct DiffSummary {
     /// is unknown rather than clean. Read alongside `has_system_drift` by
     /// every consumer that treats "no drift" as "nothing to do".
     pub system_check_failed: bool,
+    pub has_env_drift: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -248,6 +254,20 @@ pub struct SystemDriftOutput {
 pub struct SystemCheckError {
     pub key: String,
     pub error: String,
+}
+
+/// One declared env var or alias whose deployed line diverges from what
+/// `spec.env`/`spec.aliases` declares. `kind` is `"env-var"` or `"alias"`,
+/// matching `cfgd_core::reconciler::VerifyResult::resource_type` for this
+/// check byte-for-byte, so a consumer joining this against a `cfgd verify`
+/// or recorded-drift row needs no second vocabulary.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvDriftOutput {
+    pub kind: String,
+    pub name: String,
+    pub expected: String,
+    pub actual: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1170,11 +1190,18 @@ mod tests {
                 key: "launchd".to_string(),
                 error: "permission denied".to_string(),
             }],
+            env: vec![EnvDriftOutput {
+                kind: "alias".to_string(),
+                name: "ll".to_string(),
+                expected: r#"alias ll="ls -la""#.to_string(),
+                actual: "missing or changed".to_string(),
+            }],
             summary: DiffSummary {
                 has_file_drift: true,
                 has_pkg_drift: true,
                 has_system_drift: true,
                 system_check_failed: true,
+                has_env_drift: true,
             },
         };
         let json = serde_json::to_value(&v).unwrap();
@@ -1205,6 +1232,13 @@ mod tests {
         assert_eq!(errs[0]["key"], json!("launchd"));
         assert_eq!(errs[0]["error"], json!("permission denied"));
         assert_eq!(json["summary"]["systemCheckFailed"], json!(true));
+        let env = json["env"].as_array().expect("env is array");
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0]["kind"], json!("alias"));
+        assert_eq!(env[0]["name"], json!("ll"));
+        assert_eq!(env[0]["expected"], json!(r#"alias ll="ls -la""#));
+        assert_eq!(env[0]["actual"], json!("missing or changed"));
+        assert_eq!(json["summary"]["hasEnvDrift"], json!(true));
     }
 
     #[test]
@@ -1214,12 +1248,14 @@ mod tests {
             has_pkg_drift: true,
             has_system_drift: false,
             system_check_failed: false,
+            has_env_drift: true,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["hasFileDrift"], json!(false));
         assert_eq!(json["hasPkgDrift"], json!(true));
         assert_eq!(json["hasSystemDrift"], json!(false));
         assert_eq!(json["systemCheckFailed"], json!(false));
+        assert_eq!(json["hasEnvDrift"], json!(true));
     }
 
     #[test]

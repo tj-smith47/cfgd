@@ -212,6 +212,50 @@ pub(super) fn generate_powershell_env_content(
     lines.join("\n")
 }
 
+/// The one line a single env var renders as in cfgd's PRIMARY managed env
+/// file for `platform` — bash/zsh syntax on Unix, PowerShell on Windows, the
+/// dialect of the first `EnvTarget::ManagedFile` `env_targets` always
+/// produces when there is anything to write. Built by calling the same
+/// generator that writes the real file with a one-item slice, so a verify
+/// pass can attribute a content mismatch to the declared item that caused it
+/// without re-deriving that dialect's quoting rules. `None` when the name
+/// fails the generator's own safety check, matching what a real write
+/// silently skips.
+pub(super) fn primary_env_var_line(
+    ev: &crate::config::EnvVar,
+    platform: super::env_engine::EnvPlatform,
+) -> Option<String> {
+    let one = std::slice::from_ref(ev);
+    let generated = if platform == super::env_engine::EnvPlatform::Windows {
+        generate_powershell_env_content(one, &[], &[])
+    } else {
+        generate_env_file_content(one, &[], &[])
+    };
+    generated
+        .lines()
+        .nth(1)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+}
+
+/// The alias counterpart of `primary_env_var_line`.
+pub(super) fn primary_alias_line(
+    alias: &crate::config::ShellAlias,
+    platform: super::env_engine::EnvPlatform,
+) -> Option<String> {
+    let one = std::slice::from_ref(alias);
+    let generated = if platform == super::env_engine::EnvPlatform::Windows {
+        generate_powershell_env_content(&[], one, &[])
+    } else {
+        generate_env_file_content(&[], one, &[])
+    };
+    generated
+        .lines()
+        .nth(1)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+}
+
 /// Read a cfgd-generated env file for comparison against the content about to
 /// be written. `None` means "no usable comparison" and the file is regenerated.
 ///

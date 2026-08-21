@@ -10,4 +10,7 @@ Phase: Files
 Phase: Packages
   ✓ No package drift
 
+Phase: Env
+  ✓ No env drift
+
 ⚠ Drift detected

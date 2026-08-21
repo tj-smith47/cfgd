@@ -193,7 +193,11 @@ pub(super) fn merge_module_env_aliases(
     (merged, merged_aliases)
 }
 
-/// Verify env file and shell rc source line match expected state.
+/// Verify env file and shell rc source line match expected state, persisting
+/// a drift record for every non-matching result [`env_verify_results`]
+/// computes. The compute/persist split is what lets `cli::live_drift` (the
+/// shared engine behind `status --scan` and the non-recording half of
+/// `verify`) run the identical checks read-only.
 // NOTE: Secret-backed env vars (from SecretSpec.envs) are not included in
 // verification because they require provider resolution. This means cfgd status
 // may report env file drift after secret envs are written. This will be addressed
@@ -207,10 +211,38 @@ pub(super) fn verify_env(
     state: &StateStore,
     results: &mut Vec<VerifyResult>,
 ) {
+    for r in env_verify_results(profile_env, profile_aliases, scope, modules, path_dirs) {
+        if !r.matches {
+            record_drift_or_warn(
+                state,
+                &r.resource_type,
+                &r.resource_id,
+                Some(&r.expected),
+                Some(&r.actual),
+                LOCAL_LAYER,
+            );
+        }
+        results.push(r);
+    }
+}
+
+/// Pure computation behind [`verify_env`]: re-derive the exact env targets
+/// the planner would write for this scope and check each against what is
+/// actually on disk. Never touches the state store — the entry point for a
+/// caller that wants the same checks without persisting a drift record
+/// (`cli::live_drift`'s shared `status --scan` / `verify` engine).
+pub fn env_verify_results(
+    profile_env: &[crate::config::EnvVar],
+    profile_aliases: &[crate::config::ShellAlias],
+    scope: EnvScope,
+    modules: &[ResolvedModule],
+    path_dirs: &[String],
+) -> Vec<VerifyResult> {
+    let mut results = Vec::new();
     let (merged, merged_aliases) = merge_module_env_aliases(profile_env, profile_aliases, modules);
 
     if merged.is_empty() && merged_aliases.is_empty() && path_dirs.is_empty() {
-        return;
+        return results;
     }
 
     // Re-derive the exact target set the planner wrote, so verify never reports
@@ -218,6 +250,11 @@ pub(super) fn verify_env(
     let home = expand_tilde(std::path::Path::new("~"));
     let probe = EnvHostProbe::detect(&home);
     let platform = EnvPlatform::current();
+    // `env_targets` always pushes the primary managed file (bash/zsh's
+    // `.cfgd.env`, PowerShell's `.cfgd-env.ps1`) first when there is anything
+    // to write, so the first `ManagedFile` this loop sees is the one file
+    // whose dialect `verify_env_items` is built to read.
+    let mut primary_checked = false;
     for target in env_targets(
         &merged,
         &merged_aliases,
@@ -229,7 +266,11 @@ pub(super) fn verify_env(
     ) {
         match target {
             EnvTarget::ManagedFile { path, content } => {
-                verify_env_file(&path, &content, state, results);
+                if !primary_checked {
+                    primary_checked = true;
+                    verify_env_items(&path, &merged, &merged_aliases, platform, &mut results);
+                }
+                verify_env_file(&path, &content, &mut results);
             }
             EnvTarget::SourceLine { rc_path, line } => {
                 let has_line = std::fs::read_to_string(&rc_path)
@@ -246,16 +287,6 @@ pub(super) fn verify_env(
                         "source line missing".to_string()
                     },
                 });
-                if !has_line {
-                    record_drift_or_warn(
-                        state,
-                        "env-rc",
-                        &to_posix_string(&rc_path),
-                        Some("source line present"),
-                        Some("source line missing"),
-                        LOCAL_LAYER,
-                    );
-                }
             }
             // The live-session refresh is best-effort and ephemeral (a re-login
             // clears it); it is not a verified-drift surface — the durable file
@@ -263,13 +294,70 @@ pub(super) fn verify_env(
             EnvTarget::LiveSession { .. } => {}
         }
     }
+    results
+}
+
+/// Per-declared-item drift for the primary managed env file: whether the
+/// line each declared alias and env var renders as is still present in what
+/// is actually on disk. Follows the same read-the-generated-file-and-compare
+/// pattern `verify_env_file` uses for the file as a whole, at row
+/// granularity, so a status/diff consumer can attribute a mismatch to the
+/// specific alias or env var that produced it instead of only "the file is
+/// stale". A missing or unreadable file is left to the whole-file check this
+/// function's caller also runs, which already reports it once at file
+/// granularity.
+fn verify_env_items(
+    path: &std::path::Path,
+    env: &[crate::config::EnvVar],
+    aliases: &[crate::config::ShellAlias],
+    platform: EnvPlatform,
+    results: &mut Vec<VerifyResult>,
+) {
+    let Ok(actual) = std::fs::read_to_string(path) else {
+        return;
+    };
+
+    for ev in env {
+        let Some(line) = super::env_files::primary_env_var_line(ev, platform) else {
+            continue;
+        };
+        let matches = actual.contains(&line);
+        results.push(VerifyResult {
+            resource_type: "env-var".to_string(),
+            resource_id: ev.name.clone(),
+            matches,
+            expected: line,
+            actual: if matches {
+                "current".to_string()
+            } else {
+                "missing or changed".to_string()
+            },
+        });
+    }
+
+    for alias in aliases {
+        let Some(line) = super::env_files::primary_alias_line(alias, platform) else {
+            continue;
+        };
+        let matches = actual.contains(&line);
+        results.push(VerifyResult {
+            resource_type: "alias".to_string(),
+            resource_id: alias.name.clone(),
+            matches,
+            expected: line,
+            actual: if matches {
+                "current".to_string()
+            } else {
+                "missing or changed".to_string()
+            },
+        });
+    }
 }
 
 /// Verify a single env file's content matches expected.
 pub(super) fn verify_env_file(
     path: &std::path::Path,
     expected: &str,
-    state: &StateStore,
     results: &mut Vec<VerifyResult>,
 ) {
     match std::fs::read_to_string(path) {
@@ -290,14 +378,6 @@ pub(super) fn verify_env_file(
                 expected: "current".to_string(),
                 actual: "stale".to_string(),
             });
-            record_drift_or_warn(
-                state,
-                "env",
-                &to_posix_string(path),
-                Some("current"),
-                Some("stale"),
-                LOCAL_LAYER,
-            );
         }
         Err(_) => {
             results.push(VerifyResult {
@@ -307,14 +387,6 @@ pub(super) fn verify_env_file(
                 expected: "present".to_string(),
                 actual: "missing".to_string(),
             });
-            record_drift_or_warn(
-                state,
-                "env",
-                &to_posix_string(path),
-                Some("present"),
-                Some("missing"),
-                LOCAL_LAYER,
-            );
         }
     }
 }

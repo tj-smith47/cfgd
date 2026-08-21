@@ -11,4 +11,7 @@ Phase: Packages
 Phase: System
   ✓ No system drift
 
+Phase: Env
+  ✓ No env drift
+
 ✓ No drift detected

@@ -11161,14 +11161,13 @@ fn script_phase_display_names() {
 
 #[test]
 fn verify_env_file_matches_when_content_equal() {
-    let state = test_state();
     let tmp = tempfile::tempdir().unwrap();
     let env_path = tmp.path().join("test.env");
     let expected = "export FOO=\"bar\"\n";
     std::fs::write(&env_path, expected).unwrap();
 
     let mut results = Vec::new();
-    super::verify_env_file(&env_path, expected, &state, &mut results);
+    super::verify_env_file(&env_path, expected, &mut results);
 
     assert_eq!(results.len(), 1);
     assert!(results[0].matches);
@@ -11179,13 +11178,12 @@ fn verify_env_file_matches_when_content_equal() {
 
 #[test]
 fn verify_env_file_stale_when_content_differs() {
-    let state = test_state();
     let tmp = tempfile::tempdir().unwrap();
     let env_path = tmp.path().join("test.env");
     std::fs::write(&env_path, "old content").unwrap();
 
     let mut results = Vec::new();
-    super::verify_env_file(&env_path, "new content", &state, &mut results);
+    super::verify_env_file(&env_path, "new content", &mut results);
 
     assert_eq!(results.len(), 1);
     assert!(!results[0].matches);
@@ -11195,17 +11193,132 @@ fn verify_env_file_stale_when_content_differs() {
 
 #[test]
 fn verify_env_file_missing_when_file_absent() {
-    let state = test_state();
     let tmp = tempfile::tempdir().unwrap();
     let env_path = tmp.path().join("nonexistent.env");
 
     let mut results = Vec::new();
-    super::verify_env_file(&env_path, "expected content", &state, &mut results);
+    super::verify_env_file(&env_path, "expected content", &mut results);
 
     assert_eq!(results.len(), 1);
     assert!(!results[0].matches);
     assert_eq!(results[0].expected, "present");
     assert_eq!(results[0].actual, "missing");
+}
+
+// --- env_verify_results / verify_env per-item alias & env-var tests ---
+
+#[test]
+#[serial_test::serial]
+fn env_verify_results_reports_matching_alias_and_env_var_as_current() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+
+    let env = vec![EnvVar {
+        name: "EDITOR".to_string(),
+        value: "nvim".to_string(),
+    }];
+    let aliases = vec![ShellAlias {
+        name: "ll".to_string(),
+        command: "ls -la".to_string(),
+    }];
+
+    // Seed the primary managed file exactly as `apply` would generate it, so
+    // the per-item check reads a real, matching baseline.
+    let content = super::env_files::generate_env_file_content(&env, &aliases, &[]);
+    std::fs::write(tmp_home.path().join(".cfgd.env"), content).unwrap();
+
+    let results = super::verify::env_verify_results(&env, &aliases, EnvScope::All, &[], &[]);
+
+    let alias_row = results
+        .iter()
+        .find(|r| r.resource_type == "alias" && r.resource_id == "ll")
+        .expect("alias row present");
+    assert!(alias_row.matches);
+    assert_eq!(alias_row.actual, "current");
+
+    let env_row = results
+        .iter()
+        .find(|r| r.resource_type == "env-var" && r.resource_id == "EDITOR")
+        .expect("env-var row present");
+    assert!(env_row.matches);
+    assert_eq!(env_row.actual, "current");
+}
+
+#[test]
+#[serial_test::serial]
+fn env_verify_results_detects_hand_edited_alias_as_drift_without_flagging_untouched_env_var() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+
+    let env = vec![EnvVar {
+        name: "EDITOR".to_string(),
+        value: "nvim".to_string(),
+    }];
+    let aliases = vec![ShellAlias {
+        name: "ll".to_string(),
+        command: "ls -la".to_string(),
+    }];
+
+    // Generate the real baseline, then hand-edit only the alias's command —
+    // the same shape a user editing the generated file out-of-band produces.
+    let content = super::env_files::generate_env_file_content(&env, &aliases, &[]);
+    let mutated = content.replace(r#"alias ll="ls -la""#, r#"alias ll="ls -lah""#);
+    assert_ne!(
+        content, mutated,
+        "fixture must actually mutate the alias line"
+    );
+    std::fs::write(tmp_home.path().join(".cfgd.env"), mutated).unwrap();
+
+    let results = super::verify::env_verify_results(&env, &aliases, EnvScope::All, &[], &[]);
+
+    let alias_row = results
+        .iter()
+        .find(|r| r.resource_type == "alias" && r.resource_id == "ll")
+        .expect("alias row present");
+    assert!(!alias_row.matches);
+    assert_eq!(alias_row.actual, "missing or changed");
+    assert_eq!(alias_row.expected, r#"alias ll="ls -la""#);
+
+    // The env var's own line is untouched, so it must not be swept up in the
+    // alias's drift — per-item attribution, not a whole-file verdict.
+    let env_row = results
+        .iter()
+        .find(|r| r.resource_type == "env-var" && r.resource_id == "EDITOR")
+        .expect("env-var row present");
+    assert!(env_row.matches);
+}
+
+#[test]
+#[serial_test::serial]
+fn verify_env_persists_drift_for_a_hand_edited_alias() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    let state = test_state();
+
+    let aliases = vec![ShellAlias {
+        name: "ll".to_string(),
+        command: "ls -la".to_string(),
+    }];
+    let content = super::env_files::generate_env_file_content(&[], &aliases, &[]);
+    let mutated = content.replace(r#"alias ll="ls -la""#, r#"alias ll="ls -lah""#);
+    std::fs::write(tmp_home.path().join(".cfgd.env"), mutated).unwrap();
+
+    let mut results = Vec::new();
+    super::verify::verify_env(&[], &aliases, EnvScope::All, &[], &[], &state, &mut results);
+
+    assert!(
+        results
+            .iter()
+            .any(|r| r.resource_type == "alias" && r.resource_id == "ll" && !r.matches)
+    );
+
+    let drift = state.unresolved_drift().unwrap();
+    assert!(
+        drift
+            .iter()
+            .any(|d| d.resource_type == "alias" && d.resource_id == "ll"),
+        "expected a persisted alias drift row, got {drift:?}"
+    );
 }
 
 // --- merge_module_env_aliases tests ---

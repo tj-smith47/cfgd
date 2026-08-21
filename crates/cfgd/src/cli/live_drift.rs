@@ -114,9 +114,10 @@ pub(super) fn module_file_verify_results(
 }
 
 /// Non-matching live verify results across every category the live scan covers
-/// (profile files, module files, packages, system). Read-only: this performs a
-/// live scan (the same checks `diff` runs) but never writes to the `drift_events`
-/// table, so a `status --scan` call stays a non-recording dashboard query.
+/// (profile files, module files, packages, system, declared env vars and
+/// aliases). Read-only: this performs a live scan (the same checks `diff`
+/// runs) but never writes to the `drift_events` table, so a `status --scan`
+/// call stays a non-recording dashboard query.
 ///
 /// Only divergent results are returned — the caller treats a non-empty vector as
 /// "drift detected" and renders each entry. This is the single source of truth
@@ -229,6 +230,26 @@ fn live_drift_results_inner(
             }
         }
     }
+
+    // Env & aliases: whether the primary managed env file still holds the line
+    // each declared alias and env var renders as, using the same
+    // generator-and-compare check `verify` persists as drift. Read-only like
+    // every other pass here — only the recording half in `reconciler::verify`
+    // writes to `drift_events`. `path_dirs` is left empty: the PATH export
+    // line it would additionally cover names no declared item of its own, so
+    // the per-alias/per-env-var attribution this checks does not depend on it.
+    sp.set_message("Scanning: env & aliases");
+    drift.extend(
+        cfgd_core::reconciler::env_verify_results(
+            &resolved.merged.env,
+            &resolved.merged.aliases,
+            resolved.merged.env_scope,
+            modules,
+            &[],
+        )
+        .into_iter()
+        .filter(|r| !r.matches),
+    );
 
     Ok(drift)
 }
@@ -382,7 +403,7 @@ mod tests {
 
     use cfgd_core::config::{
         FileStrategy, FilesSpec, LayerPolicy, ManagedFileSpec, MergedProfile, ProfileLayer,
-        ProfileSpec, ResolvedProfile,
+        ProfileSpec, ResolvedProfile, ShellAlias,
     };
     use cfgd_core::output::Printer;
 
@@ -530,6 +551,60 @@ mod tests {
             drift.is_empty(),
             "matching file + empty packages/system must be no-drift: {drift:?}"
         );
+    }
+
+    /// `status --scan` / `verify` share this engine, and it never checked
+    /// `spec.aliases` at all before the Env pass was wired in — an alias
+    /// hand-edited on the machine was invisible to a live scan even though
+    /// `cfgd verify`'s recording half already caught it. Prove the shared
+    /// engine now reports the same mismatch this read-only path is meant to
+    /// surface.
+    #[test]
+    #[serial_test::serial]
+    fn live_drift_results_includes_a_hand_edited_alias() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        std::fs::write(
+            tmp_home.path().join(".cfgd.env"),
+            "# managed by cfgd \u{2014} do not edit\nalias ll=\"ls -lah\"\n",
+        )
+        .unwrap();
+
+        let resolved = ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".to_string(),
+                profile_name: "test".to_string(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile {
+                aliases: vec![ShellAlias {
+                    name: "ll".to_string(),
+                    command: "ls -la".to_string(),
+                }],
+                ..Default::default()
+            },
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let registry = crate::cli::build_registry_with_profile(&resolved.merged.packages);
+        let (printer, _cap) = Printer::for_test_doc();
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+        let drift = live_drift_results(
+            dir.path(),
+            &resolved,
+            &registry,
+            &[],
+            &std::collections::HashSet::new(),
+            &cx,
+        )
+        .unwrap();
+        let alias_row = drift
+            .iter()
+            .find(|r| r.resource_type == "alias" && r.resource_id == "ll")
+            .expect("a hand-edited alias must appear in the live scan");
+        assert!(!alias_row.matches);
     }
 
     /// Build a `ResolvedModule` with a single file (source + target) for the

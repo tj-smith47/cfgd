@@ -1,6 +1,7 @@
 use super::*;
 
 use cfgd_core::PathDisplayExt;
+use cfgd_core::config::EnvScope;
 use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, section_guard::SectionGuard};
 use cfgd_core::reconciler::{MANAGERS_GROUP, ManagerAction, Owner, PhaseName};
 
@@ -239,11 +240,50 @@ pub fn cmd_diff(
         close_system_phase(&sys_sec, has_system_drift, diff_payload.system_errors.len());
     }
 
+    let has_env_drift = {
+        let env_sec = printer.section_phase(&cfgd_core::output::PhaseLabel::new("Env"));
+        let mut drift = false;
+        {
+            let env_group = env_sec.section_owner_or_collapse(&owner_label(&profile_owner));
+            for r in cfgd_core::reconciler::env_verify_results(
+                &resolved.merged.env,
+                &resolved.merged.aliases,
+                resolved.merged.env_scope,
+                &resolved_modules,
+                &[],
+            )
+            .into_iter()
+            .filter(|r| !r.matches)
+            {
+                drift = true;
+                env_group
+                    .status(
+                        Role::Warn,
+                        format!("{}: {}", r.resource_type, r.resource_id),
+                    )
+                    .drift(&r.expected, &r.actual);
+                diff_payload.env.push(EnvDriftOutput {
+                    kind: r.resource_type,
+                    name: r.resource_id,
+                    expected: r.expected,
+                    actual: r.actual,
+                });
+            }
+        }
+        if drift {
+            env_sec.status_simple(Role::Warn, "Env drift detected");
+        } else {
+            env_sec.status_simple(Role::Ok, "No env drift");
+        }
+        drift
+    };
+
     diff_payload.summary = DiffSummary {
         has_file_drift,
         has_pkg_drift,
         has_system_drift,
         system_check_failed: !diff_payload.system_errors.is_empty(),
+        has_env_drift,
     };
 
     // This command just checked the machine itself, whatever it found — the
@@ -291,7 +331,10 @@ fn diff_exit_code(summary: &DiffSummary) -> Option<cfgd_core::exit::ExitCode> {
     if summary.system_check_failed {
         return Some(cfgd_core::exit::ExitCode::Error);
     }
-    (summary.has_file_drift || summary.has_pkg_drift || summary.has_system_drift)
+    (summary.has_file_drift
+        || summary.has_pkg_drift
+        || summary.has_system_drift
+        || summary.has_env_drift)
         .then_some(cfgd_core::exit::ExitCode::DriftDetected)
 }
 
@@ -402,6 +445,44 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         }
     }
 
+    let has_env_drift = {
+        let env_sec = printer.section_phase(&cfgd_core::output::PhaseLabel::new("Env"));
+        let mut drift = false;
+        for module in &resolved_modules {
+            let group = env_sec.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
+            for r in cfgd_core::reconciler::env_verify_results(
+                &[],
+                &[],
+                EnvScope::All,
+                std::slice::from_ref(module),
+                &[],
+            )
+            .into_iter()
+            .filter(|r| !r.matches)
+            {
+                drift = true;
+                group
+                    .status(
+                        Role::Warn,
+                        format!("{}: {}", r.resource_type, r.resource_id),
+                    )
+                    .drift(&r.expected, &r.actual);
+                diff_payload.env.push(EnvDriftOutput {
+                    kind: r.resource_type,
+                    name: r.resource_id,
+                    expected: r.expected,
+                    actual: r.actual,
+                });
+            }
+        }
+        if drift {
+            env_sec.status_simple(Role::Warn, "Env drift detected");
+        } else {
+            env_sec.status_simple(Role::Ok, "No env drift");
+        }
+        drift
+    };
+
     diff_payload.summary = DiffSummary {
         has_file_drift: has_file_diff,
         has_pkg_drift,
@@ -409,6 +490,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         // system verdict is neither drifted nor undetermined here.
         has_system_drift: false,
         system_check_failed: false,
+        has_env_drift,
     };
 
     printer.emit(build_diff_doc(&diff_payload));
@@ -588,7 +670,8 @@ pub(super) fn print_package_drift(
 pub fn build_diff_doc(output: &DiffOutput) -> Doc {
     let any_drift = output.summary.has_file_drift
         || output.summary.has_pkg_drift
-        || output.summary.has_system_drift;
+        || output.summary.has_system_drift
+        || output.summary.has_env_drift;
     // A run that could not check everything has no clean verdict to give, so
     // it never renders one — whether or not the checks that DID run found
     // drift.
@@ -682,6 +765,119 @@ mod tests {
         );
     }
 
+    /// `cfgd diff`'s new Env phase must surface a hand-edited alias as drift on
+    /// every channel: the human phase line, the per-item status row, the
+    /// `-o json` `env` array and the top-level drift verdict fields
+    /// (`build_diff_doc`'s `any_drift` and `diff_exit_code`'s gate). Both were
+    /// found missing `has_env_drift` while wiring this phase in, and neither
+    /// is covered by a test that drives a real `.cfgd.env` mismatch through
+    /// the full command rather than a hand-built `DiffOutput`.
+    #[test]
+    #[serial]
+    fn cmd_diff_reports_a_hand_edited_alias_as_env_drift() {
+        use crate::cli::helpers::tests::make_cli;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  aliases:\n    - name: ll\n      command: ls -la\n",
+        )
+        .unwrap();
+
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        // The primary managed env file's bash/zsh dialect renders one alias as
+        // `alias {name}={quoted command}` — a hand-edited body diverges from
+        // what the profile declared.
+        std::fs::write(
+            tmp_home.path().join(".cfgd.env"),
+            "# managed by cfgd \u{2014} do not edit\nalias ll=\"ls -lah\"\n",
+        )
+        .unwrap();
+
+        let mut cli = make_cli(config_path);
+        cli.state_dir = Some(tmp.path().join("state"));
+        cli.cache_dir = Some(tmp.path().join("cache"));
+        let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+        cmd_diff(&cli, &printer, None, false).unwrap();
+        drop(printer);
+        let human = strip_ansi(&cfgd_core::test_helpers::captured_text(&buf));
+        assert!(
+            human.contains("Env drift detected"),
+            "the Env phase must report the drift: {human}"
+        );
+        assert!(
+            human.contains("alias: ll"),
+            "the drifted alias must be named: {human}"
+        );
+    }
+
+    /// The clean-case counterpart: a `.cfgd.env` that already holds the
+    /// declared alias's exact line reports no drift FOR THAT ALIAS, on both
+    /// the human row and the `-o json` `env` array. The fixture's home
+    /// directory carries no rc files or `environment.d` entry of its own, so
+    /// this only pins the per-item alias/env-var check — the whole-file and
+    /// source-line checks the other env targets exercise are covered by
+    /// their own tests and are free to report their own unrelated drift
+    /// here.
+    #[test]
+    #[serial]
+    fn cmd_diff_reports_no_env_drift_when_alias_line_matches() {
+        use crate::cli::helpers::tests::make_cli;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  aliases:\n    - name: ll\n      command: ls -la\n",
+        )
+        .unwrap();
+
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        std::fs::write(
+            tmp_home.path().join(".cfgd.env"),
+            "# managed by cfgd \u{2014} do not edit\nalias ll=\"ls -la\"\n",
+        )
+        .unwrap();
+
+        let mut cli = make_cli(config_path);
+        cli.state_dir = Some(tmp.path().join("state"));
+        cli.cache_dir = Some(tmp.path().join("cache"));
+        let (printer, cap) = Printer::for_test_doc();
+
+        cmd_diff(&cli, &printer, None, false).unwrap();
+        drop(printer);
+        let human = strip_ansi(&cap.human());
+        assert!(
+            !human.contains("alias: ll"),
+            "a matching alias line must not be reported as drift: {human}"
+        );
+        let json = cap.json().expect("diff emits a data payload");
+        let env = json["env"].as_array().expect("env array present");
+        assert!(
+            !env.iter()
+                .any(|e| e["kind"] == "alias" && e["name"] == "ll"),
+            "a matching alias must not appear in the env drift payload: {env:?}"
+        );
+    }
+
     fn strip_ansi(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
         let mut chars = s.chars().peekable();
@@ -738,6 +934,7 @@ mod tests {
                 has_pkg_drift: false,
                 has_system_drift: false,
                 system_check_failed: false,
+                has_env_drift: false,
             },
             ..Default::default()
         };
@@ -759,6 +956,7 @@ mod tests {
                 has_pkg_drift: false,
                 has_system_drift: false,
                 system_check_failed: false,
+                has_env_drift: false,
             },
             ..Default::default()
         };
@@ -804,6 +1002,7 @@ mod tests {
                 has_pkg_drift: false,
                 has_system_drift: false,
                 system_check_failed: true,
+                has_env_drift: false,
             },
             ..Default::default()
         };

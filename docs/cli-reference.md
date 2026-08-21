@@ -662,8 +662,17 @@ Phase: System
   profile:work
     ⚠ sysctl.net.core.somaxconn — want 8192, have 4096
 
+Phase: Env
+  profile:work
+    ⚠ alias: ll — want: alias ll="ls -la", have: missing or changed
+
 ⚠ Drift detected
 ```
+
+The Env phase checks the declared `spec.env` vars and `spec.aliases` against the managed env
+files cfgd owns (`~/.cfgd.env` and its platform siblings) and the rc source lines that load
+them. It never reads a live shell session: a var or alias exported only by hand, outside those
+files, is invisible to this check by design.
 
 `cfgd:managers` reports package **managers** the plan itself would provision or
 refuse — not something the profile declared missing, but something `apply` would
@@ -676,7 +685,7 @@ self-heal reads `not installed — can bootstrap via <method>`; one it cannot re
 File bodies render at column 0 under the file they belong to, so a diff hunk stays
 copy-pasteable.
 
-The payload carries `files[]`, `packages[]`, `system[]`, and a `summary`. `files[]` lists only the managed files that do NOT match desired state, in the same shape `cfgd verify` reports a resource:
+The payload carries `files[]`, `packages[]`, `system[]`, `env[]`, and a `summary`. `files[]` lists only the managed files that do NOT match desired state, in the same shape `cfgd verify` reports a resource:
 
 ```json
 {
@@ -704,6 +713,25 @@ A managed file whose `source` cannot be found is reported as drift here and by `
     { "manager": "cargo", "shape": "missing", "packages": ["ripgrep"] },
     { "manager": "pipx", "shape": "provision", "bootstrapMethod": "pip install pipx" },
     { "manager": "snap", "shape": "refused", "reason": "no available system manager" }
+  ]
+}
+```
+
+`env[]` entries carry `kind` (`env-var` | `alias` | `env` | `env-rc`), `name`, `expected`, and
+`actual` — `kind` matches `cfgd verify`'s `resourceType` for the same check byte-for-byte, so a
+consumer joining this against a `cfgd verify` or recorded-drift row needs no second vocabulary.
+`env-var` and `alias` are per-declared-item checks (a mismatched line in `~/.cfgd.env`); `env`
+and `env-rc` are whole-file and rc-source-line checks that predate them:
+
+```json
+{
+  "env": [
+    {
+      "kind": "alias",
+      "name": "ll",
+      "expected": "alias ll=\"ls -la\"",
+      "actual": "missing or changed"
+    }
   ]
 }
 ```
