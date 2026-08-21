@@ -35,11 +35,14 @@
       "type": "object"
     },
     "EnvVar": {
+      "description": "A single `NAME=VALUE` environment variable entry.",
       "properties": {
         "name": {
+          "description": "Variable name. Must be shell-safe and not a reserved `CFGD_*` name.",
           "type": "string"
         },
         "value": {
+          "description": "Variable value.",
           "type": "string"
         }
       },
@@ -81,6 +84,7 @@
     },
     "ModuleFileEntry": {
       "additionalProperties": false,
+      "description": "One entry of `spec.files[]`: a file this module deploys.\n\n```yaml\nfiles:\n  - source: files/init.lua\n    target: ~/.config/nvim/init.lua\n```",
       "properties": {
         "encryption": {
           "anyOf": [
@@ -117,7 +121,7 @@
         },
         "source": {
           "default": "",
-          "description": "Not required when `strategy` is `Patch`; required otherwise\n(enforced by `validate_module_file_entries`, not the JSON schema).",
+          "description": "Path to the source file, relative to the module directory. Not\nrequired when `strategy` is `Patch`; required otherwise\n(enforced by `validate_module_file_entries`, not the JSON schema).",
           "type": "string"
         },
         "strategy": {
@@ -132,6 +136,7 @@
           "description": "Per-file deployment strategy override. If None, uses the global default."
         },
         "target": {
+          "description": "Destination path on the machine. A leading `~` expands to the home\ndirectory.",
           "type": "string"
         }
       },
@@ -142,14 +147,17 @@
     },
     "ModuleMetadata": {
       "additionalProperties": false,
+      "description": "`metadata`: identifying information for a module.",
       "properties": {
         "description": {
+          "description": "A one-line human summary shown in `cfgd module list` / `cfgd module show`.",
           "type": [
             "string",
             "null"
           ]
         },
         "name": {
+          "description": "The module's name, referenced from a profile's `modules:` list.",
           "type": "string"
         },
         "version": {
@@ -168,11 +176,13 @@
     },
     "ModulePackageEntry": {
       "additionalProperties": false,
+      "description": "One entry of `spec.packages[]`: a package this module installs.\n\n```yaml\npackages:\n  - name: neovim\n    minVersion: \"0.9\"\n    prefer: [brew, apt]\n```",
       "properties": {
         "aliases": {
           "additionalProperties": {
             "type": "string"
           },
+          "description": "Manager-specific package name aliases (e.g. `{apt: \"neovim\", brew:\n\"neovim\"}`) for a package named differently across managers.",
           "type": "object"
         },
         "creates": {
@@ -183,12 +193,14 @@
           ]
         },
         "deny": {
+          "description": "Package managers to never use for this package, even if otherwise\navailable and preferred by the profile.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "minVersion": {
+          "description": "Minimum acceptable installed version, loosely parsed (`\"1.2\"`, `\"1\"`).\nA version below this is treated as not satisfying the module.",
           "type": [
             "string",
             "null"
@@ -196,6 +208,7 @@
         },
         "name": {
           "default": "",
+          "description": "The package name as the chosen manager knows it.",
           "type": "string"
         },
         "onlyIf": {
@@ -206,18 +219,21 @@
           ]
         },
         "platforms": {
+          "description": "Platform tags gating this package alone. Empty means install on every\nplatform the module itself is not already gated off of.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "prefer": {
+          "description": "Manager preference order for this package, overriding the profile's\ndefault manager priority (e.g. `[brew, apt]`, or `[script]` to force the\ninstall script below).",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "script": {
+          "description": "Shell script to run instead of a manager install, selected via\n`prefer: [script]`.",
           "type": [
             "string",
             "null"
@@ -235,32 +251,38 @@
     },
     "ModuleSpec": {
       "additionalProperties": false,
+      "description": "`spec`: the declared surface of a module — everything it contributes to a\nprofile that includes it.",
       "properties": {
         "aliases": {
+          "description": "Shell aliases this module contributes.",
           "items": {
             "$ref": "#/$defs/ShellAlias"
           },
           "type": "array"
         },
         "depends": {
+          "description": "Names of other modules this one requires; cfgd resolves and applies them\nfirst.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "env": {
+          "description": "Environment variables this module contributes.",
           "items": {
             "$ref": "#/$defs/EnvVar"
           },
           "type": "array"
         },
         "files": {
+          "description": "Files this module deploys.",
           "items": {
             "$ref": "#/$defs/ModuleFileEntry"
           },
           "type": "array"
         },
         "packages": {
+          "description": "Packages this module installs.",
           "items": {
             "$ref": "#/$defs/ModulePackageEntry"
           },
@@ -281,7 +303,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Lifecycle scripts (`preApply`, `postApply`, …) this module runs."
         },
         "system": {
           "additionalProperties": true,
@@ -347,11 +370,13 @@
     "ScriptEntry": {
       "anyOf": [
         {
+          "description": "A bare command string, run with the platform's default shell and no\ntimeout/guard.",
           "type": "string"
         },
         {
           "properties": {
             "continueOnError": {
+              "description": "Treat a non-zero exit as success and continue reconciliation instead\nof failing the run. Default: `false`.",
               "type": [
                 "boolean",
                 "null"
@@ -383,6 +408,7 @@
               ]
             },
             "run": {
+              "description": "The command or script body to run.",
               "type": "string"
             },
             "shell": {
@@ -390,6 +416,7 @@
               "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts."
             },
             "timeout": {
+              "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`).\nUnset means no timeout.",
               "type": [
                 "string",
                 "null"
@@ -415,7 +442,8 @@
           ],
           "type": "object"
         }
-      ]
+      ],
+      "description": "A lifecycle script entry: either a bare command string, or a mapping for\none that needs a timeout, shell, or guard condition.\n\n```yaml\npreApply: \"echo starting\"\n# or\npostApply:\n  run: brew update\n  timeout: 2m\n  onlyIf: command -v brew\n```"
     },
     "ScriptShell": {
       "description": "Interpreter for inline lifecycle scripts.",
@@ -439,9 +467,11 @@
     },
     "ScriptSpec": {
       "additionalProperties": false,
+      "description": "`spec.scripts`: lifecycle hooks run at specific points in the reconcile cycle.\n\n```yaml\nscripts:\n  preApply: \"echo starting apply\"\n  postApply:\n    - run: brew cleanup\n      continueOnError: true\n  onDrift: \"notify-send 'cfgd: drift detected'\"\n```",
       "properties": {
         "onChange": {
           "default": [],
+          "description": "Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).",
           "items": {
             "$ref": "#/$defs/ScriptEntry"
           },
@@ -449,6 +479,7 @@
         },
         "onDrift": {
           "default": [],
+          "description": "Run when the daemon detects drift, before any auto-apply decision.",
           "items": {
             "$ref": "#/$defs/ScriptEntry"
           },
@@ -456,6 +487,7 @@
         },
         "postApply": {
           "default": [],
+          "description": "Run once after every action in an apply completes.",
           "items": {
             "$ref": "#/$defs/ScriptEntry"
           },
@@ -463,6 +495,7 @@
         },
         "postReconcile": {
           "default": [],
+          "description": "Run once after a daemon reconcile tick completes.",
           "items": {
             "$ref": "#/$defs/ScriptEntry"
           },
@@ -470,6 +503,7 @@
         },
         "preApply": {
           "default": [],
+          "description": "Run once before any action in an apply.",
           "items": {
             "$ref": "#/$defs/ScriptEntry"
           },
@@ -477,6 +511,7 @@
         },
         "preReconcile": {
           "default": [],
+          "description": "Run once before a daemon reconcile tick begins.",
           "items": {
             "$ref": "#/$defs/ScriptEntry"
           },
@@ -486,11 +521,14 @@
       "type": "object"
     },
     "ShellAlias": {
+      "description": "A single shell alias entry.",
       "properties": {
         "command": {
+          "description": "Command the alias expands to.",
           "type": "string"
         },
         "name": {
+          "description": "Alias name, as typed at the shell prompt.",
           "type": "string"
         }
       },
@@ -507,16 +545,20 @@
   "description": "Schema for cfgd Module documents (kind: Module)",
   "properties": {
     "apiVersion": {
+      "description": "API group/version, e.g. `cfgd.io/v1alpha1`.",
       "type": "string"
     },
     "kind": {
+      "description": "Document kind. Always `Module` for this file.",
       "type": "string"
     },
     "metadata": {
-      "$ref": "#/$defs/ModuleMetadata"
+      "$ref": "#/$defs/ModuleMetadata",
+      "description": "Identifying metadata for this module."
     },
     "spec": {
-      "$ref": "#/$defs/ModuleSpec"
+      "$ref": "#/$defs/ModuleSpec",
+      "description": "The module's declared surface."
     }
   },
   "required": [
