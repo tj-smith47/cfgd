@@ -172,7 +172,7 @@ async fn evaluate_module_availability<'a>(
         Ok(list) => list,
         Err(e) => {
             warn!(error = %e, "ClusterConfigPolicy cache unavailable for Module validation");
-            // If we can't read policies, allow the module (fail-open for availability)
+            // An unreadable policy cache allows the module: fail-open for availability
             return (
                 "True",
                 "ArtifactAvailable",

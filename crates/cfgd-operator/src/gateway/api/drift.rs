@@ -19,9 +19,19 @@ pub(super) async fn create_drift_alert_crd(
 
     let mc_ref = find_machine_config_for_device(client, hostname).await;
 
+    // A device id and a hostname arrive from the device itself, so neither is a
+    // legal Kubernetes name by construction: an underscore or an over-long id
+    // makes the API server reject the whole object with a 422, and the retry
+    // ladder below then burns every attempt on a body that can never be
+    // accepted. The object name and both label values are the outbound copies
+    // and are cut to shape here; the drift row the caller writes keeps the id
+    // the device sent.
+    let device_label = k8s_value(device_id);
+    let mc_label = k8s_value(&mc_ref);
+
     let alert_name = format!(
         "drift-{}-{}",
-        device_id,
+        device_label,
         cfgd_core::iso8601_to_filename_safe(timestamp)
     );
 
@@ -39,7 +49,7 @@ pub(super) async fn create_drift_alert_crd(
         DriftAlertSpec {
             device_id: device_id.to_string(),
             machine_config_ref: MachineConfigReference {
-                name: mc_ref.clone(),
+                name: mc_ref,
                 namespace: None,
             },
             drift_details,
@@ -47,11 +57,8 @@ pub(super) async fn create_drift_alert_crd(
         },
     );
     alert.metadata.labels = Some(std::collections::BTreeMap::from([
-        (cfgd_core::LABEL_MACHINE_CONFIG.to_string(), mc_ref),
-        (
-            cfgd_core::LABEL_DEVICE_ID.to_string(),
-            device_id.to_string(),
-        ),
+        (cfgd_core::LABEL_MACHINE_CONFIG.to_string(), mc_label),
+        (cfgd_core::LABEL_DEVICE_ID.to_string(), device_label),
     ]));
 
     // `Api::create` mints `kube::Error::SerdeError` from two places: serializing
@@ -135,6 +142,20 @@ pub(super) async fn create_drift_alert_crd(
     }
 
     Ok(())
+}
+
+/// One label-shaped copy of a string the gateway did not author: sanitized to
+/// an RFC 1123 label and cut to the 63 bytes a Kubernetes label value allows,
+/// trimming a hyphen the cut may have exposed at the end.
+fn k8s_value(raw: &str) -> String {
+    const LABEL_VALUE_MAX: usize = 63;
+    let mut value = cfgd_core::sanitize_k8s_name(raw);
+    // `sanitize_k8s_name` yields ASCII only, so a byte cut is a char cut.
+    value.truncate(LABEL_VALUE_MAX);
+    while value.ends_with('-') {
+        value.pop();
+    }
+    value
 }
 
 /// Find the MachineConfig CRD name that corresponds to a device hostname.
