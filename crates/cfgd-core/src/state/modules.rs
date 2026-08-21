@@ -21,7 +21,7 @@ impl StateStore {
                 "INSERT INTO module_state (module_name, installed_at, last_applied, packages_hash, files_hash, git_sources, status)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT(module_name) DO UPDATE SET
-                    last_applied = ?3,
+                    last_applied = COALESCE(?3, last_applied),
                     packages_hash = ?4,
                     files_hash = ?5,
                     git_sources = ?6,

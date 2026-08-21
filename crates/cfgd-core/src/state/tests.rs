@@ -1689,6 +1689,34 @@ fn module_state_upsert_updates_on_conflict() {
 }
 
 #[test]
+fn module_state_upsert_with_none_preserves_last_applied() {
+    let store = StateStore::open_in_memory().unwrap();
+
+    let apply1 = store
+        .record_apply("default", "h1", ApplyStatus::Success, None)
+        .unwrap();
+    store
+        .upsert_module_state(
+            "nvim",
+            Some(apply1),
+            "pkg-hash",
+            "file-hash",
+            None,
+            "installed",
+        )
+        .unwrap();
+
+    // A converged-module record carries no fresh apply id; it must not erase
+    // the timestamp a prior real apply recorded.
+    store
+        .upsert_module_state("nvim", None, "pkg-hash", "file-hash", None, "installed")
+        .unwrap();
+
+    let rec = store.module_state_by_name("nvim").unwrap().unwrap();
+    assert_eq!(rec.last_applied, Some(apply1));
+}
+
+#[test]
 fn module_state_remove() {
     let store = StateStore::open_in_memory().unwrap();
 
