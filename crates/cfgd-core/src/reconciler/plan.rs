@@ -604,13 +604,24 @@ impl<'a> super::Reconciler<'a> {
             // from this `Vec`.
             manager_order.sort_by(|a, b| (a.0, a.1.as_str()).cmp(&(b.0, b.1.as_str())));
 
-            for (_, mgr_name) in manager_order {
-                let resolved = &by_manager[mgr_name];
+            for (class, mgr_name) in manager_order {
+                let mut resolved = by_manager[mgr_name].clone();
+                // Only an AVAILABLE manager (class 0) can be asked what it
+                // holds; a bootstrappable or unknown one is planned in full,
+                // exactly as the profile-level planner does for the same case.
+                if class == 0 {
+                    self.retain_uninstalled(mgr_name, &mut resolved);
+                }
+                // Nothing left to install is nothing to plan: the module has
+                // already converged under this manager, and emitting the action
+                // anyway is what made every plan re-list the whole declared set
+                // and every apply re-shell to the manager for it.
+                if resolved.is_empty() {
+                    continue;
+                }
                 actions.push(routed(
                     module,
-                    ModuleActionKind::InstallPackages {
-                        resolved: resolved.clone(),
-                    },
+                    ModuleActionKind::InstallPackages { resolved },
                 ));
             }
 
@@ -703,6 +714,47 @@ impl<'a> super::Reconciler<'a> {
         }
 
         actions
+    }
+
+    /// Drop the entries `manager` already reports installed, leaving the ones a
+    /// run would really install.
+    ///
+    /// A no-op when the caller wired no installed-state reader, and fail-OPEN on
+    /// a manager that cannot be queried: a machine cfgd could not observe is one
+    /// whose packages must still be planned, never one whose work is silently
+    /// dropped. Entries are compared through
+    /// [`crate::providers::PackageManager::package_identity`] — the identity
+    /// space the profile planner diffs in, and the space
+    /// [`crate::providers::InstalledPackages`] folds its listing into — so a
+    /// case-insensitive manager or a `go`-style install-vs-listed name split
+    /// agrees across both halves of the run.
+    fn retain_uninstalled(
+        &self,
+        manager: &str,
+        packages: &mut Vec<crate::modules::ResolvedPackage>,
+    ) {
+        let Some(cx) = self.installed else {
+            return;
+        };
+        let Some(mgr) = self
+            .registry
+            .package_managers()
+            .iter()
+            .find(|m| m.name() == manager)
+        else {
+            return;
+        };
+        match cx.installed_for(mgr.as_ref()) {
+            Ok(installed) => packages
+                .retain(|pkg| !installed.contains(&mgr.package_identity(&pkg.resolved_name))),
+            Err(e) => {
+                tracing::warn!(
+                    manager,
+                    error = %e,
+                    "cannot read installed packages; planning the module's declared set in full"
+                );
+            }
+        }
     }
 
     /// Dedupe module `InstallPackages` actions in place, keeping the first-seen

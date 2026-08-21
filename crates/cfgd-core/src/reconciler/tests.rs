@@ -22284,3 +22284,138 @@ fn plan_observed_reports_every_computed_phase_in_order() {
         .unwrap();
     assert_eq!(plan_render(&observed), plan_render(&one_pass));
 }
+
+/// The package items a plan holds, across every phase.
+fn all_plan_items(plan: &Plan) -> Vec<String> {
+    plan.phases.iter().flat_map(plan_items).collect()
+}
+
+#[test]
+fn a_module_package_the_manager_already_has_is_not_planned() {
+    let state = test_state();
+    let printer = test_printer();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        MockPackageManager::new("brew").with_installed(&["neovim"]),
+    ));
+    let cx = test_package_context(&printer, &state);
+    let reconciler = Reconciler::new(&registry, &state).diffing_installed(&cx);
+    let resolved = make_empty_resolved();
+
+    // `make_resolved_module` declares neovim + ripgrep under brew; only neovim
+    // is on the machine.
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            vec![make_resolved_module("dev")],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let items = all_plan_items(&plan).join("\n");
+    assert!(
+        items.contains("ripgrep"),
+        "the uninstalled package must still be planned, got:\n{items}"
+    );
+    assert!(
+        !items.contains("neovim"),
+        "the installed package must be elided, got:\n{items}"
+    );
+}
+
+#[test]
+fn a_module_whose_packages_are_all_installed_plans_nothing() {
+    let state = test_state();
+    let printer = test_printer();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        MockPackageManager::new("brew").with_installed(&["neovim", "ripgrep"]),
+    ));
+    let cx = test_package_context(&printer, &state);
+    let reconciler = Reconciler::new(&registry, &state).diffing_installed(&cx);
+    let resolved = make_empty_resolved();
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            vec![make_resolved_module("dev")],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    // A converged module contributes no action, so it mints no manager
+    // prerequisite either and the whole run reads as "nothing to do".
+    assert!(
+        plan.is_empty(),
+        "a converged module must plan nothing, got:\n{:?}",
+        all_plan_items(&plan)
+    );
+}
+
+#[test]
+fn a_manager_that_cannot_be_queried_still_plans_the_whole_declared_set() {
+    let state = test_state();
+    let printer = test_printer();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        MockPackageManager::new("brew").with_installed_error("brew db unreadable"),
+    ));
+    let cx = test_package_context(&printer, &state);
+    let reconciler = Reconciler::new(&registry, &state).diffing_installed(&cx);
+    let resolved = make_empty_resolved();
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            vec![make_resolved_module("dev")],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let items = all_plan_items(&plan).join("\n");
+    assert!(
+        items.contains("neovim") && items.contains("ripgrep"),
+        "an unobservable machine fails open, got:\n{items}"
+    );
+}
+
+#[test]
+fn an_unavailable_manager_is_never_asked_what_it_holds() {
+    let state = test_state();
+    let printer = test_printer();
+    let mut registry = ProviderRegistry::new();
+    // Unavailable AND erroring: the error is what would surface if the diff
+    // asked anyway, and a bootstrappable manager's packages are planned in full
+    // because nothing is installed under a manager that is not there yet.
+    registry.add_package_manager(Box::new(
+        MockPackageManager::new("brew")
+            .unavailable()
+            .bootstrappable()
+            .with_installed(&["neovim", "ripgrep"]),
+    ));
+    let cx = test_package_context(&printer, &state);
+    let reconciler = Reconciler::new(&registry, &state).diffing_installed(&cx);
+    let resolved = make_empty_resolved();
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            vec![make_resolved_module("dev")],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let items = all_plan_items(&plan).join("\n");
+    assert!(
+        items.contains("neovim") && items.contains("ripgrep"),
+        "a manager that is not on the machine yet holds nothing, got:\n{items}"
+    );
+}

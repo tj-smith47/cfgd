@@ -156,7 +156,7 @@ pub fn cmd_plan(
 
     let module_names: Vec<String> = resolved_modules.iter().map(|m| m.name.clone()).collect();
 
-    let reconciler = Reconciler::new(&registry, state);
+    let reconciler = Reconciler::new(&registry, state).diffing_installed(&pkg_cx);
     let mut plan = printer.narrate("Planning", |sp| {
         reconciler.plan_observed(
             &effective_resolved,

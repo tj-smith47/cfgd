@@ -144,6 +144,16 @@ pub struct Reconciler<'a> {
     /// one and drops it, a daemon builds one per tick — so plaintext never
     /// outlives the work that needed it.
     secrets: crate::providers::SecretCache,
+    /// The run's installed-state reader, used to drop a module package the
+    /// machine already carries.
+    ///
+    /// `None` plans a module's whole declared list, which is what a caller with
+    /// no machine to ask about wants (a fixture, a validation pass). Every
+    /// command that plans against a real host sets it through
+    /// [`Reconciler::diffing_installed`] and hands over the SAME context its
+    /// profile-package planner uses, so one enumeration per manager answers
+    /// both halves of the run.
+    installed: Option<&'a crate::providers::PackageContext<'a>>,
 }
 
 impl<'a> Reconciler<'a> {
@@ -154,7 +164,23 @@ impl<'a> Reconciler<'a> {
             home: resolved_home(),
             withhold_env_surface: false,
             secrets: crate::providers::SecretCache::new(),
+            installed: None,
         }
+    }
+
+    /// Diff a module's declared packages against what its manager reports
+    /// installed, the way the profile-level planner already does.
+    ///
+    /// Without it a module re-lists its entire package set on every plan and
+    /// re-shells to the manager on every apply, so a converged machine never
+    /// reads as converged: `cfgd plan` prints the same block forever and the
+    /// only thing making `cfgd apply` a no-op is the manager binary's own
+    /// idempotency. Pass the context the command already built for its profile
+    /// packages — a second one would re-enumerate every manager.
+    #[must_use]
+    pub fn diffing_installed(mut self, cx: &'a crate::providers::PackageContext<'a>) -> Self {
+        self.installed = Some(cx);
+        self
     }
 
     /// Withhold the env surface from the post-phase regeneration when `yes`.
@@ -183,6 +209,7 @@ impl<'a> Reconciler<'a> {
             home: home.into(),
             withhold_env_surface: false,
             secrets: crate::providers::SecretCache::new(),
+            installed: None,
         }
     }
 }

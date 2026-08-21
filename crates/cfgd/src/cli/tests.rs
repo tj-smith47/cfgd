@@ -15621,6 +15621,12 @@ spec:
 // -----------------------------------------------------------------------
 // cmd_plan with --module filter (module-only mode)
 // Exercises: module-only path, empty_resolved_profile, module resolution
+//
+// The fixtures below name `cfgd-absent-*` packages on purpose: a module's
+// declared packages are diffed against what their manager reports installed,
+// so a fixture naming a real package (`jq`, `fd`) asserts about whatever the
+// runner happens to carry rather than about the code. An absent name is
+// planned on every host.
 // -----------------------------------------------------------------------
 
 #[test]
@@ -15635,8 +15641,8 @@ metadata:
   name: standalone
 spec:
   packages:
-    - name: jq
-    - name: yq
+    - name: cfgd-absent-alpha
+    - name: cfgd-absent-beta
 "#;
     let h = CliTestHarness::builder()
         .module("standalone", module_yaml)
@@ -15681,7 +15687,7 @@ metadata:
   name: base
 spec:
   packages:
-    - name: jq
+    - name: cfgd-absent-alpha
 "#;
     let a_yaml = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
@@ -15691,7 +15697,7 @@ spec:
   depends:
     - base
   packages:
-    - name: fd
+    - name: cfgd-absent-gamma
 "#;
     let b_yaml = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
@@ -15699,7 +15705,7 @@ metadata:
   name: b
 spec:
   packages:
-    - name: rg
+    - name: cfgd-absent-delta
 "#;
     let h = CliTestHarness::builder()
         .module("base", base_yaml)
@@ -15816,7 +15822,7 @@ metadata:
   name: standalone
 spec:
   packages:
-    - name: jq
+    - name: cfgd-absent-alpha
 "#;
     let plain = CliTestHarness::builder()
         .module("standalone", module_yaml)
@@ -15894,7 +15900,7 @@ metadata:
   name: standalone
 spec:
   packages:
-    - name: jq
+    - name: cfgd-absent-alpha
 "#;
     let h = CliTestHarness::builder()
         .module("standalone", module_yaml)

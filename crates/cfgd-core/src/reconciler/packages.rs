@@ -559,9 +559,10 @@ impl<'x> PackageExec<'x> {
         // unchanged rather than a re-run. Without guards the script runs
         // every apply (changed=true), which is the author's responsibility.
         let mut script_changed = false;
-        // A manager-backed install always counts as changed (the package
-        // managers own their own idempotency at the package level, but the
-        // action having reached the install call means work was attempted).
+        // A manager-backed install always counts as changed: the planner
+        // already dropped every entry the manager reports installed
+        // (`Reconciler::diffing_installed`), so an action that survived to here
+        // names packages the machine does not have.
         let mut manager_changed = false;
 
         if let Some(first) = pkgs.first() {

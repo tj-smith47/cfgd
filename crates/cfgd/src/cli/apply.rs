@@ -392,7 +392,8 @@ pub fn run_apply(
     )?;
     let exclusions = reconciler::DecisionExclusions::from_withheld(&withheld);
     let reconciler = Reconciler::new(&registry, state)
-        .withholding_env_surface(exclusions.withholds_env_surface());
+        .withholding_env_surface(exclusions.withholds_env_surface())
+        .diffing_installed(&pkg_cx);
     let mut plan = printer.narrate("Planning", |sp| {
         reconciler.plan_observed(
             &effective_resolved,

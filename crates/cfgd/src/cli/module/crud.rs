@@ -276,7 +276,9 @@ pub fn cmd_module_create(
             merged: config::MergedProfile::default(),
         };
 
-        let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
+        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
+        let reconciler =
+            cfgd_core::reconciler::Reconciler::new(&registry, &store).diffing_installed(&pkg_cx);
         let plan = reconciler.plan(
             &resolved,
             Vec::new(),
