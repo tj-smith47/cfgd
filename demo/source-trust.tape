@@ -85,20 +85,21 @@ Enter
 Sleep 500ms
 Show
 
-# Beat 1: the demand. `cfgd source show team` renders no subscription/policy
-# field for requireSignedCommits (verified live — SourceShowOutput carries
-# no such field), so the honest, short beat is the written YAML itself:
-# the sources block of cfgd.yaml, sliced between its own `sources:` and
-# `theme:` keys so the demand sits alone on screen.
-Type "awk '/^  sources:/{p=1} /^  theme:/{p=0} p' ~/.config/cfgd/cfgd.yaml"
+# Beat 1: the demand, from the far side. HEAD is still unsigned at this
+# point in the recording, so `cfgd source show team` cannot even load the
+# manifest to render a policy — verification runs before that, and refuses.
+# The refusal line names the demand on its own: "source requires signed
+# commits". The successful policy render (Require Signed Commits: true) is
+# beat 3b, once the fix lands and the same manifest actually resolves.
+Type "cfgd source show team"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 500ms
+Sleep 2s
 
 # Beat 2: the demo's core. `cfgd sync` really fetches the fixture, really
 # runs `git log --format=%G?` against its HEAD, and really refuses — the
 # unsigned-HEAD message below is cfgd's own, unedited. Held for 3s (longer
-# than every other beat's 500ms) because the refusal line is the whole
+# than every other beat's 2s) because the refusal line is the whole
 # claim and must be legible on its own before the screen clears for the fix.
 Type "cfgd sync"
 Enter
@@ -124,7 +125,16 @@ Show
 Type "cfgd sync"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 500ms
+Sleep 2s
+
+# Beat 3b: the render beat 1 couldn't reach. Same command, now that the
+# manifest verifies — `source show` resolves the subscription policy
+# directly, including `Require Signed Commits: true`, the field QP13 added
+# and the reason this tape stopped slicing the written YAML with awk.
+Type "cfgd source show team"
+Enter
+Wait@10s /cfgd\$$/
+Sleep 2s
 
 # Beat 4: the payoff. `cfgd source list` is the concise, honest render of a
 # healthy subscription — `cfgd status` also proves it but buries the source
@@ -133,7 +143,7 @@ Sleep 500ms
 Type "cfgd source list"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 500ms
+Sleep 2s
 
 # Closing hold — breathing room before the loop snaps back to the opening
 # frame, matching drift.tape/author.tape/backup.tape's closing beat.
