@@ -16,6 +16,9 @@ use super::types::{
     ScriptAction, ScriptPhase, SystemAction,
 };
 
+/// Actions tagged with the phase each is routed to.
+pub(super) type RoutedActions = Vec<(PhaseName, Action)>;
+
 /// The per-manager sort key `plan_modules` orders a module's package batches
 /// by: (availability class, family, source-registering managers first within
 /// the family, name), with the registry's resolved manager carried alongside
@@ -144,7 +147,8 @@ impl<'a> super::Reconciler<'a> {
         // managers first, then bootstrappable managers, so build deps are
         // installed before packages that need them.
         observe(PhaseName::Modules);
-        let mut module_routed = self.plan_modules(&module_actions, context);
+        let (mut module_routed, env_gated_hooks) =
+            self.plan_modules(&module_actions, resolved.profile_name(), context);
 
         // Cross-scope package dedup: a (manager, resolved_name) declared in both a
         // module and the profile (or in two modules) installs once. Module installs
@@ -192,6 +196,16 @@ impl<'a> super::Reconciler<'a> {
             &path_dirs,
             &super::env::recorded_managed_env_files(self.state),
         );
+
+        // The env-gated hooks deferred by `plan_modules`: an env action
+        // anywhere means the surface those modules contribute to is being
+        // rewritten, so their hooks bracket it; a converged surface drops
+        // them, which is what lets an env-declaring module go quiet. Safe to
+        // fold in this late — `dedup_module_packages` and `plan_managers`
+        // above read only `InstallPackages` actions, and hooks are none.
+        if !env_actions.is_empty() {
+            module_routed.extend(env_gated_hooks);
+        }
 
         let package_actions = profile_packages
             .into_iter()
@@ -520,12 +534,20 @@ impl<'a> super::Reconciler<'a> {
         (pre_actions, post_actions)
     }
 
+    /// Returns the module-routed actions plus the lifecycle hooks whose "does
+    /// this module have work" question only the env plan can answer: a module
+    /// whose packages and files all converged but which declares env/aliases
+    /// has work exactly when the env surface does, and that surface is planned
+    /// later, as a unit, by `plan_env`. The caller folds the second Vec into
+    /// the first when any env action was planned, and drops it otherwise.
     pub(super) fn plan_modules(
         &self,
         modules: &[ResolvedModule],
+        profile_name: &str,
         context: ReconcileContext,
-    ) -> Vec<(PhaseName, Action)> {
+    ) -> (RoutedActions, RoutedActions) {
         let mut actions = Vec::new();
+        let mut env_gated_hooks = Vec::new();
 
         for module in modules {
             // Platform-gated module: surface a single visible Skip and emit no
@@ -760,34 +782,47 @@ impl<'a> super::Reconciler<'a> {
             // rule the render states as "nothing to do". A module declaring
             // NO work surfaces at all keeps its scripts: they are the whole of
             // its content, and there is nothing for it to converge against.
+            //
+            // Declared env/aliases are a work surface too, but one this
+            // planner cannot diff: the env surface is generated as a unit by
+            // `plan_env`, later. A module whose only undecided surface is env
+            // routes its hooks through `env_gated_hooks` — kept when any env
+            // action is planned (the surface the module contributes to is
+            // being rewritten), dropped when the surface converged. The unit
+            // granularity fails OPEN: an env change owned by another layer
+            // still revives these hooks, never the reverse.
             let declares_work = !module.packages.is_empty() || !module.files.is_empty();
-            let runs_hooks = work > 0 || !declares_work;
-            if runs_hooks {
-                for script in pre_scripts {
-                    actions.push(routed(
-                        module,
-                        ModuleActionKind::RunScript {
-                            script: script.clone(),
-                            phase: pre_phase.clone(),
-                        },
-                    ));
-                }
+            let declares_env = !module.env.is_empty() || !module.aliases.is_empty();
+            let hooks_now = work > 0 || (!declares_work && !declares_env);
+            let hooks_env_gated = !hooks_now && declares_env;
+            let route_hooks = |scripts: &[crate::config::ScriptEntry], phase: &ScriptPhase| {
+                scripts
+                    .iter()
+                    .map(|script| {
+                        routed(
+                            module,
+                            ModuleActionKind::RunScript {
+                                script: script.clone(),
+                                phase: phase.clone(),
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            if hooks_now {
+                actions.extend(route_hooks(pre_scripts, &pre_phase));
+            } else if hooks_env_gated {
+                env_gated_hooks.extend(route_hooks(pre_scripts, &pre_phase));
             }
             actions.append(&mut body);
-            if runs_hooks {
-                for script in post_scripts {
-                    actions.push(routed(
-                        module,
-                        ModuleActionKind::RunScript {
-                            script: script.clone(),
-                            phase: post_phase.clone(),
-                        },
-                    ));
-                }
+            if hooks_now {
+                actions.extend(route_hooks(post_scripts, &post_phase));
+            } else if hooks_env_gated {
+                env_gated_hooks.extend(route_hooks(post_scripts, &post_phase));
             }
         }
 
-        actions
+        (actions, env_gated_hooks)
     }
 
     /// Drop the entries `mgr` already reports installed, leaving the ones a

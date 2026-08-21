@@ -6988,7 +6988,9 @@ fn plan_modules_reconcile_context_uses_pre_post_reconcile() {
     }];
 
     // Reconcile context should use pre/post reconcile scripts, not apply scripts
-    let actions = reconciler.plan_modules(&modules, ReconcileContext::Reconcile);
+    let actions = reconciler
+        .plan_modules(&modules, "test", ReconcileContext::Reconcile)
+        .0;
     assert_eq!(actions.len(), 2); // pre-reconcile + post-reconcile
 
     // First action should be pre-reconcile
@@ -10161,7 +10163,9 @@ fn plan_modules_encryption_always_with_symlink_skips() {
         platform_skip_reason: None,
     }];
 
-    let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
+    let actions = reconciler
+        .plan_modules(&modules, "test", ReconcileContext::Apply)
+        .0;
     // Should produce a Skip action because encryption=Always + symlink is incompatible
     assert_eq!(actions.len(), 1);
     match &actions[0].1 {
@@ -10215,7 +10219,9 @@ fn plan_modules_platform_skipped_emits_single_skip_and_no_other_actions() {
         platform_skip_reason: Some("platform not matched (requires: macos)".to_string()),
     }];
 
-    let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
+    let actions = reconciler
+        .plan_modules(&modules, "test", ReconcileContext::Apply)
+        .0;
     assert_eq!(actions.len(), 1, "expected exactly one action: {actions:?}");
     match &actions[0].1 {
         Action::Module(ma) => {
@@ -10277,7 +10283,9 @@ fn plan_modules_encryption_always_with_copy_proceeds() {
         platform_skip_reason: None,
     }];
 
-    let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
+    let actions = reconciler
+        .plan_modules(&modules, "test", ReconcileContext::Apply)
+        .0;
     // Should produce DeployFiles (encryption=Always + copy is OK, and file has sops marker)
     assert_eq!(actions.len(), 1);
     match &actions[0].1 {
@@ -10335,7 +10343,9 @@ fn plan_modules_encryption_check_err_skips_with_error_reason() {
         platform_skip_reason: None,
     }];
 
-    let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
+    let actions = reconciler
+        .plan_modules(&modules, "test", ReconcileContext::Apply)
+        .0;
     assert_eq!(actions.len(), 1);
     match &actions[0].1 {
         Action::Module(ma) => match &ma.kind {
@@ -10404,7 +10414,9 @@ fn plan_modules_encryption_check_err_breaks_after_first_file() {
         platform_skip_reason: None,
     }];
 
-    let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
+    let actions = reconciler
+        .plan_modules(&modules, "test", ReconcileContext::Apply)
+        .0;
     // After the failing encryption check, planner does NOT emit DeployFiles —
     // single Skip is the only module action emitted.
     let kinds: Vec<&ModuleActionKind> = actions
@@ -10470,7 +10482,9 @@ fn plan_modules_encryption_file_not_encrypted_skips() {
         platform_skip_reason: None,
     }];
 
-    let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
+    let actions = reconciler
+        .plan_modules(&modules, "test", ReconcileContext::Apply)
+        .0;
     // Should skip because file requires encryption but isn't encrypted
     assert_eq!(actions.len(), 1);
     match &actions[0].1 {
@@ -15829,7 +15843,9 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
         platform_skip_reason: None,
     };
 
-    let actions = reconciler.plan_modules(&[module], ReconcileContext::Apply);
+    let actions = reconciler
+        .plan_modules(&[module], "test", ReconcileContext::Apply)
+        .0;
     // Order in actions reflects the sorted manager order: apt (0), brew (1), unknown (2).
     let install_managers: Vec<String> = actions
         .iter()
@@ -22668,8 +22684,29 @@ fn hooked_file_module(name: &str, files: Vec<ResolvedFile>) -> ResolvedModule {
     module
 }
 
-fn plan_modules_only(modules: Vec<ResolvedModule>) -> Plan {
+/// Plan the modules against a state whose manifest already OWNS the seeded
+/// `(module, target)` rows — the precondition for eliding a converged file.
+/// With no rows the run behaves like a first deploy and elides nothing.
+fn plan_modules_recorded(modules: Vec<ResolvedModule>, seeded: &[(&str, &Path)]) -> Plan {
     let state = test_state();
+    if !seeded.is_empty() {
+        // `last_applied` is a foreign key into `applies`, so the seeded rows
+        // hang off one recorded run the way real deploys do.
+        let apply_id = state
+            .record_apply("test", "hash", ApplyStatus::Success, None)
+            .unwrap();
+        for (module, target) in seeded {
+            state
+                .upsert_module_file(
+                    module,
+                    &crate::to_posix_fs_key(target),
+                    "",
+                    "Copy",
+                    apply_id,
+                )
+                .unwrap();
+        }
+    }
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
     reconciler
@@ -22681,6 +22718,10 @@ fn plan_modules_only(modules: Vec<ResolvedModule>) -> Plan {
             ReconcileContext::Apply,
         )
         .unwrap()
+}
+
+fn plan_modules_only(modules: Vec<ResolvedModule>) -> Plan {
+    plan_modules_recorded(modules, &[])
 }
 
 #[test]
@@ -22966,5 +23007,107 @@ fn a_profile_tap_installs_before_a_modules_formula_across_the_tier_barrier() {
         log.first(),
         Some(&vec!["acme/tools".to_string()]),
         "the tap's repositories exist before any formula resolves from them, got {log:?}"
+    );
+}
+
+#[test]
+fn an_env_declaring_module_with_converged_files_still_runs_hooks() {
+    // The module's files converged, but it also declares env — a work surface
+    // planned as a unit, later, by `plan_env`. The hooks defer to that answer
+    // instead of failing closed: the env surface has work here (nothing is
+    // deployed under this home), so the hooks run.
+    let dir = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(dir.path());
+    let src = dir.path().join("src");
+    let tgt = dir.path().join("tgt");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&tgt).unwrap();
+    std::fs::write(src.join("rc"), "settled").unwrap();
+    std::fs::write(tgt.join("rc"), "settled").unwrap();
+
+    let mut module = hooked_file_module(
+        "shellrc",
+        vec![deployable_file(&src.join("rc"), &tgt.join("rc"))],
+    );
+    module.env.push(crate::config::EnvVar {
+        name: "FOO".to_string(),
+        value: "bar".to_string(),
+    });
+
+    let plan = plan_modules_recorded(vec![module], &[("shellrc", &tgt.join("rc"))]);
+
+    assert!(
+        !plan.phases.iter().any(|p| p.name == PhaseName::Files),
+        "the converged file itself stays elided, got:\n{:?}",
+        all_plan_items(&plan)
+    );
+    for phase in [PhaseName::PreScripts, PhaseName::PostScripts] {
+        assert!(
+            plan.phases.iter().any(|p| p.name == phase && !p.is_empty()),
+            "the env surface has work, so the module's {phase:?} hooks bracket it, got:\n{:?}",
+            all_plan_items(&plan)
+        );
+    }
+}
+
+#[test]
+fn a_converged_env_declaring_modules_hooks_are_deferred_not_dropped() {
+    // `plan_modules` cannot answer the env question itself: the hooks land in
+    // the gated vec for `plan_observed` to keep when the env plan has work
+    // and drop when the surface converged — never silently discarded here.
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let tgt = dir.path().join("tgt");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&tgt).unwrap();
+    std::fs::write(src.join("rc"), "settled").unwrap();
+    std::fs::write(tgt.join("rc"), "settled").unwrap();
+
+    let state = test_state();
+    let apply_id = state
+        .record_apply("test", "hash", ApplyStatus::Success, None)
+        .unwrap();
+    state
+        .upsert_module_file(
+            "shellrc",
+            &crate::to_posix_fs_key(tgt.join("rc")),
+            "",
+            "Copy",
+            apply_id,
+        )
+        .unwrap();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let mut module = hooked_file_module(
+        "shellrc",
+        vec![deployable_file(&src.join("rc"), &tgt.join("rc"))],
+    );
+    module.env.push(crate::config::EnvVar {
+        name: "FOO".to_string(),
+        value: "bar".to_string(),
+    });
+    let (actions, gated) = reconciler.plan_modules(
+        std::slice::from_ref(&module),
+        "test",
+        ReconcileContext::Apply,
+    );
+    assert!(
+        actions.is_empty(),
+        "nothing survives elision, got: {actions:?}"
+    );
+    assert_eq!(
+        gated.len(),
+        2,
+        "both hooks are deferred to the env answer, got: {gated:?}"
+    );
+
+    // The same module with no env declared is simply converged: no hooks
+    // anywhere.
+    module.env.clear();
+    let (actions, gated) = reconciler.plan_modules(&[module], "test", ReconcileContext::Apply);
+    assert!(
+        actions.is_empty() && gated.is_empty(),
+        "a fully converged module defers nothing, got: {actions:?} / {gated:?}"
     );
 }
