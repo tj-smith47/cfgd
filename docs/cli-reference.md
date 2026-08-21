@@ -1261,6 +1261,29 @@ modules the source delivers (its manifest `provides.modules` allow-list). The
 delivered modules appear under a `Modules` section in human output and as a
 `modules` array in the structured (`-o json`/`-o yaml`) payload.
 
+A `Policy` section shows what is actually enforced on the source, so an
+operator can audit it without opening the manifest YAML — the manifest's
+`policy.constraints` combined with this machine's own `subscription`
+overrides:
+
+```
+Policy
+  Require Signed Commits  true
+  Scripts Allowed         false
+  Secrets Read Allowed    false
+  System Changes Allowed  false
+  Allowed Target Paths    ~/.config/**, ~/.bashrc
+```
+
+`Require Signed Commits` is the OR of the manifest's `constraints.requireSignedCommits`
+and this machine's `subscription.requireSignedCommits` — either side asking is enough.
+`Scripts Allowed` is this machine's `subscription.allowScripts` OR the manifest not
+constraining scripts at all (`constraints.noScripts: false`). The rest —
+`Secrets Read Allowed`, `System Changes Allowed`, `Allowed Target Paths` — read straight
+from the manifest's own constraints. The section (and its `policy` object under
+`-o json`/`-o yaml`) is omitted when the manifest could not be loaded, since the
+constraints it would combine with are unknown.
+
 ### `cfgd source remove <name>`
 
 Remove a subscription. The source's cached clone (under

@@ -22,7 +22,9 @@
 use std::path::{Path, PathBuf};
 
 use cfgd::cli::error::render_cli_error;
-use cfgd::cli::output_types::{SourceResourceEntry, SourceShowOutput, SourceStateInfo};
+use cfgd::cli::output_types::{
+    SourcePolicyOutput, SourceResourceEntry, SourceShowOutput, SourceStateInfo,
+};
 use cfgd::cli::source::show::{build_source_not_found_error, build_source_show_doc};
 use cfgd_core::config::{
     AptSpec, BrewSpec, CargoSpec, ConfigSourceDocument, ConfigSourceMetadata, ConfigSourcePolicy,
@@ -68,6 +70,13 @@ fn happy_output() -> SourceShowOutput {
             },
         ],
         modules: vec!["dev-tools".into(), "shell".into()],
+        policy: Some(SourcePolicyOutput {
+            require_signed_commits: true,
+            scripts_allowed: false,
+            secrets_read_allowed: false,
+            system_changes_allowed: false,
+            allowed_target_paths: vec!["~/.config/**".into(), "~/.bashrc".into()],
+        }),
     }
 }
 
@@ -136,6 +145,7 @@ fn empty_output() -> SourceShowOutput {
         state: None,
         managed_resources: Vec::new(),
         modules: Vec::new(),
+        policy: None,
     }
 }
 
@@ -260,6 +270,7 @@ fn source_show_state_with_locked_ref_and_commit() {
         }),
         managed_resources: Vec::new(),
         modules: Vec::new(),
+        policy: None,
     };
 
     let (printer, cap) = Printer::for_test_doc();
@@ -340,6 +351,7 @@ fn source_show_locked_policy_section_renders() {
         state: None,
         managed_resources: Vec::new(),
         modules: Vec::new(),
+        policy: None,
     };
     let manifest = manifest_with_locked_policy();
 
@@ -435,6 +447,7 @@ fn source_show_all_package_manager_types_render() {
         state: None,
         managed_resources: Vec::new(),
         modules: Vec::new(),
+        policy: None,
     };
     let manifest = manifest_with_all_package_managers();
 

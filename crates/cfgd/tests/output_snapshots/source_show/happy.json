@@ -22,6 +22,16 @@
   ],
   "name": "team-config",
   "pinVersion": "v1.2.3",
+  "policy": {
+    "allowedTargetPaths": [
+      "~/.config/**",
+      "~/.bashrc"
+    ],
+    "requireSignedCommits": true,
+    "scriptsAllowed": false,
+    "secretsReadAllowed": false,
+    "systemChangesAllowed": false
+  },
   "priority": 100,
   "profile": "team",
   "state": {

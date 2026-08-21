@@ -1,6 +1,7 @@
 use super::*;
+use crate::cli::output_types::SourcePolicyOutput;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::config::{ConfigSourceDocument, PolicyItems};
+use cfgd_core::config::{ConfigSourceDocument, PolicyItems, SourceConstraints, SourceSpec};
 use cfgd_core::output::{Doc, Printer, Role, doc::SectionBuilder, renderer::Table};
 
 const SHORT_COMMIT_LEN: usize = 12;
@@ -97,6 +98,35 @@ pub fn build_source_show_doc(
         s
     });
 
+    // What this source enforces, combining the manifest's constraints with
+    // this subscriber's own overrides — an operator auditing a source reads
+    // this instead of opening its manifest YAML.
+    if let Some(ref policy) = output.policy {
+        doc = doc.section("Policy", |s| {
+            let mut s = s
+                .kv(
+                    "Require Signed Commits",
+                    policy.require_signed_commits.to_string(),
+                )
+                .kv("Scripts Allowed", policy.scripts_allowed.to_string())
+                .kv(
+                    "Secrets Read Allowed",
+                    policy.secrets_read_allowed.to_string(),
+                )
+                .kv(
+                    "System Changes Allowed",
+                    policy.system_changes_allowed.to_string(),
+                );
+            if !policy.allowed_target_paths.is_empty() {
+                s = s.kv(
+                    "Allowed Target Paths",
+                    policy.allowed_target_paths.join(", "),
+                );
+            }
+            s
+        });
+    }
+
     if let Some(m) = manifest {
         doc = doc.section("Manifest", |s| {
             let mut s = s.kv("Name", &m.metadata.name);
@@ -148,6 +178,24 @@ pub fn build_source_show_doc(
     }
 
     doc.with_data(output)
+}
+
+/// What `source` enforces, combining the subscriber's own overrides with the
+/// manifest's `policy.constraints` — the derivation `cmd_source_show` renders
+/// and serializes so a `source show` reader never has to open the manifest
+/// YAML to answer "what is enforced here".
+fn effective_source_policy(
+    source_spec: &SourceSpec,
+    constraints: &SourceConstraints,
+) -> SourcePolicyOutput {
+    SourcePolicyOutput {
+        require_signed_commits: source_spec
+            .requires_signed_commits(constraints.require_signed_commits),
+        scripts_allowed: source_spec.subscription.allow_scripts || !constraints.no_scripts,
+        secrets_read_allowed: !constraints.no_secrets_read,
+        system_changes_allowed: constraints.allow_system_changes,
+        allowed_target_paths: constraints.allowed_target_paths.clone(),
+    }
 }
 
 fn append_policy_items(mut s: SectionBuilder, items: &PolicyItems) -> SectionBuilder {
@@ -268,6 +316,7 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
             })
             .collect(),
         modules: Vec::new(),
+        policy: None,
     };
 
     let cache_dir = source_cache_dir(cli)?;
@@ -304,8 +353,93 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
     // above. Empty when the manifest could not be loaded.
     if let Some(m) = manifest {
         output.modules = m.spec.provides.modules.clone();
+        output.policy = Some(effective_source_policy(
+            source_spec,
+            &m.spec.policy.constraints,
+        ));
     }
 
     printer.emit(build_source_show_doc(&output, manifest));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source_spec(allow_scripts: bool, require_signed_commits: bool) -> SourceSpec {
+        let mut spec: SourceSpec = serde_yaml::from_str(
+            "name: acme\norigin:\n  type: Git\n  url: https://example.com/acme.git\n",
+        )
+        .unwrap();
+        spec.subscription.allow_scripts = allow_scripts;
+        spec.subscription.require_signed_commits = require_signed_commits;
+        spec
+    }
+
+    #[test]
+    fn require_signed_commits_is_the_or_of_subscriber_and_manifest() {
+        let manifest_only = SourceConstraints {
+            require_signed_commits: true,
+            ..SourceConstraints::default()
+        };
+        assert!(
+            effective_source_policy(&source_spec(false, false), &manifest_only)
+                .require_signed_commits,
+            "the manifest alone must be enough"
+        );
+
+        assert!(
+            effective_source_policy(&source_spec(false, true), &SourceConstraints::default())
+                .require_signed_commits,
+            "the subscriber alone must be enough"
+        );
+
+        assert!(
+            !effective_source_policy(&source_spec(false, false), &SourceConstraints::default())
+                .require_signed_commits,
+            "neither side asking must stay false"
+        );
+    }
+
+    #[test]
+    fn scripts_allowed_is_the_subscribers_opt_in_or_no_constraint_at_all() {
+        assert!(
+            !effective_source_policy(&source_spec(false, false), &SourceConstraints::default())
+                .scripts_allowed,
+            "the default constraint (no_scripts: true) with no opt-in must disallow"
+        );
+
+        assert!(
+            effective_source_policy(&source_spec(true, false), &SourceConstraints::default())
+                .scripts_allowed,
+            "the subscriber's own opt-in must override the constraint"
+        );
+
+        let unconstrained = SourceConstraints {
+            no_scripts: false,
+            ..SourceConstraints::default()
+        };
+        assert!(
+            effective_source_policy(&source_spec(false, false), &unconstrained).scripts_allowed,
+            "a manifest that does not constrain scripts needs no opt-in"
+        );
+    }
+
+    #[test]
+    fn secrets_system_and_target_paths_pass_through_the_manifests_constraints() {
+        let constraints = SourceConstraints {
+            no_secrets_read: false,
+            allow_system_changes: true,
+            allowed_target_paths: vec!["~/.config/**".to_string()],
+            ..SourceConstraints::default()
+        };
+        let policy = effective_source_policy(&source_spec(false, false), &constraints);
+        assert!(policy.secrets_read_allowed);
+        assert!(policy.system_changes_allowed);
+        assert_eq!(
+            policy.allowed_target_paths,
+            vec!["~/.config/**".to_string()]
+        );
+    }
 }

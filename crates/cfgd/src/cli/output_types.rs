@@ -764,6 +764,32 @@ pub struct SourceShowOutput {
     /// no modules or its manifest could not be loaded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modules: Vec<String>,
+    /// What this source enforces, combining the manifest's own
+    /// `policy.constraints` with this subscriber's overrides
+    /// (`subscription.allowScripts`, `subscription.requireSignedCommits`).
+    /// `None` when the manifest could not be loaded, since the constraints it
+    /// would combine with are unknown.
+    pub policy: Option<SourcePolicyOutput>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourcePolicyOutput {
+    /// Whether this source's HEAD commit must carry a valid signature — the
+    /// OR of the subscriber's own `subscription.requireSignedCommits` and the
+    /// manifest's `policy.constraints.requireSignedCommits`.
+    pub require_signed_commits: bool,
+    /// Whether this source's lifecycle scripts run — the subscriber's
+    /// `allowScripts` opt-in OR the manifest not constraining scripts at all.
+    pub scripts_allowed: bool,
+    /// Whether this source may deliver `${secret:…}` references.
+    pub secrets_read_allowed: bool,
+    /// Whether this source may deliver `system:` configurator settings.
+    pub system_changes_allowed: bool,
+    /// Glob patterns restricting which file targets this source may deploy
+    /// to. Empty means no restriction.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_target_paths: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -1760,6 +1786,13 @@ mod tests {
                 resource_id: "shell".to_string(),
             }],
             modules: vec!["dev-tools".to_string()],
+            policy: Some(SourcePolicyOutput {
+                require_signed_commits: true,
+                scripts_allowed: false,
+                secrets_read_allowed: false,
+                system_changes_allowed: false,
+                allowed_target_paths: vec!["~/.config/**".to_string()],
+            }),
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["modules"], json!(["dev-tools"]));
@@ -1774,6 +1807,39 @@ mod tests {
         assert_eq!(json["pinVersion"], json!("v1.2.3"));
         assert_eq!(json["state"]["status"], json!("fresh"));
         assert_eq!(json["managedResources"][0]["resourceType"], json!("Module"));
+        assert_eq!(json["policy"]["requireSignedCommits"], json!(true));
+        assert_eq!(json["policy"]["scriptsAllowed"], json!(false));
+        assert_eq!(json["policy"]["secretsReadAllowed"], json!(false));
+        assert_eq!(json["policy"]["systemChangesAllowed"], json!(false));
+        assert_eq!(
+            json["policy"]["allowedTargetPaths"],
+            json!(["~/.config/**"])
+        );
+    }
+
+    #[test]
+    fn source_show_output_omits_policy_when_manifest_unavailable() {
+        let v = SourceShowOutput {
+            name: "infra".to_string(),
+            url: "https://example.com/r.git".to_string(),
+            branch: "main".to_string(),
+            priority: 50,
+            accept_recommended: false,
+            profile: None,
+            sync_interval: "5m".to_string(),
+            auto_apply: false,
+            pin_version: None,
+            state: None,
+            managed_resources: Vec::new(),
+            modules: Vec::new(),
+            policy: None,
+        };
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(
+            json["policy"],
+            Value::Null,
+            "no manifest means no effective policy to report"
+        );
     }
 
     #[test]

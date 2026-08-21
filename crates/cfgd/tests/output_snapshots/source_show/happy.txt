@@ -25,6 +25,13 @@ Modules
   ⊙ dev-tools
   ⊙ shell
 
+Policy
+  Require Signed Commits  true
+  Scripts Allowed         false
+  Secrets Read Allowed    false
+  System Changes Allowed  false
+  Allowed Target Paths    ~/.config/**, ~/.bashrc
+
 Manifest
   Name         team-config
   Description  Team-wide baseline
