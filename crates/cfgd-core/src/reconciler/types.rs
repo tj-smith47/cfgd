@@ -827,7 +827,9 @@ impl Phase {
                         // the survivor count renders as `(k of N files)` — a
                         // shape that reads as the other N−k having CONVERGED
                         // when they were pruned by a pending decision.
-                        *declared_total -= batched - files.len();
+                        // Saturating: a `declared_total` that somehow undercounts
+                        // its own batch must clamp at zero, not unwind mid-filter.
+                        *declared_total = declared_total.saturating_sub(batched - files.len());
                         batch_survives(batched, files.len())
                     }
                     _ => true,
