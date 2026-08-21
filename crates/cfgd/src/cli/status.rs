@@ -511,6 +511,7 @@ pub(super) fn cmd_status(
             &registry,
             &resolved_modules,
             &cfgd_installed,
+            state,
             &pkg_cx,
         )?;
         // The payload's `lastScanAt` must describe the scan that PRODUCED it,

@@ -36,7 +36,7 @@ use super::verify::merge_module_env_aliases;
 ///
 /// Filtering to the still-named managers lets a manager dropped from the config
 /// age out of the generated file instead of lingering forever.
-pub(super) fn recorded_manager_path_dirs(
+pub fn recorded_manager_path_dirs(
     state: &StateStore,
     profile: &MergedProfile,
     modules: &[ResolvedModule],

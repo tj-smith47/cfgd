@@ -11276,8 +11276,11 @@ fn env_verify_results_detects_hand_edited_alias_as_drift_without_flagging_untouc
         .find(|r| r.resource_type == "alias" && r.resource_id == "ll")
         .expect("alias row present");
     assert!(!alias_row.matches);
+    // Opaque markers only: `expected`/`actual` must never carry the alias's
+    // real declared command, which flows unmodified into `drift_events` and
+    // the device gateway and can be sensitive.
     assert_eq!(alias_row.actual, "missing or changed");
-    assert_eq!(alias_row.expected, r#"alias ll="ls -la""#);
+    assert_eq!(alias_row.expected, "current");
 
     // The env var's own line is untouched, so it must not be swept up in the
     // alias's drift — per-item attribution, not a whole-file verdict.
@@ -11319,6 +11322,92 @@ fn verify_env_persists_drift_for_a_hand_edited_alias() {
             .any(|d| d.resource_type == "alias" && d.resource_id == "ll"),
         "expected a persisted alias drift row, got {drift:?}"
     );
+}
+
+/// WARN regression: a persisted `drift_events` row for a per-item env/alias
+/// mismatch must never carry the declared value — only the opaque
+/// `current`/`missing or changed` markers. A declared value can be sensitive
+/// (a secret-shaped env var, a command embedding a token) and the row is
+/// read back by `cfgd status`/`cfgd diff` *and* shipped to the device
+/// gateway, so the real content has to be recomputed from config at render
+/// time (`env_item_declared_line`) rather than stored. Uses a
+/// deliberately secret-shaped env value and alias command so a regression
+/// that persists the raw line fails on the sensitive substring, not just on
+/// a generic marker string.
+#[test]
+#[serial_test::serial]
+fn verify_env_never_persists_the_declared_value_only_the_opaque_marker() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+    let state = test_state();
+
+    let env = vec![EnvVar {
+        name: "API_TOKEN".to_string(),
+        value: "sk-super-secret-value".to_string(),
+    }];
+    let aliases = vec![ShellAlias {
+        name: "deploy".to_string(),
+        command: "curl -H 'Authorization: Bearer sk-super-secret-value' https://example.com"
+            .to_string(),
+    }];
+    // A `.cfgd.env` that exists but carries neither declared line — an
+    // absent file is left to the whole-file check instead (per
+    // `verify_env_items`'s doc comment), so the per-item rows below need a
+    // present-but-non-matching file to exercise the "missing or changed" arm.
+    std::fs::write(
+        tmp_home.path().join(".cfgd.env"),
+        "# managed by cfgd \u{2014} do not edit\n",
+    )
+    .unwrap();
+
+    let mut results = Vec::new();
+    super::verify::verify_env(
+        &env,
+        &aliases,
+        EnvScope::All,
+        &[],
+        &[],
+        &state,
+        &mut results,
+    );
+
+    let env_row = results
+        .iter()
+        .find(|r| r.resource_type == "env-var" && r.resource_id == "API_TOKEN")
+        .expect("env-var row present");
+    assert!(!env_row.matches);
+    assert_eq!(env_row.expected, "current");
+    assert_eq!(env_row.actual, "missing or changed");
+
+    let alias_row = results
+        .iter()
+        .find(|r| r.resource_type == "alias" && r.resource_id == "deploy")
+        .expect("alias row present");
+    assert!(!alias_row.matches);
+    assert_eq!(alias_row.expected, "current");
+    assert_eq!(alias_row.actual, "missing or changed");
+
+    let drift = state.unresolved_drift().unwrap();
+    let persisted_env = drift
+        .iter()
+        .find(|d| d.resource_type == "env-var" && d.resource_id == "API_TOKEN")
+        .expect("persisted env-var drift row");
+    let persisted_alias = drift
+        .iter()
+        .find(|d| d.resource_type == "alias" && d.resource_id == "deploy")
+        .expect("persisted alias drift row");
+
+    for row in [persisted_env, persisted_alias] {
+        let expected = row.expected.as_deref().unwrap_or_default();
+        let actual = row.actual.as_deref().unwrap_or_default();
+        assert!(
+            !expected.contains("sk-super-secret-value")
+                && !actual.contains("sk-super-secret-value"),
+            "declared value must never reach drift_events: {row:?}"
+        );
+        assert_eq!(expected, "current");
+        assert_eq!(actual, "missing or changed");
+    }
 }
 
 // --- merge_module_env_aliases tests ---

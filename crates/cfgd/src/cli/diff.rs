@@ -1,7 +1,6 @@
 use super::*;
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::config::EnvScope;
 use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, section_guard::SectionGuard};
 use cfgd_core::reconciler::{MANAGERS_GROUP, ManagerAction, Owner, PhaseName};
 
@@ -245,28 +244,57 @@ pub fn cmd_diff(
         let mut drift = false;
         {
             let env_group = env_sec.section_owner_or_collapse(&owner_label(&profile_owner));
+            // Must match the recorded bootstrap PATH dirs `cfgd verify` passes: the
+            // whole-file check `env_verify_results` bundles in compares against a
+            // freshly generated file, and the file cfgd actually wrote carries the
+            // bootstrapped PATH export line as its first line. An empty path_dirs
+            // here reports permanent, unfixable drift on a machine that bootstrapped
+            // any manager.
+            let path_dirs = ctx
+                .state_opt()
+                .map(|state| {
+                    cfgd_core::reconciler::recorded_manager_path_dirs(
+                        state,
+                        &resolved.merged,
+                        &resolved_modules,
+                    )
+                })
+                .unwrap_or_default();
             for r in cfgd_core::reconciler::env_verify_results(
                 &resolved.merged.env,
                 &resolved.merged.aliases,
                 resolved.merged.env_scope,
                 &resolved_modules,
-                &[],
+                &path_dirs,
             )
             .into_iter()
             .filter(|r| !r.matches)
             {
                 drift = true;
+                // An env-var/alias row's `expected`/`actual` are opaque markers —
+                // the declared value never flows into a persisted or gateway-shipped
+                // drift record — so recompute the real line here, for this
+                // terminal/`-o json` display only.
+                let (expected, actual) = match cfgd_core::reconciler::env_item_declared_line(
+                    &r.resource_type,
+                    &r.resource_id,
+                    &resolved.merged.env,
+                    &resolved.merged.aliases,
+                ) {
+                    Some(line) => (line, r.actual.clone()),
+                    None => (r.expected.clone(), r.actual.clone()),
+                };
                 env_group
                     .status(
                         Role::Warn,
                         format!("{}: {}", r.resource_type, r.resource_id),
                     )
-                    .drift(&r.expected, &r.actual);
+                    .drift(&expected, &actual);
                 diff_payload.env.push(EnvDriftOutput {
                     kind: r.resource_type,
                     name: r.resource_id,
-                    expected: r.expected,
-                    actual: r.actual,
+                    expected,
+                    actual,
                 });
             }
         }
@@ -448,17 +476,51 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     let has_env_drift = {
         let env_sec = printer.section_phase(&cfgd_core::output::PhaseLabel::new("Env"));
         let mut drift = false;
-        for module in &resolved_modules {
-            let group = env_sec.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
-            for r in cfgd_core::reconciler::env_verify_results(
-                &[],
-                &[],
-                EnvScope::All,
-                std::slice::from_ref(module),
-                &[],
-            )
-            .into_iter()
-            .filter(|r| !r.matches)
+
+        // The managed env file and rc source line are the ACTIVE PROFILE's
+        // shared artifacts, not this module's own: the planner wrote them from
+        // the whole profile plus every module, so checking them against one
+        // module's fragment — and a hardcoded EnvScope::All — reports permanent
+        // stale drift on a fully converged machine. Resolve the same full
+        // desired state the non-`--module` path checks against, so `verify` /
+        // `diff` / `diff --module` all agree about one machine.
+        let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+        let full_desired = resolve_desired_state(
+            ctx,
+            cfg,
+            local_resolved,
+            &[],
+            false,
+            printer,
+            false,
+            composition::ConstraintMode::Report,
+        )?;
+        let full_resolved = &full_desired.resolved;
+        let path_dirs = cfgd_core::reconciler::recorded_manager_path_dirs(
+            state,
+            &full_resolved.merged,
+            &full_desired.modules,
+        );
+        let all_results: Vec<_> = cfgd_core::reconciler::env_verify_results(
+            &full_resolved.merged.env,
+            &full_resolved.merged.aliases,
+            full_resolved.merged.env_scope,
+            &full_desired.modules,
+            &path_dirs,
+        )
+        .into_iter()
+        .filter(|r| !r.matches)
+        .collect();
+
+        // The file/rc rows are the profile's shared artifacts, not any one
+        // module's — report them once, under the profile itself, whichever
+        // declared item made the file stale.
+        {
+            let group = env_sec
+                .section_owner_or_collapse(&owner_label(&Owner::profile(profile_name.to_string())));
+            for r in all_results
+                .iter()
+                .filter(|r| matches!(r.resource_type.as_str(), "env" | "env-rc"))
             {
                 drift = true;
                 group
@@ -468,13 +530,55 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                     )
                     .drift(&r.expected, &r.actual);
                 diff_payload.env.push(EnvDriftOutput {
-                    kind: r.resource_type,
-                    name: r.resource_id,
-                    expected: r.expected,
-                    actual: r.actual,
+                    kind: r.resource_type.clone(),
+                    name: r.resource_id.clone(),
+                    expected: r.expected.clone(),
+                    actual: r.actual.clone(),
                 });
             }
         }
+
+        // Per-item rows are attributed to whichever of this run's own resolved
+        // modules (the target plus its dependencies) declares them.
+        for module in &resolved_modules {
+            let owns: std::collections::HashSet<&str> = module
+                .env
+                .iter()
+                .map(|e| e.name.as_str())
+                .chain(module.aliases.iter().map(|a| a.name.as_str()))
+                .collect();
+            let group = env_sec.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
+            for r in all_results.iter().filter(|r| {
+                matches!(r.resource_type.as_str(), "env-var" | "alias")
+                    && owns.contains(r.resource_id.as_str())
+            }) {
+                drift = true;
+                // Opaque markers never carry the declared value — recompute the
+                // real line here, for this terminal/`-o json` display only.
+                let (expected, actual) = match cfgd_core::reconciler::env_item_declared_line(
+                    &r.resource_type,
+                    &r.resource_id,
+                    &full_resolved.merged.env,
+                    &full_resolved.merged.aliases,
+                ) {
+                    Some(line) => (line, r.actual.clone()),
+                    None => (r.expected.clone(), r.actual.clone()),
+                };
+                group
+                    .status(
+                        Role::Warn,
+                        format!("{}: {}", r.resource_type, r.resource_id),
+                    )
+                    .drift(&expected, &actual);
+                diff_payload.env.push(EnvDriftOutput {
+                    kind: r.resource_type.clone(),
+                    name: r.resource_id.clone(),
+                    expected,
+                    actual,
+                });
+            }
+        }
+
         if drift {
             env_sec.status_simple(Role::Warn, "Env drift detected");
         } else {
@@ -875,6 +979,152 @@ mod tests {
             !env.iter()
                 .any(|e| e["kind"] == "alias" && e["name"] == "ll"),
             "a matching alias must not appear in the env drift payload: {env:?}"
+        );
+    }
+
+    /// Blocker regression: `cmd_diff` must pass the SAME recorded bootstrap
+    /// PATH dirs `cfgd verify` persists, or the managed env file's whole-file
+    /// check compares against generated content missing the `export PATH=…`
+    /// line the file actually carries — permanent, unfixable "stale" drift on
+    /// a fully converged machine that bootstrapped any manager. A profile
+    /// declaring a `chocolatey` package plus a state store recording
+    /// `chocolatey`'s bootstrap PATH dir reproduces exactly that machine: an
+    /// `.cfgd.env` written byte-for-byte with the recorded PATH line must
+    /// report no `env` drift for that file. `chocolatey` is deliberately a
+    /// Windows-only manager — its `is_available()`/`can_bootstrap()` are
+    /// platform-gated false on this Linux test host, so package planning
+    /// never shells out to a real package manager; only the declared name
+    /// needs to reach `effective_desired_packages` for
+    /// `recorded_manager_path_dirs` to pick up its recorded dir.
+    #[test]
+    #[serial]
+    fn cmd_diff_reports_no_env_drift_when_bootstrap_path_dirs_are_recorded() {
+        use crate::cli::helpers::tests::make_cli;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Interactive\n  packages:\n    chocolatey:\n      - black\n",
+        )
+        .unwrap();
+
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        // Byte-for-byte what `generate_env_file_content(&[], &[], &["/opt/choco/bin"])`
+        // produces: header, then the bootstrapped PATH export line, no
+        // declared env vars or aliases.
+        std::fs::write(
+            tmp_home.path().join(".cfgd.env"),
+            "# managed by cfgd \u{2014} do not edit\nexport PATH=\"/opt/choco/bin:$PATH\"\n",
+        )
+        .unwrap();
+
+        let state_dir = tmp.path().join("state");
+        let mut cli = make_cli(config_path);
+        cli.state_dir = Some(state_dir.clone());
+        cli.cache_dir = Some(tmp.path().join("cache"));
+
+        // The same state a real `cfgd verify` (or an apply that bootstrapped
+        // chocolatey) would have recorded.
+        let state = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
+        state
+            .record_bootstrapped_path_dirs("chocolatey", &["/opt/choco/bin".to_string()])
+            .unwrap();
+        drop(state);
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_diff(&cli, &printer, None, false).unwrap();
+        drop(printer);
+
+        let json = cap.json().expect("diff emits a data payload");
+        let env = json["env"].as_array().expect("env array present");
+        let env_file_path = cfgd_core::to_posix_string(tmp_home.path().join(".cfgd.env"));
+        assert!(
+            !env.iter()
+                .any(|e| e["kind"] == "env" && e["name"] == env_file_path.as_str()),
+            "the managed env file must not report stale once diff passes the \
+             same recorded bootstrap PATH dirs verify does: {env:?}"
+        );
+    }
+
+    /// Blocker regression: `cfgd diff --module <name>` must check the shared
+    /// managed env file against the FULL desired state (profile plus every
+    /// module), not against the target module's own fragment. A profile
+    /// declaring `PAGER` directly plus a module declaring `EDITOR` reproduces
+    /// two declarations that only combine at the profile level: an
+    /// `.cfgd.env` written with BOTH lines is what a real `cfgd apply` would
+    /// leave behind, and diffing just the module in isolation must not read
+    /// the other declaration's absence as file-level drift.
+    #[test]
+    #[serial]
+    fn cmd_diff_module_does_not_report_the_shared_env_file_stale_against_its_own_fragment() {
+        use crate::cli::helpers::tests::make_cli;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Interactive\n  env:\n    - name: PAGER\n      value: less\n  modules:\n    - env-mod\n",
+        )
+        .unwrap();
+        let mod_dir = tmp.path().join("modules").join("env-mod");
+        std::fs::create_dir_all(mod_dir.join("files")).unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: env-mod\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n",
+        )
+        .unwrap();
+
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        // Byte-for-byte what `generate_env_file_content` produces from the
+        // FULL merged env — profile vars first, then each module's, per
+        // `merge_module_env_aliases` — so `PAGER` (profile) precedes
+        // `EDITOR` (module): exactly what a real apply of this profile would
+        // have written.
+        std::fs::write(
+            tmp_home.path().join(".cfgd.env"),
+            "# managed by cfgd \u{2014} do not edit\nexport PAGER=\"less\"\nexport EDITOR=\"vim\"\n",
+        )
+        .unwrap();
+
+        let mut cli = make_cli(config_path);
+        cli.state_dir = Some(tmp.path().join("state"));
+        cli.cache_dir = Some(tmp.path().join("cache"));
+        let (printer, cap) = Printer::for_test_doc();
+
+        cmd_diff(&cli, &printer, Some("env-mod"), false).unwrap();
+        drop(printer);
+
+        let json = cap.json().expect("diff emits a data payload");
+        let env = json["env"].as_array().expect("env array present");
+        let env_file_path = cfgd_core::to_posix_string(tmp_home.path().join(".cfgd.env"));
+        assert!(
+            !env.iter()
+                .any(|e| e["kind"] == "env" && e["name"] == env_file_path.as_str()),
+            "diffing one module must not report the shared env file stale \
+             against just that module's own declarations: {env:?}"
+        );
+        assert!(
+            !env.iter()
+                .any(|e| e["kind"] == "env-var" && e["name"] == "EDITOR"),
+            "the module's own EDITOR declaration matches the file and must \
+             not be reported as drift either: {env:?}"
         );
     }
 

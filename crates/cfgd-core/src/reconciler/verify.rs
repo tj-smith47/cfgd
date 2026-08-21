@@ -316,17 +316,27 @@ fn verify_env_items(
     let Ok(actual) = std::fs::read_to_string(path) else {
         return;
     };
+    let actual_lines: std::collections::HashSet<&str> = actual.lines().collect();
 
     for ev in env {
         let Some(line) = super::env_files::primary_env_var_line(ev, platform) else {
             continue;
         };
-        let matches = actual.contains(&line);
+        // Line-anchored, not a substring search: `actual.contains(&line)` would
+        // read a commented-out `# export EDITOR="nvim"` as present, since the
+        // declared line is a substring of the commented one.
+        let matches = actual_lines.contains(line.as_str());
         results.push(VerifyResult {
             resource_type: "env-var".to_string(),
             resource_id: ev.name.clone(),
             matches,
-            expected: line,
+            // Opaque markers, not the rendered line: the line is the user's own
+            // declared value (`export EDITOR="nvim"`), and this result flows
+            // unmodified into `drift_events` (`record_drift_or_warn`, below) and
+            // the device gateway. A display surface that wants the actual line
+            // recomputes it from the declared config at render time — see
+            // `env_item_declared_line`.
+            expected: "current".to_string(),
             actual: if matches {
                 "current".to_string()
             } else {
@@ -339,18 +349,45 @@ fn verify_env_items(
         let Some(line) = super::env_files::primary_alias_line(alias, platform) else {
             continue;
         };
-        let matches = actual.contains(&line);
+        let matches = actual_lines.contains(line.as_str());
         results.push(VerifyResult {
             resource_type: "alias".to_string(),
             resource_id: alias.name.clone(),
             matches,
-            expected: line,
+            expected: "current".to_string(),
             actual: if matches {
                 "current".to_string()
             } else {
                 "missing or changed".to_string()
             },
         });
+    }
+}
+
+/// The line a declared env var or alias renders as, for a DISPLAY surface that
+/// wants to show a drifted item's real value rather than the opaque
+/// `current`/`missing or changed` markers [`verify_env_items`] returns. Never
+/// called from a path that persists or ships its result: that is exactly the
+/// content the opaque markers exist to keep out of `drift_events` and the
+/// device gateway. `resource_type` is `"env-var"` or `"alias"`; any other kind
+/// (or an item no longer declared) answers `None`.
+pub fn env_item_declared_line(
+    resource_type: &str,
+    resource_id: &str,
+    env: &[crate::config::EnvVar],
+    aliases: &[crate::config::ShellAlias],
+) -> Option<String> {
+    let platform = EnvPlatform::current();
+    match resource_type {
+        "env-var" => env
+            .iter()
+            .find(|e| e.name == resource_id)
+            .and_then(|e| super::env_files::primary_env_var_line(e, platform)),
+        "alias" => aliases
+            .iter()
+            .find(|a| a.name == resource_id)
+            .and_then(|a| super::env_files::primary_alias_line(a, platform)),
+        _ => None,
     }
 }
 

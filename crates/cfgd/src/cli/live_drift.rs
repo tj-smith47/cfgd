@@ -129,6 +129,7 @@ pub(super) fn live_drift_results(
     registry: &ProviderRegistry,
     modules: &[ResolvedModule],
     cfgd_installed: &std::collections::HashSet<String>,
+    state: &cfgd_core::state::StateStore,
     cx: &cfgd_core::providers::PackageContext<'_>,
 ) -> anyhow::Result<Vec<VerifyResult>> {
     // One spinner across the whole scan, narrated per pass via `set_message`.
@@ -139,6 +140,7 @@ pub(super) fn live_drift_results(
             registry,
             modules,
             cfgd_installed,
+            state,
             cx,
             sp,
         )
@@ -152,6 +154,7 @@ fn live_drift_results_inner(
     registry: &ProviderRegistry,
     modules: &[ResolvedModule],
     cfgd_installed: &std::collections::HashSet<String>,
+    state: &cfgd_core::state::StateStore,
     cx: &cfgd_core::providers::PackageContext<'_>,
     sp: &mut cfgd_core::output::Spinner<'_>,
 ) -> anyhow::Result<Vec<VerifyResult>> {
@@ -235,17 +238,22 @@ fn live_drift_results_inner(
     // each declared alias and env var renders as, using the same
     // generator-and-compare check `verify` persists as drift. Read-only like
     // every other pass here — only the recording half in `reconciler::verify`
-    // writes to `drift_events`. `path_dirs` is left empty: the PATH export
-    // line it would additionally cover names no declared item of its own, so
-    // the per-alias/per-env-var attribution this checks does not depend on it.
+    // writes to `drift_events`. `path_dirs` must be the same recorded
+    // bootstrap directories `cfgd verify` passes: the whole-file check bundled
+    // into `env_verify_results` compares against a freshly generated file, and
+    // the file cfgd actually wrote carries the bootstrapped `PATH` export line
+    // as its first line — an empty `path_dirs` here would generate content
+    // that never matches a converged machine's file, permanently.
     sp.set_message("Scanning: env & aliases");
+    let path_dirs =
+        cfgd_core::reconciler::recorded_manager_path_dirs(state, &resolved.merged, modules);
     drift.extend(
         cfgd_core::reconciler::env_verify_results(
             &resolved.merged.env,
             &resolved.merged.aliases,
             resolved.merged.env_scope,
             modules,
-            &[],
+            &path_dirs,
         )
         .into_iter()
         .filter(|r| !r.matches),
@@ -517,6 +525,7 @@ mod tests {
             &registry,
             &[],
             &std::collections::HashSet::new(),
+            &state,
             &cx,
         )
         .unwrap();
@@ -544,6 +553,7 @@ mod tests {
             &registry,
             &[],
             &std::collections::HashSet::new(),
+            &state,
             &cx,
         )
         .unwrap();
@@ -597,6 +607,7 @@ mod tests {
             &registry,
             &[],
             &std::collections::HashSet::new(),
+            &state,
             &cx,
         )
         .unwrap();
@@ -807,6 +818,7 @@ mod tests {
             &registry,
             &modules,
             &std::collections::HashSet::new(),
+            &state,
             &cx,
         )
         .unwrap();
@@ -884,6 +896,7 @@ mod tests {
             &registry,
             &modules,
             &std::collections::HashSet::new(),
+            &state,
             &cx,
         )
         .unwrap();
@@ -922,6 +935,7 @@ mod tests {
             &registry,
             &modules,
             &std::collections::HashSet::new(),
+            &state,
             &cx,
         )
         .unwrap();
@@ -962,6 +976,7 @@ mod tests {
             &registry,
             &modules,
             &std::collections::HashSet::new(),
+            &state,
             &cx,
         )
         .unwrap();
@@ -1194,6 +1209,7 @@ mod tests {
             &registry,
             &[module],
             &std::collections::HashSet::new(),
+            &state,
             &cx,
         )
         .unwrap();
@@ -1230,6 +1246,7 @@ mod tests {
             &registry,
             &modules,
             &std::collections::HashSet::new(),
+            &state,
             &cx,
         )
         .unwrap();

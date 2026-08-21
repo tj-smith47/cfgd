@@ -32,6 +32,7 @@ mod verify;
 mod tests;
 
 pub use apply::{action_matches_phase_filter, render_caveats};
+pub use env::recorded_manager_path_dirs;
 pub use env_engine::launchd_env_plist;
 #[cfg(any(test, feature = "test-helpers"))]
 pub use env_engine::{
@@ -66,7 +67,7 @@ pub use types::{
     ModuleAction, ModuleActionKind, Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName,
     Plan, ReconcileContext, RollbackResult, ScriptAction, ScriptPhase, SystemAction, Tier,
 };
-pub use verify::{VerifyResult, env_verify_results, verify};
+pub use verify::{VerifyResult, env_item_declared_line, env_verify_results, verify};
 
 pub(crate) use env::all_recorded_path_dirs;
 /// Widened past this crate for `cfgd::cli::plan_ops::filter_plan`, the one
