@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
@@ -494,6 +495,10 @@ fn register_sql_functions(conn: &Connection) -> Result<()> {
 /// SQLite-backed state store for cfgd.
 pub struct StateStore {
     pub(in crate::state) conn: Connection,
+    /// Set for the duration of an [`StateStore::in_transaction`] call, so a
+    /// nested call is caught at the call site that broke the rule instead of
+    /// surfacing as a generic `BEGIN`-inside-`BEGIN` database error.
+    in_transaction: Cell<bool>,
 }
 
 /// Rolls back an open [`StateStore::in_transaction`] batch unless it committed.
@@ -512,6 +517,19 @@ impl Drop for TransactionGuard<'_> {
         if !self.finished {
             let _ = self.conn.execute_batch("ROLLBACK");
         }
+    }
+}
+
+/// Clears [`StateStore::in_transaction`]'s nesting flag on drop, so an early
+/// `?` return or a panic inside `f` still leaves the next, sequential call
+/// free to proceed rather than finding the flag stuck `true` forever.
+struct NestingGuard<'a> {
+    flag: &'a Cell<bool>,
+}
+
+impl Drop for NestingGuard<'_> {
+    fn drop(&mut self) {
+        self.flag.set(false);
     }
 }
 
@@ -592,7 +610,10 @@ impl StateStore {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         register_sql_functions(&conn)?;
 
-        let mut store = Self { conn };
+        let mut store = Self {
+            conn,
+            in_transaction: Cell::new(false),
+        };
         store.run_migrations()?;
         Ok(store)
     }
@@ -616,7 +637,20 @@ impl StateStore {
     /// file backups are the record a crashed apply is reconstructed from, and
     /// batching them would lose exactly the rows describing the action that
     /// crashed. Transactions do not nest — never call this from inside `f`.
+    /// A debug build catches the violation here, at the call site that broke
+    /// the rule, with a `debug_assert` naming it; release behavior is
+    /// unchanged and still fails with the generic `BEGIN`-inside-`BEGIN`
+    /// database error the inner `BEGIN` reports.
     pub fn in_transaction<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        debug_assert!(
+            !self.in_transaction.get(),
+            "StateStore::in_transaction does not nest — never call this from inside `f`"
+        );
+        self.in_transaction.set(true);
+        let _nesting_guard = NestingGuard {
+            flag: &self.in_transaction,
+        };
+
         self.conn.execute_batch("BEGIN")?;
         let mut guard = TransactionGuard {
             conn: &self.conn,
@@ -634,7 +668,10 @@ impl StateStore {
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         register_sql_functions(&conn)?;
 
-        let mut store = Self { conn };
+        let mut store = Self {
+            conn,
+            in_transaction: Cell::new(false),
+        };
         store.run_migrations()?;
         Ok(store)
     }

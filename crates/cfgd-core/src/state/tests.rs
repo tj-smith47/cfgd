@@ -3586,3 +3586,59 @@ fn in_transaction_rolls_back_when_the_batch_panics() {
         .unwrap();
     assert_eq!(store.managed_resources().unwrap().len(), 1);
 }
+
+/// A failed batch clears the nesting flag via the guard's `Drop`, so a
+/// second, sequential `in_transaction` call right after a failure must not
+/// find the flag still set and trip the nesting assert.
+#[test]
+fn sequential_transactions_after_a_failed_one_still_pass_the_assert() {
+    let store = StateStore::open_in_memory().unwrap();
+
+    let err: Result<()> = store.in_transaction(|| {
+        store.upsert_managed_resource("file", "~/.a", "profile:test", None, None)?;
+        Err(crate::errors::StateError::MigrationFailed {
+            message: "batch aborted".to_string(),
+        }
+        .into())
+    });
+    assert!(err.is_err());
+
+    // Would trip the debug_assert in `in_transaction` if the failed call
+    // above had left the nesting flag set.
+    store
+        .in_transaction(|| {
+            store.upsert_managed_resource("file", "~/.c", "profile:test", None, None)
+        })
+        .unwrap();
+    assert_eq!(store.managed_resources().unwrap().len(), 1);
+}
+
+/// A nested call — `in_transaction` invoked from inside `f` — panics in a
+/// debug build, naming the rule the rustdoc documents, rather than surfacing
+/// as the inner `BEGIN`'s generic database error.
+#[cfg(debug_assertions)]
+#[test]
+fn a_nested_in_transaction_call_panics_naming_the_rule() {
+    let store = StateStore::open_in_memory().unwrap();
+
+    let prior_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        store.in_transaction::<()>(|| {
+            store.in_transaction(|| Ok(()))?;
+            Ok(())
+        })
+    }));
+    std::panic::set_hook(prior_hook);
+
+    let payload = unwound.expect_err("a nested call must panic, not silently proceed");
+    let message = payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .expect("panic payload must be a string");
+    assert!(
+        message.contains("does not nest"),
+        "panic message must name the rule: {message}"
+    );
+}
