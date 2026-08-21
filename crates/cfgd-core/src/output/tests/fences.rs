@@ -61,22 +61,38 @@ fn suspend_is_never_called() {
     );
 }
 
-/// A tracing subscriber wired straight to `std::io::stderr` writes past the
-/// live region: every event lands on the stream indicatif is repainting, and
-/// the last paint of whatever bar was on screen is left stranded behind it.
-/// `output::LiveTracingWriter` is the writer every subscriber that writes a
-/// plain-text line takes, because it routes each event through the printer's
-/// `MultiProgress` and folds it on the way (the one exception is cfgd-csi's
-/// JSON log line, whose serializer is its own sanitizer — see the fence
-/// below).
+/// The marker that exempts one wiring from the fence below, with the reason
+/// written after it.
+const HATCH: &str = "unfolded-writer-ok:";
+
+/// A subscriber's writer is the whole of its sanitation: an event reaches the
+/// terminal through it and through no renderer, so a writer that does not fold
+/// puts a module name, a device hostname or a remote's error text on screen
+/// with its control bytes live — and one written straight at the stream a live
+/// region repaints also strands that region's last paint there forever.
+/// `output::LiveTracingWriter` is the writer that answers both: it routes every
+/// event through the printer's `MultiProgress` and folds it on the way.
+///
+/// The predicate is POSITIVE, and that is the whole of the design. It asks
+/// whether a wiring routes through the folding writer and refuses everything
+/// else, rather than listing the streams to refuse: a refusal list grown one
+/// name at a time still passed `.with_writer(std::io::stdout)`, which is
+/// precisely the writer a `fmt::Layer` takes when none is named. Three
+/// offenses fall out of that one question — a writer that is not the folding
+/// one, a construction that names no writer at all, and a folding wiring that
+/// leaves the formatter's colours on (the fold strips ANSI, so they are eaten,
+/// and left on they paint SGR into a redirected stream the formatter never
+/// asked was a terminal).
 ///
 /// Hatch, read like every sibling gate's (`tracing-ok:`, `native-ok:`,
-/// `spawn-blocking-ok:`): mark the call line or the line above it with
-/// `// stderr-writer-ok: <why>`. A capture writer legitimately NAMED for stderr
-/// is the shape that needs it, and a gate with no hatch is one somebody
-/// eventually silences by widening the writer's name instead.
+/// `spawn-blocking-ok:`): mark the construction line, the writer's own line,
+/// or the line above either with `// unfolded-writer-ok: <why>`. The shapes
+/// that need it are a writer that is no terminal at all (a log file, a test
+/// capture) and a formatter whose own serializer is the sanitizer — a JSON log
+/// line, where folding would emit `\xNN` inside a string and cost every
+/// consumer a parseable payload.
 #[test]
-fn no_subscriber_writes_straight_to_stderr() {
+fn every_subscriber_writes_through_a_folding_writer() {
     let mut offenders = Vec::new();
     for path in workspace_rust_files() {
         if path.ends_with(Path::new("output/tests/fences.rs")) {
@@ -85,10 +101,10 @@ fn no_subscriber_writes_straight_to_stderr() {
         let Ok(body) = std::fs::read_to_string(&path) else {
             continue;
         };
-        for line_no in stderr_writer_offenders(&body) {
+        for (line_no, why) in unfolded_subscriber_offenders(&body) {
             let line = body.lines().nth(line_no).unwrap_or_default();
             offenders.push(format!(
-                "{}:{}: {}",
+                "{}:{}: {why}: {}",
                 path.display(),
                 line_no + 1,
                 line.trim()
@@ -97,116 +113,188 @@ fn no_subscriber_writes_straight_to_stderr() {
     }
     assert!(
         offenders.is_empty(),
-        "a subscriber writing straight to stderr strands the live region; take \
-         output::LiveTracingWriter instead (or mark the line \
-         `// stderr-writer-ok: <why>`):\n{}",
+        "every tracing subscriber writes through output::LiveTracingWriter with \
+         the formatter's colours off (or carries `// {HATCH} <why>`):\n{}",
         offenders.join("\n")
     );
 }
 
-/// A `tracing_subscriber::fmt` subscriber that names no writer takes the
-/// builder's default, which is the raw process stream — and the raw stream is
-/// a terminal writer that passes no renderer, so every event lands on it
-/// unfolded. That is how two server binaries kept writing module names, device
-/// hostnames and remote error text straight at a terminal while the fence
-/// above (which only reads `with_writer` arguments) saw nothing to judge.
+/// Whether `code` opens a `tracing_subscriber::fmt` subscriber or layer. Every
+/// spelling the crate offers is listed, not the two the workspace happens to
+/// use: an init that took the default writer under a spelling the fence did
+/// not know would be as invisible as the one that started this.
+fn opens_subscriber(code: &str) -> bool {
+    const SPELLINGS: [&str; 7] = [
+        "tracing_subscriber::fmt(",
+        // Bare, so an imported `fmt` module reaches the same arm as the
+        // fully-qualified path that contains it.
+        "fmt::layer(",
+        "fmt::init(",
+        "fmt::Layer::new(",
+        "fmt::Layer::default(",
+        "fmt::Subscriber::builder(",
+        "FmtSubscriber::builder(",
+    ];
+    SPELLINGS.iter().any(|spelling| code.contains(spelling))
+}
+
+/// Whether the `with_writer` argument `arg` names the folding writer: the type
+/// itself, or a binding whose initializer in the same file names it (the two
+/// CLI entry points hand the subscriber a `tracing_writer.clone()` bound
+/// earlier, and accepting that identifier on its NAME alone would accept any
+/// writer somebody later bound to it).
+fn names_folding_writer(lines: &[&str], arg: &str) -> bool {
+    let squashed: String = arg.chars().filter(|c| !c.is_whitespace()).collect();
+    if squashed.contains("LiveTracingWriter") {
+        return true;
+    }
+    let root = squashed
+        .split(['.', '(', ')', ',', '&'])
+        .find(|part| !part.is_empty())
+        .unwrap_or_default();
+    if root.is_empty() {
+        return false;
+    }
+    let bindings = [format!("let {root} "), format!("let mut {root} ")];
+    lines.iter().any(|line| {
+        let code = code_half(line);
+        code.contains("LiveTracingWriter") && bindings.iter().any(|b| code.contains(b.as_str()))
+    })
+}
+
+/// Line numbers (0-based) of every wiring in `source` that does not put its
+/// events through the folding writer, each paired with what it gets wrong.
 ///
-/// Hatch: `// default-writer-ok: <why>` on the construction line or the line
-/// above. The shape that needs it is a formatter whose own serializer is the
-/// sanitizer — a JSON log line, where folding would emit `\xNN` inside a
-/// string and cost the consumer a parseable payload.
-#[test]
-fn no_subscriber_takes_the_default_writer() {
-    let mut offenders = Vec::new();
-    for path in workspace_rust_files() {
-        if path.ends_with(Path::new("output/tests/fences.rs")) {
-            continue;
-        }
-        let Ok(body) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        for line_no in default_writer_offenders(&body) {
-            let line = body.lines().nth(line_no).unwrap_or_default();
-            offenders.push(format!(
-                "{}:{}: {}",
-                path.display(),
-                line_no + 1,
-                line.trim()
-            ));
-        }
-    }
-    assert!(
-        offenders.is_empty(),
-        "a subscriber with no writer takes the raw process stream unfolded; \
-         name output::LiveTracingWriter (or mark the line \
-         `// default-writer-ok: <why>`):\n{}",
-        offenders.join("\n")
-    );
-}
-
-/// Line numbers (0-based) of every `tracing_subscriber::fmt` construction in
-/// `source` whose statement names no writer. The statement is read to its
-/// terminating `;`, because rustfmt splits a builder chain across lines and a
-/// line-scoped read would judge the constructor alone.
-fn default_writer_offenders(source: &str) -> Vec<usize> {
+/// Two passes, because either half alone leaves a way through. The first reads
+/// every `with_writer(` wherever it stands, so a construction spelling this
+/// file does not recognize is still judged by the writer it names. The second
+/// reads each recognized construction to its terminating `;` — rustfmt splits
+/// a builder chain across lines, and a line-scoped read would judge the
+/// constructor alone — and catches the wiring that names no writer at all,
+/// plus the folding wiring that left the formatter's colours on.
+fn unfolded_subscriber_offenders(source: &str) -> Vec<(usize, &'static str)> {
     const MAX_LINES: usize = 16;
     let lines: Vec<&str> = source.lines().collect();
     let mut offenders = Vec::new();
+
     for (i, line) in lines.iter().enumerate() {
         let code = code_half(line);
-        if !code.contains("tracing_subscriber::fmt()")
-            && !code.contains("tracing_subscriber::fmt::layer()")
-        {
+        let Some(pos) = code.find("with_writer(") else {
+            continue;
+        };
+        let arg = writer_argument(&lines, i, pos + "with_writer(".len());
+        if !names_folding_writer(&lines, &arg) && !hatched(&lines, i, HATCH) {
+            offenders.push((i, "the writer named here does not fold"));
+        }
+    }
+
+    for (i, line) in lines.iter().enumerate() {
+        if !opens_subscriber(&code_half(line)) {
             continue;
         }
-        let mut names_writer = false;
-        for candidate in lines[i..].iter().take(MAX_LINES) {
+        let mut writer: Option<bool> = None;
+        let mut writer_line = i;
+        let mut test_writer = false;
+        let mut colours_off = false;
+        for (offset, candidate) in lines[i..].iter().take(MAX_LINES).enumerate() {
             let chain = code_half(candidate);
-            if chain.contains("with_writer(") || chain.contains("with_test_writer(") {
-                names_writer = true;
-                break;
+            test_writer |= chain.contains("with_test_writer(");
+            colours_off |= chain.contains("with_ansi(false)");
+            if let Some(pos) = chain.find("with_writer(") {
+                let arg = writer_argument(&lines, i + offset, pos + "with_writer(".len());
+                writer = Some(names_folding_writer(&lines, &arg));
+                writer_line = i + offset;
             }
             if chain.contains(';') {
                 break;
             }
         }
-        if !names_writer && !hatched(&lines, i, "default-writer-ok:") {
-            offenders.push(i);
+        // `with_test_writer` is the harness's own capture, named by the crate
+        // rather than by an expression this file would have to interpret.
+        if test_writer {
+            continue;
+        }
+        let excused = hatched(&lines, i, HATCH) || hatched(&lines, writer_line, HATCH);
+        match writer {
+            None if !excused => {
+                offenders.push((i, "no writer named, so the raw stream carries it"))
+            }
+            // Not hatchable: with the fold in front of it, a formatter's colour
+            // has no destination to reach, so there is no wiring that wants it.
+            Some(true) if !colours_off => {
+                offenders.push((i, "the folding writer needs `.with_ansi(false)`"))
+            }
+            _ => {}
         }
     }
     offenders
 }
 
-/// The same obligation the stderr fence carries: a predicate that recognizes
-/// one spelling is a fence somebody walks around. Both constructors, the
-/// split-chain read, the hatch, and the wirings that are already correct.
+/// The fence is only as wide as its predicate, and a predicate that recognizes
+/// one spelling of a mistake is a fence somebody walks around without
+/// noticing. Every way the workspace could reach a terminal unfolded is pinned
+/// here, together with the wirings that are correct and the hatch. The first
+/// four offenders are the ones a stream-name refusal list passed.
 #[test]
-fn the_default_writer_fence_recognizes_every_spelling() {
+fn the_folding_writer_fence_recognizes_every_spelling() {
     for offender in [
+        // The raw stream, named. `Layer::default` uses stdout, so the stream a
+        // refusal list forgot is the one a forgotten wiring lands on.
+        "        .with_writer(std::io::stdout)",
+        "        .with_writer(|| io::stdout())",
+        "        .with_writer(std::io::stderr)",
+        // A writer that is neither the stream nor the folding one.
+        "        .with_writer(RawTerminal::new())",
+        // Constructions that name no writer at all, in every spelling.
         "    tracing_subscriber::fmt().json().init();",
+        "    tracing_subscriber::fmt::init();",
+        "    fmt::init();",
         "    let l = tracing_subscriber::fmt::layer();",
+        "    let l = fmt::layer();",
+        "    let l = fmt::Layer::new();",
+        "    let s = FmtSubscriber::builder().finish();",
+        "    let s = fmt::Subscriber::builder().finish();",
         // A chain split over lines, with the writer named nowhere in it.
         "    tracing_subscriber::fmt()\n        .with_target(false)\n        .without_time()\n        .init();",
         // A later statement's writer does not cover this one.
         "    tracing_subscriber::fmt().init();\n    other.with_writer(x);",
+        // The folding writer with the formatter's colours left on.
+        "    let w = LiveTracingWriter::new();\n    tracing_subscriber::fmt().with_writer(w.clone()).init();",
+        // A binding that merely CARRIES the expected name is not the writer.
+        "    let tracing_writer = std::io::stdout;\n    fmt::layer().with_writer(tracing_writer.clone());",
         // A marker with no reason after it is not a hatch.
-        "    // default-writer-ok:\n    tracing_subscriber::fmt().init();",
+        "    // unfolded-writer-ok:\n    tracing_subscriber::fmt().init();",
+        // The marker inside a string literal is not a hatch either.
+        "        .with_writer(io::stderr).named(\"// unfolded-writer-ok: no\")",
+        // A `//` inside a string literal is not a comment: neither a URL
+        // before the call nor one inside its arguments hides the wiring.
+        "        connect(\"https://x.test//hook\").with_writer(io::stderr)",
+        "        .with_writer(tee(\"https://x.test//hook\", io::stdout))",
     ] {
         assert!(
-            !default_writer_offenders(offender).is_empty(),
+            !unfolded_subscriber_offenders(offender).is_empty(),
             "the fence must recognize this wiring: {offender:?}"
         );
     }
     for allowed in [
-        "    tracing_subscriber::fmt()\n        .with_writer(tracing_writer.clone())\n        .init();",
-        "    let l = tracing_subscriber::fmt::layer()\n        .with_writer(LiveTracingWriter::new());",
+        "    tracing_subscriber::fmt()\n        .with_ansi(false)\n        .with_writer(LiveTracingWriter::new())\n        .init();",
+        // The binding both CLI entry points use, resolved through its
+        // initializer rather than through its name.
+        "    let tracing_writer = cfgd_core::output::LiveTracingWriter::new();\n    tracing_subscriber::fmt()\n        .with_ansi(false)\n        .with_writer(tracing_writer.clone())\n        .init();",
         "    tracing_subscriber::fmt().with_test_writer().finish();",
-        "    // default-writer-ok: the JSON serializer is the sanitizer here\n    tracing_subscriber::fmt().json().init();",
+        // The hatch, on the construction line, on the writer's line, and on
+        // the line above either.
+        "    // unfolded-writer-ok: the JSON serializer is the sanitizer here\n    tracing_subscriber::fmt().json().init();",
+        "    fmt::layer()\n        .with_writer(Mutex::new(file)) // unfolded-writer-ok: a log file, not a terminal",
+        "    fmt::layer()\n        // unfolded-writer-ok: a log file, not a terminal\n        .with_writer(Mutex::new(file));",
         // The constructor named inside a string literal is a name, not a call.
         "    let s = \"tracing_subscriber::fmt()\";",
+        // A `with_writer` this file never sees the construction of is still
+        // judged by its argument, and this one is the folding writer.
+        "        .with_writer(LiveTracingWriter::new())",
     ] {
         assert!(
-            default_writer_offenders(allowed).is_empty(),
+            unfolded_subscriber_offenders(allowed).is_empty(),
             "the fence must not flag this: {allowed:?}"
         );
     }
@@ -359,84 +447,6 @@ fn writer_argument(lines: &[&str], at: usize, from: usize) -> String {
         }
     }
     arg
-}
-
-/// Line numbers (0-based) of every `with_writer(` in `source` handed the raw
-/// stderr stream. Any spelling reaches it: a path (`std::io::stderr`), an
-/// import (`use std::io::stderr;` then bare `stderr`), or a closure around
-/// either — the first cut pinned two fully-qualified forms and let the rest
-/// through.
-fn stderr_writer_offenders(source: &str) -> Vec<usize> {
-    let lines: Vec<&str> = source.lines().collect();
-    let mut offenders = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        let code = code_half(line);
-        let Some(pos) = code.find("with_writer(") else {
-            continue;
-        };
-        let arg = writer_argument(&lines, i, pos + "with_writer(".len());
-        let squashed: String = arg.chars().filter(|c| !c.is_whitespace()).collect();
-        if squashed.contains("stderr") && !hatched(&lines, i, "stderr-writer-ok:") {
-            offenders.push(i);
-        }
-    }
-    offenders
-}
-
-/// The fence above is only as wide as its predicate, and a predicate that
-/// recognizes one spelling of a mistake is a fence somebody walks around
-/// without noticing. Every way the workspace could reach the raw stream is
-/// pinned here, together with the wirings that are correct and the hatch.
-#[test]
-fn the_stderr_fence_recognizes_every_spelling() {
-    for offender in [
-        "        .with_writer(std::io::stderr)",
-        "        .with_writer(io::stderr)",
-        "        .with_writer(stderr)",
-        "        .with_writer(|| std::io::stderr())",
-        "        .with_writer(|| io::stderr()).with_ansi(false)",
-        // rustfmt splits a long call; the argument is still the raw stream.
-        "        .with_writer(\n            std::io::stderr,\n        )",
-        // A `//` inside a string literal is not a comment: neither a URL
-        // before the call nor one inside its arguments hides the wiring.
-        "        connect(\"https://x.test//hook\").with_writer(io::stderr)",
-        "        .with_writer(tee(\"https://x.test//hook\", io::stderr))",
-        // The marker inside a string literal is not a hatch — on the call
-        // line or on the line above it.
-        "        .with_writer(io::stderr).named(\"// stderr-writer-ok: no\")",
-        "        let m = \"// stderr-writer-ok: no\";\n        .with_writer(io::stderr)",
-    ] {
-        assert!(
-            !stderr_writer_offenders(offender).is_empty(),
-            "the fence must recognize this wiring: {offender:?}"
-        );
-    }
-    for allowed in [
-        "        .with_writer(tracing_writer.clone())",
-        "        .with_writer(LiveTracingWriter::new())",
-        "/// Never wire a subscriber to `with_writer` at stderr again.",
-        "        let mut err = io::stderr().lock();",
-        // The argument ends at its own close paren: a later, unrelated stderr
-        // read is not this call's.
-        "        .with_writer(writer.clone())\n        let e = io::stderr();",
-        // The hatch, on the call line and on the line above it.
-        "        .with_writer(stderr_capture.clone()) // stderr-writer-ok: test capture, not the stream",
-        "        // stderr-writer-ok: test capture, not the stream\n        .with_writer(stderr_capture.clone())",
-        // `stderr` inside a string literal is a name, not the stream.
-        "        .with_writer(file_writer(\"stderr.log\"))",
-        "        .with_writer(rotating(r\"logs\\stderr\", writer.clone()))",
-    ] {
-        assert!(
-            stderr_writer_offenders(allowed).is_empty(),
-            "the fence must not flag this: {allowed:?}"
-        );
-    }
-    // A marker with no reason after it is not a hatch.
-    assert!(
-        !stderr_writer_offenders("        .with_writer(io::stderr) // stderr-writer-ok:")
-            .is_empty(),
-        "a marker with no reason must not exempt the call"
-    );
 }
 
 /// Extract the body of every `struct Emitting` / `impl … Emitting` region in

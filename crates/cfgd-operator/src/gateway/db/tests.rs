@@ -1086,6 +1086,7 @@ fn capture_warn_logs<F: FnOnce()>(f: F) -> String {
     let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let writer = CaptureWriter(buf.clone());
     let subscriber = tracing_subscriber::fmt()
+        // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
         .with_writer(writer)
         .with_max_level(tracing::Level::WARN) // WARN+ only; DEBUG is filtered out
         .finish();

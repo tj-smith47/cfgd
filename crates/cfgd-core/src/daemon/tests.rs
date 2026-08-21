@@ -18283,6 +18283,7 @@ mod backup_timers {
 
         let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::fmt()
+            // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
             .with_writer(LogCapture(buf.clone()))
             .with_max_level(tracing::Level::INFO)
             // Styled field names would put escape sequences between `holder`

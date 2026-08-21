@@ -377,6 +377,7 @@ pub(crate) fn init_windows_logging() {
     };
 
     let file_layer = tracing_subscriber::fmt::layer()
+        // unfolded-writer-ok: a log FILE the service writes under its own state dir, never a terminal
         .with_writer(std::sync::Mutex::new(file))
         .with_ansi(false)
         .with_target(false);

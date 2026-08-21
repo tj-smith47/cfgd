@@ -18,7 +18,11 @@
 //! wiring this writer therefore has to disable the formatter's own colours
 //! (`.with_ansi(false)`) — the fold strips ANSI, so SGR the formatter emitted
 //! would be eaten, and the level tint is not worth a second sanitation policy
-//! that has to tell an `ESC [ 0 m` from an `ESC [ 2 K`.
+//! that has to tell an `ESC [ 0 m` from an `ESC [ 2 K`. That obligation is not
+//! left to whoever reads this: `every_subscriber_writes_through_a_folding_writer`
+//! (`output/tests/fences.rs`) refuses a wiring that names this writer without
+//! it, and refuses any subscriber in the workspace that names a different
+//! writer without a stated reason.
 
 use std::io::{self, Write};
 use std::sync::{Arc, RwLock};
