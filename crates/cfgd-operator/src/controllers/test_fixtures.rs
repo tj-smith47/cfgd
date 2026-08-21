@@ -106,7 +106,20 @@ pub(super) fn new_config_policy(name: &str, namespace: &str) -> ConfigPolicy {
     }
 }
 
+/// A ClusterConfigPolicy the operator has already registered, i.e. carrying its
+/// cleanup finalizer. A policy WITHOUT it is a policy on its first reconcile,
+/// which is a distinct branch and gets its own fixture below.
 pub(super) fn cluster_config_policy_with_spec(
+    name: &str,
+    spec: ClusterConfigPolicySpec,
+) -> ClusterConfigPolicy {
+    let mut policy = new_cluster_config_policy_with_spec(name, spec);
+    policy.metadata.finalizers = Some(vec![super::CLUSTER_CONFIG_POLICY_FINALIZER.to_string()]);
+    policy
+}
+
+/// A ClusterConfigPolicy as the user creates it: no finalizer yet.
+pub(super) fn new_cluster_config_policy_with_spec(
     name: &str,
     spec: ClusterConfigPolicySpec,
 ) -> ClusterConfigPolicy {

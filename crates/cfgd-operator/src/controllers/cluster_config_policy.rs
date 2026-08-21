@@ -14,23 +14,66 @@ use super::config_policy::{
     merge_policy_requirements, validate_policy_compliance,
 };
 use super::{
-    ControllerContext, FIELD_MANAGER_STATUS, build_condition, compliance_summary, matches_selector,
+    CLUSTER_CONFIG_POLICY_FINALIZER, ControllerContext, FIELD_MANAGER_OPERATOR,
+    FIELD_MANAGER_STATUS, build_condition, compliance_summary, matches_selector,
     record_reconcile_success, sort_and_cap_machines,
 };
 
-// No cleanup finalizer here, unlike ConfigPolicy: this controller writes nothing
-// onto the machines it evaluates. Its verdict lives entirely in its own status,
-// which the API server removes with the object, so deletion leaves nothing behind
-// for another controller to keep reporting. The one exception is its
-// `devices_compliant` series: with no finalizer there is no final reconcile to
-// remove it from, so a deleted ClusterConfigPolicy exports its last count until
-// the process restarts.
+// This controller writes nothing onto the machines it evaluates — its verdict
+// lives entirely in its own status, which the API server removes with the
+// object. But its `devices_compliant` gauge series is a process-global side
+// effect the API server knows nothing about: without a guaranteed last
+// reconcile to remove it from, a deleted policy exports its last count for the
+// rest of the process's life. The finalizer below buys that last reconcile, at
+// the same cost `config_policy.rs` already accepts: a deletion can hang while
+// the operator is down.
 pub(super) async fn reconcile_cluster_config_policy(
     obj: Arc<ClusterConfigPolicy>,
     ctx: Arc<ControllerContext>,
 ) -> Result<Action, OperatorError> {
     let start = std::time::Instant::now();
     let name = obj.name_any();
+
+    let finalizers = obj.metadata.finalizers.as_deref().unwrap_or(&[]);
+    let has_finalizer = finalizers
+        .iter()
+        .any(|f| f == CLUSTER_CONFIG_POLICY_FINALIZER);
+    let ccp_api: Api<ClusterConfigPolicy> = Api::all(ctx.client.clone());
+
+    if obj.metadata.deletion_timestamp.is_some() {
+        if has_finalizer {
+            info!(name = %name, "clusterConfigPolicy being deleted, removing its devices_compliant series");
+            // The gauge loses its only writer with this reconcile, so an
+            // unremoved series would export the deleted policy's last count
+            // for the life of the process.
+            ctx.metrics.devices_compliant.remove(&PolicyLabels {
+                policy: name.clone(),
+                namespace: String::new(), // cluster-scoped
+            });
+            remove_finalizer(&ccp_api, &name, finalizers).await?;
+        }
+        record_reconcile_success(&ctx, "cluster_config_policy", start);
+        return Ok(Action::await_change());
+    }
+
+    if !has_finalizer {
+        // The gauge's write path only runs from a normal reconcile; only a
+        // finalizer guarantees a last one to remove it in.
+        let mut updated: Vec<String> = finalizers.to_vec();
+        updated.push(CLUSTER_CONFIG_POLICY_FINALIZER.to_string());
+        let patch = serde_json::json!({ "metadata": { "finalizers": updated } });
+        ccp_api
+            .patch(
+                &name,
+                &PatchParams::apply(FIELD_MANAGER_OPERATOR),
+                &Patch::Merge(patch),
+            )
+            .await
+            .map_err(|e| {
+                OperatorError::Reconciliation(format!("failed to add finalizer to {name}: {e}"))
+            })?;
+        info!(name = %name, "added finalizer to ClusterConfigPolicy");
+    }
 
     info!(
         name = %name,
@@ -108,8 +151,6 @@ pub(super) async fn reconcile_cluster_config_policy(
         "False"
     };
 
-    let ccp_api: Api<ClusterConfigPolicy> = Api::all(ctx.client.clone());
-
     let existing_conditions = obj
         .status
         .as_ref()
@@ -176,4 +217,29 @@ pub(super) async fn reconcile_cluster_config_policy(
     record_reconcile_success(&ctx, "cluster_config_policy", start);
 
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
+}
+
+/// Drop this controller's finalizer, releasing the policy for deletion.
+async fn remove_finalizer(
+    policies: &Api<ClusterConfigPolicy>,
+    name: &str,
+    finalizers: &[String],
+) -> Result<(), OperatorError> {
+    let remaining: Vec<&str> = finalizers
+        .iter()
+        .filter(|f| f.as_str() != CLUSTER_CONFIG_POLICY_FINALIZER)
+        .map(String::as_str)
+        .collect();
+    let patch = serde_json::json!({ "metadata": { "finalizers": remaining } });
+    policies
+        .patch(
+            name,
+            &PatchParams::apply(FIELD_MANAGER_OPERATOR),
+            &Patch::Merge(patch),
+        )
+        .await
+        .map_err(|e| {
+            OperatorError::Reconciliation(format!("failed to remove finalizer from {name}: {e}"))
+        })?;
+    Ok(())
 }

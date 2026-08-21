@@ -9,9 +9,13 @@ use k8s_openapi::api::core::v1::Namespace;
 use kube::api::ObjectMeta;
 use kube::core::PartialObjectMeta;
 
+use super::CLUSTER_CONFIG_POLICY_FINALIZER;
 use super::ControllerStores;
 use super::cluster_config_policy::reconcile_cluster_config_policy;
-use super::test_fixtures::{cluster_config_policy_with_spec, config_policy, machine_config};
+use super::test_fixtures::{
+    cluster_config_policy_with_spec, config_policy, machine_config,
+    new_cluster_config_policy_with_spec,
+};
 use super::test_kube_harness::{
     ExpectedCall, MockKubeHarness, empty_stores, expect_event_post, seeded_store, unready_store,
 };
@@ -449,5 +453,125 @@ async fn reconcile_cluster_config_policy_writes_nothing_when_the_evaluation_is_u
     assert!(
         second.captured.is_empty(),
         "an unchanged evaluation must make no API call"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Finalizer: the gauge series is retired with the policy that wrote it
+// -----------------------------------------------------------------------
+
+/// A cluster policy on its first reconcile is registered before it evaluates
+/// anything: the `devices_compliant` series it is about to write can only be
+/// retired by a last reconcile, and only a finalizer guarantees one.
+#[tokio::test]
+async fn reconcile_cluster_config_policy_adds_finalizer_when_missing() {
+    let ccp = new_cluster_config_policy_with_spec("ccp-fresh", Default::default());
+    assert!(ccp.metadata.finalizers.is_none());
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch(cluster_policy_path("ccp-fresh"))
+                .with_query_contains("fieldManager=cfgd-operator")
+                .returning_json(&ccp),
+            ExpectedCall::patch_status(format!("{}/status", cluster_policy_path("ccp-fresh")))
+                .returning_json(&ccp),
+            expect_event_post("default"), // Evaluated
+        ],
+        stores_with(&[], vec![], vec![]),
+    );
+
+    reconcile_cluster_config_policy(Arc::new(ccp), ctx)
+        .await
+        .unwrap();
+
+    let report = harness.finish().await;
+    let added = report.captured[0].body_json();
+    assert_eq!(
+        added["metadata"]["finalizers"],
+        serde_json::json!([CLUSTER_CONFIG_POLICY_FINALIZER])
+    );
+}
+
+/// Deleting a cluster policy retires its `devices_compliant` series: with no
+/// finalizer there would be no last reconcile in which to remove it, and the
+/// deleted policy's last count would export forever.
+#[tokio::test]
+async fn reconcile_cluster_config_policy_removes_devices_compliant_gauge_on_deletion() {
+    let mut ccp = cluster_config_policy_with_spec("ccp-doomed", Default::default());
+    ccp.metadata.deletion_timestamp = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+        k8s_openapi::jiff::Timestamp::now(),
+    ));
+
+    let (ctx, registry, harness) = MockKubeHarness::with_stores(
+        vec![ExpectedCall::patch(cluster_policy_path("ccp-doomed")).returning_json(&ccp)],
+        empty_stores(),
+    );
+
+    // Seed the series the way a prior normal reconcile would have left it.
+    ctx.metrics
+        .devices_compliant
+        .get_or_create(&PolicyLabels {
+            policy: "ccp-doomed".to_string(),
+            namespace: String::new(),
+        })
+        .set(3);
+    let mut before = String::new();
+    prometheus_client::encoding::text::encode(&mut before, &registry).unwrap();
+    assert!(
+        before.contains("ccp-doomed"),
+        "series must exist before cleanup: {before}"
+    );
+
+    let action = reconcile_cluster_config_policy(Arc::new(ccp), ctx)
+        .await
+        .unwrap();
+    assert_eq!(action, Action::await_change());
+
+    let report = harness.finish().await;
+    assert_eq!(
+        report.captured.len(),
+        1,
+        "deletion removes the finalizer and makes no other call"
+    );
+    assert_eq!(
+        report.captured[0].body_json()["metadata"]["finalizers"],
+        serde_json::json!([])
+    );
+
+    let mut after = String::new();
+    prometheus_client::encoding::text::encode(&mut after, &registry).unwrap();
+    assert!(
+        !after.contains("ccp-doomed"),
+        "the devices_compliant series must be removed on deletion: {after}"
+    );
+}
+
+/// A normal reconcile of an already-registered policy still registers/updates
+/// the gauge — the finalizer add must not disturb the write path it exists to
+/// let a later delete retire.
+#[tokio::test]
+async fn reconcile_cluster_config_policy_normal_reconcile_still_updates_the_gauge() {
+    let ccp = cluster_config_policy_with_spec("ccp-live", Default::default());
+    assert!(ccp.metadata.finalizers.is_some());
+
+    let (ctx, registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", cluster_policy_path("ccp-live")))
+                .returning_json(&ccp),
+            expect_event_post("default"),
+        ],
+        stores_with(&[], vec![], vec![]),
+    );
+
+    reconcile_cluster_config_policy(Arc::new(ccp), ctx)
+        .await
+        .unwrap();
+    harness.finish().await;
+
+    let mut buf = String::new();
+    prometheus_client::encoding::text::encode(&mut buf, &registry).unwrap();
+    assert!(
+        buf.contains("ccp-live"),
+        "a normal reconcile must still register the devices_compliant series: {buf}"
     );
 }
