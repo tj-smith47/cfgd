@@ -524,7 +524,11 @@ pub(super) fn cmd_status(
             output.last_scan_at = Some(stamped);
         }
         for r in &drift {
-            output.drift.push(super::live_drift::drift_event_from(r));
+            output.drift.push(super::live_drift::drift_event_from(
+                r,
+                &resolved.merged.env,
+                &resolved.merged.aliases,
+            ));
         }
         drift
     } else {
@@ -631,7 +635,11 @@ pub(super) fn cmd_status_module(
                     &resolved_modules,
                 )?;
                 for r in file_results.into_iter().filter(|r| !r.matches) {
-                    drift.push(super::live_drift::drift_event_from(&r));
+                    drift.push(super::live_drift::drift_event_from(
+                        &r,
+                        &resolved.merged.env,
+                        &resolved.merged.aliases,
+                    ));
                 }
 
                 sp.set_message(format!("Scanning module '{mod_name}': packages"));
@@ -651,6 +659,8 @@ pub(super) fn cmd_status_module(
                                     expected: "installed".to_string(),
                                     actual: "missing".to_string(),
                                 },
+                                &resolved.merged.env,
+                                &resolved.merged.aliases,
                             ));
                         }
                     }
@@ -1268,6 +1278,91 @@ mod tests {
         assert_eq!(
             parsed["lastScanAt"], frozen,
             "a refused write must leave the stored stamp standing: {parsed}"
+        );
+    }
+
+    /// WARN regression (re-review of the QP13 fix round): `cfgd status
+    /// --scan`'s live-drift display must show a drifted env-var/alias's real
+    /// declared line, not the opaque `current`/`missing or changed` markers
+    /// `verify_env_items` persists. `drift_event_from` (`live_drift.rs`)
+    /// shapes every live-scan finding into the exact `StatusOutput.drift`
+    /// vec this test reads back from `-o json`, and `render_drift_section`
+    /// renders the same `DriftEvent.expected` string to the human terminal —
+    /// so recomputing at that one shaping point fixes both surfaces. This is
+    /// the sibling of `cmd_diff_reports_no_env_drift_when_bootstrap_path_dirs_are_recorded`'s
+    /// fix, on `status`'s parallel live-scan path rather than `diff`'s.
+    #[test]
+    fn cmd_status_scan_shows_the_declared_env_value_not_the_opaque_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Interactive\n  env:\n    - name: EDITOR\n      value: vim\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("modules")).unwrap();
+
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        // Header only, no `EDITOR` export line — the per-item check reports
+        // the declared var as drifted (opaque "missing or changed" before
+        // this fix; the real declared line after it).
+        std::fs::write(
+            tmp_home.path().join(".cfgd.env"),
+            "# managed by cfgd \u{2014} do not edit\n",
+        )
+        .unwrap();
+
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let mut cli = test_cli_for(config_path, &state_dir);
+        cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+        let (printer, buf) = test_printers_json();
+
+        cmd_status(&cli, &printer, None, false, true).unwrap();
+        drop(printer);
+
+        let captured = cfgd_core::test_helpers::captured_text(&buf);
+        let parsed: serde_json::Value = serde_json::from_str(captured.trim())
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {captured}"));
+        let drift = parsed["drift"].as_array().expect("drift array");
+        let editor_row = drift
+            .iter()
+            .find(|d| d["resourceType"] == "env-var" && d["resourceId"] == "EDITOR")
+            .unwrap_or_else(|| panic!("expected an EDITOR env-var drift row: {parsed}"));
+        assert_eq!(
+            editor_row["expected"],
+            serde_json::json!("export EDITOR=\"vim\""),
+            "the -o json payload must carry the declared line, not the opaque \
+             marker: {editor_row}"
+        );
+        assert_ne!(
+            editor_row["expected"],
+            serde_json::json!("current"),
+            "must not regress to the opaque marker: {editor_row}"
+        );
+
+        // The human render shares the same `DriftEvent`, so the fix must show
+        // up there too — assert its content directly rather than trusting the
+        // JSON assertion above to stand in for it.
+        let (human_printer, human_buf) = test_printers();
+        cmd_status(&cli, &human_printer, None, false, true).unwrap();
+        drop(human_printer);
+        let human = cfgd_core::test_helpers::captured_text(&human_buf);
+        let editor_line = human
+            .lines()
+            .find(|l| l.contains("env-var EDITOR"))
+            .unwrap_or_else(|| panic!("expected an EDITOR env-var drift line, got: {human}"));
+        assert!(
+            editor_line.contains("export EDITOR=\"vim\""),
+            "the human render must show the declared line, got: {editor_line}"
+        );
+        assert!(
+            !editor_line.contains("want: current"),
+            "the EDITOR row must not show the opaque marker, got: {editor_line}"
         );
     }
 

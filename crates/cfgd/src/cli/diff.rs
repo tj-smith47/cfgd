@@ -275,15 +275,11 @@ pub fn cmd_diff(
                 // the declared value never flows into a persisted or gateway-shipped
                 // drift record — so recompute the real line here, for this
                 // terminal/`-o json` display only.
-                let (expected, actual) = match cfgd_core::reconciler::env_item_declared_line(
-                    &r.resource_type,
-                    &r.resource_id,
+                let (expected, actual) = cfgd_core::reconciler::env_item_display_values(
+                    &r,
                     &resolved.merged.env,
                     &resolved.merged.aliases,
-                ) {
-                    Some(line) => (line, r.actual.clone()),
-                    None => (r.expected.clone(), r.actual.clone()),
-                };
+                );
                 env_group
                     .status(
                         Role::Warn,
@@ -555,15 +551,11 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                 drift = true;
                 // Opaque markers never carry the declared value — recompute the
                 // real line here, for this terminal/`-o json` display only.
-                let (expected, actual) = match cfgd_core::reconciler::env_item_declared_line(
-                    &r.resource_type,
-                    &r.resource_id,
+                let (expected, actual) = cfgd_core::reconciler::env_item_display_values(
+                    r,
                     &full_resolved.merged.env,
                     &full_resolved.merged.aliases,
-                ) {
-                    Some(line) => (line, r.actual.clone()),
-                    None => (r.expected.clone(), r.actual.clone()),
-                };
+                );
                 group
                     .status(
                         Role::Warn,

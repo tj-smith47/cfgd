@@ -90,7 +90,7 @@ pub fn cmd_verify(
     // One spinner across all four passes, renamed per pass: they run back to
     // back with no output of their own, and a package enumeration inside the
     // first can take seconds.
-    let results = printer.narrate("Verifying: resources", |sp| -> anyhow::Result<_> {
+    let mut results = printer.narrate("Verifying: resources", |sp| -> anyhow::Result<_> {
         let mut results =
             reconciler::verify(&resolved, &registry, state, &resolved_modules, &pkg_cx)?;
         // The reconciler cannot reach the file manager (crate boundary), so it no
@@ -130,6 +130,19 @@ pub fn cmd_verify(
         )?);
         Ok(results)
     })?;
+    // `reconciler::verify` already persisted the opaque `current`/`missing or
+    // changed` markers for every env-var/alias row (WARN4: the declared value
+    // must never reach `drift_events`) — but this `results` vec is the DISPLAY
+    // copy, rendered below into `build_verify_doc`'s human/`-o json` output,
+    // and persistence already happened inside `reconciler::verify` before it
+    // returned. Recomputing here is exactly `diff`'s "opaque markers never
+    // carry the declared value" rule applied to `verify`'s own render.
+    for r in &mut results {
+        let (expected, actual) =
+            reconciler::env_item_display_values(r, &resolved.merged.env, &resolved.merged.aliases);
+        r.expected = expected;
+        r.actual = actual;
+    }
     // A FLEET-wide verify just checked the machine itself, whatever it found —
     // the recorded-state `status` header dates its display from here, and a
     // scan that finds nothing is exactly the one a clean host has no other
@@ -335,6 +348,81 @@ mod tests {
         assert!(
             stamp_after_fleet.is_some(),
             "a fleet-wide verify checked the machine and must date the dashboard"
+        );
+    }
+
+    /// Sweep finding from the `status --scan` re-review: `reconciler::verify`
+    /// persists the opaque `current`/`missing or changed` markers for a
+    /// drifted env-var/alias row (correctly — WARN4 keeps the declared value
+    /// out of `drift_events`), but `cmd_verify`'s own DISPLAY of that same
+    /// `results` vec never recomputed the real declared line before this fix,
+    /// so `cfgd verify`'s human/`-o json` render showed the same opaque
+    /// marker `status --scan` was found to. Both are display consumers of the
+    /// identical per-item `VerifyResult`s and both needed the same
+    /// `env_item_display_values` recompute.
+    #[test]
+    #[serial]
+    fn cmd_verify_shows_the_declared_env_value_not_the_opaque_marker() {
+        use crate::cli::helpers::tests::make_cli;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Interactive\n  env:\n    - name: EDITOR\n      value: vim\n",
+        )
+        .unwrap();
+
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        // Header only, no `EDITOR` export line — the per-item check reports
+        // the declared var as drifted.
+        std::fs::write(
+            tmp_home.path().join(".cfgd.env"),
+            "# managed by cfgd \u{2014} do not edit\n",
+        )
+        .unwrap();
+
+        let state_dir = tmp.path().join("state");
+        let mut cli = make_cli(config_path);
+        cli.state_dir = Some(state_dir);
+        cli.cache_dir = Some(tmp.path().join("cache"));
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_verify(&cli, &printer, None, false).unwrap();
+        drop(printer);
+
+        let human = cap.human();
+        let editor_line = human
+            .lines()
+            .find(|l| l.contains("env-var EDITOR"))
+            .unwrap_or_else(|| panic!("expected an env-var EDITOR line, got: {human}"));
+        assert!(
+            editor_line.contains("export EDITOR=\"vim\""),
+            "the declared line must be visible, got: {editor_line}"
+        );
+        assert!(
+            !editor_line.contains("current"),
+            "must not regress to the opaque marker, got: {editor_line}"
+        );
+
+        let json = cap.json().expect("verify emits a data payload");
+        let results = json["results"].as_array().expect("results array");
+        let editor_row = results
+            .iter()
+            .find(|r| r["resourceType"] == "env-var" && r["resourceId"] == "EDITOR")
+            .unwrap_or_else(|| panic!("expected an EDITOR result row: {json}"));
+        assert_eq!(
+            editor_row["expected"],
+            serde_json::json!("export EDITOR=\"vim\""),
+            "the -o json payload must carry the declared line: {editor_row}"
         );
     }
 

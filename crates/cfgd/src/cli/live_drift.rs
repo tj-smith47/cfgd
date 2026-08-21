@@ -23,14 +23,28 @@ use crate::packages;
 /// since a live scan has no config-layer provenance to attribute. `matches`
 /// is dropped: every caller has already filtered to `!matches` before
 /// reaching here, and `DriftEvent` carries no field for it.
-pub(super) fn drift_event_from(r: &VerifyResult) -> cfgd_core::state::DriftEvent {
+///
+/// `env`/`aliases` recompute an env-var/alias row's opaque
+/// `current`/`missing or changed` marker into the real declared line via
+/// [`cfgd_core::reconciler::env_item_display_values`] — safe here precisely
+/// because `id: 0` means this `DriftEvent` is never persisted or shipped to
+/// the gateway, only rendered into this command's own human/`-o json`
+/// output. A caller with no env/alias rows in its input (both
+/// `cmd_status_module` loops: file and package kinds only) may pass empty
+/// slices; the recompute is a no-op for any other `resource_type`.
+pub(super) fn drift_event_from(
+    r: &VerifyResult,
+    env: &[cfgd_core::config::EnvVar],
+    aliases: &[cfgd_core::config::ShellAlias],
+) -> cfgd_core::state::DriftEvent {
+    let (expected, actual) = cfgd_core::reconciler::env_item_display_values(r, env, aliases);
     cfgd_core::state::DriftEvent {
         id: 0,
         timestamp: cfgd_core::utc_now_iso8601(),
         resource_type: r.resource_type.clone(),
         resource_id: r.resource_id.clone(),
-        expected: Some(r.expected.clone()),
-        actual: Some(r.actual.clone()),
+        expected: Some(expected),
+        actual: Some(actual),
         resolved_by: None,
         source: cfgd_core::config::LOCAL_LAYER.to_string(),
     }

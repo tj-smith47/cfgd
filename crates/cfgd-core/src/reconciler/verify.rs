@@ -391,6 +391,25 @@ pub fn env_item_declared_line(
     }
 }
 
+/// The DISPLAY `(expected, actual)` pair for one [`VerifyResult`], recomputing
+/// an env-var/alias row's real declared line via [`env_item_declared_line`]
+/// and passing every other kind through unchanged — the one place that
+/// recompute happens, so a display surface reaches for this instead of
+/// hand-rolling the same `Some(line) => ... None => ...` match at each call
+/// site. Same "never call this on a value about to be persisted or shipped to
+/// the gateway" rule as `env_item_declared_line`: this is a display-only
+/// recompute, not a second source of truth for what gets recorded.
+pub fn env_item_display_values(
+    r: &VerifyResult,
+    env: &[crate::config::EnvVar],
+    aliases: &[crate::config::ShellAlias],
+) -> (String, String) {
+    match env_item_declared_line(&r.resource_type, &r.resource_id, env, aliases) {
+        Some(line) => (line, r.actual.clone()),
+        None => (r.expected.clone(), r.actual.clone()),
+    }
+}
+
 /// Verify a single env file's content matches expected.
 pub(super) fn verify_env_file(
     path: &std::path::Path,

@@ -67,7 +67,9 @@ pub use types::{
     ModuleAction, ModuleActionKind, Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName,
     Plan, ReconcileContext, RollbackResult, ScriptAction, ScriptPhase, SystemAction, Tier,
 };
-pub use verify::{VerifyResult, env_item_declared_line, env_verify_results, verify};
+pub use verify::{
+    VerifyResult, env_item_declared_line, env_item_display_values, env_verify_results, verify,
+};
 
 pub(crate) use env::all_recorded_path_dirs;
 /// Widened past this crate for `cfgd::cli::plan_ops::filter_plan`, the one
