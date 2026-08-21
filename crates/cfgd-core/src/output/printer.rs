@@ -439,10 +439,12 @@ impl Printer {
     /// [`super::OwnerLabel`]'s three slots for the token instead of folding
     /// the whole line into `heading`'s single `theme.header` coat.
     ///
-    /// Named `_prefixed` rather than plain `heading_owner`, unlike
-    /// `Doc::heading_owner`: the two used to share one name over incompatible
-    /// first arguments (a leading verb here, `kind` there), so a call site
-    /// four files from its sibling read as if it did the same thing.
+    /// Named `_prefixed` because the verb is the point: an owner token names
+    /// WHOSE the rows below it are, which is a section's job
+    /// ([`Printer::section_owner`], [`super::Doc::section_owner`]), so a bare
+    /// `kind:name` never occupies a top-level heading slot. There is
+    /// deliberately no unprefixed counterpart on either the streaming or the
+    /// buffered side.
     pub fn heading_owner_prefixed(&self, prefix: impl Into<String>, owner: &super::OwnerLabel) {
         let depth = self.renderer.enforce_structural_top_level(0);
         let styled = owner.styled_with_prefix(&self.renderer.theme, &prefix.into());

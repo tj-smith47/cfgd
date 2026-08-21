@@ -19,10 +19,6 @@ pub(crate) fn render_doc(renderer: &Renderer, sink: &dyn Writer, doc: &Doc) {
             let styled = label.styled(&renderer.theme);
             renderer.render_heading_styled(sink, &styled);
         }
-        Some(HeadingKind::Owner(label)) => {
-            let styled = label.styled(&renderer.theme);
-            renderer.render_heading_styled(sink, &styled);
-        }
         None => {}
     }
     for child in &doc.children {

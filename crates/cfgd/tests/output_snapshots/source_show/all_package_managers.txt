@@ -5,18 +5,17 @@ source:full-pkg-source
   Accept Recommended  true
   Sync Interval       1h
   Auto Apply          false
-
-Manifest
-  Name         full-pkg-source
-  Description  All package manager types
-  Policy Summary
-    Required
-      Count  8
-      ⊙ brew formula: git
-      ⊙ brew formula: ripgrep
-      ⊙ brew cask: iterm2
-      ⊙ apt: build-essential
-      ⊙ cargo: cargo-edit
-      ⊙ pipx: black
-      ⊙ dnf: gcc
-      ⊙ npm: typescript
+  Manifest
+    Name         full-pkg-source
+    Description  All package manager types
+    Policy Summary
+      Required
+        Count  8
+        ⊙ brew formula: git
+        ⊙ brew formula: ripgrep
+        ⊙ brew cask: iterm2
+        ⊙ apt: build-essential
+        ⊙ cargo: cargo-edit
+        ⊙ pipx: black
+        ⊙ dnf: gcc
+        ⊙ npm: typescript

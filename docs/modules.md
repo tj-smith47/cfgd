@@ -636,10 +636,9 @@ Phase: Packages
 source:team-config
   URL                 https://github.com/team/config
   ...
-
-Modules
-  ⊙ dev-tools
-  ⊙ shell
+  Modules
+    ⊙ dev-tools
+    ⊙ shell
 ```
 
 A source that delivers only modules (no profiles) is valid — see [Source-Delivered Module Bodies](sources.md#source-delivered-module-bodies) for the full contract.

@@ -14,7 +14,6 @@ use super::renderer::Table;
 pub(crate) enum HeadingKind {
     Plain(String),
     Title(TitleLabel),
-    Owner(OwnerLabel),
 }
 
 impl HeadingKind {
@@ -25,7 +24,6 @@ impl HeadingKind {
         match self {
             HeadingKind::Plain(text) => text.clone(),
             HeadingKind::Title(label) => label.plain(),
-            HeadingKind::Owner(label) => label.plain(),
         }
     }
 }
@@ -131,22 +129,6 @@ impl Doc {
     /// `heading`'s single `theme.header` coat.
     pub fn heading_title(mut self, label: impl Into<String>, value: impl Into<String>) -> Self {
         self.heading = Some(HeadingKind::Title(TitleLabel::new(label, value)));
-        self
-    }
-
-    /// A structured owner-token heading (`source:acme`), styled through
-    /// [`OwnerLabel`]'s three slots at render time instead of `heading`'s
-    /// single `theme.header` coat.
-    ///
-    /// Takes an `&OwnerLabel` rather than separate `kind`/`name` strings: this
-    /// method and the streaming `Printer::heading_owner` used to share one
-    /// name over two incompatible first arguments (`kind, name` here vs. a
-    /// leading verb, `prefix, &OwnerLabel`, there), so a reader four files
-    /// apart could not tell from the name alone which shape a call site used.
-    /// The streaming counterpart is now `Printer::heading_owner_prefixed`,
-    /// leaving this the one method actually named `heading_owner`.
-    pub fn heading_owner(mut self, owner: &OwnerLabel) -> Self {
-        self.heading = Some(HeadingKind::Owner(owner.clone()));
         self
     }
 
@@ -263,6 +245,22 @@ impl Doc {
         F: FnOnce(SectionBuilder) -> SectionBuilder,
     {
         let sb = build(SectionBuilder::new(name, /*keep_when_empty=*/ true));
+        self.children.push(sb.into_component());
+        self
+    }
+
+    /// A top-level section headed by a styled owner token (`source:acme`) —
+    /// the buffered counterpart of [`super::Printer::section_owner`], and the
+    /// shape an owner token takes in a `Doc`. An owner names WHOSE the rows
+    /// below it are, which is a section's job; a `Doc` heading names the
+    /// report, so a bare `kind:name` never occupies the heading slot.
+    pub fn section_owner<F>(mut self, owner: &OwnerLabel, build: F) -> Self
+    where
+        F: FnOnce(SectionBuilder) -> SectionBuilder,
+    {
+        let sb = build(SectionBuilder::new_owner(
+            owner, /*keep_when_empty=*/ true,
+        ));
         self.children.push(sb.into_component());
         self
     }

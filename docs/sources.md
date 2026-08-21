@@ -585,13 +585,12 @@ source:acme-corp
   Branch         master
   Priority       500
   Pin Version    ~2
-
   State
     Status        synced
     Last Fetched  2026-06-09T14:32:01Z
     Last Commit   9f3c1ab2c4d  (truncated)
     Locked Ref    v2.1.0
-    Locked Commit 9f3c1ab2c4d  (same — the tag's commit)
+    Locked Commit 9f3c1ab2c4d  (same: the tag's commit)
 ```
 
 When a source has been added but never synced, `source show` still surfaces the lockfile entry (with `Status: pending`) so you can confirm the intended SHA before the first apply.
