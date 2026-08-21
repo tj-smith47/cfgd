@@ -211,11 +211,20 @@ pub fn render_cli_error(
         }
         None => {
             // A plain `?`-propagated error with no attached meta. Synthesize a payload
-            // so structured consumers are never left silent on failure.
+            // so structured consumers are never left silent on failure. `downcast_ref`
+            // walks the same causal chain `exit_code_for_anyhow` already does, so a
+            // typed CfgdError anywhere in the chain (the common case — most `?`-only
+            // sites propagate one) names its own domain instead of the tautological
+            // literal "error"; a genuinely opaque `anyhow!(...)` with no CfgdError in
+            // its chain falls back to "internal".
             let message = cfgd_core::output::collapse_to_subject_line(err);
+            let kind = err
+                .downcast_ref::<cfgd_core::errors::CfgdError>()
+                .map(cfgd_core::errors::CfgdError::kind)
+                .unwrap_or("internal");
             cfgd_core::output::error_doc(
                 "",
-                "error",
+                kind,
                 message.clone(),
                 serde_json::json!({ "message": message }),
             )
@@ -324,6 +333,67 @@ mod tests {
             out.contains("cfgd init"),
             "expected remediation naming `cfgd init`, got: {out:?}"
         );
+    }
+
+    #[test]
+    fn render_cli_error_names_a_real_kind_for_a_bare_propagated_cfgd_error() {
+        // A plain `?`-propagated CfgdError (no CliErrorMeta attached, the
+        // common case for most call sites) must report its own domain, not
+        // the tautological literal "error" the untyped fallback used to emit.
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        let err: anyhow::Error =
+            cfgd_core::errors::CfgdError::Source(cfgd_core::errors::SourceError::NotFound {
+                name: "acme".into(),
+            })
+            .into();
+        render_cli_error(&printer, &err);
+        printer.flush();
+        let raw = cfgd_core::test_helpers::captured_text(&buf);
+        let json: serde_json::Value = serde_json::from_str(&raw).expect("json payload must parse");
+        assert_eq!(
+            json["error"], "source",
+            "kind must name the CfgdError variant"
+        );
+        assert!(
+            json.get("name").is_none(),
+            "an unnamed failure must omit the name field entirely: {json:?}"
+        );
+    }
+
+    #[test]
+    fn render_cli_error_falls_back_to_internal_for_a_genuinely_opaque_error() {
+        // No CfgdError anywhere in the chain — the one case with no real
+        // domain to report.
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        let err = anyhow::anyhow!("a raw opaque failure with no typed source");
+        render_cli_error(&printer, &err);
+        printer.flush();
+        let raw = cfgd_core::test_helpers::captured_text(&buf);
+        let json: serde_json::Value = serde_json::from_str(&raw).expect("json payload must parse");
+        assert_eq!(json["error"], "internal");
+        assert!(json.get("name").is_none());
+    }
+
+    #[test]
+    fn render_cli_error_keeps_the_name_when_a_handler_supplied_one() {
+        // A handler-supplied name (via CliErrorMeta) is real data, not the
+        // absence this fix targets, and must still round-trip.
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        let err = cli_error(
+            "mymod",
+            "already_exists",
+            "Module 'mymod' already exists",
+            serde_json::json!({}),
+        );
+        render_cli_error(&printer, &err);
+        printer.flush();
+        let raw = cfgd_core::test_helpers::captured_text(&buf);
+        let json: serde_json::Value = serde_json::from_str(&raw).expect("json payload must parse");
+        assert_eq!(json["error"], "already_exists");
+        assert_eq!(json["name"], "mymod");
     }
 
     #[test]
@@ -444,7 +514,7 @@ mod tests {
         );
         let v: serde_json::Value =
             serde_json::from_str(out.trim()).expect("buffer is exactly one JSON value");
-        assert_eq!(v["error"], "error");
+        assert_eq!(v["error"], "internal");
         assert_eq!(v["message"], "some opaque failure");
     }
 

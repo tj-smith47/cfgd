@@ -258,20 +258,25 @@ pub fn condense_script_label(body: &str) -> String {
 }
 
 /// Build a stable-shaped error Doc for `bail!`-on-emit-then-fail sites.
-/// Carries an `error` category key + `name` so structured consumers
-/// (`-o json`) see a consistent payload on failure. Any extra fields in
-/// `extras` (object literal expected) are merged into the payload alongside
-/// `error` + `name`.
+/// Carries an `error` category key so structured consumers (`-o json`) can
+/// route a failure without parsing the human message; `name` joins it only
+/// when the caller actually has one — a resource-less failure (a plain
+/// `?`-propagated error with no CLI handler attached) has no name to report,
+/// and an empty string in the payload would read as "the name is empty"
+/// rather than "there is no name". Any extra fields in `extras` (object
+/// literal expected) are merged into the payload alongside them.
 pub fn error_doc(
     name: &str,
     error_kind: &str,
     message: impl Into<String>,
     extras: serde_json::Value,
 ) -> Doc {
-    let mut payload = serde_json::json!({
-        "error": error_kind,
-        "name": name,
-    });
+    let mut payload = serde_json::json!({ "error": error_kind });
+    if !name.is_empty()
+        && let serde_json::Value::Object(payload_map) = &mut payload
+    {
+        payload_map.insert("name".to_string(), serde_json::Value::String(name.into()));
+    }
     if let serde_json::Value::Object(extra_map) = extras
         && let serde_json::Value::Object(payload_map) = &mut payload
     {
@@ -294,6 +299,49 @@ pub mod test_capture;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod error_doc_tests {
+    use super::error_doc;
+
+    #[test]
+    fn a_real_name_is_present_in_the_payload() {
+        let doc = error_doc("mymod", "already_exists", "boom", serde_json::json!({}));
+        let json = doc.data_or_self_json();
+        assert_eq!(json["error"], "already_exists");
+        assert_eq!(json["name"], "mymod");
+    }
+
+    #[test]
+    fn an_empty_name_is_omitted_rather_than_serialized_as_an_empty_string() {
+        let doc = error_doc("", "internal", "boom", serde_json::json!({}));
+        let json = doc.data_or_self_json();
+        assert_eq!(json["error"], "internal");
+        assert!(
+            json.get("name").is_none(),
+            "an empty name must not appear in the payload at all: {json:?}"
+        );
+        assert_eq!(
+            json.as_object().map(serde_json::Map::len),
+            Some(1),
+            "the payload must carry only the error key: {json:?}"
+        );
+    }
+
+    #[test]
+    fn extras_still_merge_alongside_an_omitted_name() {
+        let doc = error_doc(
+            "",
+            "clone_failed",
+            "boom",
+            serde_json::json!({ "url": "https://example.com/acme.git" }),
+        );
+        let json = doc.data_or_self_json();
+        assert_eq!(json["error"], "clone_failed");
+        assert_eq!(json["url"], "https://example.com/acme.git");
+        assert!(json.get("name").is_none());
+    }
+}
 
 #[cfg(test)]
 mod drift_detail_tests {

@@ -1724,9 +1724,12 @@ selector format's success shape and an error doc's shape rarely agree:
   `error` is a machine-readable kind (`not_found`, `registry_not_found`, `already_exists`,
   `parse_failed`, `key_not_found`, `target_not_writable`, …), `name` identifies the subject
   (module / source / profile / registry / key), and any
-  command-specific fields follow. An error that carries no typed metadata falls back to
-  `{ "error": "error", "name": "", "message": "<text>" }`. Remediation hints are human-only and
-  never appear in the structured payload.
+  command-specific fields follow. `name` is present only when the failure has a subject to
+  report — an empty subject is omitted from the payload rather than serialized as `""`. A
+  plain propagated error with no CLI handler attached still gets a real kind: any typed
+  `CfgdError` in its chain names its own domain (`config`, `source`, `module`, …), and only a
+  genuinely untyped failure falls back to `{ "error": "internal", "message": "<text>" }`.
+  Remediation hints are human-only and never appear in the structured payload.
 - **Selector structured (`-o name` / `jsonpath=` / `template=` / `template-file=`):** the same
   error message is *always* echoed to `stderr` first, before the selector is evaluated. A
   selector is written against the success shape (`.items[].foo`), and an error doc's shape

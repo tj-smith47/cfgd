@@ -70,6 +70,33 @@ pub enum CfgdError {
     Io(#[from] std::io::Error),
 }
 
+impl CfgdError {
+    /// A stable, machine-readable name for the top-level variant — the
+    /// domain a structured (`-o json`) consumer can route a failure on
+    /// without parsing the human message. Snake_case to match every other
+    /// `error_kind` string the CLI boundary already emits (`not_found`,
+    /// `already_exists`, …).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Config(_) => "config",
+            Self::File(_) => "file",
+            Self::Package(_) => "package",
+            Self::Secret(_) => "secret",
+            Self::State(_) => "state",
+            Self::Daemon(_) => "daemon",
+            Self::Source(_) => "source",
+            Self::Composition(_) => "composition",
+            Self::Upgrade(_) => "upgrade",
+            Self::Module(_) => "module",
+            Self::Generate(_) => "generate",
+            Self::Oci(_) => "oci",
+            Self::Skill(_) => "skill",
+            Self::Backup(_) => "backup",
+            Self::Io(_) => "io",
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("config file not found: {path}")]
@@ -984,5 +1011,23 @@ mod tests {
             matches!(cfgd_err, CfgdError::State(StateError::Database(_))),
             "rusqlite error must map to CfgdError::State(Database)",
         );
+    }
+
+    #[test]
+    fn kind_names_the_top_level_variant_not_the_literal_word_error() {
+        let config_err: CfgdError = ConfigError::ProfileNotFound {
+            name: "work".into(),
+        }
+        .into();
+        assert_eq!(config_err.kind(), "config");
+
+        let source_err: CfgdError = SourceError::NotFound {
+            name: "acme".into(),
+        }
+        .into();
+        assert_eq!(source_err.kind(), "source");
+
+        let io_err: CfgdError = std::io::Error::new(std::io::ErrorKind::NotFound, "gone").into();
+        assert_eq!(io_err.kind(), "io");
     }
 }

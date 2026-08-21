@@ -994,12 +994,14 @@ mod tests {
     #[test]
     fn emit_structured_name_on_an_unnamed_error_doc_echoes_the_message_to_stderr() {
         let (stdout_buf, sink) = capture();
-        // `render_cli_error`'s untyped fallback names `""` — the shape that
-        // made `-o name` print a blank line and nothing else.
+        // `error_doc` omits the `name` field entirely when the caller has none
+        // (render_cli_error's untyped fallback) — `-o name` genuinely has
+        // nothing to print rather than the empty-string field that used to
+        // make it print a spurious blank line.
         let doc = crate::output::error_doc("", "error", "boom", serde_json::json!({}));
         let (handled, _output_error, stderr) = emit_with_stderr(&sink, &doc, &OutputFormat::Name);
         assert!(handled);
-        assert_eq!(take(&stdout_buf), "\n");
+        assert_eq!(take(&stdout_buf), "");
         assert_eq!(stderr, "boom\n");
     }
 

@@ -112,4 +112,4 @@ missing from the table.
 | version                      | yes               | version info queried by scripts                    |
 | workflow_generate            | yes               | generated workflow metadata                        |
 
-Error-path `Doc`s also carry `with_data` with a `{"error": "...", "name": "...", ...}` payload so structured consumers see a consistent shape on failure.
+Error-path `Doc`s also carry `with_data` with a `{"error": "...", "name": "...", ...}` payload so structured consumers see a consistent shape on failure. `name` is present only when the failure has a subject; `error` is always a real kind (a `CfgdError` variant's name, or `internal` for a genuinely untyped failure) — never the empty string or the literal placeholder `"error"`. See `docs/cli-reference.md`'s "Error output" section.
