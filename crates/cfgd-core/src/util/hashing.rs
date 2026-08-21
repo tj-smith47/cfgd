@@ -126,3 +126,119 @@ pub fn version_satisfies(version_str: &str, requirement_str: &str) -> bool {
         .map(|ver| req.matches(&ver))
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The type's whole contract: the seam between two `update` calls adds
+    /// nothing to the digest, so a caller that replaced a buffered
+    /// concatenation with the stream produces the same bytes it always did.
+    /// Every existing `modules.lock` entry verifies against a digest taken
+    /// the old way.
+    #[test]
+    fn a_seam_between_updates_is_not_part_of_the_digest() {
+        let whole = b"module.yaml\0kind: Module\0files/init.lua\0vim.opt\0";
+        for split in 0..=whole.len() {
+            let mut stream = Sha256Stream::new();
+            stream.update(&whole[..split]);
+            stream.update(&whole[split..]);
+            assert_eq!(
+                stream.finish_hex(),
+                sha256_hex(whole),
+                "the seam at byte {split} changed the digest"
+            );
+        }
+    }
+
+    /// A file part hashes as its bytes and nothing else — no length prefix, no
+    /// path, no separator of its own. The caller supplies every delimiter, so
+    /// an in-memory part and a file part are interchangeable at the same
+    /// position in the sequence.
+    #[test]
+    fn a_file_part_hashes_as_its_bytes_in_the_callers_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let body = b"kind: Module\nmetadata:\n  name: nvim\n";
+        let path = tmp.path().join("module.yaml");
+        std::fs::write(&path, body).unwrap();
+
+        let mut stream = Sha256Stream::new();
+        stream.update(b"module.yaml");
+        stream.update(&[0]);
+        stream.absorb_file(&path).unwrap();
+        stream.update(&[0]);
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"module.yaml");
+        expected.push(0);
+        expected.extend_from_slice(body);
+        expected.push(0);
+        assert_eq!(stream.finish_hex(), sha256_hex(&expected));
+    }
+
+    /// The chunked read is a read, not a framing: a file larger than one chunk
+    /// hashes as one uninterrupted sequence, and the parts around it keep
+    /// their places.
+    #[test]
+    fn a_file_larger_than_one_chunk_hashes_as_one_sequence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let body = vec![b'x'; SHA256_STREAM_CHUNK + 7];
+        let path = tmp.path().join("big.bin");
+        std::fs::write(&path, &body).unwrap();
+
+        let mut stream = Sha256Stream::new();
+        stream.update(b"head");
+        stream.absorb_file(&path).unwrap();
+        stream.update(b"tail");
+
+        assert_eq!(
+            stream.finish_hex(),
+            "98227d8ab8add3942a886765921db6d32df6bf4c158897d9e250a0390a4674a0"
+        );
+    }
+
+    /// `finish_digest` is `finish_hex` under the same `sha256:` prefix
+    /// [`sha256_digest`] uses — the form `hash_module_contents` stores in
+    /// `modules.lock`.
+    #[test]
+    fn the_digest_form_matches_the_one_shot_spelling() {
+        let mut stream = Sha256Stream::new();
+        stream.update(b"alpha");
+        stream.update(b"beta");
+        let digest = stream.finish_digest();
+        assert_eq!(digest, sha256_digest(b"alphabeta"));
+        assert_eq!(strip_sha256_prefix(&digest), sha256_hex(b"alphabeta"));
+    }
+
+    /// One literal digest over the exact seam shape `hash_module_contents`
+    /// builds (`<rel-path>\0<contents>\0`, files in sorted order). The tests
+    /// above are all self-consistent — they would stay green if the seam
+    /// order or a delimiter changed on both sides at once. This one pins the
+    /// VALUE, so a reframing has to be a deliberate edit here rather than a
+    /// silent re-hash of every user's lockfile.
+    #[test]
+    fn the_lockfile_seam_shape_has_a_pinned_digest() {
+        let mut stream = Sha256Stream::new();
+        for (name, body) in [("a.txt", "alpha"), ("b.txt", "beta")] {
+            stream.update(name.as_bytes());
+            stream.update(&[0]);
+            stream.update(body.as_bytes());
+            stream.update(&[0]);
+        }
+        assert_eq!(
+            stream.finish_digest(),
+            "sha256:44e330d3f44895307cdc6c23a01e6c001f9db1a5ed49b5ad2553206d1adbf105"
+        );
+    }
+
+    /// An absent file is reported, not silently absorbed as nothing — a tree
+    /// walk that lost a file between listing and hashing must not produce a
+    /// digest that looks like a successful one.
+    #[test]
+    fn absorbing_a_missing_file_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut stream = Sha256Stream::new();
+        let err = stream.absorb_file(&tmp.path().join("nope")).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+}

@@ -143,8 +143,8 @@ pub struct FileIdentity {
 /// could not be answered — the file is gone, or the probe itself failed.
 ///
 /// Reach for [`try_file_identity`] where the difference matters: a caller acting
-/// on "this is no longer the file I opened" must not act the same way on "I
-/// could not look".
+/// on "this is no longer the file that was opened" must not act the same way on
+/// "the question could not be asked".
 pub fn file_identity(path: &std::path::Path) -> Option<FileIdentity> {
     try_file_identity(path).ok()
 }
@@ -187,7 +187,7 @@ pub fn try_file_identity(path: &std::path::Path) -> std::io::Result<FileIdentity
     let file = std::fs::File::open(path)?;
     // SAFETY: `BY_HANDLE_FILE_INFORMATION` is a plain-old-data struct of
     // integer fields; the all-zero bit pattern is a valid initial value
-    // that `GetFileInformationByHandle` will overwrite before we read it.
+    // that `GetFileInformationByHandle` overwrites before it is read.
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     // SAFETY: `file.as_raw_handle()` returns a valid, open Win32 file
     // handle owned by `file`, which outlives the call. `&mut info`
@@ -243,9 +243,14 @@ mod tests {
         assert_eq!(first, try_file_identity(&file).unwrap());
 
         // Replacing the file at the same path is a different identity, which is
-        // the whole of what a holder is asking about.
-        std::fs::remove_file(&file).unwrap();
-        std::fs::write(&file, b"y").unwrap();
+        // the whole of what a holder is asking about. The replacement is
+        // RENAMED over the path, which is what the production case does (a
+        // state-directory migration) and what keeps the claim true on every
+        // filesystem: unlink-then-create hands the same inode straight back on
+        // ext4, so the simulation, not the product, would be what failed.
+        let replacement = tmp.path().join("replacement");
+        std::fs::write(&replacement, b"y").unwrap();
+        std::fs::rename(&replacement, &file).unwrap();
         assert_ne!(first, try_file_identity(&file).unwrap());
     }
 
