@@ -73,7 +73,7 @@ use crate::config::{ResolvedProfile, ScriptShell};
 use crate::errors::{PackageError, Result, StateError};
 use crate::modules::ResolvedModule;
 use crate::output::{LaneOutput, Printer};
-use crate::providers::{ActionNote, NoteSink, PackageStateStore, ProviderRegistry};
+use crate::providers::{ActionNote, NoteSink, PackageAction, PackageStateStore, ProviderRegistry};
 
 use super::apply::ActionOutcome;
 use super::format::{
@@ -253,12 +253,15 @@ struct Slot<'p> {
     /// Read off the plan rather than re-derived, so the scheduler cannot
     /// disagree with the edges the preview showed. Empty for package work.
     depends_on: &'p [String],
-    /// Whether this action's manager registers sources for its family
-    /// (`brew-tap`). The dispatcher offers these ahead of the tier barrier
-    /// and holds the family's other installs behind them: a formula may only
-    /// exist in the tap being added by this very run, and tier order alone
-    /// would run a module's brew installs before a profile-declared tap.
-    /// Always `false` for a `Prerequisites` node, whose ordering is the DAG's.
+    /// Whether this action INSTALLS through a manager that registers sources
+    /// for its family (`brew-tap`). The dispatcher offers these ahead of the
+    /// tier barrier and holds the family's other installs behind them: a
+    /// formula may only exist in the tap being added by this very run, and
+    /// tier order alone would run a module's brew installs before a
+    /// profile-declared tap. Install-shaped actions only — that reason does
+    /// not apply to a removal, so an untap neither crosses the barrier nor
+    /// holds its family. Always `false` for a `Prerequisites` node, whose
+    /// ordering is the DAG's.
     registers_sources: bool,
     state: SlotState,
 }
@@ -409,6 +412,34 @@ impl<'p> Slot<'p> {
         }
         self.manager.as_deref().map(crate::manager_family)
     }
+}
+
+/// Whether `action` INSTALLS through a manager that registers sources for its
+/// family — the derivation behind [`Slot::registers_sources`].
+///
+/// Install-shaped arms only: the hoist-and-hold exists because a formula may
+/// only exist in the repository the tap adds, and that reason does not apply
+/// to a removal — an untap hoisted across the barrier would run BEFORE the
+/// installs that still resolve through the tap it removes. A `Prerequisites`
+/// node is excluded by shape (neither arm matches), keeping its ordering the
+/// DAG's.
+fn registers_family_sources(action: &Action, registry: &ProviderRegistry) -> bool {
+    if !matches!(
+        action,
+        Action::Package(PackageAction::Install { .. })
+            | Action::Module(ModuleAction {
+                kind: ModuleActionKind::InstallPackages { .. },
+                ..
+            })
+    ) {
+        return false;
+    }
+    action_manager(action).is_some_and(|manager| {
+        registry
+            .package_managers()
+            .iter()
+            .any(|pm| pm.name() == manager && pm.registers_family_sources())
+    })
 }
 
 /// Whether every action of `slot`'s module's transitive dependencies has
@@ -625,6 +656,33 @@ struct DispatchState<'a> {
     running: usize,
 }
 
+/// The lanes whose next occupant must be a source registration: a family
+/// with a dispatchable tap waiting refuses its installs until the tap has
+/// run, because a formula may only exist in the repository the tap adds.
+/// Judged on depends/dag alone — fail OPEN: a tap held by a module
+/// dependency edge does not hold its family, or the edge and the family
+/// could each be waiting on the other.
+///
+/// Shared by [`pick_next`] (the hold itself) and [`held_waits`] (the row
+/// saying so), so the dispatcher and the renderer can never disagree about
+/// which families are held.
+fn source_held_lanes<'s>(
+    slots: &'s [Slot<'_>],
+    deps: &HashMap<&str, HashSet<&str>>,
+) -> HashSet<&'s str> {
+    slots
+        .iter()
+        .enumerate()
+        .filter(|(index, slot)| {
+            slot.state == SlotState::Waiting
+                && slot.registers_sources
+                && depends_satisfied(slots, *index, deps)
+                && dag_satisfied(slots, *index)
+        })
+        .filter_map(|(_, slot)| slot.lane())
+        .collect()
+}
+
 /// The next action to dispatch, or `None` when nothing may start right now.
 fn pick_next(
     slots: &[Slot<'_>],
@@ -648,23 +706,7 @@ fn pick_next(
     // while a lone owner still fills every lane in the phase.
     let mut owner_busy: Option<usize> = None;
 
-    // The lanes whose next occupant must be a source registration: a family
-    // with a dispatchable tap waiting refuses its installs until the tap has
-    // run, because a formula may only exist in the repository the tap adds.
-    // Judged on depends/dag alone — fail OPEN: a tap held by a module
-    // dependency edge does not hold its family, or the edge and the family
-    // could each be waiting on the other.
-    let source_held_lanes: HashSet<&str> = slots
-        .iter()
-        .enumerate()
-        .filter(|(index, slot)| {
-            slot.state == SlotState::Waiting
-                && slot.registers_sources
-                && depends_satisfied(slots, *index, deps)
-                && dag_satisfied(slots, *index)
-        })
-        .filter_map(|(_, slot)| slot.lane())
-        .collect();
+    let source_held = source_held_lanes(slots, deps);
 
     // Two passes over plan order: source registrations first, across BOTH
     // tiers — the tier barrier orders module work before profile work, and a
@@ -689,7 +731,7 @@ fn pick_next(
             if slot.tier != in_flight {
                 continue;
             }
-            if slot.lane().is_some_and(|l| source_held_lanes.contains(l)) {
+            if slot.lane().is_some_and(|l| source_held.contains(l)) {
                 continue;
             }
         }
@@ -705,6 +747,16 @@ fn pick_next(
             // later action would resolve a binary through a PATH the bootstrap
             // has not finished populating. Returning here rather than falling
             // through to `owner_busy` is what makes it a hard stop.
+            if slot.registers_sources && slot.tier != in_flight {
+                // A barrier-crossing tap whose manager needs bootstrapping
+                // must not quiesce the tiers ahead of it: its own family is
+                // already held (`source_held`), so only that family waits,
+                // and the tap still starts only on a quiet phase.
+                if state.running == 0 {
+                    return Some(index);
+                }
+                continue;
+            }
             return (state.running == 0).then_some(index);
         }
         if slot.lane().is_some_and(|l| state.lanes_busy.contains(l)) {
@@ -805,13 +857,7 @@ impl super::Reconciler<'_> {
                     Action::Manager(node) => node.depends_on(),
                     _ => &[],
                 },
-                registers_sources: !matches!(action, Action::Manager(_))
-                    && action_manager(action).is_some_and(|manager| {
-                        self.registry
-                            .package_managers()
-                            .iter()
-                            .any(|pm| pm.name() == manager && pm.registers_family_sources())
-                    }),
+                registers_sources: registers_family_sources(action, self.registry),
                 state: SlotState::Waiting,
             })
             .collect();
@@ -1195,9 +1241,19 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
         })
         .collect();
 
+    let source_held = source_held_lanes(slots, inputs.deps);
+
     // `slots` is walked in plan order, so the rows built from it keep it.
     for (index, slot) in slots.iter().enumerate() {
-        if slot.state != SlotState::Waiting || Some(slot.tier) != in_flight {
+        if slot.state != SlotState::Waiting {
+            continue;
+        }
+        // A source registration is exempt from the tier filter for the same
+        // reason `pick_next` offers it across the barrier: a profile-declared
+        // tap can be blocked while the module tier is in flight, and filtering
+        // it out here would leave the one action holding a whole family absent
+        // from the live region for the length of its wait.
+        if Some(slot.tier) != in_flight && !slot.registers_sources {
             continue;
         }
         if !depends_satisfied(slots, index, inputs.deps) {
@@ -1230,8 +1286,17 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
                 // the whole point of the grammar, and the window it describes
                 // — a module holding brew while another holds apt — is the one
                 // the wait line exists for.
-                let Some(lane) = slot.lane().filter(|lane| inputs.lanes_busy.contains(*lane))
-                else {
+                // A busy lane, or one held for a dispatchable tap: an install
+                // refused because its family's next occupant must be a source
+                // registration is waiting on that family exactly as it would
+                // be on a running action — with nothing in `lanes_busy` at
+                // all, its wait was otherwise invisible. The tap itself is
+                // exempt from the second half: it IS the hold, and would name
+                // itself as its own blocker.
+                let Some(lane) = slot.lane().filter(|lane| {
+                    inputs.lanes_busy.contains(*lane)
+                        || (!slot.registers_sources && source_held.contains(*lane))
+                }) else {
                     continue;
                 };
                 // The lane, not the registered name: an action for `brew-cask`
@@ -1575,6 +1640,155 @@ mod tests {
             pick_next(&slots, &registry, &deps, &held),
             Some(2),
             "with nothing else ready the owner-held tap is the pick, never the formula"
+        );
+    }
+
+    #[test]
+    fn a_draining_tap_quiets_only_its_own_family_not_the_phase() {
+        // The tap's manager needs bootstrapping, so it starts only on a quiet
+        // phase — but quiescing the tiers ahead of it would serialize work the
+        // tap cannot affect. Its own family is already held; the rest of the
+        // phase keeps moving.
+        let nvim = Owner::module("nvim");
+        let profile = Owner::profile("work");
+        let formula = install("brew", "neovim");
+        let unrelated = install("apt", "git");
+        let tap = install("brew-tap", "acme/tools");
+        let mut slots = vec![
+            slot(&nvim, Tier::Modules, "brew", &formula),
+            slot(&nvim, Tier::Modules, "apt", &unrelated),
+            slot(&profile, Tier::Rest, "brew-tap", &tap),
+        ];
+        slots[2].registers_sources = true;
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(
+            crate::test_helpers::MockPackageManager::new("brew-tap").unavailable(),
+        ));
+        let deps = HashMap::new();
+        let no_lanes = HashSet::new();
+        let no_owners = HashMap::new();
+
+        assert_eq!(
+            pick_next(
+                &slots,
+                &registry,
+                &deps,
+                &DispatchState {
+                    lanes_busy: &no_lanes,
+                    owners_busy: &no_owners,
+                    draining: false,
+                    running: 1,
+                },
+            ),
+            Some(1),
+            "module-tier work outside the tap's family proceeds while the draining tap waits"
+        );
+        assert_eq!(
+            pick_next(
+                &slots,
+                &registry,
+                &deps,
+                &DispatchState {
+                    lanes_busy: &no_lanes,
+                    owners_busy: &no_owners,
+                    draining: false,
+                    running: 0,
+                },
+            ),
+            Some(2),
+            "on a quiet phase the draining tap is the pick"
+        );
+    }
+
+    #[test]
+    fn only_an_install_derives_the_source_registration_flag() {
+        // The hoist-and-hold exists so installs can resolve from the tap
+        // being added; an untap delivers no repository, so it gets neither
+        // the hoist nor the hold.
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(
+            crate::test_helpers::MockPackageManager::new("brew-tap").registering_family_sources(),
+        ));
+
+        assert!(registers_family_sources(
+            &install("brew-tap", "acme/tools"),
+            &registry
+        ));
+        let untap = Action::Package(PackageAction::Uninstall {
+            manager: "brew-tap".to_string(),
+            packages: vec!["acme/tools".to_string()],
+            origin: "local".to_string(),
+        });
+        assert!(
+            !registers_family_sources(&untap, &registry),
+            "an untap neither crosses the tier barrier nor holds its family"
+        );
+        assert!(
+            !registers_family_sources(&install("brew", "neovim"), &registry),
+            "an install through a non-registering manager stays behind the barrier"
+        );
+    }
+
+    #[test]
+    fn an_install_held_for_a_dispatchable_tap_names_its_family_lane() {
+        // Nothing is running, so `lanes_busy` is empty — the hold is the tap
+        // itself, and without this row the formula would be absent from the
+        // live region for the whole of its wait.
+        let nvim = Owner::module("nvim");
+        let profile = Owner::profile("work");
+        let formula = install("brew", "neovim");
+        let tap = install("brew-tap", "acme/tools");
+        let mut slots = vec![
+            slot(&nvim, Tier::Modules, "brew", &formula),
+            slot(&profile, Tier::Rest, "brew-tap", &tap),
+        ];
+        slots[1].registers_sources = true;
+        let groups = groups_of(&slots);
+
+        let held = held(&slots, &groups, &HashMap::new(), &HashSet::new());
+
+        assert!(
+            rows(&held).contains(&(
+                "module:nvim".to_string(),
+                "brew install neovim · waiting on brew".to_string()
+            )),
+            "a source-held install says what its family is waiting on: {:?}",
+            rows(&held)
+        );
+        assert!(
+            !rows(&held)
+                .iter()
+                .any(|(owner, subject)| owner == "profile:work" && subject.contains("brew-tap")),
+            "the tap is the hold, never its own blocker: {:?}",
+            rows(&held)
+        );
+    }
+
+    #[test]
+    fn a_barrier_crossing_tap_blocked_by_a_running_family_gets_a_row() {
+        // The tap sits in the Rest tier while modules are in flight; the tier
+        // filter must not hide the one action holding the whole brew family.
+        let nvim = Owner::module("nvim");
+        let profile = Owner::profile("work");
+        let running = probe_action();
+        let tap = install("brew-tap", "acme/tools");
+        let mut slots = vec![
+            slot(&nvim, Tier::Modules, "brew", &running),
+            slot(&profile, Tier::Rest, "brew-tap", &tap),
+        ];
+        slots[0].state = SlotState::Running;
+        slots[1].registers_sources = true;
+        let groups = groups_of(&slots);
+
+        let held = held(&slots, &groups, &HashMap::new(), &busy(&["brew"]));
+
+        assert!(
+            rows(&held).contains(&(
+                "profile:work".to_string(),
+                "brew-tap install acme/tools · waiting on brew".to_string()
+            )),
+            "the tier filter does not hide a barrier-crossing tap: {:?}",
+            rows(&held)
         );
     }
 
