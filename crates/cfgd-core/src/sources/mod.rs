@@ -252,7 +252,13 @@ impl SourceManager {
         // longest wait any composing command takes and the one that used to
         // happen with nothing on screen. Narrated here rather than at the call
         // sites, so every command that composes gets it from one place.
-        printer.narrate("Refreshing sources", |sp| -> Result<()> {
+        // SILENT on both arms: `load_source` already writes the permanent
+        // failure lines for the source it could not fetch (`✗ Cloning source
+        // '<name>'` plus `✗ Failed to clone source '<name>'`), so a settled
+        // `Fail` here would be the same failure a third time — and `Role::Fail`
+        // survives `Verbosity::Quiet`, so it would land beside a `-o json`
+        // payload too.
+        printer.narrate_silent("Refreshing sources", |sp| -> Result<()> {
             for spec in sources {
                 sp.set_message(format!("Refreshing source:{}", spec.name));
                 match self.load_source(spec, printer) {
@@ -300,8 +306,9 @@ impl SourceManager {
         // No network here, but a cached checkout is still parsed, its manifest
         // read and its signature verified per source — narrated for the same
         // reason the refreshing loop is, and with the label that says which of
-        // the two a run is actually doing.
-        printer.narrate("Loading cached sources", |sp| -> Result<()> {
+        // the two a run is actually doing. Silent on both arms for the same
+        // reason `load_sources` is: `load_source_cached` words its own failure.
+        printer.narrate_silent("Loading cached sources", |sp| -> Result<()> {
             for spec in sources {
                 sp.set_message(format!("Loading source:{}", spec.name));
                 self.load_source_cached(spec, printer)?;

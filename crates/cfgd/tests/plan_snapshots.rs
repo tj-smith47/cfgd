@@ -31,9 +31,11 @@ mod common;
 
 use std::path::Path;
 
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::output_types::{PlanActionOutput, PlanGroupOutput, PlanOutput, PlanPhaseOutput};
 use cfgd::cli::plan::cmd_plan;
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
+use cfgd_core::output::test_capture::strip_spinner_duration;
 use cfgd_core::output::{Doc, Printer};
 use cfgd_core::reconciler::Owner;
 use pretty_assertions::assert_eq;
@@ -317,6 +319,57 @@ fn plan_with_a_decision_from_an_unsubscribed_source_human() {
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "plan/with_inert_decision.txt",
+        &stripped
+    );
+}
+
+#[test]
+fn plan_module_resolution_failure_human() {
+    // `resolve_modules` narrates its walk through `Printer::narrate`, whose
+    // FAILURE arm settles a permanent `Role::Fail` line at whatever module the
+    // walk was on — a line that survives `Verbosity::Quiet` and a `-o json`
+    // run. It is the one legitimately-permanent line the narration wave added,
+    // and this golden is what pins it: nothing else in the corpus reaches a
+    // failing module walk.
+    //
+    // The module declares a package no registered manager can satisfy
+    // (`prefer:` names a manager that does not exist), so the failure is the
+    // same on every host and reaches no real package manager.
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+    )
+    .unwrap();
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - badmod\n",
+    )
+    .unwrap();
+    let mod_dir = config_dir.path().join("modules").join("badmod");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: badmod\nspec:\n  packages:\n    - name: nothing-provides-this\n      prefer:\n        - no-such-manager\n",
+    )
+    .unwrap();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    let err =
+        cmd_plan(&cli, &printer, &plan_args()).expect_err("an unresolvable package must fail");
+    render_cli_error(&printer, &err);
+    drop(printer);
+
+    let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);
+    let stripped = strip_spinner_duration(strip_ansi(&normalized));
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "plan/module_resolution_failure.txt",
         &stripped
     );
 }
