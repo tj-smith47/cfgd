@@ -170,7 +170,7 @@ pub fn build_module_show_doc(
             }
             PackageDisplay::Skipped { name, platforms } => {
                 s.status_with(Role::Info, format!("{}{}", name, platforms), |f| {
-                    f.detail("skipped (platform filter)")
+                    f.detail(crate::cli::status::PLATFORM_SKIPPED)
                 })
             }
             PackageDisplay::Unresolved { summary, error } => {
