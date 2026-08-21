@@ -5,25 +5,25 @@
     {
       "children": [
         {
-          "description": "",
+          "description": "Command the alias expands to.",
           "name": "command",
           "required": true,
           "type": "string"
         },
         {
-          "description": "",
+          "description": "Alias name, as typed at the shell prompt.",
           "name": "name",
           "required": true,
           "type": "string"
         }
       ],
-      "description": "",
+      "description": "Shell aliases this module contributes.",
       "name": "aliases",
       "required": false,
       "type": "[]object"
     },
     {
-      "description": "",
+      "description": "Names of other modules this one requires; cfgd resolves and applies them first.",
       "name": "depends",
       "required": false,
       "type": "[]string"
@@ -31,19 +31,19 @@
     {
       "children": [
         {
-          "description": "",
+          "description": "Variable name. Must be shell-safe and not a reserved `CFGD_*` name.",
           "name": "name",
           "required": true,
           "type": "string"
         },
         {
-          "description": "",
+          "description": "Variable value.",
           "name": "value",
           "required": true,
           "type": "string"
         }
       ],
-      "description": "",
+      "description": "Environment variables this module contributes.",
       "name": "env",
       "required": false,
       "type": "[]object"
@@ -109,7 +109,7 @@
           "type": "boolean"
         },
         {
-          "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
+          "description": "Path to the source file, relative to the module directory. Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
           "name": "source",
           "required": false,
           "type": "string"
@@ -121,13 +121,13 @@
           "type": "string"
         },
         {
-          "description": "",
+          "description": "Destination path on the machine. A leading `~` expands to the home directory.",
           "name": "target",
           "required": true,
           "type": "string"
         }
       ],
-      "description": "",
+      "description": "Files this module deploys.",
       "name": "files",
       "required": false,
       "type": "[]object"
@@ -135,7 +135,7 @@
     {
       "children": [
         {
-          "description": "",
+          "description": "Manager-specific package name aliases (e.g. `{apt: \"neovim\", brew: \"neovim\"}`) for a package named differently across managers.",
           "name": "aliases",
           "required": false,
           "type": "object"
@@ -147,19 +147,19 @@
           "type": "string"
         },
         {
-          "description": "",
+          "description": "Package managers to never use for this package, even if otherwise available and preferred by the profile.",
           "name": "deny",
           "required": false,
           "type": "[]string"
         },
         {
-          "description": "",
+          "description": "Minimum acceptable installed version, loosely parsed (`\"1.2\"`, `\"1\"`). A version below this is treated as not satisfying the module.",
           "name": "minVersion",
           "required": false,
           "type": "string"
         },
         {
-          "description": "",
+          "description": "The package name as the chosen manager knows it.",
           "name": "name",
           "required": false,
           "type": "string"
@@ -171,19 +171,19 @@
           "type": "string"
         },
         {
-          "description": "",
+          "description": "Platform tags gating this package alone. Empty means install on every platform the module itself is not already gated off of.",
           "name": "platforms",
           "required": false,
           "type": "[]string"
         },
         {
-          "description": "",
+          "description": "Manager preference order for this package, overriding the profile's default manager priority (e.g. `[brew, apt]`, or `[script]` to force the install script below).",
           "name": "prefer",
           "required": false,
           "type": "[]string"
         },
         {
-          "description": "",
+          "description": "Shell script to run instead of a manager install, selected via `prefer: [script]`.",
           "name": "script",
           "required": false,
           "type": "string"
@@ -195,7 +195,7 @@
           "type": "string"
         }
       ],
-      "description": "",
+      "description": "Packages this module installs.",
       "name": "packages",
       "required": false,
       "type": "[]object"
@@ -209,13 +209,13 @@
     {
       "children": [
         {
-          "description": "",
+          "description": "Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).",
           "name": "onChange",
           "required": false,
           "type": "[](string | object)",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -223,7 +223,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -253,7 +253,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
@@ -265,7 +265,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -291,13 +291,13 @@
           ]
         },
         {
-          "description": "",
+          "description": "Run when the daemon detects drift, before any auto-apply decision.",
           "name": "onDrift",
           "required": false,
           "type": "[](string | object)",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -305,7 +305,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -335,7 +335,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
@@ -347,7 +347,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -373,13 +373,13 @@
           ]
         },
         {
-          "description": "",
+          "description": "Run once after every action in an apply completes.",
           "name": "postApply",
           "required": false,
           "type": "[](string | object)",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -387,7 +387,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -417,7 +417,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
@@ -429,7 +429,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -455,13 +455,13 @@
           ]
         },
         {
-          "description": "",
+          "description": "Run once after a daemon reconcile tick completes.",
           "name": "postReconcile",
           "required": false,
           "type": "[](string | object)",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -469,7 +469,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -499,7 +499,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
@@ -511,7 +511,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -537,13 +537,13 @@
           ]
         },
         {
-          "description": "",
+          "description": "Run once before any action in an apply.",
           "name": "preApply",
           "required": false,
           "type": "[](string | object)",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -551,7 +551,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -581,7 +581,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
@@ -593,7 +593,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -619,13 +619,13 @@
           ]
         },
         {
-          "description": "",
+          "description": "Run once before a daemon reconcile tick begins.",
           "name": "preReconcile",
           "required": false,
           "type": "[](string | object)",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -633,7 +633,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -663,7 +663,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
@@ -675,7 +675,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -701,7 +701,7 @@
           ]
         }
       ],
-      "description": "",
+      "description": "Lifecycle scripts (`preApply`, `postApply`, …) this module runs.",
       "name": "scripts",
       "required": false,
       "type": "object"

@@ -6,25 +6,25 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Command the alias expands to.",
             "name": "command",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Alias name, as typed at the shell prompt.",
             "name": "name",
             "required": true,
             "type": "string"
           }
         ],
-        "description": "",
+        "description": "Shell aliases this module contributes.",
         "name": "aliases",
         "required": false,
         "type": "[]object"
       },
       {
-        "description": "",
+        "description": "Names of other modules this one requires; cfgd resolves and applies them first.",
         "name": "depends",
         "required": false,
         "type": "[]string"
@@ -32,19 +32,19 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Variable name. Must be shell-safe and not a reserved `CFGD_*` name.",
             "name": "name",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Variable value.",
             "name": "value",
             "required": true,
             "type": "string"
           }
         ],
-        "description": "",
+        "description": "Environment variables this module contributes.",
         "name": "env",
         "required": false,
         "type": "[]object"
@@ -110,7 +110,7 @@
             "type": "boolean"
           },
           {
-            "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
+            "description": "Path to the source file, relative to the module directory. Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
             "name": "source",
             "required": false,
             "type": "string"
@@ -122,13 +122,13 @@
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Destination path on the machine. A leading `~` expands to the home directory.",
             "name": "target",
             "required": true,
             "type": "string"
           }
         ],
-        "description": "",
+        "description": "Files this module deploys.",
         "name": "files",
         "required": false,
         "type": "[]object"
@@ -136,7 +136,7 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Manager-specific package name aliases (e.g. `{apt: \"neovim\", brew: \"neovim\"}`) for a package named differently across managers.",
             "name": "aliases",
             "required": false,
             "type": "object"
@@ -148,19 +148,19 @@
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Package managers to never use for this package, even if otherwise available and preferred by the profile.",
             "name": "deny",
             "required": false,
             "type": "[]string"
           },
           {
-            "description": "",
+            "description": "Minimum acceptable installed version, loosely parsed (`\"1.2\"`, `\"1\"`). A version below this is treated as not satisfying the module.",
             "name": "minVersion",
             "required": false,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "The package name as the chosen manager knows it.",
             "name": "name",
             "required": false,
             "type": "string"
@@ -172,19 +172,19 @@
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Platform tags gating this package alone. Empty means install on every platform the module itself is not already gated off of.",
             "name": "platforms",
             "required": false,
             "type": "[]string"
           },
           {
-            "description": "",
+            "description": "Manager preference order for this package, overriding the profile's default manager priority (e.g. `[brew, apt]`, or `[script]` to force the install script below).",
             "name": "prefer",
             "required": false,
             "type": "[]string"
           },
           {
-            "description": "",
+            "description": "Shell script to run instead of a manager install, selected via `prefer: [script]`.",
             "name": "script",
             "required": false,
             "type": "string"
@@ -196,7 +196,7 @@
             "type": "string"
           }
         ],
-        "description": "",
+        "description": "Packages this module installs.",
         "name": "packages",
         "required": false,
         "type": "[]object"
@@ -210,13 +210,13 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).",
             "name": "onChange",
             "required": false,
             "type": "[](string | object)",
             "variants": [
               {
-                "description": "",
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
                 "name": "string",
                 "required": false,
                 "type": "string"
@@ -224,7 +224,7 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -254,7 +254,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "The command or script body to run.",
                     "name": "run",
                     "required": true,
                     "type": "string"
@@ -266,7 +266,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                     "name": "timeout",
                     "required": false,
                     "type": "string"
@@ -292,13 +292,13 @@
             ]
           },
           {
-            "description": "",
+            "description": "Run when the daemon detects drift, before any auto-apply decision.",
             "name": "onDrift",
             "required": false,
             "type": "[](string | object)",
             "variants": [
               {
-                "description": "",
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
                 "name": "string",
                 "required": false,
                 "type": "string"
@@ -306,7 +306,7 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -336,7 +336,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "The command or script body to run.",
                     "name": "run",
                     "required": true,
                     "type": "string"
@@ -348,7 +348,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                     "name": "timeout",
                     "required": false,
                     "type": "string"
@@ -374,13 +374,13 @@
             ]
           },
           {
-            "description": "",
+            "description": "Run once after every action in an apply completes.",
             "name": "postApply",
             "required": false,
             "type": "[](string | object)",
             "variants": [
               {
-                "description": "",
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
                 "name": "string",
                 "required": false,
                 "type": "string"
@@ -388,7 +388,7 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -418,7 +418,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "The command or script body to run.",
                     "name": "run",
                     "required": true,
                     "type": "string"
@@ -430,7 +430,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                     "name": "timeout",
                     "required": false,
                     "type": "string"
@@ -456,13 +456,13 @@
             ]
           },
           {
-            "description": "",
+            "description": "Run once after a daemon reconcile tick completes.",
             "name": "postReconcile",
             "required": false,
             "type": "[](string | object)",
             "variants": [
               {
-                "description": "",
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
                 "name": "string",
                 "required": false,
                 "type": "string"
@@ -470,7 +470,7 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -500,7 +500,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "The command or script body to run.",
                     "name": "run",
                     "required": true,
                     "type": "string"
@@ -512,7 +512,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                     "name": "timeout",
                     "required": false,
                     "type": "string"
@@ -538,13 +538,13 @@
             ]
           },
           {
-            "description": "",
+            "description": "Run once before any action in an apply.",
             "name": "preApply",
             "required": false,
             "type": "[](string | object)",
             "variants": [
               {
-                "description": "",
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
                 "name": "string",
                 "required": false,
                 "type": "string"
@@ -552,7 +552,7 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -582,7 +582,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "The command or script body to run.",
                     "name": "run",
                     "required": true,
                     "type": "string"
@@ -594,7 +594,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                     "name": "timeout",
                     "required": false,
                     "type": "string"
@@ -620,13 +620,13 @@
             ]
           },
           {
-            "description": "",
+            "description": "Run once before a daemon reconcile tick begins.",
             "name": "preReconcile",
             "required": false,
             "type": "[](string | object)",
             "variants": [
               {
-                "description": "",
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
                 "name": "string",
                 "required": false,
                 "type": "string"
@@ -634,7 +634,7 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -664,7 +664,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "The command or script body to run.",
                     "name": "run",
                     "required": true,
                     "type": "string"
@@ -676,7 +676,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                     "name": "timeout",
                     "required": false,
                     "type": "string"
@@ -702,7 +702,7 @@
             ]
           }
         ],
-        "description": "",
+        "description": "Lifecycle scripts (`preApply`, `postApply`, …) this module runs.",
         "name": "scripts",
         "required": false,
         "type": "object"
@@ -725,19 +725,19 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Command the alias expands to.",
             "name": "command",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Alias name, as typed at the shell prompt.",
             "name": "name",
             "required": true,
             "type": "string"
           }
         ],
-        "description": "",
+        "description": "Shell aliases this profile sets.",
         "name": "aliases",
         "required": false,
         "type": "[]object"
@@ -769,7 +769,7 @@
             "type": "[](string | object)",
             "variants": [
               {
-                "description": "",
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
                 "name": "string",
                 "required": false,
                 "type": "string"
@@ -777,7 +777,7 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -807,7 +807,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "The command or script body to run.",
                     "name": "run",
                     "required": true,
                     "type": "string"
@@ -819,7 +819,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                     "name": "timeout",
                     "required": false,
                     "type": "string"
@@ -851,7 +851,7 @@
             "type": "[](string | object)",
             "variants": [
               {
-                "description": "",
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
                 "name": "string",
                 "required": false,
                 "type": "string"
@@ -859,7 +859,7 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -889,7 +889,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "The command or script body to run.",
                     "name": "run",
                     "required": true,
                     "type": "string"
@@ -901,7 +901,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                     "name": "timeout",
                     "required": false,
                     "type": "string"
@@ -945,7 +945,7 @@
             "type": "string"
           }
         ],
-        "description": "",
+        "description": "Declarative backup jobs this profile schedules.",
         "name": "backups",
         "required": false,
         "type": "[]object"
@@ -953,25 +953,25 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Variable name. Must be shell-safe and not a reserved `CFGD_*` name.",
             "name": "name",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Variable value.",
             "name": "value",
             "required": true,
             "type": "string"
           }
         ],
-        "description": "",
+        "description": "Environment variables this profile sets.",
         "name": "env",
         "required": false,
         "type": "[]object"
       },
       {
-        "description": "How far `spec.env` exports reach across the current user's environment. Omitted means \"inherit\" (a parent layer's value survives); the resolved default when no layer sets it is [`EnvScope::All`] — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces.",
+        "description": "How far `spec.env` exports reach across the current user's environment. Omitted means \"inherit\" (a parent layer's value survives); the resolved default when no layer sets it is `EnvScope::All` — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces.",
         "name": "envScope",
         "required": false,
         "type": "string"
@@ -1051,37 +1051,37 @@
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Destination path on the machine. A leading `~` expands to the home directory.",
                 "name": "target",
                 "required": true,
                 "type": "string"
               }
             ],
-            "description": "",
+            "description": "Files to deploy.",
             "name": "managed",
             "required": false,
             "type": "[]object"
           },
           {
-            "description": "",
+            "description": "Octal permission strings (`\"0600\"`) keyed by target path, applied after deployment.",
             "name": "permissions",
             "required": false,
             "type": "object"
           }
         ],
-        "description": "",
+        "description": "Files this profile deploys.",
         "name": "files",
         "required": false,
         "type": "object"
       },
       {
-        "description": "",
+        "description": "Names of base profiles to merge under this one. Later fields in this profile override an inherited base's; lists are unioned.",
         "name": "inherits",
         "required": false,
         "type": "[]string"
       },
       {
-        "description": "",
+        "description": "Names of modules this profile includes.",
         "name": "modules",
         "required": false,
         "type": "[]string"
@@ -1089,7 +1089,7 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "APK packages (Alpine).",
             "name": "apk",
             "required": false,
             "type": "[]string"
@@ -1097,19 +1097,19 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Path to a package-list file to install from, one name per line.",
                 "name": "file",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "APT package names to install.",
                 "name": "packages",
                 "required": false,
                 "type": "[]string"
               }
             ],
-            "description": "",
+            "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.",
             "name": "apt",
             "required": false,
             "type": "object"
@@ -1117,31 +1117,31 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Homebrew casks (GUI applications) to install.",
                 "name": "casks",
                 "required": false,
                 "type": "[]string"
               },
               {
-                "description": "",
+                "description": "Path to a Brewfile to apply instead of (or alongside) the lists below.",
                 "name": "file",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Homebrew formulae (CLI packages) to install.",
                 "name": "formulae",
                 "required": false,
                 "type": "[]string"
               },
               {
-                "description": "",
+                "description": "Third-party taps to add before installing formulae/casks.",
                 "name": "taps",
                 "required": false,
                 "type": "[]string"
               }
             ],
-            "description": "",
+            "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.",
             "name": "brew",
             "required": false,
             "type": "object"
@@ -1149,25 +1149,25 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Path to a `Cargo.toml` whose binaries to install instead of the list below.",
                 "name": "file",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Crate names to install (`cargo install`).",
                 "name": "packages",
                 "required": false,
                 "type": "[]string"
               }
             ],
-            "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`) and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
+            "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.",
             "name": "cargo",
             "required": false,
             "type": "object"
           },
           {
-            "description": "",
+            "description": "Chocolatey packages (Windows).",
             "name": "chocolatey",
             "required": false,
             "type": "[]string"
@@ -1175,55 +1175,55 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Command that exits zero when this manager is available on the machine.",
                 "name": "check",
                 "required": true,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Command template to install a package; `{package}` is substituted.",
                 "name": "install",
                 "required": true,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Command whose stdout lists installed package names, one per line.",
                 "name": "listInstalled",
                 "required": true,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Manager name, used in `prefer:`/`deny:` lists and status output.",
                 "name": "name",
                 "required": true,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Package names to install with this manager.",
                 "name": "packages",
                 "required": false,
                 "type": "[]string"
               },
               {
-                "description": "",
+                "description": "Command template to uninstall a package; `{package}` is substituted.",
                 "name": "uninstall",
                 "required": true,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Command to refresh the manager's own package index/cache before installs.",
                 "name": "update",
                 "required": false,
                 "type": "string"
               }
             ],
-            "description": "",
+            "description": "User-defined package managers not built into cfgd, each with its own check/install/uninstall commands.",
             "name": "custom",
             "required": false,
             "type": "[]object"
           },
           {
-            "description": "",
+            "description": "DNF packages (Fedora/RHEL).",
             "name": "dnf",
             "required": false,
             "type": "[]string"
@@ -1231,31 +1231,31 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Flatpak application ids to install.",
                 "name": "packages",
                 "required": false,
                 "type": "[]string"
               },
               {
-                "description": "",
+                "description": "Remote to install from (e.g. `flathub`). Falls back to Flatpak's configured default remote when omitted.",
                 "name": "remote",
                 "required": false,
                 "type": "string"
               }
             ],
-            "description": "",
+            "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.",
             "name": "flatpak",
             "required": false,
             "type": "object"
           },
           {
-            "description": "",
+            "description": "Go packages (`go install`).",
             "name": "go",
             "required": false,
             "type": "[]string"
           },
           {
-            "description": "",
+            "description": "Nix packages (`nix-env` / `nix profile`).",
             "name": "nix",
             "required": false,
             "type": "[]string"
@@ -1263,43 +1263,43 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Path to a `package.json` to install dependencies from.",
                 "name": "file",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Package names to install globally (`npm install -g`).",
                 "name": "global",
                 "required": false,
                 "type": "[]string"
               }
             ],
-            "description": "",
+            "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping.",
             "name": "npm",
             "required": false,
             "type": "object"
           },
           {
-            "description": "",
+            "description": "Pacman packages (Arch).",
             "name": "pacman",
             "required": false,
             "type": "[]string"
           },
           {
-            "description": "",
+            "description": "pipx-installed Python applications.",
             "name": "pipx",
             "required": false,
             "type": "[]string"
           },
           {
-            "description": "",
+            "description": "pkg packages (FreeBSD).",
             "name": "pkg",
             "required": false,
             "type": "[]string"
           },
           {
-            "description": "",
+            "description": "Scoop packages (Windows).",
             "name": "scoop",
             "required": false,
             "type": "[]string"
@@ -1307,43 +1307,43 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Snap names installed with `--classic` confinement.",
                 "name": "classic",
                 "required": false,
                 "type": "[]string"
               },
               {
-                "description": "",
+                "description": "Snap names installed with default (strict) confinement.",
                 "name": "packages",
                 "required": false,
                 "type": "[]string"
               }
             ],
-            "description": "",
+            "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.",
             "name": "snap",
             "required": false,
             "type": "object"
           },
           {
-            "description": "",
+            "description": "Winget packages (Windows).",
             "name": "winget",
             "required": false,
             "type": "[]string"
           },
           {
-            "description": "",
+            "description": "Yum packages (legacy RHEL/CentOS).",
             "name": "yum",
             "required": false,
             "type": "[]string"
           },
           {
-            "description": "",
+            "description": "Zypper packages (openSUSE).",
             "name": "zypper",
             "required": false,
             "type": "[]string"
           }
         ],
-        "description": "",
+        "description": "Packages this profile installs, grouped by manager.",
         "name": "packages",
         "required": false,
         "type": "object"
@@ -1351,13 +1351,13 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).",
             "name": "onChange",
             "required": false,
             "type": "[](string | object)",
             "variants": [
               {
-                "description": "",
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
                 "name": "string",
                 "required": false,
                 "type": "string"
@@ -1365,7 +1365,7 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -1395,7 +1395,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "The command or script body to run.",
                     "name": "run",
                     "required": true,
                     "type": "string"
@@ -1407,7 +1407,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                     "name": "timeout",
                     "required": false,
                     "type": "string"
@@ -1433,13 +1433,13 @@
             ]
           },
           {
-            "description": "",
+            "description": "Run when the daemon detects drift, before any auto-apply decision.",
             "name": "onDrift",
             "required": false,
             "type": "[](string | object)",
             "variants": [
               {
-                "description": "",
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
                 "name": "string",
                 "required": false,
                 "type": "string"
@@ -1447,7 +1447,7 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -1477,7 +1477,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "The command or script body to run.",
                     "name": "run",
                     "required": true,
                     "type": "string"
@@ -1489,7 +1489,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                     "name": "timeout",
                     "required": false,
                     "type": "string"
@@ -1515,13 +1515,13 @@
             ]
           },
           {
-            "description": "",
+            "description": "Run once after every action in an apply completes.",
             "name": "postApply",
             "required": false,
             "type": "[](string | object)",
             "variants": [
               {
-                "description": "",
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
                 "name": "string",
                 "required": false,
                 "type": "string"
@@ -1529,7 +1529,7 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -1559,7 +1559,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "The command or script body to run.",
                     "name": "run",
                     "required": true,
                     "type": "string"
@@ -1571,7 +1571,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                     "name": "timeout",
                     "required": false,
                     "type": "string"
@@ -1597,13 +1597,13 @@
             ]
           },
           {
-            "description": "",
+            "description": "Run once after a daemon reconcile tick completes.",
             "name": "postReconcile",
             "required": false,
             "type": "[](string | object)",
             "variants": [
               {
-                "description": "",
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
                 "name": "string",
                 "required": false,
                 "type": "string"
@@ -1611,7 +1611,7 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -1641,7 +1641,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "The command or script body to run.",
                     "name": "run",
                     "required": true,
                     "type": "string"
@@ -1653,7 +1653,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                     "name": "timeout",
                     "required": false,
                     "type": "string"
@@ -1679,13 +1679,13 @@
             ]
           },
           {
-            "description": "",
+            "description": "Run once before any action in an apply.",
             "name": "preApply",
             "required": false,
             "type": "[](string | object)",
             "variants": [
               {
-                "description": "",
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
                 "name": "string",
                 "required": false,
                 "type": "string"
@@ -1693,7 +1693,7 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -1723,7 +1723,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "The command or script body to run.",
                     "name": "run",
                     "required": true,
                     "type": "string"
@@ -1735,7 +1735,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                     "name": "timeout",
                     "required": false,
                     "type": "string"
@@ -1761,13 +1761,13 @@
             ]
           },
           {
-            "description": "",
+            "description": "Run once before a daemon reconcile tick begins.",
             "name": "preReconcile",
             "required": false,
             "type": "[](string | object)",
             "variants": [
               {
-                "description": "",
+                "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
                 "name": "string",
                 "required": false,
                 "type": "string"
@@ -1775,7 +1775,7 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -1805,7 +1805,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "The command or script body to run.",
                     "name": "run",
                     "required": true,
                     "type": "string"
@@ -1817,7 +1817,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                     "name": "timeout",
                     "required": false,
                     "type": "string"
@@ -1843,7 +1843,7 @@
             ]
           }
         ],
-        "description": "",
+        "description": "Lifecycle scripts (`preApply`, `postApply`, …) this profile runs.",
         "name": "scripts",
         "required": false,
         "type": "object"
@@ -1851,43 +1851,43 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Secret backend name to resolve `source` with. Falls back to `spec.secrets.backend` from `cfgd.yaml` when omitted.",
             "name": "backend",
             "required": false,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Environment variable names to export the decrypted value under. Mutually exclusive with `target`.",
             "name": "envs",
             "required": false,
             "type": "[]string"
           },
           {
-            "description": "",
+            "description": "Backend-specific reference to the secret (a 1Password `op://` URI, a Vault path, a sops-encrypted file key, …).",
             "name": "source",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "File path to write the decrypted secret to. Mutually exclusive with `envs`.",
             "name": "target",
             "required": false,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Template rendered around the decrypted value before writing to `target` (e.g. wrapping it in a config file's expected shape).",
             "name": "template",
             "required": false,
             "type": "string"
           }
         ],
-        "description": "",
+        "description": "Secrets this profile resolves into files or environment variables.",
         "name": "secrets",
         "required": false,
         "type": "[]object"
       },
       {
-        "description": "",
+        "description": "System configurator settings (`macosDefaults`, `systemd`, `sysctl`, …), keyed by configurator name.",
         "name": "system",
         "required": false,
         "type": "object"
@@ -1906,13 +1906,13 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Allow this source to deliver `system:` configurator settings. Default: `false`.",
                 "name": "allowSystemChanges",
                 "required": false,
                 "type": "boolean"
               },
               {
-                "description": "",
+                "description": "Glob patterns restricting which file targets this source may deploy to. Empty means no restriction.",
                 "name": "allowedTargetPaths",
                 "required": false,
                 "type": "[]string"
@@ -1944,13 +1944,13 @@
                 "type": "object"
               },
               {
-                "description": "",
+                "description": "Reject lifecycle scripts (profile-layer and module `run:` bodies) this source delivers, unless a subscriber opts in via `subscription.allowScripts`. Default: `true`.",
                 "name": "noScripts",
                 "required": false,
                 "type": "boolean"
               },
               {
-                "description": "",
+                "description": "Reject `${secret:…}` references this source's delivered content resolves. Default: `true`.",
                 "name": "noSecretsRead",
                 "required": false,
                 "type": "boolean"
@@ -1962,7 +1962,7 @@
                 "type": "boolean"
               }
             ],
-            "description": "",
+            "description": "Restrictions this source imposes on how subscribers may compose it.",
             "name": "constraints",
             "required": false,
             "type": "object"
@@ -1972,19 +1972,19 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Command the alias expands to.",
                     "name": "command",
                     "required": true,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Alias name, as typed at the shell prompt.",
                     "name": "name",
                     "required": true,
                     "type": "string"
                   }
                 ],
-                "description": "",
+                "description": "Shell aliases offered at this tier.",
                 "name": "aliases",
                 "required": false,
                 "type": "[]object"
@@ -1992,19 +1992,19 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Variable name. Must be shell-safe and not a reserved `CFGD_*` name.",
                     "name": "name",
                     "required": true,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Variable value.",
                     "name": "value",
                     "required": true,
                     "type": "string"
                   }
                 ],
-                "description": "",
+                "description": "Environment variables offered at this tier.",
                 "name": "env",
                 "required": false,
                 "type": "[]object"
@@ -2082,19 +2082,19 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Destination path on the machine. A leading `~` expands to the home directory.",
                     "name": "target",
                     "required": true,
                     "type": "string"
                   }
                 ],
-                "description": "",
+                "description": "Files offered at this tier.",
                 "name": "files",
                 "required": false,
                 "type": "[]object"
               },
               {
-                "description": "",
+                "description": "Module names offered at this tier.",
                 "name": "modules",
                 "required": false,
                 "type": "[]string"
@@ -2102,7 +2102,7 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "APK packages (Alpine).",
                     "name": "apk",
                     "required": false,
                     "type": "[]string"
@@ -2110,19 +2110,19 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Path to a package-list file to install from, one name per line.",
                         "name": "file",
                         "required": false,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "APT package names to install.",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "",
+                    "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.",
                     "name": "apt",
                     "required": false,
                     "type": "object"
@@ -2130,31 +2130,31 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Homebrew casks (GUI applications) to install.",
                         "name": "casks",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Path to a Brewfile to apply instead of (or alongside) the lists below.",
                         "name": "file",
                         "required": false,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Homebrew formulae (CLI packages) to install.",
                         "name": "formulae",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Third-party taps to add before installing formulae/casks.",
                         "name": "taps",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "",
+                    "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.",
                     "name": "brew",
                     "required": false,
                     "type": "object"
@@ -2162,25 +2162,25 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Path to a `Cargo.toml` whose binaries to install instead of the list below.",
                         "name": "file",
                         "required": false,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Crate names to install (`cargo install`).",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`) and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
+                    "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.",
                     "name": "cargo",
                     "required": false,
                     "type": "object"
                   },
                   {
-                    "description": "",
+                    "description": "Chocolatey packages (Windows).",
                     "name": "chocolatey",
                     "required": false,
                     "type": "[]string"
@@ -2188,55 +2188,55 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Command that exits zero when this manager is available on the machine.",
                         "name": "check",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Command template to install a package; `{package}` is substituted.",
                         "name": "install",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Command whose stdout lists installed package names, one per line.",
                         "name": "listInstalled",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Manager name, used in `prefer:`/`deny:` lists and status output.",
                         "name": "name",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Package names to install with this manager.",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Command template to uninstall a package; `{package}` is substituted.",
                         "name": "uninstall",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Command to refresh the manager's own package index/cache before installs.",
                         "name": "update",
                         "required": false,
                         "type": "string"
                       }
                     ],
-                    "description": "",
+                    "description": "User-defined package managers not built into cfgd, each with its own check/install/uninstall commands.",
                     "name": "custom",
                     "required": false,
                     "type": "[]object"
                   },
                   {
-                    "description": "",
+                    "description": "DNF packages (Fedora/RHEL).",
                     "name": "dnf",
                     "required": false,
                     "type": "[]string"
@@ -2244,31 +2244,31 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Flatpak application ids to install.",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Remote to install from (e.g. `flathub`). Falls back to Flatpak's configured default remote when omitted.",
                         "name": "remote",
                         "required": false,
                         "type": "string"
                       }
                     ],
-                    "description": "",
+                    "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.",
                     "name": "flatpak",
                     "required": false,
                     "type": "object"
                   },
                   {
-                    "description": "",
+                    "description": "Go packages (`go install`).",
                     "name": "go",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Nix packages (`nix-env` / `nix profile`).",
                     "name": "nix",
                     "required": false,
                     "type": "[]string"
@@ -2276,43 +2276,43 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Path to a `package.json` to install dependencies from.",
                         "name": "file",
                         "required": false,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Package names to install globally (`npm install -g`).",
                         "name": "global",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "",
+                    "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping.",
                     "name": "npm",
                     "required": false,
                     "type": "object"
                   },
                   {
-                    "description": "",
+                    "description": "Pacman packages (Arch).",
                     "name": "pacman",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "pipx-installed Python applications.",
                     "name": "pipx",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "pkg packages (FreeBSD).",
                     "name": "pkg",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Scoop packages (Windows).",
                     "name": "scoop",
                     "required": false,
                     "type": "[]string"
@@ -2320,49 +2320,49 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Snap names installed with `--classic` confinement.",
                         "name": "classic",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Snap names installed with default (strict) confinement.",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "",
+                    "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.",
                     "name": "snap",
                     "required": false,
                     "type": "object"
                   },
                   {
-                    "description": "",
+                    "description": "Winget packages (Windows).",
                     "name": "winget",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Yum packages (legacy RHEL/CentOS).",
                     "name": "yum",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Zypper packages (openSUSE).",
                     "name": "zypper",
                     "required": false,
                     "type": "[]string"
                   }
                 ],
-                "description": "",
+                "description": "Packages offered at this tier.",
                 "name": "packages",
                 "required": false,
                 "type": "object"
               },
               {
-                "description": "",
+                "description": "Profile names this tier recommends composing in.",
                 "name": "profiles",
                 "required": false,
                 "type": "[]string"
@@ -2370,49 +2370,49 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Secret backend name to resolve `source` with. Falls back to `spec.secrets.backend` from `cfgd.yaml` when omitted.",
                     "name": "backend",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Environment variable names to export the decrypted value under. Mutually exclusive with `target`.",
                     "name": "envs",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Backend-specific reference to the secret (a 1Password `op://` URI, a Vault path, a sops-encrypted file key, …).",
                     "name": "source",
                     "required": true,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "File path to write the decrypted secret to. Mutually exclusive with `envs`.",
                     "name": "target",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Template rendered around the decrypted value before writing to `target` (e.g. wrapping it in a config file's expected shape).",
                     "name": "template",
                     "required": false,
                     "type": "string"
                   }
                 ],
-                "description": "",
+                "description": "Secrets offered at this tier.",
                 "name": "secrets",
                 "required": false,
                 "type": "[]object"
               },
               {
-                "description": "",
+                "description": "System configurator settings offered at this tier.",
                 "name": "system",
                 "required": false,
                 "type": "object"
               }
             ],
-            "description": "",
+            "description": "Items every subscriber receives and cannot override locally.",
             "name": "locked",
             "required": false,
             "type": "object"
@@ -2422,19 +2422,19 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Command the alias expands to.",
                     "name": "command",
                     "required": true,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Alias name, as typed at the shell prompt.",
                     "name": "name",
                     "required": true,
                     "type": "string"
                   }
                 ],
-                "description": "",
+                "description": "Shell aliases offered at this tier.",
                 "name": "aliases",
                 "required": false,
                 "type": "[]object"
@@ -2442,19 +2442,19 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Variable name. Must be shell-safe and not a reserved `CFGD_*` name.",
                     "name": "name",
                     "required": true,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Variable value.",
                     "name": "value",
                     "required": true,
                     "type": "string"
                   }
                 ],
-                "description": "",
+                "description": "Environment variables offered at this tier.",
                 "name": "env",
                 "required": false,
                 "type": "[]object"
@@ -2532,19 +2532,19 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Destination path on the machine. A leading `~` expands to the home directory.",
                     "name": "target",
                     "required": true,
                     "type": "string"
                   }
                 ],
-                "description": "",
+                "description": "Files offered at this tier.",
                 "name": "files",
                 "required": false,
                 "type": "[]object"
               },
               {
-                "description": "",
+                "description": "Module names offered at this tier.",
                 "name": "modules",
                 "required": false,
                 "type": "[]string"
@@ -2552,7 +2552,7 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "APK packages (Alpine).",
                     "name": "apk",
                     "required": false,
                     "type": "[]string"
@@ -2560,19 +2560,19 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Path to a package-list file to install from, one name per line.",
                         "name": "file",
                         "required": false,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "APT package names to install.",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "",
+                    "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.",
                     "name": "apt",
                     "required": false,
                     "type": "object"
@@ -2580,31 +2580,31 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Homebrew casks (GUI applications) to install.",
                         "name": "casks",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Path to a Brewfile to apply instead of (or alongside) the lists below.",
                         "name": "file",
                         "required": false,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Homebrew formulae (CLI packages) to install.",
                         "name": "formulae",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Third-party taps to add before installing formulae/casks.",
                         "name": "taps",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "",
+                    "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.",
                     "name": "brew",
                     "required": false,
                     "type": "object"
@@ -2612,25 +2612,25 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Path to a `Cargo.toml` whose binaries to install instead of the list below.",
                         "name": "file",
                         "required": false,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Crate names to install (`cargo install`).",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`) and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
+                    "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.",
                     "name": "cargo",
                     "required": false,
                     "type": "object"
                   },
                   {
-                    "description": "",
+                    "description": "Chocolatey packages (Windows).",
                     "name": "chocolatey",
                     "required": false,
                     "type": "[]string"
@@ -2638,55 +2638,55 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Command that exits zero when this manager is available on the machine.",
                         "name": "check",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Command template to install a package; `{package}` is substituted.",
                         "name": "install",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Command whose stdout lists installed package names, one per line.",
                         "name": "listInstalled",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Manager name, used in `prefer:`/`deny:` lists and status output.",
                         "name": "name",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Package names to install with this manager.",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Command template to uninstall a package; `{package}` is substituted.",
                         "name": "uninstall",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Command to refresh the manager's own package index/cache before installs.",
                         "name": "update",
                         "required": false,
                         "type": "string"
                       }
                     ],
-                    "description": "",
+                    "description": "User-defined package managers not built into cfgd, each with its own check/install/uninstall commands.",
                     "name": "custom",
                     "required": false,
                     "type": "[]object"
                   },
                   {
-                    "description": "",
+                    "description": "DNF packages (Fedora/RHEL).",
                     "name": "dnf",
                     "required": false,
                     "type": "[]string"
@@ -2694,31 +2694,31 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Flatpak application ids to install.",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Remote to install from (e.g. `flathub`). Falls back to Flatpak's configured default remote when omitted.",
                         "name": "remote",
                         "required": false,
                         "type": "string"
                       }
                     ],
-                    "description": "",
+                    "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.",
                     "name": "flatpak",
                     "required": false,
                     "type": "object"
                   },
                   {
-                    "description": "",
+                    "description": "Go packages (`go install`).",
                     "name": "go",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Nix packages (`nix-env` / `nix profile`).",
                     "name": "nix",
                     "required": false,
                     "type": "[]string"
@@ -2726,43 +2726,43 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Path to a `package.json` to install dependencies from.",
                         "name": "file",
                         "required": false,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Package names to install globally (`npm install -g`).",
                         "name": "global",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "",
+                    "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping.",
                     "name": "npm",
                     "required": false,
                     "type": "object"
                   },
                   {
-                    "description": "",
+                    "description": "Pacman packages (Arch).",
                     "name": "pacman",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "pipx-installed Python applications.",
                     "name": "pipx",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "pkg packages (FreeBSD).",
                     "name": "pkg",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Scoop packages (Windows).",
                     "name": "scoop",
                     "required": false,
                     "type": "[]string"
@@ -2770,49 +2770,49 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Snap names installed with `--classic` confinement.",
                         "name": "classic",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Snap names installed with default (strict) confinement.",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "",
+                    "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.",
                     "name": "snap",
                     "required": false,
                     "type": "object"
                   },
                   {
-                    "description": "",
+                    "description": "Winget packages (Windows).",
                     "name": "winget",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Yum packages (legacy RHEL/CentOS).",
                     "name": "yum",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Zypper packages (openSUSE).",
                     "name": "zypper",
                     "required": false,
                     "type": "[]string"
                   }
                 ],
-                "description": "",
+                "description": "Packages offered at this tier.",
                 "name": "packages",
                 "required": false,
                 "type": "object"
               },
               {
-                "description": "",
+                "description": "Profile names this tier recommends composing in.",
                 "name": "profiles",
                 "required": false,
                 "type": "[]string"
@@ -2820,49 +2820,49 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Secret backend name to resolve `source` with. Falls back to `spec.secrets.backend` from `cfgd.yaml` when omitted.",
                     "name": "backend",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Environment variable names to export the decrypted value under. Mutually exclusive with `target`.",
                     "name": "envs",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Backend-specific reference to the secret (a 1Password `op://` URI, a Vault path, a sops-encrypted file key, …).",
                     "name": "source",
                     "required": true,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "File path to write the decrypted secret to. Mutually exclusive with `envs`.",
                     "name": "target",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Template rendered around the decrypted value before writing to `target` (e.g. wrapping it in a config file's expected shape).",
                     "name": "template",
                     "required": false,
                     "type": "string"
                   }
                 ],
-                "description": "",
+                "description": "Secrets offered at this tier.",
                 "name": "secrets",
                 "required": false,
                 "type": "[]object"
               },
               {
-                "description": "",
+                "description": "System configurator settings offered at this tier.",
                 "name": "system",
                 "required": false,
                 "type": "object"
               }
             ],
-            "description": "",
+            "description": "Items a subscriber must explicitly name in `subscription.optIn` to receive.",
             "name": "optional",
             "required": false,
             "type": "object"
@@ -2872,19 +2872,19 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Command the alias expands to.",
                     "name": "command",
                     "required": true,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Alias name, as typed at the shell prompt.",
                     "name": "name",
                     "required": true,
                     "type": "string"
                   }
                 ],
-                "description": "",
+                "description": "Shell aliases offered at this tier.",
                 "name": "aliases",
                 "required": false,
                 "type": "[]object"
@@ -2892,19 +2892,19 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Variable name. Must be shell-safe and not a reserved `CFGD_*` name.",
                     "name": "name",
                     "required": true,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Variable value.",
                     "name": "value",
                     "required": true,
                     "type": "string"
                   }
                 ],
-                "description": "",
+                "description": "Environment variables offered at this tier.",
                 "name": "env",
                 "required": false,
                 "type": "[]object"
@@ -2982,19 +2982,19 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Destination path on the machine. A leading `~` expands to the home directory.",
                     "name": "target",
                     "required": true,
                     "type": "string"
                   }
                 ],
-                "description": "",
+                "description": "Files offered at this tier.",
                 "name": "files",
                 "required": false,
                 "type": "[]object"
               },
               {
-                "description": "",
+                "description": "Module names offered at this tier.",
                 "name": "modules",
                 "required": false,
                 "type": "[]string"
@@ -3002,7 +3002,7 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "APK packages (Alpine).",
                     "name": "apk",
                     "required": false,
                     "type": "[]string"
@@ -3010,19 +3010,19 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Path to a package-list file to install from, one name per line.",
                         "name": "file",
                         "required": false,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "APT package names to install.",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "",
+                    "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.",
                     "name": "apt",
                     "required": false,
                     "type": "object"
@@ -3030,31 +3030,31 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Homebrew casks (GUI applications) to install.",
                         "name": "casks",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Path to a Brewfile to apply instead of (or alongside) the lists below.",
                         "name": "file",
                         "required": false,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Homebrew formulae (CLI packages) to install.",
                         "name": "formulae",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Third-party taps to add before installing formulae/casks.",
                         "name": "taps",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "",
+                    "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.",
                     "name": "brew",
                     "required": false,
                     "type": "object"
@@ -3062,25 +3062,25 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Path to a `Cargo.toml` whose binaries to install instead of the list below.",
                         "name": "file",
                         "required": false,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Crate names to install (`cargo install`).",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`) and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
+                    "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.",
                     "name": "cargo",
                     "required": false,
                     "type": "object"
                   },
                   {
-                    "description": "",
+                    "description": "Chocolatey packages (Windows).",
                     "name": "chocolatey",
                     "required": false,
                     "type": "[]string"
@@ -3088,55 +3088,55 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Command that exits zero when this manager is available on the machine.",
                         "name": "check",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Command template to install a package; `{package}` is substituted.",
                         "name": "install",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Command whose stdout lists installed package names, one per line.",
                         "name": "listInstalled",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Manager name, used in `prefer:`/`deny:` lists and status output.",
                         "name": "name",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Package names to install with this manager.",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Command template to uninstall a package; `{package}` is substituted.",
                         "name": "uninstall",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Command to refresh the manager's own package index/cache before installs.",
                         "name": "update",
                         "required": false,
                         "type": "string"
                       }
                     ],
-                    "description": "",
+                    "description": "User-defined package managers not built into cfgd, each with its own check/install/uninstall commands.",
                     "name": "custom",
                     "required": false,
                     "type": "[]object"
                   },
                   {
-                    "description": "",
+                    "description": "DNF packages (Fedora/RHEL).",
                     "name": "dnf",
                     "required": false,
                     "type": "[]string"
@@ -3144,31 +3144,31 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Flatpak application ids to install.",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Remote to install from (e.g. `flathub`). Falls back to Flatpak's configured default remote when omitted.",
                         "name": "remote",
                         "required": false,
                         "type": "string"
                       }
                     ],
-                    "description": "",
+                    "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.",
                     "name": "flatpak",
                     "required": false,
                     "type": "object"
                   },
                   {
-                    "description": "",
+                    "description": "Go packages (`go install`).",
                     "name": "go",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Nix packages (`nix-env` / `nix profile`).",
                     "name": "nix",
                     "required": false,
                     "type": "[]string"
@@ -3176,43 +3176,43 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Path to a `package.json` to install dependencies from.",
                         "name": "file",
                         "required": false,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Package names to install globally (`npm install -g`).",
                         "name": "global",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "",
+                    "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping.",
                     "name": "npm",
                     "required": false,
                     "type": "object"
                   },
                   {
-                    "description": "",
+                    "description": "Pacman packages (Arch).",
                     "name": "pacman",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "pipx-installed Python applications.",
                     "name": "pipx",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "pkg packages (FreeBSD).",
                     "name": "pkg",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Scoop packages (Windows).",
                     "name": "scoop",
                     "required": false,
                     "type": "[]string"
@@ -3220,49 +3220,49 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Snap names installed with `--classic` confinement.",
                         "name": "classic",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Snap names installed with default (strict) confinement.",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "",
+                    "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.",
                     "name": "snap",
                     "required": false,
                     "type": "object"
                   },
                   {
-                    "description": "",
+                    "description": "Winget packages (Windows).",
                     "name": "winget",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Yum packages (legacy RHEL/CentOS).",
                     "name": "yum",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Zypper packages (openSUSE).",
                     "name": "zypper",
                     "required": false,
                     "type": "[]string"
                   }
                 ],
-                "description": "",
+                "description": "Packages offered at this tier.",
                 "name": "packages",
                 "required": false,
                 "type": "object"
               },
               {
-                "description": "",
+                "description": "Profile names this tier recommends composing in.",
                 "name": "profiles",
                 "required": false,
                 "type": "[]string"
@@ -3270,49 +3270,49 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Secret backend name to resolve `source` with. Falls back to `spec.secrets.backend` from `cfgd.yaml` when omitted.",
                     "name": "backend",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Environment variable names to export the decrypted value under. Mutually exclusive with `target`.",
                     "name": "envs",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Backend-specific reference to the secret (a 1Password `op://` URI, a Vault path, a sops-encrypted file key, …).",
                     "name": "source",
                     "required": true,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "File path to write the decrypted secret to. Mutually exclusive with `envs`.",
                     "name": "target",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Template rendered around the decrypted value before writing to `target` (e.g. wrapping it in a config file's expected shape).",
                     "name": "template",
                     "required": false,
                     "type": "string"
                   }
                 ],
-                "description": "",
+                "description": "Secrets offered at this tier.",
                 "name": "secrets",
                 "required": false,
                 "type": "[]object"
               },
               {
-                "description": "",
+                "description": "System configurator settings offered at this tier.",
                 "name": "system",
                 "required": false,
                 "type": "object"
               }
             ],
-            "description": "",
+            "description": "Items a subscriber receives when `subscription.acceptRecommended` is set.",
             "name": "recommended",
             "required": false,
             "type": "object"
@@ -3322,19 +3322,19 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Command the alias expands to.",
                     "name": "command",
                     "required": true,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Alias name, as typed at the shell prompt.",
                     "name": "name",
                     "required": true,
                     "type": "string"
                   }
                 ],
-                "description": "",
+                "description": "Shell aliases offered at this tier.",
                 "name": "aliases",
                 "required": false,
                 "type": "[]object"
@@ -3342,19 +3342,19 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Variable name. Must be shell-safe and not a reserved `CFGD_*` name.",
                     "name": "name",
                     "required": true,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Variable value.",
                     "name": "value",
                     "required": true,
                     "type": "string"
                   }
                 ],
-                "description": "",
+                "description": "Environment variables offered at this tier.",
                 "name": "env",
                 "required": false,
                 "type": "[]object"
@@ -3432,19 +3432,19 @@
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Destination path on the machine. A leading `~` expands to the home directory.",
                     "name": "target",
                     "required": true,
                     "type": "string"
                   }
                 ],
-                "description": "",
+                "description": "Files offered at this tier.",
                 "name": "files",
                 "required": false,
                 "type": "[]object"
               },
               {
-                "description": "",
+                "description": "Module names offered at this tier.",
                 "name": "modules",
                 "required": false,
                 "type": "[]string"
@@ -3452,7 +3452,7 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "APK packages (Alpine).",
                     "name": "apk",
                     "required": false,
                     "type": "[]string"
@@ -3460,19 +3460,19 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Path to a package-list file to install from, one name per line.",
                         "name": "file",
                         "required": false,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "APT package names to install.",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "",
+                    "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.",
                     "name": "apt",
                     "required": false,
                     "type": "object"
@@ -3480,31 +3480,31 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Homebrew casks (GUI applications) to install.",
                         "name": "casks",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Path to a Brewfile to apply instead of (or alongside) the lists below.",
                         "name": "file",
                         "required": false,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Homebrew formulae (CLI packages) to install.",
                         "name": "formulae",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Third-party taps to add before installing formulae/casks.",
                         "name": "taps",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "",
+                    "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.",
                     "name": "brew",
                     "required": false,
                     "type": "object"
@@ -3512,25 +3512,25 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Path to a `Cargo.toml` whose binaries to install instead of the list below.",
                         "name": "file",
                         "required": false,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Crate names to install (`cargo install`).",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`) and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
+                    "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.",
                     "name": "cargo",
                     "required": false,
                     "type": "object"
                   },
                   {
-                    "description": "",
+                    "description": "Chocolatey packages (Windows).",
                     "name": "chocolatey",
                     "required": false,
                     "type": "[]string"
@@ -3538,55 +3538,55 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Command that exits zero when this manager is available on the machine.",
                         "name": "check",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Command template to install a package; `{package}` is substituted.",
                         "name": "install",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Command whose stdout lists installed package names, one per line.",
                         "name": "listInstalled",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Manager name, used in `prefer:`/`deny:` lists and status output.",
                         "name": "name",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Package names to install with this manager.",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Command template to uninstall a package; `{package}` is substituted.",
                         "name": "uninstall",
                         "required": true,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Command to refresh the manager's own package index/cache before installs.",
                         "name": "update",
                         "required": false,
                         "type": "string"
                       }
                     ],
-                    "description": "",
+                    "description": "User-defined package managers not built into cfgd, each with its own check/install/uninstall commands.",
                     "name": "custom",
                     "required": false,
                     "type": "[]object"
                   },
                   {
-                    "description": "",
+                    "description": "DNF packages (Fedora/RHEL).",
                     "name": "dnf",
                     "required": false,
                     "type": "[]string"
@@ -3594,31 +3594,31 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Flatpak application ids to install.",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Remote to install from (e.g. `flathub`). Falls back to Flatpak's configured default remote when omitted.",
                         "name": "remote",
                         "required": false,
                         "type": "string"
                       }
                     ],
-                    "description": "",
+                    "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.",
                     "name": "flatpak",
                     "required": false,
                     "type": "object"
                   },
                   {
-                    "description": "",
+                    "description": "Go packages (`go install`).",
                     "name": "go",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Nix packages (`nix-env` / `nix profile`).",
                     "name": "nix",
                     "required": false,
                     "type": "[]string"
@@ -3626,43 +3626,43 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Path to a `package.json` to install dependencies from.",
                         "name": "file",
                         "required": false,
                         "type": "string"
                       },
                       {
-                        "description": "",
+                        "description": "Package names to install globally (`npm install -g`).",
                         "name": "global",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "",
+                    "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping.",
                     "name": "npm",
                     "required": false,
                     "type": "object"
                   },
                   {
-                    "description": "",
+                    "description": "Pacman packages (Arch).",
                     "name": "pacman",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "pipx-installed Python applications.",
                     "name": "pipx",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "pkg packages (FreeBSD).",
                     "name": "pkg",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Scoop packages (Windows).",
                     "name": "scoop",
                     "required": false,
                     "type": "[]string"
@@ -3670,49 +3670,49 @@
                   {
                     "children": [
                       {
-                        "description": "",
+                        "description": "Snap names installed with `--classic` confinement.",
                         "name": "classic",
                         "required": false,
                         "type": "[]string"
                       },
                       {
-                        "description": "",
+                        "description": "Snap names installed with default (strict) confinement.",
                         "name": "packages",
                         "required": false,
                         "type": "[]string"
                       }
                     ],
-                    "description": "",
+                    "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.",
                     "name": "snap",
                     "required": false,
                     "type": "object"
                   },
                   {
-                    "description": "",
+                    "description": "Winget packages (Windows).",
                     "name": "winget",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Yum packages (legacy RHEL/CentOS).",
                     "name": "yum",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Zypper packages (openSUSE).",
                     "name": "zypper",
                     "required": false,
                     "type": "[]string"
                   }
                 ],
-                "description": "",
+                "description": "Packages offered at this tier.",
                 "name": "packages",
                 "required": false,
                 "type": "object"
               },
               {
-                "description": "",
+                "description": "Profile names this tier recommends composing in.",
                 "name": "profiles",
                 "required": false,
                 "type": "[]string"
@@ -3720,55 +3720,55 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Secret backend name to resolve `source` with. Falls back to `spec.secrets.backend` from `cfgd.yaml` when omitted.",
                     "name": "backend",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Environment variable names to export the decrypted value under. Mutually exclusive with `target`.",
                     "name": "envs",
                     "required": false,
                     "type": "[]string"
                   },
                   {
-                    "description": "",
+                    "description": "Backend-specific reference to the secret (a 1Password `op://` URI, a Vault path, a sops-encrypted file key, …).",
                     "name": "source",
                     "required": true,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "File path to write the decrypted secret to. Mutually exclusive with `envs`.",
                     "name": "target",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Template rendered around the decrypted value before writing to `target` (e.g. wrapping it in a config file's expected shape).",
                     "name": "template",
                     "required": false,
                     "type": "string"
                   }
                 ],
-                "description": "",
+                "description": "Secrets offered at this tier.",
                 "name": "secrets",
                 "required": false,
                 "type": "[]object"
               },
               {
-                "description": "",
+                "description": "System configurator settings offered at this tier.",
                 "name": "system",
                 "required": false,
                 "type": "object"
               }
             ],
-            "description": "",
+            "description": "Items every subscriber receives unconditionally.",
             "name": "required",
             "required": false,
             "type": "object"
           }
         ],
-        "description": "",
+        "description": "Policy tiers (required/recommended/optional/locked) and constraints this source enforces on subscribers.",
         "name": "policy",
         "required": false,
         "type": "object"
@@ -3776,13 +3776,13 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Names of modules this source publishes.",
             "name": "modules",
             "required": false,
             "type": "[]string"
           },
           {
-            "description": "",
+            "description": "Maps a platform/distro tag (`macos`, `debian`, …) to the profile name to use on that platform.",
             "name": "platformProfiles",
             "required": false,
             "type": "object"
@@ -3790,43 +3790,43 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "A one-line human summary of the profile.",
                 "name": "description",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Names of other published profiles this one inherits from.",
                 "name": "inherits",
                 "required": false,
                 "type": "[]string"
               },
               {
-                "description": "",
+                "description": "Profile name.",
                 "name": "name",
                 "required": true,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Path to the profile's manifest within the source repository, if not at the conventional location.",
                 "name": "path",
                 "required": false,
                 "type": "string"
               }
             ],
-            "description": "",
+            "description": "Published profiles with descriptions, paths, and inheritance — richer than the flat `profiles` list.",
             "name": "profileDetails",
             "required": false,
             "type": "[]object"
           },
           {
-            "description": "",
+            "description": "Flat list of published profile names. Superseded by `profile_details` when that list is non-empty.",
             "name": "profiles",
             "required": false,
             "type": "[]string"
           }
         ],
-        "description": "",
+        "description": "Profiles and modules this source publishes.",
         "name": "provides",
         "required": false,
         "type": "object"
@@ -3843,19 +3843,19 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Name of the environment variable holding the API key. Default: `ANTHROPIC_API_KEY`.",
             "name": "apiKeyEnv",
             "required": false,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "The model identifier to request. Default: `claude-sonnet-4-6`.",
             "name": "model",
             "required": false,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "The AI provider name. Default: `claude`.",
             "name": "provider",
             "required": false,
             "type": "string"
@@ -3875,7 +3875,7 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Whether the daemon takes compliance snapshots on its tick. Default: `false`.",
             "name": "enabled",
             "required": false,
             "type": "boolean"
@@ -3883,31 +3883,31 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Export file format. Default: `Json`.",
                 "name": "format",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Directory a snapshot file is written into. Default: `~/.local/state/cfgd/compliance/`.",
                 "name": "path",
                 "required": false,
                 "type": "string"
               }
             ],
-            "description": "",
+            "description": "Where and in what format a snapshot is exported.",
             "name": "export",
             "required": false,
             "type": "object"
           },
           {
-            "description": "",
+            "description": "How often a snapshot is taken, as a duration string. Default: `1h`.",
             "name": "interval",
             "required": false,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "How long a snapshot is kept before being pruned, as a duration string. Default: `30d`.",
             "name": "retention",
             "required": false,
             "type": "string"
@@ -3915,43 +3915,43 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Include declared files' content/permission state. Default: `true`.",
                 "name": "files",
                 "required": false,
                 "type": "boolean"
               },
               {
-                "description": "",
+                "description": "Include declared packages' installed state. Default: `true`.",
                 "name": "packages",
                 "required": false,
                 "type": "boolean"
               },
               {
-                "description": "",
+                "description": "Include declared secrets' presence/hash state (never plaintext). Default: `true`.",
                 "name": "secrets",
                 "required": false,
                 "type": "boolean"
               },
               {
-                "description": "",
+                "description": "Include system configurator settings. Default: `true`.",
                 "name": "system",
                 "required": false,
                 "type": "boolean"
               },
               {
-                "description": "",
+                "description": "Extra package managers to watch beyond those a module declares against.",
                 "name": "watchPackageManagers",
                 "required": false,
                 "type": "[]string"
               },
               {
-                "description": "",
+                "description": "Extra filesystem paths to watch for drift beyond declared files.",
                 "name": "watchPaths",
                 "required": false,
                 "type": "[]string"
               }
             ],
-            "description": "",
+            "description": "Which surfaces a snapshot covers.",
             "name": "scope",
             "required": false,
             "type": "object"
@@ -3965,7 +3965,7 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Whether the daemon runs at all. Default: `false`.",
             "name": "enabled",
             "required": false,
             "type": "boolean"
@@ -3973,25 +3973,25 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Send a notification whenever the daemon detects drift. Default: `false`.",
                 "name": "drift",
                 "required": false,
                 "type": "boolean"
               },
               {
-                "description": "",
+                "description": "Where a drift notification is delivered. Default: `Desktop`.",
                 "name": "method",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Webhook URL to POST to when `method` is `Webhook`. Required only for that method.",
                 "name": "webhookUrl",
                 "required": false,
                 "type": "string"
               }
             ],
-            "description": "",
+            "description": "How the daemon reports detected drift.",
             "name": "notify",
             "required": false,
             "type": "object"
@@ -3999,7 +3999,7 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Apply new/changed source-recommended modules automatically. Default: `false`. Independent of `drift_policy`, which governs already-declared drift instead.",
                 "name": "autoApply",
                 "required": false,
                 "type": "boolean"
@@ -4011,13 +4011,13 @@
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "How often the daemon checks for drift, as a duration string. Default: `5m`.",
                 "name": "interval",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Trigger an immediate reconcile when a watched file changes, in addition to the timed interval. Default: `false`.",
                 "name": "onChange",
                 "required": false,
                 "type": "boolean"
@@ -4025,25 +4025,25 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Overrides the global `auto_apply` for the targeted entity.",
                     "name": "autoApply",
                     "required": false,
                     "type": "boolean"
                   },
                   {
-                    "description": "Daemon drift reconciliation policy. PascalCase values match K8s enum conventions.",
+                    "description": "Overrides the global `drift_policy` for the targeted entity.",
                     "name": "driftPolicy",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Overrides the global reconcile interval for the targeted entity.",
                     "name": "interval",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Name of the module/profile this patch targets. Omitted to target every entity of `kind`.",
                     "name": "name",
                     "required": false,
                     "type": "string"
@@ -4057,31 +4057,31 @@
               {
                 "children": [
                   {
-                    "description": "",
+                    "description": "Action when a source's recommendation conflicts with a locked version. Default: `Notify`.",
                     "name": "lockedConflict",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Action for a newly available optional module. Default: `Ignore`.",
                     "name": "newOptional",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "",
+                    "description": "Action for a newly recommended module. Default: `Notify`.",
                     "name": "newRecommended",
                     "required": false,
                     "type": "string"
                   }
                 ],
-                "description": "",
+                "description": "Auto-apply decisions for new/changed module recommendations.",
                 "name": "policy",
                 "required": false,
                 "type": "object"
               }
             ],
-            "description": "",
+            "description": "Drift-detection and auto-apply settings.",
             "name": "reconcile",
             "required": false,
             "type": "object"
@@ -4089,25 +4089,25 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Automatically pull upstream config changes. Default: `false`.",
                 "name": "autoPull",
                 "required": false,
                 "type": "boolean"
               },
               {
-                "description": "",
+                "description": "Automatically commit and push local config changes. Default: `false`.",
                 "name": "autoPush",
                 "required": false,
                 "type": "boolean"
               },
               {
-                "description": "",
+                "description": "How often the daemon runs the sync loop, as a duration string (`\"5m\"`, `\"1h\"`). Default: `1h`.",
                 "name": "interval",
                 "required": false,
                 "type": "string"
               }
             ],
-            "description": "",
+            "description": "Automatic git push/pull settings.",
             "name": "sync",
             "required": false,
             "type": "object"
@@ -4119,7 +4119,7 @@
             "type": "boolean"
           }
         ],
-        "description": "",
+        "description": "Background reconcile-daemon settings.",
         "name": "daemon",
         "required": false,
         "type": "object"
@@ -4175,13 +4175,13 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Auth method override for this origin (e.g. a credential-helper name). Omitted uses the ambient git/SSH credential configuration.",
             "name": "auth",
             "required": false,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Branch to sync against. Default: `master`.",
             "name": "branch",
             "required": false,
             "type": "string"
@@ -4193,25 +4193,25 @@
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Kind of origin: `Git` (a git remote) or `Server` (the device gateway).",
             "name": "type",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "The origin's URL (a git remote, or the gateway's base URL).",
             "name": "url",
             "required": true,
             "type": "string"
           }
         ],
-        "description": "",
+        "description": "Git origins this config's changes may be pushed to / pulled from.",
         "name": "origin",
         "required": false,
         "type": "[]object"
       },
       {
-        "description": "",
+        "description": "Name of the active `ProfileSpec` to reconcile against.",
         "name": "profile",
         "required": false,
         "type": "string"
@@ -4219,7 +4219,7 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Default secret backend name (`sops`, `1password`, `bitwarden`, `vault`, `age`). Default: `sops`.",
             "name": "backend",
             "required": false,
             "type": "string"
@@ -4227,13 +4227,13 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Integration name (`1password`, `bitwarden`, `vault`), referenced by `${secret:<name>:<ref>}`.",
                 "name": "name",
                 "required": true,
                 "type": "string"
               }
             ],
-            "description": "",
+            "description": "Named backend integrations a `${secret:<name>:<ref>}` reference can select.",
             "name": "integrations",
             "required": false,
             "type": "[]object"
@@ -4241,19 +4241,19 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Path to the age private key file sops decrypts with. Falls back to sops's own default search path when omitted.",
                 "name": "ageKey",
                 "required": false,
                 "type": "string"
               }
             ],
-            "description": "",
+            "description": "sops-specific settings, used when `backend` is `sops`.",
             "name": "sops",
             "required": false,
             "type": "object"
           }
         ],
-        "description": "",
+        "description": "Default secret backend and integrations.",
         "name": "secrets",
         "required": false,
         "type": "object"
@@ -4275,7 +4275,7 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Local name for this source, used in `cfgd source` commands and status output.",
             "name": "name",
             "required": true,
             "type": "string"
@@ -4283,13 +4283,13 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Auth method override for this origin (e.g. a credential-helper name). Omitted uses the ambient git/SSH credential configuration.",
                 "name": "auth",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Branch to sync against. Default: `master`.",
                 "name": "branch",
                 "required": false,
                 "type": "string"
@@ -4301,19 +4301,19 @@
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Kind of origin: `Git` (a git remote) or `Server` (the device gateway).",
                 "name": "type",
                 "required": true,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "The origin's URL (a git remote, or the gateway's base URL).",
                 "name": "url",
                 "required": true,
                 "type": "string"
               }
             ],
-            "description": "",
+            "description": "Where the source's manifest is fetched from.",
             "name": "origin",
             "required": true,
             "type": "object"
@@ -4321,7 +4321,7 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Automatically accept the source's `recommended` policy tier without prompting. Default: `false`.",
                 "name": "acceptRecommended",
                 "required": false,
                 "type": "boolean"
@@ -4333,31 +4333,31 @@
                 "type": "boolean"
               },
               {
-                "description": "",
+                "description": "Names from the source's `optional` policy tier to accept.",
                 "name": "optIn",
                 "required": false,
                 "type": "[]string"
               },
               {
-                "description": "",
+                "description": "Local values to deep-merge on top of what the source delivers, applied after composition.",
                 "name": "overrides",
                 "required": false,
                 "type": "object"
               },
               {
-                "description": "",
+                "description": "Merge priority against other sources and the local profile; higher wins on conflicting leaf values. Default: `500`. Capped at `MAX_SOURCE_PRIORITY`.",
                 "name": "priority",
                 "required": false,
                 "type": "integer"
               },
               {
-                "description": "",
+                "description": "Which of the source's published profiles to compose against. Omitted composes every profile the source provides.",
                 "name": "profile",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Items from the source's `recommended` tier to drop entirely rather than accept. A mapping under `packages`, `env`, `aliases`, and/or `modules`; any other top-level key is rejected as a typo.",
                 "name": "reject",
                 "required": false,
                 "type": "object"
@@ -4369,7 +4369,7 @@
                 "type": "boolean"
               }
             ],
-            "description": "",
+            "description": "What this machine accepts from the source and how it applies.",
             "name": "subscription",
             "required": false,
             "type": "object"
@@ -4377,19 +4377,19 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Apply the source's changes automatically on refresh rather than only recording them. Default: `false`.",
                 "name": "autoApply",
                 "required": false,
                 "type": "boolean"
               },
               {
-                "description": "",
+                "description": "How often to fetch and re-resolve the source, as a duration string. Default: `1h`.",
                 "name": "interval",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Pin to a specific git tag/branch/commit instead of tracking the origin's default branch.",
                 "name": "pinVersion",
                 "required": false,
                 "type": "string"
@@ -4401,13 +4401,13 @@
                 "type": "boolean"
               }
             ],
-            "description": "",
+            "description": "How often and under what conditions the source is refreshed.",
             "name": "sync",
             "required": false,
             "type": "object"
           }
         ],
-        "description": "",
+        "description": "Additional config sources this machine subscribes to.",
         "name": "sources",
         "required": false,
         "type": "[]object"
@@ -4415,7 +4415,7 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Preset name (`default`, `dracula`, `solarized`, `minimal`, …). Default: `default`.",
             "name": "name",
             "required": false,
             "type": "string"
@@ -4423,97 +4423,97 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Fills `Theme::accent`, the style for `Role::Accent` status lines (\"attention without alarm\"). Hex color.",
                 "name": "accent",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Fills `Theme::diff_add`, the style for an added diff line. Hex color.",
                 "name": "diffAdd",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Fills `Theme::diff_context`, the style for an unchanged diff context line. Hex color.",
                 "name": "diffContext",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Fills `Theme::diff_remove`, the style for a removed diff line. Hex color.",
                 "name": "diffRemove",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Fills `Theme::error`, the style for `Role::Fail` status lines. Hex color.",
                 "name": "error",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Fills `Theme::header`, the style for a top-level heading. Hex color (`\"#ff0000\"`).",
                 "name": "header",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Glyph rendered for an `old -> new` relationship (e.g. `→`).",
                 "name": "iconArrow",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Glyph for `Role::Fail` status lines. Default varies by preset (e.g. `✗`).",
                 "name": "iconFail",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Glyph for `Role::Info` status lines. Default varies by preset.",
                 "name": "iconInfo",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Glyph for `Role::Ok` status lines. Default varies by preset (e.g. `✓`).",
                 "name": "iconOk",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Glyph for `Role::Pending` status lines. Default varies by preset.",
                 "name": "iconPending",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Glyph for `Role::Running` status lines. Default varies by preset.",
                 "name": "iconRunning",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Glyph for `Role::Skipped` status lines. Default varies by preset.",
                 "name": "iconSkipped",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Glyph for `Role::Warn` status lines. Default varies by preset (e.g. `⚠`).",
                 "name": "iconWarn",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Fills `Theme::info`, the style for `Role::Info` status lines. Hex color.",
                 "name": "info",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Fills `Theme::muted`, the style for de-emphasized text (hints, notes, qualifiers). Hex color.",
                 "name": "muted",
                 "required": false,
                 "type": "string"
@@ -4525,37 +4525,37 @@
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Fills `Theme::running`, the style for `Role::Running` status lines and in-flight spinner labels. Hex color.",
                 "name": "running",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Fills `Theme::secondary`, the style for `Role::Secondary` status lines (structural pivots, labels, identifiers). Hex color.",
                 "name": "secondary",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Fills `Theme::success`, the style for `Role::Ok` status lines. Hex color.",
                 "name": "success",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "Fills `Theme::warning`, the style for `Role::Warn` status lines. Hex color.",
                 "name": "warning",
                 "required": false,
                 "type": "string"
               }
             ],
-            "description": "",
+            "description": "Per-color and per-icon overrides applied on top of the named preset.",
             "name": "overrides",
             "required": false,
             "type": "object"
           }
         ],
-        "description": "",
+        "description": "Output theme (preset + overrides).",
         "name": "theme",
         "required": false,
         "type": "object"

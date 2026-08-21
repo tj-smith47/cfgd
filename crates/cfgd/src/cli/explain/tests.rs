@@ -185,6 +185,69 @@ fn explain_cmd_field_path() {
 }
 
 #[test]
+fn explain_cmd_field_path_single_object_auto_expands_without_recursive() {
+    // `config.security` resolves to exactly one object (`SecurityConfig`, one
+    // field). Drilling in without --recursive must show the object's OWN
+    // description alongside its one field, not silently replace it with the
+    // field's description as if the object itself were never named.
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    cmd_explain(&printer, Some("Config.security"), false).unwrap();
+    printer.flush();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        output.contains("Security settings for source signature verification."),
+        "expected the queried object's own description, got: {output}"
+    );
+    assert!(
+        output.contains("allowUnsigned"),
+        "expected the object's field auto-expanded without --recursive, got: {output}"
+    );
+}
+
+#[test]
+fn explain_cmd_field_path_multi_child_object_shows_own_header_and_tree_stays_collapsed() {
+    // `config.modules` resolves to exactly one object with two children
+    // (`registries`, `security`). Its own description must render, its two
+    // children must auto-expand one level without --recursive, and a
+    // GRANDCHILD field (`registries[].name`) must stay behind the `[+]`
+    // marker: --recursive still governs the deeper tree, auto-expand is one
+    // level only.
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    cmd_explain(&printer, Some("Config.modules"), false).unwrap();
+    printer.flush();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        output.contains("Module configuration: registries and security."),
+        "expected the queried object's own description, got: {output}"
+    );
+    assert!(
+        output.contains("registries") && output.contains("security"),
+        "expected both children auto-expanded one level, got: {output}"
+    );
+    assert!(
+        output.contains("[+]"),
+        "expected registries' own fields to stay collapsed without --recursive, got: {output}"
+    );
+    assert!(
+        !output.contains("Short name / alias for this source"),
+        "grandchild field description must not appear without --recursive, got: {output}"
+    );
+
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    cmd_explain(&printer, Some("Config.modules"), true).unwrap();
+    printer.flush();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        !output.contains("[+]"),
+        "recursive expansion must leave no unexpanded markers, got: {output}"
+    );
+    assert!(
+        output.contains("Short name / alias for this source"),
+        "expected grandchild field expanded under --recursive, got: {output}"
+    );
+}
+
+#[test]
 fn explain_cmd_field_descriptions_render_documented_ai_fields() {
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer, Some("Config.ai"), true).unwrap();

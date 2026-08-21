@@ -225,6 +225,41 @@ fn resolve_field_path<'a>(fields: &'a [FieldNode], path_parts: &[&str]) -> Optio
     None
 }
 
+/// Find the field a path names, preserving ITS OWN identity — name, type,
+/// description — even when it is an object. The counterpart of
+/// [`resolve_field_path`], which returns what descends FROM a match (its
+/// children, for object drill-in) rather than the match itself: that
+/// contract is right for a caller that only wants the children to list, but
+/// it means a drill-down VIEW built from it alone shows only the children
+/// and silently discards the queried object's own description. Used by
+/// [`build_explain_drilldown_doc`] to render that header before
+/// auto-expanding the object's fields one level, so `cfgd explain
+/// resource.object` never needs `--recursive` to say anything about
+/// `object` itself. Traverses non-terminal segments identically to
+/// `resolve_field_path` (children first, then each variant's children); it
+/// exists only to answer the LAST segment differently.
+fn find_field_node<'a>(fields: &'a [FieldNode], path_parts: &[&str]) -> Option<&'a FieldNode> {
+    let (target, rest) = path_parts.split_first()?;
+    for field in fields {
+        if field.name != *target {
+            continue;
+        }
+        if rest.is_empty() {
+            return Some(field);
+        }
+        if !field.children.is_empty() {
+            return find_field_node(&field.children, rest);
+        }
+        for variant in &field.variants {
+            if let Some(found) = find_field_node(&variant.children, rest) {
+                return Some(found);
+            }
+        }
+        return None;
+    }
+    None
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExplainOutput {
@@ -381,16 +416,15 @@ pub fn build_explain_drilldown_doc(
         field_path.join(".")
     );
     let mut doc = Doc::new().heading(path_str.clone());
-    if let [f] = fields {
-        // resolve_field_path returns a single-element slice in two cases
-        // that are indistinguishable from the slice alone: the path names a
-        // leaf field with no children (the common case), or it names a
-        // parent whose own children list happens to contain exactly one
-        // field. Either way, showing that one field's own name/type/
-        // description is the correct view — a one-field "Fields" listing
-        // and a genuine leaf's own header render identically here — so the
-        // force-expand into `Variants`/`Fields` below is unconditionally
-        // correct regardless of which case produced it.
+    // `find_field_node` looks up the field the FULL path names, independent
+    // of `resolve_field_path`'s children-returning contract, so the queried
+    // object's own name/type/description renders even when it has several
+    // children (a `.modules`-shaped query used to show only `registries`
+    // and `security`, with "Module configuration: registries and
+    // security." never appearing anywhere). Falling back to `fields` keeps
+    // this defensive against a path `resolve_field_path` accepted but this
+    // walk did not (should not happen: same schema, same path).
+    if let Some(f) = find_field_node(&schema.fields, field_path) {
         let req = if f.required { " (required)" } else { "" };
         doc = doc
             .kv("field", f.name.clone())
@@ -401,6 +435,9 @@ pub fn build_explain_drilldown_doc(
                 .iter()
                 .fold(s, |s, v| append_field(s, v, recursive))
         });
+        // The object's own fields expand ONE level without `--recursive` —
+        // the auto-expand this view exists for; `--recursive` still governs
+        // whether each of THOSE fields expands further, via `append_field`.
         doc = doc.section_if_nonempty("Fields", &f.children, |s, children| {
             children
                 .iter()

@@ -5,19 +5,19 @@
     {
       "children": [
         {
-          "description": "",
+          "description": "Command the alias expands to.",
           "name": "command",
           "required": true,
           "type": "string"
         },
         {
-          "description": "",
+          "description": "Alias name, as typed at the shell prompt.",
           "name": "name",
           "required": true,
           "type": "string"
         }
       ],
-      "description": "",
+      "description": "Shell aliases this profile sets.",
       "name": "aliases",
       "required": false,
       "type": "[]object"
@@ -49,7 +49,7 @@
           "type": "[](string | object)",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -57,7 +57,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -87,7 +87,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
@@ -99,7 +99,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -131,7 +131,7 @@
           "type": "[](string | object)",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -139,7 +139,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -169,7 +169,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
@@ -181,7 +181,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -225,7 +225,7 @@
           "type": "string"
         }
       ],
-      "description": "",
+      "description": "Declarative backup jobs this profile schedules.",
       "name": "backups",
       "required": false,
       "type": "[]object"
@@ -233,25 +233,25 @@
     {
       "children": [
         {
-          "description": "",
+          "description": "Variable name. Must be shell-safe and not a reserved `CFGD_*` name.",
           "name": "name",
           "required": true,
           "type": "string"
         },
         {
-          "description": "",
+          "description": "Variable value.",
           "name": "value",
           "required": true,
           "type": "string"
         }
       ],
-      "description": "",
+      "description": "Environment variables this profile sets.",
       "name": "env",
       "required": false,
       "type": "[]object"
     },
     {
-      "description": "How far `spec.env` exports reach across the current user's environment. Omitted means \"inherit\" (a parent layer's value survives); the resolved default when no layer sets it is [`EnvScope::All`] — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces.",
+      "description": "How far `spec.env` exports reach across the current user's environment. Omitted means \"inherit\" (a parent layer's value survives); the resolved default when no layer sets it is `EnvScope::All` — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces.",
       "name": "envScope",
       "required": false,
       "type": "string"
@@ -331,37 +331,37 @@
               "type": "string"
             },
             {
-              "description": "",
+              "description": "Destination path on the machine. A leading `~` expands to the home directory.",
               "name": "target",
               "required": true,
               "type": "string"
             }
           ],
-          "description": "",
+          "description": "Files to deploy.",
           "name": "managed",
           "required": false,
           "type": "[]object"
         },
         {
-          "description": "",
+          "description": "Octal permission strings (`\"0600\"`) keyed by target path, applied after deployment.",
           "name": "permissions",
           "required": false,
           "type": "object"
         }
       ],
-      "description": "",
+      "description": "Files this profile deploys.",
       "name": "files",
       "required": false,
       "type": "object"
     },
     {
-      "description": "",
+      "description": "Names of base profiles to merge under this one. Later fields in this profile override an inherited base's; lists are unioned.",
       "name": "inherits",
       "required": false,
       "type": "[]string"
     },
     {
-      "description": "",
+      "description": "Names of modules this profile includes.",
       "name": "modules",
       "required": false,
       "type": "[]string"
@@ -369,7 +369,7 @@
     {
       "children": [
         {
-          "description": "",
+          "description": "APK packages (Alpine).",
           "name": "apk",
           "required": false,
           "type": "[]string"
@@ -377,19 +377,19 @@
         {
           "children": [
             {
-              "description": "",
+              "description": "Path to a package-list file to install from, one name per line.",
               "name": "file",
               "required": false,
               "type": "string"
             },
             {
-              "description": "",
+              "description": "APT package names to install.",
               "name": "packages",
               "required": false,
               "type": "[]string"
             }
           ],
-          "description": "",
+          "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.",
           "name": "apt",
           "required": false,
           "type": "object"
@@ -397,31 +397,31 @@
         {
           "children": [
             {
-              "description": "",
+              "description": "Homebrew casks (GUI applications) to install.",
               "name": "casks",
               "required": false,
               "type": "[]string"
             },
             {
-              "description": "",
+              "description": "Path to a Brewfile to apply instead of (or alongside) the lists below.",
               "name": "file",
               "required": false,
               "type": "string"
             },
             {
-              "description": "",
+              "description": "Homebrew formulae (CLI packages) to install.",
               "name": "formulae",
               "required": false,
               "type": "[]string"
             },
             {
-              "description": "",
+              "description": "Third-party taps to add before installing formulae/casks.",
               "name": "taps",
               "required": false,
               "type": "[]string"
             }
           ],
-          "description": "",
+          "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.",
           "name": "brew",
           "required": false,
           "type": "object"
@@ -429,25 +429,25 @@
         {
           "children": [
             {
-              "description": "",
+              "description": "Path to a `Cargo.toml` whose binaries to install instead of the list below.",
               "name": "file",
               "required": false,
               "type": "string"
             },
             {
-              "description": "",
+              "description": "Crate names to install (`cargo install`).",
               "name": "packages",
               "required": false,
               "type": "[]string"
             }
           ],
-          "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`) and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
+          "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.",
           "name": "cargo",
           "required": false,
           "type": "object"
         },
         {
-          "description": "",
+          "description": "Chocolatey packages (Windows).",
           "name": "chocolatey",
           "required": false,
           "type": "[]string"
@@ -455,55 +455,55 @@
         {
           "children": [
             {
-              "description": "",
+              "description": "Command that exits zero when this manager is available on the machine.",
               "name": "check",
               "required": true,
               "type": "string"
             },
             {
-              "description": "",
+              "description": "Command template to install a package; `{package}` is substituted.",
               "name": "install",
               "required": true,
               "type": "string"
             },
             {
-              "description": "",
+              "description": "Command whose stdout lists installed package names, one per line.",
               "name": "listInstalled",
               "required": true,
               "type": "string"
             },
             {
-              "description": "",
+              "description": "Manager name, used in `prefer:`/`deny:` lists and status output.",
               "name": "name",
               "required": true,
               "type": "string"
             },
             {
-              "description": "",
+              "description": "Package names to install with this manager.",
               "name": "packages",
               "required": false,
               "type": "[]string"
             },
             {
-              "description": "",
+              "description": "Command template to uninstall a package; `{package}` is substituted.",
               "name": "uninstall",
               "required": true,
               "type": "string"
             },
             {
-              "description": "",
+              "description": "Command to refresh the manager's own package index/cache before installs.",
               "name": "update",
               "required": false,
               "type": "string"
             }
           ],
-          "description": "",
+          "description": "User-defined package managers not built into cfgd, each with its own check/install/uninstall commands.",
           "name": "custom",
           "required": false,
           "type": "[]object"
         },
         {
-          "description": "",
+          "description": "DNF packages (Fedora/RHEL).",
           "name": "dnf",
           "required": false,
           "type": "[]string"
@@ -511,31 +511,31 @@
         {
           "children": [
             {
-              "description": "",
+              "description": "Flatpak application ids to install.",
               "name": "packages",
               "required": false,
               "type": "[]string"
             },
             {
-              "description": "",
+              "description": "Remote to install from (e.g. `flathub`). Falls back to Flatpak's configured default remote when omitted.",
               "name": "remote",
               "required": false,
               "type": "string"
             }
           ],
-          "description": "",
+          "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.",
           "name": "flatpak",
           "required": false,
           "type": "object"
         },
         {
-          "description": "",
+          "description": "Go packages (`go install`).",
           "name": "go",
           "required": false,
           "type": "[]string"
         },
         {
-          "description": "",
+          "description": "Nix packages (`nix-env` / `nix profile`).",
           "name": "nix",
           "required": false,
           "type": "[]string"
@@ -543,43 +543,43 @@
         {
           "children": [
             {
-              "description": "",
+              "description": "Path to a `package.json` to install dependencies from.",
               "name": "file",
               "required": false,
               "type": "string"
             },
             {
-              "description": "",
+              "description": "Package names to install globally (`npm install -g`).",
               "name": "global",
               "required": false,
               "type": "[]string"
             }
           ],
-          "description": "",
+          "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping.",
           "name": "npm",
           "required": false,
           "type": "object"
         },
         {
-          "description": "",
+          "description": "Pacman packages (Arch).",
           "name": "pacman",
           "required": false,
           "type": "[]string"
         },
         {
-          "description": "",
+          "description": "pipx-installed Python applications.",
           "name": "pipx",
           "required": false,
           "type": "[]string"
         },
         {
-          "description": "",
+          "description": "pkg packages (FreeBSD).",
           "name": "pkg",
           "required": false,
           "type": "[]string"
         },
         {
-          "description": "",
+          "description": "Scoop packages (Windows).",
           "name": "scoop",
           "required": false,
           "type": "[]string"
@@ -587,43 +587,43 @@
         {
           "children": [
             {
-              "description": "",
+              "description": "Snap names installed with `--classic` confinement.",
               "name": "classic",
               "required": false,
               "type": "[]string"
             },
             {
-              "description": "",
+              "description": "Snap names installed with default (strict) confinement.",
               "name": "packages",
               "required": false,
               "type": "[]string"
             }
           ],
-          "description": "",
+          "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.",
           "name": "snap",
           "required": false,
           "type": "object"
         },
         {
-          "description": "",
+          "description": "Winget packages (Windows).",
           "name": "winget",
           "required": false,
           "type": "[]string"
         },
         {
-          "description": "",
+          "description": "Yum packages (legacy RHEL/CentOS).",
           "name": "yum",
           "required": false,
           "type": "[]string"
         },
         {
-          "description": "",
+          "description": "Zypper packages (openSUSE).",
           "name": "zypper",
           "required": false,
           "type": "[]string"
         }
       ],
-      "description": "",
+      "description": "Packages this profile installs, grouped by manager.",
       "name": "packages",
       "required": false,
       "type": "object"
@@ -631,13 +631,13 @@
     {
       "children": [
         {
-          "description": "",
+          "description": "Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).",
           "name": "onChange",
           "required": false,
           "type": "[](string | object)",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -645,7 +645,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -675,7 +675,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
@@ -687,7 +687,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -713,13 +713,13 @@
           ]
         },
         {
-          "description": "",
+          "description": "Run when the daemon detects drift, before any auto-apply decision.",
           "name": "onDrift",
           "required": false,
           "type": "[](string | object)",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -727,7 +727,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -757,7 +757,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
@@ -769,7 +769,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -795,13 +795,13 @@
           ]
         },
         {
-          "description": "",
+          "description": "Run once after every action in an apply completes.",
           "name": "postApply",
           "required": false,
           "type": "[](string | object)",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -809,7 +809,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -839,7 +839,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
@@ -851,7 +851,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -877,13 +877,13 @@
           ]
         },
         {
-          "description": "",
+          "description": "Run once after a daemon reconcile tick completes.",
           "name": "postReconcile",
           "required": false,
           "type": "[](string | object)",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -891,7 +891,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -921,7 +921,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
@@ -933,7 +933,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -959,13 +959,13 @@
           ]
         },
         {
-          "description": "",
+          "description": "Run once before any action in an apply.",
           "name": "preApply",
           "required": false,
           "type": "[](string | object)",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -973,7 +973,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -1003,7 +1003,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
@@ -1015,7 +1015,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -1041,13 +1041,13 @@
           ]
         },
         {
-          "description": "",
+          "description": "Run once before a daemon reconcile tick begins.",
           "name": "preReconcile",
           "required": false,
           "type": "[](string | object)",
           "variants": [
             {
-              "description": "",
+              "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
               "name": "string",
               "required": false,
               "type": "string"
@@ -1055,7 +1055,7 @@
             {
               "children": [
                 {
-                  "description": "",
+                  "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
                   "name": "continueOnError",
                   "required": false,
                   "type": "boolean"
@@ -1085,7 +1085,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "The command or script body to run.",
                   "name": "run",
                   "required": true,
                   "type": "string"
@@ -1097,7 +1097,7 @@
                   "type": "string"
                 },
                 {
-                  "description": "",
+                  "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
                   "name": "timeout",
                   "required": false,
                   "type": "string"
@@ -1123,7 +1123,7 @@
           ]
         }
       ],
-      "description": "",
+      "description": "Lifecycle scripts (`preApply`, `postApply`, …) this profile runs.",
       "name": "scripts",
       "required": false,
       "type": "object"
@@ -1131,43 +1131,43 @@
     {
       "children": [
         {
-          "description": "",
+          "description": "Secret backend name to resolve `source` with. Falls back to `spec.secrets.backend` from `cfgd.yaml` when omitted.",
           "name": "backend",
           "required": false,
           "type": "string"
         },
         {
-          "description": "",
+          "description": "Environment variable names to export the decrypted value under. Mutually exclusive with `target`.",
           "name": "envs",
           "required": false,
           "type": "[]string"
         },
         {
-          "description": "",
+          "description": "Backend-specific reference to the secret (a 1Password `op://` URI, a Vault path, a sops-encrypted file key, …).",
           "name": "source",
           "required": true,
           "type": "string"
         },
         {
-          "description": "",
+          "description": "File path to write the decrypted secret to. Mutually exclusive with `envs`.",
           "name": "target",
           "required": false,
           "type": "string"
         },
         {
-          "description": "",
+          "description": "Template rendered around the decrypted value before writing to `target` (e.g. wrapping it in a config file's expected shape).",
           "name": "template",
           "required": false,
           "type": "string"
         }
       ],
-      "description": "",
+      "description": "Secrets this profile resolves into files or environment variables.",
       "name": "secrets",
       "required": false,
       "type": "[]object"
     },
     {
-      "description": "",
+      "description": "System configurator settings (`macosDefaults`, `systemd`, `sysctl`, …), keyed by configurator name.",
       "name": "system",
       "required": false,
       "type": "object"
