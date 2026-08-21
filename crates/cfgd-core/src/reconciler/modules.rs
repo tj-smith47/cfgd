@@ -378,6 +378,18 @@ impl<'a> super::Reconciler<'a> {
                         self.record_module_file(action, &target, strategy, apply_id)?;
                         continue;
                     }
+
+                    // A source that names nothing deploys nothing: leave the
+                    // target alone (removing it would trade a broken
+                    // declaration for lost data) and claim no change, so the
+                    // entry cannot fire `onChange` on every run over a write
+                    // that never happens. Not recorded either — the manifest
+                    // names what cfgd wrote and `profile remove-module`
+                    // deletes what the manifest names, so a row minted here
+                    // would mark a file cfgd never touched for deletion.
+                    if patched.is_none() && !file.source.exists() {
+                        continue;
+                    }
                     deployed_any = true;
 
                     // Backup existing target before overwriting

@@ -23243,3 +23243,64 @@ fn a_converged_env_declaring_modules_hooks_are_deferred_not_dropped() {
         "a fully converged module defers nothing, got: {actions:?} / {gated:?}"
     );
 }
+
+#[test]
+fn a_missing_source_deploys_nothing_and_claims_no_change() {
+    // The declaration is broken, not the machine: the target keeps its bytes
+    // (removing it would trade a broken declaration for lost data), the
+    // action reports no change so `onChange` cannot fire on every run, and
+    // the manifest gains no row for a file cfgd never wrote.
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("gone");
+    let target = dir.path().join("kept");
+    std::fs::write(&target, "the user's own bytes").unwrap();
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let module = hooked_file_module("broken", vec![deployable_file(&src, &target)]);
+    let plan = reconciler
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let result = reconciler
+        .apply(
+            &plan,
+            &make_empty_resolved(),
+            Path::new("."),
+            &test_printer(),
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    let deploy = result
+        .action_results
+        .iter()
+        .find(|r| r.description.contains("files"))
+        .expect("the deploy action is reported");
+    assert!(deploy.success, "a missing source is not a failed action");
+    assert!(
+        !deploy.changed,
+        "nothing was written, so nothing changed: {deploy:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "the user's own bytes",
+        "the target is left alone"
+    );
+    assert!(
+        state.module_deployed_files("broken").unwrap().is_empty(),
+        "the manifest never owns a file cfgd never wrote"
+    );
+}
