@@ -23299,11 +23299,18 @@ fn a_missing_source_deploys_nothing_and_claims_no_change() {
     let src = dir.path().join("gone");
     let target = dir.path().join("kept");
     std::fs::write(&target, "the user's own bytes").unwrap();
+    let nested_target = dir.path().join("never").join("made");
 
     let state = test_state();
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
-    let module = hooked_file_module("broken", vec![deployable_file(&src, &target)]);
+    let module = hooked_file_module(
+        "broken",
+        vec![
+            deployable_file(&src, &target),
+            deployable_file(&dir.path().join("gone2"), &nested_target),
+        ],
+    );
     let plan = reconciler
         .plan(
             &make_empty_resolved(),
@@ -23347,5 +23354,9 @@ fn a_missing_source_deploys_nothing_and_claims_no_change() {
     assert!(
         state.module_deployed_files("broken").unwrap().is_empty(),
         "the manifest never owns a file cfgd never wrote"
+    );
+    assert!(
+        !dir.path().join("never").exists(),
+        "a broken declaration leaves no empty directories behind"
     );
 }

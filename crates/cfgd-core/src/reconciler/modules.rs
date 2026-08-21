@@ -118,62 +118,66 @@ pub(super) fn planned_file_converged(
 /// not create is drift the deploy corrects. Symlinks under `src` are skipped
 /// to match `copy_dir_recursive`, and any unreadable entry answers false.
 fn dir_trees_equal(src: &std::path::Path, dst: &std::path::Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(src) else {
-        return false;
-    };
-    let mut expected: std::collections::BTreeSet<std::ffi::OsString> =
-        std::collections::BTreeSet::new();
-    for entry in entries {
-        let Ok(entry) = entry else {
+    // A worklist rather than recursion: the tree's depth is module-supplied,
+    // and a comparison must answer false on a pathological nesting, never
+    // exhaust the thread's stack on it.
+    let mut pending = vec![(src.to_path_buf(), dst.to_path_buf())];
+    while let Some((src, dst)) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&src) else {
             return false;
         };
-        let Ok(ft) = entry.file_type() else {
-            return false;
-        };
-        if ft.is_symlink() {
-            continue;
-        }
-        let deployed = dst.join(entry.file_name());
-        expected.insert(entry.file_name());
-        let Ok(dmeta) = deployed.symlink_metadata() else {
-            return false;
-        };
-        if ft.is_dir() {
-            if dmeta.file_type().is_symlink()
-                || !dmeta.is_dir()
-                || !dir_trees_equal(&entry.path(), &deployed)
-            {
-                return false;
-            }
-        } else {
-            if !dmeta.is_file() {
-                return false;
-            }
-            // Length first, so a differing leaf answers without reading bytes.
-            let Ok(smeta) = entry.metadata() else {
+        let mut expected: std::collections::BTreeSet<std::ffi::OsString> =
+            std::collections::BTreeSet::new();
+        for entry in entries {
+            let Ok(entry) = entry else {
                 return false;
             };
-            if smeta.len() != dmeta.len() {
-                return false;
-            }
-            let (Ok(want), Ok(have)) = (std::fs::read(entry.path()), std::fs::read(&deployed))
-            else {
+            let Ok(ft) = entry.file_type() else {
                 return false;
             };
-            if want != have {
+            if ft.is_symlink() {
+                continue;
+            }
+            let deployed = dst.join(entry.file_name());
+            expected.insert(entry.file_name());
+            let Ok(dmeta) = deployed.symlink_metadata() else {
                 return false;
+            };
+            if ft.is_dir() {
+                if dmeta.file_type().is_symlink() || !dmeta.is_dir() {
+                    return false;
+                }
+                pending.push((entry.path(), deployed));
+            } else {
+                if !dmeta.is_file() {
+                    return false;
+                }
+                // Length first, so a differing leaf answers without reading bytes.
+                let Ok(smeta) = entry.metadata() else {
+                    return false;
+                };
+                if smeta.len() != dmeta.len() {
+                    return false;
+                }
+                let (Ok(want), Ok(have)) = (std::fs::read(entry.path()), std::fs::read(&deployed))
+                else {
+                    return false;
+                };
+                if want != have {
+                    return false;
+                }
             }
         }
-    }
-    let Ok(entries) = std::fs::read_dir(dst) else {
-        return false;
-    };
-    for entry in entries {
-        let Ok(entry) = entry else {
+        let Ok(entries) = std::fs::read_dir(&dst) else {
             return false;
         };
-        if !expected.contains(&entry.file_name()) {
-            return false;
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return false;
+            };
+            if !expected.contains(&entry.file_name()) {
+                return false;
+            }
         }
     }
     true
@@ -324,9 +328,6 @@ impl<'a> super::Reconciler<'a> {
                 let mut deployed_any = false;
                 for file in files {
                     let target = expand_tilde(&file.target);
-                    if let Some(parent) = target.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
 
                     // Use the per-file strategy override if set, otherwise
                     // fall back to the global file-strategy from cfgd.yaml (default: symlink).
@@ -391,6 +392,14 @@ impl<'a> super::Reconciler<'a> {
                         continue;
                     }
                     deployed_any = true;
+
+                    // The parent is created only once a write is certain: a
+                    // converged target needs nothing, and a broken declaration
+                    // must leave no empty directories behind as the one trace
+                    // of a deploy that never happened.
+                    if let Some(parent) = target.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
 
                     // Backup existing target before overwriting
                     if let Ok(Some(file_state)) = crate::capture_file_state(&target)
