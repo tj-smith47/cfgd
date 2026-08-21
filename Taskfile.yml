@@ -5,6 +5,8 @@ dotenv: [".env"]
 vars:
   REGISTRY:
     sh: echo "${REGISTRY:-registry.jarvispro.io}"
+  TARGET_MAXSIZE:
+    sh: echo "${CFGD_TARGET_MAXSIZE:-20GB}"
 
 env:
   REGISTRY: '{{.REGISTRY}}'
@@ -547,6 +549,11 @@ tasks:
         for tag in $(find ~/.cache/cfgd-debug -maxdepth 3 -name CACHEDIR.TAG 2>/dev/null); do
           rm -rf "$(dirname "$tag")"
         done
+      # target/debug/deps accumulates one set of test binaries per rebuild and cargo
+      # never collects the superseded ones, so it reached 76G in a single day of test
+      # cycles. Age-based sweeping cannot reach it: every run stats every artifact, so
+      # nothing is ever old. Capping by SIZE evicts oldest-first until the cap holds.
+      - cargo sweep --maxsize {{.TARGET_MAXSIZE}} || true
       - df -h / | tail -1
 
   # --- Docker ---
