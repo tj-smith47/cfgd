@@ -58,15 +58,17 @@ Show
 Type "cfgd explain profile.spec.packages"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 500ms
+Sleep 2s
 
 # Beat 2: mutate the profile from the CLI — add a package and a shell alias
 # in one command, no editor. `base` is the real profile name in the cloned
-# config, verified via `cfgd profile list` during validation.
-Type "cfgd profile update base --package brew:jq --alias k=kubectl"
+# config, verified via `cfgd profile list` during validation. `catn` (not
+# `k=kubectl`) because the demo image is bare Ubuntu with no kubectl on
+# PATH — the alias has to be one beat 5 can actually run.
+Type "cfgd profile update base --package brew:jq --alias catn='cat -n'"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 500ms
+Sleep 2s
 
 # Beat 3: preview what the update queued. The plan also carries nvim's full
 # declared package/file/post-script set alongside the new jq install — nvim
@@ -81,7 +83,7 @@ Sleep 500ms
 Type "cfgd plan"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 500ms
+Sleep 2s
 
 # Beat 4: converge. Everything nvim-owned no-ops (already installed/deployed,
 # confirmed during validation); the only real work is the jq install this
@@ -89,15 +91,28 @@ Sleep 500ms
 Type "cfgd apply --yes"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 500ms
+Sleep 2s
 
-# Beat 5: the payoff. The alias needs a re-sourced shell to reach this same
-# session, so the visible proof is the package, not the alias invocation —
-# faking `k get pods` here would be showing something that didn't happen.
+# Beat 5: the payoff, both halves. This shell's copy of ~/.cfgd.env predates
+# the write cfgd apply just made, so re-source it first — on its own line,
+# never chained with `&&` onto the alias invocation below, since bash
+# resolves an alias against what was already defined when it PARSED the
+# line, not what a same-line `source` just defined — then run the alias
+# itself against that same file, proving the exact alias
+# `cfgd profile update` queued actually resolves and runs, not just that it
+# was declared.
+Type "source ~/.cfgd.env"
+Enter
+Wait@10s /cfgd\$$/
+Sleep 1s
+Type "catn ~/.cfgd.env"
+Enter
+Wait@10s /cfgd\$$/
+Sleep 2s
 Type "jq --version"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 500ms
+Sleep 2s
 
 # Closing hold — breathing room before the loop snaps back to the opening
 # frame, matching drift.tape's closing beat.
