@@ -119,31 +119,84 @@ fn every_subscriber_writes_through_a_folding_writer() {
     );
 }
 
-/// Whether `code` opens a `tracing_subscriber::fmt` subscriber or layer. Every
-/// spelling the crate offers is listed, not the two the workspace happens to
-/// use: an init that took the default writer under a spelling the fence did
-/// not know would be as invisible as the one that started this.
+/// Whether `code` opens a `tracing_subscriber::fmt` subscriber or layer. Lists
+/// every construction spelling `tracing-subscriber`'s public API and this
+/// workspace's own audits have turned up so far — not a claim of exhaustive
+/// coverage, since a spelling this list has not seen is still caught by the
+/// writer it names: the argument pass below reads every `with_writer(` and
+/// `map_writer(` wherever either stands, independent of whether this function
+/// recognized the construction in front of it. Turbofish generics are
+/// stripped first (`strip_turbofish`), so `fmt::Layer::<S>::default()` reaches
+/// the same arm as `fmt::Layer::default()`.
 fn opens_subscriber(code: &str) -> bool {
-    const SPELLINGS: [&str; 7] = [
+    const SPELLINGS: [&str; 11] = [
         "tracing_subscriber::fmt(",
         // Bare, so an imported `fmt` module reaches the same arm as the
         // fully-qualified path that contains it.
         "fmt::layer(",
         "fmt::init(",
+        "fmt::try_init(",
+        "fmt::fmt(",
         "fmt::Layer::new(",
         "fmt::Layer::default(",
+        "fmt::Subscriber::new(",
+        "fmt::Subscriber::default(",
         "fmt::Subscriber::builder(",
         "FmtSubscriber::builder(",
     ];
+    let code = strip_turbofish(code);
     SPELLINGS.iter().any(|spelling| code.contains(spelling))
 }
 
-/// Whether the `with_writer` argument `arg` names the folding writer: the type
-/// itself, or a binding whose initializer in the same file names it (the two
-/// CLI entry points hand the subscriber a `tracing_writer.clone()` bound
+/// Remove every `::<…>` turbofish from `code`, collapsing `fmt::Layer::<S>::default(`
+/// to `fmt::Layer::default(` so a generic parameter cannot hide a construction
+/// spelling from the substring list above. Brace-balanced rather than a single
+/// close-angle search, so a turbofish nesting another generic
+/// (`::<Foo<Bar>>`) still collapses to its outer close.
+fn strip_turbofish(code: &str) -> String {
+    let mut out = String::with_capacity(code.len());
+    let mut chars = code.char_indices().peekable();
+    while let Some((_, c)) = chars.next() {
+        if c == ':' && chars.peek().map(|&(_, c)| c) == Some(':') {
+            let mut lookahead = chars.clone();
+            lookahead.next();
+            if lookahead.peek().map(|&(_, c)| c) == Some('<') {
+                lookahead.next();
+                let mut depth = 1i32;
+                for (_, c) in lookahead.by_ref() {
+                    match c {
+                        '<' => depth += 1,
+                        '>' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                // Nothing pushed for the turbofish itself: the `::` that
+                // follows its close (already the next thing `lookahead`
+                // points at) is the real path separator and survives on its
+                // own in the next iteration.
+                chars = lookahead;
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Whether the `with_writer`/`map_writer` argument `arg`, called on
+/// `lines[at]`, names the folding writer: the type itself, or a binding whose
+/// initializer names it — resolved through the LAST matching `let` AT OR
+/// BEFORE `at`, not any matching `let` anywhere in the file, so a later
+/// binding that shadows an earlier folding one is not mistaken for it (the
+/// two CLI entry points hand the subscriber a `tracing_writer.clone()` bound
 /// earlier, and accepting that identifier on its NAME alone would accept any
-/// writer somebody later bound to it).
-fn names_folding_writer(lines: &[&str], arg: &str) -> bool {
+/// writer somebody later bound to it, shadow included).
+fn names_folding_writer(lines: &[&str], at: usize, arg: &str) -> bool {
     let squashed: String = arg.chars().filter(|c| !c.is_whitespace()).collect();
     if squashed.contains("LiveTracingWriter") {
         return true;
@@ -156,22 +209,31 @@ fn names_folding_writer(lines: &[&str], arg: &str) -> bool {
         return false;
     }
     let bindings = [format!("let {root} "), format!("let mut {root} ")];
-    lines.iter().any(|line| {
-        let code = code_half(line);
-        code.contains("LiveTracingWriter") && bindings.iter().any(|b| code.contains(b.as_str()))
-    })
+    lines[..=at]
+        .iter()
+        .rev()
+        .find_map(|line| {
+            let code = code_half(line);
+            bindings
+                .iter()
+                .any(|b| code.contains(b.as_str()))
+                .then(|| code.contains("LiveTracingWriter"))
+        })
+        .unwrap_or(false)
 }
 
 /// Line numbers (0-based) of every wiring in `source` that does not put its
 /// events through the folding writer, each paired with what it gets wrong.
 ///
 /// Two passes, because either half alone leaves a way through. The first reads
-/// every `with_writer(` wherever it stands, so a construction spelling this
-/// file does not recognize is still judged by the writer it names. The second
-/// reads each recognized construction to its terminating `;` — rustfmt splits
-/// a builder chain across lines, and a line-scoped read would judge the
-/// constructor alone — and catches the wiring that names no writer at all,
-/// plus the folding wiring that left the formatter's colours on.
+/// every `with_writer(` and `map_writer(` wherever either stands — `map_writer`
+/// can swap an otherwise-folding wiring's writer for something else after
+/// `with_writer` already named the folding one — so a construction spelling
+/// this file does not recognize is still judged by the writer it names. The
+/// second reads each recognized construction to its terminating `;` —
+/// rustfmt splits a builder chain across lines, and a line-scoped read would
+/// judge the constructor alone — and catches the wiring that names no writer
+/// at all, plus the folding wiring that left the formatter's colours on.
 fn unfolded_subscriber_offenders(source: &str) -> Vec<(usize, &'static str)> {
     const MAX_LINES: usize = 16;
     let lines: Vec<&str> = source.lines().collect();
@@ -179,12 +241,14 @@ fn unfolded_subscriber_offenders(source: &str) -> Vec<(usize, &'static str)> {
 
     for (i, line) in lines.iter().enumerate() {
         let code = code_half(line);
-        let Some(pos) = code.find("with_writer(") else {
-            continue;
-        };
-        let arg = writer_argument(&lines, i, pos + "with_writer(".len());
-        if !names_folding_writer(&lines, &arg) && !hatched(&lines, i, HATCH) {
-            offenders.push((i, "the writer named here does not fold"));
+        for needle in ["with_writer(", "map_writer("] {
+            let Some(pos) = code.find(needle) else {
+                continue;
+            };
+            let arg = writer_argument(&lines, i, pos + needle.len());
+            if !names_folding_writer(&lines, i, &arg) && !hatched(&lines, i, HATCH) {
+                offenders.push((i, "the writer named here does not fold"));
+            }
         }
     }
 
@@ -202,7 +266,7 @@ fn unfolded_subscriber_offenders(source: &str) -> Vec<(usize, &'static str)> {
             colours_off |= chain.contains("with_ansi(false)");
             if let Some(pos) = chain.find("with_writer(") {
                 let arg = writer_argument(&lines, i + offset, pos + "with_writer(".len());
-                writer = Some(names_folding_writer(&lines, &arg));
+                writer = Some(names_folding_writer(&lines, i + offset, &arg));
                 writer_line = i + offset;
             }
             if chain.contains(';') {
@@ -254,6 +318,13 @@ fn the_folding_writer_fence_recognizes_every_spelling() {
         "    let l = fmt::Layer::new();",
         "    let s = FmtSubscriber::builder().finish();",
         "    let s = fmt::Subscriber::builder().finish();",
+        "    tracing_subscriber::fmt::try_init();",
+        "    fmt::fmt().init();",
+        "    fmt::Subscriber::new();",
+        "    fmt::Subscriber::default();",
+        // A turbofish on the construction cannot hide it from the spelling
+        // list — `strip_turbofish` collapses it before matching.
+        "    fmt::Layer::<S>::default();",
         // A chain split over lines, with the writer named nowhere in it.
         "    tracing_subscriber::fmt()\n        .with_target(false)\n        .without_time()\n        .init();",
         // A later statement's writer does not cover this one.
@@ -262,6 +333,13 @@ fn the_folding_writer_fence_recognizes_every_spelling() {
         "    let w = LiveTracingWriter::new();\n    tracing_subscriber::fmt().with_writer(w.clone()).init();",
         // A binding that merely CARRIES the expected name is not the writer.
         "    let tracing_writer = std::io::stdout;\n    fmt::layer().with_writer(tracing_writer.clone());",
+        // A shadowing `let` of the same name after the real binding is not
+        // the writer either — resolution takes the LAST matching `let` at or
+        // before the call, not the first one found anywhere in the file.
+        "    let tracing_writer = LiveTracingWriter::new();\n    let tracing_writer = std::io::stdout;\n    fmt::layer().with_ansi(false).with_writer(tracing_writer.clone());",
+        // `map_writer` can swap an otherwise-folding wiring's writer for
+        // something else after `with_writer` already named the folding one.
+        "    tracing_subscriber::fmt()\n        .with_ansi(false)\n        .with_writer(LiveTracingWriter::new())\n        .map_writer(|_| std::io::stdout());",
         // A marker with no reason after it is not a hatch.
         "    // unfolded-writer-ok:\n    tracing_subscriber::fmt().init();",
         // The marker inside a string literal is not a hatch either.
