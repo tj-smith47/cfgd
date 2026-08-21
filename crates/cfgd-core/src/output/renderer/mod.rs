@@ -664,7 +664,11 @@ impl Emitting<'_> {
     ///
     /// The `std::mem::take` runs BEFORE rendering, which is what terminates
     /// the recursion through `flush_section_headers` → `push_line` and what
-    /// keeps a pending kv block rendering above a deferred section header.
+    /// keeps a pending kv block rendering above a deferred section header —
+    /// the shape a block written at the top level takes when a section opens
+    /// before the next emission drains it. Rows written INSIDE a section never
+    /// reach that shape: `render_section_close` drains before it pops the
+    /// frame, so they render under their own section's header.
     pub(crate) fn drain_kv_buffer(&mut self) {
         if self.state.kv_buffer.is_empty() {
             return;

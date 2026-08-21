@@ -5,11 +5,9 @@ Add Remote Module
 Fetch
   ✓ Fetched file://<BARE>@v1.0.0
 
-Commit     <COMMIT_SHA>
-Integrity  sha256:9ddde7d140067f9a93cc4d4f012b292d023731854e4f8a957bad25e565eb579b
-
 module:mymod
-  (none)
+  Commit     <COMMIT_SHA>
+  Integrity  sha256:9ddde7d140067f9a93cc4d4f012b292d023731854e4f8a957bad25e565eb579b
 
 ⊙ Tag 'v1.0.0' is unsigned
 ✓ Added module 'mymod' to profile 'default'

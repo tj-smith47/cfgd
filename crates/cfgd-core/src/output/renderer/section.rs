@@ -150,6 +150,10 @@ impl Renderer {
     /// Close the topmost section: pop frame, decrement indent. May emit
     /// the header (if first deferred + non-empty) and/or an `(none)` placeholder.
     pub(crate) fn render_section_close(&self, w: &dyn Writer) {
+        // Rows buffered inside this section belong to it. Drained after the pop
+        // they render outside the frame, above the section's own header, and
+        // leave the section reporting itself empty.
+        self.emit_with(w, |e| e.drain_kv_buffer());
         let frame = {
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
             s.indent_depth -= 1;

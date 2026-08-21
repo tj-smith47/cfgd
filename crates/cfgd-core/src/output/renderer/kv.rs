@@ -519,6 +519,32 @@ mod tests {
         );
     }
 
+    /// Rows written INSIDE a section belong to it, whatever else happens
+    /// before they drain. Left to the next emission, the drain lands after the
+    /// frame is gone: the rows render above the section's own header and the
+    /// section reports itself empty (`cfgd module add`'s review summary put its
+    /// `Commit`/`Integrity` rows above `module:<name>`, which then rendered
+    /// `(none)`).
+    #[test]
+    fn kv_rows_written_inside_a_section_render_inside_it() {
+        let (r, sink, buf) = capture();
+        r.render_section_open("module:mymod", /*keep_when_empty=*/ true);
+        r.render_kv("Commit", "abc1234");
+        r.render_kv("Integrity", "sha256:beef");
+        r.render_section_close(&sink);
+        let out = crate::test_helpers::captured_text(&buf);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines,
+            vec![
+                "module:mymod",
+                "  Commit     abc1234",
+                "  Integrity  sha256:beef",
+            ],
+            "got: {out:?}"
+        );
+    }
+
     #[test]
     fn command_list_quiet_suppressed() {
         let buf = Arc::new(Mutex::new(String::new()));
