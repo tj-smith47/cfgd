@@ -11,20 +11,6 @@ use super::scripts::{
 };
 use super::types::{ModuleAction, ModuleActionKind, ReconcileContext};
 
-/// Whether a module file's deployment would write bytes the target already
-/// holds, with the mode it already carries.
-///
-/// True only for a whole-content write whose content is knowable before it runs
-/// — a `Copy`/`Template` entry, both of which deploy the source verbatim, or a
-/// `Patch` entry whose merge has already been evaluated. A link entry has no
-/// content to compare, and a target that is a symlink or a directory is a thing
-/// to replace rather than content to match, so both answer false.
-///
-/// `strategy` is the RESOLVED strategy — the per-file override or the config's
-/// global `fileStrategy` — never `file.strategy`. Read from the field, a module
-/// file that declares no strategy of its own under a global `fileStrategy: copy`
-/// answers "not a whole-content write" and is rewritten on every apply, which is
-/// the exact repetition this check exists to end.
 /// Whether a module file's deployment would leave `target` exactly as it
 /// already stands — the PLAN-time question, answered for every strategy the
 /// apply arm below can act on.
@@ -32,21 +18,21 @@ use super::types::{ModuleAction, ModuleActionKind, ReconcileContext};
 /// [`converged_content_file`] is its whole-content core; this adds the arms
 /// planning needs that apply's write-skip cannot answer: a `Symlink` entry is
 /// converged when the target is a link to this very source, a `Hardlink` when
-/// the two paths share an inode, and a directory source (deployed as
+/// the two paths share an inode, a directory source (deployed as
 /// remove-then-clone) when the trees are byte-identical BOTH ways — extras
-/// included, because a fresh deploy clears them. Every unanswerable case fails
-/// OPEN (`Patch`, whose merge runs the module's own pipeline; an unreadable
+/// included, because a fresh deploy clears them — and a `Patch` entry when the
+/// merge `binding` lets this evaluate already reads back what the target holds
+/// (the same `is_up_to_date` question diff and verify ask). Every unanswerable
+/// case fails OPEN (a `Patch` with no binding or a failing merge; an unreadable
 /// path; an invalid declared mode): work is planned rather than silently
 /// dropped, and the apply arm decides.
 pub(super) fn planned_file_converged(
     file: &crate::modules::ResolvedFile,
     target: &std::path::Path,
     strategy: crate::config::FileStrategy,
+    binding: Option<&super::patch::PatchBinding>,
 ) -> bool {
     use crate::config::FileStrategy;
-    if strategy == FileStrategy::Patch {
-        return false;
-    }
     let mode = match file.permissions {
         Some(ref perm_str) => match crate::parse_octal_mode(perm_str) {
             Ok(m) => Some(m),
@@ -54,6 +40,19 @@ pub(super) fn planned_file_converged(
         },
         None => None,
     };
+    if strategy == FileStrategy::Patch {
+        // The merge is a function of the live target, so it is knowable here —
+        // the same evaluation diff, verify and compliance already run. Without
+        // a binding (a caller with no config dir to anchor a patch script) the
+        // question is unanswerable and the deploy is planned.
+        let (Some(binding), Some(spec)) = (binding, file.patch.as_ref()) else {
+            return false;
+        };
+        let Ok(outcome) = super::patch::evaluate_patch(spec, target, &binding.context()) else {
+            return false;
+        };
+        return converged_content_file(file, target, strategy, Some(&outcome.patched), mode);
+    }
     if strategy == FileStrategy::Symlink {
         let Ok(meta) = target.symlink_metadata() else {
             return false;
@@ -122,7 +121,8 @@ fn dir_trees_equal(src: &std::path::Path, dst: &std::path::Path) -> bool {
     let Ok(entries) = std::fs::read_dir(src) else {
         return false;
     };
-    let mut expected: std::collections::BTreeSet<std::ffi::OsString> = Default::default();
+    let mut expected: std::collections::BTreeSet<std::ffi::OsString> =
+        std::collections::BTreeSet::new();
     for entry in entries {
         let Ok(entry) = entry else {
             return false;
@@ -149,6 +149,13 @@ fn dir_trees_equal(src: &std::path::Path, dst: &std::path::Path) -> bool {
             if !dmeta.is_file() {
                 return false;
             }
+            // Length first, so a differing leaf answers without reading bytes.
+            let Ok(smeta) = entry.metadata() else {
+                return false;
+            };
+            if smeta.len() != dmeta.len() {
+                return false;
+            }
             let (Ok(want), Ok(have)) = (std::fs::read(entry.path()), std::fs::read(&deployed))
             else {
                 return false;
@@ -172,6 +179,21 @@ fn dir_trees_equal(src: &std::path::Path, dst: &std::path::Path) -> bool {
     true
 }
 
+/// Whether a module file's deployment would write bytes the target already
+/// holds, with the mode it already carries.
+///
+/// True only for a whole-content write whose content is knowable before it runs
+/// — a `Copy`/`Template` entry, both of which deploy the source verbatim, or a
+/// `Patch` entry whose merge has already been evaluated (`patched`). A link
+/// entry has no content to compare, and a target that is a symlink or a
+/// directory is a thing to replace rather than content to match, so both
+/// answer false.
+///
+/// `strategy` is the RESOLVED strategy — the per-file override or the config's
+/// global `fileStrategy` — never `file.strategy`. Read from the field, a module
+/// file that declares no strategy of its own under a global `fileStrategy: copy`
+/// answers "not a whole-content write" and is rewritten on every apply, which is
+/// the exact repetition this check exists to end.
 fn converged_content_file(
     file: &crate::modules::ResolvedFile,
     target: &std::path::Path,
@@ -194,11 +216,13 @@ fn converged_content_file(
     {
         return false;
     }
-    let Ok(actual) = std::fs::read(target) else {
-        return false;
-    };
+    // A length mismatch answers without reading either side — this runs per
+    // declared file per plan and per daemon tick, not just per apply.
     if let Some(content) = patched {
-        return actual == content.as_bytes();
+        if meta.len() != content.len() as u64 {
+            return false;
+        }
+        return std::fs::read(target).is_ok_and(|actual| actual == content.as_bytes());
     }
     if !matches!(
         strategy,
@@ -206,6 +230,13 @@ fn converged_content_file(
     ) {
         return false;
     }
+    match file.source.metadata() {
+        Ok(smeta) if smeta.len() == meta.len() => {}
+        _ => return false,
+    }
+    let Ok(actual) = std::fs::read(target) else {
+        return false;
+    };
     std::fs::read(&file.source).is_ok_and(|desired| desired == actual)
 }
 

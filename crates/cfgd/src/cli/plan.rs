@@ -104,7 +104,9 @@ pub fn cmd_plan(
     let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
 
     let module_names: Vec<String> = resolved_modules.iter().map(|m| m.name.clone()).collect();
-    let reconciler = Reconciler::new(&registry, state).diffing_installed(&pkg_cx);
+    let reconciler = Reconciler::new(&registry, state)
+        .with_config_dir(&config_dir)
+        .diffing_installed(&pkg_cx);
 
     // ONE bar for the whole planning wait. Two adjacent `narrate("Planning")`
     // calls read as one label but are not one bar: the first retires and the

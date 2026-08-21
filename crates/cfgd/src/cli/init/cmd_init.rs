@@ -224,6 +224,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
             let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
+                .with_config_dir(&target_dir)
                 .diffing_installed(&pkg_cx);
             let mut plan = reconciler.plan(
                 &resolved,
@@ -350,6 +351,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             modules::fill_module_available_versions(&mut resolved_modules, &registry.manager_map());
 
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
+                .with_config_dir(&target_dir)
                 .diffing_installed(&pkg_cx);
             let mut plan = reconciler.plan(
                 &resolved,

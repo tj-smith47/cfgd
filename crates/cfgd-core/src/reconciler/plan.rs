@@ -750,6 +750,42 @@ impl<'a> super::Reconciler<'a> {
                     // action entirely, which is what lets a settled machine
                     // read "nothing to do" instead of re-deploying (and
                     // re-hooking) the same six files on every run.
+                    //
+                    // Elision requires the manifest to already OWN the row:
+                    // `cfgd status <module>` and `profile remove-module` read
+                    // `module_file_manifest`, and its only writer is the
+                    // DeployFiles apply arm — a target that happened to match
+                    // its source before cfgd ever deployed it would never be
+                    // recorded, so it would be invisible to both. A state-read failure elides
+                    // nothing: planning (and re-recording) a converged file is
+                    // harmless, an unrecorded owned file is not.
+                    let recorded: std::collections::HashSet<String> = self
+                        .state
+                        .module_deployed_files(&module.name)
+                        .map(|rows| rows.into_iter().map(|r| r.file_path).collect())
+                        .unwrap_or_default();
+                    // A `Patch` entry's convergence is a function of the live
+                    // target plus the patch script's environment, which only a
+                    // caller holding the config dir can complete. Built once
+                    // per module, and only when a Patch entry exists to ask
+                    // about — the binding snapshots the script env eagerly.
+                    let binding = self.config_dir.as_deref().and_then(|dir| {
+                        module
+                            .files
+                            .iter()
+                            .any(|f| {
+                                f.strategy.unwrap_or(self.registry.default_file_strategy)
+                                    == crate::config::FileStrategy::Patch
+                            })
+                            .then(|| {
+                                super::patch::PatchBinding::module(
+                                    dir,
+                                    profile_name,
+                                    context,
+                                    module,
+                                )
+                            })
+                    });
                     let declared_total = module.files.len();
                     let files: Vec<crate::modules::ResolvedFile> = module
                         .files
@@ -758,7 +794,13 @@ impl<'a> super::Reconciler<'a> {
                             let target = expand_tilde(&file.target);
                             let strategy =
                                 file.strategy.unwrap_or(self.registry.default_file_strategy);
-                            !super::modules::planned_file_converged(file, &target, strategy)
+                            !(recorded.contains(&crate::to_posix_fs_key(&target))
+                                && super::modules::planned_file_converged(
+                                    file,
+                                    &target,
+                                    strategy,
+                                    binding.as_ref(),
+                                ))
                         })
                         .cloned()
                         .collect();

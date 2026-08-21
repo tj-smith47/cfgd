@@ -22735,13 +22735,19 @@ fn a_deployed_file_matching_its_source_is_elided_and_the_subset_names_itself() {
     std::fs::write(tgt.join("init.lua"), "settled").unwrap();
     std::fs::write(src.join("keys.lua"), "changed upstream").unwrap();
 
-    let plan = plan_modules_only(vec![hooked_file_module(
-        "nvim",
-        vec![
-            deployable_file(&src.join("init.lua"), &tgt.join("init.lua")),
-            deployable_file(&src.join("keys.lua"), &tgt.join("keys.lua")),
+    let plan = plan_modules_recorded(
+        vec![hooked_file_module(
+            "nvim",
+            vec![
+                deployable_file(&src.join("init.lua"), &tgt.join("init.lua")),
+                deployable_file(&src.join("keys.lua"), &tgt.join("keys.lua")),
+            ],
+        )],
+        &[
+            ("nvim", &tgt.join("init.lua")),
+            ("nvim", &tgt.join("keys.lua")),
         ],
-    )]);
+    );
 
     let files_phase = plan
         .phases
@@ -22779,17 +22785,64 @@ fn a_module_whose_files_all_match_plans_nothing_and_runs_no_hooks() {
         std::fs::write(tgt.join(name), "settled").unwrap();
     }
 
-    let plan = plan_modules_only(vec![hooked_file_module(
-        "nvim",
-        vec![
-            deployable_file(&src.join("init.lua"), &tgt.join("init.lua")),
-            deployable_file(&src.join("keys.lua"), &tgt.join("keys.lua")),
+    let plan = plan_modules_recorded(
+        vec![hooked_file_module(
+            "nvim",
+            vec![
+                deployable_file(&src.join("init.lua"), &tgt.join("init.lua")),
+                deployable_file(&src.join("keys.lua"), &tgt.join("keys.lua")),
+            ],
+        )],
+        &[
+            ("nvim", &tgt.join("init.lua")),
+            ("nvim", &tgt.join("keys.lua")),
         ],
-    )]);
+    );
 
     assert!(
         plan.is_empty(),
         "a converged module plans no deploy and no hooks, got:\n{:?}",
+        all_plan_items(&plan)
+    );
+}
+
+#[test]
+fn a_matching_target_the_manifest_does_not_own_is_still_planned() {
+    // A first deploy over a target that already holds the source's bytes:
+    // eliding it would leave `module_file_manifest` without the row that
+    // `cfgd status <module>` and `profile remove-module` read, so the file
+    // would be deployed in fact and unowned on record. Convergence elides
+    // only what the manifest already owns.
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let tgt = dir.path().join("tgt");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&tgt).unwrap();
+    std::fs::write(src.join("init.lua"), "settled").unwrap();
+    std::fs::write(tgt.join("init.lua"), "settled").unwrap();
+
+    let module = || {
+        hooked_file_module(
+            "nvim",
+            vec![deployable_file(
+                &src.join("init.lua"),
+                &tgt.join("init.lua"),
+            )],
+        )
+    };
+
+    let plan = plan_modules_only(vec![module()]);
+    assert!(
+        all_plan_items(&plan).join("\n").contains("init.lua"),
+        "an unrecorded match is planned so the deploy records it, got:\n{:?}",
+        all_plan_items(&plan)
+    );
+
+    // The same fixture with the manifest row present is the settled machine.
+    let plan = plan_modules_recorded(vec![module()], &[("nvim", &tgt.join("init.lua"))]);
+    assert!(
+        plan.is_empty(),
+        "a recorded match elides, got:\n{:?}",
         all_plan_items(&plan)
     );
 }
@@ -22812,7 +22865,10 @@ fn a_symlink_entry_is_converged_only_when_the_link_points_at_its_source() {
     let mut repointed = deployable_file(&src.join("rc"), &stale);
     repointed.strategy = Some(FileStrategy::Symlink);
 
-    let plan = plan_modules_only(vec![hooked_file_module("links", vec![correct, repointed])]);
+    let plan = plan_modules_recorded(
+        vec![hooked_file_module("links", vec![correct, repointed])],
+        &[("links", &good), ("links", &stale)],
+    );
 
     let files_phase = plan
         .phases
@@ -22837,7 +22893,10 @@ fn a_directory_deploy_is_not_converged_while_the_target_holds_an_extra_entry() {
     std::fs::write(tgt.join("lua/a.lua"), "a").unwrap();
 
     let entry = deployable_file(&src, &tgt);
-    let plan = plan_modules_only(vec![hooked_file_module("tree", vec![entry.clone()])]);
+    let plan = plan_modules_recorded(
+        vec![hooked_file_module("tree", vec![entry.clone()])],
+        &[("tree", &tgt)],
+    );
     assert!(
         plan.is_empty(),
         "an identical tree is converged, got:\n{:?}",
@@ -22847,7 +22906,10 @@ fn a_directory_deploy_is_not_converged_while_the_target_holds_an_extra_entry() {
     // A deploy is remove-then-clone, so an extra deployed entry is drift the
     // deploy corrects — the tree must be planned again.
     std::fs::write(tgt.join("stray.lua"), "left behind").unwrap();
-    let plan = plan_modules_only(vec![hooked_file_module("tree", vec![entry])]);
+    let plan = plan_modules_recorded(
+        vec![hooked_file_module("tree", vec![entry])],
+        &[("tree", &tgt)],
+    );
     assert!(
         !plan.is_empty(),
         "an extra deployed entry un-converges the tree"
@@ -23007,6 +23069,76 @@ fn a_profile_tap_installs_before_a_modules_formula_across_the_tier_barrier() {
         log.first(),
         Some(&vec!["acme/tools".to_string()]),
         "the tap's repositories exist before any formula resolves from them, got {log:?}"
+    );
+}
+
+#[test]
+fn a_patch_entry_converges_at_plan_time_only_under_a_config_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("conf.yaml");
+    std::fs::write(&target, "key: value\n").unwrap();
+
+    let patch_module = |ensure: &str| {
+        let mut file = deployable_file(&dir.path().join("unused-src"), &target);
+        file.strategy = Some(FileStrategy::Patch);
+        file.patch = Some(crate::config::PatchSpec {
+            format: None,
+            ensure: Some(serde_yaml::from_str(ensure).unwrap()),
+            script: None,
+            blocked_by: None,
+        });
+        hooked_file_module("patched", vec![file])
+    };
+
+    let plan_with = |module: ResolvedModule, config_dir: Option<&Path>| {
+        let state = test_state();
+        let apply_id = state
+            .record_apply("test", "hash", ApplyStatus::Success, None)
+            .unwrap();
+        state
+            .upsert_module_file(
+                "patched",
+                &crate::to_posix_fs_key(&target),
+                "",
+                "Patch",
+                apply_id,
+            )
+            .unwrap();
+        let registry = ProviderRegistry::new();
+        let mut reconciler = Reconciler::new(&registry, &state);
+        if let Some(config_dir) = config_dir {
+            reconciler = reconciler.with_config_dir(config_dir);
+        }
+        reconciler
+            .plan(
+                &make_empty_resolved(),
+                Vec::new(),
+                Vec::new(),
+                vec![module],
+                ReconcileContext::Apply,
+            )
+            .unwrap()
+    };
+
+    // The merge is a function of the live target — the same evaluation diff,
+    // verify and compliance already run — so an up-to-date Patch converges.
+    let plan = plan_with(patch_module("key: value"), Some(dir.path()));
+    assert!(
+        plan.is_empty(),
+        "an up-to-date Patch converges under a config dir, got:\n{:?}",
+        all_plan_items(&plan)
+    );
+
+    let plan = plan_with(patch_module("key: value"), None);
+    assert!(
+        !plan.is_empty(),
+        "with no config dir the merge is unanswerable and the deploy plans"
+    );
+
+    let plan = plan_with(patch_module("key: other"), Some(dir.path()));
+    assert!(
+        !plan.is_empty(),
+        "a merge that would change the target plans"
     );
 }
 

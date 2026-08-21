@@ -493,6 +493,7 @@ pub(crate) fn handle_reconcile(
     // surface after the phases run from the declared set rather than from the
     // plan — so the pruning below is only half the guarantee without this.
     let reconciler = crate::reconciler::Reconciler::new(registry, store)
+        .with_config_dir(&config_dir)
         .withholding_env_surface(pending_exclusions.withholds_env_surface())
         .diffing_installed(&pkg_cx);
 

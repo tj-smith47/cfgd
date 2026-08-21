@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::providers::ProviderRegistry;
 use crate::state::StateStore;
@@ -144,6 +144,15 @@ pub struct Reconciler<'a> {
     /// one and drops it, a daemon builds one per tick — so plaintext never
     /// outlives the work that needed it.
     secrets: crate::providers::SecretCache,
+    /// The config directory patch scripts are anchored under, when the caller
+    /// has one.
+    ///
+    /// `None` leaves a `Patch` entry unanswerable at plan time, so it is
+    /// planned on every run (a fixture, a validation pass). Every command that
+    /// plans against a real host sets it through
+    /// [`Reconciler::with_config_dir`], which is what lets a `Patch` module
+    /// converge instead of re-running its hooks on every daemon tick.
+    config_dir: Option<PathBuf>,
     /// The run's installed-state reader, used to drop a module package the
     /// machine already carries.
     ///
@@ -164,8 +173,21 @@ impl<'a> Reconciler<'a> {
             home: resolved_home(),
             withhold_env_surface: false,
             secrets: crate::providers::SecretCache::new(),
+            config_dir: None,
             installed: None,
         }
+    }
+
+    /// Anchor plan-time `Patch` evaluation under `config_dir`.
+    ///
+    /// A patch merge is a function of the live target plus a script anchored at
+    /// the module's directory with the standard `CFGD_*` metadata — metadata
+    /// only the config directory can complete. Without it a `Patch` entry can
+    /// never read as converged and its module re-plans (and re-hooks) forever.
+    #[must_use]
+    pub fn with_config_dir(mut self, config_dir: &Path) -> Self {
+        self.config_dir = Some(config_dir.to_path_buf());
+        self
     }
 
     /// Diff a module's declared packages against what its manager reports
@@ -209,6 +231,7 @@ impl<'a> Reconciler<'a> {
             home: home.into(),
             withhold_env_surface: false,
             secrets: crate::providers::SecretCache::new(),
+            config_dir: None,
             installed: None,
         }
     }
