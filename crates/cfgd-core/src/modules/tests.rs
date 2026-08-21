@@ -4482,6 +4482,7 @@ fn priceable_package(manager: &str, name: &str) -> ResolvedPackage {
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
     }
 }
 

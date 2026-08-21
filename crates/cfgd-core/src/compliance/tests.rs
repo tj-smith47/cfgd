@@ -1542,6 +1542,7 @@ fn collect_package_checks_includes_module_only_package() {
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
     }];
 
     let mut registry = ProviderRegistry::new();
@@ -1577,6 +1578,7 @@ fn collect_package_checks_skips_unavailable_manager() {
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
     }];
 
     let registry = ProviderRegistry::new();
@@ -1656,6 +1658,7 @@ fn collect_snapshot_includes_module_resources_and_content_check() {
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
     }];
     m.system.insert(
         "sysctl".to_string(),

@@ -892,6 +892,7 @@ mod tests {
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: None,
             }],
             files: Vec::new(),
             env: Vec::new(),

@@ -1770,6 +1770,7 @@ fn pending_package_decision_withholds_from_a_module_batch_too() {
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
     };
     let exclusions = DecisionExclusions::from_decision_paths(
         ["packages.cargo.bat".to_string()],
@@ -1817,6 +1818,7 @@ fn a_per_module_tick_keeps_the_refresh_its_own_packages_read() {
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
     };
     let module = |name: &str, resolved: Vec<crate::modules::ResolvedPackage>| {
         Action::Module(ModuleAction {
@@ -1999,6 +2001,7 @@ fn a_module_whose_only_package_awaits_a_decision_reports_no_drift() {
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: None,
             }],
         },
         origin: Some("acme".into()),

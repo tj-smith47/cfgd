@@ -1786,6 +1786,7 @@ mod tests {
             creates: None,
             only_if: None,
             unless: None,
+            min_version: None,
         }
     }
 

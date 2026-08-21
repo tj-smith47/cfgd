@@ -3269,6 +3269,7 @@ fn resolved_package(manager: &str, name: &str) -> cfgd_core::modules::ResolvedPa
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
     }
 }
 

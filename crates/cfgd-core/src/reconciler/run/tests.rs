@@ -41,6 +41,7 @@ fn module_install(module: &str, manager: &str, package: &str) -> Action {
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: None,
             }],
         },
     ))

@@ -6,7 +6,9 @@ use crate::config::{LOCAL_LAYER, MergedProfile, ResolvedProfile, ScriptSpec};
 use crate::errors::Result;
 use crate::expand_tilde;
 use crate::modules::ResolvedModule;
-use crate::providers::{FileAction, PackageAction, PackageManagerExt, SecretAction};
+use crate::providers::{
+    FileAction, PackageAction, PackageManager, PackageManagerExt, SecretAction,
+};
 
 use super::restore::content_hash_if_exists;
 use super::types::{
@@ -577,21 +579,25 @@ impl<'a> super::Reconciler<'a> {
             // The class is computed once PER MANAGER, ahead of the sort, rather
             // than inside the comparator: `is_available()` is a PATH probe, and
             // a comparator runs it O(n log n) times per module.
-            let mut manager_order: Vec<(u8, &String)> = by_manager
+            // The resolved manager travels WITH its class: the elision below
+            // needs the very `&dyn PackageManager` this lookup already found,
+            // and re-`find`ing it there walked the registry a second time per
+            // manager per module.
+            let mut manager_order: Vec<(u8, &String, Option<&dyn PackageManager>)> = by_manager
                 .keys()
                 .map(|mgr| {
-                    let class = match self
+                    let found = self
                         .registry
                         .package_managers()
                         .iter()
-                        .find(|m| m.name() == mgr.as_str())
-                    {
+                        .find(|m| m.name() == mgr.as_str());
+                    let class = match found {
                         Some(m) if m.is_available() => 0, // available (native) first
                         // Bootstrappable second — a manager with a plan to provision it.
                         Some(m) if m.can_bootstrap() => 1,
                         _ => 2, // unknown last
                     };
-                    (class, mgr)
+                    (class, mgr, found.map(|m| m.as_ref()))
                 })
                 .collect();
             // `(class, name)`, not `class` alone: a key that ties on `class`
@@ -604,13 +610,15 @@ impl<'a> super::Reconciler<'a> {
             // from this `Vec`.
             manager_order.sort_by(|a, b| (a.0, a.1.as_str()).cmp(&(b.0, b.1.as_str())));
 
-            for (class, mgr_name) in manager_order {
+            for (class, mgr_name, mgr) in manager_order {
                 let mut resolved = by_manager[mgr_name].clone();
                 // Only an AVAILABLE manager (class 0) can be asked what it
                 // holds; a bootstrappable or unknown one is planned in full,
                 // exactly as the profile-level planner does for the same case.
-                if class == 0 {
-                    self.retain_uninstalled(mgr_name, &mut resolved);
+                if class == 0
+                    && let Some(mgr) = mgr
+                {
+                    self.retain_uninstalled(mgr, &mut resolved);
                 }
                 // Nothing left to install is nothing to plan: the module has
                 // already converged under this manager, and emitting the action
@@ -716,7 +724,7 @@ impl<'a> super::Reconciler<'a> {
         actions
     }
 
-    /// Drop the entries `manager` already reports installed, leaving the ones a
+    /// Drop the entries `mgr` already reports installed, leaving the ones a
     /// run would really install.
     ///
     /// A no-op when the caller wired no installed-state reader, and fail-OPEN on
@@ -728,28 +736,39 @@ impl<'a> super::Reconciler<'a> {
     /// [`crate::providers::InstalledPackages`] folds its listing into — so a
     /// case-insensitive manager or a `go`-style install-vs-listed name split
     /// agrees across both halves of the run.
+    ///
+    /// A declared `minVersion` is a SECOND question the name comparison cannot
+    /// answer. Resolution checked the floor against what the manager currently
+    /// OFFERS, never against what the machine holds, so a host carrying an
+    /// older copy is installed-by-name and short of the floor at once. Such an
+    /// entry is KEPT, and so is one whose installed version cannot be read —
+    /// the same fail-open the unreadable-manager arm takes.
     fn retain_uninstalled(
         &self,
-        manager: &str,
+        mgr: &dyn PackageManager,
         packages: &mut Vec<crate::modules::ResolvedPackage>,
     ) {
         let Some(cx) = self.installed else {
             return;
         };
-        let Some(mgr) = self
-            .registry
-            .package_managers()
-            .iter()
-            .find(|m| m.name() == manager)
-        else {
-            return;
-        };
-        match cx.installed_for(mgr.as_ref()) {
-            Ok(installed) => packages
-                .retain(|pkg| !installed.contains(&mgr.package_identity(&pkg.resolved_name))),
+        match cx.installed_for(mgr) {
+            Ok(installed) => packages.retain(|pkg| {
+                let identity = mgr.package_identity(&pkg.resolved_name);
+                if !installed.contains(&identity) {
+                    return true;
+                }
+                let Some(min) = pkg.min_version.as_deref() else {
+                    return false;
+                };
+                installed
+                    .listed()
+                    .iter()
+                    .find(|p| mgr.listed_identity(&p.name) == identity)
+                    .is_none_or(|p| !mgr.version_meets_minimum(&p.version, min))
+            }),
             Err(e) => {
                 tracing::warn!(
-                    manager,
+                    manager = mgr.name(),
                     error = %e,
                     "cannot read installed packages; planning the module's declared set in full"
                 );

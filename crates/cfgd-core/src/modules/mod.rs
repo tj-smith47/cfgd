@@ -73,6 +73,17 @@ pub struct ResolvedPackage {
     /// Idempotency guard: run the install script only if this command exits
     /// NON-zero. Only carried for a `prefer: [script]` install.
     pub unless: Option<String>,
+    /// The declared `minVersion` floor, carried through resolution.
+    ///
+    /// Resolution checks it against what the manager currently OFFERS, which
+    /// decides which manager wins; the floor has to survive that so the planner
+    /// can ask the second question no name comparison can answer — whether the
+    /// copy the machine already HAS clears it. Without it a host holding
+    /// `neovim 0.9` under a module declaring `minVersion: 0.11` reads as
+    /// converged and the gap is never named. Not serialized: it is a planner
+    /// input, and the declared value is already in the module's own spec.
+    #[serde(skip)]
+    pub min_version: Option<String>,
 }
 
 /// A file resolved to a concrete local path.

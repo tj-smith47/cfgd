@@ -1281,6 +1281,7 @@ pub fn make_resolved_module(name: &str) -> crate::modules::ResolvedModule {
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: None,
             },
             crate::modules::ResolvedPackage {
                 canonical_name: "ripgrep".to_string(),
@@ -1291,6 +1292,7 @@ pub fn make_resolved_module(name: &str) -> crate::modules::ResolvedModule {
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: None,
             },
         ],
         files: vec![],

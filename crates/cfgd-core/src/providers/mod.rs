@@ -1463,6 +1463,11 @@ pub(crate) struct StubPackageManager {
     pub available: bool,
     pub installed: HashSet<String>,
     pub versions: std::collections::HashMap<String, String>,
+    /// Versions the machine HOLDS, keyed by installed name — the answer to a
+    /// different question than `versions`, which is what the manager OFFERS.
+    /// Empty means the trait's default listing (every name at `"unknown"`),
+    /// which no declared floor can clear.
+    pub installed_versions: std::collections::HashMap<String, String>,
     pub bootstrap_capable: bool,
     /// The tools the stub's bootstrap plan shells out to. Empty by default, so
     /// a `bootstrappable()` stub describes a cascade every host can carry out.
@@ -1490,6 +1495,7 @@ impl StubPackageManager {
             available: true,
             installed: HashSet::new(),
             versions: std::collections::HashMap::new(),
+            installed_versions: std::collections::HashMap::new(),
             bootstrap_capable: false,
             bootstrap_requires: Vec::new(),
             installed_error: None,
@@ -1537,6 +1543,15 @@ impl StubPackageManager {
         self
     }
 
+    /// Report a package as installed AT a version, so a `minVersion` floor has
+    /// something to be judged against.
+    pub fn with_installed_at(mut self, pkg: &str, ver: &str) -> Self {
+        self.installed.insert(pkg.to_string());
+        self.installed_versions
+            .insert(pkg.to_string(), ver.to_string());
+        self
+    }
+
     pub fn with_installed_error(mut self, message: &str) -> Self {
         self.installed_error = Some(message.to_string());
         self
@@ -1570,6 +1585,23 @@ impl PackageManager for StubPackageManager {
             )));
         }
         Ok(self.installed.clone())
+    }
+    fn installed_packages_with_versions(
+        &self,
+        cx: &PackageContext<'_>,
+    ) -> Result<Vec<PackageInfo>> {
+        Ok(self
+            .installed_packages(cx)?
+            .into_iter()
+            .map(|name| PackageInfo {
+                version: self
+                    .installed_versions
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".into()),
+                name,
+            })
+            .collect())
     }
     fn install(&self, _packages: &[String], _cx: &PackageContext<'_>) -> Result<()> {
         Ok(())

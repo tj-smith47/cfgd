@@ -77,6 +77,7 @@ pub fn resolve_package(
                 creates: entry.creates.clone(),
                 only_if: entry.only_if.clone(),
                 unless: entry.unless.clone(),
+                min_version: entry.min_version.clone(),
             }));
         }
 
@@ -111,6 +112,7 @@ pub fn resolve_package(
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: entry.min_version.clone(),
             }));
         }
 
@@ -132,6 +134,7 @@ pub fn resolve_package(
                         creates: None,
                         only_if: None,
                         unless: None,
+                        min_version: entry.min_version.clone(),
                     }));
                 }
                 Ok(None) => continue,
@@ -151,6 +154,7 @@ pub fn resolve_package(
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: entry.min_version.clone(),
             }));
         }
     }

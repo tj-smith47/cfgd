@@ -840,6 +840,7 @@ fn plan_multiple_modules_in_dependency_order() {
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: None,
             }],
             files: vec![],
             env: vec![],
@@ -867,6 +868,7 @@ fn plan_multiple_modules_in_dependency_order() {
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: None,
             }],
             files: vec![],
             env: vec![],
@@ -945,6 +947,7 @@ fn plan_package_actions_order_ties_by_manager_name_every_run() {
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: None,
             },
             ResolvedPackage {
                 canonical_name: "ripgrep".to_string(),
@@ -955,6 +958,7 @@ fn plan_package_actions_order_ties_by_manager_name_every_run() {
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: None,
             },
         ],
         files: vec![],
@@ -1027,6 +1031,7 @@ fn plan_routes_module_work_to_the_phase_of_its_kind() {
             creates: None,
             only_if: None,
             unless: None,
+            min_version: None,
         }],
         files: vec![ResolvedFile {
             source: PathBuf::from("/tmp/nvim-config"),
@@ -1130,6 +1135,7 @@ fn resolved_module_with_package(name: &str, pkg: &str, manager: &str) -> Resolve
             creates: None,
             only_if: None,
             unless: None,
+            min_version: None,
         }],
         files: vec![],
         env: vec![],
@@ -1256,6 +1262,7 @@ fn format_module_plan_items_packages() {
                         creates: None,
                         only_if: None,
                         unless: None,
+                        min_version: None,
                     },
                     ResolvedPackage {
                         canonical_name: "fd".to_string(),
@@ -1266,6 +1273,7 @@ fn format_module_plan_items_packages() {
                         creates: None,
                         only_if: None,
                         unless: None,
+                        min_version: None,
                     },
                 ],
             },
@@ -1345,6 +1353,7 @@ fn format_module_action_description() {
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: None,
             }],
         },
         origin: None,
@@ -1519,6 +1528,7 @@ fn plan_hash_includes_module_actions() {
                         creates: None,
                         only_if: None,
                         unless: None,
+                        min_version: None,
                     }],
                 },
                 origin: None,
@@ -1610,6 +1620,7 @@ fn verify_routes_through_package_identity_for_name_remapping_manager() {
             creates: None,
             only_if: None,
             unless: None,
+            min_version: None,
         }],
         files: vec![],
         env: vec![],
@@ -1667,6 +1678,7 @@ fn verify_module_script_packages_not_false_drift() {
             creates: None,
             only_if: None,
             unless: None,
+            min_version: None,
         }],
         files: vec![],
         env: vec![],
@@ -1717,6 +1729,7 @@ fn module_one_pkg(name: &str, manager: &str, pkg: &str) -> ResolvedModule {
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
     }];
     m
 }
@@ -1931,6 +1944,7 @@ fn plan_module_with_script_packages() {
             creates: None,
             only_if: None,
             unless: None,
+            min_version: None,
         }],
         files: vec![],
         env: vec![],
@@ -2002,6 +2016,7 @@ fn format_module_plan_script_packages() {
                     creates: None,
                     only_if: None,
                     unless: None,
+                    min_version: None,
                 }],
             },
             origin: None,
@@ -9132,6 +9147,7 @@ fn apply_module_install_packages_calls_manager() {
             creates: None,
             only_if: None,
             unless: None,
+            min_version: None,
         }],
         files: vec![],
         env: vec![],
@@ -9165,6 +9181,7 @@ fn apply_module_install_packages_calls_manager() {
                         creates: None,
                         only_if: None,
                         unless: None,
+                        min_version: None,
                     }],
                 },
                 origin: None,
@@ -9929,6 +9946,7 @@ fn apply_module_install_packages_provisions_manager_when_needed() {
             creates: None,
             only_if: None,
             unless: None,
+            min_version: None,
         }],
         files: vec![],
         env: vec![],
@@ -9968,6 +9986,7 @@ fn apply_module_install_packages_provisions_manager_when_needed() {
                             creates: None,
                             only_if: None,
                             unless: None,
+                            min_version: None,
                         }],
                     },
                     origin: None,
@@ -10143,6 +10162,7 @@ fn plan_modules_platform_skipped_emits_single_skip_and_no_other_actions() {
             creates: None,
             only_if: None,
             unless: None,
+            min_version: None,
         }],
         files: vec![],
         env: vec![],
@@ -10998,6 +11018,7 @@ fn format_action_description_module_install_multiple_packages() {
                     creates: None,
                     only_if: None,
                     unless: None,
+                    min_version: None,
                 },
                 ResolvedPackage {
                     canonical_name: "ripgrep".to_string(),
@@ -11008,6 +11029,7 @@ fn format_action_description_module_install_multiple_packages() {
                     creates: None,
                     only_if: None,
                     unless: None,
+                    min_version: None,
                 },
             ],
         },
@@ -13050,6 +13072,7 @@ fn format_action_description_module_alias_canonical_mismatch() {
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: None,
             }],
         },
         origin: None,
@@ -13913,6 +13936,7 @@ fn brew_install_fixture() -> (Vec<ResolvedModule>, ModuleAction) {
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
     };
     let modules = vec![ResolvedModule {
         name: "tools".to_string(),
@@ -14483,6 +14507,7 @@ fn brew_and_npm_module_fixture() -> Vec<ResolvedModule> {
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
     };
     let npm_package = ResolvedPackage {
         canonical_name: "prettier".to_string(),
@@ -14493,6 +14518,7 @@ fn brew_and_npm_module_fixture() -> Vec<ResolvedModule> {
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
     };
     vec![ResolvedModule {
         name: "tools".to_string(),
@@ -14902,6 +14928,7 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
             creates: None,
             only_if: None,
             unless: None,
+            min_version: None,
         }],
         files: vec![],
         env: vec![],
@@ -14935,6 +14962,7 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
                         creates: None,
                         only_if: None,
                         unless: None,
+                        min_version: None,
                     }],
                 },
                 origin: None,
@@ -15018,6 +15046,7 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
                             creates: None,
                             only_if: None,
                             unless: None,
+                            min_version: None,
                         },
                         ResolvedPackage {
                             canonical_name: "pkg-b".to_string(),
@@ -15028,6 +15057,7 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
                             creates: None,
                             only_if: None,
                             unless: None,
+                            min_version: None,
                         },
                     ],
                 },
@@ -15102,6 +15132,7 @@ fn apply_module_install_packages_script_manager_failure_returns_err() {
                         creates: None,
                         only_if: None,
                         unless: None,
+                        min_version: None,
                     }],
                 },
                 origin: None,
@@ -15183,6 +15214,7 @@ fn run_guarded_script_install(
                         creates,
                         only_if,
                         unless,
+                        min_version: None,
                     }],
                 },
                 origin: None,
@@ -15666,6 +15698,7 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: None,
             },
             crate::modules::ResolvedPackage {
                 canonical_name: "p2".to_string(),
@@ -15676,6 +15709,7 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: None,
             },
             crate::modules::ResolvedPackage {
                 canonical_name: "p3".to_string(),
@@ -15686,6 +15720,7 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
                 creates: None,
                 only_if: None,
                 unless: None,
+                min_version: None,
             },
         ],
         files: vec![],
@@ -17252,6 +17287,7 @@ fn dedup_rp(name: &str, manager: &str) -> ResolvedPackage {
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
     }
 }
 
@@ -18635,6 +18671,7 @@ fn owner_resolved_package(manager: &str, package: &str) -> ResolvedPackage {
         creates: None,
         only_if: None,
         unless: None,
+        min_version: None,
     }
 }
 
@@ -22322,6 +22359,76 @@ fn a_module_package_the_manager_already_has_is_not_planned() {
     assert!(
         !items.contains("neovim"),
         "the installed package must be elided, got:\n{items}"
+    );
+}
+
+/// A module declares `minVersion` and the machine's copy is older: the package
+/// is still planned, because "present" was never the question the floor asks.
+#[test]
+fn an_installed_package_below_its_min_version_is_still_planned() {
+    let state = test_state();
+    let printer = test_printer();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        MockPackageManager::new("brew").with_installed_at("neovim", "0.9.5"),
+    ));
+    let cx = test_package_context(&printer, &state);
+    let reconciler = Reconciler::new(&registry, &state).diffing_installed(&cx);
+    let resolved = make_empty_resolved();
+
+    let mut module = make_resolved_module("dev");
+    module.packages.retain(|p| p.canonical_name == "neovim");
+    module.packages[0].min_version = Some("0.11".to_string());
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let items = all_plan_items(&plan).join("\n");
+    assert!(
+        items.contains("neovim"),
+        "an installed copy below the declared floor must still be planned, got:\n{items}"
+    );
+}
+
+/// The same module against a machine whose copy already clears the floor: the
+/// package is elided exactly as an unconstrained installed package is.
+#[test]
+fn an_installed_package_meeting_its_min_version_is_elided() {
+    let state = test_state();
+    let printer = test_printer();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        MockPackageManager::new("brew").with_installed_at("neovim", "0.11.2"),
+    ));
+    let cx = test_package_context(&printer, &state);
+    let reconciler = Reconciler::new(&registry, &state).diffing_installed(&cx);
+    let resolved = make_empty_resolved();
+
+    let mut module = make_resolved_module("dev");
+    module.packages.retain(|p| p.canonical_name == "neovim");
+    module.packages[0].min_version = Some("0.11".to_string());
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let items = all_plan_items(&plan).join("\n");
+    assert!(
+        !items.contains("neovim"),
+        "an installed copy clearing the declared floor must be elided, got:\n{items}"
     );
 }
 
