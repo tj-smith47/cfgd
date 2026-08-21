@@ -760,7 +760,7 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "terminate_process" && $2 != "set_file_permissions" && \
         $2 != "is_same_inode" && $2 != "is_root" && $2 != "is_executable" && \
         $2 != "run_health_server" && $2 != "run_as_windows_service" && \
-        $2 != "read" && $2 != "write" && \
+        $2 != "read" && $2 != "write" && $2 != "flush" && \
         $2 != "home_dir_var" && $2 != "file_permissions_mode" && \
         $2 != "create_symlink_impl" && $2 != "cleanup_old_binary" && \
         $2 != "atomic_replace" && $2 != "acquire_apply_lock" && \
