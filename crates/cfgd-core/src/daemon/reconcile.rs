@@ -282,7 +282,7 @@ pub(crate) fn handle_reconcile(
         // `local_resolved` is the local-config input it composes over.
         //
         // FAIL-CLOSED: on a real compose error (malformed/constraint-violating cached
-        // manifest, failed signature) we must SKIP this tick — never reconcile against
+        // manifest, failed signature) this tick is SKIPPED — never reconcile against
         // a substituted local-only desired state, because this is a pruning reconcile
         // and a dropped source-delivered package/module would be UNINSTALLED under
         // autoApply. Mirror the `resolve_profile` failure above: error + alert +

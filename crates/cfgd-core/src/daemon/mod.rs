@@ -581,7 +581,7 @@ mod reconcile;
 mod runner;
 mod service;
 mod sync;
-mod tick_cache;
+pub(crate) mod tick_cache;
 
 #[cfg(test)]
 mod tests;

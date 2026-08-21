@@ -2291,6 +2291,95 @@ impl Drop for AvailableVersionMemoTtlGuard {
     }
 }
 
+/// RAII pin of the daemon tick cache's config-reuse ceiling, restoring the
+/// prior setting on drop. The sibling of [`AvailableVersionMemoTtlGuard`] for
+/// the backstop that bounds how long ONE config derivation may be reused when
+/// its recorded inputs all still stand.
+///
+/// The real ceiling is five minutes, so the expiry filter it guards is
+/// unreachable from a test that does not pin it. Pair every use with
+/// `#[serial_test::serial(tick_cache_reuse)]`: the pin is process-global and
+/// every test that reads this cache asserts on a COUNT of derivations, which is
+/// exactly what a concurrent zero pin changes.
+pub struct ConfigReuseMaxAgeGuard {
+    prior: Option<u64>,
+}
+
+impl ConfigReuseMaxAgeGuard {
+    /// Pin the ceiling to `ttl`, saturating at the millisecond range.
+    pub fn pinned(ttl: std::time::Duration) -> Self {
+        // `u64::MAX` is the "no override" sentinel, so a pin that would land on
+        // it saturates one below rather than silently restoring the default.
+        let millis = u64::try_from(ttl.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(u64::MAX - 1);
+        Self {
+            prior: crate::daemon::tick_cache::set_config_reuse_max_age_override(Some(millis)),
+        }
+    }
+
+    /// Pin the ceiling beyond any test's lifetime, for a test whose claim is
+    /// that a derivation still stands.
+    pub fn never_expires() -> Self {
+        Self::pinned(std::time::Duration::from_millis(u64::MAX - 1))
+    }
+
+    /// Pin the ceiling to zero, so every derivation is stale the moment it is
+    /// stored. For a test whose claim is that the ceiling retires one.
+    pub fn always_expired() -> Self {
+        Self::pinned(std::time::Duration::ZERO)
+    }
+}
+
+impl Drop for ConfigReuseMaxAgeGuard {
+    fn drop(&mut self) {
+        crate::daemon::tick_cache::set_config_reuse_max_age_override(self.prior);
+    }
+}
+
+/// RAII pin of the daemon tick cache's module-reuse ceiling, restoring the
+/// prior setting on drop. [`ConfigReuseMaxAgeGuard`]'s counterpart for the
+/// resolved module set, which stands for the same thirty seconds the git
+/// refresh window and the enumeration memo carry.
+///
+/// Kept separate from its sibling rather than folded into one guard, for the
+/// same reason the five memo ceilings each keep their own constant: they answer
+/// different questions, and one pin that moved both would make a test unable to
+/// say which ceiling it was asserting about. Pair every use with
+/// `#[serial_test::serial(tick_cache_reuse)]`.
+pub struct ModuleReuseTtlGuard {
+    prior: Option<u64>,
+}
+
+impl ModuleReuseTtlGuard {
+    /// Pin the ceiling to `ttl`, saturating at the millisecond range.
+    pub fn pinned(ttl: std::time::Duration) -> Self {
+        let millis = u64::try_from(ttl.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(u64::MAX - 1);
+        Self {
+            prior: crate::daemon::tick_cache::set_module_reuse_ttl_override(Some(millis)),
+        }
+    }
+
+    /// Pin the ceiling beyond any test's lifetime.
+    pub fn never_expires() -> Self {
+        Self::pinned(std::time::Duration::from_millis(u64::MAX - 1))
+    }
+
+    /// Pin the ceiling to zero, so every resolution is stale the moment it is
+    /// stored.
+    pub fn always_expired() -> Self {
+        Self::pinned(std::time::Duration::ZERO)
+    }
+}
+
+impl Drop for ModuleReuseTtlGuard {
+    fn drop(&mut self) {
+        crate::daemon::tick_cache::set_module_reuse_ttl_override(self.prior);
+    }
+}
+
 /// RAII pin of the module git-cache refresh window, restoring the prior setting
 /// on drop. The third sibling of [`CommandPathMemoTtlGuard`], guarding the
 /// window inside which one `git fetch` of a repository serves every later ask

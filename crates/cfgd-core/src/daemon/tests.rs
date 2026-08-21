@@ -14429,7 +14429,7 @@ spec: {}
         // concurrent test could observe / consume the signal.
         let (tx, mut rx) = mpsc::channel::<()>(8);
         let handle = super::super::spawn_sighup_pump(tx).expect("sighup pump registers");
-        // sleep-ok: give tokio's SIGHUP subscription a chance to wire up before we raise the signal — no observable exists for OS signal-handler registration
+        // sleep-ok: gives tokio's SIGHUP subscription a chance to wire up before the signal is raised — no observable exists for OS signal-handler registration
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         // SAFETY: libc::kill against own PID is well-defined.
         unsafe {

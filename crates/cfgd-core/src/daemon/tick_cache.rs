@@ -82,6 +82,59 @@ const CONFIG_REUSE_MAX_AGE: Duration = Duration::from_secs(300);
 /// Ceiling on how long a module resolution stands. See the module docs.
 const MODULE_REUSE_TTL: Duration = Duration::from_secs(30);
 
+/// Millisecond overrides of the two ceilings above, or [`u64::MAX`] for "no
+/// override". Both filters are otherwise unreachable from a test without
+/// sleeping out the real ceiling, which is 30 seconds for one of them and five
+/// minutes for the other. Same shape as every sibling memo in the 30-second
+/// convention; reach for them through `test_helpers`, never directly.
+#[cfg(any(test, feature = "test-helpers"))]
+static CONFIG_REUSE_MAX_AGE_OVERRIDE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
+
+#[cfg(any(test, feature = "test-helpers"))]
+static MODULE_REUSE_TTL_OVERRIDE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
+
+#[cfg(any(test, feature = "test-helpers"))]
+fn pinned(over: &std::sync::atomic::AtomicU64, default: Duration) -> Duration {
+    let millis = over.load(Ordering::Relaxed);
+    if millis == u64::MAX {
+        return default;
+    }
+    Duration::from_millis(millis)
+}
+
+fn config_reuse_max_age() -> Duration {
+    #[cfg(any(test, feature = "test-helpers"))]
+    let ttl = pinned(&CONFIG_REUSE_MAX_AGE_OVERRIDE, CONFIG_REUSE_MAX_AGE);
+    #[cfg(not(any(test, feature = "test-helpers")))]
+    let ttl = CONFIG_REUSE_MAX_AGE;
+    ttl
+}
+
+fn module_reuse_ttl() -> Duration {
+    #[cfg(any(test, feature = "test-helpers"))]
+    let ttl = pinned(&MODULE_REUSE_TTL_OVERRIDE, MODULE_REUSE_TTL);
+    #[cfg(not(any(test, feature = "test-helpers")))]
+    let ttl = MODULE_REUSE_TTL;
+    ttl
+}
+
+/// Pin the config-reuse ceiling, or hand back the default with `None`. Returns
+/// what was pinned before, so a guard can put it back.
+#[cfg(any(test, feature = "test-helpers"))]
+pub(crate) fn set_config_reuse_max_age_override(millis: Option<u64>) -> Option<u64> {
+    let prior = CONFIG_REUSE_MAX_AGE_OVERRIDE.swap(millis.unwrap_or(u64::MAX), Ordering::Relaxed);
+    (prior != u64::MAX).then_some(prior)
+}
+
+/// Pin the module-reuse ceiling, or hand back the default with `None`.
+#[cfg(any(test, feature = "test-helpers"))]
+pub(crate) fn set_module_reuse_ttl_override(millis: Option<u64>) -> Option<u64> {
+    let prior = MODULE_REUSE_TTL_OVERRIDE.swap(millis.unwrap_or(u64::MAX), Ordering::Relaxed);
+    (prior != u64::MAX).then_some(prior)
+}
+
 /// The config-derived half of a tick, and the identity it was derived for.
 struct ConfigDerivation {
     /// Which config and profile override this was derived for. A cache is per
@@ -335,7 +388,7 @@ impl TickCache {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .filter(|held| held.identity == identity)
-            .filter(|held| held.derived_at.elapsed() < CONFIG_REUSE_MAX_AGE)
+            .filter(|held| held.derived_at.elapsed() < config_reuse_max_age())
             .map(|held| {
                 (
                     Arc::clone(&held.inputs),
@@ -399,7 +452,7 @@ impl TickCache {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .filter(|held| held.config_derivation_id == config.derivation_id)
-            .filter(|held| held.resolved_at.elapsed() < MODULE_REUSE_TTL)
+            .filter(|held| held.resolved_at.elapsed() < module_reuse_ttl())
             .map(|held| (Arc::clone(&held.inputs), Arc::clone(&held.modules)));
         if let Some((inputs, hit)) = candidate
             && inputs.unchanged()
@@ -642,6 +695,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(tick_cache_reuse)]
     fn an_unchanged_input_reuses_the_whole_derivation() {
         let tmp = tempfile::tempdir().unwrap();
         let config_path = tmp.path().join("cfgd.yaml");
@@ -658,6 +712,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(tick_cache_reuse)]
     fn a_changed_input_re_derives() {
         let tmp = tempfile::tempdir().unwrap();
         let config_path = tmp.path().join("cfgd.yaml");
@@ -676,6 +731,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(tick_cache_reuse)]
     fn a_changed_input_that_is_not_the_config_file_re_derives() {
         // The gate is on what the derivation READ, not on the file the daemon
         // was pointed at: a profile, a source manifest and a module document
@@ -697,6 +753,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(tick_cache_reuse)]
     fn a_derivation_that_recorded_nothing_is_never_reused() {
         // A derivation with no inputs is one whose readers all went unreported,
         // and there is nothing to re-stat that could say it went stale. Reusing
@@ -715,6 +772,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(tick_cache_reuse)]
     fn an_invalidation_racing_a_derivation_is_not_lost() {
         // The derivation runs unlocked, so a watcher event can land while it is
         // in flight. Storing it anyway would answer the NEXT tick with a config
@@ -738,6 +796,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(tick_cache_reuse)]
     fn a_different_identity_re_derives() {
         let tmp = tempfile::tempdir().unwrap();
         let config_path = tmp.path().join("cfgd.yaml");
@@ -757,6 +816,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(tick_cache_reuse)]
     fn modules_stand_while_their_config_derivation_does() {
         let tmp = tempfile::tempdir().unwrap();
         let config_path = tmp.path().join("cfgd.yaml");
@@ -789,6 +849,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(tick_cache_reuse)]
     fn a_re_derived_config_re_resolves_its_modules() {
         // The module set describes ONE config derivation. A config that moved
         // may name different modules, so the module inputs standing still says
@@ -822,6 +883,60 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(tick_cache_reuse)]
+    fn a_derivation_past_the_reuse_ceiling_is_derived_again() {
+        // The ceiling is the backstop for an input no reader reported, so it
+        // must retire a derivation whose fingerprint says nothing changed.
+        let _pin = crate::test_helpers::ConfigReuseMaxAgeGuard::always_expired();
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, "first").unwrap();
+        let cache = TickCache::new();
+        let calls = std::cell::Cell::new(0);
+
+        derive_reading(&cache, &config_path, &config_path, &calls, "first");
+        derive_reading(&cache, &config_path, &config_path, &calls, "second");
+
+        assert_eq!(
+            calls.get(),
+            2,
+            "an expired derivation must be derived again, not reused"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(tick_cache_reuse)]
+    fn a_module_resolution_past_its_ttl_is_resolved_again() {
+        // The module ceiling is its own knob: the config derivation still
+        // stands here, and only the resolution is expired.
+        let _pin = crate::test_helpers::ModuleReuseTtlGuard::always_expired();
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, "first").unwrap();
+        let module_path = tmp.path().join("module.yaml");
+        std::fs::write(&module_path, "unchanging").unwrap();
+        let cache = TickCache::new();
+        let calls = std::cell::Cell::new(0);
+        let resolves = std::cell::Cell::new(0);
+
+        for label in ["first", "second"] {
+            let held = derive_reading(&cache, &config_path, &config_path, &calls, label);
+            cache.modules(&held, || {
+                resolves.set(resolves.get() + 1);
+                crate::record_config_input(&module_path);
+                Vec::new()
+            });
+        }
+
+        assert_eq!(calls.get(), 1, "the config derivation still stands");
+        assert_eq!(
+            resolves.get(),
+            2,
+            "an expired module resolution must be resolved again"
+        );
+    }
+
+    #[test]
     fn the_store_is_opened_once_and_lent_after() {
         let tmp = tempfile::tempdir().unwrap();
         let state_dir = tmp.path().join("state");
@@ -838,6 +953,83 @@ mod tests {
             assert!(held.get().is_some());
         }
         assert_eq!(opens, 1);
+    }
+
+    /// Turn the state directory into a regular file, so a stat of the database
+    /// path underneath it fails with ENOTDIR — the one shape that means the
+    /// question went unanswered rather than answered "gone". A mode change
+    /// would not do: the suite may run as root, and root bypasses the bit.
+    #[cfg(unix)]
+    fn make_path_unanswerable(state_dir: &std::path::Path, aside: &std::path::Path) {
+        std::fs::rename(state_dir, aside).unwrap();
+        std::fs::write(state_dir, b"not a directory").unwrap();
+    }
+
+    #[cfg(unix)]
+    fn make_path_answerable_again(state_dir: &std::path::Path, aside: &std::path::Path) {
+        std::fs::remove_file(state_dir).unwrap();
+        std::fs::rename(aside, state_dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_probe_that_cannot_answer_keeps_the_open_connection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state_dir = tmp.path().join("state");
+        let aside = tmp.path().join("state-aside");
+        let cache = TickCache::new();
+        let mut opens = 0;
+        drop(
+            cache
+                .store(|| {
+                    opens += 1;
+                    StateStore::open_in_dir(&state_dir)
+                })
+                .unwrap(),
+        );
+
+        make_path_unanswerable(&state_dir, &aside);
+
+        let held = cache
+            .store(|| {
+                opens += 1;
+                StateStore::open_in_dir(&state_dir)
+            })
+            .unwrap();
+        assert!(held.get().is_some(), "the lend must still hand out a store");
+        assert_eq!(
+            opens, 1,
+            "an unanswered probe must not close a working connection"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unanswerable_probe_names_its_reason_once_per_streak() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state_dir = tmp.path().join("state");
+        let aside = tmp.path().join("state-aside");
+        let mut held = HeldStore::capture(StateStore::open_in_dir(&state_dir).unwrap());
+        assert!(matches!(held.path_verdict(), HeldFileVerdict::Same));
+
+        make_path_unanswerable(&state_dir, &aside);
+        assert!(
+            matches!(held.path_verdict(), HeldFileVerdict::Unreadable(Some(_))),
+            "a probe that failed for any reason but NotFound is unanswered, never gone"
+        );
+        assert!(
+            matches!(held.path_verdict(), HeldFileVerdict::Unreadable(None)),
+            "a streak carries its reason once, or an hour-long condition says so every tick"
+        );
+
+        make_path_answerable_again(&state_dir, &aside);
+        assert!(matches!(held.path_verdict(), HeldFileVerdict::Same));
+
+        make_path_unanswerable(&state_dir, &aside);
+        assert!(
+            matches!(held.path_verdict(), HeldFileVerdict::Unreadable(Some(_))),
+            "a probe that succeeded in between starts a new streak"
+        );
     }
 
     #[test]
@@ -905,6 +1097,7 @@ mod tests {
     const GATE_BUDGET: Duration = Duration::from_secs(10);
 
     #[test]
+    #[serial_test::serial(tick_cache_reuse)]
     fn every_reusing_tick_restates_the_composition_advisories() {
         // A source with no local cache is skipped, and the composition says so
         // once per tick. Holding the derivation across ticks must not turn that
@@ -955,6 +1148,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(tick_cache_reuse)]
     fn a_reusing_tick_restates_a_bypass_where_a_quiet_daemon_hears_it() {
         // The reason the advisory carries its channel: a daemon ticks at
         // Verbosity::Quiet, where a Role::Warn status is dropped. A bypass of a
