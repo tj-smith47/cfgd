@@ -36,8 +36,8 @@ pub const HTTP_WEBHOOK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The `ureq::Agent` this process uses for `timeout`, built at most once per
 /// distinct timeout. Exists so every call site that wants a timeout can use one
-/// line and we can change agent configuration (user-agent defaults, connection
-/// pooling, TLS options) in exactly one place if it becomes necessary.
+/// line and agent configuration (user-agent defaults, connection pooling, TLS
+/// options) has exactly one place to change.
 ///
 /// Shared rather than freshly built because an `Agent` OWNS the connection
 /// pool: a per-call agent throws its pooled TLS connections away when it drops,

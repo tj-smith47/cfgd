@@ -2147,6 +2147,17 @@ impl Drop for CommandPathMemoTtlGuard {
 /// listing recompute and changes exactly what that test measures. Pair every
 /// use with `#[serial_test::serial(enumeration_memo)]`, the named group the
 /// enumeration-count tests share — named, so nothing outside them is held up.
+///
+/// Scope is the test BINARY, since the override atomic is process-global and a
+/// binary is a process. cfgd-core's own tests pin to zero, so every use here
+/// carries the group; the four count assertions in the `cfgd` crate omit it on
+/// purpose, because nothing in THAT binary pins the ceiling and a group key
+/// there would exclude nothing. That is a precondition on the `cfgd` binary
+/// rather than a property of this type: the first `cfgd`-crate test to pin
+/// `always_expired` has to add the group to all four in the same change
+/// (`cli/live_drift.rs`, `cli/doctor.rs`, `cli/diff.rs`,
+/// `generate/scan/tests.rs`), or it breaks them with nothing going red where
+/// the mistake was made.
 pub struct EnumerationMemoTtlGuard {
     prior: Option<u64>,
 }
