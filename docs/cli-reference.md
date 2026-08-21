@@ -145,7 +145,7 @@ cfgd apply --yes --on-conflict fail      # refuse to touch a file cfgd never wro
 | `--dry-run` | Preview changes without applying (supports `-o json`) |
 | `--phase <name>` | Apply only a specific phase; takes a dotted `<phase>[.<selector>]` path (see below) |
 | `--yes`, `-y` | Skip confirmation prompt |
-| `--module <name>` | Resolve and apply ONLY this module and its dependencies, isolated from the active profile — every profile-owned contribution (env, aliases, packages, files, system settings, secrets, scripts, backups) is zeroed, not composed. Repeatable: unions several modules |
+| `--module <name>` | Resolve and apply ONLY this module and its dependencies, isolated from the active profile: every profile-owned contribution (env, aliases, packages, files, system settings, secrets, scripts, backups) is zeroed, not composed. Repeatable: unions several modules |
 | `--with-profile` | Compose `--module`'s named module(s) WITH the full active profile instead of isolating them. Rejected (with an error) if passed without `--module` |
 | `--skip <path>` | Skip items by dot-notation path (repeatable) |
 | `--only <path>` | Apply only items matching dot-notation paths (repeatable) |
@@ -234,7 +234,7 @@ cfgd plan -o json                       # structured plan output
 |---|---|
 | `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory (an existing path wins over the shorthand) |
 | `--phase <name>` | Show only a specific phase; takes a dotted `<phase>[.<selector>]` path (see below) |
-| `--module <name>` | Resolve and plan ONLY this module and its dependencies, isolated from the active profile — every profile-owned contribution (env, aliases, packages, files, system settings, secrets, scripts, backups) is zeroed, not composed. Repeatable: unions several modules |
+| `--module <name>` | Resolve and plan ONLY this module and its dependencies, isolated from the active profile: every profile-owned contribution (env, aliases, packages, files, system settings, secrets, scripts, backups) is zeroed, not composed. Repeatable: unions several modules |
 | `--with-profile` | Compose `--module`'s named module(s) WITH the full active profile instead of isolating them. Rejected (with an error) if passed without `--module` |
 | `--skip <path>` | Skip items by dot-notation path (repeatable) |
 | `--only <path>` | Plan only items matching dot-notation paths (repeatable) |
@@ -542,7 +542,7 @@ cfgd status --module nvim --exit-code       # live scan: exit 5 if the module ha
 default: it reads what a prior `apply`/`diff`/`verify`/`status --scan`/daemon run
 already wrote to state, so on a host with no daemon and no prior scan it reports no
 drift however far the machine has actually drifted. `-o json`'s `drift` array and
-`driftCheckedLive` flag say which of those two you are holding —
+`driftCheckedLive` flag say which of those two you are holding.
 `driftCheckedLive: false` means `drift` is only what was previously recorded, not a
 claim about the machine right now:
 
@@ -718,7 +718,7 @@ A managed file whose `source` cannot be found is reported as drift here and by `
 ```
 
 `env[]` entries carry `kind` (`env-var` | `alias` | `env` | `env-rc`), `name`, `expected`, and
-`actual` — `kind` matches `cfgd verify`'s `resourceType` for the same check byte-for-byte, so a
+`actual`. `kind` matches `cfgd verify`'s `resourceType` for the same check byte-for-byte, so a
 consumer joining this against a `cfgd verify` or recorded-drift row needs no second vocabulary.
 `env-var` and `alias` are per-declared-item checks (a mismatched line in `~/.cfgd.env`); `env`
 and `env-rc` are whole-file and rc-source-line checks that predate them:
@@ -1262,7 +1262,7 @@ delivered modules appear under a `Modules` section in human output and as a
 `modules` array in the structured (`-o json`/`-o yaml`) payload.
 
 A `Policy` section shows what is actually enforced on the source, so an
-operator can audit it without opening the manifest YAML — the manifest's
+operator can audit it without opening the manifest YAML: the manifest's
 `policy.constraints` combined with this machine's own `subscription`
 overrides:
 
@@ -1276,10 +1276,10 @@ Policy
 ```
 
 `Require Signed Commits` is the OR of the manifest's `constraints.requireSignedCommits`
-and this machine's `subscription.requireSignedCommits` — either side asking is enough.
+and this machine's `subscription.requireSignedCommits` (either side asking is enough).
 `Scripts Allowed` is this machine's `subscription.allowScripts` OR the manifest not
-constraining scripts at all (`constraints.noScripts: false`). The rest —
-`Secrets Read Allowed`, `System Changes Allowed`, `Allowed Target Paths` — read straight
+constraining scripts at all (`constraints.noScripts: false`). The rest
+(`Secrets Read Allowed`, `System Changes Allowed`, `Allowed Target Paths`) read straight
 from the manifest's own constraints. The section (and its `policy` object under
 `-o json`/`-o yaml`) is omitted when the manifest could not be loaded, since the
 constraints it would combine with are unknown.
@@ -1696,7 +1696,7 @@ Scripted consumers rely on distinct exit codes to decide follow-up actions witho
 | `3` | No cfgd config file at the resolved path. | Any command when `--config` points to a missing file. |
 | `4` | Config file exists but failed parse or validation. | Any command when `--config` is malformed or schema-invalid. |
 | `5` | Drift detected between actual and desired state. | `cfgd diff --exit-code`, `cfgd status --exit-code`, `cfgd verify --exit-code`. |
-| `6` | A named resource was not found. | Any command naming a missing resource — e.g. `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`, `cfgd backup run/list/restore <missing>`, `cfgd backup restore --at <missing-snapshot>`, `cfgd init --apply-profile <missing>`, `cfgd init --apply-module <missing>`, `cfgd config get/set/unset <missing-key>`, `cfgd alias show/delete <missing>` (which dispatch into the same config-key lookup with an `aliases.` prefix), `cfgd rollback <missing-apply-id>`. The destructive verbs `module delete`, `module registry remove`, `source remove`, and `profile delete` accept `--ignore-not-found` to exit `0` instead when the target is absent. |
+| `6` | A named resource was not found. | Any command naming a missing resource: `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`, `cfgd backup run/list/restore <missing>`, `cfgd backup restore --at <missing-snapshot>`, `cfgd init --apply-profile <missing>`, `cfgd init --apply-module <missing>`, `cfgd config get/set/unset <missing-key>`, `cfgd alias show/delete <missing>` (which dispatch into the same config-key lookup with an `aliases.` prefix), `cfgd rollback <missing-apply-id>`. The destructive verbs `module delete`, `module registry remove`, `source remove`, and `profile delete` accept `--ignore-not-found` to exit `0` instead when the target is absent. |
 | `7` | An apply ran but at least one action failed (partial or total). Also a schedule-less `spec.backups[]` unit that failed or didn't complete cleanly during `cfgd apply` (see [Apply Integration](backups.md#cli)) — the unit is reported, apply continues, and the overall status downgrades to `partial`. | `cfgd apply`, `cfgd init --apply/--apply-profile/--apply-module`, and `cfgd module add --apply` when one or more actions fail. |
 | `130` | `apply` was cooperatively aborted by `SIGINT` (Ctrl-C). | `cfgd apply` interrupted with Ctrl-C; the in-flight action finishes, the lock releases, the run is recorded as `Aborted`. |
 | `143` | `apply` was cooperatively aborted by `SIGTERM`. | `cfgd apply` interrupted with `kill`; same cooperative-abort semantics as `130`. |
@@ -1725,7 +1725,7 @@ selector format's success shape and an error doc's shape rarely agree:
   `parse_failed`, `key_not_found`, `target_not_writable`, …), `name` identifies the subject
   (module / source / profile / registry / key), and any
   command-specific fields follow. `name` is present only when the failure has a subject to
-  report — an empty subject is omitted from the payload rather than serialized as `""`. A
+  report: an empty subject is omitted from the payload rather than serialized as `""`. A
   plain propagated error with no CLI handler attached still gets a real kind: any typed
   `CfgdError` in its chain names its own domain (`config`, `source`, `module`, …), and only a
   genuinely untyped failure falls back to `{ "error": "internal", "message": "<text>" }`.
@@ -1733,11 +1733,11 @@ selector format's success shape and an error doc's shape rarely agree:
 - **Selector structured (`-o name` / `jsonpath=` / `template=` / `template-file=`):** the same
   error message is *always* echoed to `stderr` first, before the selector is evaluated. A
   selector is written against the success shape (`.items[].foo`), and an error doc's shape
-  (`error`/`message`/`name`) almost never satisfies one — without the `stderr` echo, a
+  (`error`/`message`/`name`) almost never satisfies one: without the `stderr` echo, a
   non-matching selector printed nothing to `stdout` and nothing anywhere else, leaving only the
   exit code to say a failure happened. If the selector *does* resolve against the error doc's
   fields (e.g. `-o jsonpath={.name}` against a `not_found` error, which does carry `name`), that
-  projection additionally prints to `stdout` — so a selector format can render an error twice,
+  projection additionally prints to `stdout`, so a selector format can render an error twice,
   once as the guaranteed `stderr` diagnostic and once as whatever the selector matched.
 
 ### Use in CI
