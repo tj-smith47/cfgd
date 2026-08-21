@@ -22920,3 +22920,51 @@ fn module_tap_installs_order_before_formula_installs() {
         "the tap registers the source a formula may come from, so it installs first"
     );
 }
+
+#[test]
+fn a_profile_tap_installs_before_a_modules_formula_across_the_tier_barrier() {
+    // The tier barrier dispatches module work before profile work, but a
+    // profile-declared tap delivers the repositories a module's formulas
+    // resolve from — the dispatcher offers it across the barrier and holds
+    // the brew family behind it.
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let harness = crate::test_helpers::ReconcilerTestHarness::builder()
+        .with_package_manager(
+            crate::test_helpers::MockPackageManager::new("brew").recording_installs(log.clone()),
+        )
+        .with_package_manager(
+            crate::test_helpers::MockPackageManager::new("brew-tap")
+                .registering_family_sources()
+                .recording_installs(log.clone()),
+        )
+        .build();
+
+    let plan = harness
+        .plan_with_actions(
+            Vec::new(),
+            vec![PackageAction::Install {
+                manager: "brew-tap".to_string(),
+                packages: vec!["acme/tools".to_string()],
+                origin: "local".to_string(),
+            }],
+            vec![make_resolved_module("dev")],
+        )
+        .unwrap();
+
+    let result = harness.apply(&plan, &test_printer()).unwrap();
+    assert!(
+        result.action_results.iter().all(|r| r.success),
+        "every install lands: {:?}",
+        result
+            .action_results
+            .iter()
+            .map(|r| (&r.description, &r.error))
+            .collect::<Vec<_>>()
+    );
+    let log = log.lock().unwrap();
+    assert_eq!(
+        log.first(),
+        Some(&vec!["acme/tools".to_string()]),
+        "the tap's repositories exist before any formula resolves from them, got {log:?}"
+    );
+}

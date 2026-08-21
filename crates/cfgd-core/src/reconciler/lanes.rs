@@ -253,6 +253,13 @@ struct Slot<'p> {
     /// Read off the plan rather than re-derived, so the scheduler cannot
     /// disagree with the edges the preview showed. Empty for package work.
     depends_on: &'p [String],
+    /// Whether this action's manager registers sources for its family
+    /// (`brew-tap`). The dispatcher offers these ahead of the tier barrier
+    /// and holds the family's other installs behind them: a formula may only
+    /// exist in the tap being added by this very run, and tier order alone
+    /// would run a module's brew installs before a profile-declared tap.
+    /// Always `false` for a `Prerequisites` node, whose ordering is the DAG's.
+    registers_sources: bool,
     state: SlotState,
 }
 
@@ -641,9 +648,50 @@ fn pick_next(
     // while a lone owner still fills every lane in the phase.
     let mut owner_busy: Option<usize> = None;
 
-    for (index, slot) in slots.iter().enumerate() {
-        if slot.state != SlotState::Waiting || slot.tier != in_flight {
+    // The lanes whose next occupant must be a source registration: a family
+    // with a dispatchable tap waiting refuses its installs until the tap has
+    // run, because a formula may only exist in the repository the tap adds.
+    // Judged on depends/dag alone — fail OPEN: a tap held by a module
+    // dependency edge does not hold its family, or the edge and the family
+    // could each be waiting on the other.
+    let source_held_lanes: HashSet<&str> = slots
+        .iter()
+        .enumerate()
+        .filter(|(index, slot)| {
+            slot.state == SlotState::Waiting
+                && slot.registers_sources
+                && depends_satisfied(slots, *index, deps)
+                && dag_satisfied(slots, *index)
+        })
+        .filter_map(|(_, slot)| slot.lane())
+        .collect();
+
+    // Two passes over plan order: source registrations first, across BOTH
+    // tiers — the tier barrier orders module work before profile work, and a
+    // profile-declared tap serviced in tier order would run after the module
+    // brew installs whose formulas it delivers. Everything else keeps the
+    // tier gate.
+    let scan = slots
+        .iter()
+        .enumerate()
+        .filter(|(_, slot)| slot.registers_sources)
+        .chain(
+            slots
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| !slot.registers_sources),
+        );
+    for (index, slot) in scan {
+        if slot.state != SlotState::Waiting {
             continue;
+        }
+        if !slot.registers_sources {
+            if slot.tier != in_flight {
+                continue;
+            }
+            if slot.lane().is_some_and(|l| source_held_lanes.contains(l)) {
+                continue;
+            }
         }
         if !depends_satisfied(slots, index, deps) {
             continue;
@@ -757,6 +805,13 @@ impl super::Reconciler<'_> {
                     Action::Manager(node) => node.depends_on(),
                     _ => &[],
                 },
+                registers_sources: !matches!(action, Action::Manager(_))
+                    && action_manager(action).is_some_and(|manager| {
+                        self.registry
+                            .package_managers()
+                            .iter()
+                            .any(|pm| pm.name() == manager && pm.registers_family_sources())
+                    }),
                 state: SlotState::Waiting,
             })
             .collect();
@@ -1413,6 +1468,7 @@ mod tests {
                 .map(ToString::to_string),
             node: None,
             depends_on: &[],
+            registers_sources: false,
             state: SlotState::Waiting,
         }
     }
@@ -1459,6 +1515,67 @@ mod tests {
 
     fn probe_action() -> Action {
         install("brew", "neovim")
+    }
+
+    #[test]
+    fn a_dispatchable_tap_is_offered_across_the_tier_barrier_and_holds_its_family() {
+        // A profile-declared tap delivers the repositories a module's
+        // formulas resolve from, and the tier barrier alone would run the
+        // module's brew installs first — so the tap leapfrogs the barrier,
+        // and its family refuses other work until it has run.
+        let nvim = Owner::module("nvim");
+        let profile = Owner::profile("work");
+        let formula = install("brew", "neovim");
+        let unrelated = install("apt", "git");
+        let tap = install("brew-tap", "acme/tools");
+        let mut slots = vec![
+            slot(&nvim, Tier::Modules, "brew", &formula),
+            slot(&nvim, Tier::Modules, "apt", &unrelated),
+            slot(&profile, Tier::Rest, "brew-tap", &tap),
+        ];
+        slots[2].registers_sources = true;
+        let registry = ProviderRegistry::new();
+        let deps = HashMap::new();
+        let no_lanes = HashSet::new();
+        let no_owners = HashMap::new();
+
+        assert_eq!(
+            pick_next(
+                &slots,
+                &registry,
+                &deps,
+                &DispatchState {
+                    lanes_busy: &no_lanes,
+                    owners_busy: &no_owners,
+                    draining: false,
+                    running: 0,
+                },
+            ),
+            Some(2),
+            "the tap dispatches ahead of the tier in flight"
+        );
+
+        // The tap's owner is mid-action elsewhere: its family stays held —
+        // the module's brew install may not overtake it — while another
+        // family's work proceeds.
+        let profile_busy = HashMap::from([(profile.token(), 1usize)]);
+        let held = DispatchState {
+            lanes_busy: &no_lanes,
+            owners_busy: &profile_busy,
+            draining: false,
+            running: 1,
+        };
+        assert_eq!(
+            pick_next(&slots, &registry, &deps, &held),
+            Some(1),
+            "an unrelated family is not held by the tap"
+        );
+        slots[1].state = SlotState::Done;
+        assert_eq!(
+            pick_next(&slots, &registry, &deps, &held),
+            Some(2),
+            "with nothing else ready the owner-held tap is the pick, never the formula"
+        );
     }
 
     #[test]
@@ -1584,6 +1701,7 @@ mod tests {
             module: None,
             node: Some(node.node_id()),
             depends_on: node.depends_on(),
+            registers_sources: false,
             state: SlotState::Waiting,
         }
     }

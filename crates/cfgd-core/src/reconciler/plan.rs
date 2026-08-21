@@ -16,6 +16,18 @@ use super::types::{
     ScriptAction, ScriptPhase, SystemAction,
 };
 
+/// The per-manager sort key `plan_modules` orders a module's package batches
+/// by: (availability class, family, source-registering managers first within
+/// the family, name), with the registry's resolved manager carried alongside
+/// so the elision below never re-walks the registry.
+type ManagerOrder<'a> = (
+    u8,
+    &'a str,
+    bool,
+    &'a String,
+    Option<&'a dyn PackageManager>,
+);
+
 /// The phase a module action belongs to.
 ///
 /// Total: every variant returns a phase and nothing panics. `Skip` is the one
@@ -578,39 +590,47 @@ impl<'a> super::Reconciler<'a> {
             // needs the very `&dyn PackageManager` this lookup already found,
             // and re-`find`ing it there walked the registry a second time per
             // manager per module.
-            let mut manager_order: Vec<(u8, bool, &String, Option<&dyn PackageManager>)> =
-                by_manager
-                    .keys()
-                    .map(|mgr| {
-                        let found = self
-                            .registry
-                            .package_managers()
-                            .iter()
-                            .find(|m| m.name() == mgr.as_str());
-                        let class = match found {
-                            Some(m) if m.is_available() => 0, // available (native) first
-                            // Bootstrappable second — a manager with a plan to provision it.
-                            Some(m) if m.can_bootstrap() => 1,
-                            _ => 2, // unknown last
-                        };
-                        // A source-registering manager's installs go ahead of
-                        // its class: a formula may only exist in the tap being
-                        // added by this very run.
-                        let sources_last = !found.is_some_and(|m| m.registers_family_sources());
-                        (class, sources_last, mgr, found.map(|m| m.as_ref()))
-                    })
-                    .collect();
-            // `(class, sources, name)`, not `class` alone: a key that ties on
-            // `class` would otherwise fall back to `HashMap::keys()`'s
-            // arbitrary, per-process order. Two managers in the same class
-            // (`cargo` and `npm`, both `0`) would then emit their
-            // `InstallPackages` actions in a different relative order on every
-            // run — the plan tree's bullet order, the `-o json` payload order,
-            // the journal `action_index`, and the phase's execution offer
-            // order all read from this `Vec`.
-            manager_order.sort_by(|a, b| (a.0, a.1, a.2.as_str()).cmp(&(b.0, b.1, b.2.as_str())));
+            let mut manager_order: Vec<ManagerOrder<'_>> = by_manager
+                .keys()
+                .map(|mgr| {
+                    let found = self
+                        .registry
+                        .package_managers()
+                        .iter()
+                        .find(|m| m.name() == mgr.as_str());
+                    let class = match found {
+                        Some(m) if m.is_available() => 0, // available (native) first
+                        // Bootstrappable second — a manager with a plan to provision it.
+                        Some(m) if m.can_bootstrap() => 1,
+                        _ => 2, // unknown last
+                    };
+                    // A source-registering manager's installs go ahead of
+                    // its OWN family: a formula may only exist in the tap
+                    // being added by this very run. The family bound is
+                    // the point — a tap has nothing to say about another
+                    // family's packages, so it does not jump those.
+                    let sources_last = !found.is_some_and(|m| m.registers_family_sources());
+                    (
+                        class,
+                        crate::manager_family(mgr),
+                        sources_last,
+                        mgr,
+                        found.map(|m| m.as_ref()),
+                    )
+                })
+                .collect();
+            // `(class, family, sources, name)`, not `class` alone: a key that
+            // ties on `class` would otherwise fall back to
+            // `HashMap::keys()`'s arbitrary, per-process order. Two managers
+            // in the same class (`cargo` and `npm`, both `0`) would then emit
+            // their `InstallPackages` actions in a different relative order on
+            // every run — the plan tree's bullet order, the `-o json` payload
+            // order, the journal `action_index`, and the phase's execution
+            // offer order all read from this `Vec`.
+            manager_order
+                .sort_by(|a, b| (a.0, a.1, a.2, a.3.as_str()).cmp(&(b.0, b.1, b.2, b.3.as_str())));
 
-            for (class, _, mgr_name, mgr) in manager_order {
+            for (class, _, _, mgr_name, mgr) in manager_order {
                 let mut resolved = by_manager[mgr_name].clone();
                 // Only an AVAILABLE manager (class 0) can be asked what it
                 // holds; a bootstrappable or unknown one is planned in full,

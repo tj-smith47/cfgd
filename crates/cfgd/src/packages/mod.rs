@@ -195,12 +195,25 @@ pub fn plan_packages_observed(
         }
     }
 
-    // Pass 2: generate actions. Source-registering managers (`brew-tap`) go
-    // first — their entries are the repositories the family's other installs
-    // may resolve from — and the sort is stable, so everyone else keeps
-    // registry order and the action list stays deterministic.
+    // Pass 2: generate actions. A source-registering manager (`brew-tap`)
+    // goes ahead of its OWN family — its entries are the repositories the
+    // family's other installs may resolve from — and no further: a tap has
+    // nothing to say about another family's packages, so hoisting it globally
+    // would reorder managers it cannot affect. Families keep the order of
+    // their first registry appearance, so the list stays deterministic.
+    let mut family_rank: HashMap<&str, usize> = HashMap::new();
+    for (i, manager) in managers.iter().enumerate() {
+        family_rank
+            .entry(cfgd_core::manager_family(manager.name()))
+            .or_insert(i);
+    }
     let mut order: Vec<usize> = (0..managers.len()).collect();
-    order.sort_by_key(|&i| !managers[i].registers_family_sources());
+    order.sort_by_key(|&i| {
+        (
+            family_rank[cfgd_core::manager_family(managers[i].name())],
+            !managers[i].registers_family_sources(),
+        )
+    });
     for (manager, available) in order.iter().map(|&i| (&managers[i], &availability[i])) {
         let desired = desired_for(manager.name());
 
