@@ -36,24 +36,37 @@ Wait@60m /cfgd\$$/
 Type "source ~/.cfgd.env"
 Enter
 Wait@30s /cfgd\$$/
+
+# The real tj-smith47/cfgd-config `base` profile also declares two modules
+# this container can never converge (jarvis: private repo, no SSH credentials
+# baked in; clift: needs charm's apt repo, not present on a bare Ubuntu
+# base) — stripped here for the same reason author.tape/backup.tape strip
+# them: both are unrelated to this tape's claim (drift detection and
+# healing), and `cfgd diff --module nvim`'s Env phase resolves the whole
+# active profile, so an unstripped jarvis/clift would surface as noise
+# alongside the nvim drift this tape is actually about.
+Type "cfgd profile update base --module -jarvis --module -clift"
+Enter
+Wait@30s /cfgd\$$/
 Type "clear"
 Enter
 Sleep 500ms
 Show
 
-# Beat 1: a converged machine. `-e` runs the live scan (content + package),
-# not the fast recorded-only dashboard `status` gives by default — the same
-# distinction `cfgd diff`/`verify` already draw, and the only way this
-# command can claim "no drift" rather than just "nothing recorded yet". The
-# live scan genuinely walks 28 packages plus every deployed file, so it costs
-# real wall time (measured ~13s in the demo container) — every beat below
-# waits on the returning prompt rather than guessing a fixed Sleep, because a
-# flat Sleep shorter than that cost queues the NEXT beat's keystrokes into the
-# terminal before this one finishes, garbling the recording.
-Type "cfgd status --module nvim -e"
+# Beat 1: a converged machine. `--scan` runs the live scan (content +
+# package), not the fast recorded-only dashboard `status` gives by default —
+# the same distinction `cfgd diff`/`verify` already draw, and the only way
+# this command can claim "no drift" rather than just "nothing recorded yet".
+# The live scan genuinely walks 28 packages plus every deployed file, so it
+# costs real wall time (measured ~13s in the demo container) — every beat
+# below waits on the returning prompt rather than guessing a fixed Sleep,
+# because a flat Sleep shorter than that cost queues the NEXT beat's
+# keystrokes into the terminal before this one finishes, garbling the
+# recording.
+Type "cfgd status --module nvim --scan"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 500ms
+Sleep 2s
 
 # Beat 2: sabotage a real module-managed file from outside cfgd. `rm` first
 # because the file is deployed via Symlink — editing through the link in
@@ -66,16 +79,16 @@ Enter
 Sleep 1s
 
 # Beat 3: the same live scan now reports it.
-Type "cfgd status --module nvim -e"
+Type "cfgd status --module nvim --scan"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 500ms
+Sleep 2s
 
-# Beat 4: the hunk. cfgd diff always runs the live scan — no -e needed.
+# Beat 4: the hunk. cfgd diff always runs the live scan — no --scan needed.
 Type "cfgd diff --module nvim"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 500ms
+Sleep 2s
 
 # Beat 5: heal it. `--phase files` scopes to the phase that owns the drifted
 # file — the nvim module's postApply hooks (plugin sync, go tool installs)
@@ -85,13 +98,13 @@ Sleep 500ms
 Type "cfgd apply --module nvim --phase files --yes"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 500ms
+Sleep 2s
 
 # Beat 6: clean again.
-Type "cfgd status --module nvim -e"
+Type "cfgd status --module nvim --scan"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 500ms
+Sleep 2s
 
 # Closing hold — breathing room before the loop snaps back to the opening
 # frame, matching init.tape's closing beat.
