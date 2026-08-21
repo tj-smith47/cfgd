@@ -1307,14 +1307,27 @@ mod tests {
 
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
-        // Header only, no `EDITOR` export line — the per-item check reports
-        // the declared var as drifted (opaque "missing or changed" before
-        // this fix; the real declared line after it).
+        // Header only, no `EDITOR` line — the per-item check reports the
+        // declared var as drifted (opaque "missing or changed" before this
+        // fix; the real declared line after it).
         std::fs::write(
-            tmp_home.path().join(".cfgd.env"),
+            tmp_home
+                .path()
+                .join(crate::cli::helpers::tests::primary_env_file_name()),
             "# managed by cfgd \u{2014} do not edit\n",
         )
         .unwrap();
+        // The declared line's dialect is platform-dependent (bash `export`
+        // vs PowerShell `$env:`), so the expected needle is derived from
+        // `env_item_declared_line` — production's own per-item renderer for
+        // the running platform — rather than a hardcoded POSIX literal.
+        let declared_env = vec![cfgd_core::config::EnvVar {
+            name: "EDITOR".to_string(),
+            value: "vim".to_string(),
+        }];
+        let declared_line =
+            cfgd_core::reconciler::env_item_declared_line("env-var", "EDITOR", &declared_env, &[])
+                .expect("EDITOR renders a declared line");
 
         let state_dir = tmp.path().join("state");
         std::fs::create_dir_all(&state_dir).unwrap();
@@ -1335,7 +1348,7 @@ mod tests {
             .unwrap_or_else(|| panic!("expected an EDITOR env-var drift row: {parsed}"));
         assert_eq!(
             editor_row["expected"],
-            serde_json::json!("export EDITOR=\"vim\""),
+            serde_json::json!(declared_line),
             "the -o json payload must carry the declared line, not the opaque \
              marker: {editor_row}"
         );
@@ -1357,7 +1370,7 @@ mod tests {
             .find(|l| l.contains("env-var EDITOR"))
             .unwrap_or_else(|| panic!("expected an EDITOR env-var drift line, got: {human}"));
         assert!(
-            editor_line.contains("export EDITOR=\"vim\""),
+            editor_line.contains(&declared_line),
             "the human render must show the declared line, got: {editor_line}"
         );
         assert!(

@@ -11207,6 +11207,28 @@ fn verify_env_file_missing_when_file_absent() {
 
 // --- env_verify_results / verify_env per-item alias & env-var tests ---
 
+/// The primary managed env file `env_targets` would write for `env`/`aliases`
+/// on THIS platform, enumerated through the very function `env_verify_results`
+/// itself calls (`EnvHostProbe::detect` + `EnvPlatform::current()` +
+/// `env_targets`) — so a fixture seeded from it can never drift from what the
+/// verifier treats as the primary file: bash/zsh's `.cfgd.env` on Unix,
+/// PowerShell's `.cfgd-env.ps1` on Windows.
+fn primary_managed_env_target(
+    home: &Path,
+    env: &[EnvVar],
+    aliases: &[ShellAlias],
+) -> (PathBuf, String) {
+    let probe = EnvHostProbe::detect(home);
+    let platform = EnvPlatform::current();
+    env_targets(env, aliases, &[], EnvScope::All, home, &probe, platform)
+        .into_iter()
+        .find_map(|t| match t {
+            EnvTarget::ManagedFile { path, content } => Some((path, content)),
+            _ => None,
+        })
+        .expect("env_targets yields a primary managed file for non-empty env/aliases")
+}
+
 #[test]
 #[serial_test::serial]
 fn env_verify_results_reports_matching_alias_and_env_var_as_current() {
@@ -11224,8 +11246,8 @@ fn env_verify_results_reports_matching_alias_and_env_var_as_current() {
 
     // Seed the primary managed file exactly as `apply` would generate it, so
     // the per-item check reads a real, matching baseline.
-    let content = super::env_files::generate_env_file_content(&env, &aliases, &[]);
-    std::fs::write(tmp_home.path().join(".cfgd.env"), content).unwrap();
+    let (path, content) = primary_managed_env_target(tmp_home.path(), &env, &aliases);
+    std::fs::write(path, content).unwrap();
 
     let results = super::verify::env_verify_results(&env, &aliases, EnvScope::All, &[], &[]);
 
@@ -11261,13 +11283,26 @@ fn env_verify_results_detects_hand_edited_alias_as_drift_without_flagging_untouc
 
     // Generate the real baseline, then hand-edit only the alias's command —
     // the same shape a user editing the generated file out-of-band produces.
-    let content = super::env_files::generate_env_file_content(&env, &aliases, &[]);
-    let mutated = content.replace(r#"alias ll="ls -la""#, r#"alias ll="ls -lah""#);
+    // The needle and its replacement are both derived from
+    // `primary_alias_line` (the real declared line vs. the line a hand-edited
+    // command would render), never a hardcoded POSIX literal — so the
+    // mutation is meaningful on whichever dialect this platform writes.
+    let (path, content) = primary_managed_env_target(tmp_home.path(), &env, &aliases);
+    let platform = EnvPlatform::current();
+    let declared_line = super::env_files::primary_alias_line(&aliases[0], platform)
+        .expect("alias renders a declared line");
+    let hand_edited = ShellAlias {
+        name: "ll".to_string(),
+        command: "ls -lah".to_string(),
+    };
+    let hand_edited_line = super::env_files::primary_alias_line(&hand_edited, platform)
+        .expect("hand-edited alias renders a line");
+    let mutated = content.replace(&declared_line, &hand_edited_line);
     assert_ne!(
         content, mutated,
         "fixture must actually mutate the alias line"
     );
-    std::fs::write(tmp_home.path().join(".cfgd.env"), mutated).unwrap();
+    std::fs::write(path, mutated).unwrap();
 
     let results = super::verify::env_verify_results(&env, &aliases, EnvScope::All, &[], &[]);
 
@@ -11302,9 +11337,18 @@ fn verify_env_persists_drift_for_a_hand_edited_alias() {
         name: "ll".to_string(),
         command: "ls -la".to_string(),
     }];
-    let content = super::env_files::generate_env_file_content(&[], &aliases, &[]);
-    let mutated = content.replace(r#"alias ll="ls -la""#, r#"alias ll="ls -lah""#);
-    std::fs::write(tmp_home.path().join(".cfgd.env"), mutated).unwrap();
+    let (path, content) = primary_managed_env_target(tmp_home.path(), &[], &aliases);
+    let platform = EnvPlatform::current();
+    let declared_line = super::env_files::primary_alias_line(&aliases[0], platform)
+        .expect("alias renders a declared line");
+    let hand_edited = ShellAlias {
+        name: "ll".to_string(),
+        command: "ls -lah".to_string(),
+    };
+    let hand_edited_line = super::env_files::primary_alias_line(&hand_edited, platform)
+        .expect("hand-edited alias renders a line");
+    let mutated = content.replace(&declared_line, &hand_edited_line);
+    std::fs::write(path, mutated).unwrap();
 
     let mut results = Vec::new();
     super::verify::verify_env(&[], &aliases, EnvScope::All, &[], &[], &state, &mut results);
@@ -11350,15 +11394,15 @@ fn verify_env_never_persists_the_declared_value_only_the_opaque_marker() {
         command: "curl -H 'Authorization: Bearer sk-super-secret-value' https://example.com"
             .to_string(),
     }];
-    // A `.cfgd.env` that exists but carries neither declared line — an
-    // absent file is left to the whole-file check instead (per
-    // `verify_env_items`'s doc comment), so the per-item rows below need a
-    // present-but-non-matching file to exercise the "missing or changed" arm.
-    std::fs::write(
-        tmp_home.path().join(".cfgd.env"),
-        "# managed by cfgd \u{2014} do not edit\n",
-    )
-    .unwrap();
+    // The primary managed file (whichever dialect this platform writes)
+    // exists but carries neither declared line — an absent file is left to
+    // the whole-file check instead (per `verify_env_items`'s doc comment), so
+    // the per-item rows below need a present-but-non-matching file to
+    // exercise the "missing or changed" arm. `ENV_FILE_HEADER` is the one
+    // line every dialect's generator opens with, so the header alone is a
+    // legal (if incomplete) managed file on any platform.
+    let (path, _) = primary_managed_env_target(tmp_home.path(), &env, &aliases);
+    std::fs::write(path, format!("{ENV_FILE_HEADER}\n")).unwrap();
 
     let mut results = Vec::new();
     super::verify::verify_env(

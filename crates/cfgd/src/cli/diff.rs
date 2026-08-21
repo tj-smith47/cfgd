@@ -940,12 +940,27 @@ mod tests {
 
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
-        // The primary managed env file's bash/zsh dialect renders one alias as
-        // `alias {name}={quoted command}` — a hand-edited body diverges from
-        // what the profile declared.
+        // The primary managed env file's dialect is platform-dependent (bash
+        // `alias` on Unix, a PowerShell `function`/`Set-Alias` on Windows), so
+        // the hand-edited line is derived from `env_item_declared_line` —
+        // production's own per-item renderer for the running platform —
+        // rather than a hardcoded POSIX literal.
+        let hand_edited = cfgd_core::config::ShellAlias {
+            name: "ll".to_string(),
+            command: "ls -lah".to_string(),
+        };
+        let hand_edited_line = cfgd_core::reconciler::env_item_declared_line(
+            "alias",
+            "ll",
+            &[],
+            std::slice::from_ref(&hand_edited),
+        )
+        .expect("alias renders a declared line");
         std::fs::write(
-            tmp_home.path().join(".cfgd.env"),
-            "# managed by cfgd \u{2014} do not edit\nalias ll=\"ls -lah\"\n",
+            tmp_home
+                .path()
+                .join(crate::cli::helpers::tests::primary_env_file_name()),
+            format!("# managed by cfgd \u{2014} do not edit\n{hand_edited_line}\n"),
         )
         .unwrap();
 

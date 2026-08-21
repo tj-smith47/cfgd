@@ -381,13 +381,26 @@ mod tests {
 
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
-        // Header only, no `EDITOR` export line — the per-item check reports
-        // the declared var as drifted.
+        // Header only, no `EDITOR` line — the per-item check reports the
+        // declared var as drifted.
         std::fs::write(
-            tmp_home.path().join(".cfgd.env"),
+            tmp_home
+                .path()
+                .join(crate::cli::helpers::tests::primary_env_file_name()),
             "# managed by cfgd \u{2014} do not edit\n",
         )
         .unwrap();
+        // The declared line's dialect is platform-dependent, so the expected
+        // needle is derived from `env_item_declared_line` (production's own
+        // per-item renderer for the running platform) rather than a
+        // hardcoded POSIX literal.
+        let declared_env = vec![cfgd_core::config::EnvVar {
+            name: "EDITOR".to_string(),
+            value: "vim".to_string(),
+        }];
+        let declared_line =
+            cfgd_core::reconciler::env_item_declared_line("env-var", "EDITOR", &declared_env, &[])
+                .expect("EDITOR renders a declared line");
 
         let state_dir = tmp.path().join("state");
         let mut cli = make_cli(config_path);
@@ -404,7 +417,7 @@ mod tests {
             .find(|l| l.contains("env-var EDITOR"))
             .unwrap_or_else(|| panic!("expected an env-var EDITOR line, got: {human}"));
         assert!(
-            editor_line.contains("export EDITOR=\"vim\""),
+            editor_line.contains(&declared_line),
             "the declared line must be visible, got: {editor_line}"
         );
         assert!(
@@ -420,7 +433,7 @@ mod tests {
             .unwrap_or_else(|| panic!("expected an EDITOR result row: {json}"));
         assert_eq!(
             editor_row["expected"],
-            serde_json::json!("export EDITOR=\"vim\""),
+            serde_json::json!(declared_line),
             "the -o json payload must carry the declared line: {editor_row}"
         );
     }

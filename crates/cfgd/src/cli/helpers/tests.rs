@@ -46,6 +46,21 @@ pub(crate) fn quiet_printer() -> Printer {
     Printer::for_test().0
 }
 
+/// Basename of the PRIMARY managed env file the env engine writes on THIS
+/// platform: bash/zsh's `.cfgd.env` everywhere but Windows, where it is
+/// PowerShell's `.cfgd-env.ps1`. `env_targets`'s platform split
+/// (`cfgd-core::reconciler::env_engine`, unreachable from this crate) always
+/// picks the same one first, so an env-drift fixture across the cli test
+/// modules that seeds this basename can never point at a file the real
+/// verifier does not read.
+pub(crate) fn primary_env_file_name() -> &'static str {
+    if cfg!(windows) {
+        ".cfgd-env.ps1"
+    } else {
+        ".cfgd.env"
+    }
+}
+
 // ---------------------------------------------------------------------------
 // parse_package_flag
 // ---------------------------------------------------------------------------
