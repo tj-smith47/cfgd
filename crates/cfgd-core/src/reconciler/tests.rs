@@ -23290,6 +23290,39 @@ fn a_converged_env_declaring_modules_hooks_are_deferred_not_dropped() {
 }
 
 #[test]
+fn a_script_and_env_module_keeps_its_hooks_unconditionally() {
+    // A module with no packages and no files is a script module whatever else
+    // it declares: the scripts are the whole of its content, and there is
+    // nothing for it to converge against. Routing its hooks through the env
+    // gate would make the module inert on every run whose env surface
+    // happened to converge.
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let mut module = hooked_file_module("greeter", Vec::new());
+    module.env.push(crate::config::EnvVar {
+        name: "FOO".to_string(),
+        value: "bar".to_string(),
+    });
+
+    let (actions, gated) = reconciler.plan_modules(
+        std::slice::from_ref(&module),
+        "test",
+        ReconcileContext::Apply,
+    );
+    assert_eq!(
+        actions.len(),
+        2,
+        "both hooks are planned outright, got: {actions:?}"
+    );
+    assert!(
+        gated.is_empty(),
+        "a script module's hooks are never deferred to the env answer, got: {gated:?}"
+    );
+}
+
+#[test]
 fn a_missing_source_deploys_nothing_and_claims_no_change() {
     // The declaration is broken, not the machine: the target keeps its bytes
     // (removing it would trade a broken declaration for lost data), the

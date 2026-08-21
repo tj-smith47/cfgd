@@ -822,20 +822,27 @@ impl<'a> super::Reconciler<'a> {
             // packages or files and planned none of them is converged, and a
             // converged module runs no hooks and renders nothing — the same
             // rule the render states as "nothing to do". A module declaring
-            // NO work surfaces at all keeps its scripts: they are the whole of
-            // its content, and there is nothing for it to converge against.
+            // no packages and no files keeps its scripts: they are the whole
+            // of its content, and there is nothing for it to converge against.
             //
             // Declared env/aliases are a work surface too, but one this
             // planner cannot diff: the env surface is generated as a unit by
-            // `plan_env`, later. A module whose only undecided surface is env
-            // routes its hooks through `env_gated_hooks` — kept when any env
-            // action is planned (the surface the module contributes to is
-            // being rewritten), dropped when the surface converged. The unit
-            // granularity fails OPEN: an env change owned by another layer
-            // still revives these hooks, never the reverse.
+            // `plan_env`, later. A module that declares packages or files AND
+            // env, all of whose diffable work converged, routes its hooks
+            // through `env_gated_hooks` — kept when any env action is planned
+            // (the surface the module contributes to is being rewritten),
+            // dropped when the surface converged. The unit granularity fails
+            // OPEN: an env change owned by another layer still revives these
+            // hooks, never the reverse.
+            //
+            // "Declares no work" deliberately reads packages/files ALONE, not
+            // env: a module with scripts and env but no packages or files
+            // keeps its hooks unconditionally, because the scripts are the
+            // whole of its content — env-gating it would make the module
+            // inert on every run whose env surface happened to converge.
             let declares_work = !module.packages.is_empty() || !module.files.is_empty();
             let declares_env = !module.env.is_empty() || !module.aliases.is_empty();
-            let hooks_now = work > 0 || (!declares_work && !declares_env);
+            let hooks_now = work > 0 || !declares_work;
             let hooks_env_gated = !hooks_now && declares_env;
             let route_hooks = |scripts: &[crate::config::ScriptEntry], phase: &ScriptPhase| {
                 scripts
