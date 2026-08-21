@@ -5,7 +5,7 @@ use serde::Serialize;
 use super::OwnerLabel;
 use super::Role;
 use super::TitleLabel;
-use super::component::{Component, KvPair, StatusLabel};
+use super::component::{CommandPair, Component, KvPair, StatusLabel};
 use super::renderer::Table;
 
 /// A `Doc`'s top-level heading, deferred past construction because the
@@ -187,7 +187,10 @@ impl Doc {
         K: Into<String>,
         V: Into<String>,
     {
-        let pairs: Vec<KvPair> = pairs.into_iter().map(|(k, v)| KvPair::new(k, v)).collect();
+        let pairs: Vec<CommandPair> = pairs
+            .into_iter()
+            .map(|(k, v)| CommandPair::new(k, v))
+            .collect();
         if !pairs.is_empty() {
             self.children.push(Component::CommandList { pairs });
         }
@@ -419,7 +422,10 @@ impl SectionBuilder {
         K: Into<String>,
         V: Into<String>,
     {
-        let pairs: Vec<KvPair> = pairs.into_iter().map(|(k, v)| KvPair::new(k, v)).collect();
+        let pairs: Vec<CommandPair> = pairs
+            .into_iter()
+            .map(|(k, v)| CommandPair::new(k, v))
+            .collect();
         if !pairs.is_empty() {
             self.children.push(Component::CommandList { pairs });
         }

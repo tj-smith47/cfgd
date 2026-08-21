@@ -17,8 +17,13 @@ pub enum Component {
     /// column that is a shell command rather than a data-carrying key. See
     /// `Renderer::render_command_list` for why it needs its own layout
     /// (uncapped key column, `" — "` glue) rather than reusing `KvBlock`'s.
+    ///
+    /// Carries [`CommandPair`], not [`KvPair`]: nothing renders a command
+    /// row's annotation (`render_doc` drops it converting to the renderer's
+    /// `(String, String)` pairs), so `KvPair` let a caller build a
+    /// human/JSON-divergent value the type should make unrepresentable.
     CommandList {
-        pairs: Vec<KvPair>,
+        pairs: Vec<CommandPair>,
     },
     Bullet {
         text: String,
@@ -144,6 +149,28 @@ impl KvPair {
     }
 }
 
+/// A `command_list` row: a shell command and its description, nothing else.
+///
+/// `KvPair`'s `annotation` slot exists so a data-carrying row can style a
+/// trailing note about its value; a `command_list` row has no such slot
+/// rendered anywhere (`render_doc` converts `CommandList` to bare
+/// `(String, String)` pairs before handing them to the renderer), so this
+/// type carries only what can actually reach the screen.
+#[derive(Debug, Clone, Serialize)]
+pub struct CommandPair {
+    pub key: String,
+    pub value: String,
+}
+
+impl CommandPair {
+    pub fn new(k: impl Into<String>, v: impl Into<String>) -> Self {
+        Self {
+            key: k.into(),
+            value: v.into(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +260,28 @@ mod tests {
         let c = serde_json::to_value(&collapse).unwrap();
         assert_eq!(p["keep_when_empty"], true);
         assert_eq!(c["keep_when_empty"], false);
+    }
+
+    /// Pins `CommandList`'s wire shape at exactly `{"key": …, "value": …}` per
+    /// pair — the same shape `KvPair::new(k, v)` (annotation `None`, skipped
+    /// by `skip_serializing_if`) already produced before `CommandPair`
+    /// replaced it, so this fix changes what the type can hold, never what
+    /// `-o json` emits for an existing `command_list` payload.
+    #[test]
+    fn command_list_pair_serializes_as_key_value_only() {
+        let c = Component::CommandList {
+            pairs: vec![CommandPair::new("cfgd apply", "apply configuration")],
+        };
+        let json = serde_json::to_value(&c).unwrap();
+        assert_eq!(json["type"], "command_list");
+        let first = &json["pairs"][0];
+        assert_eq!(first["key"], "cfgd apply");
+        assert_eq!(first["value"], "apply configuration");
+        assert_eq!(
+            first.as_object().unwrap().len(),
+            2,
+            "a command_list pair must serialize as exactly {{key, value}}; \
+             an annotation field would diverge from the pre-fix KvPair(annotation: None) shape: {first}"
+        );
     }
 }
