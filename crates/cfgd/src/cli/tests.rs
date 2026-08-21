@@ -20008,7 +20008,7 @@ mod cmd_source_add_local {
             let show_out = &full[baseline_len..];
 
             assert!(
-                show_out.contains("source:shown-src"),
+                show_out.contains("Source: shown-src"),
                 "expected header, got: {show_out}"
             );
             assert!(
