@@ -254,7 +254,7 @@ kubectl attach -n demo app -c cfgd-debug -it
 ![attaching a module to a running pod](../demo/cfgd-connect.gif)
 *A pod that cannot see the module, a debug shell that can, and the boundary still holding once that shell exits.*
 
-The plugin does not read the namespace from the kubeconfig context, so `--namespace` is required whenever the pod is not in `default`.
+An omitted `--namespace` resolves the same way `kubectl` itself does: from the kubeconfig current context, falling back to `default` only when the context names none.
 
 ## Device Gateway
 

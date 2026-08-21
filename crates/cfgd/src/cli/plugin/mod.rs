@@ -58,9 +58,9 @@ enum PluginCommand {
         /// Module(s) to inject (format: name:version, repeatable)
         #[arg(long, short)]
         module: Vec<String>,
-        /// Namespace
-        #[arg(long, short, default_value = "default")]
-        namespace: String,
+        /// Namespace (defaults to the kubeconfig current context's namespace, then "default")
+        #[arg(long, short)]
+        namespace: Option<String>,
         /// Container image for ephemeral container
         #[arg(long, default_value = "ubuntu:22.04")]
         image: String,
@@ -78,9 +78,9 @@ enum PluginCommand {
         /// Module(s) to load
         #[arg(long, short)]
         module: Vec<String>,
-        /// Namespace
-        #[arg(long, short, default_value = "default")]
-        namespace: String,
+        /// Namespace (defaults to the kubeconfig current context's namespace, then "default")
+        #[arg(long, short)]
+        namespace: Option<String>,
         /// Command to execute (after --)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
@@ -98,9 +98,9 @@ enum PluginCommand {
         /// Module(s) to inject
         #[arg(long, short)]
         module: Vec<String>,
-        /// Namespace
-        #[arg(long, short, default_value = "default")]
-        namespace: String,
+        /// Namespace (defaults to the kubeconfig current context's namespace, then "default")
+        #[arg(long, short)]
+        namespace: Option<String>,
     },
     /// Show fleet module status
     #[command(
@@ -149,13 +149,49 @@ enum PluginCommand {
         /// Apply the rewritten manifests via `kubectl apply` instead of printing
         #[arg(long)]
         apply: bool,
-        /// Namespace passed to `kubectl apply` (only used with --apply)
-        #[arg(long, short, default_value = "default")]
-        namespace: String,
+        /// Namespace passed to `kubectl apply` (only used with --apply); defaults to
+        /// the kubeconfig current context's namespace, then "default"
+        #[arg(long, short)]
+        namespace: Option<String>,
     },
 }
 
 const MODULE_REQUIRED: &str = "at least one --module is required";
+
+/// Resolve a namespace-taking subcommand's effective namespace. An explicit
+/// `--namespace`/`-n` always wins; when it is omitted, resolve the
+/// kubeconfig current context's namespace — the same source plain `kubectl`
+/// reads for the same omission — falling back to `"default"` only when the
+/// context names none.
+fn resolve_namespace(explicit: Option<String>) -> String {
+    explicit.unwrap_or_else(current_context_namespace)
+}
+
+/// The kubeconfig current context's namespace, via `kube`'s own config
+/// loader — the same crate `cmd_debug`/`cmd_status`/`cmd_version` already
+/// trust for every other kubeconfig question (it honors `KUBECONFIG`), so a
+/// `KUBECONFIG`-fixture test needs no real `kubectl` binary on PATH and no
+/// new controlled-command-layer entry. `Config::infer` itself falls back to
+/// `"default"` when the context names no namespace; this wrapper does the
+/// same when no kubeconfig or in-cluster config can be found at all (a
+/// devbox with nothing configured), so resolution never fails — a broken or
+/// absent kubeconfig surfaces as a normal connection error later, at the
+/// point the command actually contacts the cluster, not as a namespace
+/// resolution failure here.
+fn current_context_namespace() -> String {
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return "default".to_string();
+    };
+    rt.block_on(async {
+        kube::Config::infer()
+            .await
+            .map(|c| c.default_namespace)
+            .unwrap_or_else(|_| "default".to_string())
+    })
+}
 
 fn parse_module_arg(arg: &str) -> anyhow::Result<(&str, &str)> {
     arg.split_once(':')
@@ -224,18 +260,27 @@ pub fn plugin_main() -> anyhow::Result<()> {
             module,
             namespace,
             image,
-        } => cmd_debug(&printer, &pod, &module, &namespace, &image),
+        } => {
+            let namespace = resolve_namespace(namespace);
+            cmd_debug(&printer, &pod, &module, &namespace, &image)
+        }
         PluginCommand::Exec {
             pod,
             module,
             namespace,
             command,
-        } => cmd_exec(&printer, &pod, &module, &namespace, &command),
+        } => {
+            let namespace = resolve_namespace(namespace);
+            cmd_exec(&printer, &pod, &module, &namespace, &command)
+        }
         PluginCommand::Inject {
             resource,
             module,
             namespace,
-        } => cmd_inject(&printer, &resource, &module, &namespace),
+        } => {
+            let namespace = resolve_namespace(namespace);
+            cmd_inject(&printer, &resource, &module, &namespace)
+        }
         PluginCommand::Status => cmd_status(&printer),
         PluginCommand::Version { namespace } => cmd_version(&printer, &namespace),
         PluginCommand::Deploy {
@@ -243,7 +288,10 @@ pub fn plugin_main() -> anyhow::Result<()> {
             lock,
             apply,
             namespace,
-        } => cmd_deploy(&printer, &filename, &lock, apply, &namespace),
+        } => {
+            let namespace = resolve_namespace(namespace);
+            cmd_deploy(&printer, &filename, &lock, apply, &namespace)
+        }
     };
 
     // The plugin has its OWN entry (main.rs returns here directly, never reaching the

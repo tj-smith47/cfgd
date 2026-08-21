@@ -311,7 +311,7 @@ fn plugin_cli_parse_debug_command() {
         } => {
             assert_eq!(pod, "my-pod");
             assert_eq!(module, vec!["nettools:1.0"]);
-            assert_eq!(namespace, "prod");
+            assert_eq!(namespace, Some("prod".to_string()));
             assert_eq!(image, "alpine:3.18");
         }
         _ => panic!("Expected Debug command"),
@@ -319,7 +319,7 @@ fn plugin_cli_parse_debug_command() {
 }
 
 #[test]
-fn plugin_cli_parse_debug_default_namespace_and_image() {
+fn plugin_cli_parse_debug_omitted_namespace_and_default_image() {
     let cli =
         PluginCli::try_parse_from(["kubectl-cfgd", "debug", "my-pod", "-m", "tools:1.0"]).unwrap();
 
@@ -327,7 +327,10 @@ fn plugin_cli_parse_debug_default_namespace_and_image() {
         PluginCommand::Debug {
             namespace, image, ..
         } => {
-            assert_eq!(namespace, "default");
+            // An omitted `-n` parses to `None`, not the literal "default" —
+            // `resolve_namespace` fills it in at dispatch time, so parsing
+            // alone must not bake a value in.
+            assert_eq!(namespace, None);
             assert_eq!(image, "ubuntu:22.04");
         }
         _ => panic!("Expected Debug command"),
@@ -380,7 +383,7 @@ fn plugin_cli_parse_exec_command() {
         } => {
             assert_eq!(pod, "my-pod");
             assert_eq!(module, vec!["tools:1.0"]);
-            assert_eq!(namespace, "default");
+            assert_eq!(namespace, None);
             assert_eq!(command, vec!["ls", "-la"]);
         }
         _ => panic!("Expected Exec command"),
@@ -408,7 +411,7 @@ fn plugin_cli_parse_inject_command() {
         } => {
             assert_eq!(resource, "deployment/myapp");
             assert_eq!(module, vec!["cfg:1.0"]);
-            assert_eq!(namespace, "staging");
+            assert_eq!(namespace, Some("staging".to_string()));
         }
         _ => panic!("Expected Inject command"),
     }
@@ -1941,4 +1944,81 @@ images:
             "unmapped volume reference must survive verbatim: {stdout}"
         );
     }
+}
+
+// --- resolve_namespace / current_context_namespace ---
+
+/// Write a minimal kubeconfig fixture: one cluster, one context named
+/// `test-ctx` set as `current-context`. `namespace` is the context's
+/// declared namespace, or `None` to omit the field entirely (the "context
+/// names no namespace" arm). No `users:` entry is needed — `kube`'s loader
+/// defaults auth info when a context names none.
+fn write_kubeconfig_fixture(dir: &std::path::Path, namespace: Option<&str>) -> std::path::PathBuf {
+    let ns_line = namespace
+        .map(|ns| format!("      namespace: {ns}\n"))
+        .unwrap_or_default();
+    let path = dir.join("kubeconfig");
+    std::fs::write(
+        &path,
+        format!(
+            "\
+apiVersion: v1
+kind: Config
+current-context: test-ctx
+clusters:
+  - name: test-cluster
+    cluster:
+      server: https://127.0.0.1:6443
+contexts:
+  - name: test-ctx
+    context:
+      cluster: test-cluster
+{ns_line}users: []
+"
+        ),
+    )
+    .expect("write kubeconfig fixture");
+    path
+}
+
+#[test]
+#[serial]
+fn resolve_namespace_explicit_flag_wins() {
+    // Points KUBECONFIG at a path that names no such file — proves the
+    // explicit value short-circuits before any kubeconfig read happens, not
+    // merely that it happens to win a race against one.
+    let _kc = EnvVarGuard::set("KUBECONFIG", "/nonexistent-kubeconfig-cfgd-test");
+    assert_eq!(
+        resolve_namespace(Some("prod".to_string())),
+        "prod",
+        "an explicit --namespace must always win"
+    );
+}
+
+#[test]
+#[serial]
+fn resolve_namespace_uses_context_namespace_when_omitted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let kubeconfig = write_kubeconfig_fixture(dir.path(), Some("prod-ns"));
+    let _kc = EnvVarGuard::set("KUBECONFIG", &kubeconfig.to_string_lossy());
+
+    assert_eq!(
+        resolve_namespace(None),
+        "prod-ns",
+        "an omitted --namespace must resolve from the kubeconfig current context"
+    );
+}
+
+#[test]
+#[serial]
+fn resolve_namespace_falls_back_to_default_when_context_names_none() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let kubeconfig = write_kubeconfig_fixture(dir.path(), None);
+    let _kc = EnvVarGuard::set("KUBECONFIG", &kubeconfig.to_string_lossy());
+
+    assert_eq!(
+        resolve_namespace(None),
+        "default",
+        "a context naming no namespace must fall back to \"default\", same as kubectl"
+    );
 }
