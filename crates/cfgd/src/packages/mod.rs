@@ -210,7 +210,13 @@ pub fn plan_packages_observed(
     let mut order: Vec<usize> = (0..managers.len()).collect();
     order.sort_by_key(|&i| {
         (
-            family_rank[cfgd_core::manager_family(managers[i].name())],
+            // Populated from this same slice one loop up, so every family is
+            // present — but a sort key must not be able to panic mid-plan, so
+            // an absent family sorts last instead of unwinding.
+            family_rank
+                .get(cfgd_core::manager_family(managers[i].name()))
+                .copied()
+                .unwrap_or(usize::MAX),
             !managers[i].registers_family_sources(),
         )
     });
