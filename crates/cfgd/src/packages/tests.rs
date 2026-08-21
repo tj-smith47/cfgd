@@ -33,6 +33,9 @@ struct MockPackageManager {
     // manager (e.g. pacman db unreadable). Used to assert plan_packages never
     // probes a manager that has no work to do.
     list_fails: bool,
+    // The brew-tap shape: entries are package SOURCES for the family, so the
+    // planner must order this mock's installs first.
+    registers_sources: bool,
 }
 
 impl MockPackageManager {
@@ -45,6 +48,7 @@ impl MockPackageManager {
             installs: Mutex::new(Vec::new()),
             uninstalls: Mutex::new(Vec::new()),
             list_fails: false,
+            registers_sources: false,
         }
     }
 
@@ -57,6 +61,11 @@ impl MockPackageManager {
         self.list_fails = true;
         self
     }
+
+    fn registering_family_sources(mut self) -> Self {
+        self.registers_sources = true;
+        self
+    }
 }
 
 impl PackageManager for MockPackageManager {
@@ -66,6 +75,10 @@ impl PackageManager for MockPackageManager {
 
     fn is_available(&self) -> bool {
         self.available
+    }
+
+    fn registers_family_sources(&self) -> bool {
+        self.registers_sources
     }
 
     fn bootstrap_plan(&self) -> Option<cfgd_core::providers::BootstrapPlan> {
@@ -647,7 +660,7 @@ fn plan_sub_manager_installs_when_parent_bootstrapping() {
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
     // brew is unavailable + bootstrappable, brew-tap should get Install (not Skip)
     let brew_mock = MockPackageManager::new("brew", false, vec![]).with_bootstrap();
-    let tap_mock = MockPackageManager::new("brew-tap", false, vec![]);
+    let tap_mock = MockPackageManager::new("brew-tap", false, vec![]).registering_family_sources();
 
     let profile = test_profile(PackagesSpec {
         brew: Some(cfgd_core::config::BrewSpec {
@@ -661,11 +674,12 @@ fn plan_sub_manager_installs_when_parent_bootstrapping() {
     let managers: Vec<&dyn PackageManager> = vec![&brew_mock, &tap_mock];
     let actions = plan_packages(&profile, &[], &managers, &HashSet::new(), &cx).unwrap();
 
-    // Should have: Install(brew: ripgrep), Install(brew-tap: some/tap) — brew's
+    // Should have: Install(brew-tap: some/tap), Install(brew: ripgrep) — the tap
+    // registers the source a formula may come from, so it orders first; brew's
     // own provisioning is a Prerequisites-phase concern this planner never sees.
     assert_eq!(actions.len(), 2);
-    assert!(matches!(&actions[0], PackageAction::Install { manager, .. } if manager == "brew"));
-    assert!(matches!(&actions[1], PackageAction::Install { manager, .. } if manager == "brew-tap"));
+    assert!(matches!(&actions[0], PackageAction::Install { manager, .. } if manager == "brew-tap"));
+    assert!(matches!(&actions[1], PackageAction::Install { manager, .. } if manager == "brew"));
 }
 
 // --- Declarative prune (Uninstall generation) tests ---

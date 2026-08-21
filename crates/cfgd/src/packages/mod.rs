@@ -195,8 +195,13 @@ pub fn plan_packages_observed(
         }
     }
 
-    // Pass 2: generate actions
-    for (manager, available) in managers.iter().zip(&availability) {
+    // Pass 2: generate actions. Source-registering managers (`brew-tap`) go
+    // first — their entries are the repositories the family's other installs
+    // may resolve from — and the sort is stable, so everyone else keeps
+    // registry order and the action list stays deterministic.
+    let mut order: Vec<usize> = (0..managers.len()).collect();
+    order.sort_by_key(|&i| !managers[i].registers_family_sources());
+    for (manager, available) in order.iter().map(|&i| (&managers[i], &availability[i])) {
         let desired = desired_for(manager.name());
 
         // A manager with no desired packages AND no cfgd-tracked installs has

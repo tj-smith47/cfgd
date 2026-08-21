@@ -607,6 +607,19 @@ pub trait PackageManager: Send + Sync {
         false
     }
 
+    /// Whether this manager's "packages" are package SOURCES for its family —
+    /// repositories the family's other managers then resolve from (`brew-tap`,
+    /// whose entries are taps a `brew` formula may only exist in) — rather
+    /// than packages themselves.
+    ///
+    /// Every ordering surface in the `Packages` phase puts such a manager's
+    /// installs ahead of its siblings', so a formula delivered by a tap being
+    /// added in the same run resolves instead of failing the install that
+    /// needed it.
+    fn registers_family_sources(&self) -> bool {
+        false
+    }
+
     /// Query the available version of a package without installing it.
     /// Returns None if the package is not found in the manager's index.
     fn available_version(&self, package: &str) -> Result<Option<String>>;

@@ -137,6 +137,12 @@ impl PackageManager for BrewTapManager {
         // Taps don't have versions
         Ok(None)
     }
+
+    fn registers_family_sources(&self) -> bool {
+        // A tap is a formula SOURCE: `brew`/`brew-cask` installs in the same
+        // run may only resolve once it is added, so tap installs order first.
+        true
+    }
 }
 
 // --- BrewCaskManager ---

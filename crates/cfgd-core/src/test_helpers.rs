@@ -2905,6 +2905,9 @@ pub struct MockPackageManager {
     /// Whether declared and listed names fold to lowercase, the way a
     /// case-insensitive manager's identity space does.
     folds_case: bool,
+    /// Whether this mock's entries register package SOURCES for its family,
+    /// the `brew-tap` shape — the flag every tap-first ordering surface reads.
+    registers_sources: bool,
 }
 
 impl MockPackageManager {
@@ -2930,7 +2933,15 @@ impl MockPackageManager {
             install_log: None,
             enumerations: std::sync::Arc::default(),
             folds_case: false,
+            registers_sources: false,
         }
+    }
+
+    /// The `brew-tap` shape: entries are package SOURCES for the family, so
+    /// ordering surfaces put this mock's installs first.
+    pub fn registering_family_sources(mut self) -> Self {
+        self.registers_sources = true;
+        self
     }
 
     /// The chocolatey/scoop/winget shape: the identity space is lowercase, so
@@ -3184,6 +3195,10 @@ impl crate::providers::PackageManager for MockPackageManager {
 
     fn has_index(&self) -> bool {
         self.keeps_index
+    }
+
+    fn registers_family_sources(&self) -> bool {
+        self.registers_sources
     }
 
     fn refresh_index(
