@@ -1850,13 +1850,27 @@ mod tests {
     fn installed_for_re_enumerates_once_a_run_changes_what_is_installed() {
         let (printer, _cap) = Printer::for_test();
         let state = StateStore::open_in_memory().expect("store");
-        let cx = test_cx(&printer, &state);
-        let mgr = EnumeratingManager::new("apt", &["ripgrep"]);
-        let counter = mgr.counter();
+        // Only the memo-HIT half is measured in a stable generation: anything
+        // else in this binary that installs something retires the entry between
+        // the two reads, and the second would legitimately re-enumerate. The
+        // invalidation half below cannot be measured that way — it moves the
+        // generation itself — and does not need to be: two calls cost at most
+        // two enumerations however many foreign bumps land between them.
+        let _ttl = crate::test_helpers::EnumerationMemoTtlGuard::never_expires();
+        let (cx, mgr, counter, asked) =
+            crate::test_helpers::measured_in_a_stable_generation(|| {
+                // Built inside, so a retry measures a context and a counter no
+                // abandoned attempt already warmed.
+                let cx = test_cx(&printer, &state);
+                let mgr = EnumeratingManager::new("apt", &["ripgrep"]);
+                let counter = mgr.counter();
 
-        cx.installed_for(&mgr).expect("first");
-        cx.installed_for(&mgr).expect("memoized");
-        assert_eq!(asked_count(&counter), 1);
+                cx.installed_for(&mgr).expect("first");
+                cx.installed_for(&mgr).expect("memoized");
+                let asked = asked_count(&counter);
+                (cx, mgr, counter, asked)
+            });
+        assert_eq!(asked, 1);
 
         // What an install through the exec path does, and the only thing it has
         // to do for a later read to see the machine as it now is.
@@ -1989,21 +2003,27 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn a_sweep_older_than_the_ceiling_is_taken_again() {
-        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (pending, asked) = CountingManager::new("pending", &flag);
-        let mut registry = ProviderRegistry::new();
-        registry.add_package_manager(Box::new(pending));
+        // The half inside the ceiling is a memo-hit claim, so it is measured in
+        // a generation nothing else moved — a foreign invalidation re-sweeps the
+        // registry and reports the manager the pin says is still hidden. Its
+        // subject is built inside for the same reason: a retry must count its
+        // own sweeps.
+        let (registry, asked, while_memoized, swept) =
+            crate::test_helpers::measured_in_a_stable_generation(|| {
+                let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let (pending, asked) = CountingManager::new("pending", &flag);
+                let mut registry = ProviderRegistry::new();
+                registry.add_package_manager(Box::new(pending));
 
-        {
-            let _ttl = crate::test_helpers::AvailabilityMemoTtlGuard::never_expires();
-            assert!(registry.available_package_managers().is_empty());
-            flag.store(true, std::sync::atomic::Ordering::SeqCst);
-            assert!(
-                registry.available_package_managers().is_empty(),
-                "inside the ceiling the sweep stands"
-            );
-            assert_eq!(asked_count(&asked), 1);
-        }
+                let _ttl = crate::test_helpers::AvailabilityMemoTtlGuard::never_expires();
+                assert!(registry.available_package_managers().is_empty());
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                let while_memoized = registry.available_package_managers().len();
+                let swept = asked_count(&asked);
+                (registry, asked, while_memoized, swept)
+            });
+        assert_eq!(while_memoized, 0, "inside the ceiling the sweep stands");
+        assert_eq!(swept, 1);
 
         let _ttl = crate::test_helpers::AvailabilityMemoTtlGuard::always_expired();
         let available = registry.available_package_managers();
