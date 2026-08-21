@@ -20521,6 +20521,51 @@ fn retain_actions_and_batches_shrinks_a_batch_before_dropping_it() {
 }
 
 #[test]
+fn a_withheld_file_leaves_the_declared_set_with_it() {
+    // Pruning one file from a two-file batch must not leave the survivor
+    // rendering `(1 of 2 files)` — that shape claims the other file CONVERGED
+    // when it was withheld by a pending decision. The declared set shrinks
+    // with the batch, so the render and the persisted id both describe the
+    // batch that remains.
+    let resolved_file = |target: &str| ResolvedFile {
+        source: std::path::PathBuf::from("/src").join(target),
+        target: std::path::PathBuf::from("/dst").join(target),
+        is_git_source: false,
+        strategy: Some(crate::config::FileStrategy::Copy),
+        encryption: None,
+        permissions: None,
+        patch: None,
+    };
+    let files = vec![resolved_file("kept.txt"), resolved_file("withheld.txt")];
+    let mut phase = Phase::from_actions(
+        PhaseName::Files,
+        &Owner::profile("work"),
+        vec![Action::Module(ModuleAction {
+            module_name: "mymod".to_string(),
+            kind: ModuleActionKind::DeployFiles {
+                declared_total: files.len(),
+                files,
+            },
+            origin: None,
+        })],
+    );
+
+    phase.retain_actions_and_batches(
+        |_| true,
+        |_, _| true,
+        |target| !target.ends_with("withheld.txt"),
+    );
+
+    let action = phase.actions().next().expect("the shrunk batch survives");
+    assert_eq!(format_action_description(action), "module:mymod:files:1");
+    let item = format_plan_item(action);
+    assert!(
+        !item.contains("of 2 files"),
+        "the survivor must not claim a converged sibling, got: {item}"
+    );
+}
+
+#[test]
 fn retain_actions_leaves_an_already_empty_batch_exactly_as_it_found_it() {
     // `retain_actions` retains every package, so it must stay a pure
     // action-level filter: only a batch the filter EMPTIED loses its action.

@@ -2603,6 +2603,56 @@ fn a_skipped_module_file_reports_the_same_reason_the_profile_arm_does() {
 }
 
 #[test]
+fn a_skipped_module_file_leaves_the_declared_set_with_it() {
+    // The survivor must not render `(1 of 2 files)` — that shape claims the
+    // skipped sibling CONVERGED when it was refused over an unmanaged target.
+    let tmp = tempfile::tempdir().unwrap();
+    let kept_source = tmp.path().join("kept-src.conf");
+    let kept_target = tmp.path().join("kept.conf");
+    std::fs::write(&kept_source, "from module\n").unwrap();
+    let skipped_source = tmp.path().join("skipped-src.conf");
+    let skipped_target = tmp.path().join("skipped.conf");
+    std::fs::write(&skipped_source, "from module\n").unwrap();
+    std::fs::write(&skipped_target, "hand written\n").unwrap();
+
+    let state = StateStore::open_in_memory().unwrap();
+    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
+    let mut plan = module_deploy_plan(vec![
+        module_copy_file(&kept_source, &kept_target),
+        module_copy_file(&skipped_source, &skipped_target),
+    ]);
+
+    handle_unmanaged_file_targets(
+        &mut plan,
+        tmp.path(),
+        &state,
+        &printer,
+        true,
+        OnConflict::Skip,
+        FileStrategy::Symlink,
+    )
+    .unwrap();
+
+    assert_eq!(deployed_files(&plan), vec![kept_target]);
+    let survives_with_total =
+        plan.phases
+            .iter()
+            .flat_map(|p| p.owned_actions())
+            .find_map(|(_, a)| match a {
+                Action::Module(ma) => match &ma.kind {
+                    ModuleActionKind::DeployFiles { declared_total, .. } => Some(*declared_total),
+                    _ => None,
+                },
+                _ => None,
+            });
+    assert_eq!(
+        survives_with_total,
+        Some(1),
+        "the skipped file leaves the declared set with it"
+    );
+}
+
+#[test]
 fn two_adoptions_in_the_same_second_land_beside_each_other_never_on_top() {
     // The stamp has one-second resolution, so it is a hint at a free name and
     // never a guarantee of one: unchecked, the second adoption of a second

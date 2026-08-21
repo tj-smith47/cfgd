@@ -1244,7 +1244,10 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
 
                 // Module file actions
                 if let reconciler::Action::Module(ref mut ma) = actions[i]
-                    && let reconciler::ModuleActionKind::DeployFiles { ref mut files, .. } = ma.kind
+                    && let reconciler::ModuleActionKind::DeployFiles {
+                        ref mut files,
+                        ref mut declared_total,
+                    } = ma.kind
                 {
                     let module_name = ma.module_name.clone();
                     let mut j = 0;
@@ -1284,6 +1287,11 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
                                         .detail(UNMANAGED_SKIP_REASON);
                                     skipped.push(file_target);
                                     files.remove(j);
+                                    // The skipped file leaves the declared set
+                                    // with it: a `(k of N files)` render must
+                                    // mean the other N−k converged, and this
+                                    // one was refused, not converged.
+                                    *declared_total = declared_total.saturating_sub(1);
                                     continue;
                                 }
                                 ResolvedConflict::Fail => {

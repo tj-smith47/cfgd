@@ -814,11 +814,20 @@ impl Phase {
                         batch_survives(batched, resolved.len())
                     }
                     Action::Module(ModuleAction {
-                        kind: ModuleActionKind::DeployFiles { files, .. },
+                        kind:
+                            ModuleActionKind::DeployFiles {
+                                files,
+                                declared_total,
+                            },
                         ..
                     }) => {
                         let batched = files.len();
                         files.retain(|file| keep_file(&file.target));
+                        // A withheld entry leaves the declared set with it, or
+                        // the survivor count renders as `(k of N files)` — a
+                        // shape that reads as the other N−k having CONVERGED
+                        // when they were pruned by a pending decision.
+                        *declared_total -= batched - files.len();
                         batch_survives(batched, files.len())
                     }
                     _ => true,
