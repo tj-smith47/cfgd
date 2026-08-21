@@ -381,8 +381,9 @@ pub fn cmd_profile_update(
             continue;
         }
         printer.status(Role::Ok, "Added secret").qualifier(format!(
-            "{} → {}",
+            "{} {} {}",
             secret.source,
+            printer.arrow(),
             target.posix()
         ));
         doc.spec.secrets.push(secret);

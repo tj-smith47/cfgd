@@ -127,8 +127,11 @@ pub fn cmd_checkin(
             .checkin(&config_hash, compliance_summary, printer)
             .context("checkin to gateway failed");
         match &result {
-            Ok(resp) => {
-                gateway_sec.status_simple(Role::Ok, format!("server status: {}", resp.status));
+            Ok(_) => {
+                // The VERDICT of the round-trip, not the server's own status
+                // string: that is a fact about the response and is stated
+                // once, by the `Server status` kv row below.
+                gateway_sec.status_simple(Role::Ok, "Checked in");
             }
             Err(e) => {
                 gateway_sec
@@ -139,11 +142,10 @@ pub fn cmd_checkin(
         result?
     };
 
-    // The gateway's own string reaches two display slots — the status subject
-    // above and this kv value — and both fold it through `cursor_safe` at the
-    // renderer, so one response renders one way in both places and neither can
-    // repaint the line describing it. The `-o json` payload below carries the
-    // response verbatim; the fold is display-only.
+    // The gateway's own string reaches exactly one display slot, this kv
+    // value, folded through `cursor_safe` at the renderer so a response
+    // cannot repaint the line describing it. The `-o json` payload below
+    // carries the response verbatim; the fold is display-only.
     printer.kv("Server status", &resp.status);
     printer.kv("Config changed", resp.config_changed.to_string());
 
@@ -182,7 +184,10 @@ pub fn cmd_checkin(
             Ok(()) => {
                 drift_sec.status_simple(
                     Role::Ok,
-                    format!("{} drift items reported", all_drifts.len()),
+                    format!(
+                        "{} reported",
+                        cfgd_core::pluralize(all_drifts.len(), "drift item")
+                    ),
                 );
             }
             Err(e) => {
@@ -551,14 +556,12 @@ spec:
         );
     }
 
-    /// Every string in a gateway response is remote input, and two of this
-    /// command's lines echo `status` verbatim — a status subject and a kv
-    /// row. An `ESC[2K` in either erases the line it is written on, so what a
-    /// user reads is not what the gateway sent. The two slots sanitize in
-    /// different places (the renderer owns the subject; a kv value carries
-    /// caller-composed styling, so the call site owns it), which is exactly
-    /// why the assertion covers the whole rendered command rather than one
-    /// line of it.
+    /// Every string in a gateway response is remote input, and this command
+    /// echoes `status` verbatim into a kv row. An `ESC[2K` in it erases the
+    /// line it is written on, so what a user reads is not what the gateway
+    /// sent. The assertion covers the whole rendered command rather than one
+    /// line of it, so a second slot that starts echoing the same string
+    /// unfolded is caught here too.
     #[test]
     #[serial_test::serial]
     fn a_gateway_status_carrying_escapes_cannot_repaint_the_terminal() {
@@ -595,12 +598,12 @@ spec:
         );
         let plain = cfgd_core::output::strip_ansi(&human);
         assert!(
-            plain.contains("server status: ok"),
-            "the verdict line must still name the status: {plain:?}"
-        );
-        assert!(
             plain.contains("Server status"),
             "the kv row must still render: {plain:?}"
+        );
+        assert!(
+            plain.contains("ok"),
+            "the status must survive the fold as text: {plain:?}"
         );
     }
 
@@ -678,7 +681,7 @@ spec:
         drift.assert();
 
         let human = cfgd_core::output::strip_ansi(&cap.human());
-        crate::cli::test_support::assert_nests_under(&human, "Drift", "drift items reported");
+        crate::cli::test_support::assert_nests_under(&human, "Drift", "1 drift item reported");
     }
 
     // Linux-only like the drift tests above: the "never scanned" negative is
@@ -835,7 +838,7 @@ spec:
         mock.assert();
 
         let human = cfgd_core::output::strip_ansi(&cap.human());
-        crate::cli::test_support::assert_nests_under(&human, "Gateway", "server status: ok");
+        crate::cli::test_support::assert_nests_under(&human, "Gateway", "Checked in");
     }
 
     #[test]

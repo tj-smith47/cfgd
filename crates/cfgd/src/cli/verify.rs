@@ -131,8 +131,8 @@ pub fn cmd_verify(
         Ok(results)
     })?;
     // `reconciler::verify` already persisted the opaque `current`/`missing or
-    // changed` markers for every env-var/alias row (WARN4: the declared value
-    // must never reach `drift_events`) — but this `results` vec is the DISPLAY
+    // changed` markers for every env-var/alias row (the declared value must
+    // never reach `drift_events`) — but this `results` vec is the DISPLAY
     // copy, rendered below into `build_verify_doc`'s human/`-o json` output,
     // and persistence already happened inside `reconciler::verify` before it
     // returned. Recomputing here is exactly `diff`'s "opaque markers never
@@ -351,14 +351,13 @@ mod tests {
         );
     }
 
-    /// Sweep finding from the `status --scan` re-review: `reconciler::verify`
-    /// persists the opaque `current`/`missing or changed` markers for a
-    /// drifted env-var/alias row (correctly — WARN4 keeps the declared value
-    /// out of `drift_events`), but `cmd_verify`'s own DISPLAY of that same
-    /// `results` vec never recomputed the real declared line before this fix,
-    /// so `cfgd verify`'s human/`-o json` render showed the same opaque
-    /// marker `status --scan` was found to. Both are display consumers of the
-    /// identical per-item `VerifyResult`s and both needed the same
+    /// `reconciler::verify` persists the opaque `current`/`missing or changed`
+    /// markers for a drifted env-var/alias row — correctly, since the declared
+    /// value must stay out of `drift_events` — but `cmd_verify`'s own DISPLAY
+    /// of that same `results` vec has to recompute the real declared line, or
+    /// `cfgd verify`'s human and `-o json` renders show the storage marker
+    /// instead of the value. `status --scan` is the sibling display consumer
+    /// of the identical per-item `VerifyResult`s, and needs the same
     /// `env_item_display_values` recompute.
     #[test]
     #[serial]

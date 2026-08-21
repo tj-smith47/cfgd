@@ -710,7 +710,10 @@ pub fn cmd_deploy(
         // the human channel, rather than through tracing, whose default filter
         // means nobody reads it.
         for (old, new) in &rewrites {
-            printer.status_simple(Role::Info, format!("pinned {old} → {new}"));
+            printer.status_simple(
+                Role::Info,
+                format!("pinned {old} {} {new}", printer.arrow()),
+            );
         }
         printer.data_line(&yaml_out);
     }

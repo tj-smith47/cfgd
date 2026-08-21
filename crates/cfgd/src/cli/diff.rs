@@ -813,17 +813,25 @@ pub fn build_diff_doc(output: &DiffOutput) -> Doc {
     } else {
         Role::Ok
     };
+    let mut reasons = Vec::new();
+    if output.summary.system_check_failed {
+        reasons.push("a system check could not run");
+    }
+    if output.summary.env_check_failed {
+        reasons.push("the env check could not run");
+    }
     if any_drift {
-        return Doc::new().status(role, "Drift detected").with_data(output);
+        // Drift AND a check that could not run: the verdict names the drift,
+        // but the exit code is `Error` rather than `DriftDetected`, and the
+        // reason for it is owed to whoever reads the two together.
+        if reasons.is_empty() {
+            return Doc::new().status(role, "Drift detected").with_data(output);
+        }
+        return Doc::new()
+            .status_with(role, "Drift detected", |f| f.detail(reasons.join("; ")))
+            .with_data(output);
     }
     if check_failed {
-        let mut reasons = Vec::new();
-        if output.summary.system_check_failed {
-            reasons.push("a system check could not run");
-        }
-        if output.summary.env_check_failed {
-            reasons.push("the env check could not run");
-        }
         return Doc::new()
             .status_with(role, "Drift undetermined", |f| f.detail(reasons.join("; ")))
             .with_data(output);
@@ -1162,6 +1170,90 @@ mod tests {
         );
     }
 
+    /// The other half of `a_failed_env_check_is_never_reported_as_clean`,
+    /// driven through the real command: a module cfgd cannot resolve is
+    /// enough to fail the FULL-profile resolution the env check needs, and
+    /// the Files and Packages diffs of the module actually asked about must
+    /// survive it. Restoring the `?` on that resolution — or moving the call
+    /// back inside the Env section — turns `cfgd diff --module nvim` into an
+    /// error that renders nothing, on any machine whose profile also declares
+    /// a module with a broken dependency.
+    #[test]
+    #[serial]
+    fn cmd_diff_module_keeps_its_own_diff_when_an_unrelated_module_cannot_resolve() {
+        use crate::cli::helpers::tests::make_cli;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - file-mod\n    - broken\n",
+        )
+        .unwrap();
+
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let target = tmp_home.path().join("app.conf");
+
+        let mod_dir = tmp.path().join("modules").join("file-mod");
+        std::fs::create_dir_all(mod_dir.join("files")).unwrap();
+        std::fs::write(mod_dir.join("files").join("app.conf"), "theme = dark\n").unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: file-mod\nspec:\n  files:\n    - source: files/app.conf\n      target: {}\n",
+                cfgd_core::to_posix_string(&target)
+            ),
+        )
+        .unwrap();
+
+        let broken_dir = tmp.path().join("modules").join("broken");
+        std::fs::create_dir_all(&broken_dir).unwrap();
+        std::fs::write(
+            broken_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: broken\nspec:\n  depends: [nope]\n",
+        )
+        .unwrap();
+
+        let mut cli = make_cli(config_path);
+        cli.state_dir = Some(tmp.path().join("state"));
+        cli.cache_dir = Some(tmp.path().join("cache"));
+        let (printer, cap) = Printer::for_test_doc();
+
+        cmd_diff(&cli, &printer, Some("file-mod"), false)
+            .expect("one module's failure must not abort another module's diff");
+        drop(printer);
+
+        let json = cap.json().expect("diff emits a data payload");
+        assert_eq!(
+            json["summary"]["envCheckFailed"],
+            serde_json::json!(true),
+            "the env verdict is undetermined and must say so: {json}"
+        );
+        assert!(
+            json["envCheckError"]
+                .as_str()
+                .is_some_and(|e| e.contains("nope") || e.contains("broken")),
+            "the error must name what could not resolve: {json}"
+        );
+        let files = json["files"].as_array().expect("files array present");
+        let target_posix = cfgd_core::to_posix_string(&target);
+        assert!(
+            files
+                .iter()
+                .any(|f| f["resourceId"] == target_posix.as_str() && f["matches"] == false),
+            "the asked-for module's file diff must survive the other module's \
+             failure: {json}"
+        );
+    }
+
     fn strip_ansi(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
         let mut chars = s.chars().peekable();
@@ -1359,6 +1451,43 @@ mod tests {
             diff_exit_code(&payload.summary),
             Some(cfgd_core::exit::ExitCode::Error),
             "--exit-code must not report success on an unknown verdict"
+        );
+    }
+
+    /// Drift AND a check that could not run: the verdict names the drift, and
+    /// the exit code is `Error` rather than `DriftDetected`. Without the
+    /// reason on the line, a reader is left with "Drift detected" and an exit
+    /// code that says something else went wrong.
+    #[test]
+    fn a_drifted_run_that_could_not_check_everything_still_names_the_gap() {
+        let payload = DiffOutput {
+            env_check_error: Some("failed to fetch git source for module 'jarvis'".to_string()),
+            summary: DiffSummary {
+                has_file_drift: true,
+                has_pkg_drift: false,
+                has_system_drift: false,
+                system_check_failed: false,
+                has_env_drift: false,
+                env_check_failed: true,
+            },
+            ..Default::default()
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_diff_doc(&payload));
+        drop(printer);
+        let doc_human = strip_ansi(&cap.human());
+        assert!(
+            doc_human.contains("Drift detected"),
+            "the drift it did find is still the verdict: {doc_human}"
+        );
+        assert!(
+            doc_human.contains("the env check could not run"),
+            "the reason for exit 1 must be on the line that carries it: {doc_human}"
+        );
+        assert_eq!(
+            diff_exit_code(&payload.summary),
+            Some(cfgd_core::exit::ExitCode::Error),
+            "an unrun check outranks ordinary drift in the exit code"
         );
     }
 
