@@ -122,7 +122,9 @@ pub enum ConfigError {
     #[error("profile not found: {name}")]
     ProfileNotFound { name: String },
 
-    #[error("key '{key}' not found in config")]
+    // No "in config" here: this variant renders under `CfgdError::Config`'s own
+    // "config error: " prefix, and the two together said config twice.
+    #[error("key '{key}' not found")]
     KeyNotFound { key: String },
 
     #[error(

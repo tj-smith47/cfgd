@@ -12180,8 +12180,8 @@ fn cmd_config_get_missing_key_fails() {
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("not found in config"),
-        "expected 'not found in config' error, got: {msg}"
+        msg == "config error: key 'nonexistent' not found",
+        "expected a missing-key error that says config once, got: {msg}"
     );
 }
 
