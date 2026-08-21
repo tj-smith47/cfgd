@@ -38,7 +38,10 @@ pub use windows::service_binpath_argv;
 /// user session bus, launchd with no `launchctl` — and each pairs it with its
 /// own subject and its own hint. Only the middle clause, the state of the
 /// machine, is shared, and a user comparing two hosts must read the same
-/// words for the same state.
+/// words for the same state. Unix-only: the Windows installer never reports
+/// this state statically — it polls the SCM and states the real post-start
+/// outcome instead.
+#[cfg(unix)]
 pub(crate) const INSTALLED_NOT_STARTED: &str = "daemon installed but not started";
 
 /// The `--state-dir` / `--runtime-dir` tokens an installed service must carry,
