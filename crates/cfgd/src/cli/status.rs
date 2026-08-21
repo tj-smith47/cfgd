@@ -718,6 +718,51 @@ fn declared_script_hooks(spec: Option<&cfgd_core::config::ScriptSpec>) -> Vec<St
     .collect()
 }
 
+/// Pair each DECLARED package with the scan verdict resolution produced for it.
+///
+/// The two lists are joined by name and by ORDER, never by name alone: one name
+/// may be declared twice under two managers (the `brew` / `brew-cask` shape),
+/// and a single slot per name kept only the last verdict and rendered both rows
+/// as that one manager. A gated entry is answered before the queue is drawn
+/// from — it produced no resolution, so consuming one would hand it the verdict
+/// belonging to its same-named sibling.
+fn join_package_state(
+    declared: &[cfgd_core::config::ModulePackageEntry],
+    scanned: &mut std::collections::HashMap<
+        String,
+        std::collections::VecDeque<(String, ModulePackagePresence)>,
+    >,
+    here: &Platform,
+) -> Vec<ModulePackageStatus> {
+    declared
+        .iter()
+        .map(|p| {
+            if !here.matches_any(&p.platforms) {
+                return ModulePackageStatus {
+                    name: p.name.clone(),
+                    manager: None,
+                    state: ModulePackagePresence::PlatformSkipped,
+                };
+            }
+            match scanned
+                .get_mut(&p.name)
+                .and_then(std::collections::VecDeque::pop_front)
+            {
+                Some((manager, state)) => ModulePackageStatus {
+                    name: p.name.clone(),
+                    manager: Some(manager),
+                    state,
+                },
+                None => ModulePackageStatus {
+                    name: p.name.clone(),
+                    manager: None,
+                    state: ModulePackagePresence::NotScanned,
+                },
+            }
+        })
+        .collect()
+}
+
 pub(super) fn cmd_status_module(
     ctx: &RunContext<'_>,
     mod_name: &str,
@@ -772,8 +817,14 @@ pub(super) fn cmd_status_module(
     // list and the two can never differ in length: a package resolution
     // dropped (a platform gate) is a package nothing asked about, not a
     // package that vanished from the report.
-    let mut scanned_packages: std::collections::HashMap<String, (String, ModulePackagePresence)> =
-        std::collections::HashMap::new();
+    // One name may be declared TWICE under two managers (the `brew` /
+    // `brew-cask` shape), so each key holds a QUEUE in resolution order and
+    // each declared row consumes its own verdict. A single slot per name kept
+    // only the last, and rendered both rows as that one manager.
+    let mut scanned_packages: std::collections::HashMap<
+        String,
+        std::collections::VecDeque<(String, ModulePackagePresence)>,
+    > = std::collections::HashMap::new();
     if do_scan {
         let platform = Platform::current();
         // Deliberately the config-FREE registry: a module resolves against the
@@ -855,10 +906,10 @@ pub(super) fn cmd_status_module(
                         // the reader asked about, whose declared count heads
                         // the report.
                         if resolved_module.name == mod_name {
-                            scanned_packages.insert(
-                                pkg.canonical_name.clone(),
-                                (pkg.manager.clone(), presence),
-                            );
+                            scanned_packages
+                                .entry(pkg.canonical_name.clone())
+                                .or_default()
+                                .push_back((pkg.manager.clone(), presence));
                         }
                     }
                 }
@@ -867,33 +918,11 @@ pub(super) fn cmd_status_module(
         )?;
     }
 
-    let package_state: Vec<ModulePackageStatus> = module
-        .spec
-        .packages
-        .iter()
-        .map(|p| match scanned_packages.get(&p.name) {
-            Some((manager, state)) => ModulePackageStatus {
-                name: p.name.clone(),
-                manager: Some(manager.clone()),
-                state: *state,
-            },
-            // A package the module's own platform gate rules out never
-            // reaches the scan, so "nobody looked" would be a lie about a
-            // question that IS answered.
-            None if !cfgd_core::platform::Platform::current().matches_any(&p.platforms) => {
-                ModulePackageStatus {
-                    name: p.name.clone(),
-                    manager: None,
-                    state: ModulePackagePresence::PlatformSkipped,
-                }
-            }
-            None => ModulePackageStatus {
-                name: p.name.clone(),
-                manager: None,
-                state: ModulePackagePresence::NotScanned,
-            },
-        })
-        .collect();
+    let package_state = join_package_state(
+        &module.spec.packages,
+        &mut scanned_packages,
+        cfgd_core::platform::Platform::current(),
+    );
 
     let deployed_files: Vec<ModuleFileStatus> = state
         .module_deployed_files(mod_name)?
@@ -1788,6 +1817,66 @@ mod tests {
             output.contains("installed"),
             "should print state-store status, got: {output}"
         );
+    }
+
+    fn declared(name: &str, platforms: &[&str]) -> cfgd_core::config::ModulePackageEntry {
+        cfgd_core::config::ModulePackageEntry {
+            name: name.to_string(),
+            platforms: platforms.iter().map(|p| (*p).to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// One name declared twice under two managers is two rows with two
+    /// verdicts. Keyed by name alone, the second resolution overwrote the
+    /// first and both rows rendered the same manager.
+    #[test]
+    fn two_declarations_of_one_name_each_keep_their_own_manager() {
+        let mut scanned = std::collections::HashMap::new();
+        scanned.insert(
+            "docker".to_string(),
+            std::collections::VecDeque::from(vec![
+                ("brew".to_string(), ModulePackagePresence::Installed),
+                ("brew-cask".to_string(), ModulePackagePresence::NotInstalled),
+            ]),
+        );
+
+        let rows = join_package_state(
+            &[declared("docker", &[]), declared("docker", &[])],
+            &mut scanned,
+            Platform::current(),
+        );
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].manager.as_deref(), Some("brew"));
+        assert_eq!(rows[0].state, ModulePackagePresence::Installed);
+        assert_eq!(rows[1].manager.as_deref(), Some("brew-cask"));
+        assert_eq!(rows[1].state, ModulePackagePresence::NotInstalled);
+    }
+
+    /// A gated entry resolved to nothing, so it must not consume the verdict
+    /// its same-named sibling earned.
+    #[test]
+    fn a_gated_declaration_does_not_consume_its_siblings_verdict() {
+        let mut scanned = std::collections::HashMap::new();
+        scanned.insert(
+            "docker".to_string(),
+            std::collections::VecDeque::from(vec![(
+                "brew".to_string(),
+                ModulePackagePresence::Installed,
+            )]),
+        );
+
+        let rows = join_package_state(
+            &[declared("docker", &["plan9"]), declared("docker", &[])],
+            &mut scanned,
+            Platform::current(),
+        );
+
+        assert_eq!(rows[0].state, ModulePackagePresence::PlatformSkipped);
+        assert_eq!(rows[0].manager, None);
+        assert_eq!(rows[1].manager.as_deref(), Some("brew"));
+        assert_eq!(rows[1].state, ModulePackagePresence::Installed);
     }
 
     /// A package the module's own `platforms` gate rules out is not "not

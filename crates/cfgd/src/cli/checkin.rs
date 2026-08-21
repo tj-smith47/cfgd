@@ -597,13 +597,18 @@ spec:
             "a gateway escape reached the terminal: {human:?}"
         );
         let plain = cfgd_core::output::strip_ansi(&human);
-        assert!(
-            plain.contains("Server status"),
-            "the kv row must still render: {plain:?}"
-        );
-        assert!(
-            plain.contains("ok"),
-            "the status must survive the fold as text: {plain:?}"
+        // Pin the VALUE against its own row: a bare `contains("ok")` matches
+        // any line in the render carrying those two letters, so it would pass
+        // with the status dropped entirely.
+        let row = plain
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("Server status"))
+            .unwrap_or_else(|| panic!("the kv row must still render: {plain:?}"));
+        assert_eq!(
+            row.trim_start_matches("Server status").trim(),
+            "ok",
+            "the row's whole value is the status, with the escapes gone: {row:?}"
         );
     }
 
