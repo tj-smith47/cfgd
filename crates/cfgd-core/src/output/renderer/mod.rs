@@ -76,6 +76,9 @@ impl TopGroup {
 pub(crate) struct KvAnchor {
     /// The indent depth the rows were written at.
     pub(crate) depth: usize,
+    /// No section was open when the rows were written, so the block is a
+    /// top-level group and owes the next top-level emission a blank line.
+    pub(crate) at_top_level: bool,
     /// The rows followed a top-level heading with no section open, so they
     /// bind to it: one level deeper, and no blank line between.
     pub(crate) bound_to_heading: bool,
@@ -121,11 +124,11 @@ pub(crate) struct RenderState {
 impl RenderState {
     /// The anchor a kv row written right now belongs to.
     pub(crate) fn kv_anchor_here(&self) -> KvAnchor {
+        let at_top_level = self.section_stack.is_empty();
         KvAnchor {
             depth: self.indent_depth,
-            bound_to_heading: self.indent_depth == 0
-                && self.section_stack.is_empty()
-                && self.last_was_top_heading,
+            at_top_level,
+            bound_to_heading: at_top_level && self.indent_depth == 0 && self.last_was_top_heading,
         }
     }
 
@@ -214,7 +217,17 @@ impl RenderState {
     /// Close a top-level group emission: the next top-level emit gets one
     /// blank line unless `open_top_group` decides it continues this group.
     pub(crate) fn mark_top_level_group(&mut self, kind: TopGroup) {
-        if self.section_stack.is_empty() {
+        self.mark_group_written_at_top_level(kind, self.section_stack.is_empty());
+    }
+
+    /// `mark_top_level_group` for an emission whose top-levelness is a fact
+    /// about when it was WRITTEN rather than about the stack as it stands now.
+    /// A buffered kv block drains arbitrarily later — after the following
+    /// section pushed its frame — and judged there it marks no group at all,
+    /// so the section header it precedes gets no blank line of its own while a
+    /// status line written in the same place gets one.
+    pub(crate) fn mark_group_written_at_top_level(&mut self, kind: TopGroup, at_top_level: bool) {
+        if at_top_level {
             self.blank_pending = true;
             self.last_top_group = Some(kind);
             self.last_top_in_doc = self.doc_depth > 0;
@@ -676,7 +689,7 @@ impl Emitting<'_> {
         let pairs = std::mem::take(&mut self.state.kv_buffer);
         let anchor = self.state.kv_anchor.take();
         let depth = anchor.map_or(self.state.indent_depth, |a| a.depth);
-        self.render_kv_block_anchored(depth, &pairs, anchor.map(|a| a.bound_to_heading));
+        self.render_kv_block_anchored(depth, &pairs, anchor);
     }
 
     pub(crate) fn open_top_group(&mut self, kind: TopGroup) {
@@ -685,6 +698,11 @@ impl Emitting<'_> {
 
     pub(crate) fn mark_top_level_group(&mut self, kind: TopGroup) {
         self.state.mark_top_level_group(kind);
+    }
+
+    pub(crate) fn mark_group_written_at_top_level(&mut self, kind: TopGroup, at_top_level: bool) {
+        self.state
+            .mark_group_written_at_top_level(kind, at_top_level);
     }
 
     pub(crate) fn clear_blank_pending(&mut self) {

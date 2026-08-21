@@ -108,26 +108,27 @@ impl Emitting<'_> {
         indent_prefix(effective_depth)
     }
 
-    /// Collect one aligned kv block at `depth`, judging the heading binding
-    /// from the state as it stands now — for a block handed in whole (the
-    /// `Doc` render path), where now IS when its rows were written.
+    /// Collect one aligned kv block at `depth`, judging its placement from the
+    /// state as it stands now — for a block handed in whole (the `Doc` render
+    /// path), where now IS when its rows were written.
     pub(crate) fn render_kv_block(&mut self, depth: usize, pairs: &[KvPair]) {
         self.render_kv_block_anchored(depth, pairs, None);
     }
 
-    /// Collect one aligned kv block at `depth`, with `bound_to_heading`
-    /// carrying the binding decision the rows were written under. `None`
-    /// judges it from the current state.
+    /// Collect one aligned kv block at `depth`, with `anchor` carrying the
+    /// placement the rows were written under: whether they bind to a heading
+    /// above them, and whether they are a top-level group that owes the next
+    /// emission a blank line. `None` judges both from the current state.
     pub(crate) fn render_kv_block_anchored(
         &mut self,
         depth: usize,
         pairs: &[KvPair],
-        bound_to_heading: Option<bool>,
+        anchor: Option<super::KvAnchor>,
     ) {
         if self.verbosity == Verbosity::Quiet || pairs.is_empty() {
             return;
         }
-        let prefix = self.open_aligned_block(depth, bound_to_heading);
+        let prefix = self.open_aligned_block(depth, anchor.map(|a| a.bound_to_heading));
         // Both halves of a row name things cfgd did not author — a gateway's
         // device id, a source manifest's description, a module's own file
         // paths — so both are folded here rather than at the call sites.
@@ -157,7 +158,12 @@ impl Emitting<'_> {
                 self.out.push(format!("{}  {}", prefix, v));
             }
         }
-        self.mark_top_level_group(super::TopGroup::KvBlock);
+        match anchor {
+            Some(a) => {
+                self.mark_group_written_at_top_level(super::TopGroup::KvBlock, a.at_top_level)
+            }
+            None => self.mark_top_level_group(super::TopGroup::KvBlock),
+        }
     }
 
     /// The rendered value column of one row: the folded value, plus the
@@ -482,7 +488,9 @@ mod tests {
     /// leaves the section header with none of its own.
     ///
     /// `cfgd checkin`'s drift path is the live shape: heading, two kvs, then
-    /// `printer.section("Drift")`.
+    /// `printer.section("Drift")`. The blank ahead of `Drift` is the trailing
+    /// half of the same judged-when-written rule — see
+    /// `a_top_level_kv_block_separates_from_the_section_that_follows_it`.
     #[test]
     fn kv_rows_bind_to_their_heading_even_when_a_section_opens_before_the_drain() {
         let (r, sink, buf) = capture();
@@ -512,6 +520,52 @@ mod tests {
                 "Checkin",
                 "  Server status   ok",
                 "  Config changed  false",
+                "",
+                "Drift",
+                "  ✓ 3 drift items reported",
+            ],
+            "got: {out:?}"
+        );
+    }
+
+    /// The trailing half: a kv block written at the TOP LEVEL is a top-level
+    /// group, so the section header after it gets the one blank line every
+    /// other top-level group gets. Judged at drain time the answer is wrong in
+    /// exactly the same way the binding was — the following section has
+    /// already pushed its frame, so the block marks no group at all and its
+    /// rows run straight into the header (`cfgd checkin`'s drift path against
+    /// its no-drift path, which ends in a status line and is spaced).
+    ///
+    /// No heading here on purpose: the binding under test is the block's own,
+    /// not one inherited from a heading above it.
+    #[test]
+    fn a_top_level_kv_block_separates_from_the_section_that_follows_it() {
+        let (r, sink, buf) = capture();
+        r.render_kv("Server status", "ok");
+        r.render_kv("Config changed", "false");
+        r.render_section_open("Drift", /*keep_when_empty=*/ true);
+        r.render_status(
+            &sink,
+            1,
+            &StatusFields {
+                role: Role::Ok,
+                subject: "3 drift items reported",
+                detail: None,
+                duration: None,
+                target: None,
+                subject_style: None,
+                detail_style: None,
+            },
+        );
+        r.render_section_close(&sink);
+        let out = crate::test_helpers::captured_text(&buf);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines,
+            vec![
+                "Server status   ok",
+                "Config changed  false",
+                "",
                 "Drift",
                 "  ✓ 3 drift items reported",
             ],
