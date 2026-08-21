@@ -42,6 +42,13 @@ impl Renderer {
     /// `flush_kv_buffer`.
     pub(crate) fn render_kv(&self, key: &str, value: &str) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        // The first row anchors the block. Placement is a fact about where
+        // the rows were WRITTEN, and the drain can happen after a section has
+        // opened — which moves the indent and empties the heading binding out
+        // from under rows that belong to the heading.
+        if s.kv_buffer.is_empty() {
+            s.kv_anchor = Some(s.kv_anchor_here());
+        }
         s.kv_buffer.push(KvPair::new(key, value));
     }
 
@@ -74,18 +81,19 @@ impl Emitting<'_> {
     /// `render_command_list`): flush deferred section headers so the block
     /// lands under them, not above; honor blank-pending/leading; and consume
     /// the heading-just-emitted flag — when the previous emission was a
-    /// top-level heading and we're still at root, re-anchor this block one
+    /// top-level heading and the block is still at root, re-anchor it one
     /// level deeper so it visually nests under the heading, SUPPRESSING the
     /// would-be blank between them (heading + block render as one bound
     /// unit). Returns the depth-appropriate indent prefix. Column width and
     /// glue are the one thing each caller still owns — those differ per
     /// block kind, which is the whole justification for two callers sharing
     /// one preamble instead of one renderer for both.
-    fn open_aligned_block(&mut self, depth: usize) -> String {
+    fn open_aligned_block(&mut self, depth: usize, bound_to_heading: Option<bool>) -> String {
         self.flush_section_headers();
 
-        let bump =
-            depth == 0 && self.state.section_stack.is_empty() && self.state.last_was_top_heading;
+        let bump = bound_to_heading.unwrap_or(
+            depth == 0 && self.state.section_stack.is_empty() && self.state.last_was_top_heading,
+        );
         self.state.last_was_top_heading = false;
         if self.state.leading {
             self.state.leading = false;
@@ -100,12 +108,26 @@ impl Emitting<'_> {
         indent_prefix(effective_depth)
     }
 
-    /// Collect one aligned kv block at `depth`.
+    /// Collect one aligned kv block at `depth`, judging the heading binding
+    /// from the state as it stands now — for a block handed in whole (the
+    /// `Doc` render path), where now IS when its rows were written.
     pub(crate) fn render_kv_block(&mut self, depth: usize, pairs: &[KvPair]) {
+        self.render_kv_block_anchored(depth, pairs, None);
+    }
+
+    /// Collect one aligned kv block at `depth`, with `bound_to_heading`
+    /// carrying the binding decision the rows were written under. `None`
+    /// judges it from the current state.
+    pub(crate) fn render_kv_block_anchored(
+        &mut self,
+        depth: usize,
+        pairs: &[KvPair],
+        bound_to_heading: Option<bool>,
+    ) {
         if self.verbosity == Verbosity::Quiet || pairs.is_empty() {
             return;
         }
-        let prefix = self.open_aligned_block(depth);
+        let prefix = self.open_aligned_block(depth, bound_to_heading);
         // Both halves of a row name things cfgd did not author — a gateway's
         // device id, a source manifest's description, a module's own file
         // paths — so both are folded here rather than at the call sites.
@@ -174,7 +196,7 @@ impl Emitting<'_> {
         if self.verbosity == Verbosity::Quiet || pairs.is_empty() {
             return;
         }
-        let prefix = self.open_aligned_block(depth);
+        let prefix = self.open_aligned_block(depth, None);
         // Folded before the key column is measured, for the same reason
         // `render_kv_block` folds: the width has to describe the text that
         // actually renders.
@@ -201,7 +223,8 @@ mod tests {
 
     use super::super::{Renderer, StringSink};
 
-    use crate::output::{KvPair, Theme, Verbosity};
+    use crate::output::renderer::StatusFields;
+    use crate::output::{KvPair, Role, Theme, Verbosity};
 
     fn capture() -> (Renderer, StringSink, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
@@ -446,6 +469,52 @@ mod tests {
         assert_eq!(
             lines,
             vec!["Next Steps", "  cfgd apply — apply configuration"],
+            "got: {out:?}"
+        );
+    }
+
+    /// Rows written under a top-level heading bind to it even when the drain
+    /// is not reached until a section has opened. The buffer is flushed by
+    /// the NEXT non-kv emission, and when that emission is the first line of
+    /// a section, `indent_depth` has already moved and `section_stack` is no
+    /// longer empty — so a binding judged at drain time reads the rows as
+    /// belonging to nothing, spends the blank the heading suppresses, and
+    /// leaves the section header with none of its own.
+    ///
+    /// `cfgd checkin`'s drift path is the live shape: heading, two kvs, then
+    /// `printer.section("Drift")`.
+    #[test]
+    fn kv_rows_bind_to_their_heading_even_when_a_section_opens_before_the_drain() {
+        let (r, sink, buf) = capture();
+        r.render_heading(&sink, "Checkin");
+        r.render_kv("Server status", "ok");
+        r.render_kv("Config changed", "false");
+        r.render_section_open("Drift", /*keep_when_empty=*/ true);
+        r.render_status(
+            &sink,
+            1,
+            &StatusFields {
+                role: Role::Ok,
+                subject: "3 drift items reported",
+                detail: None,
+                duration: None,
+                target: None,
+                subject_style: None,
+                detail_style: None,
+            },
+        );
+        r.render_section_close(&sink);
+        let out = crate::test_helpers::captured_text(&buf);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines,
+            vec![
+                "Checkin",
+                "  Server status   ok",
+                "  Config changed  false",
+                "Drift",
+                "  ✓ 3 drift items reported",
+            ],
             "got: {out:?}"
         );
     }

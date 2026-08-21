@@ -70,6 +70,17 @@ impl TopGroup {
 /// `SectionGuard`s may share the same `&Printer` and write concurrently
 /// from one thread (drop ordering is single-threaded but borrow-checker
 /// can't see that).
+/// Where a buffered kv block belongs, captured at the moment its first row
+/// was written rather than at the moment it drains.
+#[derive(Clone, Copy)]
+pub(crate) struct KvAnchor {
+    /// The indent depth the rows were written at.
+    pub(crate) depth: usize,
+    /// The rows followed a top-level heading with no section open, so they
+    /// bind to it: one level deeper, and no blank line between.
+    pub(crate) bound_to_heading: bool,
+}
+
 pub(crate) struct RenderState {
     /// Current indent depth. Section open = +1, section close = -1.
     indent_depth: usize,
@@ -80,6 +91,12 @@ pub(crate) struct RenderState {
     leading: bool,
     /// Buffered kvs awaiting a non-kv emission to flush as one aligned block.
     kv_buffer: Vec<crate::output::KvPair>,
+    /// Where the buffered rows were WRITTEN, captured when the first one was
+    /// buffered. The block's placement is a fact about the moment its rows
+    /// were emitted, and the drain can happen arbitrarily later — after a
+    /// section frame has been pushed, which moves `indent_depth` and empties
+    /// the heading binding out from under rows that belong to the heading.
+    kv_anchor: Option<KvAnchor>,
     pub(crate) section_stack: Vec<crate::output::renderer::section::SectionFrame>,
     /// True iff the most recent emission was a top-level heading and no other
     /// emission has happened since. Consumed by the next top-level kv_block,
@@ -102,12 +119,23 @@ pub(crate) struct RenderState {
 }
 
 impl RenderState {
+    /// The anchor a kv row written right now belongs to.
+    pub(crate) fn kv_anchor_here(&self) -> KvAnchor {
+        KvAnchor {
+            depth: self.indent_depth,
+            bound_to_heading: self.indent_depth == 0
+                && self.section_stack.is_empty()
+                && self.last_was_top_heading,
+        }
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             indent_depth: 0,
             blank_pending: false,
             leading: true,
             kv_buffer: Vec::new(),
+            kv_anchor: None,
             section_stack: Vec::new(),
             last_was_top_heading: false,
             last_top_group: None,
@@ -642,8 +670,9 @@ impl Emitting<'_> {
             return;
         }
         let pairs = std::mem::take(&mut self.state.kv_buffer);
-        let depth = self.state.indent_depth;
-        self.render_kv_block(depth, &pairs);
+        let anchor = self.state.kv_anchor.take();
+        let depth = anchor.map_or(self.state.indent_depth, |a| a.depth);
+        self.render_kv_block_anchored(depth, &pairs, anchor.map(|a| a.bound_to_heading));
     }
 
     pub(crate) fn open_top_group(&mut self, kind: TopGroup) {

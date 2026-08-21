@@ -164,7 +164,7 @@ fn checkin_bridge_one_blank_line() {
     printer.heading("Checkin");
     {
         let gateway_sec = printer.section("Gateway");
-        gateway_sec.status_simple(Role::Ok, "server status: ok");
+        gateway_sec.status_simple(Role::Ok, "Checked in");
     }
 
     let doc = Doc::new()

@@ -1,6 +1,6 @@
 Checkin
 
 Gateway
-  ✓ server status: ok
+  ✓ Checked in
 
 ✓ Checkin complete
