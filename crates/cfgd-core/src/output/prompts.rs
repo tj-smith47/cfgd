@@ -124,7 +124,16 @@ impl Printer {
         // character, and silently answer with the first one instead.
         let shown_options: Vec<String> = options.iter().map(|o| shown(o)).collect();
         let chosen = inquire::Select::new(&shown(message), shown_options).raw_prompt()?;
-        Ok(options.get(chosen.index).unwrap_or(&options[0]))
+        options.get(chosen.index).ok_or_else(|| {
+            inquire::InquireError::Custom(
+                format!(
+                    "inquire returned index {} out of range for {} option(s)",
+                    chosen.index,
+                    options.len()
+                )
+                .into(),
+            )
+        })
     }
 
     pub fn prompt_text(
