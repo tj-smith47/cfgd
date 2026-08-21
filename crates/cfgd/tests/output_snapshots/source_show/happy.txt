@@ -26,11 +26,15 @@ Modules
   ⊙ shell
 
 Policy
-  Require Signed Commits  true
+  Require Signed Commits  true (bypassed: security.allowUnsigned)
   Scripts Allowed         false
   Secrets Read Allowed    false
   System Changes Allowed  false
   Allowed Target Paths    ~/.config/**, ~/.bashrc
+  Encryption
+    Required Targets  secrets/**
+    Backend           sops
+    Mode              Always
 
 Manifest
   Name         team-config

@@ -27,9 +27,17 @@
       "~/.config/**",
       "~/.bashrc"
     ],
+    "encryption": {
+      "backend": "sops",
+      "mode": "Always",
+      "requiredTargets": [
+        "secrets/**"
+      ]
+    },
     "requireSignedCommits": true,
     "scriptsAllowed": false,
     "secretsReadAllowed": false,
+    "signedCommitsBypassed": true,
     "systemChangesAllowed": false
   },
   "priority": 100,

@@ -256,11 +256,13 @@ pub struct SystemCheckError {
     pub error: String,
 }
 
-/// One declared env var or alias whose deployed line diverges from what
-/// `spec.env`/`spec.aliases` declares. `kind` is `"env-var"` or `"alias"`,
-/// matching `cfgd_core::reconciler::VerifyResult::resource_type` for this
-/// check byte-for-byte, so a consumer joining this against a `cfgd verify`
-/// or recorded-drift row needs no second vocabulary.
+/// One drifted env row: a declared env var or alias whose deployed line
+/// diverges from what `spec.env`/`spec.aliases` declares (`kind` is
+/// `"env-var"` or `"alias"`), the primary managed env file itself gone stale
+/// (`kind` `"env"`), or a shell rc's `cfgd` source line missing (`kind`
+/// `"env-rc"`). Matches `cfgd_core::reconciler::VerifyResult::resource_type`
+/// for this check byte-for-byte, so a consumer joining this against a
+/// `cfgd verify` or recorded-drift row needs no second vocabulary.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnvDriftOutput {
@@ -768,7 +770,10 @@ pub struct SourceShowOutput {
     /// `policy.constraints` with this subscriber's overrides
     /// (`subscription.allowScripts`, `subscription.requireSignedCommits`).
     /// `None` when the manifest could not be loaded, since the constraints it
-    /// would combine with are unknown.
+    /// would combine with are unknown. Omitted from the wire in that case
+    /// (matches the envelope discipline of dropping empty fields), rather
+    /// than serializing as a `null` a consumer has to special-case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<SourcePolicyOutput>,
 }
 
@@ -777,8 +782,16 @@ pub struct SourceShowOutput {
 pub struct SourcePolicyOutput {
     /// Whether this source's HEAD commit must carry a valid signature — the
     /// OR of the subscriber's own `subscription.requireSignedCommits` and the
-    /// manifest's `policy.constraints.requireSignedCommits`.
+    /// manifest's `policy.constraints.requireSignedCommits`. This is the
+    /// DEMAND, not the enforcement: `spec.security.allowUnsigned` can bypass
+    /// it entirely, which `signed_commits_bypassed` says explicitly rather
+    /// than leaving this flag to read as unqualified enforcement.
     pub require_signed_commits: bool,
+    /// Whether `spec.security.allowUnsigned` bypasses `require_signed_commits`
+    /// for this subscriber — always `false` when the demand above is itself
+    /// `false`, since there is nothing to bypass.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub signed_commits_bypassed: bool,
     /// Whether this source's lifecycle scripts run — the subscriber's
     /// `allowScripts` opt-in OR the manifest not constraining scripts at all.
     pub scripts_allowed: bool,
@@ -790,6 +803,25 @@ pub struct SourcePolicyOutput {
     /// to. Empty means no restriction.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_target_paths: Vec<String>,
+    /// Encryption the manifest's `policy.constraints.encryption` imposes on
+    /// files this source delivers. `None` when the manifest declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<SourceEncryptionOutput>,
+}
+
+/// The `policy.constraints.encryption` block, reshaped for display —
+/// `cfgd_core::config::EncryptionConstraint` with its enum/optional fields
+/// rendered as plain strings so a `source show` consumer needs no second
+/// vocabulary for the same mode/backend names the manifest schema documents.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceEncryptionOutput {
+    /// Glob patterns or explicit paths that must be encrypted.
+    pub required_targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1788,10 +1820,16 @@ mod tests {
             modules: vec!["dev-tools".to_string()],
             policy: Some(SourcePolicyOutput {
                 require_signed_commits: true,
+                signed_commits_bypassed: true,
                 scripts_allowed: false,
                 secrets_read_allowed: false,
                 system_changes_allowed: false,
                 allowed_target_paths: vec!["~/.config/**".to_string()],
+                encryption: Some(crate::cli::output_types::SourceEncryptionOutput {
+                    required_targets: vec!["secrets/**".to_string()],
+                    backend: Some("sops".to_string()),
+                    mode: Some("Always".to_string()),
+                }),
             }),
         };
         let json = serde_json::to_value(&v).unwrap();
@@ -1808,12 +1846,45 @@ mod tests {
         assert_eq!(json["state"]["status"], json!("fresh"));
         assert_eq!(json["managedResources"][0]["resourceType"], json!("Module"));
         assert_eq!(json["policy"]["requireSignedCommits"], json!(true));
+        assert_eq!(json["policy"]["signedCommitsBypassed"], json!(true));
         assert_eq!(json["policy"]["scriptsAllowed"], json!(false));
         assert_eq!(json["policy"]["secretsReadAllowed"], json!(false));
         assert_eq!(json["policy"]["systemChangesAllowed"], json!(false));
         assert_eq!(
             json["policy"]["allowedTargetPaths"],
             json!(["~/.config/**"])
+        );
+        assert_eq!(
+            json["policy"]["encryption"]["requiredTargets"],
+            json!(["secrets/**"])
+        );
+        assert_eq!(json["policy"]["encryption"]["backend"], json!("sops"));
+        assert_eq!(json["policy"]["encryption"]["mode"], json!("Always"));
+    }
+
+    /// `signedCommitsBypassed` and `encryption` both take `skip_serializing_if`
+    /// — omitted from the wire rather than serialized as `false`/`null` when
+    /// there is nothing to report, matching the envelope discipline every
+    /// other optional field on this struct already follows.
+    #[test]
+    fn source_policy_output_omits_bypass_and_encryption_when_absent() {
+        let policy = SourcePolicyOutput {
+            require_signed_commits: false,
+            signed_commits_bypassed: false,
+            scripts_allowed: true,
+            secrets_read_allowed: true,
+            system_changes_allowed: true,
+            allowed_target_paths: Vec::new(),
+            encryption: None,
+        };
+        let json = serde_json::to_value(&policy).unwrap();
+        assert!(
+            json.get("signedCommitsBypassed").is_none(),
+            "false bypass must be omitted: {json}"
+        );
+        assert!(
+            json.get("encryption").is_none(),
+            "absent encryption constraint must be omitted: {json}"
         );
     }
 
@@ -1835,10 +1906,10 @@ mod tests {
             policy: None,
         };
         let json = serde_json::to_value(&v).unwrap();
-        assert_eq!(
-            json["policy"],
-            Value::Null,
-            "no manifest means no effective policy to report"
+        assert!(
+            json.get("policy").is_none(),
+            "no manifest means no effective policy to report — the key must be \
+             omitted, not serialized as null: {json}"
         );
     }
 

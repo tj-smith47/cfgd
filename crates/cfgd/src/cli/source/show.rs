@@ -103,11 +103,19 @@ pub fn build_source_show_doc(
     // this instead of opening its manifest YAML.
     if let Some(ref policy) = output.policy {
         doc = doc.section("Policy", |s| {
-            let mut s = s
-                .kv(
-                    "Require Signed Commits",
-                    policy.require_signed_commits.to_string(),
+            // `allowUnsigned` bypasses the demand entirely — the screen must
+            // say so beside the flag, or `true` reads as enforced when the
+            // check never runs.
+            let require_signed_commits_value = if policy.signed_commits_bypassed {
+                format!(
+                    "{} (bypassed: security.allowUnsigned)",
+                    policy.require_signed_commits
                 )
+            } else {
+                policy.require_signed_commits.to_string()
+            };
+            let mut s = s
+                .kv("Require Signed Commits", require_signed_commits_value)
                 .kv("Scripts Allowed", policy.scripts_allowed.to_string())
                 .kv(
                     "Secrets Read Allowed",
@@ -122,6 +130,21 @@ pub fn build_source_show_doc(
                     "Allowed Target Paths",
                     policy.allowed_target_paths.join(", "),
                 );
+            }
+            if let Some(ref enc) = policy.encryption {
+                s = s.subsection("Encryption", |sub| {
+                    let mut sub = sub;
+                    if !enc.required_targets.is_empty() {
+                        sub = sub.kv("Required Targets", enc.required_targets.join(", "));
+                    }
+                    if let Some(ref backend) = enc.backend {
+                        sub = sub.kv("Backend", backend);
+                    }
+                    if let Some(ref mode) = enc.mode {
+                        sub = sub.kv("Mode", mode);
+                    }
+                    sub
+                });
             }
             s
         });
@@ -183,18 +206,34 @@ pub fn build_source_show_doc(
 /// What `source` enforces, combining the subscriber's own overrides with the
 /// manifest's `policy.constraints` — the derivation `cmd_source_show` renders
 /// and serializes so a `source show` reader never has to open the manifest
-/// YAML to answer "what is enforced here".
+/// YAML to answer "what is enforced here". `allow_unsigned` is the
+/// subscriber's own `spec.security.allowUnsigned`, which bypasses signature
+/// verification entirely regardless of what `require_signed_commits`
+/// demands — the returned `require_signed_commits` states the DEMAND, and
+/// `signed_commits_bypassed` states whether this subscriber actually
+/// enforces it, so the screen never renders an unqualified `true` for a
+/// check that never runs.
 fn effective_source_policy(
     source_spec: &SourceSpec,
     constraints: &SourceConstraints,
+    allow_unsigned: bool,
 ) -> SourcePolicyOutput {
+    let require_signed_commits =
+        source_spec.requires_signed_commits(constraints.require_signed_commits);
     SourcePolicyOutput {
-        require_signed_commits: source_spec
-            .requires_signed_commits(constraints.require_signed_commits),
+        require_signed_commits,
+        signed_commits_bypassed: require_signed_commits && allow_unsigned,
         scripts_allowed: source_spec.subscription.allow_scripts || !constraints.no_scripts,
         secrets_read_allowed: !constraints.no_secrets_read,
         system_changes_allowed: constraints.allow_system_changes,
         allowed_target_paths: constraints.allowed_target_paths.clone(),
+        encryption: constraints.encryption.as_ref().map(|enc| {
+            crate::cli::output_types::SourceEncryptionOutput {
+                required_targets: enc.required_targets.clone(),
+                backend: enc.backend.clone(),
+                mode: enc.mode.as_ref().map(|m| m.as_str().to_string()),
+            }
+        }),
     }
 }
 
@@ -319,9 +358,10 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
         policy: None,
     };
 
+    let allow_unsigned = cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned);
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
-    mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
+    mgr.set_allow_unsigned(allow_unsigned);
     let silent_printer = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
     // `show` is a read path (Report mode, output-module.md): it renders
     // whatever `add`/`update`/`sync` already cached rather than fetching, so
@@ -356,6 +396,7 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
         output.policy = Some(effective_source_policy(
             source_spec,
             &m.spec.policy.constraints,
+            allow_unsigned,
         ));
     }
 
@@ -384,20 +425,28 @@ mod tests {
             ..SourceConstraints::default()
         };
         assert!(
-            effective_source_policy(&source_spec(false, false), &manifest_only)
+            effective_source_policy(&source_spec(false, false), &manifest_only, false)
                 .require_signed_commits,
             "the manifest alone must be enough"
         );
 
         assert!(
-            effective_source_policy(&source_spec(false, true), &SourceConstraints::default())
-                .require_signed_commits,
+            effective_source_policy(
+                &source_spec(false, true),
+                &SourceConstraints::default(),
+                false
+            )
+            .require_signed_commits,
             "the subscriber alone must be enough"
         );
 
         assert!(
-            !effective_source_policy(&source_spec(false, false), &SourceConstraints::default())
-                .require_signed_commits,
+            !effective_source_policy(
+                &source_spec(false, false),
+                &SourceConstraints::default(),
+                false
+            )
+            .require_signed_commits,
             "neither side asking must stay false"
         );
     }
@@ -405,14 +454,22 @@ mod tests {
     #[test]
     fn scripts_allowed_is_the_subscribers_opt_in_or_no_constraint_at_all() {
         assert!(
-            !effective_source_policy(&source_spec(false, false), &SourceConstraints::default())
-                .scripts_allowed,
+            !effective_source_policy(
+                &source_spec(false, false),
+                &SourceConstraints::default(),
+                false
+            )
+            .scripts_allowed,
             "the default constraint (no_scripts: true) with no opt-in must disallow"
         );
 
         assert!(
-            effective_source_policy(&source_spec(true, false), &SourceConstraints::default())
-                .scripts_allowed,
+            effective_source_policy(
+                &source_spec(true, false),
+                &SourceConstraints::default(),
+                false
+            )
+            .scripts_allowed,
             "the subscriber's own opt-in must override the constraint"
         );
 
@@ -421,7 +478,8 @@ mod tests {
             ..SourceConstraints::default()
         };
         assert!(
-            effective_source_policy(&source_spec(false, false), &unconstrained).scripts_allowed,
+            effective_source_policy(&source_spec(false, false), &unconstrained, false)
+                .scripts_allowed,
             "a manifest that does not constrain scripts needs no opt-in"
         );
     }
@@ -434,12 +492,72 @@ mod tests {
             allowed_target_paths: vec!["~/.config/**".to_string()],
             ..SourceConstraints::default()
         };
-        let policy = effective_source_policy(&source_spec(false, false), &constraints);
+        let policy = effective_source_policy(&source_spec(false, false), &constraints, false);
         assert!(policy.secrets_read_allowed);
         assert!(policy.system_changes_allowed);
         assert_eq!(
             policy.allowed_target_paths,
             vec!["~/.config/**".to_string()]
         );
+    }
+
+    /// `security.allowUnsigned` bypasses `require_signed_commits` for THIS
+    /// subscriber, and the payload must say so explicitly rather than
+    /// leaving `require_signed_commits: true` to read as enforced when the
+    /// check never runs. Bypassed only when there was a demand to bypass —
+    /// `allow_unsigned` with no demand at all reports no bypass, since
+    /// nothing was skipped.
+    #[test]
+    fn allow_unsigned_bypasses_the_demand_and_says_so() {
+        let manifest_demands = SourceConstraints {
+            require_signed_commits: true,
+            ..SourceConstraints::default()
+        };
+        let bypassed = effective_source_policy(&source_spec(false, false), &manifest_demands, true);
+        assert!(bypassed.require_signed_commits, "the demand still stands");
+        assert!(
+            bypassed.signed_commits_bypassed,
+            "allowUnsigned must say it bypassed the demand"
+        );
+
+        let enforced =
+            effective_source_policy(&source_spec(false, false), &manifest_demands, false);
+        assert!(
+            !enforced.signed_commits_bypassed,
+            "without allowUnsigned the demand is enforced, not bypassed"
+        );
+
+        let no_demand = effective_source_policy(
+            &source_spec(false, false),
+            &SourceConstraints::default(),
+            true,
+        );
+        assert!(
+            !no_demand.signed_commits_bypassed,
+            "allowUnsigned with no demand at all bypasses nothing"
+        );
+    }
+
+    /// The manifest's `policy.constraints.encryption` must reach the
+    /// rendered/serialized policy — a prior revision omitted it entirely,
+    /// so `source show` never told an operator a source requires encrypted
+    /// files at all.
+    #[test]
+    fn encryption_constraint_passes_through_to_the_policy_output() {
+        let constraints = SourceConstraints {
+            encryption: Some(cfgd_core::config::EncryptionConstraint {
+                required_targets: vec!["secrets/**".to_string()],
+                backend: Some("sops".to_string()),
+                mode: Some(cfgd_core::config::EncryptionMode::Always),
+            }),
+            ..SourceConstraints::default()
+        };
+        let policy = effective_source_policy(&source_spec(false, false), &constraints, false);
+        let enc = policy
+            .encryption
+            .expect("encryption constraint must pass through");
+        assert_eq!(enc.required_targets, vec!["secrets/**".to_string()]);
+        assert_eq!(enc.backend.as_deref(), Some("sops"));
+        assert_eq!(enc.mode.as_deref(), Some("Always"));
     }
 }

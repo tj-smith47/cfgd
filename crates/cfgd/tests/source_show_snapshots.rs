@@ -23,7 +23,8 @@ use std::path::{Path, PathBuf};
 
 use cfgd::cli::error::render_cli_error;
 use cfgd::cli::output_types::{
-    SourcePolicyOutput, SourceResourceEntry, SourceShowOutput, SourceStateInfo,
+    SourceEncryptionOutput, SourcePolicyOutput, SourceResourceEntry, SourceShowOutput,
+    SourceStateInfo,
 };
 use cfgd::cli::source::show::{build_source_not_found_error, build_source_show_doc};
 use cfgd_core::config::{
@@ -70,12 +71,24 @@ fn happy_output() -> SourceShowOutput {
             },
         ],
         modules: vec!["dev-tools".into(), "shell".into()],
+        // `signed_commits_bypassed: true` and a real `encryption` block
+        // exercise the two policy fields this golden previously never
+        // covered: `security.allowUnsigned` bypassing an active
+        // `require_signed_commits` demand, and the manifest's
+        // `policy.constraints.encryption` reaching the rendered/serialized
+        // policy at all.
         policy: Some(SourcePolicyOutput {
             require_signed_commits: true,
+            signed_commits_bypassed: true,
             scripts_allowed: false,
             secrets_read_allowed: false,
             system_changes_allowed: false,
             allowed_target_paths: vec!["~/.config/**".into(), "~/.bashrc".into()],
+            encryption: Some(SourceEncryptionOutput {
+                required_targets: vec!["secrets/**".into()],
+                backend: Some("sops".into()),
+                mode: Some("Always".into()),
+            }),
         }),
     }
 }
