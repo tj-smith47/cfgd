@@ -22221,3 +22221,66 @@ fn the_post_apply_snapshot_covers_only_the_files_the_run_touched() {
         "an untouched managed target must not be snapshotted"
     );
 }
+
+/// The phase blocks a plan renders, as `(phase, items)` — what a preview and a
+/// `-o json` payload are both built from, so two plans that agree here are the
+/// same plan as far as any surface can tell.
+fn plan_render(plan: &Plan) -> Vec<(String, Vec<String>)> {
+    plan.phases
+        .iter()
+        .map(|p| (p.name.display_name().to_string(), plan_items(p)))
+        .collect()
+}
+
+#[test]
+fn plan_observed_reports_every_computed_phase_in_order() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(MockPackageManager::new("brew")));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let mut resolved = make_empty_resolved();
+    resolved.merged.scripts.pre_apply = vec![ScriptEntry::Simple("scripts/pre.sh".to_string())];
+    let modules = vec![make_resolved_module("dev")];
+
+    let mut seen: Vec<PhaseName> = Vec::new();
+    let observed = reconciler
+        .plan_observed(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            modules.clone(),
+            ReconcileContext::Apply,
+            &mut |phase| seen.push(phase),
+        )
+        .unwrap();
+
+    // Computation order, not render order: `Prerequisites` is planned from the
+    // package work that survived dedup, so it cannot be reported before
+    // `Packages` even though it renders ahead of it. `PostScripts` never fires
+    // — its actions are computed in the same passes as `PreScripts` and
+    // `Modules`.
+    assert_eq!(
+        seen,
+        vec![
+            PhaseName::Files,
+            PhaseName::PreScripts,
+            PhaseName::Modules,
+            PhaseName::Packages,
+            PhaseName::Prerequisites,
+            PhaseName::System,
+            PhaseName::Secrets,
+        ]
+    );
+
+    let one_pass = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            modules,
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+    assert_eq!(plan_render(&observed), plan_render(&one_pass));
+}

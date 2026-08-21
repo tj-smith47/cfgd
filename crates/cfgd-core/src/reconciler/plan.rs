@@ -76,13 +76,51 @@ impl<'a> super::Reconciler<'a> {
         module_actions: Vec<ResolvedModule>,
         context: ReconcileContext,
     ) -> Result<Plan> {
+        self.plan_observed(
+            resolved,
+            file_actions,
+            pkg_actions,
+            module_actions,
+            context,
+            &mut |_| {},
+        )
+    }
+
+    /// [`Reconciler::plan`], reporting each phase to `observe` as that phase's
+    /// contents are computed.
+    ///
+    /// The seam exists so a command can narrate a plan while it is being built
+    /// instead of standing silent until the whole tree is ready. `observe` fires
+    /// at real computation boundaries, in COMPUTATION order rather than render
+    /// order — the two differ because the phases are not independent: no bucket
+    /// is final until module work has been routed into it, `Prerequisites` is
+    /// planned from the package work that survived dedup, and the caller hands
+    /// `file_actions` in already computed. Two phases therefore never fire.
+    /// `Files` fires for the conflict sweep that hashes every declared source,
+    /// which is the only file work this function does; `PostScripts` fires not
+    /// at all, because profile post-scripts are computed in the same pass as
+    /// pre-scripts and a module's own are computed under `Modules`.
+    ///
+    /// Observation changes nothing about the plan: the `Plan` this returns is
+    /// the one [`Reconciler::plan`] returns for the same inputs.
+    pub fn plan_observed(
+        &self,
+        resolved: &ResolvedProfile,
+        file_actions: Vec<FileAction>,
+        pkg_actions: Vec<PackageAction>,
+        module_actions: Vec<ResolvedModule>,
+        context: ReconcileContext,
+        observe: &mut dyn FnMut(PhaseName),
+    ) -> Result<Plan> {
         // Conflict detection: check for multiple sources targeting the same path
+        observe(PhaseName::Files);
         Self::detect_file_conflicts(&file_actions, &module_actions)?;
 
         // The profile is the document the user edited, so every action derived
         // from the merged profile is owned by its leaf profile name.
         let profile = Owner::profile(resolved.profile_name());
 
+        observe(PhaseName::PreScripts);
         let (pre_script_actions, post_script_actions) =
             self.plan_scripts(&resolved.merged.scripts, context);
 
@@ -91,6 +129,7 @@ impl<'a> super::Reconciler<'a> {
         // in a bucket of their own. Packages are grouped with system/native
         // managers first, then bootstrappable managers, so build deps are
         // installed before packages that need them.
+        observe(PhaseName::Modules);
         let mut module_routed = self.plan_modules(&module_actions, context);
 
         // Cross-scope package dedup: a (manager, resolved_name) declared in both a
@@ -98,6 +137,7 @@ impl<'a> super::Reconciler<'a> {
         // win because module-owned package work is dispatched first (Rule P's
         // tier 0) and a module's postApply may need the package present; among
         // modules the earlier one wins (module-order walk).
+        observe(PhaseName::Packages);
         let claimed = Self::dedup_module_packages(&mut module_routed);
 
         // Profile-level packages are applied after module packages so module
@@ -114,6 +154,7 @@ impl<'a> super::Reconciler<'a> {
         // consumer left in this run and must not mint a node — a converged
         // host plans nothing, which is what keeps a daemon tick from running
         // `apt update` on every interval.
+        observe(PhaseName::Prerequisites);
         let manager_actions =
             super::managers::plan_managers(self.registry, &profile_packages, &module_routed);
 
@@ -143,7 +184,9 @@ impl<'a> super::Reconciler<'a> {
             .map(Action::Package)
             .collect::<Vec<_>>();
 
+        observe(PhaseName::System);
         let system_actions = self.plan_system(&resolved.merged, &module_actions)?;
+        observe(PhaseName::Secrets);
         let secret_actions = self.plan_secrets(&resolved.merged);
 
         let mut buckets: Vec<(PhaseName, Vec<Action>)> = vec![

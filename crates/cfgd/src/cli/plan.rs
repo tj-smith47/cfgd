@@ -97,6 +97,12 @@ pub fn cmd_plan(
     // `resolve_desired_state`'s isolation (`effective_resolved`).
     let module_only = !module_filter.is_empty() && !with_profile;
 
+    // ONE installed-state read for the whole command: the profile planner below
+    // diffs against it, and `Reconciler::plan` diffs a module's declared
+    // packages against the same enumeration, so a converged host asks each
+    // manager once rather than once per surface.
+    let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
+
     // Plan-only mode: no secret providers needed
     let (pkg_actions, file_actions, dry_run_fm, actual_packages) = if module_only {
         (
@@ -106,55 +112,61 @@ pub fn cmd_plan(
             cfgd_core::reconciler::ActualPackages::default(),
         )
     } else {
-        let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
-            .package_managers()
-            .iter()
-            .map(|m| m.as_ref())
-            .collect();
-        // Mirror apply's prune guard so the preview matches what a real run does:
-        // a scoped plan (--phase / --only / --skip / --skip-scripts) sees a
-        // partial picture, so suppress prune previews with an empty tracked set.
-        let scope_restricted = phase_filter.is_some()
-            || !args.skip.is_empty()
-            || !args.only.is_empty()
-            || args.skip_scripts;
-        let cfgd_installed = if scope_restricted {
-            std::collections::HashSet::new()
-        } else {
-            cfgd_installed_packages(state)?
-        };
-        // Profile-scoped: module packages are added separately by
-        // `reconciler.plan` as `Action::Module`, so this planner must stay
-        // profile-only to avoid double-handling them.
-        let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
-        let (pkg, actual) = packages::plan_packages_observed(
-            &effective_resolved.merged,
-            &[],
-            &all_managers,
-            &cfgd_installed,
-            &pkg_cx,
-        )?;
+        printer.narrate("Planning", |sp| -> anyhow::Result<_> {
+            sp.set_message("Planning Packages");
+            let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
+                .package_managers()
+                .iter()
+                .map(|m| m.as_ref())
+                .collect();
+            // Mirror apply's prune guard so the preview matches what a real run does:
+            // a scoped plan (--phase / --only / --skip / --skip-scripts) sees a
+            // partial picture, so suppress prune previews with an empty tracked set.
+            let scope_restricted = phase_filter.is_some()
+                || !args.skip.is_empty()
+                || !args.only.is_empty()
+                || args.skip_scripts;
+            let cfgd_installed = if scope_restricted {
+                std::collections::HashSet::new()
+            } else {
+                cfgd_installed_packages(state)?
+            };
+            // Profile-scoped: module packages are added separately by
+            // `reconciler.plan` as `Action::Module`, so this planner must stay
+            // profile-only to avoid double-handling them.
+            let (pkg, actual) = packages::plan_packages_observed(
+                &effective_resolved.merged,
+                &[],
+                &all_managers,
+                &cfgd_installed,
+                &pkg_cx,
+            )?;
 
-        let mut fm = CfgdFileManager::new(&config_dir, &effective_resolved)?;
-        fm.set_global_strategy(cfg.spec.file_strategy);
-        if !source_env.is_empty() {
-            fm.set_source_env(&source_env);
-        }
+            sp.set_message("Planning Files");
+            let mut fm = CfgdFileManager::new(&config_dir, &effective_resolved)?;
+            fm.set_global_strategy(cfg.spec.file_strategy);
+            if !source_env.is_empty() {
+                fm.set_source_env(&source_env);
+            }
 
-        let fa = fm.plan(&effective_resolved.merged)?;
-        (pkg, fa, Some(fm), actual)
+            let fa = fm.plan(&effective_resolved.merged)?;
+            Ok((pkg, fa, Some(fm), actual))
+        })?
     };
 
     let module_names: Vec<String> = resolved_modules.iter().map(|m| m.name.clone()).collect();
 
     let reconciler = Reconciler::new(&registry, state);
-    let mut plan = reconciler.plan(
-        &effective_resolved,
-        file_actions,
-        pkg_actions,
-        resolved_modules,
-        reconcile_context,
-    )?;
+    let mut plan = printer.narrate("Planning", |sp| {
+        reconciler.plan_observed(
+            &effective_resolved,
+            file_actions,
+            pkg_actions,
+            resolved_modules,
+            reconcile_context,
+            &mut |phase| sp.set_message(format!("Planning {}", phase.display_name())),
+        )
+    })?;
 
     // A resource awaiting (or declined by) a source decision is not this run's
     // to plan. Pruned before the scope snapshot below, so the preview, the

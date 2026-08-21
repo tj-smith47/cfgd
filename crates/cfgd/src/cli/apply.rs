@@ -286,55 +286,59 @@ pub fn run_apply(
             cfgd_core::reconciler::ActualPackages::default(),
         )
     } else {
-        let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
-            .package_managers()
-            .iter()
-            .map(|m| m.as_ref())
-            .collect();
-        let cfgd_installed = if prune_eligible {
-            cfgd_installed_packages(state)?
-        } else {
-            std::collections::HashSet::new()
-        };
-        // Profile-scoped: module packages are added separately by
-        // `reconciler.plan` as `Action::Module`, so this planner must stay
-        // profile-only to avoid double-handling them.
-        let (pkg, actual) = packages::plan_packages_observed(
-            &effective_resolved.merged,
-            &[],
-            &all_managers,
-            &cfgd_installed,
-            &pkg_cx,
-        )?;
+        printer.narrate("Planning", |sp| -> anyhow::Result<_> {
+            sp.set_message("Planning Packages");
+            let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
+                .package_managers()
+                .iter()
+                .map(|m| m.as_ref())
+                .collect();
+            let cfgd_installed = if prune_eligible {
+                cfgd_installed_packages(state)?
+            } else {
+                std::collections::HashSet::new()
+            };
+            // Profile-scoped: module packages are added separately by
+            // `reconciler.plan` as `Action::Module`, so this planner must stay
+            // profile-only to avoid double-handling them.
+            let (pkg, actual) = packages::plan_packages_observed(
+                &effective_resolved.merged,
+                &[],
+                &all_managers,
+                &cfgd_installed,
+                &pkg_cx,
+            )?;
 
-        let mut fm = CfgdFileManager::new(&config_dir, &effective_resolved)?;
-        fm.set_global_strategy(cfg.spec.file_strategy);
-        if !source_env.is_empty() {
-            fm.set_source_env(&source_env);
-        }
+            sp.set_message("Planning Files");
+            let mut fm = CfgdFileManager::new(&config_dir, &effective_resolved)?;
+            fm.set_global_strategy(cfg.spec.file_strategy);
+            if !source_env.is_empty() {
+                fm.set_source_env(&source_env);
+            }
 
-        if !dry_run {
-            let (backend_name, age_key_path) = secret_backend_from_config(Some(&cfg));
-            fm.set_secret_providers(
-                Some(secrets::build_secret_backend(
-                    &backend_name,
-                    age_key_path,
-                    Some(&config_dir),
-                )),
-                secrets::build_secret_providers(),
-            );
-        }
+            if !dry_run {
+                let (backend_name, age_key_path) = secret_backend_from_config(Some(&cfg));
+                fm.set_secret_providers(
+                    Some(secrets::build_secret_backend(
+                        &backend_name,
+                        age_key_path,
+                        Some(&config_dir),
+                    )),
+                    secrets::build_secret_providers(),
+                );
+            }
 
-        let fa = fm.plan(&effective_resolved.merged)?;
+            let fa = fm.plan(&effective_resolved.merged)?;
 
-        if dry_run {
-            // Keep fm around for diff display but don't register it
-            (pkg, fa, Some(fm), actual)
-        } else {
-            // Register the file manager so the reconciler delegates through the trait
-            registry.file_manager = Some(Box::new(fm));
-            (pkg, fa, None, actual)
-        }
+            Ok(if dry_run {
+                // Keep fm around for diff display but don't register it
+                (pkg, fa, Some(fm), actual)
+            } else {
+                // Register the file manager so the reconciler delegates through the trait
+                registry.file_manager = Some(Box::new(fm));
+                (pkg, fa, None, actual)
+            })
+        })?
     };
 
     let module_names: Vec<String> = resolved_modules.iter().map(|m| m.name.clone()).collect();
@@ -389,13 +393,16 @@ pub fn run_apply(
     let exclusions = reconciler::DecisionExclusions::from_withheld(&withheld);
     let reconciler = Reconciler::new(&registry, state)
         .withholding_env_surface(exclusions.withholds_env_surface());
-    let mut plan = reconciler.plan(
-        &effective_resolved,
-        file_actions,
-        pkg_actions,
-        resolved_modules.clone(),
-        reconcile_context,
-    )?;
+    let mut plan = printer.narrate("Planning", |sp| {
+        reconciler.plan_observed(
+            &effective_resolved,
+            file_actions,
+            pkg_actions,
+            resolved_modules.clone(),
+            reconcile_context,
+            &mut |phase| sp.set_message(format!("Planning {}", phase.display_name())),
+        )
+    })?;
     reconciler::withhold_from_plan(&mut plan, &exclusions);
 
     // Snapshot scope before --skip/--only prune the plan, so a zero-action
