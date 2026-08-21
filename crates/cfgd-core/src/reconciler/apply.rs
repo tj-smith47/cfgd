@@ -514,7 +514,7 @@ impl<'a> super::Reconciler<'a> {
     fn update_module_state(
         &self,
         modules: &[ResolvedModule],
-        apply_id: i64,
+        apply_id: Option<i64>,
         results: &[ActionResult],
     ) -> Result<()> {
         for module in modules {
@@ -568,7 +568,7 @@ impl<'a> super::Reconciler<'a> {
 
             self.state.upsert_module_state(
                 &module.name,
-                Some(apply_id),
+                apply_id,
                 &packages_hash,
                 &files_hash,
                 git_sources_json.as_deref(),
@@ -576,6 +576,23 @@ impl<'a> super::Reconciler<'a> {
             )?;
         }
         Ok(())
+    }
+
+    /// Record the module bookkeeping for a run that had NOTHING to execute.
+    ///
+    /// A run whose plan is empty never reaches [`Self::apply`], so the only
+    /// writer of `module_state` never fires — and since a module's packages are
+    /// elided from the plan once the manager already holds them, an empty plan
+    /// is exactly what a converged packages-only module produces. Without this
+    /// the module reads "not applied" in `cfgd status` and "pending" in `cfgd
+    /// module list` forever, on a machine where it is fully converged, and its
+    /// `packages_hash` keeps describing a declared set that has since changed.
+    ///
+    /// Only correct for a run that planned NOTHING AT ALL: every module in
+    /// `modules` is recorded `installed`, which is a claim about the whole
+    /// module, not about the subset a phase filter admitted.
+    pub fn record_converged_modules(&self, modules: &[ResolvedModule]) -> Result<()> {
+        self.update_module_state(modules, None, &[])
     }
 
     /// Apply a plan, executing each phase in order.
@@ -1109,7 +1126,7 @@ impl<'a> super::Reconciler<'a> {
         // return the signal exit code. The lock releases via the caller's Drop.
         if let Some(code) = aborted_code {
             self.record_managed_resources(apply_id, &results)?;
-            self.update_module_state(module_actions, apply_id, &results)?;
+            self.update_module_state(module_actions, Some(apply_id), &results)?;
             let succeeded = results.iter().filter(|r| r.success).count();
             // `total` is what the run PLANNED, not what it reached: an aborted
             // run's whole point is that those two numbers differ, and a stored
@@ -1386,7 +1403,7 @@ impl<'a> super::Reconciler<'a> {
                 .update_apply_status(apply_id, status.clone(), Some(&summary))?;
             self.record_managed_resources(apply_id, &results)?;
             // Update module state and file manifests for successfully applied modules
-            self.update_module_state(module_actions, apply_id, &results)?;
+            self.update_module_state(module_actions, Some(apply_id), &results)?;
             self.snapshot_touched_files(apply_id, resolved, module_actions)
         })?;
 

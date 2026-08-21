@@ -559,6 +559,19 @@ pub fn run_apply(
         // No confirm gate exists on this path: nothing destructive follows.
         if store_writes {
             reconciler::mint_decisions(state, &review);
+            // A module whose packages the machine already holds contributes no
+            // action, so `Reconciler::apply` — the only writer of
+            // `module_state` — never runs for it. Recorded here or the module
+            // reads "not applied" forever on a machine where it is converged,
+            // and its `packages_hash` keeps describing a set that has moved.
+            // Gated on the WHOLE plan being empty, not on `has_actions`: a
+            // phase filter can empty the run without the modules being
+            // converged, and "installed" is a claim about all of a module.
+            if plan.is_empty()
+                && let Err(e) = reconciler.record_converged_modules(&resolved_modules)
+            {
+                tracing::warn!(error = %e, "failed to record converged module state");
+            }
         }
         report_plan_verdict(printer, 0, Some(&scope));
         printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));

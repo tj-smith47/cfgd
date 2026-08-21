@@ -1769,6 +1769,80 @@ mod tests {
         );
     }
 
+    /// The whole shape of the bug: a module whose declared packages the machine
+    /// already holds plans nothing, so `Reconciler::apply` — the only writer of
+    /// `module_state` — never runs. The run must still record the module, or
+    /// `cfgd status` and `cfgd module list` both call a fully converged module
+    /// "not applied" forever.
+    #[test]
+    fn a_converged_module_apply_still_records_the_module_as_applied() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let config_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = config_dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        // `fakemgr` reports itself present and reports `ripgrep` installed —
+        // `echo` runs on every host cfgd targets, so the fixture describes the
+        // same machine everywhere and no real package manager is reached.
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - test-mod\n  packages:\n    custom:\n      - name: fakemgr\n        check: echo ok\n        listInstalled: echo ripgrep\n        install: echo install\n        uninstall: echo uninstall\n",
+        )
+        .unwrap();
+        let mod_dir = config_dir.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: ripgrep\n      prefer:\n        - fakemgr\n",
+        )
+        .unwrap();
+
+        let cli = test_cli_for(config_path, state_dir.path());
+        let (apply_printer, apply_buf) = test_printers();
+        let args = crate::cli::ApplyArgs {
+            on_conflict: crate::cli::OnConflict::Ask,
+            from: None,
+            dry_run: false,
+            phase: None,
+            yes: true,
+            skip: vec![],
+            only: vec![],
+            module: vec![],
+            with_profile: false,
+            skip_scripts: false,
+            context: "apply".to_string(),
+            shell: None,
+        };
+        crate::cli::apply::cmd_apply(&cli, &apply_printer, &args).unwrap();
+        drop(apply_printer);
+        let applied = cfgd_core::test_helpers::captured_text(&apply_buf);
+
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
+        let record = store
+            .module_state_by_name("test-mod")
+            .unwrap()
+            .unwrap_or_else(|| {
+                panic!("a converged apply must still record module_state, apply said:\n{applied}")
+            });
+        assert_eq!(record.status, "installed");
+        assert!(
+            !record.packages_hash.is_empty(),
+            "the recorded packages_hash must describe the declared set, got: {record:?}"
+        );
+
+        let (printer, buf) = test_printers();
+        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, false).unwrap();
+        drop(printer);
+        let output = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            output.contains("installed") && !output.contains("not applied"),
+            "a converged module must not report itself unapplied, got: {output}"
+        );
+    }
+
     #[test]
     fn cmd_status_module_without_state_record_prints_not_applied() {
         let tmp_home = tempfile::tempdir().unwrap();
