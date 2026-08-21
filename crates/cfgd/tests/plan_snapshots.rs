@@ -26,6 +26,12 @@
 //!     the plan. Pins the always-visible alert shape (names the token
 //!     verbatim, hints the owner tokens the plan actually held) and that
 //!     `MSG_NOTHING_TO_DO` never renders for this reason.
+//!   - `plan/module_resolution_failure.txt` — a module whose package no
+//!     registered manager can satisfy. Pins the permanent `Role::Fail` line
+//!     `Printer::narrate`'s failure arm settles for the module walk.
+//!   - `plan/module_package_elided.txt` — a module declaring two packages
+//!     under a manager that already reports one installed: only the missing
+//!     one is planned.
 
 mod common;
 
@@ -370,6 +376,58 @@ fn plan_module_resolution_failure_human() {
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "plan/module_resolution_failure.txt",
+        &stripped
+    );
+}
+
+#[test]
+fn plan_module_package_already_installed_is_elided() {
+    // The rendered pin for the elision: a module declaring two packages under
+    // one manager that already reports one of them installed plans the OTHER
+    // one only. Nothing else in the corpus captures a module package the
+    // runner actually has, so a change that re-listed the whole declared set
+    // would go red in zero snapshot binaries.
+    //
+    // `fakemgr` is a custom manager built from `echo`, which runs on every host
+    // cfgd targets — the fixture describes the same machine everywhere and no
+    // real package manager is reached.
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+    )
+    .unwrap();
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - demo\n  packages:\n    custom:\n      - name: fakemgr\n        check: echo ok\n        listInstalled: echo ripgrep\n        install: echo install\n        uninstall: echo uninstall\n",
+    )
+    .unwrap();
+    let mod_dir = config_dir.path().join("modules").join("demo");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: demo\nspec:\n  packages:\n    - name: ripgrep\n      prefer:\n        - fakemgr\n    - name: fd\n      prefer:\n        - fakemgr\n",
+    )
+    .unwrap();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_plan(&cli, &printer, &plan_args()).unwrap();
+    drop(printer);
+
+    let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);
+    let stripped = strip_spinner_duration(strip_ansi(&normalized));
+    assert!(
+        !stripped.contains("ripgrep"),
+        "the installed package must not appear in the plan:\n{stripped}"
+    );
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "plan/module_package_elided.txt",
         &stripped
     );
 }

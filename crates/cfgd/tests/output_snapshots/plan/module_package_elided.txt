@@ -1,0 +1,11 @@
+Plan
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  default
+  Modules  demo
+  Phases   Packages
+
+Phase: Packages
+  module:demo
+    - fakemgr install fd
+
+⊙ 1 action planned
