@@ -520,10 +520,16 @@ mod tests {
             )
             .unwrap();
             assert!(out.status.success());
-            let raw = crate::test_helpers::captured_text(&buf);
+            // raw-capture-ok: the claim IS that no escape survives, and captured_text strips exactly what this test looks for
+            let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
             assert!(
                 !raw.contains("\x1b[31m"),
                 "foreign red SGR reached the sink; got: {raw:?}"
+            );
+            assert!(
+                raw.contains("red") && raw.contains("text"),
+                "the child's own words were dropped, so the assertion above \
+                 proves nothing; got: {raw:?}"
             );
         });
     }

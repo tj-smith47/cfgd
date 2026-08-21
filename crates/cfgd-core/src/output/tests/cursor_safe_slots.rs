@@ -374,6 +374,10 @@ fn a_status_label_and_target_cannot_repaint_the_line_they_are_written_on() {
 fn a_live_bar_label_cannot_repaint_the_region_it_paints_in() {
     let (printer, screen) = Printer::for_test_live_terminal(24, 200);
     let mut spinner = printer.spinner(poisoned("Cloning acme/config"));
+    // The steady tick redraws from another thread and its clear/cursor-move
+    // sequences interleave with this thread's draws, which is what left the
+    // emulated screen blank in CI.
+    spinner.bar.disable_steady_tick();
     spinner.set_message(poisoned("Fetching acme/config"));
     let held = screen.contents();
     let _ = spinner.finish_ok("cloned");
@@ -388,6 +392,7 @@ fn a_live_bar_label_cannot_repaint_the_region_it_paints_in() {
 fn an_output_window_label_cannot_repaint_the_region_it_paints_in() {
     let (printer, screen) = Printer::for_test_live_terminal(24, 200);
     let mut window = printer.output_window(poisoned("postApply: install.sh"));
+    window.disable_steady_tick();
     window.push_line("compiling");
     let held = screen.contents();
     let _ = window.finish_ok("done");
@@ -407,6 +412,95 @@ fn a_live_region_note_cannot_repaint_the_region_it_paints_in() {
     row.retire();
     printer.flush();
     assert_row_survived(&held, "3 settled rows held for commit");
+}
+
+/// The pre-approval counterpart of [`assert_row_survived`], for the two RAW
+/// renderers: they take the ESCAPE policy, so the hostile bytes are SHOWN
+/// rather than deleted. The row carries its own words, then a visible
+/// `\x0d`, then the erase sequence spelled out, then the text the poison
+/// meant to repaint with — nothing of it executed, and nothing of it gone.
+///
+/// Showing the erase is the whole point on a screen somebody approves from:
+/// the bytes about to be written to disk are the bytes on the line.
+fn assert_row_escaped(held: &str, description: &str) {
+    let row = held
+        .lines()
+        .find(|l| l.contains(description))
+        .unwrap_or_else(|| {
+            panic!("the row describing {description:?} was repainted away; screen holds: {held:?}")
+        });
+    let (before, after) = row.split_once("\\x0d").unwrap_or_else(|| {
+        panic!("the carriage return was executed instead of shown; row: {row:?}")
+    });
+    assert!(
+        before.contains(description),
+        "the row's own words no longer stand ahead of the return; row: {row:?}"
+    );
+    assert_eq!(
+        after, "\\x1b[2Krepainted",
+        "the erase sequence was stripped instead of shown, so an operator \
+         approves bytes the screen never rendered; row: {row:?}"
+    );
+}
+
+/// `cfgd plan --diff` renders a module's own file — delivered by a remote
+/// registry or a git source — on the screen the operator reads before running
+/// `cfgd apply`.
+///
+/// The diff's line splitter treats the lone return as a break of its own, so
+/// the poison lands as two rows rather than one: the escape has to hold on
+/// both of them, or the erase runs and takes the row that names the change.
+#[test]
+fn a_diff_row_cannot_repaint_the_screen_it_is_read_from() {
+    let (printer, screen) = Printer::for_test_live_terminal(24, 200);
+    printer.diff(
+        "packages: []\n",
+        &format!("{}\n", poisoned("packages: [ripgrep]")),
+    );
+    printer.flush();
+    let held = screen.contents();
+    let row = held
+        .lines()
+        .find(|l| l.contains("packages: [ripgrep]"))
+        .unwrap_or_else(|| panic!("the added row was repainted away; screen holds: {held:?}"));
+    assert!(
+        row.ends_with("\\x0d"),
+        "the carriage return was executed instead of shown; row: {row:?}"
+    );
+    assert!(
+        held.lines().any(|l| l == "+\\x1b[2Krepainted"),
+        "the erase sequence was stripped instead of shown, so an operator \
+         reads a diff that is not the file: {held:?}"
+    );
+}
+
+/// `cfgd generate` shows a model-authored manifest through this renderer with
+/// an Accept/Reject prompt seven lines below it. What the operator reads is
+/// what gets written.
+#[test]
+fn a_syntax_highlighted_body_cannot_repaint_the_screen_it_is_approved_from() {
+    let (printer, screen) = Printer::for_test_live_terminal(24, 200);
+    printer.syntax_highlight(&poisoned("  packages: [ripgrep]"), "yaml");
+    printer.flush();
+    assert_row_escaped(&screen.contents(), "packages: [ripgrep]");
+}
+
+/// A terminal decoding UTF-8 acts on `U+009B` as CSI, so the C1 range is the
+/// same attack without an ESC byte to look for.
+#[test]
+fn a_c1_control_in_approved_content_is_shown_rather_than_executed() {
+    let (printer, screen) = Printer::for_test_live_terminal(24, 200);
+    printer.syntax_highlight("  image: alpine\u{9b}2Krepainted", "yaml");
+    printer.flush();
+    let held = screen.contents();
+    let row = held
+        .lines()
+        .find(|l| l.contains("image: alpine"))
+        .unwrap_or_else(|| panic!("the row was repainted away; screen holds: {held:?}"));
+    assert!(
+        row.trim_end().ends_with("image: alpine\\x9b2Krepainted"),
+        "the C1 introducer was executed or stripped instead of shown; row: {row:?}"
+    );
 }
 
 /// The mechanism that lets a PRE-APPROVAL surface show what the renderer

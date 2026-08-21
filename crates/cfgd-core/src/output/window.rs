@@ -123,6 +123,15 @@ impl<'p> OutputWindow<'p> {
         }
     }
 
+    /// Join the spinner's steady-tick thread, so a test reading the emulated
+    /// screen is the only writer to it — its redraws otherwise interleave
+    /// with this thread's draws and corrupt the screen's cursor-move and
+    /// clear sequences.
+    #[cfg(test)]
+    pub(crate) fn disable_steady_tick(&self) {
+        self.spinner.bar.disable_steady_tick();
+    }
+
     /// Feed one raw line of child output. Blank lines are dropped — they cost a
     /// window row and carry nothing.
     pub fn push_line(&mut self, raw: &str) {

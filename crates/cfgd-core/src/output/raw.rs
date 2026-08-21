@@ -1,5 +1,21 @@
 //! Raw renderers — diff, syntax_highlight, data_line.
 //!
+//! `diff` and `syntax_highlight` render CONTENT cfgd did not author — a
+//! module's own file, a model's generated manifest — on screens an operator
+//! reads before approving what they describe. They take the ESCAPE policy
+//! rather than the renderer fold: every content line goes through
+//! [`crate::escape_control_chars`] BEFORE any styling is applied, so a lone
+//! `\r` or an `ESC [ 2 K` inside the content stands as visible `\x0d` /
+//! `\x1b[2K` instead of repainting the rows above it. Escaping rather than
+//! folding is what the pre-approval rule asks for: `strip_ansi` would DELETE
+//! the escape, and a screen somebody approves from has to show the bytes that
+//! are about to be written to disk. A tab escapes with everything else — the
+//! policy is one pass with no exemptions, and a source line that renders
+//! `\x09` where it held a tab still says what it holds.
+//!
+//! `data_line` is the machine channel and stays byte-exact, per the fold
+//! catalog's data-channel exemption.
+//!
 //! `diff` and `syntax_highlight` are exempt from the WRAP invariant every
 //! other emission gets: their content is multi-line and word-wrapping a diff
 //! row or a highlighted source line mid-token would no longer be the content
@@ -16,12 +32,17 @@ use syntect::highlighting::Style as SynStyle;
 use syntect::parsing::SyntaxSet;
 use syntect::util::as_24_bit_terminal_escaped;
 
+use crate::escape_control_chars;
+
 use super::renderer::{Renderer, Writer};
 
 impl Renderer {
     /// Render a unified diff using `theme.diff_*` styles. Lines starting with
     /// `+` are themed diff_add, `-` themed diff_remove, others diff_context.
     /// Nests at `depth`, like any other emission.
+    ///
+    /// Each row is escaped before the theme paints it, per this module's
+    /// ESCAPE policy — the content is a module's file, not cfgd's own text.
     pub fn render_diff(&self, w: &dyn Writer, depth: usize, old: &str, new: &str) {
         let diff = TextDiff::from_lines(old, new);
         let mut lines = Vec::new();
@@ -31,9 +52,18 @@ impl Renderer {
                 ChangeTag::Delete => ("-", &self.theme.diff_remove),
                 ChangeTag::Equal => (" ", &self.theme.diff_context),
             };
-            let body = format!("{sign}{change}");
-            let body = body.trim_end_matches('\n');
-            lines.push(style.apply_to(body).to_string());
+            // A CRLF is one line break, not a cursor move — escaping its
+            // return would put a visible `\x0d` at the end of every row of a
+            // Windows-authored file. A LONE return is not a line break, even
+            // though the line splitter treats it as one, so it keeps its
+            // escape and stands on the screen as the cursor move it is.
+            let value = change.value();
+            let body = match value.strip_suffix("\r\n") {
+                Some(head) => head,
+                None => value.strip_suffix('\n').unwrap_or(value),
+            };
+            let body = escape_control_chars(body);
+            lines.push(style.apply_to(format!("{sign}{body}")).to_string());
         }
         // One block per render, so a diff is never split across two of
         // indicatif's clear/redraw cycles.
@@ -43,6 +73,13 @@ impl Renderer {
     /// Render syntax-highlighted code. Caller passes the `lang` hint (e.g.,
     /// "yaml", "rust", "json"); falls back to plain text on unknown. Nests
     /// at `depth`, like any other emission.
+    ///
+    /// Every line is escaped before syntect sees it, per this module's ESCAPE
+    /// policy — `cfgd generate` shows a model-authored manifest through here
+    /// with an Accept/Reject prompt seven lines below it, and highlighting an
+    /// unescaped line hands its control bytes straight to the terminal
+    /// between syntect's own SGR runs. `str::lines` already drops the return
+    /// of a CRLF, so only a LONE return is left to escape.
     pub fn render_syntax_highlight(
         &self,
         w: &dyn Writer,
@@ -58,7 +95,7 @@ impl Renderer {
         // --no-color` / `NO_COLOR=1` still wrote escapes into the reader's
         // pipe. Same fallback as the missing-theme arm below.
         if !self.theme.colors() {
-            let plain: Vec<String> = code.lines().map(str::to_string).collect();
+            let plain: Vec<String> = code.lines().map(escape_control_chars).collect();
             self.emit_raw_block(w, depth, &plain);
             return;
         }
@@ -72,15 +109,16 @@ impl Renderer {
             .or_else(|| theme_set.themes.values().next())
         else {
             // No syntect themes available; emit unstyled lines.
-            let plain: Vec<String> = code.lines().map(str::to_string).collect();
+            let plain: Vec<String> = code.lines().map(escape_control_chars).collect();
             self.emit_raw_block(w, depth, &plain);
             return;
         };
         let mut h = HighlightLines::new(syntax, theme);
         let mut lines = Vec::new();
         for line in code.lines() {
+            let line = escape_control_chars(line);
             let ranges: Vec<(SynStyle, &str)> =
-                h.highlight_line(line, syntax_set).unwrap_or_default();
+                h.highlight_line(&line, syntax_set).unwrap_or_default();
             lines.push(as_24_bit_terminal_escaped(&ranges, false));
         }
         // Built outside the guard: highlighting is expensive and touches no
@@ -92,6 +130,9 @@ impl Renderer {
 impl super::Printer {
     /// Diff renderer. Goes to stderr. Nests at whatever depth the caller's
     /// section opened, the same as every other Printer emission.
+    ///
+    /// The renderer escapes each row, so a caller passing a module's own file
+    /// content does not sanitize it first.
     pub fn diff(&self, old: &str, new: &str) {
         let depth = self.renderer.inherit_depth();
         self.renderer
@@ -100,6 +141,9 @@ impl super::Printer {
 
     /// Syntax-highlighted code. Goes to stderr. Nests at whatever depth the
     /// caller's section opened, the same as every other Printer emission.
+    ///
+    /// The renderer escapes each line, so a caller passing model- or
+    /// registry-supplied text does not sanitize it first.
     pub fn syntax_highlight(&self, code: &str, lang: &str) {
         let depth = self.renderer.inherit_depth();
         self.renderer.render_syntax_highlight(
@@ -273,6 +317,44 @@ mod tests {
             on.contains('\u{1b}'),
             "a colour printer emitted no escapes, so the assertion above \
              proves nothing: {on:?}"
+        );
+    }
+
+    /// The colour-ON arm hands each line to syntect, which writes the text
+    /// between its own SGR runs untouched — so the escape has to land BEFORE
+    /// highlighting, not after it. The emulated-screen tests in
+    /// `output/tests/cursor_safe_slots.rs` run on a colourless test printer
+    /// and so reach only the plain arm; this is the other one.
+    #[test]
+    fn syntax_highlight_escapes_hostile_content_before_it_is_highlighted() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(Theme::default().with_colors(true), Verbosity::Normal);
+        let ss = SyntaxSet::load_defaults_newlines();
+        let ts = syntect::highlighting::ThemeSet::load_defaults();
+        r.render_syntax_highlight(
+            &sink,
+            0,
+            "packages: [ripgrep]\r\u{1b}[2Krepainted\n",
+            "yaml",
+            &ss,
+            &ts,
+        );
+        // raw-capture-ok: the claim is about which escapes survive, and captured_text strips exactly what this test looks for
+        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            out.contains("\\x0d") && out.contains("\\x1b[2K"),
+            "the hostile bytes must be SHOWN on a screen an operator approves \
+             from: {out:?}"
+        );
+        assert!(
+            !out.contains("\u{1b}[2K") && !out.contains('\r'),
+            "a live erase or return reached the sink: {out:?}"
+        );
+        assert!(
+            out.contains('\u{1b}'),
+            "syntect emitted no styling, so the assertion above proves \
+             nothing about the highlighted arm: {out:?}"
         );
     }
 
