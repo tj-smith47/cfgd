@@ -174,7 +174,7 @@ const NOT_SCANNED: &str = "not scanned";
 /// The wording `cfgd module show` renders for a platform-gated package
 /// (`module/list_show.rs`); the two surfaces answer about one declared package
 /// and must say the same thing.
-const PLATFORM_SKIPPED: &str = "skipped (platform filter)";
+pub(in crate::cli) const PLATFORM_SKIPPED: &str = "skipped (platform filter)";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1999,6 +1999,66 @@ mod tests {
         assert!(
             output.contains("installed") && !output.contains("not applied"),
             "a converged module must not report itself unapplied, got: {output}"
+        );
+    }
+
+    /// W1's inverse: a `--skip` that empties an otherwise non-empty plan must
+    /// not record the module as installed. `fakemgr` here reports the package
+    /// absent, so the plan holds a real install action before filtering; the
+    /// skip token removes it entirely, leaving a machine that is NOT
+    /// converged with nothing left to apply. Recording `module_state` from
+    /// that emptied plan would claim a package the machine never received.
+    #[test]
+    fn a_filter_emptied_plan_does_not_record_the_module_as_applied() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let config_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = config_dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        // `fakemgr` reports the package absent, so the reconciler plans a real
+        // install before any filter runs.
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - test-mod\n  packages:\n    custom:\n      - name: fakemgr\n        check: echo ok\n        listInstalled: echo none\n        install: echo install\n        uninstall: echo uninstall\n",
+        )
+        .unwrap();
+        let mod_dir = config_dir.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: ripgrep\n      prefer:\n        - fakemgr\n",
+        )
+        .unwrap();
+
+        let cli = test_cli_for(config_path, state_dir.path());
+        let (apply_printer, apply_buf) = test_printers();
+        let args = crate::cli::ApplyArgs {
+            on_conflict: crate::cli::OnConflict::Ask,
+            from: None,
+            dry_run: false,
+            phase: None,
+            yes: true,
+            skip: vec!["module:test-mod".to_string()],
+            only: vec![],
+            module: vec![],
+            with_profile: false,
+            skip_scripts: false,
+            context: "apply".to_string(),
+            shell: None,
+        };
+        crate::cli::apply::cmd_apply(&cli, &apply_printer, &args).unwrap();
+        drop(apply_printer);
+        let applied = cfgd_core::test_helpers::captured_text(&apply_buf);
+
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
+        assert!(
+            store.module_state_by_name("test-mod").unwrap().is_none(),
+            "a --skip that empties the plan must not mint a converged \
+             module_state row for a module the machine never applied, \
+             apply said:\n{applied}"
         );
     }
 

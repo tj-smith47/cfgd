@@ -404,6 +404,10 @@ pub fn run_apply(
             &mut |phase| sp.set_message(format!("Planning {}", phase.display_name())),
         )
     })?;
+    // Snapshot BEFORE `withhold_from_plan` and every filter below prunes the
+    // plan: a module is converged only when the RECONCILER found nothing to
+    // do, never when a filter emptied a plan that still held real work.
+    let plan_was_converged = plan.is_empty();
     reconciler::withhold_from_plan(&mut plan, &exclusions);
 
     // Snapshot scope before --skip/--only prune the plan, so a zero-action
@@ -564,10 +568,12 @@ pub fn run_apply(
             // `module_state` — never runs for it. Recorded here or the module
             // reads "not applied" forever on a machine where it is converged,
             // and its `packages_hash` keeps describing a set that has moved.
-            // Gated on the WHOLE plan being empty, not on `has_actions`: a
-            // phase filter can empty the run without the modules being
-            // converged, and "installed" is a claim about all of a module.
-            if plan.is_empty()
+            // Gated on `plan_was_converged`, the pre-filter snapshot, not on
+            // `plan.is_empty()` here: by this point `--skip`/`--only`/
+            // `--skip-scripts`/a withheld decision may have pruned a plan
+            // that held real work, and "installed" is a claim about all of a
+            // module's packages, not about what a filter happened to spare.
+            if plan_was_converged
                 && let Err(e) = reconciler.record_converged_modules(&resolved_modules)
             {
                 tracing::warn!(error = %e, "failed to record converged module state");
