@@ -798,45 +798,33 @@ impl Renderer {
         });
     }
 
-    /// Bullet: glyph `-`, then space, then text. Uncolored. The renderer's only
-    /// bullet glyph; `+`/`~`/`>`/`*` are forbidden.
-    pub fn render_bullet(&self, w: &dyn Writer, depth: usize, text: &str) {
+    /// Bullet: glyph `-`, then space, then text. Uncolored except for an
+    /// optional leading styled `marker` (`run PreApply script: <body>`), the
+    /// bullet counterpart of a status line's marker slot — `marker` composes
+    /// through [`finalize_subject`] exactly as a status line's marker does, so
+    /// a planned script's marker in the preview tree carries the same
+    /// `Role::Accent` styling it gets once the script actually runs
+    /// (`StatusBuilder::marker`) instead of reading as plain body text. The
+    /// renderer's only bullet glyph; `+`/`~`/`>`/`*` are forbidden.
+    pub fn render_bullet(
+        &self,
+        w: &dyn Writer,
+        depth: usize,
+        text: &str,
+        marker: Option<&crate::output::component::StatusLabel>,
+    ) {
         if self.verbosity == Verbosity::Quiet {
             return;
         }
-        // The marker is structure, the text is content: muting the dash gives
-        // a run of bullets a scan column instead of leaving every character on
-        // the line at the terminal's default with nothing to read against.
-        let body = format!("{}{}", self.theme.muted.apply_to("- "), cursor_safe(text));
+        let subject = finalize_subject(&self.theme, text, marker, None, None);
+        // The dash is structure, the text is content: muting it gives a run of
+        // bullets a scan column instead of leaving every character on the
+        // line at the terminal's default with nothing to read against.
+        let body = format!("{}{}", self.theme.muted.apply_to("- "), subject);
         self.emit_with(w, |e| {
             e.flush_section_headers();
             e.open_top_group(TopGroup::Bullet);
             e.push_line(depth, &body);
-            e.mark_top_level_group(TopGroup::Bullet);
-        });
-    }
-
-    /// Bullet with a leading styled marker (`run PreApply script: <body>`),
-    /// the bullet counterpart of a status line's marker slot. Same dash and
-    /// depth as [`Self::render_bullet`]; the difference is the subject, built
-    /// through [`finalize_subject`] exactly as a status line's marker is, so a
-    /// planned script's marker in the preview tree carries the same
-    /// `Role::Accent` styling it gets once the script actually runs
-    /// (`StatusBuilder::marker`) instead of reading as plain body text.
-    pub fn render_bullet_marker(&self, w: &dyn Writer, depth: usize, marker: &str, body: &str) {
-        if self.verbosity == Verbosity::Quiet {
-            return;
-        }
-        let label = crate::output::component::StatusLabel {
-            role: crate::output::Role::Accent,
-            text: format!("{marker}:"),
-        };
-        let subject = finalize_subject(&self.theme, body, Some(&label), None, None);
-        let line = format!("{}{}", self.theme.muted.apply_to("- "), subject);
-        self.emit_with(w, |e| {
-            e.flush_section_headers();
-            e.open_top_group(TopGroup::Bullet);
-            e.push_line(depth, &line);
             e.mark_top_level_group(TopGroup::Bullet);
         });
     }
@@ -995,7 +983,7 @@ mod tests {
         }
 
         assert_styled("heading", |r, s| r.render_heading(s, "h"));
-        assert_styled("bullet", |r, s| r.render_bullet(s, 0, "b"));
+        assert_styled("bullet", |r, s| r.render_bullet(s, 0, "b", None));
         assert_styled("stream_line", |r, s| r.render_stream_line(s, 0, "l"));
         assert_styled("hint", |r, s| r.render_hint(s, 0, "h"));
         assert_styled("code_block", |r, s| {
@@ -1107,7 +1095,7 @@ mod tests {
     #[test]
     fn bullet_uses_dash_glyph() {
         let (r, sink, buf) = capture();
-        r.render_bullet(&sink, 1, "foo");
+        r.render_bullet(&sink, 1, "foo", None);
         let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("  - foo"), "got: {s:?}");
     }
@@ -1117,7 +1105,7 @@ mod tests {
         let buf = Arc::new(Mutex::new(String::new()));
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Quiet);
-        r.render_bullet(&sink, 1, "foo");
+        r.render_bullet(&sink, 1, "foo", None);
         assert!(crate::test_helpers::captured_text(&buf).is_empty());
     }
 
@@ -1509,7 +1497,7 @@ mod tests {
         // The bullet is what drains the kvs and what flushes the still-
         // deferred section header. All of it is ONE emission.
         let before = f.cycles();
-        f.renderer.render_bullet(&f.sink, 1, "applied");
+        f.renderer.render_bullet(&f.sink, 1, "applied", None);
         assert_eq!(
             f.cycles() - before,
             1,
@@ -1542,7 +1530,7 @@ mod tests {
         let (r, sink, buf) = capture();
         r.render_section_open("Section", true);
         r.render_kv("Key", "value");
-        r.render_bullet(&sink, 1, "child");
+        r.render_bullet(&sink, 1, "child", None);
         r.render_section_close(&sink);
 
         let out = crate::test_helpers::captured_text(&buf);

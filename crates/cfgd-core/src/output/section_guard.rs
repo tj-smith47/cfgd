@@ -19,7 +19,7 @@ pub struct SectionGuard<'p> {
 impl<'p> SectionGuard<'p> {
     pub fn bullet(&self, text: impl Into<String>) -> &Self {
         self.renderer
-            .render_bullet(self.sink.as_ref(), self.depth, &text.into());
+            .render_bullet(self.sink.as_ref(), self.depth, &text.into(), None);
         self
     }
 
@@ -29,12 +29,12 @@ impl<'p> SectionGuard<'p> {
     /// colon and styles it `Role::Accent`, matching the color a script's own
     /// executed status line paints its marker in.
     pub fn bullet_marker(&self, marker: impl Into<String>, body: impl Into<String>) -> &Self {
-        self.renderer.render_bullet_marker(
-            self.sink.as_ref(),
-            self.depth,
-            &marker.into(),
-            &body.into(),
-        );
+        let label = super::component::StatusLabel {
+            role: Role::Accent,
+            text: format!("{}:", marker.into()),
+        };
+        self.renderer
+            .render_bullet(self.sink.as_ref(), self.depth, &body.into(), Some(&label));
         self
     }
 

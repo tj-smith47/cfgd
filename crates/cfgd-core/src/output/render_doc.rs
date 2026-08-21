@@ -48,7 +48,7 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
             renderer.render_command_list(sink, depth, &pairs);
         }
         Component::Bullet { text } => {
-            renderer.render_bullet(sink, depth, text);
+            renderer.render_bullet(sink, depth, text, None);
         }
         Component::Status {
             role,
