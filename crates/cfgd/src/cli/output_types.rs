@@ -199,6 +199,14 @@ pub struct DiffOutput {
     /// declares — the same per-item check `cfgd verify` persists as drift,
     /// run here read-only.
     pub env: Vec<EnvDriftOutput>,
+    /// Set only by `diff --module`: the env check there resolves the whole
+    /// active profile (not just the named module), and that resolution is a
+    /// single all-or-nothing call rather than a per-item one — an unrelated
+    /// module's resolution failure lands here instead of aborting a diff
+    /// whose Files/Packages phases already succeeded for the module asked
+    /// about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env_check_error: Option<String>,
     pub summary: DiffSummary,
 }
 
@@ -213,6 +221,11 @@ pub struct DiffSummary {
     /// every consumer that treats "no drift" as "nothing to do".
     pub system_check_failed: bool,
     pub has_env_drift: bool,
+    /// The env check itself could not run (`diff --module` only — see
+    /// `DiffOutput::env_check_error`), so `has_env_drift` is not a verdict.
+    /// Read alongside `has_env_drift` the same way `system_check_failed` is
+    /// read alongside `has_system_drift`.
+    pub env_check_failed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1260,7 +1273,9 @@ mod tests {
                 has_system_drift: true,
                 system_check_failed: true,
                 has_env_drift: true,
+                env_check_failed: false,
             },
+            env_check_error: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         let files = json["files"].as_array().expect("files is array");
@@ -1307,6 +1322,7 @@ mod tests {
             has_system_drift: false,
             system_check_failed: false,
             has_env_drift: true,
+            env_check_failed: true,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["hasFileDrift"], json!(false));
@@ -1314,6 +1330,7 @@ mod tests {
         assert_eq!(json["hasSystemDrift"], json!(false));
         assert_eq!(json["systemCheckFailed"], json!(false));
         assert_eq!(json["hasEnvDrift"], json!(true));
+        assert_eq!(json["envCheckFailed"], json!(true));
     }
 
     #[test]
@@ -1326,6 +1343,11 @@ mod tests {
             "a complete run carries no error list: {json}"
         );
         assert_eq!(json["summary"]["systemCheckFailed"], json!(false));
+        assert!(
+            json.get("envCheckError").is_none(),
+            "a complete run carries no env check error: {json}"
+        );
+        assert_eq!(json["summary"]["envCheckFailed"], json!(false));
     }
 
     #[test]

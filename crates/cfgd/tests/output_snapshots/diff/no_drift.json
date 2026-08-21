@@ -3,6 +3,7 @@
   "files": [],
   "packages": [],
   "summary": {
+    "envCheckFailed": false,
     "hasEnvDrift": false,
     "hasFileDrift": false,
     "hasPkgDrift": false,

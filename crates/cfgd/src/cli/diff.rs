@@ -308,6 +308,11 @@ pub fn cmd_diff(
         has_system_drift,
         system_check_failed: !diff_payload.system_errors.is_empty(),
         has_env_drift,
+        // The full desired state this path needs for every phase was already
+        // resolved above (line ~95) before any section opened; a failure
+        // there aborts the whole command via `?`, so this path never reaches
+        // here with the env check unresolved.
+        env_check_failed: false,
     };
 
     // This command just checked the machine itself, whatever it found — the
@@ -352,7 +357,7 @@ fn close_system_phase(sec: &SectionGuard<'_>, drift: bool, unchecked: usize) {
 /// needs an apply, while a check that could not run means the answer is
 /// unknown, which is an error rather than a verdict.
 fn diff_exit_code(summary: &DiffSummary) -> Option<cfgd_core::exit::ExitCode> {
-    if summary.system_check_failed {
+    if summary.system_check_failed || summary.env_check_failed {
         return Some(cfgd_core::exit::ExitCode::Error);
     }
     (summary.has_file_drift
@@ -469,114 +474,144 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         }
     }
 
-    let has_env_drift = {
+    // The managed env file and rc source line are the ACTIVE PROFILE's shared
+    // artifacts, not this module's own: the planner wrote them from the whole
+    // profile plus every module, so checking them against one module's
+    // fragment — and a hardcoded EnvScope::All — reports permanent stale
+    // drift on a fully converged machine. Resolve the same full desired
+    // state the non-`--module` path checks against, so `verify` / `diff` /
+    // `diff --module` all agree about one machine. Resolved BEFORE any
+    // section opens: `resolve_desired_state` performs its own top-level
+    // Printer emits (module-resolution status, git-fetch warnings), and
+    // nesting that call inside an already-open `SectionGuard` tripped the
+    // renderer's structural-depth guard and mis-indented that output under
+    // "Phase: Env" instead of at the top level.
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    let full_desired_result = resolve_desired_state(
+        ctx,
+        cfg,
+        local_resolved,
+        &[],
+        false,
+        printer,
+        false,
+        composition::ConstraintMode::Report,
+    );
+
+    // `env_sec` must drop before `build_diff_doc`'s top-level emit below: a
+    // `SectionGuard` still in scope there is exactly the mis-nesting this
+    // whole reorder exists to avoid, so its lifetime is bounded to this block
+    // rather than left open to the end of the function.
+    let (has_env_drift, env_check_failed) = {
         let env_sec = printer.section_phase(&cfgd_core::output::PhaseLabel::new("Env"));
-        let mut drift = false;
-
-        // The managed env file and rc source line are the ACTIVE PROFILE's
-        // shared artifacts, not this module's own: the planner wrote them from
-        // the whole profile plus every module, so checking them against one
-        // module's fragment — and a hardcoded EnvScope::All — reports permanent
-        // stale drift on a fully converged machine. Resolve the same full
-        // desired state the non-`--module` path checks against, so `verify` /
-        // `diff` / `diff --module` all agree about one machine.
-        let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
-        let full_desired = resolve_desired_state(
-            ctx,
-            cfg,
-            local_resolved,
-            &[],
-            false,
-            printer,
-            false,
-            composition::ConstraintMode::Report,
-        )?;
-        let full_resolved = &full_desired.resolved;
-        let path_dirs = cfgd_core::reconciler::recorded_manager_path_dirs(
-            state,
-            &full_resolved.merged,
-            &full_desired.modules,
-        );
-        let all_results: Vec<_> = cfgd_core::reconciler::env_verify_results(
-            &full_resolved.merged.env,
-            &full_resolved.merged.aliases,
-            full_resolved.merged.env_scope,
-            &full_desired.modules,
-            &path_dirs,
-        )
-        .into_iter()
-        .filter(|r| !r.matches)
-        .collect();
-
-        // The file/rc rows are the profile's shared artifacts, not any one
-        // module's — report them once, under the profile itself, whichever
-        // declared item made the file stale.
-        {
-            let group = env_sec
-                .section_owner_or_collapse(&owner_label(&Owner::profile(profile_name.to_string())));
-            for r in all_results
-                .iter()
-                .filter(|r| matches!(r.resource_type.as_str(), "env" | "env-rc"))
-            {
-                drift = true;
-                group
-                    .status(
-                        Role::Warn,
-                        format!("{}: {}", r.resource_type, r.resource_id),
-                    )
-                    .drift(&r.expected, &r.actual);
-                diff_payload.env.push(EnvDriftOutput {
-                    kind: r.resource_type.clone(),
-                    name: r.resource_id.clone(),
-                    expected: r.expected.clone(),
-                    actual: r.actual.clone(),
-                });
+        match full_desired_result {
+            // A module UNRELATED to the one this run was scoped to (a different
+            // module in the same profile, failing to resolve) must not discard
+            // the Files/Packages diff already computed above for the module that
+            // was actually asked about — report the env check as undetermined
+            // rather than aborting the whole `--module` diff.
+            Err(e) => {
+                let error = cfgd_core::output::collapse_to_subject_line(e);
+                env_sec
+                    .status(Role::Warn, "profile")
+                    .qualifier("could not resolve the active profile")
+                    .detail(&error);
+                env_sec.status_simple(Role::Warn, "Env check failed");
+                diff_payload.env_check_error = Some(error);
+                (false, true)
             }
-        }
-
-        // Per-item rows are attributed to whichever of this run's own resolved
-        // modules (the target plus its dependencies) declares them.
-        for module in &resolved_modules {
-            let owns: std::collections::HashSet<&str> = module
-                .env
-                .iter()
-                .map(|e| e.name.as_str())
-                .chain(module.aliases.iter().map(|a| a.name.as_str()))
-                .collect();
-            let group = env_sec.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
-            for r in all_results.iter().filter(|r| {
-                matches!(r.resource_type.as_str(), "env-var" | "alias")
-                    && owns.contains(r.resource_id.as_str())
-            }) {
-                drift = true;
-                // Opaque markers never carry the declared value — recompute the
-                // real line here, for this terminal/`-o json` display only.
-                let (expected, actual) = cfgd_core::reconciler::env_item_display_values(
-                    r,
+            Ok(full_desired) => {
+                let mut drift = false;
+                let full_resolved = &full_desired.resolved;
+                let path_dirs = cfgd_core::reconciler::recorded_manager_path_dirs(
+                    state,
+                    &full_resolved.merged,
+                    &full_desired.modules,
+                );
+                let all_results: Vec<_> = cfgd_core::reconciler::env_verify_results(
                     &full_resolved.merged.env,
                     &full_resolved.merged.aliases,
-                );
-                group
-                    .status(
-                        Role::Warn,
-                        format!("{}: {}", r.resource_type, r.resource_id),
-                    )
-                    .drift(&expected, &actual);
-                diff_payload.env.push(EnvDriftOutput {
-                    kind: r.resource_type.clone(),
-                    name: r.resource_id.clone(),
-                    expected,
-                    actual,
-                });
+                    full_resolved.merged.env_scope,
+                    &full_desired.modules,
+                    &path_dirs,
+                )
+                .into_iter()
+                .filter(|r| !r.matches)
+                .collect();
+
+                // The file/rc rows are the profile's shared artifacts, not any one
+                // module's — report them once, under the profile itself, whichever
+                // declared item made the file stale.
+                {
+                    let group = env_sec.section_owner_or_collapse(&owner_label(&Owner::profile(
+                        profile_name.to_string(),
+                    )));
+                    for r in all_results
+                        .iter()
+                        .filter(|r| matches!(r.resource_type.as_str(), "env" | "env-rc"))
+                    {
+                        drift = true;
+                        group
+                            .status(
+                                Role::Warn,
+                                format!("{}: {}", r.resource_type, r.resource_id),
+                            )
+                            .drift(&r.expected, &r.actual);
+                        diff_payload.env.push(EnvDriftOutput {
+                            kind: r.resource_type.clone(),
+                            name: r.resource_id.clone(),
+                            expected: r.expected.clone(),
+                            actual: r.actual.clone(),
+                        });
+                    }
+                }
+
+                // Per-item rows are attributed to whichever of this run's own resolved
+                // modules (the target plus its dependencies) declares them.
+                for module in &resolved_modules {
+                    let owns: std::collections::HashSet<&str> = module
+                        .env
+                        .iter()
+                        .map(|e| e.name.as_str())
+                        .chain(module.aliases.iter().map(|a| a.name.as_str()))
+                        .collect();
+                    let group =
+                        env_sec.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
+                    for r in all_results.iter().filter(|r| {
+                        matches!(r.resource_type.as_str(), "env-var" | "alias")
+                            && owns.contains(r.resource_id.as_str())
+                    }) {
+                        drift = true;
+                        // Opaque markers never carry the declared value — recompute the
+                        // real line here, for this terminal/`-o json` display only.
+                        let (expected, actual) = cfgd_core::reconciler::env_item_display_values(
+                            r,
+                            &full_resolved.merged.env,
+                            &full_resolved.merged.aliases,
+                        );
+                        group
+                            .status(
+                                Role::Warn,
+                                format!("{}: {}", r.resource_type, r.resource_id),
+                            )
+                            .drift(&expected, &actual);
+                        diff_payload.env.push(EnvDriftOutput {
+                            kind: r.resource_type.clone(),
+                            name: r.resource_id.clone(),
+                            expected,
+                            actual,
+                        });
+                    }
+                }
+
+                if drift {
+                    env_sec.status_simple(Role::Warn, "Env drift detected");
+                } else {
+                    env_sec.status_simple(Role::Ok, "No env drift");
+                }
+                (drift, false)
             }
         }
-
-        if drift {
-            env_sec.status_simple(Role::Warn, "Env drift detected");
-        } else {
-            env_sec.status_simple(Role::Ok, "No env drift");
-        }
-        drift
     };
 
     diff_payload.summary = DiffSummary {
@@ -587,6 +622,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         has_system_drift: false,
         system_check_failed: false,
         has_env_drift,
+        env_check_failed,
     };
 
     printer.emit(build_diff_doc(&diff_payload));
@@ -771,7 +807,8 @@ pub fn build_diff_doc(output: &DiffOutput) -> Doc {
     // A run that could not check everything has no clean verdict to give, so
     // it never renders one — whether or not the checks that DID run found
     // drift.
-    let role = if any_drift || output.summary.system_check_failed {
+    let check_failed = output.summary.system_check_failed || output.summary.env_check_failed;
+    let role = if any_drift || check_failed {
         Role::Warn
     } else {
         Role::Ok
@@ -779,11 +816,16 @@ pub fn build_diff_doc(output: &DiffOutput) -> Doc {
     if any_drift {
         return Doc::new().status(role, "Drift detected").with_data(output);
     }
-    if output.summary.system_check_failed {
+    if check_failed {
+        let mut reasons = Vec::new();
+        if output.summary.system_check_failed {
+            reasons.push("a system check could not run");
+        }
+        if output.summary.env_check_failed {
+            reasons.push("the env check could not run");
+        }
         return Doc::new()
-            .status_with(role, "Drift undetermined", |f| {
-                f.detail("a system check could not run")
-            })
+            .status_with(role, "Drift undetermined", |f| f.detail(reasons.join("; ")))
             .with_data(output);
     }
     Doc::new()
@@ -1177,6 +1219,7 @@ mod tests {
                 has_system_drift: false,
                 system_check_failed: false,
                 has_env_drift: false,
+                env_check_failed: false,
             },
             ..Default::default()
         };
@@ -1199,6 +1242,7 @@ mod tests {
                 has_system_drift: false,
                 system_check_failed: false,
                 has_env_drift: false,
+                env_check_failed: false,
             },
             ..Default::default()
         };
@@ -1245,6 +1289,7 @@ mod tests {
                 has_system_drift: false,
                 system_check_failed: true,
                 has_env_drift: false,
+                env_check_failed: false,
             },
             ..Default::default()
         };
@@ -1266,6 +1311,49 @@ mod tests {
             serde_json::json!(true)
         );
         assert_eq!(json["systemErrors"][0]["key"], serde_json::json!("sysctl"));
+
+        assert_eq!(
+            diff_exit_code(&payload.summary),
+            Some(cfgd_core::exit::ExitCode::Error),
+            "--exit-code must not report success on an unknown verdict"
+        );
+    }
+
+    /// The `diff --module` sibling of the test above: an unrelated module's
+    /// full-profile resolution failure must read the same way a failed
+    /// system-configurator check does, not as a clean env verdict.
+    #[test]
+    fn a_failed_env_check_is_never_reported_as_clean() {
+        let payload = DiffOutput {
+            env_check_error: Some("failed to fetch git source for module 'jarvis'".to_string()),
+            summary: DiffSummary {
+                has_file_drift: false,
+                has_pkg_drift: false,
+                has_system_drift: false,
+                system_check_failed: false,
+                has_env_drift: false,
+                env_check_failed: true,
+            },
+            ..Default::default()
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_diff_doc(&payload));
+        drop(printer);
+        let doc_human = strip_ansi(&cap.human());
+        assert!(
+            !doc_human.contains("No drift detected"),
+            "the summary must not report a verdict it does not have: {doc_human}"
+        );
+        assert!(
+            doc_human.contains("Drift undetermined"),
+            "the summary must name the gap: {doc_human}"
+        );
+        let json = cap.json().expect("diff emits a data payload");
+        assert_eq!(json["summary"]["envCheckFailed"], serde_json::json!(true));
+        assert_eq!(
+            json["envCheckError"],
+            serde_json::json!("failed to fetch git source for module 'jarvis'")
+        );
 
         assert_eq!(
             diff_exit_code(&payload.summary),
