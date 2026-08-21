@@ -35,23 +35,13 @@ pub fn build_source_show_doc(
     output: &SourceShowOutput,
     manifest: Option<&ConfigSourceDocument>,
 ) -> Doc {
-    // The source's own rows hang under an owner-token SECTION, never a
-    // top-level heading: an owner names whose the rows below it are, and
-    // `source update` / `sync` render the same token the same way.
-    Doc::new()
-        .section_owner(
-            &cfgd_core::output::OwnerLabel::new("source", &output.name),
-            |s| build_source_show_body(s, output, manifest),
-        )
-        .with_data(output)
-}
-
-fn build_source_show_body(
-    doc: SectionBuilder,
-    output: &SourceShowOutput,
-    manifest: Option<&ConfigSourceDocument>,
-) -> SectionBuilder {
-    let mut doc = doc
+    // A `Label: value` title, never a `kind:name` owner token: an owner names
+    // whose the rows below it are, which is a section's job, and hanging the
+    // whole report off one nests every block a level deeper than `module show`
+    // renders the same shape at — where the renderer's blank separation between
+    // top-level sections is what makes ~60 rows of eight blocks readable.
+    let mut doc = Doc::new()
+        .heading_title("Source", &output.name)
         .kv("URL", &output.url)
         .kv("Branch", &output.branch)
         .kv("Priority", output.priority.to_string())
@@ -68,7 +58,7 @@ fn build_source_show_body(
     }
 
     if let Some(ref state_info) = output.state {
-        doc = doc.subsection("State", |s| {
+        doc = doc.section("State", |s| {
             let mut s = s.kv("Status", &state_info.status);
             if let Some(ref fetched) = state_info.last_fetched {
                 s = s.kv("Last Fetched", fetched);
@@ -91,7 +81,7 @@ fn build_source_show_body(
         });
     }
 
-    doc = doc.subsection_if_nonempty(
+    doc = doc.section_if_nonempty(
         "Managed Resources",
         &output.managed_resources,
         |s, resources| {
@@ -105,7 +95,7 @@ fn build_source_show_body(
 
     // Modules this source DELIVERS — its manifest `provides.modules` allow-list
     // (the bodies a subscriber can resolve from this source).
-    doc = doc.subsection_if_nonempty("Modules", &output.modules, |s, modules| {
+    doc = doc.section_if_nonempty("Modules", &output.modules, |s, modules| {
         let mut s = s;
         for m in modules {
             s = s.status(Role::Info, m.clone());
@@ -117,7 +107,7 @@ fn build_source_show_body(
     // this subscriber's own overrides — an operator auditing a source reads
     // this instead of opening its manifest YAML.
     if let Some(ref policy) = output.policy {
-        doc = doc.subsection("Policy", |s| {
+        doc = doc.section("Policy", |s| {
             // `allowUnsigned` bypasses the demand entirely — the screen must
             // say so beside the flag, or `true` reads as enforced when the
             // check never runs.
@@ -166,7 +156,7 @@ fn build_source_show_body(
     }
 
     if let Some(m) = manifest {
-        doc = doc.subsection("Manifest", |s| {
+        doc = doc.section("Manifest", |s| {
             let mut s = s.kv("Name", &m.metadata.name);
             if let Some(ref desc) = m.metadata.description {
                 s = s.kv("Description", desc);
@@ -215,7 +205,7 @@ fn build_source_show_body(
         });
     }
 
-    doc
+    doc.with_data(output)
 }
 
 /// What `source` enforces, combining the subscriber's own overrides with the

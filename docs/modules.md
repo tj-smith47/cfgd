@@ -630,15 +630,16 @@ Phase: Packages
     - brew install jq (1.8.2)
 ```
 
-`cfgd source show <name>` lists the modules a source offers, under the source's own owner token:
+`cfgd source show <name>` lists the modules a source offers:
 
 ```
-source:team-config
+Source: team-config
   URL                 https://github.com/team/config
   ...
-  Modules
-    ⊙ dev-tools
-    ⊙ shell
+
+Modules
+  ⊙ dev-tools
+  ⊙ shell
 ```
 
 A source that delivers only modules (no profiles) is valid — see [Source-Delivered Module Bodies](sources.md#source-delivered-module-bodies) for the full contract.

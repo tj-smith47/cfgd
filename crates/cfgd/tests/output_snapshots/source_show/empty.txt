@@ -1,4 +1,4 @@
-source:minimal
+Source: minimal
   URL                 https://github.com/team/minimal
   Branch              main
   Priority            500
