@@ -2002,7 +2002,8 @@ mod tests {
         );
     }
 
-    /// W1's inverse: a `--skip` that empties an otherwise non-empty plan must
+    /// The inverse of the converged-apply case above: a `--skip` that empties
+    /// an otherwise non-empty plan must
     /// not record the module as installed. `fakemgr` here reports the package
     /// absent, so the plan holds a real install action before filtering; the
     /// skip token removes it entirely, leaving a machine that is NOT
