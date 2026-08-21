@@ -301,6 +301,64 @@ prepare_namespace() {
     kubectl config set-context --current --namespace="$DEMO_NAMESPACE"
 }
 
+# The second fixture, for connect.tape: a module whose CRD carries
+# `mountPolicy: Debug`, and a pod that asks for it. Debug is what makes that
+# tape's claim real — the CSI volume is staged on the pod and mounted into no
+# declared container, so the module is genuinely absent from the app until an
+# ephemeral debug container mounts it. A separate module name from `tools`
+# because Module is cluster-scoped: one name cannot carry both policies.
+write_connect_fixture() {
+    local fixture="$1"
+    mkdir -p "$fixture/nettools/bin"
+
+    cat > "$fixture/nettools/module.yaml" <<'EOF'
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nettools
+spec:
+  packages: []
+  files:
+    - source: bin/netcheck.sh
+      target: bin/netcheck.sh
+EOF
+
+    # Reads the pod's own network namespace, so its output is evidence the tool
+    # is running beside the app rather than somewhere else.
+    cat > "$fixture/nettools/bin/netcheck.sh" <<'EOF'
+#!/bin/sh
+echo "netcheck: pod $(hostname)"
+ip -4 addr show eth0 2>/dev/null | awk '/inet /{print "  eth0     " $2}'
+awk '/^nameserver/{print "  resolver " $2}' /etc/resolv.conf
+EOF
+    chmod +x "$fixture/nettools/bin/netcheck.sh"
+
+    cat > "$fixture/debug-module.yaml" <<EOF
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nettools
+spec:
+  packages: []
+  ociArtifact: "${REGISTRY_NAME}:5000/demo/nettools:v1"
+  mountPolicy: Debug
+EOF
+
+    cat > "$fixture/app-pod.yaml" <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app
+  annotations:
+    cfgd.io/modules: "nettools:v1"
+spec:
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["sleep", "3600"]
+EOF
+}
+
 # The tape types `cfgd module push ./tools`, `kubectl apply -f module.yaml` and
 # `kubectl apply -f pod.yaml` against these. They are written here rather than
 # in the tape so the recording opens on a ready fixture instead of on a wall of
@@ -356,6 +414,8 @@ spec:
       image: busybox:1.36
       command: ["sleep", "3600"]
 EOF
+
+    write_connect_fixture "$fixture"
 
     # The tape runs `cfgd` and `kubectl cfgd` from the freshly built tree, never
     # from whatever version happens to be on the recording host's PATH. Checked

@@ -242,6 +242,20 @@ Two settings matter in production:
 
 `kubectl cfgd status` lists the registered modules and whether each one verified.
 
+### Debug Containers
+
+`mountPolicy: Debug` stages a module's volume on every pod that asks for it and mounts it into none of that pod's own containers. `kubectl cfgd debug` adds an ephemeral container to a pod that is already running, mounts the staged module into it, and puts the module's `bin` directory on that container's `PATH`.
+
+```sh
+kubectl cfgd debug app --module nettools:v1 --image busybox:1.36 --namespace demo
+kubectl attach -n demo app -c cfgd-debug -it
+```
+
+![attaching a module to a running pod](../demo/cfgd-connect.gif)
+*A pod that cannot see the module, a debug shell that can, and the boundary still holding once that shell exits.*
+
+The plugin does not read the namespace from the kubeconfig context, so `--namespace` is required whenever the pod is not in `default`.
+
 ## Device Gateway
 
 Optional component, toggled via Helm values (`deviceGateway.enabled: true`). Provides the bridge between the cluster control plane and managed devices.
