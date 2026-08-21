@@ -1,6 +1,10 @@
 Status: dev-tools
-  Packages      18
+  Packages      2
   Files         12
+  Env           3
+  Aliases       1
+  Scripts       postApply
+  System        shell
   Dependencies  base
   Status        installed
   Last applied  2026-05-14T10:00:00Z
@@ -8,6 +12,10 @@ Status: dev-tools
 Drift
   ✓ No drift recorded — `cfgd diff` checks the live machine
 
+Packages
+  ⊙ neovim  — not scanned
+  ⊙ ripgrep — not scanned
+
 Deployed Files
-  ✓ /home/user/.config/nvim/init.lua
-  ✗ /home/user/.gitconfig (missing)
+  ⊙ /home/user/.config/nvim/init.lua — not scanned
+  ✗ /home/user/.gitconfig            — missing

@@ -1,0 +1,53 @@
+{
+  "aliases": 0,
+  "depends": [
+    "base"
+  ],
+  "deployedFiles": [
+    {
+      "path": "/home/user/.config/nvim/init.lua",
+      "state": "deployed"
+    },
+    {
+      "path": "/home/user/.zshrc",
+      "state": "drifted"
+    },
+    {
+      "path": "/home/user/.gitconfig",
+      "state": "missing"
+    }
+  ],
+  "drift": [
+    {
+      "actual": "hash-actual",
+      "expected": "hash-desired",
+      "id": 20,
+      "resolvedBy": null,
+      "resourceId": "dev-tools/home/user/.zshrc",
+      "resourceType": "module",
+      "source": "local",
+      "timestamp": "2026-05-14T12:00:00Z"
+    }
+  ],
+  "driftCheckedLive": true,
+  "env": 0,
+  "files": 12,
+  "lastApplied": "2026-05-14T10:00:00Z",
+  "name": "dev-tools",
+  "packageState": [
+    {
+      "manager": "brew",
+      "name": "neovim",
+      "state": "installed"
+    },
+    {
+      "manager": "brew",
+      "name": "ripgrep",
+      "state": "notInstalled"
+    }
+  ],
+  "packages": 2,
+  "scripts": [],
+  "status": "installed",
+  "system": []
+}

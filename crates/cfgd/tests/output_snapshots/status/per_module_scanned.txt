@@ -1,0 +1,18 @@
+Status: dev-tools
+  Packages      2
+  Files         12
+  Dependencies  base
+  Status        installed
+  Last applied  2026-05-14T10:00:00Z
+
+Drift
+  ⚠ module dev-tools/home/user/.zshrc — want: hash-desired, have: hash-actual
+
+Packages
+  ✓ neovim  — installed (brew)
+  ⚠ ripgrep — not installed (brew)
+
+Deployed Files
+  ✓ /home/user/.config/nvim/init.lua — deployed
+  ⚠ /home/user/.zshrc                — drifted
+  ✗ /home/user/.gitconfig            — missing

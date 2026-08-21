@@ -86,6 +86,19 @@ pub(super) fn file_verify_results(
 /// target is missing OR its bytes drifted out-of-band. Module files carry no tera
 /// `origin`, so `None` is passed — consistent with how they deploy. The
 /// `resource_id` is `"<module>/<target>"` so module-file drift is attributable.
+/// The ONE composition of a module file's verify/drift identity.
+///
+/// `target` is posix-folded and, for a real deployed file, absolute — joining
+/// it under the module name with a bare `/` doubles up into `nvim//home/tj/…`,
+/// so the redundant leading separator is trimmed and the id reads as one path
+/// rather than two glued halves. `cfgd status <module>` composes the same
+/// string from a file the state store recorded to ask whether the scan found
+/// that file drifted; the producer and that lookup must never disagree about
+/// the spelling, or a drifted file reads clean under Deployed Files.
+pub(super) fn module_file_resource_id(module: &str, target: &str) -> String {
+    format!("{}/{}", module, target.trim_start_matches('/'))
+}
+
 pub(super) fn module_file_verify_results(
     fm: &CfgdFileManager,
     config_dir: &std::path::Path,
@@ -112,12 +125,7 @@ pub(super) fn module_file_verify_results(
             };
             results.push(VerifyResult {
                 resource_type: "module".to_string(),
-                // `drift.target` is posix-folded and, for a real deployed
-                // file, absolute — joining it under the module name with a
-                // bare `/` doubled up into `nvim//home/tj/...`. Trim the
-                // redundant leading separator so the id reads as one path,
-                // not two glued halves.
-                resource_id: format!("{}/{}", module.name, drift.target.trim_start_matches('/')),
+                resource_id: module_file_resource_id(&module.name, &drift.target),
                 matches: drift.matches,
                 expected: drift.expected,
                 actual: drift.actual,

@@ -66,9 +66,28 @@ pub struct ModuleStatus {
     pub name: String,
     pub packages: usize,
     pub files: usize,
+    /// Counts of the declared surfaces apply runs a phase for but that carry
+    /// no per-item recorded state: a phase that ran with nothing to say about
+    /// it in status is a phase the reader watched happen and then could not
+    /// find. `cfgd module show` itemizes what these summarize.
+    pub env: usize,
+    pub aliases: usize,
+    /// Lifecycle hooks the module declares, by name (`preApply`, `onDrift`, …).
+    pub scripts: Vec<String>,
+    /// System configurators the module contributes settings to, by name.
+    pub system: Vec<String>,
     pub depends: Vec<String>,
     pub status: String,
     pub last_applied: Option<String>,
+    /// One row per DECLARED package, carrying what the machine holds — the
+    /// state half of the count above. Every row reads `notScanned` unless
+    /// `--scan` asked a manager.
+    pub package_state: Vec<ModulePackageStatus>,
+    /// One row per file this module has deployed, carrying the same verdict
+    /// the drift scan reached. Never a bare presence check: a drifted file is
+    /// present, and reporting presence as health is the contradiction this
+    /// field exists to make unrepresentable.
+    pub deployed_files: Vec<ModuleFileStatus>,
     /// Live drift found for this module's files and packages. Always empty
     /// unless `--scan` (or `--exit-code`, which implies it) requested the live
     /// scan — see `drift_checked_live`.
@@ -77,6 +96,91 @@ pub struct ModuleStatus {
     /// an unchecked empty default. Mirrors `StatusOutput::drift_checked_live`
     /// so the two `-o json` shapes read the same way.
     pub drift_checked_live: bool,
+}
+
+/// What a manager reports about one declared package.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum ModulePackagePresence {
+    Installed,
+    NotInstalled,
+    /// Nothing asked: no `--scan`, a `script` package with no manager to ask,
+    /// or a manager this host does not have registered.
+    NotScanned,
+}
+
+impl ModulePackagePresence {
+    fn role(self) -> Role {
+        match self {
+            Self::Installed => Role::Ok,
+            Self::NotInstalled => Role::Warn,
+            Self::NotScanned => Role::Info,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Installed => "installed",
+            Self::NotInstalled => cfgd_core::Absence::NotInstalled.as_str(),
+            Self::NotScanned => NOT_SCANNED,
+        }
+    }
+}
+
+/// What this run can say about one file the module deployed.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum ModuleFilePresence {
+    Deployed,
+    /// Present, and its content is not what the module declares — the same
+    /// verdict the Drift section reports for it, so the two can never disagree.
+    Drifted,
+    Missing,
+    /// Present on disk, content unchecked (no `--scan`). Presence alone is not
+    /// health.
+    NotScanned,
+}
+
+impl ModuleFilePresence {
+    fn role(self) -> Role {
+        match self {
+            Self::Deployed => Role::Ok,
+            Self::Drifted => Role::Warn,
+            Self::Missing => Role::Fail,
+            Self::NotScanned => Role::Info,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Deployed => "deployed",
+            Self::Drifted => "drifted",
+            Self::Missing => cfgd_core::Absence::Missing.as_str(),
+            Self::NotScanned => NOT_SCANNED,
+        }
+    }
+}
+
+/// The one spelling of "cfgd did not ask", shared by both state vocabularies
+/// so a reader meets one phrase per report rather than one per section.
+const NOT_SCANNED: &str = "not scanned";
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModulePackageStatus {
+    pub name: String,
+    /// The manager that answered. `None` when nothing asked, so the row can
+    /// never name a manager as the authority for a verdict it did not give.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manager: Option<String>,
+    pub state: ModulePackagePresence,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleFileStatus {
+    pub path: String,
+    pub state: ModuleFilePresence,
 }
 
 /// Render the "Drift" section shared by the fleet-wide and per-module status
@@ -295,13 +399,28 @@ pub fn build_fleet_status_doc(
 }
 
 /// Build the per-module `cfgd status <module>` Doc.
-/// `deployed_files` is a list of (path, exists) pairs.
-pub fn build_module_status_doc(output: &ModuleStatus, deployed_files: &[(String, bool)]) -> Doc {
+///
+/// Every row's subject is the thing's identity and its detail is what the
+/// machine holds — the same grammar the fleet doc's module rows read in, so
+/// one report never states a fact the other contradicts.
+pub fn build_module_status_doc(output: &ModuleStatus) -> Doc {
     let mut doc = Doc::new()
         .heading_title("Status", &output.name)
         .kv("Packages", output.packages.to_string())
         .kv("Files", output.files.to_string());
 
+    if output.env > 0 {
+        doc = doc.kv("Env", output.env.to_string());
+    }
+    if output.aliases > 0 {
+        doc = doc.kv("Aliases", output.aliases.to_string());
+    }
+    if !output.scripts.is_empty() {
+        doc = doc.kv("Scripts", output.scripts.join(", "));
+    }
+    if !output.system.is_empty() {
+        doc = doc.kv("System", output.system.join(", "));
+    }
     if !output.depends.is_empty() {
         doc = doc.kv("Dependencies", output.depends.join(", "));
     }
@@ -313,13 +432,24 @@ pub fn build_module_status_doc(output: &ModuleStatus, deployed_files: &[(String,
 
     doc = render_drift_section(doc, &output.drift, output.drift_checked_live);
 
-    doc = doc.section_if_nonempty("Deployed Files", deployed_files, |s, files| {
-        files.iter().fold(s, |s, (path, exists)| {
-            if *exists {
-                s.status(Role::Ok, path)
-            } else {
-                s.status(Role::Fail, format!("{} (missing)", path))
-            }
+    doc = doc.section_if_nonempty("Packages", &output.package_state, |s, pkgs| {
+        pkgs.iter().fold(s, |s, pkg| {
+            // The manager rides in the detail beside the verdict it gave,
+            // never in the subject: the subject is the name the user declared,
+            // and an unscanned row has no manager to name.
+            let detail = match &pkg.manager {
+                Some(m) => format!("{} ({m})", pkg.state.label()),
+                None => pkg.state.label().to_string(),
+            };
+            s.status_with(pkg.state.role(), &pkg.name, |f| f.detail(detail))
+        })
+    });
+
+    doc = doc.section_if_nonempty("Deployed Files", &output.deployed_files, |s, files| {
+        files.iter().fold(s, |s, file| {
+            s.status_with(file.state.role(), &file.path, |f| {
+                f.detail(file.state.label())
+            })
         })
     });
 
@@ -334,9 +464,15 @@ pub fn build_module_status_not_found_doc(name: &str) -> Doc {
         name: name.to_string(),
         packages: 0,
         files: 0,
+        env: 0,
+        aliases: 0,
+        scripts: Vec::new(),
+        system: Vec::new(),
         depends: Vec::new(),
         status: "not found".into(),
         last_applied: None,
+        package_state: Vec::new(),
+        deployed_files: Vec::new(),
         drift: Vec::new(),
         drift_checked_live: false,
     };
@@ -550,6 +686,27 @@ pub(super) fn cmd_status(
     Ok(())
 }
 
+/// The lifecycle hooks a module declares, by the name the YAML spells them
+/// with. Apply opens a phase for each one that has entries, so each has to be
+/// findable in the module's report.
+fn declared_script_hooks(spec: Option<&cfgd_core::config::ScriptSpec>) -> Vec<String> {
+    let Some(spec) = spec else {
+        return Vec::new();
+    };
+    [
+        ("preApply", &spec.pre_apply),
+        ("postApply", &spec.post_apply),
+        ("preReconcile", &spec.pre_reconcile),
+        ("postReconcile", &spec.post_reconcile),
+        ("onDrift", &spec.on_drift),
+        ("onChange", &spec.on_change),
+    ]
+    .into_iter()
+    .filter(|(_, entries)| !entries.is_empty())
+    .map(|(name, _)| name.to_string())
+    .collect()
+}
+
 pub(super) fn cmd_status_module(
     ctx: &RunContext<'_>,
     mod_name: &str,
@@ -583,15 +740,6 @@ pub(super) fn cmd_status_module(
         .unwrap_or_else(|| "not applied".into());
     let last_applied = state_rec.as_ref().map(|s| s.installed_at.clone());
 
-    let deployed_files: Vec<(String, bool)> = state
-        .module_deployed_files(mod_name)?
-        .into_iter()
-        .map(|f| {
-            let exists = std::path::Path::new(&f.file_path).exists();
-            (f.file_path, exists)
-        })
-        .collect();
-
     // Same live, read-only re-check `diff --module` performs, and the same
     // deliberate gate as the profile-wide command: plain `status --module`
     // stays a fast recorded-only dashboard (this module surface has no
@@ -605,6 +753,16 @@ pub(super) fn cmd_status_module(
     // dashboard's header, and one module's files and packages are not evidence
     // the machine was checked.
     let mut drift: Vec<cfgd_core::state::DriftEvent> = Vec::new();
+    // The verify ids of the files this scan found drifted. The Deployed Files
+    // rows are judged against it, so the two sections state one verdict per
+    // file instead of a content check and a presence check disagreeing.
+    let mut drifted_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Keyed by DECLARED name, so the rows below can be built from the declared
+    // list and the two can never differ in length: a package resolution
+    // dropped (a platform gate) is a package nothing asked about, not a
+    // package that vanished from the report.
+    let mut scanned_packages: std::collections::HashMap<String, (String, ModulePackagePresence)> =
+        std::collections::HashMap::new();
     if do_scan {
         let platform = Platform::current();
         // Deliberately the config-FREE registry: a module resolves against the
@@ -635,6 +793,7 @@ pub(super) fn cmd_status_module(
                     &resolved_modules,
                 )?;
                 for r in file_results.into_iter().filter(|r| !r.matches) {
+                    drifted_ids.insert(r.resource_id.clone());
                     drift.push(super::live_drift::drift_event_from(
                         &r,
                         &resolved.merged.env,
@@ -643,10 +802,23 @@ pub(super) fn cmd_status_module(
                 }
 
                 sp.set_message(format!("Scanning module '{mod_name}': packages"));
+                // ONE context across every package of every resolved module,
+                // so a manager is enumerated once however many packages name
+                // it (`PackageContext::installed_for`'s memo).
                 let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
                 for resolved_module in &resolved_modules {
                     for pkg in &resolved_module.packages {
-                        if let Some(pd) = super::diff::package_missing_drift(pkg, &mgr_map, &pkg_cx)
+                        // A `script` package and a manager this host has not
+                        // registered are both questions nothing can answer —
+                        // `package_missing_drift` returns `None` for each, and
+                        // reading that as "installed" would report a verdict
+                        // no manager gave.
+                        let presence = if pkg.manager == "script"
+                            || !mgr_map.contains_key(pkg.manager.as_str())
+                        {
+                            ModulePackagePresence::NotScanned
+                        } else if let Some(pd) =
+                            super::diff::package_missing_drift(pkg, &mgr_map, &pkg_cx)
                         {
                             drift.push(super::live_drift::drift_event_from(
                                 &cfgd_core::reconciler::VerifyResult {
@@ -662,6 +834,20 @@ pub(super) fn cmd_status_module(
                                 &resolved.merged.env,
                                 &resolved.merged.aliases,
                             ));
+                            ModulePackagePresence::NotInstalled
+                        } else {
+                            ModulePackagePresence::Installed
+                        };
+                        // Drift is collected for the dependency modules this
+                        // resolution pulled in too (they are why the named
+                        // module works); the package ROWS report the module
+                        // the reader asked about, whose declared count heads
+                        // the report.
+                        if resolved_module.name == mod_name {
+                            scanned_packages.insert(
+                                pkg.canonical_name.clone(),
+                                (pkg.manager.clone(), presence),
+                            );
                         }
                     }
                 }
@@ -670,18 +856,69 @@ pub(super) fn cmd_status_module(
         )?;
     }
 
+    let package_state: Vec<ModulePackageStatus> = module
+        .spec
+        .packages
+        .iter()
+        .map(|p| match scanned_packages.get(&p.name) {
+            Some((manager, state)) => ModulePackageStatus {
+                name: p.name.clone(),
+                manager: Some(manager.clone()),
+                state: *state,
+            },
+            None => ModulePackageStatus {
+                name: p.name.clone(),
+                manager: None,
+                state: ModulePackagePresence::NotScanned,
+            },
+        })
+        .collect();
+
+    let deployed_files: Vec<ModuleFileStatus> = state
+        .module_deployed_files(mod_name)?
+        .into_iter()
+        .map(|f| {
+            // Absence is definite whether or not a scan ran; presence is not.
+            // Without a live check the honest verdict on a file that is THERE
+            // is that nothing looked inside it — `Path::exists` cannot tell a
+            // converged file from a tampered one.
+            let state = if !std::path::Path::new(&f.file_path).exists() {
+                ModuleFilePresence::Missing
+            } else if !do_scan {
+                ModuleFilePresence::NotScanned
+            } else if drifted_ids.contains(&super::live_drift::module_file_resource_id(
+                mod_name,
+                &f.file_path,
+            )) {
+                ModuleFilePresence::Drifted
+            } else {
+                ModuleFilePresence::Deployed
+            };
+            ModuleFileStatus {
+                path: f.file_path,
+                state,
+            }
+        })
+        .collect();
+
     let output = ModuleStatus {
         name: mod_name.to_string(),
         packages: module.spec.packages.len(),
         files: module.spec.files.len(),
+        env: module.spec.env.len(),
+        aliases: module.spec.aliases.len(),
+        scripts: declared_script_hooks(module.spec.scripts.as_ref()),
+        system: module.spec.system.keys().cloned().collect(),
         depends: module.spec.depends.clone(),
         status,
         last_applied,
+        package_state,
+        deployed_files,
         drift_checked_live: do_scan,
         drift,
     };
 
-    printer.emit(build_module_status_doc(&output, &deployed_files));
+    printer.emit(build_module_status_doc(&output));
 
     if exit_code && !output.drift.is_empty() {
         cfgd_core::exit::ExitCode::DriftDetected.exit();
@@ -1601,8 +1838,18 @@ mod tests {
             "existing file should appear, got: {output}"
         );
         assert!(
-            output.contains("/nonexistent/missing.conf") && output.contains("(missing)"),
+            output.contains("/nonexistent/missing.conf") && output.contains("— missing"),
             "missing file should be flagged, got: {output}"
+        );
+        // No scan ran, so the present file's CONTENT is unchecked and the row
+        // must say that rather than claim health `Path::exists` cannot back.
+        let present_row = output
+            .lines()
+            .find(|l| l.contains(real_file.to_str().unwrap()))
+            .unwrap_or_else(|| panic!("no row for the present file: {output}"));
+        assert!(
+            present_row.contains(NOT_SCANNED) && !present_row.contains('✓'),
+            "an unscanned present file must not read converged: {present_row}"
         );
     }
 
@@ -1648,19 +1895,28 @@ mod tests {
     struct ConvergedModuleEnv {
         config_path: std::path::PathBuf,
         state_dir: tempfile::TempDir,
+        target: std::path::PathBuf,
         _config_dir: tempfile::TempDir,
         _target_dir: tempfile::TempDir,
         _home: cfgd_core::TestHomeGuard,
     }
 
     fn converged_module_env() -> ConvergedModuleEnv {
+        module_env_with("same content\n", "[]")
+    }
+
+    /// `converged_module_env` with the two knobs the state-rendering tests
+    /// turn: what the deployed target actually holds (content identical to the
+    /// module's source converges, anything else is content drift), and the
+    /// module's declared `packages:` block.
+    fn module_env_with(target_content: &str, packages_yaml: &str) -> ConvergedModuleEnv {
         let tmp_home = tempfile::tempdir().unwrap();
         let home = cfgd_core::with_test_home_guard(tmp_home.path());
         let config_dir = tempfile::tempdir().unwrap();
         let state_dir = tempfile::tempdir().unwrap();
         let target_dir = tempfile::tempdir().unwrap();
         let target = target_dir.path().join("converged.conf");
-        std::fs::write(&target, "same content\n").unwrap();
+        std::fs::write(&target, target_content).unwrap();
 
         let config_path = config_dir.path().join("cfgd.yaml");
         std::fs::write(&config_path, CONFIG_YAML).unwrap();
@@ -1671,7 +1927,8 @@ mod tests {
         std::fs::create_dir_all(&mod_dir).unwrap();
         std::fs::write(mod_dir.join("conf"), "same content\n").unwrap();
         let module_yaml = format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages: []\n  files:\n    - source: conf\n      target: {}\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages: {}\n  files:\n    - source: conf\n      target: {}\n",
+            packages_yaml,
             cfgd_core::to_posix_string(&target)
         );
         std::fs::write(mod_dir.join("module.yaml"), module_yaml).unwrap();
@@ -1679,10 +1936,152 @@ mod tests {
         ConvergedModuleEnv {
             config_path,
             state_dir,
+            target,
             _config_dir: config_dir,
             _target_dir: target_dir,
             _home: home,
         }
+    }
+
+    /// Record `target` as a file this module deployed, so the Deployed Files
+    /// section has a row to state a verdict about.
+    fn record_deployed(env: &ConvergedModuleEnv) {
+        let store = open_state_store(Some(env.state_dir.path()), cfgd_core::Scope::User).unwrap();
+        let apply_id = store
+            .record_apply("default", "h", ApplyStatus::Success, None)
+            .unwrap();
+        store
+            .upsert_module_file(
+                "test-mod",
+                &cfgd_core::to_posix_fs_key(&env.target),
+                "hash-deployed",
+                "copy",
+                apply_id,
+            )
+            .unwrap();
+    }
+
+    /// Everything the report says under its `Deployed Files` heading.
+    fn deployed_files_section(output: &str) -> &str {
+        output
+            .split_once("Deployed Files")
+            .unwrap_or_else(|| panic!("no Deployed Files section: {output}"))
+            .1
+    }
+
+    /// P2: a file whose content drifted is reported drifted by the Drift
+    /// section AND by its Deployed Files row. It is present on disk, so the
+    /// bare `Path::exists` check this row used to be rendered it converged
+    /// three lines under its own `want:`/`have:`.
+    #[test]
+    fn cmd_status_module_drifted_file_is_never_ok_under_deployed_files() {
+        let env = module_env_with("tampered\n", "[]");
+        record_deployed(&env);
+
+        let cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
+        let (printer, buf) = test_printers();
+        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, true).unwrap();
+        drop(printer);
+
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("want:"),
+            "the scan must report the tampered file as drift: {out}"
+        );
+        let deployed = deployed_files_section(&out);
+        let path = cfgd_core::to_posix_string(&env.target);
+        let row = deployed
+            .lines()
+            .find(|l| l.contains(&path))
+            .unwrap_or_else(|| panic!("no deployed row for {path}: {out}"));
+        assert!(
+            row.contains("drifted"),
+            "the deployed row must carry the same verdict the Drift section gave: {row}"
+        );
+        assert!(
+            !row.contains('✓'),
+            "a drifted file must not render converged: {row}"
+        );
+    }
+
+    /// The same module with nothing tampered: the row reads converged, so the
+    /// drift marking above is a verdict rather than a constant.
+    #[test]
+    fn cmd_status_module_converged_file_reads_deployed_after_a_scan() {
+        let env = converged_module_env();
+        record_deployed(&env);
+
+        let cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
+        let (printer, buf) = test_printers();
+        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, true).unwrap();
+        drop(printer);
+
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        let deployed = deployed_files_section(&out);
+        let path = cfgd_core::to_posix_string(&env.target);
+        let row = deployed
+            .lines()
+            .find(|l| l.contains(&path))
+            .unwrap_or_else(|| panic!("no deployed row for {path}: {out}"));
+        assert!(
+            row.contains("deployed") && !row.contains("drifted"),
+            "a scanned, converged file must read deployed: {row}"
+        );
+    }
+
+    /// P1: the packages phase has a STATE presentation, not just a declared
+    /// count. A `script` package is the deterministic arm — no manager can be
+    /// asked about it on any host — so the row names the manager that would
+    /// have answered and says plainly that nothing did.
+    #[test]
+    fn cmd_status_module_scan_renders_package_state_per_declared_package() {
+        let env = module_env_with(
+            "same content\n",
+            "\n    - name: rustup\n      prefer:\n        - script\n      script: \"true\"",
+        );
+        let cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
+        let (printer, buf) = test_printers();
+        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, true).unwrap();
+        drop(printer);
+
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("\nPackages\n"),
+            "the packages phase must have a section of its own: {out}"
+        );
+        let row = out
+            .lines()
+            .find(|l| l.contains("rustup"))
+            .unwrap_or_else(|| panic!("no package row: {out}"));
+        assert!(
+            row.contains(NOT_SCANNED) && row.contains("(script)"),
+            "the row must name the manager and the verdict it gave: {row}"
+        );
+    }
+
+    /// Without `--scan` the section still stands — a declared package with no
+    /// state is still a package the apply installed — and every row says
+    /// nothing asked, rather than borrowing the ✓ a scan would have earned.
+    #[test]
+    fn cmd_status_module_without_scan_lists_declared_packages_as_unscanned() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let (_cfg_dir, state_dir, config_path) = setup_env_with_module();
+
+        let cli = test_cli_for(config_path, state_dir.path());
+        let (printer, buf) = test_printers();
+        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, false).unwrap();
+        drop(printer);
+
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        let row = out
+            .lines()
+            .find(|l| l.contains("ripgrep"))
+            .unwrap_or_else(|| panic!("the declared package must appear: {out}"));
+        assert!(
+            row.contains(NOT_SCANNED) && !row.contains('✓'),
+            "an unscanned package must not read installed: {row}"
+        );
     }
 
     /// `--scan` without `-e` scans, and the payload must say so.

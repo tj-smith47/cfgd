@@ -7,8 +7,12 @@
 //!   - `status/drift.{txt,json}` — drift events present, exit-code worthy.
 //!     Exercises the Drift section's warn rendering plus the Config Sources
 //!     table population.
-//!   - `status/per_module.txt` — `cfgd status <module>` path with a known
-//!     module, state record, and deployed files (one present, one missing).
+//!   - `status/per_module.txt` — `cfgd status <module>` with no `--scan`: a
+//!     known module, a state record, and deployed files whose content nothing
+//!     has checked (one present-but-unchecked, one missing).
+//!   - `status/per_module_scanned.{txt,json}` — the same module after a live
+//!     scan: package presence per declared package, and a drifted file that
+//!     reads drifted in BOTH the Drift section and Deployed Files.
 //!
 //! Goldens live under `tests/output_snapshots/status/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test status_snapshots
@@ -16,7 +20,8 @@
 use std::path::Path;
 
 use cfgd::cli::status::{
-    ModuleStatus, ModuleStatusEntry, StatusOutput, build_fleet_status_doc, build_module_status_doc,
+    ModuleFilePresence, ModuleFileStatus, ModulePackagePresence, ModulePackageStatus, ModuleStatus,
+    ModuleStatusEntry, StatusOutput, build_fleet_status_doc, build_module_status_doc,
     build_module_status_not_found_doc,
 };
 use cfgd_core::output::Printer;
@@ -146,24 +151,101 @@ fn drift_output() -> StatusOutput {
     }
 }
 
+/// The recorded-only render: no `--scan`, so no file's content and no
+/// package's presence has been checked. Every row says so rather than letting
+/// `Path::exists` stand in for health.
 fn per_module_output() -> ModuleStatus {
     ModuleStatus {
         name: "dev-tools".into(),
-        packages: 18,
+        packages: 2,
         files: 12,
+        env: 3,
+        aliases: 1,
+        scripts: vec!["postApply".into()],
+        system: vec!["shell".into()],
         depends: vec!["base".into()],
         status: "installed".into(),
         last_applied: Some("2026-05-14T10:00:00Z".into()),
+        package_state: vec![
+            ModulePackageStatus {
+                name: "neovim".into(),
+                manager: None,
+                state: ModulePackagePresence::NotScanned,
+            },
+            ModulePackageStatus {
+                name: "ripgrep".into(),
+                manager: None,
+                state: ModulePackagePresence::NotScanned,
+            },
+        ],
+        deployed_files: vec![
+            ModuleFileStatus {
+                path: "/home/user/.config/nvim/init.lua".into(),
+                state: ModuleFilePresence::NotScanned,
+            },
+            ModuleFileStatus {
+                path: "/home/user/.gitconfig".into(),
+                state: ModuleFilePresence::Missing,
+            },
+        ],
         drift: Vec::new(),
         drift_checked_live: false,
     }
 }
 
-fn per_module_deployed_files() -> Vec<(String, bool)> {
-    vec![
-        ("/home/user/.config/nvim/init.lua".into(), true),
-        ("/home/user/.gitconfig".into(), false),
-    ]
+/// The scanned render, and the one that pins the P2 contract: `~/.zshrc` is
+/// reported drifted in the Drift section AND as drifted under Deployed Files,
+/// never as a converged row beside its own drift.
+fn per_module_scanned_output() -> ModuleStatus {
+    ModuleStatus {
+        name: "dev-tools".into(),
+        packages: 2,
+        files: 12,
+        env: 0,
+        aliases: 0,
+        scripts: Vec::new(),
+        system: Vec::new(),
+        depends: vec!["base".into()],
+        status: "installed".into(),
+        last_applied: Some("2026-05-14T10:00:00Z".into()),
+        package_state: vec![
+            ModulePackageStatus {
+                name: "neovim".into(),
+                manager: Some("brew".into()),
+                state: ModulePackagePresence::Installed,
+            },
+            ModulePackageStatus {
+                name: "ripgrep".into(),
+                manager: Some("brew".into()),
+                state: ModulePackagePresence::NotInstalled,
+            },
+        ],
+        deployed_files: vec![
+            ModuleFileStatus {
+                path: "/home/user/.config/nvim/init.lua".into(),
+                state: ModuleFilePresence::Deployed,
+            },
+            ModuleFileStatus {
+                path: "/home/user/.zshrc".into(),
+                state: ModuleFilePresence::Drifted,
+            },
+            ModuleFileStatus {
+                path: "/home/user/.gitconfig".into(),
+                state: ModuleFilePresence::Missing,
+            },
+        ],
+        drift: vec![DriftEvent {
+            id: 20,
+            timestamp: "2026-05-14T12:00:00Z".into(),
+            resource_type: "module".into(),
+            resource_id: "dev-tools/home/user/.zshrc".into(),
+            expected: Some("hash-desired".into()),
+            actual: Some("hash-actual".into()),
+            resolved_by: None,
+            source: "local".into(),
+        }],
+        drift_checked_live: true,
+    }
 }
 
 #[test]
@@ -243,11 +325,37 @@ fn status_drift_json() {
 #[test]
 fn status_per_module_human() {
     let output = per_module_output();
-    let files = per_module_deployed_files();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_module_status_doc(&output, &files));
+    printer.emit(build_module_status_doc(&output));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "status/per_module.txt");
+}
+
+#[test]
+fn status_per_module_scanned_human() {
+    let output = per_module_scanned_output();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_module_status_doc(&output));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "status/per_module_scanned.txt");
+}
+
+/// The human render and the `-o json` payload state the same per-file and
+/// per-package verdicts: a consumer reading `deployedFiles[].state` must not
+/// see `deployed` for the file the human render marks drifted.
+#[test]
+fn status_per_module_scanned_json() {
+    let output = per_module_scanned_output();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_module_status_doc(&output));
+    drop(printer);
+    let expected = serde_json::to_value(&output).unwrap();
+    let actual = cap.json().expect("doc captured json");
+    assert_eq!(
+        actual, expected,
+        "emit -o json must match serde_json::to_value(output)"
+    );
+    cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "status/per_module_scanned.json");
 }
 
 #[test]

@@ -576,6 +576,33 @@ packages only: it does not evaluate the module's system-config contribution
 (`effective_system_map` folds that into the profile-wide scan) or manager
 drift, matching the scope of `cfgd diff --module`.
 
+The module report states one verdict per thing. Every declared package gets a
+row under `Packages` and every file the module has deployed gets a row under
+`Deployed Files`, each carrying what this run can actually say about it:
+
+```
+Packages
+  ✓ neovim  — installed (brew)
+  ⚠ ripgrep — not installed (brew)
+
+Deployed Files
+  ✓ ~/.config/nvim/init.lua — deployed
+  ⚠ ~/.zshrc                — drifted
+  ✗ ~/.gitconfig            — missing
+```
+
+Without `--scan` nothing has asked a manager and nothing has read a file's
+content, so every package row and every present file reads `not scanned`
+(absence is still definite: a file the module deployed and that is gone reads
+`missing` either way). A file the scan found drifted reads `drifted` here and
+`want:`/`have:` under `Drift`, never converged beside its own drift. `-o json`
+carries the same verdicts as `packageState[].state` (`installed`,
+`notInstalled`, `notScanned`) and `deployedFiles[].state` (`deployed`,
+`drifted`, `missing`, `notScanned`). The header adds a count for each declared
+surface the module contributes (`Env`, `Aliases`, `Scripts`, `System`) so a
+phase that ran during `apply` is findable in the report; `cfgd module show`
+itemizes what those counts summarize.
+
 `pendingDecisions` lists the same rows `cfgd decide` offers, including
 classified-but-unrecorded items with `id: 0` (see [`cfgd plan`](#cfgd-plan)).
 The dashboard degrades rather than failing on that classification: if it cannot
