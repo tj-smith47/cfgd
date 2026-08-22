@@ -4,6 +4,17 @@ use crate::reconciler::{DecisionExclusions, action_resource_info, withhold_from_
 
 // --- File Watcher ---
 
+/// Whether a watch event's path is git bookkeeping rather than content.
+///
+/// A synced config dir is a git checkout watched recursively, so the daemon's
+/// own periodic fetch rewrites `.git/FETCH_HEAD` under the watch — forwarding
+/// those events makes every sync tick trigger an onChange reconcile of nothing.
+/// cfgd never manages a file inside a `.git` directory (nor a `.git` gitlink
+/// file), so anything under one is safe to drop at the watcher.
+pub(crate) fn is_git_internal(path: &Path) -> bool {
+    path.components().any(|c| c.as_os_str() == ".git")
+}
+
 pub(crate) fn setup_file_watcher(
     tx: mpsc::Sender<PathBuf>,
     managed_paths: &[PathBuf],
@@ -16,6 +27,9 @@ pub(crate) fn setup_file_watcher(
                 match event.kind {
                     EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_) => {
                         for path in event.paths {
+                            if is_git_internal(&path) {
+                                continue;
+                            }
                             match sender.try_send(path) {
                                 Ok(()) => {}
                                 Err(mpsc::error::TrySendError::Full(_)) => {

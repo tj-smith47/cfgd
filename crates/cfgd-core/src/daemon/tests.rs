@@ -13953,6 +13953,34 @@ spec: {}
         );
     }
 
+    #[test]
+    fn git_internal_paths_are_dropped_and_content_paths_kept() {
+        use super::super::reconcile::is_git_internal;
+        // A synced config dir is a git checkout under a recursive watch: the
+        // daemon's own fetch rewrites these, and forwarding them re-triggers
+        // reconcile every sync tick.
+        assert!(is_git_internal(Path::new(
+            "/home/u/.config/cfgd/.git/FETCH_HEAD"
+        )));
+        assert!(is_git_internal(Path::new(
+            "/home/u/.config/cfgd/.git/refs/remotes/origin/main"
+        )));
+        // A `.git` gitlink FILE (worktree/submodule) is bookkeeping too.
+        assert!(is_git_internal(Path::new("/home/u/.config/cfgd/.git")));
+        // Content beside the checkout stays watched, including names that
+        // merely contain the substring.
+        assert!(!is_git_internal(Path::new(
+            "/home/u/.config/cfgd/cfgd.yaml"
+        )));
+        assert!(!is_git_internal(Path::new(
+            "/home/u/.config/cfgd/modules/nvim/files/init.lua"
+        )));
+        assert!(!is_git_internal(Path::new("/home/u/.gitconfig")));
+        assert!(!is_git_internal(Path::new(
+            "/home/u/.config/cfgd/.gitignore"
+        )));
+    }
+
     // ----- run_daemon_with end-to-end tests -----
     //
     // These drive `run_daemon_with` against externally-supplied triggers so
