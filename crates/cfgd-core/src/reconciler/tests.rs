@@ -22818,24 +22818,36 @@ fn an_unreadable_manager_is_priced_in_full_matching_the_plan() {
     let mgr_name = unshared_manager_name("unreadable-priced-mgr");
     let mgr = MockPackageManager::new(&mgr_name)
         .with_installed_error("db unreadable")
-        .with_package("demofix-blind", "2.2.2");
+        .with_package("demofix-blind", "2.2.2")
+        .with_package("demofix-deaf", "4.4.4");
     let queries = mgr.version_query_counter();
+    let enumerations = mgr.enumeration_counter();
     let mut registry = ProviderRegistry::new();
     registry.add_package_manager(Box::new(mgr));
     let cx = test_package_context(&printer, &state);
     let reconciler = Reconciler::new(&registry, &state).diffing_installed(&cx);
 
     let mut module = make_resolved_module("dev");
-    module.packages = vec![unpriced_package(&mgr_name, "demofix-blind")];
+    module.packages = vec![
+        unpriced_package(&mgr_name, "demofix-blind"),
+        unpriced_package(&mgr_name, "demofix-deaf"),
+    ];
     let mut modules = vec![module];
     reconciler.fill_planned_versions(&mut modules, &registry.manager_map());
 
-    assert_eq!(queries.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(queries.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(
+        enumerations.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a failed read is held for the run, never retried per package — \
+         only successes memoize, and each retry is a full failing subprocess"
+    );
     assert_eq!(
         modules[0].packages[0].version.as_deref(),
         Some("2.2.2"),
         "the elision gate fails open exactly where the planner does"
     );
+    assert_eq!(modules[0].packages[1].version.as_deref(), Some("4.4.4"));
 }
 
 #[test]

@@ -1498,6 +1498,11 @@ pub(crate) struct StubPackageManager {
     /// claim — a count, never a duration — and shared, so a stub already handed
     /// out as a `&dyn PackageManager` can still be read back for it.
     version_queries: Arc<std::sync::atomic::AtomicUsize>,
+    /// How many times this stub was asked what it HOLDS, failing reads
+    /// included. The observable behind "one enumeration per manager per run":
+    /// `installed_for` memoizes successes only, so a caller retrying a failed
+    /// read per package shows up here as a count, never a duration.
+    enumerations: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[cfg(test)]
@@ -1514,6 +1519,7 @@ impl StubPackageManager {
             installed_error: None,
             fold_case: false,
             version_queries: Arc::default(),
+            enumerations: Arc::default(),
         }
     }
 
@@ -1521,6 +1527,13 @@ impl StubPackageManager {
     /// is handed to a resolver.
     pub fn version_query_counter(&self) -> Arc<std::sync::atomic::AtomicUsize> {
         Arc::clone(&self.version_queries)
+    }
+
+    /// The shared counter of this stub's enumerations, taken BEFORE the stub
+    /// is handed to a resolver. Failed reads count too — they are the ones a
+    /// caller can accidentally retry per package, since only successes memoize.
+    pub fn enumeration_counter(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+        Arc::clone(&self.enumerations)
     }
 
     /// Mark this stub as a case-insensitive manager so `package_identity`
@@ -1592,6 +1605,8 @@ impl PackageManager for StubPackageManager {
         Ok(())
     }
     fn installed_packages(&self, _cx: &PackageContext<'_>) -> Result<HashSet<String>> {
+        self.enumerations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Some(ref msg) = self.installed_error {
             return Err(crate::errors::CfgdError::Io(std::io::Error::other(
                 msg.clone(),

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::PathDisplayExt;
 use crate::config::{LOCAL_LAYER, MergedProfile, ResolvedProfile, ScriptSpec};
@@ -988,29 +989,28 @@ impl<'a> super::Reconciler<'a> {
         modules: &mut [ResolvedModule],
         managers: &HashMap<String, &dyn PackageManager>,
     ) {
+        // One installed listing per manager, a FAILED read held too:
+        // `installed_for` memoizes successes only, so retrying per package
+        // turns one unreadable manager into one failing subprocess per
+        // declared package.
+        let mut listings: HashMap<String, Option<Arc<crate::providers::InstalledPackages>>> =
+            HashMap::new();
         for module in modules.iter_mut() {
             for pkg in module.packages.iter_mut() {
-                if pkg.version.is_some() || pkg.manager == "script" {
-                    continue;
-                }
-                let Some(&mgr) = managers.get(pkg.manager.as_str()) else {
+                let Some(mgr) = crate::modules::priceable_manager(pkg, managers) else {
                     continue;
                 };
-                if !mgr.is_available() {
-                    continue;
+                if let Some(cx) = self.installed {
+                    let listing = listings
+                        .entry(mgr.name().to_string())
+                        .or_insert_with(|| cx.installed_for(mgr).ok());
+                    if let Some(installed) = listing
+                        && !Self::package_survives_elision(mgr, installed, pkg)
+                    {
+                        continue;
+                    }
                 }
-                if let Some(cx) = self.installed
-                    && let Ok(installed) = cx.installed_for(mgr)
-                    && !Self::package_survives_elision(mgr, &installed, pkg)
-                {
-                    continue;
-                }
-                // A manager that cannot answer is not a failure — the version
-                // is a display detail, and the package still installs.
-                pkg.version = mgr
-                    .available_version_memoized(&pkg.resolved_name)
-                    .ok()
-                    .flatten();
+                crate::modules::price_package(pkg, mgr);
             }
         }
     }

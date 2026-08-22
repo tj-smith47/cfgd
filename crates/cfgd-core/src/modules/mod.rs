@@ -40,6 +40,7 @@ pub use resolve::{
     fill_available_versions, resolve_module_files, resolve_module_packages, resolve_modules,
     resolve_package,
 };
+pub(crate) use resolve::{price_package, priceable_manager};
 
 // ---------------------------------------------------------------------------
 // Resolved types — output of module resolution

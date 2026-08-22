@@ -984,6 +984,23 @@ if direct=$(rg --type-add 'rust:*.txt' --type rust -n '(console::|indicatif::(Pr
   echo "$direct"
 fi
 
+# 4b. Unconditional version pricing outside the two surfaces that render a
+#     version per DECLARED package (cfgd doctor, cfgd module show). Every
+#     PLANNING path routes through Reconciler::fill_planned_versions, the
+#     survivor-gated form — an unconditional fill there re-prices packages the
+#     plan elides, one subprocess per declared package per invocation (the
+#     converged-plan multi-second wait). See shared-utils.md's pricing entry.
+if unfenced=$(rg --type-add 'rust:*.txt' --type rust -n 'fill_available_versions\(' \
+      "${CFGD_AUDIT_PATH:-crates/}" \
+      --glob '!crates/cfgd-core/src/modules/resolve.rs' \
+      --glob '!crates/cfgd/src/cli/doctor.rs' \
+      --glob '!crates/cfgd/src/cli/module/list_show.rs' \
+      --glob '!**/tests.rs' \
+      --glob '!**/tests/**' 2>/dev/null) && [ -n "$unfenced" ]; then
+  log_error "UNCONDITIONAL VERSION PRICING (fill_available_versions is for doctor/module-show only — planning paths take Reconciler::fill_planned_versions):"
+  echo "$unfenced"
+fi
+
 # 5. Structured-output coverage table — every cmd_* function in cli/ must
 #    appear in .claude/rules/structured-output-coverage.md's table.
 #    Only match file-scope definitions (no leading whitespace) to avoid

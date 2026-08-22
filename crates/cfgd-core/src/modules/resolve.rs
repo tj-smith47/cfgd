@@ -214,22 +214,40 @@ pub fn fill_available_versions(
     managers: &HashMap<String, &dyn PackageManager>,
 ) {
     for pkg in packages {
-        if pkg.version.is_some() || pkg.manager == "script" {
-            continue;
-        }
-        let Some(mgr) = managers.get(pkg.manager.as_str()) else {
+        let Some(mgr) = priceable_manager(pkg, managers) else {
             continue;
         };
-        if !mgr.is_available() {
-            continue;
-        }
-        // A manager that cannot answer is not a resolution failure — the
-        // version is a display detail, and the package still installs.
-        pkg.version = mgr
-            .available_version_memoized(&pkg.resolved_name)
-            .ok()
-            .flatten();
+        price_package(pkg, mgr);
     }
+}
+
+/// The manager `pkg` can be priced through, when pricing applies at all:
+/// `None` for a package already carrying a version (the `minVersion` check
+/// found one), a `script` package (no manager to ask), an unregistered
+/// manager, or one that is not available (a bootstrappable manager resolves
+/// optimistically with no version). The ONE askability gate both
+/// [`fill_available_versions`] and
+/// [`crate::reconciler::Reconciler::fill_planned_versions`] read, so the
+/// survivor gate stays their only difference.
+pub(crate) fn priceable_manager<'m>(
+    pkg: &ResolvedPackage,
+    managers: &HashMap<String, &'m dyn PackageManager>,
+) -> Option<&'m dyn PackageManager> {
+    if pkg.version.is_some() || pkg.manager == "script" {
+        return None;
+    }
+    let mgr = *managers.get(pkg.manager.as_str())?;
+    mgr.is_available().then_some(mgr)
+}
+
+/// Price `pkg` through `mgr`'s memoized offer. A manager that cannot answer
+/// is not a failure — the version is a display detail, and the package still
+/// installs.
+pub(crate) fn price_package(pkg: &mut ResolvedPackage, mgr: &dyn PackageManager) {
+    pkg.version = mgr
+        .available_version_memoized(&pkg.resolved_name)
+        .ok()
+        .flatten();
 }
 
 // ---------------------------------------------------------------------------
