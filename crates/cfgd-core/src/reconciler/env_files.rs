@@ -1012,4 +1012,101 @@ mod tests {
             "unexpected quoting: {content}"
         );
     }
+
+    use super::super::env_engine::EnvPlatform;
+
+    #[test]
+    fn stable_line_prefix_stops_at_the_value_and_strips_its_quote() {
+        assert_eq!(
+            super::stable_line_prefix(
+                Some("export A=\"0x\"".to_string()),
+                Some("export A=\"1x\"".to_string())
+            )
+            .as_deref(),
+            Some("export A=")
+        );
+        assert_eq!(super::stable_line_prefix(None, Some("x".to_string())), None);
+        // Lines differing at their first character leave nothing stable to
+        // claim by, and an empty prefix would claim everything.
+        assert_eq!(
+            super::stable_line_prefix(Some("axx".to_string()), Some("bxx".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn env_var_line_prefix_prefixes_the_real_rendered_line_in_both_dialects() {
+        // `$env:OTHER;x` is the value that flips PowerShell to double quotes:
+        // only a quote-stripped prefix claims lines rendered under either.
+        for platform in [EnvPlatform::Linux, EnvPlatform::Windows] {
+            let prefix = super::env_var_line_prefix("EDITOR", platform).unwrap();
+            assert!(
+                prefix.contains("EDITOR") && !prefix.contains("cfgd"),
+                "prefix must carry the name and never a sentinel: {prefix:?}"
+            );
+            for value in ["nvim", "a\"b$(x)", "$env:OTHER;x"] {
+                let line = super::primary_env_var_line(
+                    &EnvVar {
+                        name: "EDITOR".to_string(),
+                        value: value.to_string(),
+                    },
+                    platform,
+                )
+                .unwrap();
+                assert!(
+                    line.starts_with(&prefix),
+                    "{prefix:?} must prefix {line:?} ({platform:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn alias_line_prefixes_cover_every_rendered_alias_shape() {
+        // `git` renders as Set-Alias on Windows, `git status --short` as a
+        // function wrapper: one declared name, two line shapes, both claimed.
+        for platform in [EnvPlatform::Linux, EnvPlatform::Windows] {
+            let prefixes = super::alias_line_prefixes("g", platform);
+            assert!(!prefixes.is_empty(), "no prefixes for {platform:?}");
+            for prefix in &prefixes {
+                assert!(
+                    prefix.contains('g') && !prefix.contains("cfgd"),
+                    "prefix must carry the name and never a sentinel: {prefix:?}"
+                );
+            }
+            for command in ["git", "git status --short"] {
+                let line = super::primary_alias_line(
+                    &ShellAlias {
+                        name: "g".to_string(),
+                        command: command.to_string(),
+                    },
+                    platform,
+                )
+                .unwrap();
+                assert!(
+                    prefixes.iter().any(|p| line.starts_with(p.as_str())),
+                    "no prefix in {prefixes:?} claims {line:?} ({platform:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn path_dirs_line_prefix_prefixes_the_generated_path_line() {
+        let unix = super::generate_env_file_content(&[], &[], &["/opt/homebrew/bin".to_string()]);
+        let prefix = super::path_dirs_line_prefix(EnvPlatform::Linux).unwrap();
+        assert!(
+            unix.lines().nth(1).unwrap().starts_with(&prefix),
+            "{prefix:?} must prefix the unix PATH line: {unix}"
+        );
+        assert!(!prefix.contains("cfgd"), "sentinel leaked: {prefix:?}");
+
+        let ps = super::generate_powershell_env_content(&[], &[], &["C:/tools/bin".to_string()]);
+        let prefix = super::path_dirs_line_prefix(EnvPlatform::Windows).unwrap();
+        assert!(
+            ps.lines().nth(1).unwrap().starts_with(&prefix),
+            "{prefix:?} must prefix the PowerShell PATH line: {ps}"
+        );
+        assert!(!prefix.contains("cfgd"), "sentinel leaked: {prefix:?}");
+    }
 }

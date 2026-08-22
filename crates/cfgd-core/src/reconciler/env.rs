@@ -551,3 +551,103 @@ impl<'a> super::Reconciler<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{EnvVar, ShellAlias};
+
+    fn ev(name: &str, value: &str) -> EnvVar {
+        EnvVar {
+            name: name.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    fn ps(env: &[EnvVar], aliases: &[ShellAlias], path_dirs: &[String]) -> String {
+        super::super::env_files::generate_powershell_env_content(env, aliases, path_dirs)
+    }
+
+    // The reconciler-level gate tests run under the host's own
+    // `EnvPlatform::current()` (Unix on CI), so the PowerShell dialect of the
+    // unclaimed-deletion scan is driven here explicitly against
+    // `.cfgd-env.ps1`-shaped content — pure string logic, no Windows host in
+    // the loop.
+
+    #[test]
+    fn a_deleted_entry_in_a_powershell_baseline_is_unclaimed() {
+        let foo = ev("FOO", "bar");
+        let baseline = ps(&[foo.clone(), ev("BAR", "baz")], &[], &[]);
+        let desired = ps(std::slice::from_ref(&foo), &[], &[]);
+        assert!(
+            has_unclaimed_disappearing_line(&baseline, &desired, &[foo], &[], EnvPlatform::Windows,),
+            "BAR is declared nowhere, so its deployed line is unclaimed"
+        );
+    }
+
+    #[test]
+    fn another_layers_addition_to_a_powershell_baseline_stays_claimed() {
+        let foo = ev("FOO", "bar");
+        let catn = ShellAlias {
+            name: "catn".to_string(),
+            command: "cat -n".to_string(),
+        };
+        let baseline = ps(std::slice::from_ref(&foo), &[], &[]);
+        let desired = ps(std::slice::from_ref(&foo), std::slice::from_ref(&catn), &[]);
+        assert!(
+            !has_unclaimed_disappearing_line(
+                &baseline,
+                &desired,
+                &[foo],
+                &[catn],
+                EnvPlatform::Windows,
+            ),
+            "an addition leaves no orphaned line behind"
+        );
+    }
+
+    #[test]
+    fn a_changed_powershell_value_is_claimed_across_its_quote_flip() {
+        // `$env:BASE;x` renders double-quoted while a plain value renders
+        // single-quoted, so a value change across that flip leaves a
+        // disappearing line whose quote differs from the current
+        // declaration's — only the quote-stripped name prefix ties it back.
+        // Both directions, because the disappearing line is always the OLD
+        // rendering and either quote can be the old one.
+        let plain = ev("FOO", "bar");
+        let referencing = ev("FOO", "$env:BASE;x");
+        for (old, new) in [(&plain, &referencing), (&referencing, &plain)] {
+            let baseline = ps(std::slice::from_ref(old), &[], &[]);
+            let desired = ps(std::slice::from_ref(new), &[], &[]);
+            assert!(
+                !has_unclaimed_disappearing_line(
+                    &baseline,
+                    &desired,
+                    std::slice::from_ref(new),
+                    &[],
+                    EnvPlatform::Windows,
+                ),
+                "a value change ({:?} -> {:?}) is claimed by its still-declared name, not read as a deletion",
+                old.value,
+                new.value
+            );
+        }
+    }
+
+    #[test]
+    fn a_powershell_path_dirs_change_is_claimed_as_scaffolding() {
+        let foo = ev("FOO", "bar");
+        let baseline = ps(std::slice::from_ref(&foo), &[], &["C:/old/bin".to_string()]);
+        let desired = ps(std::slice::from_ref(&foo), &[], &["C:/new/bin".to_string()]);
+        assert!(
+            !has_unclaimed_disappearing_line(
+                &baseline,
+                &desired,
+                &[foo],
+                &[],
+                EnvPlatform::Windows,
+            ),
+            "the old PATH line is cfgd's own scaffolding, never a layer's deleted entry"
+        );
+    }
+}
