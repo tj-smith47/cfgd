@@ -143,6 +143,13 @@ pub(super) struct PrimaryEnvWrite {
     baseline: Option<String>,
     desired: String,
     platform: EnvPlatform,
+    /// The deployed baseline holds a managed line the desired rendering no
+    /// longer contains AND that no current layer's declared entries account
+    /// for — the shape a DELETED declaration leaves behind. The deleted
+    /// entry is absent from every current declaration, so no per-module
+    /// comparison can see it or say whose it was: attribution is
+    /// unanswerable, and the gate fails OPEN for every deferred module.
+    unclaimed_deletion: bool,
 }
 
 impl PrimaryEnvWrite {
@@ -161,6 +168,14 @@ impl PrimaryEnvWrite {
         env: &[crate::config::EnvVar],
         aliases: &[crate::config::ShellAlias],
     ) -> bool {
+        // A deleted declaration is invisible to the per-entry comparison
+        // below (it iterates only CURRENT entries), so an unclaimed
+        // disappearing line makes the whole attribution unanswerable and
+        // every asking module revives — same fail-open as the unreadable
+        // baseline.
+        if self.unclaimed_deletion {
+            return true;
+        }
         let Some(baseline) = &self.baseline else {
             return true;
         };
@@ -175,6 +190,49 @@ impl PrimaryEnvWrite {
             )
             .any(|line| deployed.contains(line.as_str()) != desired.contains(line.as_str()))
     }
+}
+
+/// Whether `baseline` holds a managed line that `desired` no longer contains
+/// and that no CURRENT declared entry (env var, alias, or the generator's own
+/// PATH scaffolding) accounts for.
+///
+/// Claiming is by name-derived line PREFIX (`env_var_line_prefix` and
+/// friends), not whole-line equality, so a line that merely CHANGED — its
+/// name still declared, its value different — is claimed by its declaration
+/// and left to the per-module presence comparison that already detects it.
+/// Only a line whose name no current layer declares at all goes unclaimed.
+/// Confined to the primary MANAGED file's content, which cfgd authors in
+/// full; user-authored rc files never pass through here.
+fn has_unclaimed_disappearing_line(
+    baseline: &str,
+    desired: &str,
+    merged_env: &[crate::config::EnvVar],
+    merged_aliases: &[crate::config::ShellAlias],
+    platform: EnvPlatform,
+) -> bool {
+    let desired_lines: HashSet<&str> = desired.lines().collect();
+    // Blank and comment lines are the generator's fixed scaffolding (header,
+    // trailing newline), never a declaration's rendering.
+    let disappeared: Vec<&str> = baseline
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && !desired_lines.contains(l))
+        .collect();
+    if disappeared.is_empty() {
+        return false;
+    }
+    let mut claimed: Vec<String> = merged_env
+        .iter()
+        .filter_map(|ev| super::env_files::env_var_line_prefix(&ev.name, platform))
+        .collect();
+    for alias in merged_aliases {
+        claimed.extend(super::env_files::alias_line_prefixes(&alias.name, platform));
+    }
+    claimed.extend(super::env_files::path_dirs_line_prefix(platform));
+    disappeared.iter().any(|line| {
+        !claimed
+            .iter()
+            .any(|prefix| line.starts_with(prefix.as_str()))
+    })
 }
 
 impl<'a> super::Reconciler<'a> {
@@ -285,10 +343,20 @@ impl<'a> super::Reconciler<'a> {
                     if !primary_seen {
                         primary_seen = true;
                         if !converged {
+                            let unclaimed_deletion = baseline.as_deref().is_some_and(|b| {
+                                has_unclaimed_disappearing_line(
+                                    b,
+                                    &content,
+                                    &merged,
+                                    &merged_aliases,
+                                    platform,
+                                )
+                            });
                             primary_write = Some(PrimaryEnvWrite {
                                 baseline,
                                 desired: content.clone(),
                                 platform,
+                                unclaimed_deletion,
                             });
                         }
                     }

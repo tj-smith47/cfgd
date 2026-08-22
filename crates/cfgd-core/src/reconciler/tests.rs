@@ -23666,6 +23666,91 @@ fn an_unanswerable_env_baseline_fails_open_and_revives_hooks() {
 }
 
 #[test]
+fn a_modules_own_env_entry_deletion_revives_its_hooks() {
+    // The module deletes ONE of its several declared entries. The deleted
+    // entry is absent from every current declaration, so the per-entry
+    // comparison cannot see it — its deployed line goes unclaimed, the
+    // attribution is unanswerable, and the gate fails OPEN: hooks revive.
+    let fx = env_hook_gate_fixture();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &fx.state);
+    let mut resolved = make_empty_resolved();
+    resolved.merged.env_scope = crate::config::EnvScope::Interactive;
+    let mut with_bar = fx.module("bar");
+    with_bar.env.push(crate::config::EnvVar {
+        name: "BAR".to_string(),
+        value: "baz".to_string(),
+    });
+    fx.converge_env(&reconciler, &resolved, with_bar);
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            vec![fx.module("bar")],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    assert!(
+        plan_has_env_action(&plan),
+        "the shrunk declaration plans its env rewrite, got:\n{:?}",
+        all_plan_items(&plan)
+    );
+    assert!(
+        plan_has_hook_work(&plan),
+        "the module's own entry deletion revives its hooks, got:\n{:?}",
+        all_plan_items(&plan)
+    );
+}
+
+#[test]
+fn a_profile_layer_deleting_its_alias_revives_converged_modules_hooks() {
+    // Documented over-trigger, pinned as the chosen semantics: the deleted
+    // alias belonged to the PROFILE, but a deleted declaration is absent
+    // from every current layer, so plan-time attribution cannot say whose
+    // its deployed line was. Per the fail-open ruling, uncertainty revives
+    // — a converged module's hooks running once too often on the rare
+    // deletion beats them silently not running when the deletion was the
+    // module's own. Contrast with the ADDITION case
+    // (`another_layers_env_change_does_not_revive_a_converged_modules_hooks`),
+    // which leaves no orphaned line behind and stays cleanly attributed.
+    let fx = env_hook_gate_fixture();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &fx.state);
+    let mut resolved = make_empty_resolved();
+    resolved.merged.env_scope = crate::config::EnvScope::Interactive;
+    resolved.merged.aliases.push(crate::config::ShellAlias {
+        name: "catn".to_string(),
+        command: "cat -n".to_string(),
+    });
+    fx.converge_env(&reconciler, &resolved, fx.module("bar"));
+
+    resolved.merged.aliases.clear();
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            vec![fx.module("bar")],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    assert!(
+        plan_has_env_action(&plan),
+        "the deletion plans its env rewrite, got:\n{:?}",
+        all_plan_items(&plan)
+    );
+    assert!(
+        plan_has_hook_work(&plan),
+        "an unclaimed deleted line fails open and revives the hooks, got:\n{:?}",
+        all_plan_items(&plan)
+    );
+}
+
+#[test]
 fn a_script_and_env_module_keeps_its_hooks_unconditionally() {
     // A module with no packages and no files is a script module whatever else
     // it declares: the scripts are the whole of its content, and there is

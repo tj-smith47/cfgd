@@ -256,6 +256,96 @@ pub(super) fn primary_alias_line(
         .map(str::to_string)
 }
 
+/// The shared derivation behind the `*_line_prefix` helpers below: the common
+/// prefix of two renders of one entry whose values differ at their FIRST
+/// character, which is exactly the rendered line up to where the value
+/// starts. A trailing quote is stripped because PowerShell picks its quote
+/// per value (`'` normally, `"` for a `$env:`-referencing one), so the
+/// quote-free prefix claims a line rendered under either. `None` when either
+/// render refused the name, or when nothing stable precedes the value.
+fn stable_line_prefix(a: Option<String>, b: Option<String>) -> Option<String> {
+    let (a, b) = (a?, b?);
+    let mut n = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
+    while n > 0 && !a.is_char_boundary(n) {
+        n -= 1;
+    }
+    let prefix = a[..n]
+        .strip_suffix(|c| c == '\'' || c == '"')
+        .unwrap_or(&a[..n]);
+    (!prefix.is_empty()).then(|| prefix.to_string())
+}
+
+/// The dialect-rendered prefix of the line env var `name` renders as in the
+/// primary managed file, up to (not including) its value — `export FOO=` /
+/// `$env:FOO = `. Built by rendering the real generator twice with sentinel
+/// values rather than restating its format string, so the two cannot drift.
+/// A deployed line starting with this prefix is accounted for by the CURRENT
+/// declaration of `name` (a value change, not a deletion).
+pub(super) fn env_var_line_prefix(
+    name: &str,
+    platform: super::env_engine::EnvPlatform,
+) -> Option<String> {
+    let line = |value: &str| {
+        primary_env_var_line(
+            &crate::config::EnvVar {
+                name: name.to_string(),
+                value: value.to_string(),
+            },
+            platform,
+        )
+    };
+    stable_line_prefix(line("0cfgdsentinel"), line("1cfgdsentinel"))
+}
+
+/// The alias counterpart of [`env_var_line_prefix`]. Plural because
+/// PowerShell renders a one-word command as `Set-Alias` and a multi-word one
+/// as a function wrapper — two line shapes for one declared name, both of
+/// which must claim a deployed line however the OLD value was shaped.
+pub(super) fn alias_line_prefixes(
+    name: &str,
+    platform: super::env_engine::EnvPlatform,
+) -> Vec<String> {
+    let line = |command: &str| {
+        primary_alias_line(
+            &crate::config::ShellAlias {
+                name: name.to_string(),
+                command: command.to_string(),
+            },
+            platform,
+        )
+    };
+    let mut prefixes: Vec<String> = [
+        ("0cfgdsentinel", "1cfgdsentinel"),
+        ("0cfgd sentinel", "1cfgd sentinel"),
+    ]
+    .into_iter()
+    .filter_map(|(a, b)| stable_line_prefix(line(a), line(b)))
+    .collect();
+    prefixes.dedup();
+    prefixes
+}
+
+/// The prefix of the generator's own PATH scaffolding line (`export PATH=` /
+/// `$env:PATH = `), so a PATH line rendered from a PAST run's bootstrapped
+/// directories is claimed as cfgd's own scaffolding rather than read as some
+/// layer's deleted entry.
+pub(super) fn path_dirs_line_prefix(platform: super::env_engine::EnvPlatform) -> Option<String> {
+    let line = |dir: &str| {
+        let dirs = [dir.to_string()];
+        let content = if platform == super::env_engine::EnvPlatform::Windows {
+            generate_powershell_env_content(&[], &[], &dirs)
+        } else {
+            generate_env_file_content(&[], &[], &dirs)
+        };
+        content
+            .lines()
+            .nth(1)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+    };
+    stable_line_prefix(line("0cfgdsentinel"), line("1cfgdsentinel"))
+}
+
 /// Read a cfgd-generated env file for comparison against the content about to
 /// be written. `None` means "no usable comparison" and the file is regenerated.
 ///
