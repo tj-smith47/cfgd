@@ -68,26 +68,26 @@ Show
 Type "cfgd backup list"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 2s
+Sleep 4s
 
 # Beat 2: take the snapshot. The output names the stamped snapshot it wrote.
 Type "cfgd backup run"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 2s
+Sleep 4s
 
 # Beat 3: tamper from outside cfgd, then show the damage. Combined into one
 # line — echo prints nothing itself, so the visible output is entirely cat's.
 Type "echo 'oops' > ~/notes.md && cat ~/notes.md"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 2s
+Sleep 4s
 
 # Beat 4: the snapshot inventory — what restore can put back.
 Type "cfgd backup list notes --snapshots"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 2s
+Sleep 4s
 
 # Beat 5: the payoff. --yes skips the confirmation prompt for a clean,
 # deterministic recording (the CLI reference's own examples restore this
@@ -95,7 +95,7 @@ Sleep 2s
 Type "cfgd backup restore notes --yes && cat ~/notes.md"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 2s
+Sleep 4s
 
 # Closing hold — breathing room before the loop snaps back to the opening
 # frame, matching drift.tape/author.tape's closing beat.

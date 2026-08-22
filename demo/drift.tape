@@ -66,7 +66,7 @@ Show
 Type "cfgd status --module nvim --scan"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 2s
+Sleep 4s
 
 # Beat 2: sabotage a real module-managed file from outside cfgd. `rm` first
 # because the file is deployed via Symlink — editing through the link in
@@ -76,19 +76,19 @@ Sleep 2s
 # instant.
 Type "rm ~/.config/nvim/stylua.toml && echo '# not mine' > ~/.config/nvim/stylua.toml"
 Enter
-Sleep 1s
+Sleep 2s
 
 # Beat 3: the same live scan now reports it.
 Type "cfgd status --module nvim --scan"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 2s
+Sleep 4s
 
 # Beat 4: the hunk. cfgd diff always runs the live scan — no --scan needed.
 Type "cfgd diff --module nvim"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 2s
+Sleep 4s
 
 # Beat 5: heal it. `--phase files` scopes to the phase that owns the drifted
 # file — the nvim module's postApply hooks (plugin sync, go tool installs)
@@ -98,13 +98,13 @@ Sleep 2s
 Type "cfgd apply --module nvim --phase files --yes"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 2s
+Sleep 4s
 
 # Beat 6: clean again.
 Type "cfgd status --module nvim --scan"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 2s
+Sleep 4s
 
 # Closing hold — breathing room before the loop snaps back to the opening
 # frame, matching init.tape's closing beat.

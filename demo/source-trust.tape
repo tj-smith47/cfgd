@@ -94,7 +94,7 @@ Show
 Type "cfgd source show team"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 2s
+Sleep 4s
 
 # Beat 2: the demo's core. `cfgd sync` really fetches the fixture, really
 # runs `git log --format=%G?` against its HEAD, and really refuses — the
@@ -104,7 +104,7 @@ Sleep 2s
 Type "cfgd sync"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 3s
+Sleep 6s
 
 # Beat 3: the fix. A brand-new signed commit (never an amend — cfgd's fetch
 # only fast-forwards the cache, and an amended HEAD is a diverged rewrite the
@@ -125,7 +125,7 @@ Show
 Type "cfgd sync"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 2s
+Sleep 4s
 
 # Beat 3b: the render beat 1 couldn't reach. Same command, now that the
 # manifest verifies — `source show` resolves the subscription policy
@@ -134,7 +134,7 @@ Sleep 2s
 Type "cfgd source show team"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 2s
+Sleep 4s
 
 # Beat 4: the payoff. `cfgd source list` is the concise, honest render of a
 # healthy subscription — `cfgd status` also proves it but buries the source
@@ -143,7 +143,7 @@ Sleep 2s
 Type "cfgd source list"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 2s
+Sleep 4s
 
 # Closing hold — breathing room before the loop snaps back to the opening
 # frame, matching drift.tape/author.tape/backup.tape's closing beat.
