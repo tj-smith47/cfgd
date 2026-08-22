@@ -23810,7 +23810,14 @@ fn an_unanswerable_env_baseline_fails_open_and_revives_hooks() {
     resolved.merged.env_scope = crate::config::EnvScope::Interactive;
     fx.converge_env(&reconciler, &resolved, fx.module("bar"));
 
-    std::fs::write(fx.dir.path().join(".cfgd.env"), b"\xff\xfe broken").unwrap();
+    // Damage the PLATFORM's primary file: the Windows engine reads
+    // `.cfgd-env.ps1`, and a damaged `.cfgd.env` there is a file it never opens.
+    let primary = if cfg!(windows) {
+        ".cfgd-env.ps1"
+    } else {
+        ".cfgd.env"
+    };
+    std::fs::write(fx.dir.path().join(primary), b"\xff\xfe broken").unwrap();
     let plan = reconciler
         .plan(
             &resolved,
