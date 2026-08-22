@@ -740,10 +740,37 @@ fn a_source_lock_still_excludes_after_its_file_is_deleted_by_the_holder() {
         || std::fs::remove_file(&lock_path),
         "the file the holder locked is removed",
     );
-    remove_with_retry(
-        || std::fs::remove_dir(&cache),
-        "the directory holding it goes too",
-    );
+    // On Windows the POSIX-deleted lock file pins its parent directory until
+    // every open handle on it closes (persistent on Server 2025 runners;
+    // Server 2022 releases the pin at the unlink). The holder's handle and
+    // the blocked contender's both stay open by design for the length of
+    // this test, so no retry budget can outwait DirectoryNotEmpty — and a
+    // real `rm -rf` on such a host hits the same wall, leaving the directory
+    // standing too, so the directory-gone state is unreachable there and the
+    // file-gone half above is the whole simulation. Everything the test
+    // proves keys on the FILE being replaced; a surviving directory only
+    // means the re-acquire skips its re-create step.
+    let mut last: Option<std::io::Error> = None;
+    for _ in 0..1000 {
+        match std::fs::remove_dir(&cache) {
+            Ok(()) => {
+                last = None;
+                break;
+            }
+            Err(e) if cfg!(windows) && e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+                last = None;
+                break;
+            }
+            Err(e) => {
+                last = Some(e);
+                // sleep-ok: waiting out a foreign scanner's transient handle; no in-process observable exists for another process's handle
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+    if let Some(e) = last {
+        panic!("the directory holding it goes too: still failing after retries: {e:?}");
+    }
     drop(guard);
     took_rx.recv().expect("the contender takes the lock");
 
