@@ -13,7 +13,7 @@ use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
     brew_available, brew_cmd, brew_path_dirs, command_failure_reason,
-    install_batch_then_per_package, pkg_run, run_pkg_cmd, run_pkg_cmd_live,
+    install_batch_then_per_package, pkg_run, run_pkg_cmd, run_pkg_cmd_live, run_pkg_cmd_msg,
 };
 
 pub struct BrewManager;
@@ -71,6 +71,63 @@ pub(super) fn parse_brew_info_version(
 
 pub struct BrewTapManager;
 
+// Older brew has no `trust` subcommand and no trust gate either, so its
+// "Unknown command: trust/untrust" refusal means there is nothing to record.
+fn is_missing_trust_subcommand(message: &str) -> bool {
+    message.to_lowercase().contains("unknown command")
+}
+
+impl BrewTapManager {
+    // Current brew ignores formulae, casks and commands from a tap the user
+    // has not trusted (`brew trust --tap` records the grant in trust.json,
+    // non-interactively — the command takes no confirmation), so a tap cfgd
+    // adds is only usable once trusted. A real trust failure leaves the tap's
+    // formulae uninstallable, which fails the install it belongs to.
+    fn trust_tap(&self, tap: &str) -> Result<()> {
+        match run_pkg_cmd_msg(
+            "brew-tap",
+            brew_cmd().args(["trust", "--tap", tap]),
+            "install",
+            &format!("brew trust --tap {tap}"),
+        ) {
+            Err(PackageError::InstallFailed { message, .. })
+                if is_missing_trust_subcommand(&message) =>
+            {
+                Ok(())
+            }
+            other => Ok(other.map(|_| ())?),
+        }
+    }
+
+    // The untap already succeeded when this runs, so a failed untrust is
+    // residue (a trust.json entry naming a tap that no longer exists), never
+    // a failed uninstall — it is reported as a caveat instead of propagated,
+    // which also keeps untap working for taps trusted before cfgd recorded
+    // trust at all.
+    fn untrust_tap(&self, tap: &str, cx: &cfgd_core::providers::PackageContext<'_>) {
+        match run_pkg_cmd_msg(
+            "brew-tap",
+            brew_cmd().args(["untrust", "--tap", tap]),
+            "uninstall",
+            &format!("brew untrust --tap {tap}"),
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                if let PackageError::UninstallFailed { message, .. } = &e
+                    && is_missing_trust_subcommand(message)
+                {
+                    return;
+                }
+                cx.report(
+                    Role::Warn,
+                    "brew-tap",
+                    cfgd_core::output::collapse_to_subject_line(&e),
+                );
+            }
+        }
+    }
+}
+
 impl PackageManager for BrewTapManager {
     fn name(&self) -> &str {
         "brew-tap"
@@ -111,6 +168,7 @@ impl PackageManager for BrewTapManager {
                 &label,
                 "install",
             )?;
+            self.trust_tap(tap)?;
         }
         Ok(())
     }
@@ -129,6 +187,7 @@ impl PackageManager for BrewTapManager {
                 &label,
                 "uninstall",
             )?;
+            self.untrust_tap(tap, cx);
         }
         Ok(())
     }

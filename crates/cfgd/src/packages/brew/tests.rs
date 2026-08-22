@@ -632,7 +632,7 @@ mod brew_shim {
 
     #[test]
     #[serial]
-    fn brew_tap_install_runs_one_tap_subcommand_per_entry() {
+    fn brew_tap_install_taps_then_trusts_each_entry() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
         let st = test_state();
@@ -640,15 +640,59 @@ mod brew_shim {
         BrewTapManager
             .install(&["org/foo".into(), "org/bar".into()], &cx)
             .expect("Ok");
-        assert_eq!(shim.invocation_count(), 2, "one brew invocation per tap");
+        assert_eq!(
+            shim.invocation_count(),
+            4,
+            "one tap + one trust invocation per entry: {}",
+            shim.argv_log()
+        );
         let argv = shim.argv_log();
-        assert!(argv.contains("tap org/foo"));
-        assert!(argv.contains("tap org/bar"));
+        let lines: Vec<&str> = argv.lines().collect();
+        let tap_at = |needle: &str| {
+            lines
+                .iter()
+                .position(|l| *l == needle)
+                .unwrap_or_else(|| panic!("missing `{needle}` in {lines:?}"))
+        };
+        // Trust follows its own tap: brew ignores an untrusted tap's formulae,
+        // so a formula install later in the run needs the grant already recorded.
+        assert!(tap_at("tap org/foo") < tap_at("trust --tap org/foo"));
+        assert!(tap_at("tap org/bar") < tap_at("trust --tap org/bar"));
     }
 
     #[test]
     #[serial]
-    fn brew_tap_uninstall_runs_one_untap_subcommand_per_entry() {
+    fn brew_tap_install_tolerates_an_old_brew_without_the_trust_subcommand() {
+        let shim = ToolShim::install_failing_on(SHIM_ENV, "trust", "Error: Unknown command: trust");
+        let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
+        BrewTapManager
+            .install(&["org/foo".into()], &cx)
+            .expect("an old brew with no trust gate needs no trust step");
+        assert!(shim.argv_log().contains("tap org/foo"));
+    }
+
+    #[test]
+    #[serial]
+    fn brew_tap_install_propagates_a_real_trust_failure() {
+        let _shim = ToolShim::install_failing_on(SHIM_ENV, "trust", "Error: org/foo is not tapped");
+        let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
+        let err = BrewTapManager
+            .install(&["org/foo".into()], &cx)
+            .expect_err("a failed trust leaves the tap's formulae ignored");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("brew trust --tap org/foo"),
+            "error must name the trust step that failed: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn brew_tap_uninstall_untaps_then_untrusts_each_entry() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();
         let st = test_state();
@@ -656,6 +700,27 @@ mod brew_shim {
         BrewTapManager
             .uninstall(&["org/foo".into()], &cx)
             .expect("Ok");
+        let argv = shim.argv_log();
+        let lines: Vec<&str> = argv.lines().collect();
+        let untap = lines.iter().position(|l| *l == "untap org/foo");
+        let untrust = lines.iter().position(|l| *l == "untrust --tap org/foo");
+        assert!(
+            untap.is_some() && untrust.is_some() && untap < untrust,
+            "untap must run, then its trust entry is removed: {argv}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn brew_tap_uninstall_tolerates_a_failed_untrust() {
+        let shim =
+            ToolShim::install_failing_on(SHIM_ENV, "untrust", "Error: org/foo is not trusted");
+        let p = test_printer();
+        let st = test_state();
+        let cx = test_package_context(&p, &st);
+        BrewTapManager
+            .uninstall(&["org/foo".into()], &cx)
+            .expect("a stale trust entry is residue, not a failed untap");
         assert!(shim.argv_log().contains("untap org/foo"));
     }
 
