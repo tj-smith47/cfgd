@@ -6,8 +6,8 @@ Output "demo/.out/author.mp4"
 Require docker
 
 Set Shell "bash"
-# Same font as drift.tape — the alpha dashboard beat renders Nerd Font glyphs,
-# and cfgd's own output (icons, spinners) shares the terminal.
+# Same font as drift.tape — cfgd's own output (icons, spinners) renders
+# Nerd Font glyphs.
 Set FontFamily "FiraCode Nerd Font Mono"
 Set FontSize 15
 Set Width 1320
@@ -132,28 +132,6 @@ Type "cfgd apply --yes"
 Enter
 Wait@60s /cfgd\$$/
 Sleep 5s
-
-# Beat 8: change one piece of module CONTENT — the alpha dashboard greeting's
-# name. The nvim files are deployed as symlinks into the module tree, so the
-# edit is live the moment it lands: opening nvim IS the proof, no redeploy
-# needed. The closing apply confirms cfgd still has nothing to do — content
-# flowed through the link, not around cfgd's back.
-Type "sed -i 's/TJ/Taylor/' ~/.config/cfgd/modules/nvim/files/lua/plugins/dashboard.lua"
-Enter
-Wait@10s /cfgd\$$/
-Sleep 2s
-Type "nvim"
-Enter
-Wait+Screen@20s /Welcome, Taylor Smith!/
-Sleep 5s
-Type ":qa"
-Enter
-Wait@30s /cfgd\$$/
-Sleep 1s
-Type "cfgd apply --yes"
-Enter
-Wait@60s /cfgd\$$/
-Sleep 4s
 
 # Closing hold — breathing room before the loop snaps back to the opening
 # frame, matching drift.tape's closing beat.
