@@ -1,12 +1,13 @@
 # Whole take plays at 1:1 (make-gif-flat.sh, no ramp) — this tape's claim is
-# the CLI-authoring loop itself, so nothing in it is worth compressing away.
+# the authoring loop on an ALREADY-CONVERGED machine: discover the schema,
+# change one thing, watch cfgd do exactly that one thing and then nothing.
 Output "demo/.out/author.mp4"
 
 Require docker
 
 Set Shell "bash"
-# Same font as drift.tape — no LazyVim glyphs on screen here, but the shell
-# prompt and cfgd's own output (icons, spinners) share the terminal.
+# Same font as drift.tape — the alpha dashboard beat renders Nerd Font glyphs,
+# and cfgd's own output (icons, spinners) shares the terminal.
 Set FontFamily "FiraCode Nerd Font Mono"
 Set FontSize 15
 Set Width 1320
@@ -15,9 +16,9 @@ Set TypingSpeed 50ms
 Set Padding 20
 Set Framerate 50
 
-# Everything up to the converged prompt is hidden: this tape's claim is
-# authoring a profile from the CLI, not the install that gets a machine to a
-# starting point. Recording resumes on an already-converged machine.
+# Everything up to the converged prompt is hidden: this tape starts where the
+# hero demo ends. Recording resumes on an already-converged machine, which is
+# what lets beats 7 and 8 say anything about idempotency.
 Hide
 Type "clear"
 Enter
@@ -41,10 +42,9 @@ Wait@30s /cfgd\$$/
 # credentials baked into the demo image (cfgd correctly refuses it — that's
 # not a bug, there's nothing to authenticate with), and `clift` installs `gum`
 # via plain apt, which needs charm's apt repo configured and isn't present on
-# a bare Ubuntu base. Both are unrelated to this tape's claim (authoring
-# packages/aliases via the CLI), so they're stripped from the profile here,
-# hidden, the same way the hidden setup already scopes convergence to nvim
-# only rather than showing the full (irrelevant) profile install.
+# a bare Ubuntu base. Both are unrelated to this tape's claim, so they're
+# stripped from the profile here, hidden, the same way the hidden setup
+# already scopes convergence to nvim only.
 Type "cfgd profile update base --module -jarvis --module -clift"
 Enter
 Wait@30s /cfgd\$$/
@@ -53,66 +53,107 @@ Enter
 Sleep 500ms
 Show
 
+# Beat 0: the starting point, on camera — converged machine, nvim module
+# applied, no drift recorded. Without this frame beats 7/8 have no baseline.
+Type "cfgd status"
+Enter
+Wait@60s /cfgd\$$/
+Sleep 5s
+
 # Beat 1: render the schema/field docs for a resource path — proves you can
 # discover what a profile accepts without opening docs or an editor.
 Type "cfgd explain profile.spec.packages"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 2s
+Sleep 5s
 
-# Beat 2: mutate the profile from the CLI — add a package and a shell alias
-# in one command, no editor. `base` is the real profile name in the cloned
-# config, verified via `cfgd profile list` during validation. `catn` (not
-# `k=kubectl`) because the demo image is bare Ubuntu with no kubectl on
-# PATH — the alias has to be one beat 5 can actually run.
-Type "cfgd profile update base --package brew:jq --alias catn='cat -n'"
+# Beat 2: recurse into one manager key — brew is not just a list, it carries
+# taps / formulae / casks / a Brewfile path, which is what beat 3 leans on.
+Type "cfgd explain profile.spec.packages.brew"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 2s
+Sleep 4s
 
-# Beat 3: preview what the update queued. The plan also carries nvim's full
-# declared package/file/post-script set alongside the new jq install — nvim
-# is already fully converged (verified via `brew list`/`dpkg -l` matching
-# every pinned version), but `cfgd plan`'s package-phase rendering shows a
-# module's whole declared set on every run rather than eliding satisfied
-# packages the way it does for profile-level ones (`brew install jq` here
-# correctly disappears once jq is actually installed — module packages don't
-# get that same diff). Real, accurate, unedited cfgd output either way; the
-# new profile:base package/alias-carrying work is the top of the Packages
-# phase.
+# Beat 3: mutate the profile from the CLI — a tap, a formula delivered
+# through brew, and a shell alias, one command, no editor. `catn` (not
+# `k=kubectl`) because the demo image is bare Ubuntu with no kubectl on
+# PATH — the alias has to be one beat 6 can actually run.
+Type "cfgd profile update base \"
+Enter
+Type "    --package brew-tap:charmbracelet/tap \"
+Enter
+Type "    --package brew:gum \"
+Enter
+Type "    --alias catn='cat -n'"
+Enter
+Wait@60s /cfgd\$$/
+Sleep 4s
+
+# Beat 4: preview what the update queued. Only the tap, gum and the env write
+# the alias caused appear — everything nvim-owned is satisfied and elided, so
+# the plan is exactly the delta beat 3 created.
 Type "cfgd plan"
 Enter
 Wait@60s /cfgd\$$/
-Sleep 2s
+Sleep 6s
 
-# Beat 4: converge. Everything nvim-owned no-ops (already installed/deployed,
-# confirmed during validation); the only real work is the jq install this
-# tape's beat 2 queued.
+# Beat 5: converge. The tap is added (and trusted) before the formula that
+# may only exist inside it, then gum installs; nothing nvim-owned re-runs.
+# 5m, not 60s: the tap clone and the brew index refresh are network round
+# trips whose worst case is not this box's to control.
 Type "cfgd apply --yes"
 Enter
-Wait@60s /cfgd\$$/
-Sleep 2s
+Wait@5m /cfgd\$$/
+Sleep 6s
 
-# Beat 5: the payoff, both halves. This shell's copy of ~/.cfgd.env predates
+# Beat 6: the payoff, both halves. This shell's copy of ~/.cfgd.env predates
 # the write cfgd apply just made, so re-source it first — on its own line,
 # never chained with `&&` onto the alias invocation below, since bash
 # resolves an alias against what was already defined when it PARSED the
-# line, not what a same-line `source` just defined — then run the alias
-# itself against that same file, proving the exact alias
-# `cfgd profile update` queued actually resolves and runs, not just that it
-# was declared.
+# line — then prove the formula runs and the exact alias beat 3 queued
+# resolves against the very file that declared it.
 Type "source ~/.cfgd.env"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 1s
+Sleep 2s
+Type "gum --version"
+Enter
+Wait@10s /cfgd\$$/
+Sleep 3s
 Type "catn ~/.cfgd.env"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 2s
-Type "jq --version"
+Sleep 4s
+
+# Beat 7: the idempotency shot — the same apply again, and cfgd says the
+# whole machine is up to date in one line. Nothing re-installs, no module
+# hook re-runs.
+Type "cfgd apply --yes"
 Enter
 Wait@60s /cfgd\$$/
+Sleep 5s
+
+# Beat 8: change one piece of module CONTENT — the alpha dashboard greeting's
+# name. The nvim files are deployed as symlinks into the module tree, so the
+# edit is live the moment it lands: opening nvim IS the proof, no redeploy
+# needed. The closing apply confirms cfgd still has nothing to do — content
+# flowed through the link, not around cfgd's back.
+Type "sed -i 's/TJ/Taylor/' ~/.config/cfgd/modules/nvim/files/lua/plugins/dashboard.lua"
+Enter
+Wait@10s /cfgd\$$/
 Sleep 2s
+Type "nvim"
+Enter
+Wait+Screen@20s /Welcome, Taylor Smith!/
+Sleep 5s
+Type ":qa"
+Enter
+Wait@30s /cfgd\$$/
+Sleep 1s
+Type "cfgd apply --yes"
+Enter
+Wait@60s /cfgd\$$/
+Sleep 4s
 
 # Closing hold — breathing room before the loop snaps back to the opening
 # frame, matching drift.tape's closing beat.
