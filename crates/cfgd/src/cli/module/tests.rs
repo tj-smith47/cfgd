@@ -3451,14 +3451,21 @@ fn cmd_module_show_renders_platform_filtered_and_resolved_packages() {
         // A host named by neither entry — FreeBSD, today. Both are filtered,
         // which is still a rendering worth pinning: without an arm here the
         // test builds the output and asserts nothing at all on that host,
-        // passing while proving nothing.
+        // passing while proving nothing. Subject and detail are matched
+        // separately: the renderer pads the shorter subject to align the
+        // detail column, so the dash's exact spacing varies per entry.
         assert!(
-            output.contains("curl, platforms: linux/macos — skipped (platform filter)"),
-            "an entry naming neither host platform should be filtered with its declared list, got: {output}"
+            output.contains("curl, platforms: linux/macos"),
+            "an entry naming neither host platform should render its declared list, got: {output}"
         );
         assert!(
-            output.contains("notepad, platforms: windows — skipped (platform filter)"),
-            "an entry naming neither host platform should be filtered with its declared list, got: {output}"
+            output.contains("notepad, platforms: windows"),
+            "an entry naming neither host platform should render its declared list, got: {output}"
+        );
+        assert_eq!(
+            output.matches("skipped (platform filter)").count(),
+            2,
+            "both entries should be platform-filtered on a host neither names, got: {output}"
         );
     }
 }
