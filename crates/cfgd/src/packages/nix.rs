@@ -8,8 +8,8 @@ use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
-    bootstrap_via_shell_script, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
-    strip_version_suffix, tool_cmd_with_resolver,
+    bootstrap_via_shell_script, install_batch_then_per_package, resolve_tool_with_fallbacks,
+    run_pkg_cmd, run_pkg_cmd_live, strip_version_suffix, tool_cmd_with_resolver,
 };
 
 pub struct NixManager;
@@ -115,26 +115,24 @@ impl PackageManager for NixManager {
         packages: &[String],
         cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<()> {
-        for pkg in packages {
-            if nix_available() {
-                let label = format!("nix profile install nixpkgs#{}", pkg);
-                run_pkg_cmd_live(
-                    cx,
-                    "nix",
-                    nix_cmd().args(["profile", "install", &format!("nixpkgs#{}", pkg)]),
-                    &label,
-                    "install",
-                )?;
-            } else {
-                let label = format!("nix-env -iA nixpkgs.{}", pkg);
-                run_pkg_cmd_live(
-                    cx,
-                    "nix",
-                    nix_env_cmd().args(["-iA", &format!("nixpkgs.{}", pkg)]),
-                    &label,
-                    "install",
-                )?;
-            }
+        // Both install forms take many packages in one invocation (`nix profile
+        // install [option...] installables...`; `nix-env -iA args...`), and the
+        // nix-vs-nix-env choice is a property of the host, not of a package —
+        // so it is decided once, outside the batch closure.
+        if nix_available() {
+            install_batch_then_per_package(cx, "nix", packages, |pkgs| {
+                let mut cmd = nix_cmd();
+                cmd.args(["profile", "install"]);
+                cmd.args(pkgs.iter().map(|p| format!("nixpkgs#{}", p)));
+                cmd
+            })?;
+        } else {
+            install_batch_then_per_package(cx, "nix", packages, |pkgs| {
+                let mut cmd = nix_env_cmd();
+                cmd.arg("-iA");
+                cmd.args(pkgs.iter().map(|p| format!("nixpkgs.{}", p)));
+                cmd
+            })?;
         }
         Ok(())
     }
@@ -551,7 +549,7 @@ mod tests {
 
         #[test]
         #[serial]
-        fn nix_install_routes_through_nix_profile_when_nix_available() {
+        fn nix_install_batches_all_packages_into_one_nix_profile_spawn() {
             // CFGD_NIX_BIN is set → nix_available() returns true → install
             // takes the `nix profile install` path. CFGD_NIX_ENV_BIN must
             // stay unset so the test fails loudly if the wrong branch fires.
@@ -560,20 +558,65 @@ mod tests {
             let st = test_state();
             let cx = test_package_context(&p, &st);
             NixManager
-                .install(&["ripgrep".into(), "fd".into()], &cx)
+                .install(&["ripgrep".into(), "fd".into(), "bat".into()], &cx)
                 .expect("Ok");
-            // is_available() consults nix_env_available() first; install
-            // hits nix_available() per package. With the shim set only on
-            // CFGD_NIX_BIN, install should call the shim 2× via
-            // `nix profile install nixpkgs#<pkg>`.
-            let argv = s.argv_log();
-            assert!(
-                argv.contains("profile install nixpkgs#ripgrep"),
-                "ripgrep argv must use `nix profile install nixpkgs#`: {argv}"
+            // Filter to the lines naming this test's own subject: the seam is
+            // a process-global env var, so an unfiltered count also measures
+            // whatever a parallel test spawned through the same shim.
+            let lines = s.argv_lines_naming("nixpkgs#ripgrep");
+            assert_eq!(
+                lines.len(),
+                1,
+                "three packages must produce ONE spawn: {}",
+                s.argv_log()
             );
             assert!(
-                argv.contains("profile install nixpkgs#fd"),
-                "fd argv must use `nix profile install nixpkgs#`: {argv}"
+                lines[0].contains("profile install")
+                    && lines[0].contains("nixpkgs#fd")
+                    && lines[0].contains("nixpkgs#bat"),
+                "the one spawn must carry every installable: {}",
+                lines[0]
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn nix_install_batch_failure_falls_back_to_per_package_attribution() {
+            // The shim fails any argv naming the bad package: the batch line
+            // carries it (so the batch fails), then the per-package retry
+            // isolates it while the valid ones install.
+            let s = ToolShim::install_failing_on(
+                SHIM_ENV,
+                "nixpkgs#nope",
+                "error: flake 'nixpkgs' does not provide attribute 'nope'",
+            );
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let err = NixManager
+                .install(&["ripgrep".into(), "nope".into()], &cx)
+                .expect_err("the bad package must fail after the retry");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("nope") && msg.contains("does not provide attribute"),
+                "the error must name the failed package and its cause: {msg}"
+            );
+            assert!(
+                !msg.contains("ripgrep ("),
+                "the valid package must not be attributed a failure: {msg}"
+            );
+            // One batch spawn naming both, then one retry per package.
+            assert_eq!(
+                s.argv_lines_naming("nixpkgs#ripgrep").len(),
+                2,
+                "batch + its own retry: {}",
+                s.argv_log()
+            );
+            assert_eq!(
+                s.argv_lines_naming("nixpkgs#nope").len(),
+                2,
+                "batch + its own retry: {}",
+                s.argv_log()
             );
         }
 
@@ -669,11 +712,15 @@ mod tests {
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
-            NixManager.install(&["ripgrep".into()], &cx).expect("Ok");
-            let argv = s.argv_log();
+            NixManager
+                .install(&["ripgrep".into(), "fd".into()], &cx)
+                .expect("Ok");
+            let lines = s.argv_lines_naming("nixpkgs.ripgrep");
+            assert_eq!(lines.len(), 1, "one batched spawn: {}", s.argv_log());
             assert!(
-                argv.contains("-iA nixpkgs.ripgrep"),
-                "fallback argv must use `nix-env -iA nixpkgs.<pkg>`: {argv}"
+                lines[0].contains("-iA nixpkgs.ripgrep nixpkgs.fd"),
+                "fallback argv must batch `nix-env -iA nixpkgs.<pkg>...`: {}",
+                lines[0]
             );
         }
 

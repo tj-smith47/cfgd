@@ -128,6 +128,11 @@ impl PackageManager for WingetManager {
     }
 
     fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
+        // One spawn per package on purpose: winget's multi-package form is
+        // positional QUERIES (case-insensitive substring over name/id/moniker;
+        // usage `winget install [[-q] <query> ...]`), while `--id` is a
+        // single-value option. A batch would drop the id-restricted match and
+        // can resolve a declared id to a different package than this path does.
         for pkg in packages {
             run_pkg_cmd_live(
                 cx,

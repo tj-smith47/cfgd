@@ -7,8 +7,8 @@ use cfgd_core::errors::Result;
 use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageInfo, PackageManager};
 
 use super::shared::{
-    canonical_ci_pkg_name, home_relative_dir, parse_version_field, resolve_tool_with_fallbacks,
-    run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
+    canonical_ci_pkg_name, home_relative_dir, install_batch_then_per_package, parse_version_field,
+    resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query, tool_cmd_with_resolver,
 };
 
 pub struct ScoopManager;
@@ -159,15 +159,13 @@ impl PackageManager for ScoopManager {
     }
 
     fn install(&self, packages: &[String], cx: &PackageContext<'_>) -> Result<()> {
-        for pkg in packages {
-            run_pkg_cmd_live(
-                cx,
-                "scoop",
-                scoop_cmd().args(["install", pkg]),
-                &format!("Installing {}", pkg),
-                "install",
-            )?;
-        }
+        // `scoop install <app>...` takes many apps in one invocation
+        // (scoop-install.ps1 iterates its $apps array).
+        install_batch_then_per_package(cx, "scoop", packages, |pkgs| {
+            let mut cmd = scoop_cmd();
+            cmd.arg("install").args(pkgs);
+            cmd
+        })?;
         Ok(())
     }
 
@@ -351,9 +349,10 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // PackageManager trait impls via a fake scoop binary on PATH. scoop_cmd()
-    // resolves the tool through command_path (no CFGD_SCOOP_BIN seam), so PATH
-    // manipulation routes the invocation through our shim.
+    // PackageManager trait impls via a fake scoop binary. scoop_cmd() honors the
+    // CFGD_SCOOP_BIN seam first (tool_cmd_with_resolver), so a ToolShim carries
+    // argv logging for spawn-count claims; the PATH-shim tests predate the seam
+    // and stay on PATH manipulation.
     // ---------------------------------------------------------------------------
 
     #[cfg(unix)]
@@ -433,14 +432,67 @@ mod tests {
 
         #[test]
         #[serial]
-        fn scoop_install_invokes_per_package() {
-            let (_bin, _path) = install_scoop_shim(0, "", "");
+        fn scoop_install_batches_all_packages_into_one_spawn() {
+            let s = cfgd_core::test_helpers::ToolShim::install("CFGD_SCOOP_BIN", 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
             ScoopManager
-                .install(&["git".into(), "ripgrep".into()], &cx)
+                .install(&["git".into(), "ripgrep".into(), "fd".into()], &cx)
                 .expect("install Ok");
+            // Filter to the lines naming this test's own subject: the seam is
+            // a process-global env var, so an unfiltered count also measures
+            // whatever a parallel test spawned through the same shim.
+            let lines = s.argv_lines_naming("ripgrep");
+            assert_eq!(
+                lines.len(),
+                1,
+                "three apps must produce ONE spawn: {}",
+                s.argv_log()
+            );
+            assert!(
+                lines[0].contains("install git ripgrep fd"),
+                "the one spawn must carry every app: {}",
+                lines[0]
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn scoop_install_batch_failure_falls_back_to_per_package_attribution() {
+            let s = cfgd_core::test_helpers::ToolShim::install_failing_on(
+                "CFGD_SCOOP_BIN",
+                "nope",
+                "Couldn't find manifest for 'nope'",
+            );
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+            let err = ScoopManager
+                .install(&["git".into(), "nope".into()], &cx)
+                .expect_err("the bad app must fail after the retry");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("nope") && msg.contains("Couldn't find manifest"),
+                "the error must name the failed app and its cause: {msg}"
+            );
+            assert!(
+                !msg.contains("git ("),
+                "the valid app must not be attributed a failure: {msg}"
+            );
+            // One batch spawn naming both, then one retry per app.
+            assert_eq!(
+                s.argv_lines_naming("git").len(),
+                2,
+                "batch + its own retry: {}",
+                s.argv_log()
+            );
+            assert_eq!(
+                s.argv_lines_naming("nope").len(),
+                2,
+                "batch + its own retry: {}",
+                s.argv_log()
+            );
         }
 
         #[test]
