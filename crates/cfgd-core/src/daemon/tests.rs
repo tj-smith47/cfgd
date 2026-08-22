@@ -13953,6 +13953,48 @@ spec: {}
         );
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_nested_edit_under_a_directory_target_reaches_the_watcher_channel() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Managed target is a directory TREE: the edit lands a level below
+        // its immediate children, which a NonRecursive watch never reports.
+        let tree = tmp.path().join("nvim-lua");
+        let nested_dir = tree.join("plugins");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+        let nested_file = nested_dir.join("dashboard.lua");
+        std::fs::write(&nested_file, b"return {}").unwrap();
+        // Config dir is elsewhere so the recursive config-dir watch cannot be
+        // the one that delivers the event.
+        let config_dir = tmp.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let (tx, mut rx) = mpsc::channel::<PathBuf>(8);
+
+        let _watcher = super::super::reconcile::setup_file_watcher(
+            tx,
+            std::slice::from_ref(&tree),
+            &config_dir,
+        )
+        .unwrap();
+        std::fs::write(&nested_file, b"return { name = 'Taylor' }").unwrap();
+
+        // The timeout is a deadlock escape, never a timing assertion: the
+        // event either arrives or the watch mode regressed to NonRecursive.
+        let got = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(path) = rx.recv().await {
+                if path.ends_with("dashboard.lua") {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+        assert_eq!(
+            got,
+            Ok(true),
+            "nested edit under a directory target should surface a watch event"
+        );
+    }
+
     #[test]
     fn git_internal_paths_are_dropped_and_content_paths_kept() {
         use super::super::reconcile::is_git_internal;

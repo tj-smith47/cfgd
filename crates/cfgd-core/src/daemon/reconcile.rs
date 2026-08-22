@@ -52,7 +52,18 @@ pub(crate) fn setup_file_watcher(
     // Watch managed files
     for path in managed_paths {
         if path.exists() {
-            if let Err(e) = watcher.watch(path, RecursiveMode::NonRecursive) {
+            // A directory target watched NonRecursive reports only its
+            // immediate children, so an edit nested one level deeper waited
+            // for the interval tick while a sibling FILE target reconciled
+            // immediately. Recurse into trees (`is_dir` follows a symlinked
+            // target); the `.git` filter above keeps a checkout inside one
+            // from self-triggering.
+            let mode = if path.is_dir() {
+                RecursiveMode::Recursive
+            } else {
+                RecursiveMode::NonRecursive
+            };
+            if let Err(e) = watcher.watch(path, mode) {
                 tracing::warn!(path = %path.posix(), error = %e, "cannot watch path");
             }
         } else if let Some(parent) = path.parent() {
