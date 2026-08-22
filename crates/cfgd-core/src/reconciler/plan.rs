@@ -978,8 +978,10 @@ impl<'a> super::Reconciler<'a> {
     /// packages hash is unchanged for planned work.
     ///
     /// Elision is judged through [`Self::package_survives_elision`] against
-    /// the same enumeration [`Self::retain_uninstalled`] reads (one memoized
-    /// listing per manager), and fails OPEN everywhere the planner does: no
+    /// the same enumeration [`Self::retain_uninstalled`] reads. On the success
+    /// path both cost one memoized listing per manager; this pass additionally
+    /// holds a FAILED read for its whole run, since the memo caches successes
+    /// only. It fails OPEN everywhere the planner does: no
     /// installed-state reader wired, or a manager that cannot be queried,
     /// prices the declared set in full exactly as the planner plans it in
     /// full. `cfgd doctor` and `cfgd module show` render a version per
