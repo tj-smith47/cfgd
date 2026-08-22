@@ -1,0 +1,180 @@
+# Whole take plays at 1:1 (make-gif-flat.sh, no ramp) — this tape's claim is
+# fleet sync: two machines initialized from one git config source, machine A
+# commits a change to the nvim module, and machine B's daemon pulls and
+# reconciles it while nobody touches B. The money shot is B's nvim gutter
+# switching from absolute to relative line numbers on its second open.
+Output "demo/.out/sync.mp4"
+
+Require docker
+
+Set Shell "bash"
+# Same font as author.tape — the alpha dashboard beats render Nerd Font
+# glyphs, and cfgd's own output (icons, tables) shares the terminal.
+Set FontFamily "FiraCode Nerd Font Mono"
+Set FontSize 15
+Set Width 1320
+Set Height 1000
+Set TypingSpeed 50ms
+Set Padding 20
+Set Framerate 50
+
+# Everything up to here is hidden and pre-staged by setup-sync-demo.sh: both
+# containers were initialized from the same bare git hub (mounted at
+# /srv/git/config.git in each), the nvim module applied, and `cfgd daemon run`
+# started on each with autoPull sync every 5s. autoPush stays off — this
+# tape's change leaves machine A by an explicit, on-camera git push. The
+# host prompt is renamed so the hops between machines read as hops.
+Hide
+Type "export PS1='host$ '"
+Enter
+# Gate on machine B's daemon having finished its INITIAL reconcile: the tick
+# loop is serial, the first reconcile on a cold machine blocks it for a
+# minute-plus, and every sync tick queues behind it — a take recorded before
+# it drains reaches beat 8 before the first pull can land. A second
+# "running reconciliation check" line only appears once the first has
+# finished, so two on screen means the loop is draining at its warm cadence.
+Type "docker exec machine-b tail -f /home/tj/daemon.log"
+Enter
+Wait+Screen@240s /(?s)running reconciliation check.*running reconciliation check/
+Ctrl+C
+Type "clear"
+Enter
+Sleep 500ms
+Show
+
+# Beat 1: hop onto machine B — the machine nobody will touch. Its hostname
+# is in the prompt, so every later frame says which machine is on camera.
+Type "docker exec -it machine-b bash -l"
+Enter
+Wait@15s /machine-b:~\$$/
+Sleep 2s
+
+# Beat 2: B's daemon is alive and syncing — running, zero drift, and the
+# `local` source (the machine's own clone of the shared config repo) active
+# with a last-sync timestamp. This is the agent that will do all the work.
+Type "cfgd daemon status"
+Enter
+Wait@30s /machine-b:~\$$/
+Sleep 5s
+
+# Beat 3: BEFORE — a real file in B's nvim, with the absolute line numbers
+# the shared config ships today (`require("config.options")` is line 3 and
+# its gutter says 3).
+Type "nvim ~/.config/nvim/init.lua"
+Enter
+Wait+Screen@20s /3 require\("config\.options"\)/
+Sleep 5s
+Type ":qa"
+Enter
+Wait@15s /machine-b:~\$$/
+Sleep 1s
+
+# Hidden scene cut: nvim leaves VHS's terminal unable to scroll the primary
+# screen (and can leave a stale scroll region) until a full reset — without
+# this, output later in the take silently stops at the bottom row and the
+# beat-8 log gate can never match. `printf '\033c'` is RIS: unlike `clear`,
+# it also drops any scroll region the nvim session left behind.
+Hide
+Type "printf '\033c'; clear"
+Enter
+Sleep 300ms
+Show
+
+# Beat 4: leave B untouched and hop onto machine A.
+Type "exit"
+Enter
+Wait@10s /host\$$/
+Sleep 1s
+Type "docker exec -it machine-a bash -l"
+Enter
+Wait@15s /machine-a:~\$$/
+Sleep 2s
+
+# Beat 5: the config dir IS a git clone of the shared source — turn on
+# relative line numbers in the nvim module (appended to the module's
+# init.lua, which runs the option late enough that nothing overrides it),
+# and read the diff back before it ships.
+Type "cd .config/cfgd"
+Enter
+Wait@10s /cfgd\$$/
+Sleep 1s
+Type "echo 'vim.opt.relativenumber = true' >> modules/nvim/files/init.lua"
+Enter
+Wait@10s /cfgd\$$/
+Sleep 1s
+Type "git diff"
+Enter
+Wait@10s /cfgd\$$/
+Sleep 5s
+
+# Beat 6: commit and push — the change leaves A for the shared source. This
+# is the last manual action in the demo; everything after is the daemon's.
+Type "git commit -am 'nvim: relative line numbers'"
+Enter
+Wait@10s /cfgd\$$/
+Sleep 3s
+Type "git push"
+Enter
+Wait@30s /cfgd\$$/
+Sleep 4s
+
+# Beat 7: back to machine B. Nothing is typed at it beyond looking — the
+# 5s-interval autoPull daemon is what moves the change.
+Type "exit"
+Enter
+Wait@10s /host\$$/
+Sleep 1s
+Type "docker exec -it machine-b bash -l"
+Enter
+Wait@15s /machine-b:~\$$/
+Sleep 1s
+
+# Hidden scene cut: fresh screen for the payoff act, so every line the
+# daemon log shows fits on screen without scrolling (see the note above —
+# same RIS reset, this shell is a fresh exec but the VHS terminal is not).
+Hide
+Type "printf '\033c'; clear"
+Enter
+Sleep 300ms
+Show
+Sleep 1s
+
+# Beat 8: watch the daemon's log live until the pull lands on camera — it
+# pulls, sees the module file change, and schedules a reconcile. The gate is
+# the pull line itself, so the take can never claim a sync it didn't see.
+Type "tail -f ~/daemon.log"
+Enter
+Wait+Screen@45s /pulled new changes from remote/
+Sleep 4s
+Ctrl+C
+Wait@10s /machine-b:~\$$/
+Sleep 1s
+
+# Beat 9: A's commit is at the tip of B's clone — nobody ran git here.
+Type "git -C ~/.config/cfgd log --oneline -1"
+Enter
+Wait+Screen@10s /relative line numbers/
+Sleep 4s
+
+# Beat 10: AFTER — the same file, reopened: the appended option is the new
+# last line, and the gutter now counts relative to the cursor (the appended
+# line sits 14 below it). The synced module content is live through the
+# deployed symlinks the moment the daemon's pull lands.
+Type "nvim ~/.config/nvim/init.lua"
+Enter
+Wait+Screen@20s /14 vim\.opt\.relativenumber = true/
+# lazy.nvim's update toast slides in ~2s after open and covers the tail of the
+# appended line for its 5s nvim-notify timeout. Sleep past its whole lifecycle,
+# then re-gate on the full line: while the toast is up, `= true` is covered and
+# the regex cannot match, so the dwell that follows is provably clean.
+Sleep 9s
+Wait+Screen@15s /14 vim\.opt\.relativenumber = true/
+Sleep 5s
+Type ":qa"
+Enter
+Wait@15s /machine-b:~\$$/
+Sleep 1s
+
+# Closing hold — breathing room before the loop snaps back to the opening
+# frame, matching the set's closing beat.
+Sleep 8s
