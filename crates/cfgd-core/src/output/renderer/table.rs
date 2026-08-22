@@ -1,8 +1,53 @@
 use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
 
-use super::{Renderer, Writer, role_glyph};
+use super::{Renderer, Writer, role_glyph, wrap};
 use crate::output::{Role, Verbosity, cursor_safe};
+
+/// Narrower than this a capped column carries almost nothing but its
+/// ellipsis, so shrinking stops here and a terminal too narrow to hold every
+/// column at the floor is left alone — the same stance `wrap::MIN_WRAP_WIDTH`
+/// takes for a status line.
+const MIN_COL_WIDTH: usize = 8;
+
+/// Shrink `widths` until the row they lay out (columns plus the two-space
+/// gaps between them) fits `budget`, always taking columns from the widest
+/// one — the offending column pays, and every other column keeps its natural
+/// width, which is the kubectl/docker-style degrade. No column drops below
+/// [`MIN_COL_WIDTH`]; if the floors themselves overflow, what is left is left.
+fn fit_widths(widths: &mut [usize], budget: usize) {
+    if widths.is_empty() {
+        return;
+    }
+    let gaps = 2 * (widths.len() - 1);
+    loop {
+        let total: usize = widths.iter().sum::<usize>() + gaps;
+        if total <= budget {
+            return;
+        }
+        let overflow = total - budget;
+        let widest = (0..widths.len()).max_by_key(|&i| widths[i]).unwrap_or(0);
+        if widths[widest] <= MIN_COL_WIDTH {
+            return;
+        }
+        // Come down no further than the runner-up: past it a DIFFERENT column
+        // is the widest and should pay the remainder instead.
+        let runner_up = widths
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| i != widest)
+            .map(|(_, w)| *w)
+            .max()
+            .unwrap_or(0);
+        let target = widths[widest]
+            .saturating_sub(overflow)
+            .max(runner_up)
+            .max(MIN_COL_WIDTH);
+        // A tie with the runner-up would leave the width unchanged; one column
+        // must still shrink or nothing ever converges.
+        widths[widest] = target.min(widths[widest] - 1);
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Table {
@@ -80,6 +125,16 @@ impl Renderer {
                 widths[i] = widths[i].max(UnicodeWidthStr::width(cell.as_str()));
             }
         }
+        // A grid wider than the terminal is not a grid: the terminal
+        // hard-wraps the over-wide row to column 0 and the header under its
+        // own rule. Cap the widest column(s) until the row fits and truncate
+        // what a capped column holds with `…`, so every row stays one line in
+        // consistent columns. Only a sink that hard-wraps asks (a golden's
+        // capture buffer answers `None` and keeps its natural widths).
+        if let Some(term_cols) = w.wrap_columns() {
+            fit_widths(&mut widths, wrap::line_budget(term_cols, depth));
+        }
+        let clamped = |cell: &str, i: usize| wrap::clamp(cell, widths[i]);
         // Header row. Pad by the display-width deficit so CJK / emoji / accented
         // cells line up with ASCII neighbours — `format!("{:<w$}", ...)` pads by
         // char count, which over-pads multi-byte and under-pads zero-width.
@@ -90,6 +145,7 @@ impl Renderer {
             .iter()
             .enumerate()
             .map(|(i, h)| {
+                let h = clamped(h, i);
                 let pad = widths[i].saturating_sub(UnicodeWidthStr::width(h.as_str()));
                 let padded = format!("{h}{}", " ".repeat(pad));
                 self.theme.header.apply_to(padded).to_string()
@@ -117,6 +173,7 @@ impl Renderer {
                 .enumerate()
                 .take(cols)
                 .map(|(i, cell)| {
+                    let cell = clamped(cell, i);
                     let pad = widths[i].saturating_sub(UnicodeWidthStr::width(cell.as_str()));
                     let padded = format!("{cell}{}", " ".repeat(pad));
                     match roles_for_row.get(i).and_then(|r| *r) {
@@ -331,6 +388,151 @@ mod tests {
             prefix_display_width(ru, "ru"),
             prefix_display_width(fr, "fr"),
             "Cyrillic and ASCII rows must align by display width.\nout:\n{out}"
+        );
+    }
+
+    /// A sink that hard-wraps at a fixed column, the way a terminal does.
+    /// `StringSink` answers `None`, so the width cap is only ever exercised
+    /// against one of these — which is also why goldens are never re-capped.
+    struct NarrowSink(StringSink, usize);
+
+    impl Writer for NarrowSink {
+        fn write_line(&self, text: &str) {
+            self.0.write_line(text);
+        }
+
+        fn wrap_columns(&self) -> Option<usize> {
+            Some(self.1)
+        }
+    }
+
+    fn display_width(line: &str) -> usize {
+        UnicodeWidthStr::width(line.trim_end())
+    }
+
+    /// The demo-terminal shape that broke the grid: a `cfgd status` Managed
+    /// Resources row whose `module:packages:…` resource id is wider than the
+    /// terminal. Left to the terminal it hard-wrapped the row to column 0 and
+    /// the "Source" header under "Resource" with a doubled rule; capped, every
+    /// row stays one line in consistent columns with the cut marked `…`.
+    #[test]
+    fn an_over_wide_cell_is_capped_into_the_grid_instead_of_wrapping_out_of_it() {
+        let cols = 100;
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = NarrowSink(StringSink(buf.clone()), cols);
+        let r = Renderer::new(Theme::default(), Verbosity::Normal);
+        let packages: Vec<String> = (0..28).map(|i| format!("pkg-number-{i}")).collect();
+        let wide = format!("nvim:packages:{}", packages.join(","));
+        let t = Table::new(["Type", "Resource", "Source"])
+            .row(["file", "~/.config/nvim", "module:nvim"])
+            .row(["packages", wide.as_str(), "module:nvim"]);
+        r.render_table(&sink, 0, &t);
+        let out = crate::test_helpers::captured_text(&buf);
+        let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+
+        // One header line carrying every header, one rule, one line per row —
+        // a dropped or terminal-wrapped row would change the count.
+        assert_eq!(lines.len(), 4, "header, rule, two rows: {out:?}");
+        assert!(
+            lines[0].contains("Type")
+                && lines[0].contains("Resource")
+                && lines[0].contains("Source"),
+            "every header stays on the one header line: {:?}",
+            lines[0]
+        );
+        for line in &lines {
+            assert!(
+                display_width(line) <= cols,
+                "a line wider than the terminal is a wrapped grid: {line:?}"
+            );
+        }
+        let wide_row = lines
+            .iter()
+            .find(|l| l.contains("nvim:packages:"))
+            .expect("the over-wide row must still render");
+        assert!(
+            wide_row.contains('…'),
+            "the cap is marked, not silent: {wide_row:?}"
+        );
+        // The capped cell keeps its column: Source still lands at the same
+        // display column on both data rows.
+        let narrow_row = lines
+            .iter()
+            .find(|l| l.contains("~/.config/nvim"))
+            .expect("the ordinary row must render");
+        assert_eq!(
+            prefix_display_width(wide_row, "module:nvim"),
+            prefix_display_width(narrow_row, "module:nvim"),
+            "the Source column must stay aligned across rows:\n{out}"
+        );
+    }
+
+    /// A table that already fits its terminal renders exactly as it does on a
+    /// non-wrapping sink: the cap only engages on overflow.
+    #[test]
+    fn a_table_that_fits_its_terminal_is_left_at_natural_widths() {
+        let render_with = |sink: &dyn Writer, buf: &Arc<Mutex<String>>| {
+            let r = Renderer::new(Theme::default(), Verbosity::Normal);
+            let t = Table::new(["Name", "Age"])
+                .row(["alice", "30"])
+                .row(["bob", "25"]);
+            r.render_table(sink, 0, &t);
+            crate::test_helpers::captured_text(buf)
+        };
+        let wide_buf = Arc::new(Mutex::new(String::new()));
+        let wide = render_with(&NarrowSink(StringSink(wide_buf.clone()), 100), &wide_buf);
+        let plain_buf = Arc::new(Mutex::new(String::new()));
+        let plain = render_with(&StringSink(plain_buf.clone()), &plain_buf);
+        assert_eq!(wide, plain, "a fitting table must not be reshaped");
+        assert!(!wide.contains('…'), "nothing to cap: {wide:?}");
+    }
+
+    /// A terminal too narrow to hold every column at the floor is left alone —
+    /// the same stance `wrap_body` takes below `MIN_WRAP_WIDTH`. The grid
+    /// still degrades no further than the floors.
+    #[test]
+    fn a_pathologically_narrow_terminal_stops_shrinking_at_the_floor() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = NarrowSink(StringSink(buf.clone()), 10);
+        let r = Renderer::new(Theme::default(), Verbosity::Normal);
+        let t = Table::new(["Resource", "Source"])
+            .row(["something-quite-long-indeed", "another-long-value-here"]);
+        r.render_table(&sink, 0, &t);
+        let out = crate::test_helpers::captured_text(&buf);
+        let row = out
+            .lines()
+            .find(|l| l.contains('…'))
+            .expect("both columns capped to the floor");
+        assert!(
+            display_width(row) <= 2 * MIN_COL_WIDTH + 2,
+            "no column shrinks past the floor, none grows either: {row:?}"
+        );
+    }
+
+    #[test]
+    fn fit_widths_takes_from_the_widest_and_leaves_the_rest_natural() {
+        let mut widths = vec![8, 200, 11];
+        fit_widths(&mut widths, 100);
+        assert_eq!(widths[0], 8, "an innocent column keeps its width");
+        assert_eq!(widths[2], 11, "an innocent column keeps its width");
+        assert_eq!(
+            widths.iter().sum::<usize>() + 4,
+            100,
+            "the offending column pays exactly the overflow: {widths:?}"
+        );
+    }
+
+    #[test]
+    fn fit_widths_levels_ties_instead_of_looping_forever() {
+        let mut widths = vec![50, 50, 50];
+        fit_widths(&mut widths, 60);
+        assert!(
+            widths.iter().sum::<usize>() + 4 <= 60,
+            "equal columns level down together: {widths:?}"
+        );
+        assert!(
+            widths.iter().all(|w| *w >= MIN_COL_WIDTH),
+            "no column drops below the floor: {widths:?}"
         );
     }
 
