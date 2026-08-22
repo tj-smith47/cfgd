@@ -310,7 +310,11 @@ fn tier_index(tier: Tier) -> usize {
 struct GroupWait<'p> {
     owner: &'p Owner,
     tier: Tier,
-    /// The group still has an action that has not been dispatched.
+    /// The group still has an undispatched action held BEHIND the tier
+    /// barrier. A source registration does not count: it is offered across
+    /// the barrier, gets its own specific row when blocked, and counting it
+    /// here would render its wait twice — once as the coarse tier row and
+    /// once as the per-slot row.
     pending: bool,
 }
 
@@ -1219,15 +1223,25 @@ fn held_waits<'p>(inputs: &WaitInputs<'_, 'p>) -> Held<'p> {
         .map(|(owner, tier)| GroupWait {
             owner,
             tier: *tier,
-            pending: slots
-                .iter()
-                .any(|s| s.state == SlotState::Waiting && s.owner.token() == owner.token()),
+            pending: slots.iter().any(|s| {
+                s.state == SlotState::Waiting
+                    && !s.registers_sources
+                    && s.owner.token() == owner.token()
+            }),
         })
         .collect();
-    let pending_owners: Vec<String> = waits
+    // Sealing counts EVERY waiting slot, source registrations included: the
+    // tap's group must stay open to gain and settle the tap's own row, even
+    // when the tap is the only work the group has left.
+    let pending_owners: Vec<String> = inputs
+        .groups
         .iter()
-        .filter(|g| g.pending)
-        .map(|g| g.owner.token())
+        .filter(|(owner, _)| {
+            slots
+                .iter()
+                .any(|s| s.state == SlotState::Waiting && s.owner.token() == owner.token())
+        })
+        .map(|(owner, _)| owner.token())
         .collect();
     // A `Vec` throughout, never a `HashMap`: the order these are built in IS
     // the top-to-bottom order the tree draws new rows in, and collecting
@@ -1789,6 +1803,18 @@ mod tests {
             )),
             "the tier filter does not hide a barrier-crossing tap: {:?}",
             rows(&held)
+        );
+        // One row per wait: the tap crossed the barrier, so its owner is not
+        // also "waiting on modules" — the coarse tier row would say the same
+        // wait twice.
+        assert!(
+            !rows(&held).contains(&("profile:work".to_string(), "waiting on modules".to_string())),
+            "the coarse tier row never doubles the tap's specific row: {:?}",
+            rows(&held)
+        );
+        assert!(
+            held.pending_owners.contains(&"profile:work".to_string()),
+            "the tap's group stays open to settle the tap's own row"
         );
     }
 
