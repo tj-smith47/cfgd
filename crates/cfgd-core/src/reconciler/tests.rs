@@ -14529,8 +14529,10 @@ fn apply_converges_env_file_in_the_same_run_that_bootstraps() {
         "the bootstrapped manager's directories must reach the env file: {contents}"
     );
 
-    // The record is what a later plan reads back, so a second apply is a no-op
-    // rather than a rewrite.
+    // The record is what a later plan reads back: re-derived byte-identical,
+    // the write is elided at plan time, so a second apply plans nothing. A
+    // derivation that drifted from the record would surface here as a planned
+    // write carrying the drifted content.
     let replan = reconciler
         .plan(
             &resolved,
@@ -14540,10 +14542,10 @@ fn apply_converges_env_file_in_the_same_run_that_bootstraps() {
             ReconcileContext::Apply,
         )
         .unwrap();
-    assert_eq!(
-        planned_env_file_content(&replan).as_deref(),
-        Some(contents.as_str()),
-        "the next plan must re-derive byte-identical content from the record"
+    assert!(
+        planned_env_file_content(&replan).is_none(),
+        "a converged env file must plan no write: {:?}",
+        planned_env_file_content(&replan)
     );
 }
 
@@ -23287,6 +23289,154 @@ fn a_converged_env_declaring_modules_hooks_are_deferred_not_dropped() {
         actions.is_empty() && gated.is_empty(),
         "a fully converged module defers nothing, got: {actions:?} / {gated:?}"
     );
+}
+
+#[test]
+fn a_converged_env_surface_plans_no_env_actions() {
+    // The elision is at plan time, with the same reads the apply arm makes:
+    // once the managed file and the rc source line hold what the plan would
+    // write, a re-plan carries no env actions at all instead of re-planning
+    // writes the apply would only report back as unchanged.
+    let tmp = tempfile::tempdir().unwrap();
+    let env = vec![crate::config::EnvVar {
+        name: "EDITOR".into(),
+        value: "nvim".into(),
+    }];
+    let aliases = vec![crate::config::ShellAlias {
+        name: "v".into(),
+        command: "nvim".into(),
+    }];
+    let plan = || {
+        Reconciler::plan_env_with_home(
+            &env,
+            &aliases,
+            crate::config::EnvScope::Interactive,
+            &[],
+            &[],
+            &[],
+            &[],
+            tmp.path(),
+        )
+    };
+
+    let (first, _) = plan();
+    assert!(!first.is_empty(), "a fresh home has env work");
+    let printer = test_printer();
+    for action in &first {
+        if let Action::Env(ea) = action {
+            Reconciler::apply_env_action(ea, &printer, crate::providers::NoteSink::discarded())
+                .unwrap();
+        }
+    }
+
+    let (second, _) = plan();
+    assert!(
+        second.is_empty(),
+        "an applied env surface plans nothing, got: {second:?}"
+    );
+}
+
+#[test]
+fn a_converged_env_declaring_module_goes_fully_quiet_once_the_surface_converges() {
+    // The env-gated hook fold keys off env actions EXISTING; with the env
+    // surface elided at plan time, a module whose files and env are both
+    // converged plans neither its hooks nor any env work — the run is
+    // truthfully "nothing to do" instead of re-running every postApply hook
+    // on every converged apply.
+    let dir = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(dir.path());
+    let src = dir.path().join("src");
+    let tgt = dir.path().join("tgt");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&tgt).unwrap();
+    std::fs::write(src.join("rc"), "settled").unwrap();
+    std::fs::write(tgt.join("rc"), "settled").unwrap();
+
+    let state = test_state();
+    let apply_id = state
+        .record_apply("test", "hash", ApplyStatus::Success, None)
+        .unwrap();
+    state
+        .upsert_module_file(
+            "shellrc",
+            &crate::to_posix_fs_key(tgt.join("rc")),
+            "",
+            "Copy",
+            apply_id,
+        )
+        .unwrap();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let module = || {
+        let mut module = hooked_file_module(
+            "shellrc",
+            vec![deployable_file(&src.join("rc"), &tgt.join("rc"))],
+        );
+        module.env.push(crate::config::EnvVar {
+            name: "FOO".to_string(),
+            value: "bar".to_string(),
+        });
+        module
+    };
+    let mut resolved = make_empty_resolved();
+    resolved.merged.env_scope = crate::config::EnvScope::Interactive;
+
+    let before = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            vec![module()],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+    let env_actions: Vec<&Action> = before
+        .phases
+        .iter()
+        .flat_map(|p| p.actions())
+        .filter(|a| matches!(a, Action::Env(_)))
+        .collect();
+    assert!(
+        !env_actions.is_empty(),
+        "a fresh home still has env work to plan"
+    );
+    let printer = test_printer();
+    for action in env_actions {
+        if let Action::Env(ea) = action {
+            Reconciler::apply_env_action(ea, &printer, crate::providers::NoteSink::discarded())
+                .unwrap();
+        }
+    }
+
+    let after = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            vec![module()],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+    assert!(
+        !after
+            .phases
+            .iter()
+            .flat_map(|p| p.actions())
+            .any(|a| matches!(a, Action::Env(_))),
+        "the converged env surface plans no actions, got:\n{:?}",
+        all_plan_items(&after)
+    );
+    for phase in [PhaseName::PreScripts, PhaseName::PostScripts] {
+        assert!(
+            !after
+                .phases
+                .iter()
+                .any(|p| p.name == phase && !p.is_empty()),
+            "a fully converged module runs no {phase:?} hooks, got:\n{:?}",
+            all_plan_items(&after)
+        );
+    }
 }
 
 #[test]

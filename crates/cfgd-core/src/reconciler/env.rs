@@ -194,17 +194,31 @@ impl<'a> super::Reconciler<'a> {
             platform,
         );
 
+        // Converged surfaces are elided HERE, with the same reads
+        // `apply_env_action` makes, so a plan over an unchanged machine
+        // carries no env actions at all: the plan, `-o json` and the
+        // env-gated module hooks that key off their presence all read
+        // "converged" instead of re-planning writes the apply would only
+        // report back as unchanged.
         let mut actions = Vec::new();
         let mut warnings = Vec::new();
+        let mut live_session = None;
         for target in targets {
             match target {
                 EnvTarget::ManagedFile { path, content } => {
+                    if super::env_files::read_managed_baseline(&path).as_deref()
+                        == Some(content.as_str())
+                    {
+                        continue;
+                    }
                     actions.push(Action::Env(EnvAction::WriteEnvFile { path, content }));
                 }
                 EnvTarget::SourceLine { rc_path, line } => {
                     // Warn when a user-owned shell rc defines a cfgd-managed name
                     // *before* our source line (their value would win). Bash/zsh
-                    // syntax only — skip on Windows PowerShell profiles.
+                    // syntax only — skip on Windows PowerShell profiles. The
+                    // warning describes the live rc, so it stands whether or
+                    // not the source line still needs injecting.
                     if platform != EnvPlatform::Windows {
                         warnings.extend(detect_rc_env_conflicts(
                             &rc_path,
@@ -212,12 +226,30 @@ impl<'a> super::Reconciler<'a> {
                             &merged_aliases,
                         ));
                     }
+                    // Already present as the exact desired line: nothing to
+                    // plan. An unreadable rc fails OPEN — the action is kept,
+                    // so the apply arm reports the real error instead of the
+                    // plan silently claiming converged.
+                    if super::env_files::read_rc_baseline(&rc_path).is_ok_and(|existing| {
+                        super::env_files::merge_source_line(&existing, &line).is_none()
+                    }) {
+                        continue;
+                    }
                     actions.push(Action::Env(EnvAction::InjectSourceLine { rc_path, line }));
                 }
                 EnvTarget::LiveSession { vars } => {
-                    actions.push(Action::Env(EnvAction::RefreshLiveSession { vars }));
+                    live_session = Some(vars);
                 }
             }
+        }
+        // The broadcast follows a change: a converged file set means past
+        // applies already refreshed the session with these same values, and
+        // planning the refresh anyway is what held the env-gated hook fold
+        // open on every converged run.
+        if !actions.is_empty()
+            && let Some(vars) = live_session
+        {
+            actions.push(Action::Env(EnvAction::RefreshLiveSession { vars }));
         }
 
         (actions, warnings)
