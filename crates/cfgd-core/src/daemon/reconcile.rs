@@ -520,12 +520,12 @@ pub(crate) fn handle_reconcile(
         );
         // The tick plans and (under auto-apply) applies, so its action descriptions
         // and recorded packages hash carry the version the read paths never ask for.
-        // The compliance tick shares `resolve_daemon_modules` and deliberately does
-        // NOT fill: nothing it stores renders a version.
-        crate::modules::fill_module_available_versions(
-            &mut resolved_modules,
-            &registry.manager_map(),
-        );
+        // Survivor-gated: a package the machine already holds is elided from the
+        // plan, so a converged tick queries nothing instead of pricing the whole
+        // declared set on every interval. The compliance tick shares
+        // `resolve_daemon_modules` and deliberately does NOT fill: nothing it
+        // stores renders a version.
+        reconciler.fill_planned_versions(&mut resolved_modules, &registry.manager_map());
         resolved_modules
     });
     let mut plan = match reconciler.plan(

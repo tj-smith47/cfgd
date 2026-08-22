@@ -269,8 +269,6 @@ pub fn cmd_module_create(
             &mgr_map,
             printer,
         )?;
-        modules::fill_module_available_versions(&mut resolved_modules, &mgr_map);
-
         let resolved = config::ResolvedProfile {
             layers: Vec::new(),
             merged: config::MergedProfile::default(),
@@ -280,6 +278,9 @@ pub fn cmd_module_create(
         let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
             .with_config_dir(&config_dir)
             .diffing_installed(&pkg_cx);
+        // Survivor-gated pricing: only a package this plan will surface is
+        // asked for the version its install action renders and persists.
+        reconciler.fill_planned_versions(&mut resolved_modules, &mgr_map);
         let plan = reconciler.plan(
             &resolved,
             Vec::new(),

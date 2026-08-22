@@ -77,10 +77,6 @@ pub fn cmd_plan(
     let mut effective_resolved = desired.resolved;
     registry.set_system_config_dir(&config_dir);
 
-    // The preview renders `brew install neovim (0.10.2)`, so this is one of the
-    // paths that consumes a version and therefore one of the paths that asks.
-    modules::fill_module_available_versions(&mut resolved_modules, &registry.manager_map());
-
     // Resolve manifest files (Brewfile, package.json, etc.) into package lists
     ctx.resolve_manifest_packages(&mut effective_resolved.merged.packages)?;
 
@@ -161,6 +157,13 @@ pub fn cmd_plan(
                 let fa = fm.plan(&effective_resolved.merged)?;
                 (pkg, fa, Some(fm), actual)
             };
+
+            // The preview renders `brew install neovim (0.10.2)`, so this is a
+            // path that consumes a version — priced survivor-gated (a package
+            // the machine already holds is elided and never queried), and
+            // under this bar so the wait is narrated, not dead air.
+            sp.set_message("Resolving package versions");
+            reconciler.fill_planned_versions(&mut resolved_modules, &registry.manager_map());
 
             let plan = reconciler.plan_observed(
                 &effective_resolved,

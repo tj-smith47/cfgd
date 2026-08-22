@@ -22682,6 +22682,162 @@ fn a_manager_that_cannot_be_queried_still_plans_the_whole_declared_set() {
     );
 }
 
+/// A manager name no other test in this binary shares, so the process-global
+/// available-version memo (keyed by `(manager, package)`) can never answer one
+/// of these tests out of another's fixture.
+fn unshared_manager_name(prefix: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    format!(
+        "{prefix}-{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    )
+}
+
+/// A version-less resolved package under `manager`, the shape
+/// `fill_planned_versions` prices.
+fn unpriced_package(manager: &str, name: &str) -> crate::modules::ResolvedPackage {
+    crate::modules::ResolvedPackage {
+        canonical_name: name.to_string(),
+        resolved_name: name.to_string(),
+        manager: manager.to_string(),
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+        min_version: None,
+    }
+}
+
+/// The whole of a converged `cfgd plan`'s silent multi-second wait was pricing
+/// packages the plan then elided: a satisfied package produces no action, no
+/// rendered description and no stored string, so its version query buys
+/// nothing. The survivor gate must ask NOTHING for a converged module.
+#[test]
+#[serial_test::serial(available_version_memo)]
+fn a_converged_module_is_priced_with_zero_version_queries() {
+    let state = test_state();
+    let printer = test_printer();
+    let mgr_name = unshared_manager_name("conv-priced-mgr");
+    let mgr = MockPackageManager::new(&mgr_name)
+        .with_installed(&["demofix-conv-a", "demofix-conv-b"])
+        .with_package("demofix-conv-a", "1.0.0")
+        .with_package("demofix-conv-b", "2.0.0");
+    let queries = mgr.version_query_counter();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(mgr));
+    let cx = test_package_context(&printer, &state);
+    let reconciler = Reconciler::new(&registry, &state).diffing_installed(&cx);
+
+    let mut module = make_resolved_module("dev");
+    module.packages = vec![
+        unpriced_package(&mgr_name, "demofix-conv-a"),
+        unpriced_package(&mgr_name, "demofix-conv-b"),
+    ];
+    let mut modules = vec![module];
+    reconciler.fill_planned_versions(&mut modules, &registry.manager_map());
+
+    assert_eq!(
+        queries.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a converged module's packages are elided from the plan, so pricing them buys nothing"
+    );
+    assert!(
+        modules[0].packages.iter().all(|p| p.version.is_none()),
+        "nothing asked means nothing filled"
+    );
+}
+
+/// The other half of the contract: a package the plan WILL surface is still
+/// priced through the same memoized query, and its planned `InstallPackages`
+/// description renders the version byte-identically to the unconditional fill.
+#[test]
+#[serial_test::serial(available_version_memo)]
+fn an_unsatisfied_package_is_still_priced_and_planned_with_its_version() {
+    let state = test_state();
+    let printer = test_printer();
+    let mgr_name = unshared_manager_name("survivor-priced-mgr");
+    let mgr = MockPackageManager::new(&mgr_name)
+        .with_installed(&["demofix-have"])
+        .with_package("demofix-have", "1.0.0")
+        .with_package("demofix-need", "3.1.4");
+    let queries = mgr.version_query_counter();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(mgr));
+    let cx = test_package_context(&printer, &state);
+    let reconciler = Reconciler::new(&registry, &state).diffing_installed(&cx);
+
+    let mut module = make_resolved_module("dev");
+    module.packages = vec![
+        unpriced_package(&mgr_name, "demofix-have"),
+        unpriced_package(&mgr_name, "demofix-need"),
+    ];
+    let mut modules = vec![module];
+    reconciler.fill_planned_versions(&mut modules, &registry.manager_map());
+
+    assert_eq!(
+        queries.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "only the surviving package is priced"
+    );
+    assert_eq!(
+        modules[0]
+            .packages
+            .iter()
+            .find(|p| p.resolved_name == "demofix-need")
+            .and_then(|p| p.version.as_deref()),
+        Some("3.1.4")
+    );
+
+    let resolved = make_empty_resolved();
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            modules,
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+    let items = all_plan_items(&plan).join("\n");
+    assert!(
+        items.contains(&format!("{mgr_name} install demofix-need (3.1.4)")),
+        "the planned install must carry the version its manager quoted, got:\n{items}"
+    );
+}
+
+/// Fail-open parity with the planner: a manager that cannot be queried plans
+/// the declared set in full, so the same set is priced in full — an
+/// unobservable machine must not render version-less strings the next
+/// observable run then rewrites.
+#[test]
+#[serial_test::serial(available_version_memo)]
+fn an_unreadable_manager_is_priced_in_full_matching_the_plan() {
+    let state = test_state();
+    let printer = test_printer();
+    let mgr_name = unshared_manager_name("unreadable-priced-mgr");
+    let mgr = MockPackageManager::new(&mgr_name)
+        .with_installed_error("db unreadable")
+        .with_package("demofix-blind", "2.2.2");
+    let queries = mgr.version_query_counter();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(mgr));
+    let cx = test_package_context(&printer, &state);
+    let reconciler = Reconciler::new(&registry, &state).diffing_installed(&cx);
+
+    let mut module = make_resolved_module("dev");
+    module.packages = vec![unpriced_package(&mgr_name, "demofix-blind")];
+    let mut modules = vec![module];
+    reconciler.fill_planned_versions(&mut modules, &registry.manager_map());
+
+    assert_eq!(queries.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        modules[0].packages[0].version.as_deref(),
+        Some("2.2.2"),
+        "the elision gate fails open exactly where the planner does"
+    );
+}
+
 #[test]
 fn an_unavailable_manager_is_never_asked_what_it_holds() {
     let state = test_state();

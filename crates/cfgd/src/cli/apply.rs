@@ -237,12 +237,6 @@ pub fn run_apply(
     let mut effective_resolved = desired.resolved;
     registry.set_system_config_dir(&config_dir);
 
-    // A version is a display detail resolution no longer prices, so the paths
-    // that show one ask for it. Apply is one: its plan preview reads `brew
-    // install neovim (0.10.2)`, and the same string is the persisted action
-    // description and the module's recorded packages hash.
-    modules::fill_module_available_versions(&mut resolved_modules, &registry.manager_map());
-
     // Resolve manifest files (Brewfile, package.json, etc.) into package lists
     ctx.resolve_manifest_packages(&mut effective_resolved.merged.packages)?;
 
@@ -396,6 +390,13 @@ pub fn run_apply(
         .withholding_env_surface(exclusions.withholds_env_surface())
         .diffing_installed(&pkg_cx);
     let mut plan = printer.narrate("Planning", |sp| {
+        // Apply's plan preview reads `brew install neovim (0.10.2)`, and the
+        // same string is the persisted action description and the module's
+        // recorded packages hash — priced survivor-gated (a package the
+        // machine already holds is elided and never queried), and under this
+        // bar so the wait is narrated, not dead air.
+        sp.set_message("Resolving package versions");
+        reconciler.fill_planned_versions(&mut resolved_modules, &registry.manager_map());
         reconciler.plan_observed(
             &effective_resolved,
             file_actions,

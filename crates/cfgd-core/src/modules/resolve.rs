@@ -192,17 +192,16 @@ pub fn resolve_module_packages(
 /// `verify`, `compliance`, `checkin` and `decide` — none of which show a version
 /// — once per declared package, on every invocation and every daemon tick.
 ///
-/// Call it from the paths that consume the version and from no others. The rule
-/// is not a list to memorize: **every** caller of
-/// [`crate::reconciler::Reconciler::plan`] fills, because that planner's
-/// `InstallPackages` description renders `brew install neovim (0.10.2)` and is
-/// also the persisted action description and the module's recorded packages
-/// hash — a plan built over unfilled modules renders and STORES a different
-/// string than the same modules applied from anywhere else. That is six sites:
-/// `cfgd apply`, `cfgd plan`, the daemon's reconcile tick, both `cfgd init`
-/// apply paths, and `cfgd module create --apply`. Two more surfaces print a
-/// version per declared package without planning — `cfgd doctor` and `cfgd
-/// module show` — for eight in total.
+/// Call it from the paths that consume the version and from no others. Two
+/// surfaces do: `cfgd doctor` and `cfgd module show`, which print a version
+/// per DECLARED package without planning. Every PLANNING path — `cfgd apply`,
+/// `cfgd plan`, the daemon's reconcile tick, both `cfgd init` apply paths,
+/// and `cfgd module create --apply` — routes through
+/// [`crate::reconciler::Reconciler::fill_planned_versions`] instead, the
+/// survivor-gated form of this fill: a package the machine already holds is
+/// elided from the plan, so it renders and stores nothing and its version
+/// query buys nothing, while a package that does get planned is priced
+/// through the same memoized query and renders byte-identically.
 ///
 /// The gating reproduces what resolution used to do exactly, so those surfaces
 /// render byte-identically: a package already carrying a version (the
@@ -230,18 +229,6 @@ pub fn fill_available_versions(
             .available_version_memoized(&pkg.resolved_name)
             .ok()
             .flatten();
-    }
-}
-
-/// [`fill_available_versions`] over every package of every resolved module —
-/// what the three planning paths call, since each holds modules rather than a
-/// flat package list.
-pub fn fill_module_available_versions(
-    modules: &mut [ResolvedModule],
-    managers: &HashMap<String, &dyn PackageManager>,
-) {
-    for module in modules {
-        fill_available_versions(&mut module.packages, managers);
     }
 }
 

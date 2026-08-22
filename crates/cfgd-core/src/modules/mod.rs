@@ -37,8 +37,8 @@ pub use registry::{
     latest_module_version_remote, parse_registry_ref, resolve_profile_module_name,
 };
 pub use resolve::{
-    fill_available_versions, fill_module_available_versions, resolve_module_files,
-    resolve_module_packages, resolve_modules, resolve_package,
+    fill_available_versions, resolve_module_files, resolve_module_packages, resolve_modules,
+    resolve_package,
 };
 
 // ---------------------------------------------------------------------------
@@ -58,9 +58,11 @@ pub struct ResolvedPackage {
     ///
     /// Resolution fills it only where it had to look anyway — a `minVersion`
     /// constraint. Everywhere else it is a DISPLAY detail and stays `None` until
-    /// a surface that renders one calls
-    /// [`resolve::fill_available_versions`]; a read path that shows no version
-    /// pays no query for it.
+    /// a surface that renders one calls [`resolve::fill_available_versions`]
+    /// (or its survivor-gated planning form,
+    /// `Reconciler::fill_planned_versions`); a read path that shows no version
+    /// pays no query for it, and neither does a planning path for a package
+    /// the machine already holds.
     pub version: Option<String>,
     /// Install script content (inline or file path). Only set when `manager == "script"`.
     pub script: Option<String>,

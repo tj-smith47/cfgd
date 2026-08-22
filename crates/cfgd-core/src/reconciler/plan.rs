@@ -926,26 +926,91 @@ impl<'a> super::Reconciler<'a> {
             return;
         };
         match cx.installed_for(mgr) {
-            Ok(installed) => packages.retain(|pkg| {
-                let identity = mgr.package_identity(&pkg.resolved_name);
-                if !installed.contains(&identity) {
-                    return true;
-                }
-                let Some(min) = pkg.min_version.as_deref() else {
-                    return false;
-                };
-                installed
-                    .listed()
-                    .iter()
-                    .find(|p| mgr.listed_identity(&p.name) == identity)
-                    .is_none_or(|p| !mgr.version_meets_minimum(&p.version, min))
-            }),
+            Ok(installed) => {
+                packages.retain(|pkg| Self::package_survives_elision(mgr, &installed, pkg));
+            }
             Err(e) => {
                 tracing::warn!(
                     manager = mgr.name(),
                     error = %e,
                     "cannot read installed packages; planning the module's declared set in full"
                 );
+            }
+        }
+    }
+
+    /// Whether `pkg` survives the installed-state elision: not installed under
+    /// `mgr`'s identity fold, or installed short of its declared `minVersion`
+    /// floor. The ONE predicate [`Self::retain_uninstalled`] and
+    /// [`Self::fill_planned_versions`] both read, so a package can never be
+    /// planned-but-unpriced or priced-but-elided.
+    fn package_survives_elision(
+        mgr: &dyn PackageManager,
+        installed: &crate::providers::InstalledPackages,
+        pkg: &crate::modules::ResolvedPackage,
+    ) -> bool {
+        let identity = mgr.package_identity(&pkg.resolved_name);
+        if !installed.contains(&identity) {
+            return true;
+        }
+        let Some(min) = pkg.min_version.as_deref() else {
+            return false;
+        };
+        installed
+            .listed()
+            .iter()
+            .find(|p| mgr.listed_identity(&p.name) == identity)
+            .is_none_or(|p| !mgr.version_meets_minimum(&p.version, min))
+    }
+
+    /// Price the packages this run's plan will actually surface, and no others.
+    ///
+    /// The survivor-gated form of [`crate::modules::fill_available_versions`],
+    /// and what every planning path calls in its place: a package the manager
+    /// already reports installed is elided by [`Self::plan_modules`], so it
+    /// renders no description, persists no string, and its version query buys
+    /// nothing — pricing a converged machine's whole declared set per
+    /// invocation was a multi-second silent wait before every plan and apply.
+    /// A package that DOES survive is priced through the same memoized query,
+    /// so a planned `InstallPackages` renders and persists strings
+    /// byte-identical to the unconditional fill's, and the module's recorded
+    /// packages hash is unchanged for planned work.
+    ///
+    /// Elision is judged through [`Self::package_survives_elision`] against
+    /// the same enumeration [`Self::retain_uninstalled`] reads (one memoized
+    /// listing per manager), and fails OPEN everywhere the planner does: no
+    /// installed-state reader wired, or a manager that cannot be queried,
+    /// prices the declared set in full exactly as the planner plans it in
+    /// full. `cfgd doctor` and `cfgd module show` render a version per
+    /// DECLARED package without planning and keep the unconditional fill.
+    pub fn fill_planned_versions(
+        &self,
+        modules: &mut [ResolvedModule],
+        managers: &HashMap<String, &dyn PackageManager>,
+    ) {
+        for module in modules.iter_mut() {
+            for pkg in module.packages.iter_mut() {
+                if pkg.version.is_some() || pkg.manager == "script" {
+                    continue;
+                }
+                let Some(&mgr) = managers.get(pkg.manager.as_str()) else {
+                    continue;
+                };
+                if !mgr.is_available() {
+                    continue;
+                }
+                if let Some(cx) = self.installed
+                    && let Ok(installed) = cx.installed_for(mgr)
+                    && !Self::package_survives_elision(mgr, &installed, pkg)
+                {
+                    continue;
+                }
+                // A manager that cannot answer is not a failure — the version
+                // is a display detail, and the package still installs.
+                pkg.version = mgr
+                    .available_version_memoized(&pkg.resolved_name)
+                    .ok()
+                    .flatten();
             }
         }
     }

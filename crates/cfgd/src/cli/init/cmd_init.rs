@@ -220,12 +220,13 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 &mgr_map,
                 printer,
             )?;
-            modules::fill_module_available_versions(&mut resolved_modules, &mgr_map);
-
             let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
                 .with_config_dir(&target_dir)
                 .diffing_installed(&pkg_cx);
+            // Survivor-gated pricing: only a package this plan will surface is
+            // asked for the version its install action renders and persists.
+            reconciler.fill_planned_versions(&mut resolved_modules, &mgr_map);
             let mut plan = reconciler.plan(
                 &resolved,
                 Vec::new(),
@@ -348,11 +349,12 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
             registry.file_manager = Some(Box::new(fm));
 
-            modules::fill_module_available_versions(&mut resolved_modules, &registry.manager_map());
-
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
                 .with_config_dir(&target_dir)
                 .diffing_installed(&pkg_cx);
+            // Survivor-gated pricing: only a package this plan will surface is
+            // asked for the version its install action renders and persists.
+            reconciler.fill_planned_versions(&mut resolved_modules, &registry.manager_map());
             let mut plan = reconciler.plan(
                 &resolved,
                 file_actions,
