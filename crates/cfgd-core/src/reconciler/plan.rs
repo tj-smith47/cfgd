@@ -10,6 +10,7 @@ use crate::providers::{
     FileAction, PackageAction, PackageManager, PackageManagerExt, SecretAction,
 };
 
+use super::env::EnvPlanOutcome;
 use super::restore::content_hash_if_exists;
 use super::types::{
     Action, ModuleAction, ModuleActionKind, Owner, Phase, PhaseName, Plan, ReconcileContext,
@@ -186,7 +187,7 @@ impl<'a> super::Reconciler<'a> {
             &manager_actions,
             super::env::recorded_manager_path_dirs(self.state, &resolved.merged, &module_actions),
         );
-        let (env_actions, warnings) = self.plan_env(
+        let env_plan = self.plan_env(
             &resolved.merged.env,
             &resolved.merged.aliases,
             resolved.merged.env_scope,
@@ -197,14 +198,31 @@ impl<'a> super::Reconciler<'a> {
             &super::env::recorded_managed_env_files(self.state),
         );
 
-        // The env-gated hooks deferred by `plan_modules`: an env action
-        // anywhere means the surface those modules contribute to is being
-        // rewritten, so their hooks bracket it; a converged surface drops
-        // them, which is what lets an env-declaring module go quiet. Safe to
-        // fold in this late — `dedup_module_packages` and `plan_managers`
-        // above read only `InstallPackages` actions, and hooks are none.
-        if !env_actions.is_empty() {
-            module_routed.extend(env_gated_hooks);
+        // The env-gated hooks deferred by `plan_modules`: a module's hooks
+        // revive off the env surface only when its OWN env/alias entries
+        // moved between the deployed primary env file and the content this
+        // plan writes — another layer rewriting the shared surface is that
+        // layer's work, not this module's, so its hooks stay dropped. No
+        // planned primary rewrite means no declared entry moved (every entry
+        // renders into that file), so nothing revives; an unanswerable
+        // baseline fails OPEN and revives. Safe to fold in this late —
+        // `dedup_module_packages` and `plan_managers` above read only
+        // `InstallPackages` actions, and hooks are none.
+        let EnvPlanOutcome {
+            actions: env_actions,
+            warnings,
+            primary_write,
+        } = env_plan;
+        for (module_name, hooks) in env_gated_hooks {
+            let revive = primary_write.as_ref().is_some_and(|w| {
+                module_actions
+                    .iter()
+                    .find(|m| m.name == module_name)
+                    .is_none_or(|m| w.module_env_moved(&m.env, &m.aliases))
+            });
+            if revive {
+                module_routed.extend(hooks);
+            }
         }
 
         let package_actions = profile_packages
@@ -537,15 +555,17 @@ impl<'a> super::Reconciler<'a> {
     /// Returns the module-routed actions plus the lifecycle hooks whose "does
     /// this module have work" question only the env plan can answer: a module
     /// whose packages and files all converged but which declares env/aliases
-    /// has work exactly when the env surface does, and that surface is planned
-    /// later, as a unit, by `plan_env`. The caller folds the second Vec into
-    /// the first when any env action was planned, and drops it otherwise.
+    /// has work exactly when its OWN env/alias contribution moves, and that
+    /// surface is planned later, as a unit, by `plan_env`. The deferred hooks
+    /// are grouped under the declaring module's name so the caller can revive
+    /// each module's hooks per [`super::env::PrimaryEnvWrite::module_env_moved`]
+    /// instead of reviving all of them whenever any env action was planned.
     pub(super) fn plan_modules(
         &self,
         modules: &[ResolvedModule],
         profile_name: &str,
         context: ReconcileContext,
-    ) -> (RoutedActions, RoutedActions) {
+    ) -> (RoutedActions, Vec<(String, RoutedActions)>) {
         let mut actions = Vec::new();
         let mut env_gated_hooks = Vec::new();
 
@@ -829,11 +849,11 @@ impl<'a> super::Reconciler<'a> {
             // planner cannot diff: the env surface is generated as a unit by
             // `plan_env`, later. A module that declares packages or files AND
             // env, all of whose diffable work converged, routes its hooks
-            // through `env_gated_hooks` — kept when any env action is planned
-            // (the surface the module contributes to is being rewritten),
-            // dropped when the surface converged. The unit granularity fails
-            // OPEN: an env change owned by another layer still revives these
-            // hooks, never the reverse.
+            // through `env_gated_hooks` — revived when the module's OWN
+            // env/alias entries move between the deployed primary env file
+            // and the planned content, dropped when they hold (another
+            // layer's change to the shared surface is that layer's work).
+            // An unanswerable comparison fails OPEN and revives.
             //
             // "Declares no work" deliberately reads packages/files ALONE, not
             // env: a module with scripts and env but no packages or files
@@ -858,16 +878,20 @@ impl<'a> super::Reconciler<'a> {
                     })
                     .collect::<Vec<_>>()
             };
+            let mut gated: RoutedActions = Vec::new();
             if hooks_now {
                 actions.extend(route_hooks(pre_scripts, &pre_phase));
             } else if hooks_env_gated {
-                env_gated_hooks.extend(route_hooks(pre_scripts, &pre_phase));
+                gated.extend(route_hooks(pre_scripts, &pre_phase));
             }
             actions.append(&mut body);
             if hooks_now {
                 actions.extend(route_hooks(post_scripts, &post_phase));
             } else if hooks_env_gated {
-                env_gated_hooks.extend(route_hooks(post_scripts, &post_phase));
+                gated.extend(route_hooks(post_scripts, &post_phase));
+            }
+            if !gated.is_empty() {
+                env_gated_hooks.push((module.name.clone(), gated));
             }
         }
 

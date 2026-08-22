@@ -1190,7 +1190,7 @@ impl<'a> super::Reconciler<'a> {
         if self.withhold_env_surface {
             tracing::debug!("env surface withheld: skipping post-phase regeneration");
         } else if !secret_env_collector.is_empty() || path_dirs_changed {
-            let (env_actions, _) = self.plan_env(
+            let env_plan = self.plan_env(
                 &resolved.merged.env,
                 &resolved.merged.aliases,
                 resolved.merged.env_scope,
@@ -1199,7 +1199,7 @@ impl<'a> super::Reconciler<'a> {
                 &path_dirs_now,
                 &super::env::recorded_managed_env_files(self.state),
             );
-            for env_action in &env_actions {
+            for env_action in &env_plan.actions {
                 if let Action::Env(ea) = env_action {
                     // No phase section is open here and nothing will drain a
                     // sink, so a session-refresh warning settles on its own line

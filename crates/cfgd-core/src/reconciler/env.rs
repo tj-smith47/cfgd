@@ -116,9 +116,70 @@ fn collect_recorded_path_dirs(state: &StateStore, keep: Option<&HashSet<String>>
     dirs
 }
 
+/// What one env plan decided, beyond the actions themselves.
+///
+/// `primary_write` is present exactly when the primary managed env file's
+/// rewrite survived elision, carrying both sides of that comparison so the
+/// env-gated hook fold can ask a narrower question than "was anything
+/// planned": whether one MODULE's own entries are what moved.
+pub(super) struct EnvPlanOutcome {
+    pub(super) actions: Vec<Action>,
+    pub(super) warnings: Vec<String>,
+    pub(super) primary_write: Option<PrimaryEnvWrite>,
+}
+
+/// Both sides of the planned primary managed env file rewrite: the deployed
+/// baseline (`None` when unreadable or absent) and the content the plan
+/// writes.
+///
+/// The primary file is the comparison surface for per-module attribution for
+/// the same reason `verify_env_items` reads only it: every declared env var
+/// and alias renders into it as one line per entry
+/// (`primary_env_var_line` / `primary_alias_line`), so it witnesses any
+/// declared entry changing, while the secondary files (fish, environment.d,
+/// the LaunchAgent plist) are projections of the same declared entries in
+/// dialects those helpers cannot render.
+pub(super) struct PrimaryEnvWrite {
+    baseline: Option<String>,
+    desired: String,
+    platform: EnvPlatform,
+}
+
+impl PrimaryEnvWrite {
+    /// Whether a module's OWN env/alias entries differ between the deployed
+    /// rendering and the desired one.
+    ///
+    /// Presence semantics per declared entry: an entry's rendered line being
+    /// in the deployed file but not the desired content (or the reverse) is
+    /// the module's contribution moving — a value change shows up as the new
+    /// line missing from the baseline, and a merge-shadowing change as the
+    /// line appearing or disappearing. An unanswerable baseline fails OPEN:
+    /// hooks revive rather than silently skip on uncertainty. An entry whose
+    /// name the generator refuses renders in neither, so it cannot move.
+    pub(super) fn module_env_moved(
+        &self,
+        env: &[crate::config::EnvVar],
+        aliases: &[crate::config::ShellAlias],
+    ) -> bool {
+        let Some(baseline) = &self.baseline else {
+            return true;
+        };
+        let deployed: HashSet<&str> = baseline.lines().collect();
+        let desired: HashSet<&str> = self.desired.lines().collect();
+        env.iter()
+            .filter_map(|ev| super::env_files::primary_env_var_line(ev, self.platform))
+            .chain(
+                aliases
+                    .iter()
+                    .filter_map(|a| super::env_files::primary_alias_line(a, self.platform)),
+            )
+            .any(|line| deployed.contains(line.as_str()) != desired.contains(line.as_str()))
+    }
+}
+
 impl<'a> super::Reconciler<'a> {
     /// Plan env file generation from merged profile + module env vars and aliases.
-    /// Returns (actions, warnings) — warnings for shell rc conflicts.
+    /// The outcome's warnings are shell rc conflicts.
     ///
     /// A method, not a free function, because the home directory the env
     /// surfaces hang off is the reconciler's — resolved once at construction.
@@ -134,7 +195,7 @@ impl<'a> super::Reconciler<'a> {
         secret_envs: &[(String, String)],
         path_dirs: &[String],
         managed_env_ids: &[String],
-    ) -> (Vec<Action>, Vec<String>) {
+    ) -> EnvPlanOutcome {
         Self::plan_env_with_home(
             profile_env,
             profile_aliases,
@@ -157,7 +218,7 @@ impl<'a> super::Reconciler<'a> {
         path_dirs: &[String],
         managed_env_ids: &[String],
         home: &std::path::Path,
-    ) -> (Vec<Action>, Vec<String>) {
+    ) -> EnvPlanOutcome {
         let (mut merged, merged_aliases) =
             merge_module_env_aliases(profile_env, profile_aliases, modules);
 
@@ -178,10 +239,17 @@ impl<'a> super::Reconciler<'a> {
         // has no env vars, and without the source line no shell would ever read
         // the PATH entry that makes the manager's binaries reachable.
         if merged.is_empty() && merged_aliases.is_empty() && path_dirs.is_empty() {
-            return (
-                Self::neutralize_managed_env_files(scope, home, &probe, platform, managed_env_ids),
-                Vec::new(),
-            );
+            return EnvPlanOutcome {
+                actions: Self::neutralize_managed_env_files(
+                    scope,
+                    home,
+                    &probe,
+                    platform,
+                    managed_env_ids,
+                ),
+                warnings: Vec::new(),
+                primary_write: None,
+            };
         }
 
         let targets = env_targets(
@@ -203,12 +271,28 @@ impl<'a> super::Reconciler<'a> {
         let mut actions = Vec::new();
         let mut warnings = Vec::new();
         let mut live_session = None;
+        // `env_targets` pushes the primary managed file (bash/zsh's
+        // `.cfgd.env`, PowerShell's `.cfgd-env.ps1`) first whenever there is
+        // anything to write, so the first `ManagedFile` this loop sees is the
+        // one whose per-entry dialect the hook fold can attribute.
+        let mut primary_write = None;
+        let mut primary_seen = false;
         for target in targets {
             match target {
                 EnvTarget::ManagedFile { path, content } => {
-                    if super::env_files::read_managed_baseline(&path).as_deref()
-                        == Some(content.as_str())
-                    {
+                    let baseline = super::env_files::read_managed_baseline(&path);
+                    let converged = baseline.as_deref() == Some(content.as_str());
+                    if !primary_seen {
+                        primary_seen = true;
+                        if !converged {
+                            primary_write = Some(PrimaryEnvWrite {
+                                baseline,
+                                desired: content.clone(),
+                                platform,
+                            });
+                        }
+                    }
+                    if converged {
                         continue;
                     }
                     actions.push(Action::Env(EnvAction::WriteEnvFile { path, content }));
@@ -252,7 +336,11 @@ impl<'a> super::Reconciler<'a> {
             actions.push(Action::Env(EnvAction::RefreshLiveSession { vars }));
         }
 
-        (actions, warnings)
+        EnvPlanOutcome {
+            actions,
+            warnings,
+            primary_write,
+        }
     }
 
     /// Reduce every cfgd-generated env file that still exists to its header,

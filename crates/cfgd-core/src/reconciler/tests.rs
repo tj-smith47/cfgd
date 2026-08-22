@@ -2450,7 +2450,7 @@ fn generate_fish_path_keeps_colon_containing_home_intact() {
 #[test]
 fn plan_env_empty_when_no_env() {
     let tmp = tempfile::tempdir().unwrap();
-    let (actions, _warnings) = Reconciler::plan_env_with_home(
+    let actions = Reconciler::plan_env_with_home(
         &[],
         &[],
         crate::config::EnvScope::Interactive,
@@ -2459,7 +2459,8 @@ fn plan_env_empty_when_no_env() {
         &[],
         &[],
         tmp.path(),
-    );
+    )
+    .actions;
     assert!(actions.is_empty());
 }
 
@@ -2492,7 +2493,7 @@ fn plan_env_module_wins_on_conflict() {
     }];
     // plan_env merges and generates actions — the merged env should have EDITOR=nvim
     let tmp = tempfile::tempdir().unwrap();
-    let (actions, _warnings) = Reconciler::plan_env_with_home(
+    let actions = Reconciler::plan_env_with_home(
         &profile_env,
         &[],
         crate::config::EnvScope::Interactive,
@@ -2501,7 +2502,8 @@ fn plan_env_module_wins_on_conflict() {
         &[],
         &[],
         tmp.path(),
-    );
+    )
+    .actions;
     // With non-empty env, there should be at least a WriteEnvFile action
     let has_write = actions
         .iter()
@@ -2587,7 +2589,7 @@ fn plan_env_aliases_only() {
         command: "nvim".into(),
     }];
     let tmp = tempfile::tempdir().unwrap();
-    let (actions, _warnings) = Reconciler::plan_env_with_home(
+    let actions = Reconciler::plan_env_with_home(
         &[],
         &aliases,
         crate::config::EnvScope::Interactive,
@@ -2596,7 +2598,8 @@ fn plan_env_aliases_only() {
         &[],
         &[],
         tmp.path(),
-    );
+    )
+    .actions;
     let has_write = actions
         .iter()
         .any(|a| matches!(a, Action::Env(EnvAction::WriteEnvFile { .. })));
@@ -2632,7 +2635,7 @@ fn plan_env_module_alias_wins_on_conflict() {
         platform_skip_reason: None,
     }];
     let tmp = tempfile::tempdir().unwrap();
-    let (actions, _warnings) = Reconciler::plan_env_with_home(
+    let actions = Reconciler::plan_env_with_home(
         &[],
         &profile_aliases,
         crate::config::EnvScope::Interactive,
@@ -2641,7 +2644,8 @@ fn plan_env_module_alias_wins_on_conflict() {
         &[],
         &[],
         tmp.path(),
-    );
+    )
+    .actions;
     // Find the WriteEnvFile action and check it has "nvim" not "vi"
     for action in &actions {
         if let Action::Env(EnvAction::WriteEnvFile { content, .. }) = action {
@@ -2741,7 +2745,7 @@ fn plan_env_with_secret_envs_includes_them() {
         ("NPM_TOKEN".to_string(), "npm_xyz789".to_string()),
     ];
     let tmp = tempfile::tempdir().unwrap();
-    let (actions, _warnings) = Reconciler::plan_env_with_home(
+    let actions = Reconciler::plan_env_with_home(
         &[],
         &[],
         crate::config::EnvScope::Interactive,
@@ -2750,7 +2754,8 @@ fn plan_env_with_secret_envs_includes_them() {
         &[],
         &[],
         tmp.path(),
-    );
+    )
+    .actions;
     // With non-empty secret envs, there should be at least a WriteEnvFile action
     let has_write = actions
         .iter()
@@ -2767,7 +2772,7 @@ fn plan_env_secret_envs_appear_in_generated_content() {
     }];
     let secret_envs = vec![("GITHUB_TOKEN".to_string(), "ghp_abc123".to_string())];
     let tmp = tempfile::tempdir().unwrap();
-    let (actions, _warnings) = Reconciler::plan_env_with_home(
+    let actions = Reconciler::plan_env_with_home(
         &regular_env,
         &[],
         crate::config::EnvScope::Interactive,
@@ -2776,7 +2781,8 @@ fn plan_env_secret_envs_appear_in_generated_content() {
         &[],
         &[],
         tmp.path(),
-    );
+    )
+    .actions;
 
     // Find the WriteEnvFile action and check its content
     for action in &actions {
@@ -17359,7 +17365,7 @@ fn launchd_plist_xml_escapes_values() {
 #[test]
 fn plan_env_all_scope_emits_live_session_action() {
     let tmp = tempfile::tempdir().unwrap();
-    let (actions, _w) = Reconciler::plan_env_with_home(
+    let actions = Reconciler::plan_env_with_home(
         &one_env(),
         &[],
         EnvScope::All,
@@ -17368,7 +17374,8 @@ fn plan_env_all_scope_emits_live_session_action() {
         &[],
         &[],
         tmp.path(),
-    );
+    )
+    .actions;
     assert!(
         actions
             .iter()
@@ -17380,7 +17387,7 @@ fn plan_env_all_scope_emits_live_session_action() {
 #[test]
 fn plan_env_interactive_scope_has_no_live_session_action() {
     let tmp = tempfile::tempdir().unwrap();
-    let (actions, _w) = Reconciler::plan_env_with_home(
+    let actions = Reconciler::plan_env_with_home(
         &one_env(),
         &[],
         EnvScope::Interactive,
@@ -17389,7 +17396,8 @@ fn plan_env_interactive_scope_has_no_live_session_action() {
         &[],
         &[],
         tmp.path(),
-    );
+    )
+    .actions;
     assert!(
         !actions
             .iter()
@@ -18169,7 +18177,7 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
     std::fs::write(&env_file, format!("{neutral}export FOO=\"bar\"\n")).unwrap();
     let managed = vec![crate::to_posix_string(&env_file)];
 
-    let (actions, _warnings) = Reconciler::plan_env_with_home(
+    let actions = Reconciler::plan_env_with_home(
         &[],
         &[],
         EnvScope::Interactive,
@@ -18178,7 +18186,8 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
         &[],
         &managed,
         home.path(),
-    );
+    )
+    .actions;
 
     assert_eq!(actions.len(), 1, "{actions:?}");
     match &actions[0] {
@@ -18191,7 +18200,7 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
 
     // Already neutral: nothing left to strip.
     std::fs::write(&env_file, neutral).unwrap();
-    let (actions, _) = Reconciler::plan_env_with_home(
+    let actions = Reconciler::plan_env_with_home(
         &[],
         &[],
         EnvScope::Interactive,
@@ -18200,12 +18209,13 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
         &[],
         &managed,
         home.path(),
-    );
+    )
+    .actions;
     assert!(actions.is_empty(), "{actions:?}");
 
     // A file cfgd's generator did not write is not cfgd's to strip.
     std::fs::write(&env_file, "export FOO=\"user-authored\"\n").unwrap();
-    let (actions, _) = Reconciler::plan_env_with_home(
+    let actions = Reconciler::plan_env_with_home(
         &[],
         &[],
         EnvScope::Interactive,
@@ -18214,7 +18224,8 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
         &[],
         &managed,
         home.path(),
-    );
+    )
+    .actions;
     assert!(actions.is_empty(), "{actions:?}");
 }
 
@@ -18229,7 +18240,7 @@ fn plan_env_leaves_a_generated_file_this_state_store_never_recorded() {
     let body = "# managed by cfgd \u{2014} do not edit\nexport FOO=\"bar\"\n";
     std::fs::write(&env_file, body).unwrap();
 
-    let (actions, _warnings) = Reconciler::plan_env_with_home(
+    let actions = Reconciler::plan_env_with_home(
         &[],
         &[],
         EnvScope::Interactive,
@@ -18238,7 +18249,8 @@ fn plan_env_leaves_a_generated_file_this_state_store_never_recorded() {
         &[],
         &[],
         home.path(),
-    );
+    )
+    .actions;
 
     assert!(actions.is_empty(), "{actions:?}");
     assert_eq!(std::fs::read_to_string(&env_file).unwrap(), body);
@@ -18259,8 +18271,9 @@ fn reconciler_env_surfaces_resolve_against_the_home_it_was_built_with() {
         value: "nvim".into(),
     }];
 
-    let (actions, _warnings) =
-        reconciler.plan_env(&env, &[], EnvScope::Interactive, &[], &[], &[], &[]);
+    let actions = reconciler
+        .plan_env(&env, &[], EnvScope::Interactive, &[], &[], &[], &[])
+        .actions;
 
     assert!(!actions.is_empty(), "the env plan must not be empty");
     for action in &actions {
@@ -23277,6 +23290,15 @@ fn a_converged_env_declaring_modules_hooks_are_deferred_not_dropped() {
     );
     assert_eq!(
         gated.len(),
+        1,
+        "one module defers its hooks to the env answer, got: {gated:?}"
+    );
+    assert_eq!(
+        gated[0].0, "shellrc",
+        "the deferred hooks are grouped under the declaring module"
+    );
+    assert_eq!(
+        gated[0].1.len(),
         2,
         "both hooks are deferred to the env answer, got: {gated:?}"
     );
@@ -23319,7 +23341,7 @@ fn a_converged_env_surface_plans_no_env_actions() {
         )
     };
 
-    let (first, _) = plan();
+    let first = plan().actions;
     assert!(!first.is_empty(), "a fresh home has env work");
     let printer = test_printer();
     for action in &first {
@@ -23329,7 +23351,7 @@ fn a_converged_env_surface_plans_no_env_actions() {
         }
     }
 
-    let (second, _) = plan();
+    let second = plan().actions;
     assert!(
         second.is_empty(),
         "an applied env surface plans nothing, got: {second:?}"
@@ -23437,6 +23459,210 @@ fn a_converged_env_declaring_module_goes_fully_quiet_once_the_surface_converges(
             all_plan_items(&after)
         );
     }
+}
+
+/// Scaffolding for the per-module env hook gate: a converged file module
+/// (`shellrc`, manifest-owned target) declaring `FOO`, under a guarded home,
+/// so each test converges the env surface once and then moves exactly one
+/// layer's contribution.
+struct EnvHookGateFixture {
+    dir: tempfile::TempDir,
+    _home: crate::TestHomeGuard,
+    state: StateStore,
+}
+
+fn env_hook_gate_fixture() -> EnvHookGateFixture {
+    let dir = tempfile::tempdir().unwrap();
+    let home = crate::with_test_home_guard(dir.path());
+    let src = dir.path().join("src");
+    let tgt = dir.path().join("tgt");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&tgt).unwrap();
+    std::fs::write(src.join("rc"), "settled").unwrap();
+    std::fs::write(tgt.join("rc"), "settled").unwrap();
+    let state = test_state();
+    let apply_id = state
+        .record_apply("test", "hash", ApplyStatus::Success, None)
+        .unwrap();
+    state
+        .upsert_module_file(
+            "shellrc",
+            &crate::to_posix_fs_key(tgt.join("rc")),
+            "",
+            "Copy",
+            apply_id,
+        )
+        .unwrap();
+    EnvHookGateFixture {
+        dir,
+        _home: home,
+        state,
+    }
+}
+
+impl EnvHookGateFixture {
+    fn module(&self, foo_value: &str) -> ResolvedModule {
+        let src = self.dir.path().join("src");
+        let tgt = self.dir.path().join("tgt");
+        let mut module = hooked_file_module(
+            "shellrc",
+            vec![deployable_file(&src.join("rc"), &tgt.join("rc"))],
+        );
+        module.env.push(crate::config::EnvVar {
+            name: "FOO".to_string(),
+            value: foo_value.to_string(),
+        });
+        module
+    }
+
+    /// Plan under `resolved` and apply every env action, so the surface the
+    /// next plan reads is converged for these inputs.
+    fn converge_env(
+        &self,
+        reconciler: &Reconciler<'_>,
+        resolved: &crate::config::ResolvedProfile,
+        module: ResolvedModule,
+    ) {
+        let plan = reconciler
+            .plan(
+                resolved,
+                Vec::new(),
+                Vec::new(),
+                vec![module],
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+        let printer = test_printer();
+        for action in plan.phases.iter().flat_map(|p| p.actions()) {
+            if let Action::Env(ea) = action {
+                Reconciler::apply_env_action(ea, &printer, crate::providers::NoteSink::discarded())
+                    .unwrap();
+            }
+        }
+    }
+}
+
+fn plan_has_env_action(plan: &Plan) -> bool {
+    plan.phases
+        .iter()
+        .flat_map(|p| p.actions())
+        .any(|a| matches!(a, Action::Env(_)))
+}
+
+fn plan_has_hook_work(plan: &Plan) -> bool {
+    plan.phases
+        .iter()
+        .any(|p| matches!(p.name, PhaseName::PreScripts | PhaseName::PostScripts) && !p.is_empty())
+}
+
+#[test]
+fn another_layers_env_change_does_not_revive_a_converged_modules_hooks() {
+    // The demo bug: the module's packages, files and its own env entries are
+    // all converged, and the profile layer then adds an alias. The shared
+    // env file legitimately gets a planned rewrite — owned by the layer that
+    // changed it — but the module's own contribution is byte-identical
+    // between the deployed file and the planned content, so its hooks stay
+    // dropped instead of re-running on every other layer's env edit.
+    let fx = env_hook_gate_fixture();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &fx.state);
+    let mut resolved = make_empty_resolved();
+    resolved.merged.env_scope = crate::config::EnvScope::Interactive;
+    fx.converge_env(&reconciler, &resolved, fx.module("bar"));
+
+    resolved.merged.aliases.push(crate::config::ShellAlias {
+        name: "catn".to_string(),
+        command: "cat -n".to_string(),
+    });
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            vec![fx.module("bar")],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    assert!(
+        plan_has_env_action(&plan),
+        "the other layer's alias still plans its env rewrite, got:\n{:?}",
+        all_plan_items(&plan)
+    );
+    assert!(
+        !plan_has_hook_work(&plan),
+        "another layer's contribution must not revive this module's hooks, got:\n{:?}",
+        all_plan_items(&plan)
+    );
+}
+
+#[test]
+fn a_modules_own_env_change_revives_its_hooks() {
+    // The counterweight to the test above: when the module's OWN entry is
+    // what moves the shared surface, its hooks bracket the rewrite.
+    let fx = env_hook_gate_fixture();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &fx.state);
+    let mut resolved = make_empty_resolved();
+    resolved.merged.env_scope = crate::config::EnvScope::Interactive;
+    fx.converge_env(&reconciler, &resolved, fx.module("bar"));
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            vec![fx.module("baz")],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    assert!(
+        plan_has_env_action(&plan),
+        "the changed entry plans its env rewrite, got:\n{:?}",
+        all_plan_items(&plan)
+    );
+    assert!(
+        plan_has_hook_work(&plan),
+        "the module's own env change revives its hooks, got:\n{:?}",
+        all_plan_items(&plan)
+    );
+}
+
+#[test]
+fn an_unanswerable_env_baseline_fails_open_and_revives_hooks() {
+    // The deployed primary env file cannot be read back (here: not valid
+    // UTF-8, the same damage `read_managed_baseline` regenerates over), so
+    // the module's own contribution cannot be compared. Uncertainty fails
+    // OPEN: the hooks revive rather than silently skip.
+    let fx = env_hook_gate_fixture();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &fx.state);
+    let mut resolved = make_empty_resolved();
+    resolved.merged.env_scope = crate::config::EnvScope::Interactive;
+    fx.converge_env(&reconciler, &resolved, fx.module("bar"));
+
+    std::fs::write(fx.dir.path().join(".cfgd.env"), b"\xff\xfe broken").unwrap();
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            vec![fx.module("bar")],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    assert!(
+        plan_has_env_action(&plan),
+        "the damaged file plans its regeneration, got:\n{:?}",
+        all_plan_items(&plan)
+    );
+    assert!(
+        plan_has_hook_work(&plan),
+        "an unanswerable baseline revives the hooks, got:\n{:?}",
+        all_plan_items(&plan)
+    );
 }
 
 #[test]
