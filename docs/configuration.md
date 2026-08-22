@@ -338,6 +338,37 @@ files:
 
 Files can be marked `private: true` to exclude them from git (added to `.gitignore`).
 
+### Choosing a file strategy
+
+`Symlink` and `Copy` answer one question differently: who owns the bytes at the
+target after apply.
+
+| | `Symlink` (default) | `Copy` |
+|---|---|---|
+| Content edits in the repo | Live immediately (no apply needed) | Reach the target on the next apply or reconcile |
+| `cfgd apply` after a content edit | Nothing to do (the link is intact; content already flowed) | Shows the file write |
+| Hand edits at the target | Land in your repo (the target is the repo file) | Detected as drift and repaired back to the repo content |
+| App rewrites its own config | Rewrites your repo file through the link | Rewrite is drift; reconcile restores it |
+| Works across filesystems | Yes | Yes |
+| Windows | Requires Developer Mode or elevation | Works everywhere |
+
+Pick `Symlink` when the repo should stay the single source of truth and you want
+edits (yours or the app's) captured there instantly: editor configs you iterate
+on, dotfiles you tweak in place. Pick `Copy` when the target must not follow the
+repo between applies, or when you want cfgd to police the target's content:
+files an app rewrites at runtime, machines where a broken checkout must not
+break the deployed config, Windows hosts without Developer Mode.
+
+The remaining strategies are variants of `Copy`: `Template` renders through Tera
+first (per-machine values baked in, so the output cannot be a link), `Hardlink`
+shares the inode (same filesystem only; instant like a symlink, but severed
+silently when any tool saves by rename, which most editors do), and `Patch` is for files cfgd shares
+with other writers rather than owns.
+
+The daemon watches both shapes: a change to a file target or anywhere under a
+directory target triggers an immediate reconcile check, and interval ticks catch
+the rest.
+
 > **One writer per rc file.** `spec.env` maintains its own loader line inside
 > shell rc files: `~/.bashrc` / `~/.zshrc` get
 > `[ -f ~/.cfgd.env ] && . ~/.cfgd.env` injected so declared vars and
