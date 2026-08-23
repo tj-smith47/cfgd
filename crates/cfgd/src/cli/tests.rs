@@ -14550,7 +14550,7 @@ fn render_daemon_status_human_running_with_sources_and_update() {
         7,
         vec![
             sample_source("local", "active", 0, None),
-            sample_source("team", "syncing", 7, Some("2026-05-12T09:00:00Z")),
+            sample_source("team", "error", 7, Some("2026-05-12T09:00:00Z")),
         ],
         Some("9.9.9".to_string()),
     );
