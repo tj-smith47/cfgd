@@ -25,9 +25,9 @@
 use std::path::Path;
 
 use cfgd::cli::status::{
-    ModuleDrift, ModuleFilePresence, ModuleFileStatus, ModulePackagePresence, ModulePackageStatus,
-    ModuleStatus, ModuleStatusEntry, ModuleStatusView, SURFACE_FILES, SURFACE_PACKAGES,
-    StatusOutput, build_fleet_status_doc, build_module_status_doc,
+    ModuleDeclared, ModuleDrift, ModuleFilePresence, ModuleFileStatus, ModulePackagePresence,
+    ModulePackageStatus, ModuleStatus, ModuleStatusEntry, ModuleStatusView, SURFACE_FILES,
+    SURFACE_PACKAGES, StatusOutput, build_fleet_status_doc, build_module_status_doc,
     build_module_status_not_found_doc,
 };
 use cfgd_core::config::{EnvVar, ShellAlias};
@@ -45,6 +45,55 @@ const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 /// every run. `clean_output`'s scan is 5m old (exactly the staleness
 /// threshold, so no hint); the drift fixtures' are 2h old, which does hint.
 const NOW: &str = "2026-05-14T10:05:00Z";
+
+/// What the `dev-tools` module's own rows render from: the recorded id says
+/// how many files and which packages, and this is what the live resolution
+/// adds — where the files land, which manager installs each package, and the
+/// hooks the module declares.
+fn dev_tools_declared() -> ModuleDeclared {
+    ModuleDeclared {
+        file_root: Some("/home/user/.config/nvim".into()),
+        package_managers: [
+            ("cargo", "apt"),
+            ("gcc", "apt"),
+            ("git", "apt"),
+            ("age", "brew"),
+            ("fd", "brew"),
+            ("neovim", "brew"),
+        ]
+        .into_iter()
+        .map(|(pkg, mgr)| (pkg.to_string(), mgr.to_string()))
+        .collect(),
+        script_summary: declared_surfaces(18, 12).script_summary(),
+    }
+}
+
+/// One row of every recorded shape the table has to read: cfgd's own env file
+/// and rc-file write, a module's three surfaces (its two package groups
+/// recorded as the planner grouped them, one row per manager), and the
+/// per-package rows a profile-level install writes, which the table groups
+/// back into one row per manager.
+fn managed_resources() -> Vec<ManagedResource> {
+    [
+        ("env", "/home/user/.cfgd.env"),
+        ("file", "~/.bashrc"),
+        ("module", "dev-tools:files:12"),
+        ("module", "dev-tools:packages:gcc,cargo,git"),
+        ("module", "dev-tools:packages:neovim,age,fd"),
+        ("module", "dev-tools:script"),
+        ("package", "brew/ripgrep"),
+        ("package", "brew/bat"),
+    ]
+    .into_iter()
+    .map(|(resource_type, resource_id)| ManagedResource {
+        resource_type: resource_type.into(),
+        resource_id: resource_id.into(),
+        source: "local".into(),
+        last_hash: Some("hash1".into()),
+        last_applied: Some(1_715_680_800),
+    })
+    .collect()
+}
 
 fn clean_output() -> StatusOutput {
     StatusOutput {
@@ -65,21 +114,17 @@ fn clean_output() -> StatusOutput {
                 packages: 5,
                 files: 3,
                 status: "installed".into(),
+                declared: ModuleDeclared::default(),
             },
             ModuleStatusEntry {
                 name: "dev-tools".into(),
                 packages: 18,
                 files: 12,
                 status: "installed".into(),
+                declared: dev_tools_declared(),
             },
         ],
-        managed_resources: vec![ManagedResource {
-            resource_type: "file".into(),
-            resource_id: "~/.bashrc".into(),
-            source: "local".into(),
-            last_hash: Some("hash1".into()),
-            last_applied: Some(1_715_680_800),
-        }],
+        managed_resources: managed_resources(),
         warnings: Vec::new(),
         classification_degraded: false,
         classification_degraded_code: None,
@@ -148,6 +193,7 @@ fn drift_output() -> StatusOutput {
             packages: 0,
             files: 4,
             status: "installed".into(),
+            declared: ModuleDeclared::default(),
         }],
         managed_resources: Vec::new(),
         warnings: Vec::new(),

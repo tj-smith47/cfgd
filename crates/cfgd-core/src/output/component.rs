@@ -102,6 +102,11 @@ pub enum Component {
         /// consumers that don't care about presentation styling.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         row_roles: Vec<Vec<Option<Role>>>,
+        /// Set by `Table::wrapping`: a cell too wide for its column wraps
+        /// instead of truncating. Never serialized — display-only, so the
+        /// JSON shape is the same with or without it.
+        #[serde(skip)]
+        wrap_cells: bool,
     },
     Section {
         name: String,

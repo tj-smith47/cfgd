@@ -57,6 +57,33 @@ impl ModuleSurfaces {
         }
     }
 
+    /// The same tally taken from a RESOLVED module, for a surface that holds
+    /// one rather than the document it was loaded from (the fleet-wide
+    /// `cfgd status`, which resolves the profile's modules and never re-reads
+    /// their specs). Resolution copies each surface across verbatim, so the
+    /// two constructors describe the same module — except a platform-skipped
+    /// one, whose resolved surfaces are empty because nothing about it applies
+    /// on this host.
+    pub fn of_resolved(module: &super::ResolvedModule) -> Self {
+        Self {
+            packages: module.packages.len(),
+            files: module.files.len(),
+            env: module.env.clone(),
+            aliases: module.aliases.clone(),
+            scripts: module
+                .script_hooks()
+                .into_iter()
+                .filter(|(_, entries)| !entries.is_empty())
+                .map(|(hook, entries)| HookScripts {
+                    hook,
+                    bodies: entries.iter().map(|e| e.run_str().to_string()).collect(),
+                })
+                .collect(),
+            system: module.system.keys().cloned().collect(),
+            depends: module.depends.clone(),
+        }
+    }
+
     /// The per-hook script tally a summary row renders: `3 preApply, 6
     /// postApply`, in execution order. `None` when the module declares no
     /// scripts at all, so the row is left out rather than reading empty.
@@ -108,6 +135,51 @@ mod tests {
             Some("1 preApply, 2 postApply")
         );
         assert_eq!(surfaces.hook_names(), vec!["preApply", "postApply"]);
+    }
+
+    /// Each hook's body names the hook it was declared under, so a resolved
+    /// vec wired to the wrong name renders a summary that says so — the whole
+    /// risk in mirroring `ScriptSpec::hooks()` on the resolved side.
+    #[test]
+    fn a_resolved_module_tallies_the_same_hooks_its_spec_declared() {
+        let spec = spec_with_scripts(ScriptSpec {
+            pre_apply: vec![ScriptEntry::Simple("preApply".into())],
+            post_apply: vec![
+                ScriptEntry::Simple("postApply".into()),
+                ScriptEntry::Simple("postApply".into()),
+            ],
+            pre_reconcile: vec![ScriptEntry::Simple("preReconcile".into())],
+            post_reconcile: vec![ScriptEntry::Simple("postReconcile".into())],
+            on_drift: vec![ScriptEntry::Simple("onDrift".into())],
+            on_change: vec![ScriptEntry::Simple("onChange".into())],
+        });
+        let scripts = spec.scripts.clone().unwrap_or_default();
+        // The same copy-across `modules::resolve` performs.
+        let resolved = crate::modules::ResolvedModule {
+            pre_apply_scripts: scripts.pre_apply.clone(),
+            post_apply_scripts: scripts.post_apply.clone(),
+            pre_reconcile_scripts: scripts.pre_reconcile.clone(),
+            post_reconcile_scripts: scripts.post_reconcile.clone(),
+            on_drift_scripts: scripts.on_drift.clone(),
+            on_change_scripts: scripts.on_change.clone(),
+            packages: Vec::new(),
+            files: Vec::new(),
+            ..crate::test_helpers::make_resolved_module("dev-tools")
+        };
+        let surfaces = ModuleSurfaces::of_resolved(&resolved);
+        for hook in &surfaces.scripts {
+            assert!(
+                hook.bodies.iter().all(|b| b == hook.hook),
+                "hook {} was tallied from another hook's entries: {:?}",
+                hook.hook,
+                hook.bodies
+            );
+        }
+        assert_eq!(
+            surfaces.script_summary(),
+            ModuleSurfaces::of(&spec).script_summary(),
+            "one module, one tally, whichever side it is read from"
+        );
     }
 
     #[test]

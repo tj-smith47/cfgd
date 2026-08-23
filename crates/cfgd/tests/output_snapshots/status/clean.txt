@@ -17,6 +17,12 @@ Modules
   ✓ module:dev-tools — 18 pkgs, 12 files, Synced
 
 Managed Resources
-  Type  Resource   Source
-  ───────────────────────
-  file  ~/.bashrc  local 
+  Type      Owner             Resource                            Source
+  ──────────────────────────────────────────────────────────────────────
+  env       cfgd              /home/user/.cfgd.env                local 
+  files     cfgd              ~/.bashrc                           local 
+  files     module:dev-tools  /home/user/.config/nvim (12 files)  local 
+  packages  cfgd              brew: bat, ripgrep                  local 
+  packages  module:dev-tools  apt: cargo, gcc, git                local 
+  packages  module:dev-tools  brew: age, fd, neovim               local 
+  script    module:dev-tools  1 preApply, 2 postApply             local 

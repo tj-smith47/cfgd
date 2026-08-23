@@ -97,11 +97,13 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
             headers,
             rows,
             row_roles,
+            wrap_cells,
         } => {
             let t = Table {
                 headers: headers.clone(),
                 rows: rows.clone(),
                 row_roles: row_roles.clone(),
+                wrap_cells: *wrap_cells,
             };
             renderer.render_table(sink, depth, &t);
         }

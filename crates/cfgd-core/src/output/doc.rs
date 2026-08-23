@@ -267,6 +267,7 @@ impl Doc {
             headers: t.headers,
             rows: t.rows,
             row_roles: t.row_roles,
+            wrap_cells: t.wrap_cells,
         });
         self
     }
@@ -518,6 +519,7 @@ impl SectionBuilder {
             headers: t.headers,
             rows: t.rows,
             row_roles: t.row_roles,
+            wrap_cells: t.wrap_cells,
         });
         self
     }
@@ -839,21 +841,33 @@ mod tests {
 
     #[test]
     fn doc_table_adds_table_component() {
-        let t = Table {
-            headers: vec!["Name".into(), "Version".into()],
-            rows: vec![vec!["foo".into(), "1.0".into()]],
-            row_roles: vec![],
-        };
+        let t = Table::new(["Name", "Version"]).row(["foo", "1.0"]);
         let d = Doc::new().table(t);
         if let Component::Table {
             headers,
             rows,
             row_roles,
+            wrap_cells,
         } = &d.children[0]
         {
             assert_eq!(headers.len(), 2);
             assert_eq!(rows.len(), 1);
-            assert!(row_roles.is_empty());
+            assert_eq!(row_roles.len(), 1);
+            assert!(!wrap_cells);
+        } else {
+            panic!("expected Table");
+        }
+    }
+
+    /// The wrap flag is the difference between a truncated package list and a
+    /// complete one, and the buffered path rebuilds the table from its own
+    /// component — a flag that does not survive that rebuild leaves the
+    /// streaming and buffered renders of one table disagreeing.
+    #[test]
+    fn doc_table_carries_the_wrap_flag_through_its_component() {
+        let d = Doc::new().table(Table::new(["Name"]).row(["foo"]).wrapping());
+        if let Component::Table { wrap_cells, .. } = &d.children[0] {
+            assert!(wrap_cells);
         } else {
             panic!("expected Table");
         }
@@ -957,11 +971,7 @@ mod tests {
 
     #[test]
     fn section_builder_table() {
-        let t = Table {
-            headers: vec!["H".into()],
-            rows: vec![vec!["R".into()]],
-            row_roles: vec![],
-        };
+        let t = Table::new(["H"]).row(["R"]);
         let s = SectionBuilder::new("X", true).table(t);
         let c = s.into_component();
         if let Component::Section { children, .. } = c {

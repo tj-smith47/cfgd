@@ -60,6 +60,69 @@ pub struct ModuleStatusEntry {
     pub packages: usize,
     pub files: usize,
     pub status: String,
+    /// What resolution can still say about the module's recorded Managed
+    /// Resources rows. Display-only — the recorded row is the fact a consumer
+    /// reads out of `managedResources`, so the payload shape is the same with
+    /// or without it.
+    #[serde(skip)]
+    pub declared: ModuleDeclared,
+}
+
+/// The detail the Managed Resources table renders beside one module's recorded
+/// rows: the id records WHAT was applied, and this is what the current
+/// resolution can add about it (which directory the files land in, which
+/// manager installs a package, which hooks the module declares).
+///
+/// Empty for a module the config no longer carries — the row still names what
+/// cfgd manages, with only the recorded id behind it.
+#[derive(Debug, Clone, Default)]
+pub struct ModuleDeclared {
+    /// Directory the module's declared file targets share, POSIX-folded.
+    pub file_root: Option<String>,
+    /// Resolved package name to the manager that installs it.
+    pub package_managers: std::collections::BTreeMap<String, String>,
+    /// `3 preApply, 6 postApply`, from [`cfgd_core::modules::ModuleSurfaces`] —
+    /// the same tally, and the same rendering, `cfgd status <module>` reports.
+    pub script_summary: Option<String>,
+}
+
+impl ModuleDeclared {
+    fn of(module: &cfgd_core::modules::ResolvedModule) -> Self {
+        Self {
+            file_root: common_target_root(&module.files),
+            package_managers: module
+                .packages
+                .iter()
+                .map(|p| (p.resolved_name.clone(), p.manager.clone()))
+                .collect(),
+            script_summary: cfgd_core::modules::ModuleSurfaces::of_resolved(module)
+                .script_summary(),
+        }
+    }
+}
+
+/// The deepest directory every one of `files` deploys under, POSIX-folded.
+///
+/// A module deploying one file answers with that file: it IS the whole of what
+/// the module put on the machine, and naming its parent would claim a
+/// directory cfgd does not manage.
+fn common_target_root(files: &[cfgd_core::modules::ResolvedFile]) -> Option<String> {
+    let mut targets = files.iter().map(|f| f.target.as_path());
+    let mut root: Vec<std::path::Component<'_>> = targets.next()?.components().collect();
+    for target in targets {
+        let shared = root
+            .iter()
+            .zip(target.components())
+            .take_while(|(a, b)| **a == *b)
+            .count();
+        root.truncate(shared);
+    }
+    if root.is_empty() {
+        return None;
+    }
+    Some(cfgd_core::to_posix_string(
+        root.iter().collect::<std::path::PathBuf>(),
+    ))
 }
 
 #[derive(Serialize)]
@@ -541,24 +604,184 @@ pub fn build_fleet_status_doc(
         "Managed Resources",
         &output.managed_resources,
         |s, items| {
-            let mut t = Table::new(["Type", "Resource", "Source"]);
-            for r in items {
-                // Same rationale as the Drift section above: condense a
-                // "script" / "Running script" resource_id only for this
-                // table cell, never the stored id itself.
-                let display_id =
-                    if r.resource_type == "script" || r.resource_type == "Running script" {
-                        condense_script_label(&r.resource_id)
-                    } else {
-                        r.resource_id.clone()
-                    };
-                t = t.row([r.resource_type.clone(), display_id, r.source.clone()]);
+            let mut t = Table::new(["Type", "Owner", "Resource", "Source"])
+                // A package list is what the reader acts on, so a narrow
+                // terminal wraps it rather than cutting names off the tail.
+                .wrapping();
+            for row in managed_resource_rows(items, &output.modules) {
+                t = t.row(row);
             }
             s.table(t)
         },
     );
 
     doc.with_data(output)
+}
+
+/// The owner column's word for what cfgd manages on the profile's own behalf
+/// rather than for a module.
+const OWNER_SELF: &str = "cfgd";
+
+/// Stand-in for a resource column with nothing left to say — the same `-` the
+/// Config Sources table renders for a version nobody has fetched.
+const NO_DETAIL: &str = "-";
+
+/// The Managed Resources rows, as `[Type, Owner, Resource, Source]`.
+///
+/// A recorded row is a state-matching key rather than a report: a `module`
+/// row's id carries the owner and the surface inside it, and a `package` row
+/// is ONE package where a reader wants the list a manager installed. Both are
+/// split out here, so the table can say whose each resource is and can render
+/// one row per manager rather than one per package.
+fn managed_resource_rows(
+    items: &[cfgd_core::state::ManagedResource],
+    modules: &[ModuleStatusEntry],
+) -> Vec<[String; 4]> {
+    let mut rows: Vec<[String; 4]> = Vec::new();
+    // Keyed by (manager, source) rather than manager alone: two sources
+    // delivering one manager's packages are two facts, and a merged row would
+    // attribute both to whichever source sorted first.
+    let mut own_packages: std::collections::BTreeMap<(&str, &str), Vec<&str>> =
+        std::collections::BTreeMap::new();
+
+    for r in items {
+        if let Some((manager, package)) = package_id_parts(&r.resource_type, &r.resource_id) {
+            own_packages
+                .entry((manager, r.source.as_str()))
+                .or_default()
+                .push(package);
+            continue;
+        }
+        let Some((module, rest)) = module_id_parts(&r.resource_type, &r.resource_id) else {
+            // Same rationale as the Drift section above: condense a "script" /
+            // "Running script" resource_id only for this table cell, never the
+            // stored id itself.
+            let resource = if r.resource_type == "script" || r.resource_type == "Running script" {
+                condense_script_label(&r.resource_id)
+            } else {
+                r.resource_id.clone()
+            };
+            rows.push([
+                display_type(&r.resource_type),
+                OWNER_SELF.to_string(),
+                resource,
+                r.source.clone(),
+            ]);
+            continue;
+        };
+        let owner = OwnerLabel::new("module", module).plain();
+        let declared = modules
+            .iter()
+            .find(|m| m.name == module)
+            .map(|m| &m.declared);
+        let (surface, detail) = rest.split_once(':').unwrap_or((rest, ""));
+        let resource = match surface {
+            "files" => module_files_resource(detail, declared),
+            "packages" => module_packages_resource(detail, declared),
+            "script" => declared
+                .and_then(|d| d.script_summary.clone())
+                .unwrap_or_else(|| NO_DETAIL.to_string()),
+            _ if detail.is_empty() => NO_DETAIL.to_string(),
+            _ => detail.to_string(),
+        };
+        rows.push([surface.to_string(), owner, resource, r.source.clone()]);
+    }
+
+    for ((manager, source), mut packages) in own_packages {
+        packages.sort_unstable();
+        rows.push([
+            "packages".to_string(),
+            OWNER_SELF.to_string(),
+            format!("{manager}: {}", packages.join(", ")),
+            source.to_string(),
+        ]);
+    }
+    // The recorded order is the state store's (type, id); grouping and
+    // splitting break it, so the table sorts what it renders instead of
+    // letting the shape of the rows decide the order.
+    rows.sort();
+    rows
+}
+
+/// The `(manager, package)` halves of a `package` row's `<manager>/<package>`
+/// id. `None` for every other resource type, and for an id missing either
+/// half — an id cfgd cannot read is rendered as it stands rather than
+/// half-parsed into a row claiming a manager it never named.
+fn package_id_parts<'a>(resource_type: &str, resource_id: &'a str) -> Option<(&'a str, &'a str)> {
+    if resource_type != "package" {
+        return None;
+    }
+    resource_id
+        .split_once('/')
+        .filter(|(manager, package)| !manager.is_empty() && !package.is_empty())
+}
+
+/// The `(module, remainder)` halves of a `module` row's `<name>:<surface>[…]`
+/// id.
+fn module_id_parts<'a>(resource_type: &str, resource_id: &'a str) -> Option<(&'a str, &'a str)> {
+    if resource_type != "module" {
+        return None;
+    }
+    resource_id
+        .split_once(':')
+        .filter(|(module, rest)| !module.is_empty() && !rest.is_empty())
+}
+
+/// A module's file deployment: where the files land, and how many the apply
+/// that recorded the row declared. The count is the recorded fact; the root is
+/// what the current resolution says about it. Full paths are
+/// `cfgd status --module -o wide`'s job.
+fn module_files_resource(recorded_count: &str, declared: Option<&ModuleDeclared>) -> String {
+    let count = recorded_count
+        .parse::<usize>()
+        .ok()
+        .map(|n| cfgd_core::pluralize(n, "file"));
+    let root = declared.and_then(|d| d.file_root.clone());
+    match (root, count) {
+        (Some(root), Some(count)) => format!("{root} ({count})"),
+        (Some(root), None) => root,
+        (None, Some(count)) => count,
+        (None, None) => NO_DETAIL.to_string(),
+    }
+}
+
+/// A module's package install: the names the apply recorded, alphabetical, led
+/// by the manager that installs them.
+///
+/// One recorded row is one manager's group (the planner groups them that way),
+/// but the manager itself is not part of the id — it is recovered from the
+/// resolution, and only when every name in the row agrees on one, so the row
+/// can never name a manager that installs some other part of its own list.
+fn module_packages_resource(recorded: &str, declared: Option<&ModuleDeclared>) -> String {
+    let mut names: Vec<&str> = recorded.split(',').filter(|n| !n.is_empty()).collect();
+    if names.is_empty() {
+        return NO_DETAIL.to_string();
+    }
+    names.sort_unstable();
+    let list = names.join(", ");
+    let managers: std::collections::BTreeSet<&str> = names
+        .iter()
+        .filter_map(|n| declared?.package_managers.get(*n).map(String::as_str))
+        .collect();
+    match managers.len() {
+        1 => format!("{}: {list}", managers.iter().next().unwrap_or(&"")),
+        _ => list,
+    }
+}
+
+/// The word the Type column reads for a recorded `resource_type`.
+///
+/// The recorded types are a state-matching vocabulary and stay exactly as they
+/// are; the column names the SURFACE, in the same words a module row's own id
+/// spells them (`files`, `packages`), so one table does not call one thing two
+/// names depending on who declared it.
+fn display_type(resource_type: &str) -> String {
+    match resource_type {
+        "file" => "files".to_string(),
+        "package" => "packages".to_string(),
+        "Running script" => "script".to_string(),
+        other => other.to_string(),
+    }
 }
 
 /// Build the per-module `cfgd status <module>` Doc.
@@ -908,6 +1131,7 @@ pub(super) fn cmd_status(
                 packages: module.packages.len(),
                 files: module.files.len(),
                 status,
+                declared: ModuleDeclared::of(module),
             }
         })
         .collect();
@@ -1338,6 +1562,159 @@ mod tests {
         );
     }
 
+    fn recorded(resource_type: &str, resource_id: &str) -> cfgd_core::state::ManagedResource {
+        cfgd_core::state::ManagedResource {
+            resource_type: resource_type.to_string(),
+            resource_id: resource_id.to_string(),
+            source: "local".to_string(),
+            last_hash: None,
+            last_applied: None,
+        }
+    }
+
+    fn nvim_entry(declared: ModuleDeclared) -> ModuleStatusEntry {
+        ModuleStatusEntry {
+            name: "nvim".to_string(),
+            packages: 3,
+            files: 6,
+            status: "installed".to_string(),
+            declared,
+        }
+    }
+
+    /// Profile-level `package` rows are recorded one package per row, which is
+    /// a state-matching key rather than a report. The table renders one row per
+    /// manager, names alphabetical whatever order they were recorded in.
+    #[test]
+    fn profile_packages_collapse_into_one_row_per_manager() {
+        let rows = managed_resource_rows(
+            &[
+                recorded("package", "brew/ripgrep"),
+                recorded("package", "apt/git"),
+                recorded("package", "brew/bat"),
+            ],
+            &[],
+        );
+        assert_eq!(
+            rows,
+            vec![
+                [
+                    "packages".to_string(),
+                    "cfgd".to_string(),
+                    "apt: git".to_string(),
+                    "local".to_string()
+                ],
+                [
+                    "packages".to_string(),
+                    "cfgd".to_string(),
+                    "brew: bat, ripgrep".to_string(),
+                    "local".to_string()
+                ],
+            ]
+        );
+    }
+
+    /// Two sources delivering one manager's packages are two facts. Merging
+    /// them would attribute both to whichever source sorted first.
+    #[test]
+    fn one_manager_delivered_by_two_sources_stays_two_rows() {
+        let mut remote = recorded("package", "brew/fd");
+        remote.source = "acme".to_string();
+        let rows = managed_resource_rows(&[recorded("package", "brew/bat"), remote], &[]);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(rows[0][2], "brew: bat");
+        assert_eq!(rows[0][3], "local");
+        assert_eq!(rows[1][2], "brew: fd");
+        assert_eq!(rows[1][3], "acme");
+    }
+
+    /// A module row's id carries the owner and the surface; the detail the
+    /// reader wants (where files land, which manager installs, how many hooks)
+    /// lives in the resolution beside it.
+    #[test]
+    fn a_module_row_names_its_owner_and_reads_its_detail_from_the_resolution() {
+        let declared = ModuleDeclared {
+            file_root: Some("/home/u/.config/nvim".to_string()),
+            package_managers: [("git", "apt"), ("gcc", "apt")]
+                .into_iter()
+                .map(|(p, m)| (p.to_string(), m.to_string()))
+                .collect(),
+            script_summary: Some("3 preApply, 6 postApply".to_string()),
+        };
+        let rows = managed_resource_rows(
+            &[
+                recorded("module", "nvim:files:6"),
+                recorded("module", "nvim:packages:git,gcc"),
+                recorded("module", "nvim:script"),
+            ],
+            &[nvim_entry(declared)],
+        );
+        let resources: Vec<&str> = rows.iter().map(|r| r[2].as_str()).collect();
+        assert!(rows.iter().all(|r| r[1] == "module:nvim"), "{rows:?}");
+        assert_eq!(
+            resources,
+            vec![
+                "/home/u/.config/nvim (6 files)",
+                "apt: gcc, git",
+                "3 preApply, 6 postApply",
+            ]
+        );
+    }
+
+    /// The manager prefix is recovered from the resolution, so a row whose
+    /// names do not all agree on one manager names none — better silent than
+    /// claiming a manager that installs only part of its own list.
+    #[test]
+    fn a_package_row_names_a_manager_only_when_every_name_agrees() {
+        let split = ModuleDeclared {
+            package_managers: [("git", "apt"), ("neovim", "brew")]
+                .into_iter()
+                .map(|(p, m)| (p.to_string(), m.to_string()))
+                .collect(),
+            ..ModuleDeclared::default()
+        };
+        let rows = managed_resource_rows(
+            &[recorded("module", "nvim:packages:neovim,git")],
+            &[nvim_entry(split)],
+        );
+        assert_eq!(rows[0][2], "git, neovim");
+    }
+
+    /// A module the current config no longer resolves still has recorded rows.
+    /// Each keeps whatever the id itself carries and says nothing it cannot
+    /// know.
+    #[test]
+    fn an_unresolvable_module_keeps_the_facts_its_own_id_carries() {
+        let rows = managed_resource_rows(
+            &[
+                recorded("module", "gone:files:4"),
+                recorded("module", "gone:packages:zsh"),
+                recorded("module", "gone:script"),
+            ],
+            &[],
+        );
+        let resources: Vec<&str> = rows.iter().map(|r| r[2].as_str()).collect();
+        assert_eq!(resources, vec!["4 files", "zsh", "-"]);
+    }
+
+    /// A recorded type is a state-matching token; the Type column names the
+    /// surface in the same words a module row's own id spells them, so one
+    /// table never calls one thing two names depending on who declared it.
+    #[test]
+    fn the_type_column_names_the_surface_not_the_recorded_token() {
+        let rows = managed_resource_rows(
+            &[
+                recorded("file", "/home/u/.bashrc"),
+                recorded("env", "/home/u/.cfgd.env"),
+                recorded("Running script", "echo hi"),
+            ],
+            &[],
+        );
+        let types: Vec<&str> = rows.iter().map(|r| r[0].as_str()).collect();
+        assert_eq!(types, vec!["env", "files", "script"]);
+        assert!(rows.iter().all(|r| r[1] == "cfgd"), "{rows:?}");
+    }
+
     /// The module health line's units agree with their own counts: a module
     /// with one of each reads `1 pkg, 1 file`, and anything else — including
     /// zero — keeps the plural.
@@ -1354,18 +1731,21 @@ mod tests {
                     packages: 1,
                     files: 1,
                     status: "installed".to_string(),
+                    declared: ModuleDeclared::default(),
                 },
                 ModuleStatusEntry {
                     name: "nvim".to_string(),
                     packages: 3,
                     files: 12,
                     status: "installed".to_string(),
+                    declared: ModuleDeclared::default(),
                 },
                 ModuleStatusEntry {
                     name: "git".to_string(),
                     packages: 0,
                     files: 0,
                     status: "installed".to_string(),
+                    declared: ModuleDeclared::default(),
                 },
             ],
             managed_resources: Vec::new(),

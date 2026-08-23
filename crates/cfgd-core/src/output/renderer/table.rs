@@ -60,6 +60,12 @@ pub struct Table {
     /// escapes from styling never inflate column widths.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) row_roles: Vec<Vec<Option<Role>>>,
+    /// Whether a cell too wide for its column WRAPS onto continuation lines
+    /// instead of being truncated with `…`. Display-only, like
+    /// `Component::Section`'s `owner`: a `-o json` reader sees the same rows
+    /// either way.
+    #[serde(skip)]
+    pub(crate) wrap_cells: bool,
 }
 
 impl Table {
@@ -68,7 +74,19 @@ impl Table {
             headers: headers.into_iter().map(Into::into).collect(),
             rows: Vec::new(),
             row_roles: Vec::new(),
+            wrap_cells: false,
         }
+    }
+
+    /// Wrap a cell onto continuation lines rather than truncating it, when the
+    /// terminal cannot hold the table at its natural widths.
+    ///
+    /// For a table whose cells carry a LIST the reader has to act on — the
+    /// package names one manager installed — where the tail `…` eats is data
+    /// lost rather than a detail some wider view still offers.
+    pub fn wrapping(mut self) -> Self {
+        self.wrap_cells = true;
+        self
     }
 
     pub fn row(mut self, row: impl IntoIterator<Item = impl Into<String>>) -> Self {
@@ -168,25 +186,42 @@ impl Renderer {
         let empty_roles: Vec<Option<Role>> = Vec::new();
         for (row_idx, row) in rows.iter().enumerate() {
             let roles_for_row = t.row_roles.get(row_idx).unwrap_or(&empty_roles);
-            let line: String = row
+            // One physical line per cell normally; a wrapping table lays each
+            // cell out over as many as its column needs, and the row is as
+            // tall as its tallest cell.
+            let laid_out: Vec<Vec<String>> = row
                 .iter()
                 .enumerate()
                 .take(cols)
                 .map(|(i, cell)| {
-                    let cell = clamped(cell, i);
-                    let pad = widths[i].saturating_sub(UnicodeWidthStr::width(cell.as_str()));
-                    let padded = format!("{cell}{}", " ".repeat(pad));
-                    match roles_for_row.get(i).and_then(|r| *r) {
-                        Some(role) => {
-                            let (_icon, style) = role_glyph(&self.theme, role);
-                            style.apply_to(padded).to_string()
-                        }
-                        None => padded,
+                    if t.wrap_cells {
+                        wrap::wrap_segment(cell, "", "", Some(widths[i]))
+                    } else {
+                        vec![clamped(cell, i)]
                     }
                 })
-                .collect::<Vec<_>>()
-                .join("  ");
-            body.push(line);
+                .collect();
+            let height = laid_out.iter().map(Vec::len).max().unwrap_or(0);
+            for physical in 0..height {
+                let line: String = laid_out
+                    .iter()
+                    .enumerate()
+                    .map(|(i, lines)| {
+                        let cell = lines.get(physical).map(String::as_str).unwrap_or("");
+                        let pad = widths[i].saturating_sub(UnicodeWidthStr::width(cell));
+                        let padded = format!("{cell}{}", " ".repeat(pad));
+                        match roles_for_row.get(i).and_then(|r| *r) {
+                            Some(role) => {
+                                let (_icon, style) = role_glyph(&self.theme, role);
+                                style.apply_to(padded).to_string()
+                            }
+                            None => padded,
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("  ");
+                body.push(line);
+            }
         }
         self.emit_with(w, |e| {
             e.flush_section_headers();
@@ -451,6 +486,61 @@ mod tests {
             prefix_display_width(wide_row, "module:nvim"),
             prefix_display_width(narrow_row, "module:nvim"),
             "the Source column must stay aligned across rows:\n{out}"
+        );
+    }
+
+    /// The same over-wide row under [`Table::wrapping`]: a package list is
+    /// what the reader acts on, so the tail is carried onto continuation lines
+    /// under its own column instead of being cut with `…`. Every name the row
+    /// holds is still readable, and the columns still line up.
+    #[test]
+    fn a_wrapping_table_carries_an_over_wide_cell_onto_continuation_lines() {
+        let cols = 100;
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = NarrowSink(StringSink(buf.clone()), cols);
+        let r = Renderer::new(Theme::default(), Verbosity::Normal);
+        let packages: Vec<String> = (0..28).map(|i| format!("pkg-number-{i}")).collect();
+        let wide = format!("apt: {}", packages.join(", "));
+        let t = Table::new(["Type", "Owner", "Resource", "Source"])
+            .row(["files", "module:nvim", "~/.config/nvim (6 files)", "local"])
+            .row(["packages", "module:nvim", wide.as_str(), "local"])
+            .wrapping();
+        r.render_table(&sink, 0, &t);
+        let out = crate::test_helpers::captured_text(&buf);
+        let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+
+        assert!(
+            !out.contains('…'),
+            "a wrapping table never truncates: {out:?}"
+        );
+        for name in &packages {
+            assert!(
+                out.contains(name.as_str()),
+                "every package name survives the wrap, {name} did not: {out:?}"
+            );
+        }
+        for line in &lines {
+            assert!(
+                display_width(line) <= cols,
+                "a line wider than the terminal is a wrapped grid: {line:?}"
+            );
+        }
+        // The continuation lines hang under the Resource column, so the row
+        // still reads as one row: nothing lands in the Type or Owner columns.
+        let first_wrapped = lines
+            .iter()
+            .position(|l| l.contains("apt: "))
+            .expect("the wide row must render");
+        let continuation = lines
+            .get(first_wrapped + 1)
+            .expect("the wide row must wrap onto a second line");
+        let indent = UnicodeWidthStr::width(
+            &continuation[..continuation.len() - continuation.trim_start().len()],
+        );
+        assert_eq!(
+            indent,
+            prefix_display_width(lines[0], "Resource"),
+            "a continuation line starts at the Resource column:\n{out}"
         );
     }
 

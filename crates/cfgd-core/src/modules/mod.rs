@@ -161,6 +161,43 @@ pub struct ResolvedModule {
 }
 
 impl ResolvedModule {
+    /// The six lifecycle hooks paired with the entries this module resolved
+    /// for them, in RUN order — the resolved-side mirror of
+    /// [`crate::config::ScriptSpec::hooks`], which is the ordering authority
+    /// both read from.
+    ///
+    /// Destructured for the same reason that one is: a seventh hook field does
+    /// not compile until it is listed here, so no surface reporting a module's
+    /// hooks can silently miss one.
+    pub fn script_hooks(&self) -> [(&'static str, &[crate::config::ScriptEntry]); 6] {
+        let Self {
+            pre_apply_scripts,
+            post_apply_scripts,
+            pre_reconcile_scripts,
+            post_reconcile_scripts,
+            on_drift_scripts,
+            on_change_scripts,
+            name: _,
+            packages: _,
+            files: _,
+            env: _,
+            aliases: _,
+            system: _,
+            depends: _,
+            dir: _,
+            platform_skip_reason: _,
+            origin: _,
+        } = self;
+        [
+            ("preApply", pre_apply_scripts),
+            ("postApply", post_apply_scripts),
+            ("preReconcile", pre_reconcile_scripts),
+            ("postReconcile", post_reconcile_scripts),
+            ("onDrift", on_drift_scripts),
+            ("onChange", on_change_scripts),
+        ]
+    }
+
     /// Build a platform-skipped placeholder: identity (`name`, `dir`, `depends`)
     /// is preserved, `platform_skip_reason` is set, and every applyable field
     /// (packages, files, env, aliases, system, scripts) is empty. Centralizing
