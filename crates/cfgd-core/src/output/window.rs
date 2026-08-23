@@ -95,10 +95,12 @@ impl<'p> OutputWindow<'p> {
             // `run_streaming` does: a Running status, then its lines.
             //
             // Routed through `finalize_subject` like every other status
-            // subject rather than written straight into the fields — the fold
-            // it applies is idempotent over the label `compose_in_flight_subject`
-            // already handed back, and going through it is what keeps this arm
-            // rendering the same bytes as the settled line that replaces it.
+            // subject rather than written straight into the fields — its fold
+            // takes the live-region COAT back off the label
+            // `compose_in_flight_subject` handed over (the text underneath is
+            // already folded, so nothing else changes), which is what keeps
+            // this permanent arm rendering the same bytes as the settled line
+            // that replaces it.
             let announced = finalize_subject(&spinner.renderer.theme, &label, None, None, None);
             spinner.renderer.render_status(
                 spinner.sink.as_ref(),
@@ -286,7 +288,7 @@ impl super::Printer {
 
     #[must_use]
     pub fn output_window_at(&self, depth: usize, label: impl Into<String>) -> OutputWindow<'_> {
-        let label = super::spinner::compose_in_flight_subject(label);
+        let label = super::spinner::compose_in_flight_subject(&self.renderer.theme, label);
         let (bar, live) = super::spinner::make_spinner_bar(
             &self.multi_progress,
             &self.renderer,

@@ -317,7 +317,7 @@ impl<'p> SectionGuard<'p> {
     /// Status emitted by `finish_*` lands at the right indentation.
     #[must_use]
     pub fn spinner(&self, message: impl Into<String>) -> super::spinner::Spinner<'_> {
-        let message = super::spinner::compose_in_flight_subject(message);
+        let message = super::spinner::compose_in_flight_subject(&self.renderer.theme, message);
         let (bar, live) = super::spinner::make_spinner_bar(
             &self.printer.multi_progress,
             &self.renderer,
@@ -345,7 +345,7 @@ impl<'p> SectionGuard<'p> {
         total: u64,
         message: impl Into<String>,
     ) -> super::spinner::ProgressBar<'_> {
-        let message = super::spinner::compose_in_flight_subject(message);
+        let message = super::spinner::compose_in_flight_subject(&self.renderer.theme, message);
         let (bar, live) = super::spinner::make_progress_bar(
             &self.printer.multi_progress,
             &self.renderer,

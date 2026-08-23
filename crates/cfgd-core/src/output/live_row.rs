@@ -129,7 +129,7 @@ impl<'p> LiveRow<'p> {
     /// The returned window does NOT retire the bar when it closes: the row
     /// outlives it and settles the line itself.
     pub(crate) fn window(&self, subject: impl Into<String>) -> OutputWindow<'p> {
-        let subject = super::spinner::compose_in_flight_subject(subject);
+        let subject = super::spinner::compose_in_flight_subject(&self.renderer.theme, subject);
         if !self.bar.is_hidden() {
             self.bar.set_style(super::spinner::spinner_style(
                 &self.renderer,
@@ -151,7 +151,11 @@ impl<'p> LiveRow<'p> {
             borrowed: true,
             _phantom: PhantomData,
         };
-        spinner.set_message(subject.clone());
+        // Already composed above — folded, ellipsis-stripped and painted — so
+        // it goes in through the bypass. `set_message` would compose it a
+        // second time, whose fold strips the coat the first one put on and
+        // pays for the whole label again to arrive back where it started.
+        spinner.set_composed_message(subject.clone());
         OutputWindow::borrowed(spinner, subject)
     }
 

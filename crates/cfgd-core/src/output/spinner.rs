@@ -21,9 +21,9 @@ use std::time::Duration;
 
 use indicatif::{ProgressBar as IndProgressBar, ProgressStyle};
 
-use super::Role;
 use super::renderer::{LiveBarGuard, Renderer, Writer, indent_prefix, wrap};
 use super::status_builder::StatusBuilder;
+use super::{Role, Theme};
 
 pub(crate) fn stderr_is_terminal() -> bool {
     std::io::stderr().is_terminal()
@@ -69,15 +69,65 @@ pub(super) fn clamp_label(sink: &dyn Writer, message: &str, depth: usize) -> Str
 /// per repaint — indicatif redraws from the message it was handed. The fold
 /// runs BEFORE the ellipsis strip, so a trailing `…` hidden behind an escape
 /// sequence is still the trailing character when the strip looks.
-pub(super) fn compose_in_flight_subject(text: impl Into<String>) -> String {
+///
+/// The label's own COAT goes on last, after the fold, for the ordering
+/// [`cursor_safe`] forbids reversing — see [`paint_in_flight_label`]. Every
+/// consumer that turns a live label back into a PERMANENT line runs it through
+/// `finalize_subject`, whose fold strips that coat again, so a settled line
+/// renders the same bytes it always did.
+pub(super) fn compose_in_flight_subject(theme: &Theme, text: impl Into<String>) -> String {
     let text = super::cursor_safe(&text.into());
     let trimmed = text.trim_end();
     let stripped = trimmed
         .strip_suffix('…')
         .or_else(|| trimmed.strip_suffix("..."));
-    match stripped {
-        Some(base) => base.trim_end().to_string(),
-        None => text,
+    let body = match stripped {
+        Some(base) => base.trim_end(),
+        None => text.as_str(),
+    };
+    paint_in_flight_label(theme, body)
+}
+
+/// A live label's renderer-owned styling: the text in `theme.info` — the slot
+/// the animated frame beside it is already painted with, so the running line
+/// reads as one thing — with a trailing `kind:name` owner token handed to
+/// [`super::OwnerLabel`]'s three slots instead of that single coat.
+fn paint_in_flight_label(theme: &Theme, body: &str) -> String {
+    if body.is_empty() {
+        return String::new();
+    }
+    let (_, style) = super::renderer::role_glyph(theme, Role::Info);
+    match split_owner_token(body) {
+        ("", Some(owner)) => owner.styled(theme),
+        (head, Some(owner)) => format!("{} {}", style.apply_to(head), owner.styled(theme)),
+        (_, None) => style.apply_to(body).to_string(),
+    }
+}
+
+/// The trailing `kind:name` owner token of a live label, when its last word is
+/// one: `Fetching source:acme` splits into `("Fetching", source:acme)`.
+///
+/// Shape-only and deliberately narrow, because this is a string a producer
+/// formatted rather than an [`super::OwnerLabel`] it built: the kind must be
+/// nothing but ASCII lowercase letters and the name must carry no separator of
+/// its own, so an OCI reference (`ghcr.io/acme/mod:1.0`), a URL
+/// (`https://host/x`) and a Windows path (`C:\x`) all stay plain text. A false
+/// positive costs two theme slots on a word that is not an owner; a false
+/// NEGATIVE costs nothing but the tint, so the predicate errs tight.
+fn split_owner_token(body: &str) -> (&str, Option<super::OwnerLabel>) {
+    let (head, last) = match body.rsplit_once(char::is_whitespace) {
+        Some((head, last)) => (head.trim_end(), last),
+        None => ("", body),
+    };
+    let Some((kind, name)) = last.split_once(':') else {
+        return (body, None);
+    };
+    let plain_kind = !kind.is_empty() && kind.chars().all(|c| c.is_ascii_lowercase());
+    let plain_name = !name.is_empty() && !name.contains([':', '/', '\\']);
+    if plain_kind && plain_name {
+        (head, Some(super::OwnerLabel::new(kind, name)))
+    } else {
+        (body, None)
     }
 }
 
@@ -129,7 +179,7 @@ impl<'p> Spinner<'p> {
     /// narration be what an early `?` leaves behind, not the spinner's
     /// original opening label.
     pub fn set_message(&mut self, text: impl Into<String>) {
-        self.set_composed_message(compose_in_flight_subject(text));
+        self.set_composed_message(compose_in_flight_subject(&self.renderer.theme, text));
     }
 
     /// [`Self::set_message`] for text that is already folded and already
@@ -280,7 +330,7 @@ impl<'p> ProgressBar<'p> {
     /// becomes `self.message`, the label `Drop` settles with if the bar is
     /// abandoned before `finish()`.
     pub fn set_message(&mut self, m: impl Into<String>) {
-        let m = compose_in_flight_subject(m);
+        let m = compose_in_flight_subject(&self.renderer.theme, m);
         let clamped = clamp_label(self.sink.as_ref(), &m, self.depth);
         self.bar.set_message(clamped.clone());
         self.message = clamped;
@@ -502,23 +552,38 @@ mod tests {
 
     #[test]
     fn compose_in_flight_subject_strips_a_trailing_ellipsis_char() {
-        assert_eq!(compose_in_flight_subject("Cloning…"), "Cloning");
+        assert_eq!(
+            compose_in_flight_subject(&Theme::default(), "Cloning…"),
+            "Cloning"
+        );
     }
 
     #[test]
     fn compose_in_flight_subject_strips_a_trailing_literal_dots() {
-        assert_eq!(compose_in_flight_subject("Cloning..."), "Cloning");
+        assert_eq!(
+            compose_in_flight_subject(&Theme::default(), "Cloning..."),
+            "Cloning"
+        );
     }
 
     #[test]
     fn compose_in_flight_subject_strips_trailing_whitespace_around_the_marker() {
-        assert_eq!(compose_in_flight_subject("Cloning ... "), "Cloning");
-        assert_eq!(compose_in_flight_subject("Cloning …  "), "Cloning");
+        assert_eq!(
+            compose_in_flight_subject(&Theme::default(), "Cloning ... "),
+            "Cloning"
+        );
+        assert_eq!(
+            compose_in_flight_subject(&Theme::default(), "Cloning …  "),
+            "Cloning"
+        );
     }
 
     #[test]
     fn compose_in_flight_subject_leaves_a_bare_participle_untouched() {
-        assert_eq!(compose_in_flight_subject("Cloning"), "Cloning");
+        assert_eq!(
+            compose_in_flight_subject(&Theme::default(), "Cloning"),
+            "Cloning"
+        );
     }
 
     #[test]
@@ -526,8 +591,8 @@ mod tests {
         // A caller that hands in only "..."/"…" gets back "". No production
         // call site does this — every in-flight subject names a verb — but
         // the composer's contract must be pinned regardless of who calls it.
-        assert_eq!(compose_in_flight_subject("..."), "");
-        assert_eq!(compose_in_flight_subject("…"), "");
+        assert_eq!(compose_in_flight_subject(&Theme::default(), "..."), "");
+        assert_eq!(compose_in_flight_subject(&Theme::default(), "…"), "");
     }
 
     #[test]
@@ -537,9 +602,110 @@ mod tests {
         // marker", not "strip every trailing dot" — a second stacked marker,
         // or a lone ".." that is not the three-dot ellipsis, is left in place
         // rather than guessed at.
-        assert_eq!(compose_in_flight_subject("Cloning……"), "Cloning…");
-        assert_eq!(compose_in_flight_subject("Cloning......"), "Cloning...");
-        assert_eq!(compose_in_flight_subject("Cloning.."), "Cloning..");
+        assert_eq!(
+            compose_in_flight_subject(&Theme::default(), "Cloning……"),
+            "Cloning…"
+        );
+        assert_eq!(
+            compose_in_flight_subject(&Theme::default(), "Cloning......"),
+            "Cloning..."
+        );
+        assert_eq!(
+            compose_in_flight_subject(&Theme::default(), "Cloning.."),
+            "Cloning.."
+        );
+    }
+
+    /// The label takes `theme.info` — the slot the animated frame beside it is
+    /// already painted with, so the running line reads as one thing rather
+    /// than as a coloured glyph next to terminal-default text.
+    #[test]
+    #[serial_test::serial]
+    fn an_in_flight_label_is_painted_with_the_frames_own_slot() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        assert_eq!(
+            compose_in_flight_subject(&theme, "Cloning…"),
+            theme.info.apply_to("Cloning").to_string()
+        );
+    }
+
+    /// A trailing `kind:name` goes to `OwnerLabel`'s three slots instead of
+    /// disappearing into the label's single coat — the same token the settled
+    /// section heading below it will render, in the same colours.
+    #[test]
+    #[serial_test::serial]
+    fn a_trailing_owner_token_is_painted_through_owner_label() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let owner = super::super::OwnerLabel::new("source", "acme");
+        assert_eq!(
+            compose_in_flight_subject(&theme, "Fetching source:acme"),
+            format!(
+                "{} {}",
+                theme.info.apply_to("Fetching"),
+                owner.styled(&theme)
+            )
+        );
+        // A bare token with no verb ahead of it is the token alone, not a
+        // token behind an empty styled span.
+        assert_eq!(
+            compose_in_flight_subject(&theme, "module:nvim"),
+            super::super::OwnerLabel::new("module", "nvim").styled(&theme)
+        );
+    }
+
+    /// The owner predicate is shape-only, so it has to be TIGHT: a URL, an OCI
+    /// reference and a colon that merely punctuates all stay one plain span.
+    /// Painting `ghcr.io/acme/mod` as an owner "kind" would claim a structure
+    /// the string does not have.
+    #[test]
+    #[serial_test::serial]
+    fn a_colon_that_is_not_an_owner_token_keeps_the_single_coat() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        for label in [
+            "Downloading https://example.com/cfgd.tar.gz",
+            "Pushing module to ghcr.io/acme/mod:1.0",
+            "Restoring daily: staging snapshot",
+            "Extracting archive",
+        ] {
+            assert_eq!(
+                compose_in_flight_subject(&theme, label),
+                theme.info.apply_to(label).to_string(),
+                "{label:?} was split as an owner token"
+            );
+        }
+    }
+
+    /// The coat goes on AFTER the fold: painted first, `cursor_safe` would
+    /// strip it off the very label the theme is colouring.
+    #[test]
+    #[serial_test::serial]
+    fn an_in_flight_label_is_folded_before_it_is_painted() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        assert_eq!(
+            compose_in_flight_subject(&theme, "Cloning\r\u{1b}[2Krepainted"),
+            theme.info.apply_to("Cloning\\x0drepainted").to_string()
+        );
+    }
+
+    /// What the REGION is left painting, read off the bar's own draws: the
+    /// composed label reaches indicatif intact, owner token and all. Colour is
+    /// off in every live capture, so this is also the proof that a themed
+    /// label spends nothing on a colourless stream — the plain bytes are the
+    /// ones a golden holds.
+    #[test]
+    fn the_composed_label_is_what_the_bar_paints() {
+        let (printer, buf) = super::super::Printer::for_test_with_live_bars();
+        let sp = printer.spinner("Fetching source:acme…");
+        let painted = crate::test_helpers::captured_text(&buf);
+        assert!(
+            painted.contains("Fetching source:acme"),
+            "the bar is not painting the composed label: {painted:?}"
+        );
+        assert!(
+            !painted.contains('…'),
+            "the ellipsis strip did not survive the paint: {painted:?}"
+        );
+        sp.finish_silent();
     }
 
     #[test]
