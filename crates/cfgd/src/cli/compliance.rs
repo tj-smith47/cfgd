@@ -307,7 +307,7 @@ pub fn build_compliance_diff_doc(
     arrow: &str,
 ) -> Doc {
     let mut doc = Doc::new()
-        .heading(format!("Compliance Diff #{id1} {arrow} #{id2}"))
+        .heading_title("Compliance Diff", format!("#{id1} {arrow} #{id2}"))
         .kv_block([
             ("Snapshot 1", snap1.timestamp.clone()),
             ("Snapshot 2", snap2.timestamp.clone()),

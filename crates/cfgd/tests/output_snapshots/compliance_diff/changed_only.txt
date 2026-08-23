@@ -1,4 +1,4 @@
-Compliance Diff #3 → #4
+Compliance Diff: #3 → #4
   Snapshot 1  2026-05-14T09:00:00Z
   Snapshot 2  2026-05-14T12:00:00Z
 
