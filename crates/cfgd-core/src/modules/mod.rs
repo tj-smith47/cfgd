@@ -18,6 +18,7 @@ mod loader;
 mod lockfile;
 mod registry;
 mod resolve;
+mod surfaces;
 
 #[cfg(any(test, feature = "test-helpers"))]
 pub(crate) use git::set_repo_refresh_ttl_override;
@@ -41,6 +42,7 @@ pub use resolve::{
     resolve_package,
 };
 pub(crate) use resolve::{price_package, priceable_manager};
+pub use surfaces::{HookScripts, ModuleSurfaces};
 
 // ---------------------------------------------------------------------------
 // Resolved types — output of module resolution

@@ -1096,6 +1096,25 @@ pub struct ScriptSpec {
     pub on_change: Vec<ScriptEntry>,
 }
 
+impl ScriptSpec {
+    /// Every lifecycle hook paired with the entries declared for it, in the
+    /// order a run reaches them.
+    ///
+    /// The ONE enumeration of the hook set: a surface that lists, counts or
+    /// names hooks reads from here, so none of them can miss a hook the YAML
+    /// accepts or disagree about the order they run in.
+    pub fn hooks(&self) -> [(&'static str, &[ScriptEntry]); 6] {
+        [
+            ("preApply", &self.pre_apply),
+            ("postApply", &self.post_apply),
+            ("preReconcile", &self.pre_reconcile),
+            ("postReconcile", &self.post_reconcile),
+            ("onDrift", &self.on_drift),
+            ("onChange", &self.on_change),
+        ]
+    }
+}
+
 /// A declarative backup: snapshot `source` (a file or directory) into
 /// `destination`, retaining the newest `retention` snapshots.
 ///
