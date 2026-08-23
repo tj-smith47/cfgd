@@ -654,6 +654,13 @@ scan. `-o json` carries the same verdicts as `packageState[].state`
 is identical under every view — `-o wide` and `--show-values` change the human
 render only.
 
+The payload carries two words for the module itself. `status` is the token the
+state store holds (`installed`, `error`, or one of the no-record spellings).
+`state` is the verdict the human Status row shows, always present, one of
+`Synced`, `Drifted`, `Failed`, `NotApplied`. `Drifted` needs a live scan: both
+words come from one derivation, so a `state` of `Drifted` always has the
+findings under `drift` to back it.
+
 `pendingDecisions` lists the same rows `cfgd decide` offers, including
 classified-but-unrecorded items with `id: 0` (see [`cfgd plan`](#cfgd-plan)).
 The dashboard degrades rather than failing on that classification: if it cannot

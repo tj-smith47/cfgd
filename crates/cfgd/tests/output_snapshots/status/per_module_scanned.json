@@ -71,6 +71,7 @@
     "preApply",
     "postApply"
   ],
+  "state": "Drifted",
   "status": "installed",
   "system": [
     "shell"

@@ -190,6 +190,35 @@ pub struct ModuleStatus {
     pub drift_checked_live: bool,
 }
 
+impl ModuleStatus {
+    /// The ONE derivation of this module's verdict: the word the human `Status`
+    /// row renders and the word the payload's `state` field carries come from
+    /// this single call, so a reader and a machine consumer can never be shown
+    /// two different answers about one module.
+    ///
+    /// `Drifted` is derived, never stored: it is read off the very scan whose
+    /// findings fill the sections below, so the two can never disagree. Without
+    /// a live scan there is no verdict to derive one from.
+    fn state_display(&self) -> (&'static str, Role) {
+        let drifted = self.drift_checked_live && !self.drift.is_empty();
+        cfgd_core::state::module_status_display(&self.status, drifted)
+    }
+}
+
+/// The `-o json` body of a module status report: every field of
+/// [`ModuleStatus`] plus the derived verdict the human `Status` row shows.
+///
+/// `state` is composed HERE rather than stored on [`ModuleStatus`], because a
+/// stored copy is a second thing to keep in step with the row it must agree
+/// with — both halves read one [`ModuleStatus::state_display`] call instead.
+/// `status` beside it stays the untouched stored token.
+#[derive(Serialize)]
+struct ModuleStatusPayload<'a> {
+    #[serde(flatten)]
+    module: &'a ModuleStatus,
+    state: &'static str,
+}
+
 /// One live-scan finding, carrying both the recorded-shape event a consumer
 /// reads and the three display slots a drift row renders from.
 ///
@@ -812,12 +841,7 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView) ->
     // One aligned block: the Status row needs a role-tinted value, which only
     // `kv_rows` can carry, and `kv_rows` does not coalesce with a preceding
     // `kv` block — so every row of the header is built here.
-    //
-    // `Drifted` is derived, never stored: it is read off the very scan whose
-    // findings fill the sections below, so the two can never disagree. Without
-    // a live scan there is no verdict to derive one from.
-    let drifted = output.drift_checked_live && !output.drift.is_empty();
-    let (state_word, role) = cfgd_core::state::module_status_display(&output.status, drifted);
+    let (state_word, role) = output.state_display();
     let mut rows = vec![KvPair::role_valued("Status", state_word, role)];
     if let Some(last) = &output.last_applied {
         rows.push(KvPair::new("Last applied", last));
@@ -866,7 +890,10 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView) ->
         }
     };
 
-    doc.with_data(output)
+    doc.with_data(ModuleStatusPayload {
+        module: output,
+        state: state_word,
+    })
 }
 
 /// How much of a module a status report itemizes.
@@ -1014,10 +1041,14 @@ pub fn build_module_status_not_found_doc(name: &str) -> Doc {
         drift: Vec::new(),
         drift_checked_live: false,
     };
+    let (state_word, _) = payload.state_display();
     Doc::new()
         .heading_title("Status", name)
         .status(Role::Info, format!("Module '{}' not found", name))
-        .with_data(&payload)
+        .with_data(ModuleStatusPayload {
+            module: &payload,
+            state: state_word,
+        })
 }
 
 pub(super) fn cmd_status(

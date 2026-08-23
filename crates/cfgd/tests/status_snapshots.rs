@@ -563,11 +563,15 @@ fn status_per_module_scanned_json() {
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_module_status_doc(&output, ModuleStatusView::Compact));
     drop(printer);
-    let expected = serde_json::to_value(&output).unwrap();
+    // The payload is the struct's own serialization plus ONE derived field, so
+    // the expectation is built that way: `state` is pinned to the verdict this
+    // fixture's live scan reached, and nothing else may differ.
+    let mut expected = serde_json::to_value(&output).unwrap();
+    expected["state"] = serde_json::Value::String("Drifted".to_string());
     let actual = cap.json().expect("doc captured json");
     assert_eq!(
         actual, expected,
-        "emit -o json must match serde_json::to_value(output)"
+        "emit -o json must match serde_json::to_value(output) plus the derived state"
     );
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "status/per_module_scanned.json");
 }
