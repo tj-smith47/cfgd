@@ -1,16 +1,8 @@
-Diff
-  Module  diff-mod
+Diff: diff-mod
 
-Phase: Files
+Files
   module:diff-mod
     ⊙ <CONFIG_DIR>/mod-out/conf (new file)
     module content
-  ⚠ File drift detected
 
-Phase: Packages
-  ✓ No package drift
-
-Phase: Env
-  ✓ No env drift
-
-⚠ Drift detected
+⚠ Drift detected — 1 file (packages, env clean)

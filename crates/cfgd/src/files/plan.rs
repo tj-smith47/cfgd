@@ -404,7 +404,13 @@ impl super::CfgdFileManager {
     pub fn diff(&self, profile: &MergedProfile, printer: &Printer) -> Result<Vec<FileDriftResult>> {
         let mut results = Vec::new();
 
-        for managed in &profile.files.managed {
+        // Declaration order says nothing about the machine: two profiles that
+        // deploy the same files report the same drift, in target order, so a
+        // reader compares two runs rather than two spellings of one config.
+        let mut managed_files: Vec<&_> = profile.files.managed.iter().collect();
+        managed_files.sort_by(|a, b| a.target.cmp(&b.target));
+
+        for managed in managed_files {
             if managed.strategy == Some(FileStrategy::Patch) {
                 let target_path = expand_tilde(&managed.target);
                 let evaluated = self.evaluate(managed, &target_path, ReconcileContext::Reconcile);

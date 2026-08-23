@@ -1,8 +1,8 @@
 use super::*;
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, section_guard::SectionGuard};
-use cfgd_core::reconciler::{MANAGERS_GROUP, ManagerAction, Owner, PhaseName};
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, TitleLabel, section_guard::SectionGuard};
+use cfgd_core::reconciler::{MANAGERS_GROUP, ManagerAction, Owner};
 
 /// Render one module-deployed file's inline diff and report whether it drifts.
 ///
@@ -53,16 +53,23 @@ fn owner_label(owner: &Owner) -> OwnerLabel {
     OwnerLabel::new(owner.kind.as_str(), owner.name.as_str())
 }
 
-/// Render a file group's status lines as they happen instead of buffering them
-/// until the group closes.
-///
-/// Every file's status line is followed by its own raw content block — a
-/// unified diff or a highlighted body — and the renderer never buffers those.
-/// Buffered statuses would flush at group close, printing every diff body above
-/// the line that names the file it belongs to. Nothing in a file group carries
-/// a trailing field, so the alignment a buffered group would buy is zero.
-fn live_file_group(group: &SectionGuard<'_>) {
-    group.live_column(0);
+/// The modules a surface walks, by name, so two runs over the same machine
+/// report the same findings in the same order.
+fn modules_by_name(
+    modules: &[cfgd_core::modules::ResolvedModule],
+) -> Vec<&cfgd_core::modules::ResolvedModule> {
+    let mut sorted: Vec<&cfgd_core::modules::ResolvedModule> = modules.iter().collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    sorted
+}
+
+/// One module's declared files, by deployment target, for the same reason.
+fn files_by_target(
+    module: &cfgd_core::modules::ResolvedModule,
+) -> Vec<&cfgd_core::modules::ResolvedFile> {
+    let mut sorted: Vec<&cfgd_core::modules::ResolvedFile> = module.files.iter().collect();
+    sorted.sort_by(|a, b| a.target.cmp(&b.target));
+    sorted
 }
 
 pub fn cmd_diff(
@@ -71,14 +78,15 @@ pub fn cmd_diff(
     module_filter: Option<&str>,
     exit_code: bool,
 ) -> anyhow::Result<()> {
-    printer.heading("Diff");
-
     let ctx = RunContext::new(cli, printer);
     let config_dir = ctx.config_dir();
 
     if let Some(mod_name) = module_filter {
+        printer.heading_title(&TitleLabel::new("Diff", mod_name));
         return cmd_diff_module(&ctx, mod_name, exit_code);
     }
+
+    printer.heading("Diff");
 
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     printer.kv_block([
@@ -118,7 +126,7 @@ pub fn cmd_diff(
     let mut has_system_drift = false;
 
     let has_file_drift = {
-        let files_phase = printer.section_phase(&PhaseName::Files.section_label());
+        let files_phase = printer.section_or_collapse("Files");
         // The file renderers take a bare `&Printer` and know nothing of the
         // tree; depth inheritance is what lands their per-file lines inside
         // the owner group opened around them.
@@ -126,35 +134,28 @@ pub fn cmd_diff(
         let fm = CfgdFileManager::new(config_dir, &resolved)?;
         let mut drift = false;
         {
-            let group = files_phase.section_owner_or_collapse(&owner_label(&profile_owner));
-            live_file_group(&group);
+            let _group = files_phase.section_owner_or_collapse(&owner_label(&profile_owner));
             for record in fm.diff(&resolved.merged, printer)? {
                 drift |= record_file_drift(&mut diff_payload, record);
             }
         }
         // Module-deployed files render the same inline content diff as profile
         // files (module sources carry no tera origin, so pass None).
-        for module in &resolved_modules {
-            let group =
+        for module in modules_by_name(&resolved_modules) {
+            let _group =
                 files_phase.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
-            live_file_group(&group);
-            for file in &module.files {
+            for file in files_by_target(module) {
                 let record = diff_module_file(&fm, &resolved, module, file, config_dir, printer)?;
                 if record_file_drift(&mut diff_payload, record) {
                     drift = true;
                 }
             }
         }
-        if drift {
-            files_phase.status_simple(Role::Warn, "File drift detected");
-        } else {
-            files_phase.status_simple(Role::Ok, "No file drift");
-        }
         drift
     };
 
     let has_pkg_drift = {
-        let pkg_sec = printer.section_phase(&PhaseName::Packages.section_label());
+        let pkg_sec = printer.section_or_collapse("Packages");
         let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
             .package_managers()
             .iter()
@@ -189,14 +190,70 @@ pub fn cmd_diff(
         )
     };
 
+    let has_env_drift = {
+        let env_sec = printer.section_or_collapse("Env");
+        let mut drift = false;
+        {
+            let env_group = env_sec.section_owner_or_collapse(&owner_label(&profile_owner));
+            // Must match the recorded bootstrap PATH dirs `cfgd verify` passes: the
+            // whole-file check `env_verify_results` bundles in compares against a
+            // freshly generated file, and the file cfgd actually wrote carries the
+            // bootstrapped PATH export line as its first line. An empty path_dirs
+            // here reports permanent, unfixable drift on a machine that bootstrapped
+            // any manager.
+            let path_dirs = ctx
+                .state_opt()
+                .map(|state| {
+                    cfgd_core::reconciler::recorded_manager_path_dirs(
+                        state,
+                        &resolved.merged,
+                        &resolved_modules,
+                    )
+                })
+                .unwrap_or_default();
+            for r in env_drift_ordered(cfgd_core::reconciler::env_verify_results(
+                &resolved.merged.env,
+                &resolved.merged.aliases,
+                resolved.merged.env_scope,
+                &resolved_modules,
+                &path_dirs,
+            )) {
+                drift = true;
+                // An env-var/alias row's `expected`/`actual` are opaque markers —
+                // the declared value never flows into a persisted or gateway-shipped
+                // drift record — so recompute the real line here, for this
+                // terminal/`-o json` display only.
+                let (expected, actual) = cfgd_core::reconciler::env_item_display_values(
+                    &r,
+                    &resolved.merged.env,
+                    &resolved.merged.aliases,
+                );
+                env_group
+                    .status(
+                        Role::Warn,
+                        format!("{}: {}", r.resource_type, r.resource_id),
+                    )
+                    .drift(&expected, &actual);
+                diff_payload.env.push(EnvDriftOutput {
+                    kind: r.resource_type,
+                    name: r.resource_id,
+                    expected,
+                    actual,
+                });
+            }
+        }
+        drift
+    };
+
     {
-        let sys_sec = printer.section_phase(&PhaseName::System.section_label());
+        let sys_sec = printer.section_or_collapse("System");
         // Every system key resolves against the merged profile ⊕ module view,
         // which is what puts a system action under the profile owner in the
         // plan too (`owner_of`'s fall-through arm).
         {
             let sys_group = sys_sec.section_owner_or_collapse(&owner_label(&profile_owner));
-            let available_configurators = registry.available_system_configurators();
+            let mut available_configurators = registry.available_system_configurators();
+            available_configurators.sort_by_key(|c| c.name());
             // Combine profile and module system config so module system tweaks
             // surface in `diff` exactly as they do on the write path.
             let system =
@@ -208,8 +265,9 @@ pub fn cmd_diff(
                     None => continue,
                 };
                 match configurator.diff(desired) {
-                    Ok(drifts) if !drifts.is_empty() => {
+                    Ok(mut drifts) if !drifts.is_empty() => {
                         has_system_drift = true;
+                        drifts.sort_by(|a, b| a.key.cmp(&b.key));
                         for drift in &drifts {
                             sys_group
                                 .status(Role::Warn, format!("{}.{}", key, drift.key))
@@ -236,71 +294,7 @@ pub fn cmd_diff(
                 }
             }
         }
-        close_system_phase(&sys_sec, has_system_drift, diff_payload.system_errors.len());
     }
-
-    let has_env_drift = {
-        let env_sec = printer.section_phase(&cfgd_core::output::PhaseLabel::new("Env"));
-        let mut drift = false;
-        {
-            let env_group = env_sec.section_owner_or_collapse(&owner_label(&profile_owner));
-            // Must match the recorded bootstrap PATH dirs `cfgd verify` passes: the
-            // whole-file check `env_verify_results` bundles in compares against a
-            // freshly generated file, and the file cfgd actually wrote carries the
-            // bootstrapped PATH export line as its first line. An empty path_dirs
-            // here reports permanent, unfixable drift on a machine that bootstrapped
-            // any manager.
-            let path_dirs = ctx
-                .state_opt()
-                .map(|state| {
-                    cfgd_core::reconciler::recorded_manager_path_dirs(
-                        state,
-                        &resolved.merged,
-                        &resolved_modules,
-                    )
-                })
-                .unwrap_or_default();
-            for r in cfgd_core::reconciler::env_verify_results(
-                &resolved.merged.env,
-                &resolved.merged.aliases,
-                resolved.merged.env_scope,
-                &resolved_modules,
-                &path_dirs,
-            )
-            .into_iter()
-            .filter(|r| !r.matches)
-            {
-                drift = true;
-                // An env-var/alias row's `expected`/`actual` are opaque markers —
-                // the declared value never flows into a persisted or gateway-shipped
-                // drift record — so recompute the real line here, for this
-                // terminal/`-o json` display only.
-                let (expected, actual) = cfgd_core::reconciler::env_item_display_values(
-                    &r,
-                    &resolved.merged.env,
-                    &resolved.merged.aliases,
-                );
-                env_group
-                    .status(
-                        Role::Warn,
-                        format!("{}: {}", r.resource_type, r.resource_id),
-                    )
-                    .drift(&expected, &actual);
-                diff_payload.env.push(EnvDriftOutput {
-                    kind: r.resource_type,
-                    name: r.resource_id,
-                    expected,
-                    actual,
-                });
-            }
-        }
-        if drift {
-            env_sec.status_simple(Role::Warn, "Env drift detected");
-        } else {
-            env_sec.status_simple(Role::Ok, "No env drift");
-        }
-        drift
-    };
 
     diff_payload.summary = DiffSummary {
         has_file_drift,
@@ -322,7 +316,7 @@ pub fn cmd_diff(
         state.record_scan();
     }
 
-    printer.emit(build_diff_doc(&diff_payload));
+    printer.emit(build_diff_doc(&diff_payload, DiffScope::Machine));
 
     if exit_code && let Some(code) = diff_exit_code(&diff_payload.summary) {
         code.exit();
@@ -331,22 +325,22 @@ pub fn cmd_diff(
     Ok(())
 }
 
-/// The System phase's closing line.
+/// Env findings in the order they render: by kind, then by the item named.
 ///
-/// A configurator whose check ERRORED has already spoken inside its owner
-/// group; what the phase must not then do is close with `No system drift`. A
-/// check that could not run is not a check that passed, and the group above it
-/// makes the contradiction plain.
-fn close_system_phase(sec: &SectionGuard<'_>, drift: bool, unchecked: usize) {
-    if unchecked > 0 {
-        sec.status(Role::Warn, "System drift undetermined")
-            .detail(format!(
-                "{} could not be checked",
-                cfgd_core::pluralize(unchecked, "configurator")
-            ));
-    } else if !drift {
-        sec.status_simple(Role::Ok, "No system drift");
-    }
+/// `env_verify_results` answers in check order (the managed file and its rc
+/// lines, then each declared item), which says nothing about the machine — two
+/// runs finding the same drift must read the same rather than reordering by
+/// whatever the check reached first.
+fn env_drift_ordered(
+    results: Vec<cfgd_core::reconciler::VerifyResult>,
+) -> Vec<cfgd_core::reconciler::VerifyResult> {
+    let mut drifted: Vec<_> = results.into_iter().filter(|r| !r.matches).collect();
+    drifted.sort_by(|a, b| {
+        a.resource_type
+            .cmp(&b.resource_type)
+            .then_with(|| a.resource_id.cmp(&b.resource_id))
+    });
+    drifted
 }
 
 /// What `--exit-code` reports, from the same summary the `-o json` payload
@@ -416,8 +410,6 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         Err(e) => return Err(e.into()),
     };
 
-    printer.kv_block([("Module".to_string(), mod_name.to_string())]);
-
     let state = ctx.state()?;
     let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
 
@@ -426,41 +418,34 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     let mut has_pkg_drift = false;
 
     {
-        // Mirror the full `cmd_diff` path: the `Phase: Files` heading, one
+        // Mirror the full `cmd_diff` path: the `Files` heading, one
         // `module:<name>` group per module, the shared per-file inline-diff
-        // renderer, then the phase's summary line. Module sources carry no
-        // tera origin (None).
-        let files_phase = printer.section_phase(&PhaseName::Files.section_label());
+        // renderer. Module sources carry no tera origin (None).
+        let files_phase = printer.section_or_collapse("Files");
         let _inherit = printer.depth_inheritance();
         let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
         let fm = CfgdFileManager::new(config_dir, &resolved)?;
-        for module in &resolved_modules {
-            let group =
+        for module in modules_by_name(&resolved_modules) {
+            let _group =
                 files_phase.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
-            live_file_group(&group);
-            for file in &module.files {
+            for file in files_by_target(module) {
                 let record = diff_module_file(&fm, &resolved, module, file, config_dir, printer)?;
                 if record_file_drift(&mut diff_payload, record) {
                     has_file_diff = true;
                 }
             }
         }
-        if has_file_diff {
-            files_phase.status_simple(Role::Warn, "File drift detected");
-        } else {
-            files_phase.status_simple(Role::Ok, "No file drift");
-        }
     }
 
     {
-        let pkg_sec = printer.section_phase(&PhaseName::Packages.section_label());
-        let mut emitted = false;
-        for module in &resolved_modules {
+        let pkg_sec = printer.section_or_collapse("Packages");
+        for module in modules_by_name(&resolved_modules) {
             let group = pkg_sec.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
-            for pkg in &module.packages {
+            let mut packages: Vec<&modules::ResolvedPackage> = module.packages.iter().collect();
+            packages.sort_by(|a, b| a.resolved_name.cmp(&b.resolved_name));
+            for pkg in packages {
                 if let Some(drift) = package_missing_drift(pkg, &mgr_map, &pkg_cx) {
                     has_pkg_drift = true;
-                    emitted = true;
                     group
                         .status(Role::Warn, pkg.manager.clone())
                         .qualifier(cfgd_core::Absence::Missing.as_str())
@@ -468,9 +453,6 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                     diff_payload.packages.push(drift);
                 }
             }
-        }
-        if !emitted {
-            pkg_sec.status_simple(Role::Ok, "No package drift");
         }
     }
 
@@ -503,7 +485,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     // whole reorder exists to avoid, so its lifetime is bounded to this block
     // rather than left open to the end of the function.
     let (has_env_drift, env_check_failed) = {
-        let env_sec = printer.section_phase(&cfgd_core::output::PhaseLabel::new("Env"));
+        let env_sec = printer.section_or_collapse("Env");
         match full_desired_result {
             // A module UNRELATED to the one this run was scoped to (a different
             // module in the same profile, failing to resolve) must not discard
@@ -516,7 +498,6 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                     .status(Role::Warn, "profile")
                     .qualifier("could not resolve the active profile")
                     .detail(&error);
-                env_sec.status_simple(Role::Warn, "Env check failed");
                 diff_payload.env_check_error = Some(error);
                 (false, true)
             }
@@ -528,16 +509,13 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                     &full_resolved.merged,
                     &full_desired.modules,
                 );
-                let all_results: Vec<_> = cfgd_core::reconciler::env_verify_results(
+                let all_results = env_drift_ordered(cfgd_core::reconciler::env_verify_results(
                     &full_resolved.merged.env,
                     &full_resolved.merged.aliases,
                     full_resolved.merged.env_scope,
                     &full_desired.modules,
                     &path_dirs,
-                )
-                .into_iter()
-                .filter(|r| !r.matches)
-                .collect();
+                ));
 
                 // The file/rc rows are the profile's shared artifacts, not any one
                 // module's — report them once, under the profile itself, whichever
@@ -568,7 +546,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
 
                 // Per-item rows are attributed to whichever of this run's own resolved
                 // modules (the target plus its dependencies) declares them.
-                for module in &resolved_modules {
+                for module in modules_by_name(&resolved_modules) {
                     let owns: std::collections::HashSet<&str> = module
                         .env
                         .iter()
@@ -604,11 +582,6 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                     }
                 }
 
-                if drift {
-                    env_sec.status_simple(Role::Warn, "Env drift detected");
-                } else {
-                    env_sec.status_simple(Role::Ok, "No env drift");
-                }
                 (drift, false)
             }
         }
@@ -625,7 +598,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         env_check_failed,
     };
 
-    printer.emit(build_diff_doc(&diff_payload));
+    printer.emit(build_diff_doc(&diff_payload, DiffScope::Module));
 
     if exit_code && let Some(code) = diff_exit_code(&diff_payload.summary) {
         code.exit();
@@ -695,13 +668,23 @@ pub(super) fn print_package_drift(
     profile: &Owner,
     payload: &mut DiffOutput,
 ) -> bool {
-    let pkg_diffs: Vec<&PackageAction> = pkg_actions
+    let mut pkg_diffs: Vec<&PackageAction> = pkg_actions
         .iter()
         .filter(|a| !matches!(a, PackageAction::Skip { .. }))
         .collect();
+    // Planner order is whatever the dependency walk produced; the report reads
+    // the same for one machine however that walk was reached.
+    pkg_diffs.sort_by_key(|a| match a {
+        PackageAction::Install {
+            manager, packages, ..
+        }
+        | PackageAction::Uninstall {
+            manager, packages, ..
+        } => (manager.clone(), packages.join(", ")),
+        PackageAction::Skip { manager, .. } => (manager.clone(), String::new()),
+    });
     let has_drift = !pkg_diffs.is_empty() || !manager_actions.is_empty();
     if !has_drift {
-        section.status_simple(Role::Ok, "No package drift");
         return false;
     }
     let managers_owner = Owner::cfgd(MANAGERS_GROUP);
@@ -799,7 +782,69 @@ pub(super) fn print_package_drift(
     has_drift
 }
 
-pub fn build_diff_doc(output: &DiffOutput) -> Doc {
+/// How much of the machine a diff run looked at.
+///
+/// `--module` evaluates no system configurator, so its closing line must not
+/// call `system` clean — that would claim a check the run never made. Nothing
+/// in [`DiffSummary`] can tell the two apart: a module run and a machine run
+/// with no `spec.system` both report `has_system_drift: false`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffScope {
+    Machine,
+    Module,
+}
+
+/// The closing line's tally: what drifted, and which of the surfaces this run
+/// checked came back clean (`1 file (packages, env clean)`).
+///
+/// A surface whose check could not RUN is named by neither half — the same
+/// line already carries the reason it could not, and calling it clean or
+/// drifted would both be claims the run cannot make.
+fn drift_tally(output: &DiffOutput, scope: DiffScope) -> String {
+    let s = &output.summary;
+    let surfaces = [
+        ("files", "file", output.files.len(), s.has_file_drift, true),
+        (
+            "packages",
+            "package",
+            output.packages.len(),
+            s.has_pkg_drift,
+            true,
+        ),
+        (
+            "env",
+            "env item",
+            output.env.len(),
+            s.has_env_drift,
+            !s.env_check_failed,
+        ),
+        (
+            "system",
+            "system setting",
+            output.system.len(),
+            s.has_system_drift,
+            scope == DiffScope::Machine && !s.system_check_failed,
+        ),
+    ];
+
+    let mut drifted = Vec::new();
+    let mut clean = Vec::new();
+    for (label, noun, count, has_drift, decided) in surfaces {
+        if has_drift {
+            drifted.push(cfgd_core::pluralize(count, noun));
+        } else if decided {
+            clean.push(label);
+        }
+    }
+    let drifted = drifted.join(", ");
+    if clean.is_empty() {
+        drifted
+    } else {
+        format!("{drifted} ({} clean)", clean.join(", "))
+    }
+}
+
+pub fn build_diff_doc(output: &DiffOutput, scope: DiffScope) -> Doc {
     let any_drift = output.summary.has_file_drift
         || output.summary.has_pkg_drift
         || output.summary.has_system_drift
@@ -815,20 +860,21 @@ pub fn build_diff_doc(output: &DiffOutput) -> Doc {
     };
     let mut reasons = Vec::new();
     if output.summary.system_check_failed {
-        reasons.push("a system check could not run");
+        reasons.push("a system check could not run".to_string());
     }
     if output.summary.env_check_failed {
-        reasons.push("the env check could not run");
+        reasons.push("the env check could not run".to_string());
     }
     if any_drift {
         // Drift AND a check that could not run: the verdict names the drift,
         // but the exit code is `Error` rather than `DriftDetected`, and the
         // reason for it is owed to whoever reads the two together.
-        if reasons.is_empty() {
-            return Doc::new().status(role, "Drift detected").with_data(output);
-        }
+        let detail = std::iter::once(drift_tally(output, scope))
+            .chain(reasons)
+            .collect::<Vec<_>>()
+            .join("; ");
         return Doc::new()
-            .status_with(role, "Drift detected", |f| f.detail(reasons.join("; ")))
+            .status_with(role, "Drift detected", |f| f.detail(detail))
             .with_data(output);
     }
     if check_failed {
@@ -973,8 +1019,8 @@ mod tests {
         drop(printer);
         let human = strip_ansi(&cfgd_core::test_helpers::captured_text(&buf));
         assert!(
-            human.contains("Env drift detected"),
-            "the Env phase must report the drift: {human}"
+            human.contains("\nEnv\n"),
+            "the Env surface must render, since it has a finding: {human}"
         );
         assert!(
             human.contains("alias: ll"),
@@ -1297,7 +1343,7 @@ mod tests {
             origin: "profile".into(),
         }];
         {
-            let section = printer.section_phase(&PhaseName::Packages.section_label());
+            let section = printer.section_or_collapse("Packages");
             let has_drift = print_package_drift(
                 &actions,
                 &[],
@@ -1311,8 +1357,8 @@ mod tests {
 
         let output = strip_ansi(&cap.human());
         assert!(
-            output.contains("No package drift"),
-            "all-skip should show no drift, got: {output}"
+            !output.contains("Packages"),
+            "a converged surface leaves no trace at all, got: {output}"
         );
         assert!(payload.packages.is_empty());
     }
@@ -1331,7 +1377,7 @@ mod tests {
             ..Default::default()
         };
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_diff_doc(&payload));
+        printer.emit(build_diff_doc(&payload, DiffScope::Machine));
         drop(printer);
         let out = strip_ansi(&cap.human());
         assert!(
@@ -1354,7 +1400,7 @@ mod tests {
             ..Default::default()
         };
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_diff_doc(&payload));
+        printer.emit(build_diff_doc(&payload, DiffScope::Machine));
         drop(printer);
         let out = strip_ansi(&cap.human());
         assert!(
@@ -1364,27 +1410,11 @@ mod tests {
     }
 
     /// A configurator whose check errored leaves the machine's state unknown.
-    /// All three of the command's answers — the human phase line, the `-o json`
+    /// All three of the command's answers — the closing line, the `-o json`
     /// summary and the `--exit-code` status — must say so, because a script
     /// that reads any one of them as "clean" acts on a check that never ran.
     #[test]
     fn a_failed_system_check_is_never_reported_as_clean() {
-        let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        {
-            let sec = printer.section_phase(&PhaseName::System.section_label());
-            close_system_phase(&sec, false, 1);
-        }
-        drop(printer);
-        let human = cfgd_core::test_helpers::captured_text(&buf);
-        assert!(
-            !human.contains("No system drift"),
-            "a check that could not run is not a check that passed: {human}"
-        );
-        assert!(
-            human.contains("System drift undetermined"),
-            "the phase must name the gap: {human}"
-        );
-
         let payload = DiffOutput {
             system_errors: vec![SystemCheckError {
                 key: "sysctl".to_string(),
@@ -1401,7 +1431,7 @@ mod tests {
             ..Default::default()
         };
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_diff_doc(&payload));
+        printer.emit(build_diff_doc(&payload, DiffScope::Machine));
         drop(printer);
         let doc_human = strip_ansi(&cap.human());
         assert!(
@@ -1424,6 +1454,29 @@ mod tests {
             Some(cfgd_core::exit::ExitCode::Error),
             "--exit-code must not report success on an unknown verdict"
         );
+
+        // The same fact on the tally: a surface whose check could not run is
+        // named by neither half of the closing line.
+        let drifted = DiffOutput {
+            files: vec![cfgd_core::providers::FileDriftResult {
+                target: "/home/you/.zshrc".to_string(),
+                matches: false,
+                expected: "content matches source".to_string(),
+                actual: "content differs from source".to_string(),
+            }],
+            summary: DiffSummary {
+                has_file_drift: true,
+                system_check_failed: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let tally = drift_tally(&drifted, DiffScope::Machine);
+        assert!(
+            !tally.contains("system"),
+            "an unrun check is neither drifted nor clean: {tally}"
+        );
+        assert_eq!(tally, "1 file (packages, env clean)");
     }
 
     /// The `diff --module` sibling of the test above: an unrelated module's
@@ -1444,7 +1497,7 @@ mod tests {
             ..Default::default()
         };
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_diff_doc(&payload));
+        printer.emit(build_diff_doc(&payload, DiffScope::Machine));
         drop(printer);
         let doc_human = strip_ansi(&cap.human());
         assert!(
@@ -1488,7 +1541,7 @@ mod tests {
             ..Default::default()
         };
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_diff_doc(&payload));
+        printer.emit(build_diff_doc(&payload, DiffScope::Machine));
         drop(printer);
         let doc_human = strip_ansi(&cap.human());
         assert!(
@@ -1508,16 +1561,18 @@ mod tests {
 
     #[test]
     fn a_clean_run_reports_its_clean_verdict_on_every_channel() {
-        let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        {
-            let sec = printer.section_phase(&PhaseName::System.section_label());
-            close_system_phase(&sec, false, 0);
-        }
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_diff_doc(&DiffOutput::default(), DiffScope::Machine));
         drop(printer);
-        let human = cfgd_core::test_helpers::captured_text(&buf);
+        let human = strip_ansi(&cap.human());
         assert!(
-            human.contains("No system drift"),
-            "an all-checks-ran, no-drift phase still says so"
+            human.contains("No drift detected"),
+            "an all-checks-ran, no-drift run still says so: {human}"
+        );
+        assert!(
+            !human.contains("clean)"),
+            "a converged run names no surfaces — there is nothing to contrast \
+             them against: {human}"
         );
         assert_eq!(
             diff_exit_code(&DiffSummary::default()),
@@ -1558,7 +1613,7 @@ mod tests {
             },
         ];
         {
-            let section = printer.section_phase(&PhaseName::Packages.section_label());
+            let section = printer.section_or_collapse("Packages");
             let has_drift = print_package_drift(
                 &actions,
                 &[],
@@ -1591,7 +1646,7 @@ mod tests {
             },
         ];
         {
-            let section = printer.section_phase(&PhaseName::Packages.section_label());
+            let section = printer.section_or_collapse("Packages");
             let has_drift = print_package_drift(
                 &actions,
                 &[],
@@ -1646,7 +1701,7 @@ mod tests {
             },
         ];
         {
-            let section = printer.section_phase(&PhaseName::Packages.section_label());
+            let section = printer.section_or_collapse("Packages");
             let has_drift = print_package_drift(
                 &pkg_actions,
                 &manager_actions,

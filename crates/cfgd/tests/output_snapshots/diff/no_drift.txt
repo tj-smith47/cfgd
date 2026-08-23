@@ -2,16 +2,4 @@ Diff
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  tiny
 
-Phase: Files
-  ✓ No file drift
-
-Phase: Packages
-  ✓ No package drift
-
-Phase: System
-  ✓ No system drift
-
-Phase: Env
-  ✓ No env drift
-
 ✓ No drift detected

@@ -1,6 +1,6 @@
 Diff
 
-Phase: Packages
+Packages
   profile:tiny
     ⚠ drift-mgr: missing — pkg-a
 

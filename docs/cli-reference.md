@@ -708,27 +708,26 @@ cfgd diff --exit-code        # exit 5 on drift, for CI gating
 cfgd diff -o json            # structured drift payload
 ```
 
-The human render uses the plan's own axes — phase, then owner group — so a drifted
-resource is named by the same coordinates the plan and apply trees would use to fix it:
+The report is differences-only: a converged surface prints nothing at all, so what
+is on screen is what needs fixing. Each drifted surface names its owner group — the
+same coordinate the plan and apply trees would use to fix it:
 
 ```
 Diff
   Config   /home/you/.config/cfgd/cfgd.yaml
   Profile  work
 
-Phase: Files
+Files
   profile:work
     ⊙ /home/you/.gitconfig (new file)
-[user]
-	name = You
+    [user]
+    name = You
   module:nvim
-    ⊙ /home/you/.config/nvim/init.lua (new file)
--- init
-    ⊙ /home/you/.config/nvim/lua/opts.lua (new file)
--- opts
-  ⚠ File drift detected
+    ⊙ /home/you/.config/nvim/stylua.toml
+    -# not mine
+    +indent_type = "Spaces"
 
-Phase: Packages
+Packages
   profile:work
     ⚠ brew: missing — extra-tool
     ⚠ nix: missing  — hello
@@ -736,18 +735,53 @@ Phase: Packages
     ⚠ pipx: not installed — can bootstrap via pip install pipx
     ⚠ snap: not installed — cannot bootstrap: no available system manager
 
-Phase: System
-  profile:work
-    ⚠ sysctl.net.core.somaxconn — want 8192, have 4096
-
-Phase: Env
+Env
   profile:work
     ⚠ alias: ll — want: alias ll="ls -la", have: missing or changed
 
-⚠ Drift detected
+System
+  profile:work
+    ⚠ sysctl.net.core.somaxconn — want 8192, have 4096
+
+⚠ Drift detected — 2 files, 2 packages, 1 env item, 1 system setting
 ```
 
-The Env phase checks the declared `spec.env` vars and `spec.aliases` against the managed env
+Surfaces render in a fixed order (files, packages, env, system) and items sort
+alphabetically within each, so two runs that found the same drift read the same
+rather than reordering by whatever the check reached first.
+
+The closing line carries the tally, and names the surfaces that were checked and
+came back clean — the only place a converged surface is mentioned at all:
+
+```
+⚠ Drift detected — 1 file (packages, env, system clean)
+```
+
+A surface whose check could not RUN is named by neither half; the reason it could
+not is on the same line (`⚠ Drift detected — 1 file (packages, env clean); a system
+check could not run`). A run with nothing to report is a single line:
+
+```
+✓ No drift detected
+```
+
+`--module <name>` scopes the run to one module. The heading carries it, and the
+closing line never calls `system` clean, because a module run evaluates no system
+configurator:
+
+```
+Diff: nvim
+
+Files
+  module:nvim
+    ⊙ /home/you/.config/nvim/stylua.toml
+    -# not mine
+    +indent_type = "Spaces"
+
+⚠ Drift detected — 1 file (packages, env clean)
+```
+
+The Env surface checks the declared `spec.env` vars and `spec.aliases` against the managed env
 files cfgd owns (`~/.cfgd.env` and its platform siblings) and the rc source lines that load
 them. It never reads a live shell session: a var or alias exported only by hand, outside those
 files, is invisible to this check by design.
@@ -760,8 +794,8 @@ still change. It draws from the same planner the `Prerequisites` phase uses (see
 self-heal reads `not installed — can bootstrap via <method>`; one it cannot reads
 `not installed — cannot bootstrap: <reason>`.
 
-File bodies render at column 0 under the file they belong to, so a diff hunk stays
-copy-pasteable.
+A file's body renders directly under the line that names it, so a hunk reads with
+its target rather than above it.
 
 The payload carries `files[]`, `packages[]`, `system[]`, `env[]`, and a `summary`. `files[]` lists only the managed files that do NOT match desired state, in the same shape `cfgd verify` reports a resource:
 

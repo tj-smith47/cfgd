@@ -12502,7 +12502,7 @@ fn cmd_diff_module_patch_shows_the_merge_the_target_is_missing() {
         "diff must preview the merged content, got: {output}"
     );
     assert!(
-        output.contains("File drift detected"),
+        output.contains("Files") && output.contains("Drift detected"),
         "a missing Patch target is drift, got: {output}"
     );
     assert!(
@@ -12531,7 +12531,11 @@ fn cmd_diff_full_profile_patch_reports_no_drift_when_converged() {
     super::diff::cmd_diff(&h.cli(), h.printer(), None, false).unwrap();
     let output = h.output();
     assert!(
-        output.contains("No file drift"),
+        !output.contains("Files"),
+        "a converged surface leaves no trace at all, got: {output}"
+    );
+    assert!(
+        output.contains("No drift detected"),
         "a converged Patch target must not report drift, got: {output}"
     );
 }
@@ -16308,11 +16312,11 @@ fn build_registry_with_no_config_uses_defaults() {
 }
 
 // -----------------------------------------------------------------------
-// cmd_diff empty profile — exercises file, package, and system diff display
+// cmd_diff empty profile — every surface converged, so none of them render
 // -----------------------------------------------------------------------
 
 #[test]
-fn cmd_diff_full_profile_shows_all_sections() {
+fn cmd_diff_full_profile_converged_names_no_surface() {
     let h = CliTestHarness::builder().build();
     let result = super::diff::cmd_diff(&h.cli(), h.printer(), None, false);
     assert!(
@@ -16326,17 +16330,18 @@ fn cmd_diff_full_profile_shows_all_sections() {
         output.contains("Diff"),
         "should show Diff header, got: {output}"
     );
+    // Env is deliberately not among these: the harness declares an env var and
+    // installs no test home, so whether the managed env file on THIS host
+    // matches is a fact about the host rather than about the fixture.
+    for surface in ["Files", "Packages", "System"] {
+        assert!(
+            !output.contains(surface),
+            "a converged {surface} surface must leave no trace, got: {output}"
+        );
+    }
     assert!(
-        output.contains("Files"),
-        "should show Files section, got: {output}"
-    );
-    assert!(
-        output.contains("Packages"),
-        "should show Packages section, got: {output}"
-    );
-    assert!(
-        output.contains("System"),
-        "should show System section, got: {output}"
+        output.contains("files, packages") || output.contains("No drift detected"),
+        "the converged surfaces are named on the closing line, got: {output}"
     );
 }
 
@@ -16360,7 +16365,7 @@ fn cmd_diff_module_not_found_shows_info() {
 }
 
 #[test]
-fn cmd_diff_module_with_files_shows_file_and_package_sections() {
+fn cmd_diff_module_with_files_shows_the_drifted_file() {
     let _pm_guard = crate::cli::registry::PackageManagerFactoryGuard::hermetic_native();
     // Target lands in an isolated temp dir (never a shared path); it is left
     // absent so the renderer exercises the missing-target branch.
@@ -16390,16 +16395,12 @@ fn cmd_diff_module_with_files_shows_file_and_package_sections() {
 
     let output = h.output();
     assert!(
-        output.contains("Module") && output.contains("diff-mod"),
-        "should show module name, got: {output}"
+        output.contains("Diff: diff-mod"),
+        "the heading carries the module the run was scoped to, got: {output}"
     );
     assert!(
         output.contains("Files"),
         "should show Files line, got: {output}"
-    );
-    assert!(
-        output.contains("Packages"),
-        "should show Packages section, got: {output}"
     );
     // Target is absent: the shared renderer shows the would-be-created content
     // ("(new file)" + the source bytes), identical to profile-file rendering.

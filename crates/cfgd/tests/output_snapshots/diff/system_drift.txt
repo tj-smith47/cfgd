@@ -1,1 +1,1 @@
-⚠ Drift detected
+⚠ Drift detected — 1 system setting (files, packages, env clean)
