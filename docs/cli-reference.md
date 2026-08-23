@@ -600,8 +600,12 @@ Drift
 
 Each drift row names the module, the `spec` block the finding is on, the item
 itself, and the KIND of divergence (`content differs`, `version mismatch`,
-`missing`) — the bytes are `cfgd diff`'s job. `✓ No drift detected` is claimed
-only after `--scan`; without one the row says nothing was checked.
+`missing`) — the bytes are `cfgd diff`'s job. Rows are grouped by surface
+(files, then packages, then any other surface alphabetically) and sorted by
+item within each group, so two runs that found the same drift render the same
+section rather than reordering it by whatever the scan reached first.
+`✓ No drift detected` is claimed only after `--scan`; without one the row says
+nothing was checked.
 
 `-o wide` replaces the counts with the inventories, each row carrying its own
 verdict, and drops the `Drift` section — every finding is already inline on the

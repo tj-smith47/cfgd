@@ -6,18 +6,28 @@
   "deployedFiles": [
     {
       "path": "/home/user/.config/nvim/init.lua",
-      "state": "deployed"
-    },
-    {
-      "path": "/home/user/.zshrc",
       "state": "drifted"
     },
     {
       "path": "/home/user/.gitconfig",
       "state": "missing"
+    },
+    {
+      "path": "/home/user/.zshrc",
+      "state": "drifted"
     }
   ],
   "drift": [
+    {
+      "actual": "missing",
+      "expected": "installed",
+      "id": 21,
+      "resolvedBy": null,
+      "resourceId": "brew:ripgrep",
+      "resourceType": "package",
+      "source": "local",
+      "timestamp": "2026-05-14T12:00:01Z"
+    },
     {
       "actual": "content differs from source",
       "expected": "content matches source",
@@ -29,14 +39,14 @@
       "timestamp": "2026-05-14T12:00:00Z"
     },
     {
-      "actual": "13.0.0",
-      "expected": "14.1.0",
-      "id": 21,
+      "actual": "content differs from source",
+      "expected": "content matches source",
+      "id": 22,
       "resolvedBy": null,
-      "resourceId": "ripgrep",
-      "resourceType": "package",
+      "resourceId": "dev-tools/home/user/.config/nvim/init.lua",
+      "resourceType": "module",
       "source": "local",
-      "timestamp": "2026-05-14T12:00:01Z"
+      "timestamp": "2026-05-14T12:00:02Z"
     }
   ],
   "driftCheckedLive": true,

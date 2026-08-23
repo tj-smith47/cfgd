@@ -1098,19 +1098,31 @@ pub struct ScriptSpec {
 
 impl ScriptSpec {
     /// Every lifecycle hook paired with the entries declared for it, in the
-    /// order a run reaches them.
+    /// canonical hook order: each context's `pre` before its `post` (apply,
+    /// then reconcile), then the event hooks. An apply and a reconcile are
+    /// separate runs, so no single run reaches all six.
     ///
     /// The ONE enumeration of the hook set: a surface that lists, counts or
     /// names hooks reads from here, so none of them can miss a hook the YAML
-    /// accepts or disagree about the order they run in.
+    /// accepts or disagree about the order they are reported in.
     pub fn hooks(&self) -> [(&'static str, &[ScriptEntry]); 6] {
+        // Destructured, so a seventh hook field does not compile until it is
+        // listed here — the mechanism behind "no surface can miss a hook".
+        let Self {
+            pre_apply,
+            post_apply,
+            pre_reconcile,
+            post_reconcile,
+            on_drift,
+            on_change,
+        } = self;
         [
-            ("preApply", &self.pre_apply),
-            ("postApply", &self.post_apply),
-            ("preReconcile", &self.pre_reconcile),
-            ("postReconcile", &self.post_reconcile),
-            ("onDrift", &self.on_drift),
-            ("onChange", &self.on_change),
+            ("preApply", pre_apply),
+            ("postApply", post_apply),
+            ("preReconcile", pre_reconcile),
+            ("postReconcile", post_reconcile),
+            ("onDrift", on_drift),
+            ("onChange", on_change),
         ]
     }
 }

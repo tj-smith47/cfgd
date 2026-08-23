@@ -10,5 +10,6 @@ Status: dev-tools
   Dependencies  base
 
 Drift
-  ⚠ module:dev-tools:files /home/user/.zshrc — content differs
-  ⚠ module:dev-tools:packages ripgrep        — version mismatch
+  ⚠ module:dev-tools:files /home/user/.config/nvim/init.lua — content differs
+  ⚠ module:dev-tools:files /home/user/.zshrc                — content differs
+  ⚠ module:dev-tools:packages ripgrep                       — missing

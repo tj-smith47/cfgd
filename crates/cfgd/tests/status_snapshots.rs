@@ -243,10 +243,11 @@ fn per_module_output() -> ModuleStatus {
     }
 }
 
-/// The scanned render, and the one that pins the P2 contract: `~/.zshrc` is
-/// reported drifted in the compact Drift section AND — in the wide view, which
-/// has no Drift section — as a drifted row under Deployed Files, never as a
-/// converged row beside its own drift.
+/// The scanned render. It pins two things: a drifted file carries that verdict
+/// on its own Deployed Files row in the wide view (which has no Drift section),
+/// never a converged one; and the compact Drift section groups its rows by
+/// surface and sorts alphabetically within each group — the findings below are
+/// deliberately listed in neither order.
 fn per_module_scanned_output() -> ModuleStatus {
     let declared = declared_surfaces(2, 12);
     ModuleStatus {
@@ -273,23 +274,43 @@ fn per_module_scanned_output() -> ModuleStatus {
                 state: ModulePackagePresence::NotInstalled,
             },
         ],
+        // `module_deployed_files` reads `ORDER BY file_path`, so the rows a
+        // real scan hands the renderer are alphabetical.
         deployed_files: vec![
             ModuleFileStatus {
                 path: "/home/user/.config/nvim/init.lua".into(),
-                state: ModuleFilePresence::Deployed,
-            },
-            ModuleFileStatus {
-                path: "/home/user/.zshrc".into(),
                 state: ModuleFilePresence::Drifted,
             },
             ModuleFileStatus {
                 path: "/home/user/.gitconfig".into(),
                 state: ModuleFilePresence::Missing,
             },
+            ModuleFileStatus {
+                path: "/home/user/.zshrc".into(),
+                state: ModuleFilePresence::Drifted,
+            },
         ],
-        // The producer's own strings (`files/plan.rs`), so the terse cause the
-        // row renders is derived from what a real scan records.
+        // Each producer's own strings — `files/plan.rs` for a file, the
+        // `installed`/`missing` pair `cmd_status_module` records for a package
+        // — so the terse cause each row renders is derived from what a real
+        // scan writes. Listed package-first and file-reverse on purpose: the
+        // golden is what proves the section sorts them.
         drift: vec![
+            ModuleDrift {
+                event: DriftEvent {
+                    id: 21,
+                    timestamp: "2026-05-14T12:00:01Z".into(),
+                    resource_type: "package".into(),
+                    resource_id: "brew:ripgrep".into(),
+                    expected: Some("installed".into()),
+                    actual: Some("missing".into()),
+                    resolved_by: None,
+                    source: "local".into(),
+                },
+                owner: "dev-tools".into(),
+                surface: SURFACE_PACKAGES,
+                item: "ripgrep".into(),
+            },
             ModuleDrift {
                 event: DriftEvent {
                     id: 20,
@@ -307,18 +328,18 @@ fn per_module_scanned_output() -> ModuleStatus {
             },
             ModuleDrift {
                 event: DriftEvent {
-                    id: 21,
-                    timestamp: "2026-05-14T12:00:01Z".into(),
-                    resource_type: "package".into(),
-                    resource_id: "ripgrep".into(),
-                    expected: Some("14.1.0".into()),
-                    actual: Some("13.0.0".into()),
+                    id: 22,
+                    timestamp: "2026-05-14T12:00:02Z".into(),
+                    resource_type: "module".into(),
+                    resource_id: "dev-tools/home/user/.config/nvim/init.lua".into(),
+                    expected: Some("content matches source".into()),
+                    actual: Some("content differs from source".into()),
                     resolved_by: None,
                     source: "local".into(),
                 },
                 owner: "dev-tools".into(),
-                surface: SURFACE_PACKAGES,
-                item: "ripgrep".into(),
+                surface: SURFACE_FILES,
+                item: "/home/user/.config/nvim/init.lua".into(),
             },
         ],
         drift_checked_live: true,

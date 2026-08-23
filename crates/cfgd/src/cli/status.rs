@@ -326,11 +326,35 @@ fn render_drift_section(
     })
 }
 
+/// The order a drift row's surface sorts in: the `spec` blocks in the order
+/// [`SURFACE_ORDER`] lists them, then anything else, alphabetically.
+fn surface_rank(surface: &str) -> usize {
+    SURFACE_ORDER
+        .iter()
+        .position(|s| *s == surface)
+        .unwrap_or(SURFACE_ORDER.len())
+}
+
+/// The surface grouping of the per-module Drift section, in render order.
+const SURFACE_ORDER: [&str; 2] = [SURFACE_FILES, SURFACE_PACKAGES];
+
 /// Render the per-module "Drift" section: one row per finding, named by the
 /// owner and surface it was found on rather than by the id it is stored under
 /// (`module:nvim:files /home/u/.zshrc — content differs`).
+///
+/// Rows are grouped by surface and alphabetical by item within each group,
+/// stated here rather than inherited from scan order: a scan visits files and
+/// packages in whatever order resolution reached them, so an unsorted section
+/// re-orders itself between two runs that found the same drift.
 fn render_module_drift_section(doc: Doc, drift: &[ModuleDrift], checked_live: bool) -> Doc {
-    drift_section(doc, drift, checked_live, |s, d| {
+    let mut ordered: Vec<&ModuleDrift> = drift.iter().collect();
+    ordered.sort_by(|a, b| {
+        surface_rank(a.surface)
+            .cmp(&surface_rank(b.surface))
+            .then_with(|| a.surface.cmp(b.surface))
+            .then_with(|| a.item.cmp(&b.item))
+    });
+    drift_section(doc, &ordered, checked_live, |s, d| {
         let subject = format!(
             "{}:{} {}",
             OwnerLabel::new("module", &d.owner).plain(),
@@ -599,16 +623,18 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
             })
         });
 
-    // The cause a drifted file's row carries, keyed by the path the scan found
-    // it under: the inline verdict IS the drift finding, never a second
-    // judgement of the same file.
-    let file_causes: std::collections::HashMap<&str, String> = output
+    // The cause a drifted file's row carries, keyed through the id producer
+    // both halves already agree on (`drifted_ids` matches the same way): a
+    // deployed path and a finding's item are two spellings of one file, and
+    // comparing them directly misses whenever they differ (a relative
+    // manifest path against an absolute finding).
+    let file_causes: std::collections::HashMap<String, String> = output
         .drift
         .iter()
         .filter(|d| d.surface == SURFACE_FILES)
         .map(|d| {
             (
-                d.item.as_str(),
+                super::live_drift::module_file_resource_id(&d.owner, &d.item),
                 terse_drift_cause(
                     d.event.expected.as_deref().unwrap_or_default(),
                     d.event.actual.as_deref().unwrap_or_default(),
@@ -625,7 +651,10 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
             ModuleFilePresence::Deployed => s.status(Role::Ok, &file.path),
             ModuleFilePresence::Drifted => {
                 let cause = file_causes
-                    .get(file.path.as_str())
+                    .get(&super::live_drift::module_file_resource_id(
+                        &output.name,
+                        &file.path,
+                    ))
                     .cloned()
                     .unwrap_or_else(|| file.state.label().to_string());
                 s.status_with(file.state.role(), &file.path, |f| f.detail(cause))
@@ -1511,6 +1540,78 @@ mod tests {
     }
 
     // --- cmd_status (aggregate) -------------------------------------------
+
+    /// `--show-values` names items, and only the itemized view has rows to
+    /// name them on — so it selects that view without `-o wide` being asked
+    /// for, and renders the declared value beside the name.
+    #[test]
+    fn show_values_selects_the_itemized_view_without_wide() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let (config_dir, state_dir, config_path) = setup_env_with_module();
+        std::fs::write(
+            config_dir
+                .path()
+                .join("modules")
+                .join("test-mod")
+                .join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  env:\n    - name: EDITOR\n      value: nvim\n",
+        )
+        .unwrap();
+
+        let cli = test_cli_for(config_path, state_dir.path());
+        let (printer, buf) = test_printers();
+        cmd_status(&cli, &printer, Some("test-mod"), false, false, true).unwrap();
+        drop(printer);
+
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("\nEnv\n") && out.contains("EDITOR=nvim"),
+            "--show-values must itemize env and show the declared value: {out}"
+        );
+    }
+
+    /// `-o wide` reaches the same view through the global output flag, with no
+    /// values shown.
+    #[test]
+    fn wide_output_selects_the_itemized_view() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let (_config_dir, state_dir, config_path) = setup_env_with_module();
+
+        let mut cli = test_cli_for(config_path, state_dir.path());
+        cli.output = super::OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
+        let (printer, cap) =
+            Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
+        cmd_status(&cli, &printer, Some("test-mod"), false, false, false).unwrap();
+        drop(printer);
+
+        let out = cap.human();
+        assert!(
+            out.contains("\nInstalled Packages\n") && out.contains("ripgrep"),
+            "-o wide must itemize the declared packages: {out}"
+        );
+        assert!(
+            !out.contains("Packages      1"),
+            "the itemized view replaces the counts rather than adding to them: {out}"
+        );
+    }
+
+    /// The three shapes a cause is condensed into, and the pass-through for a
+    /// producer whose phrasing matches none of them.
+    #[test]
+    fn a_terse_cause_names_the_kind_of_divergence() {
+        assert_eq!(
+            terse_drift_cause("content matches source", "content differs from source"),
+            "content differs"
+        );
+        assert_eq!(terse_drift_cause("installed", "missing"), "missing");
+        assert_eq!(terse_drift_cause("14.1.0", "13.0.0"), "version mismatch");
+        assert_eq!(
+            terse_drift_cause("present", "unreadable: permission denied"),
+            "unreadable: permission denied"
+        );
+    }
 
     #[test]
     fn cmd_status_missing_config_returns_err() {

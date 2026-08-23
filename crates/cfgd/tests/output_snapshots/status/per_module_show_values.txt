@@ -7,9 +7,9 @@ Installed Packages
   ⚠ ripgrep — not installed (brew)
 
 Deployed Files
-  ✓ /home/user/.config/nvim/init.lua
-  ⚠ /home/user/.zshrc     — content differs
-  ✗ /home/user/.gitconfig — missing
+  ⚠ /home/user/.config/nvim/init.lua — content differs
+  ✗ /home/user/.gitconfig            — missing
+  ⚠ /home/user/.zshrc                — content differs
 
 Env
   ✓ EDITOR=nvim
