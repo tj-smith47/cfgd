@@ -467,7 +467,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     // Printer emits (module-resolution status, git-fetch warnings), and
     // nesting that call inside an already-open `SectionGuard` tripped the
     // renderer's structural-depth guard and mis-indented that output under
-    // "Phase: Env" instead of at the top level.
+    // the Env section instead of at the top level.
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     let full_desired_result = resolve_desired_state(
         ctx,

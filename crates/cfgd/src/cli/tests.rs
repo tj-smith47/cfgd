@@ -16317,7 +16317,20 @@ fn build_registry_with_no_config_uses_defaults() {
 
 #[test]
 fn cmd_diff_full_profile_converged_names_no_surface() {
-    let h = CliTestHarness::builder().build();
+    // A profile declaring nothing is the only fixture whose convergence is a
+    // fact about cfgd rather than about the host: [`DEFAULT_PROFILE_YAML`]
+    // declares `cargo: [bat]`, whose drift depends on the host's install
+    // list, and an env var, whose drift depends on the managed env file and
+    // the rc files in `$HOME`. The test home is installed anyway, so the read
+    // can never reach the operator's own dotfiles.
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+    let h = CliTestHarness::builder()
+        .profile(
+            "default",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  inherits: []\n  modules: []\n",
+        )
+        .build();
     let result = super::diff::cmd_diff(&h.cli(), h.printer(), None, false);
     assert!(
         result.is_ok(),
@@ -16330,18 +16343,15 @@ fn cmd_diff_full_profile_converged_names_no_surface() {
         output.contains("Diff"),
         "should show Diff header, got: {output}"
     );
-    // Env is deliberately not among these: the harness declares an env var and
-    // installs no test home, so whether the managed env file on THIS host
-    // matches is a fact about the host rather than about the fixture.
-    for surface in ["Files", "Packages", "System"] {
+    for surface in ["Files", "Packages", "Env", "System"] {
         assert!(
             !output.contains(surface),
             "a converged {surface} surface must leave no trace, got: {output}"
         );
     }
     assert!(
-        output.contains("files, packages") || output.contains("No drift detected"),
-        "the converged surfaces are named on the closing line, got: {output}"
+        output.contains("No drift detected"),
+        "a converged run states its verdict on the closing line, got: {output}"
     );
 }
 
