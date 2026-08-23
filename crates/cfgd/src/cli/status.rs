@@ -846,7 +846,7 @@ pub(super) fn cmd_status_module(
         let fm = CfgdFileManager::new(config_dir, &resolved)?;
         // One spinner across this module's live scan, narrated per pass.
         printer.narrate(
-            format!("Scanning module '{mod_name}': files"),
+            format!("Scanning module:{mod_name} files"),
             |sp| -> anyhow::Result<()> {
                 let file_results = super::live_drift::module_file_verify_results(
                     &fm,
@@ -863,7 +863,7 @@ pub(super) fn cmd_status_module(
                     ));
                 }
 
-                sp.set_message(format!("Scanning module '{mod_name}': packages"));
+                sp.set_message(format!("Scanning module:{mod_name} packages"));
                 // ONE context across every package of every resolved module,
                 // so a manager is enumerated once however many packages name
                 // it (`PackageContext::installed_for`'s memo).

@@ -90,22 +90,38 @@ pub(super) fn compose_in_flight_subject(theme: &Theme, text: impl Into<String>) 
 
 /// A live label's renderer-owned styling: the text in `theme.info` — the slot
 /// the animated frame beside it is already painted with, so the running line
-/// reads as one thing — with a trailing `kind:name` owner token handed to
+/// reads as one thing — with a `kind:name` owner token handed to
 /// [`super::OwnerLabel`]'s three slots instead of that single coat.
 fn paint_in_flight_label(theme: &Theme, body: &str) -> String {
     if body.is_empty() {
         return String::new();
     }
     let (_, style) = super::renderer::role_glyph(theme, Role::Info);
-    match split_owner_token(body) {
-        ("", Some(owner)) => owner.styled(theme),
-        (head, Some(owner)) => format!("{} {}", style.apply_to(head), owner.styled(theme)),
-        (_, None) => style.apply_to(body).to_string(),
+    let Some((head, owner, tail)) = split_owner_token(body) else {
+        return style.apply_to(body).to_string();
+    };
+    let mut out = String::new();
+    if !head.is_empty() {
+        out.push_str(&style.apply_to(head).to_string());
+        out.push(' ');
     }
+    out.push_str(&owner.styled(theme));
+    if !tail.is_empty() {
+        out.push(' ');
+        out.push_str(&style.apply_to(tail).to_string());
+    }
+    out
 }
 
-/// The trailing `kind:name` owner token of a live label, when its last word is
-/// one: `Fetching source:acme` splits into `("Fetching", source:acme)`.
+/// The `kind:name` owner token of a live label, with the words either side of
+/// it: `Cloning source:acme (libgit2)` splits into
+/// `("Cloning", source:acme, "(libgit2)")`.
+///
+/// The scan walks words from the END rather than reading only the last one,
+/// because a producer routinely appends a detail after the token it names
+/// (`(libgit2)`, `— cached`); with only the last word inspected, every one of
+/// those labels lost the tint. The LAST owner-shaped word wins, so a label
+/// naming two owners tints the one its detail belongs to.
 ///
 /// Shape-only and deliberately narrow, because this is a string a producer
 /// formatted rather than an [`super::OwnerLabel`] it built: the kind must be
@@ -114,21 +130,28 @@ fn paint_in_flight_label(theme: &Theme, body: &str) -> String {
 /// (`https://host/x`) and a Windows path (`C:\x`) all stay plain text. A false
 /// positive costs two theme slots on a word that is not an owner; a false
 /// NEGATIVE costs nothing but the tint, so the predicate errs tight.
-fn split_owner_token(body: &str) -> (&str, Option<super::OwnerLabel>) {
-    let (head, last) = match body.rsplit_once(char::is_whitespace) {
-        Some((head, last)) => (head.trim_end(), last),
-        None => ("", body),
-    };
-    let Some((kind, name)) = last.split_once(':') else {
-        return (body, None);
-    };
+fn split_owner_token(body: &str) -> Option<(&str, super::OwnerLabel, &str)> {
+    let mut scanned = body;
+    loop {
+        let (head, last) = match scanned.rsplit_once(char::is_whitespace) {
+            Some((head, last)) => (head.trim_end(), last),
+            None => ("", scanned),
+        };
+        if let Some(owner) = owner_token(last) {
+            return Some((head, owner, body[scanned.len()..].trim_start()));
+        }
+        if head.is_empty() {
+            return None;
+        }
+        scanned = head;
+    }
+}
+
+fn owner_token(word: &str) -> Option<super::OwnerLabel> {
+    let (kind, name) = word.split_once(':')?;
     let plain_kind = !kind.is_empty() && kind.chars().all(|c| c.is_ascii_lowercase());
     let plain_name = !name.is_empty() && !name.contains([':', '/', '\\']);
-    if plain_kind && plain_name {
-        (head, Some(super::OwnerLabel::new(kind, name)))
-    } else {
-        (body, None)
-    }
+    (plain_kind && plain_name).then(|| super::OwnerLabel::new(kind, name))
 }
 
 /// Indent a live bar by putting `depth`'s indent in its `{prefix}` field — the
@@ -650,6 +673,34 @@ mod tests {
         assert_eq!(
             compose_in_flight_subject(&theme, "module:nvim"),
             super::super::OwnerLabel::new("module", "nvim").styled(&theme)
+        );
+    }
+
+    /// A detail after the token is what producers actually write, so the scan
+    /// walks words from the end instead of reading only the last one: the
+    /// token is still tinted and the detail keeps the label's own coat.
+    #[test]
+    #[serial_test::serial]
+    fn an_owner_token_followed_by_a_detail_is_still_painted() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let owner = super::super::OwnerLabel::new("source", "acme");
+        assert_eq!(
+            compose_in_flight_subject(&theme, "Cloning source:acme (libgit2)"),
+            format!(
+                "{} {} {}",
+                theme.info.apply_to("Cloning"),
+                owner.styled(&theme),
+                theme.info.apply_to("(libgit2)")
+            )
+        );
+        // No verb ahead of the token, detail behind it.
+        assert_eq!(
+            compose_in_flight_subject(&theme, "source:acme (libgit2)"),
+            format!(
+                "{} {}",
+                owner.styled(&theme),
+                theme.info.apply_to("(libgit2)")
+            )
         );
     }
 

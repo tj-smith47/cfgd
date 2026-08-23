@@ -18,9 +18,8 @@ fn expected_warn_row(theme: &Theme) -> String {
     )
 }
 
-/// raw-capture-ok: the assertion subject is the role's SGR bytes themselves,
-/// which `captured_text` would strip.
 fn raw(buf: &std::sync::Arc<std::sync::Mutex<String>>) -> String {
+    // raw-capture-ok: the subject IS the role's SGR bytes, which captured_text strips.
     buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 

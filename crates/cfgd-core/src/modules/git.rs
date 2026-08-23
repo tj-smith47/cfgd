@@ -507,7 +507,7 @@ pub(super) fn clone_repo(
     }
 
     // Fall back to libgit2 with spinner.
-    let spinner = printer.spinner(format!("Cloning module '{}' (libgit2)", module_name));
+    let spinner = printer.spinner(format!("Cloning module:{} (libgit2)", module_name));
 
     let result = git2::build::RepoBuilder::new()
         .fetch_options(git_fetch_options())
@@ -585,7 +585,7 @@ pub(super) fn fetch_existing_repo(
             message: format!("no 'origin' remote: {e}"),
         })?;
 
-    let spinner = printer.spinner(format!("Fetching module '{}' (libgit2)", module_name));
+    let spinner = printer.spinner(format!("Fetching module:{} (libgit2)", module_name));
 
     let refspecs: Vec<String> = remote
         .refspecs()

@@ -676,7 +676,7 @@ impl SourceManager {
             let repo = Repository::open(source_dir).map_err(to_git_err)?;
             let mut remote = repo.find_remote("origin").map_err(to_git_err)?;
 
-            let spinner = printer.spinner(format!("Fetching source '{}' (libgit2)", spec.name));
+            let spinner = printer.spinner(format!("Fetching source:{} (libgit2)", spec.name));
 
             let mut fo = FetchOptions::new();
             let mut callbacks = RemoteCallbacks::new();
@@ -770,7 +770,7 @@ impl SourceManager {
         let _ = std::fs::remove_dir_all(source_dir);
 
         // Fall back to libgit2 with spinner
-        let spinner = printer.spinner(format!("Cloning source '{}' (libgit2)", spec.name));
+        let spinner = printer.spinner(format!("Cloning source:{} (libgit2)", spec.name));
 
         let mut fo = FetchOptions::new();
         if spec.origin.url.starts_with("git@") || spec.origin.url.starts_with("ssh://") {

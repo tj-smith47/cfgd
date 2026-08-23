@@ -382,7 +382,7 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
     // still verifies the manifest's signature, which is a cosign subprocess.
     // Silent on success and the same single Warn on failure, so the permanent
     // output either way is what it was before the spinner existed.
-    let load_spinner = printer.spinner(format!("Loading source '{name}'"));
+    let load_spinner = printer.spinner(format!("Loading source:{name}"));
     match mgr.load_source_cached(source_spec, &silent_printer) {
         Ok(()) => load_spinner.finish_silent(),
         Err(e) => {
