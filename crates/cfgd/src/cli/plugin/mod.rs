@@ -251,7 +251,16 @@ pub fn plugin_main() -> anyhow::Result<()> {
     // Same precedence as the primary CLI (main.rs), via the one shared
     // resolution both entry points call.
     let color_choice = crate::cli::resolve_color_choice(cli.no_color, cli.color);
-    let printer = Printer::with_format(Verbosity::Normal, None, cli.output.0, color_choice);
+    // The plugin carries no `--config` of its own, so the theme is read from
+    // the default location — the one config a `kubectl cfgd` invocation on this
+    // machine could be describing.
+    let theme_config = crate::cli::resolve_theme_config(&crate::cli::default_config_file());
+    let printer = Printer::with_theme_config(
+        Verbosity::Normal,
+        theme_config.as_ref(),
+        cli.output.0,
+        color_choice,
+    );
     tracing_writer.attach(&printer);
 
     let result = match cli.command {

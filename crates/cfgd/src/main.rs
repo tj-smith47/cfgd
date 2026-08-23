@@ -301,14 +301,7 @@ fn main() -> anyhow::Result<()> {
     // `--color always` deliberately outranks them.
     let color_choice = cli::resolve_color_choice(cli.no_color, cli.color);
 
-    // Try loading config for theme settings; fall back to default theme if
-    // unavailable. The whole block travels, not just its name: `overrides`
-    // is a documented field, and a printer built from the name alone drops it.
-    let theme_config = std::path::Path::new(&cli.config)
-        .exists()
-        .then(|| cfgd_core::config::load_config(std::path::Path::new(&cli.config)).ok())
-        .flatten()
-        .and_then(|c| c.spec.theme);
+    let theme_config = cli::resolve_theme_config(std::path::Path::new(&cli.config));
     let printer = cfgd_core::output::Printer::with_theme_config(
         verbosity,
         theme_config.as_ref(),
