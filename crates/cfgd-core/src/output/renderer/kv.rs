@@ -44,6 +44,9 @@ fn pad_to_width(text: &str, width: usize) -> String {
 const KEY_WIDTH_CAP: usize = 24;
 /// Gap inserted between the (padded) key column and the value.
 const KEY_VALUE_GAP: &str = "  ";
+/// The glue between a `command_list` row's two columns, rendered with one
+/// space either side.
+const GLUE_DASH: &str = "—";
 
 impl Renderer {
     /// Buffer a single kv pair. Will be aligned with adjacent kvs into one
@@ -95,9 +98,18 @@ impl Emitting<'_> {
     /// would-be blank between them (heading + block render as one bound
     /// unit). Returns the depth-appropriate indent prefix. Column width and
     /// glue are the one thing each caller still owns — those differ per
-    /// block kind, which is the whole justification for two callers sharing
-    /// one preamble instead of one renderer for both.
-    fn open_aligned_block(&mut self, depth: usize, bound_to_heading: Option<bool>) -> String {
+    /// block kind, which is the whole justification for several callers
+    /// sharing one preamble instead of one renderer for all of them.
+    ///
+    /// `render_paragraph` takes it too, though it aligns nothing: what it
+    /// wants is the heading binding, which is a fact about placement rather
+    /// than about columns — body text written under a top-level heading nests
+    /// beneath it exactly as a kv block written there does.
+    pub(super) fn open_aligned_block(
+        &mut self,
+        depth: usize,
+        bound_to_heading: Option<bool>,
+    ) -> String {
         // The rows below are pushed straight into `out`, never through
         // `push_line`, so this is the block's only chance to let a section's
         // held-back statuses out ahead of it.
@@ -213,16 +225,24 @@ impl Emitting<'_> {
 
     /// Collect one aligned "command — description" block at `depth`.
     ///
-    /// `render_kv_block`'s counterpart for a list whose left column is a
-    /// shell command rather than a data-carrying key. Two things differ, both
-    /// deliberate: the key column carries no `KEY_WIDTH_CAP` (a wrapped
-    /// command severs the exact glue that makes the list scannable, and no
-    /// command list in the product runs wide enough for an uncapped column to
-    /// become the readability problem the cap exists to prevent for arbitrary
-    /// key/value pairs); and the glue is `" — "` — the same em-dash a status
-    /// subject/detail pair renders with — never the plain whitespace gap
-    /// `render_kv_block` uses, because this is a list of DESCRIPTIONS, not a
-    /// list of VALUES.
+    /// `render_kv_block`'s counterpart for a list whose left column names a
+    /// thing rather than carrying data — a shell command the user types, a
+    /// schema field's `name <type>` — and whose right column DESCRIBES it.
+    /// Three things differ from a kv block, all deliberate: the key column
+    /// carries no `KEY_WIDTH_CAP` (a wrapped left column severs the exact glue
+    /// that makes the list scannable, and no such list in the product runs
+    /// wide enough for an uncapped column to become the readability problem
+    /// the cap exists to prevent for arbitrary key/value pairs); the glue is
+    /// `" — "` — the same em-dash a status subject/detail pair renders with —
+    /// never the plain whitespace gap `render_kv_block` uses, because this is
+    /// a list of DESCRIPTIONS, not a list of VALUES; and a description too
+    /// long for the window hangs at the DESCRIPTION column rather than at the
+    /// left one, so its tail reads as the tail of the row above it instead of
+    /// as another row whose left column happens to be blank.
+    ///
+    /// A row with no description at all renders its left column alone: the
+    /// em-dash would introduce nothing, and the padding ahead of it would be
+    /// trailing whitespace.
     pub(crate) fn render_command_list(&mut self, depth: usize, pairs: &[(String, String)]) {
         if self.verbosity == Verbosity::Quiet || pairs.is_empty() {
             return;
@@ -241,8 +261,21 @@ impl Emitting<'_> {
             .max()
             .unwrap_or(0);
         for (k, v) in &rows {
+            if v.is_empty() {
+                self.out
+                    .push(format!("{}{}", prefix, self.theme.secondary.apply_to(k)));
+                continue;
+            }
             let key = self.theme.secondary.apply_to(pad_to_width(k, key_col));
-            self.out.push(format!("{}{} — {}", prefix, key, v));
+            let opening = format!("{}{} {} ", prefix, key, GLUE_DASH);
+            // Measured from the parts rather than from `opening`, which
+            // carries the key's SGR: the prefix is spaces, the padded key is
+            // `key_col` columns by construction, and the glue is space +
+            // em-dash + space.
+            let hang = " ".repeat(UnicodeWidthStr::width(prefix.as_str()) + key_col + 3);
+            for physical in super::wrap::wrap_segment(v, &opening, &hang, self.wrap_cols) {
+                self.out.push(physical);
+            }
         }
         self.mark_top_level_group(super::TopGroup::KvBlock);
     }
@@ -262,6 +295,13 @@ mod tests {
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Normal);
         (r, sink, buf)
+    }
+
+    use super::super::NarrowSink;
+
+    fn narrow(cols: usize) -> (Renderer, NarrowSink, Arc<Mutex<String>>) {
+        let (r, sink, buf) = capture();
+        (r, NarrowSink(sink, cols), buf)
     }
 
     #[test]
@@ -293,6 +333,91 @@ mod tests {
         let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("Größe  1"), "got: {out:?}");
         assert!(out.contains("ID     2"), "got: {out:?}");
+    }
+
+    /// A description too long for the window hangs at the DESCRIPTION column,
+    /// not at the left one: its tail is the tail of the row above it, and a
+    /// continuation starting under the command reads as another row whose
+    /// description happens to be missing.
+    #[test]
+    fn a_long_description_hangs_under_the_description_column() {
+        let (r, sink, buf) = narrow(40);
+        r.render_command_list(
+            &sink,
+            0,
+            &[(
+                "cfgd apply".to_string(),
+                "reconcile every declared surface on this machine".to_string(),
+            )],
+        );
+        let out = crate::test_helpers::captured_text(&buf);
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(
+            lines.len() > 1,
+            "expected a wrap at 40 columns, got: {out:?}"
+        );
+        assert!(lines[0].starts_with("cfgd apply — "), "got: {:?}", lines[0]);
+        // "cfgd apply" (10) + " — " (3) = the description column.
+        let hang = " ".repeat(13);
+        for line in &lines[1..] {
+            assert!(
+                line.starts_with(&hang) && !line[13..].starts_with(' '),
+                "continuation is not flush with the description column: {line:?}"
+            );
+        }
+    }
+
+    /// The hang is the width of the padded key column, not of this row's own
+    /// key: every description in the block starts in the same column, so
+    /// every continuation must too.
+    #[test]
+    fn the_hang_follows_the_padded_column_not_the_row_key() {
+        let (r, sink, buf) = narrow(44);
+        r.render_command_list(
+            &sink,
+            0,
+            &[
+                (
+                    "ls".to_string(),
+                    "list every declared module by name".to_string(),
+                ),
+                ("cfgd module list".to_string(), "short".to_string()),
+            ],
+        );
+        let out = crate::test_helpers::captured_text(&buf);
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(
+            lines.len() > 2,
+            "expected the first row to wrap, got: {out:?}"
+        );
+        // "cfgd module list" (16) + " — " (3) — the column the SECOND row's
+        // description starts in, which the first row's continuation shares.
+        assert_eq!(
+            lines[1].len() - lines[1].trim_start().len(),
+            19,
+            "continuation column: {:?}",
+            lines[1]
+        );
+    }
+
+    /// A row with no description renders its command alone: the em-dash would
+    /// introduce nothing, and the padding ahead of it would be trailing
+    /// whitespace on the line.
+    #[test]
+    fn a_row_with_no_description_renders_no_glue() {
+        let (r, sink, buf) = capture();
+        r.render_command_list(
+            &sink,
+            0,
+            &[
+                ("object".to_string(), String::new()),
+                ("string".to_string(), "a bare command string".to_string()),
+            ],
+        );
+        let out = crate::test_helpers::captured_text(&buf);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "object", "got: {out:?}");
+        assert_eq!(lines[1], "string — a bare command string", "got: {out:?}");
     }
 
     /// `command_list` pads through the same helper and takes its width from

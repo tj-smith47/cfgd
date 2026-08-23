@@ -391,20 +391,7 @@ mod tests {
         );
     }
 
-    /// A sink that hard-wraps at a fixed column, the way a terminal does.
-    /// `StringSink` answers `None`, so the width cap is only ever exercised
-    /// against one of these — which is also why goldens are never re-capped.
-    struct NarrowSink(StringSink, usize);
-
-    impl Writer for NarrowSink {
-        fn write_line(&self, text: &str) {
-            self.0.write_line(text);
-        }
-
-        fn wrap_columns(&self) -> Option<usize> {
-            Some(self.1)
-        }
-    }
+    use super::super::NarrowSink;
 
     fn display_width(line: &str) -> usize {
         UnicodeWidthStr::width(line.trim_end())

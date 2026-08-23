@@ -46,6 +46,9 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
         Component::Bullet { text } => {
             renderer.render_bullet(sink, depth, text, None);
         }
+        Component::Paragraph { text } => {
+            renderer.render_paragraph(sink, depth, text);
+        }
         Component::Status {
             role,
             subject,

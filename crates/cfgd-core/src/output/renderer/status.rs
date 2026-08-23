@@ -404,20 +404,7 @@ mod tests {
         (r, sink, buf)
     }
 
-    /// A sink that hard-wraps, the way a terminal does. `StringSink` answers
-    /// `None`, so the padding budget is only ever exercised against one of
-    /// these — which is also why a golden capture is never re-padded.
-    struct NarrowSink(StringSink, usize);
-
-    impl Writer for NarrowSink {
-        fn write_line(&self, text: &str) {
-            self.0.write_line(text);
-        }
-
-        fn wrap_columns(&self) -> Option<usize> {
-            Some(self.1)
-        }
-    }
+    use super::super::NarrowSink;
 
     fn narrow(cols: usize) -> (Renderer, NarrowSink, Arc<Mutex<String>>) {
         let (r, sink, buf) = capture();

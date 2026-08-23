@@ -135,7 +135,13 @@ pub(crate) fn wrap_body(body: &str, prefix: &str, cols: Option<usize>) -> Vec<St
 /// ANSI escapes are carried through without consuming width; a break lands on
 /// the last space that fits, or mid-word when a single word is itself longer
 /// than the line.
-fn wrap_segment(
+///
+/// Reachable from the renderer directly, for the one shape whose hang cannot
+/// be derived from the line itself: a two-column list's description hangs at
+/// the DESCRIPTION column, which only its caller knows — [`wrap_body`] reads
+/// the marker column off the first word instead, which is right for a status
+/// line and would wrap a description back under its own left column.
+pub(crate) fn wrap_segment(
     body: &str,
     first_prefix: &str,
     cont_prefix: &str,

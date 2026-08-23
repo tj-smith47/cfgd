@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use cfgd_core::output::{Doc, Printer, Role, SectionBuilder, renderer::Table};
+use cfgd_core::output::{Doc, Printer, SectionBuilder, renderer::Table};
 use cfgd_core::schema::{FieldNode, KIND_REGISTRY};
 
 // cfgd explain — schema documentation for all resource types
@@ -320,32 +320,66 @@ fn schema_to_output(schema: &ResourceSchema) -> ExplainOutput {
     }
 }
 
-/// Append a schema field as a Status row, recursively nesting children (and, for
-/// a genuine multi-shape union field, every accepted `variants` shape) under a
-/// subsection when `recursive` is set. Nested indentation comes from the
-/// renderer's section depth — never manual whitespace. A `variants` entry is a
-/// [`FieldNode`] named by its own type description (`string`, `object`, …) —
-/// see `cfgd_core::schema::union_variants` — so it renders through the same
-/// path as a real field, with its own `children` when the shape is an object.
-fn append_field(s: SectionBuilder, f: &FieldNode, recursive: bool) -> SectionBuilder {
+/// The level a field drills into: every accepted shape of a multi-shape
+/// union field, then the object's own children.
+///
+/// A node carries one or the other and never both — a union field has no
+/// children of its own (see [`resolve_field_path`]) — so the two are one list
+/// rather than two sections. A `variants` entry is a [`FieldNode`] named by
+/// its own type description (`string`, `object`, …); see
+/// `cfgd_core::schema::union_variants`.
+fn drill_level(f: &FieldNode) -> Vec<&FieldNode> {
+    f.variants.iter().chain(f.children.iter()).collect()
+}
+
+/// One row of a field list: the `name <type>` left column and the description
+/// that follows it.
+///
+/// The name is padded to the level's widest so the type column lines up
+/// beneath itself — the row's OWN two-level alignment, inside the single left
+/// column the renderer then aligns against the other rows — with the same
+/// two-space gap a kv block puts between its key and its value. Char padding
+/// is column padding here because a schema field name is an ASCII identifier.
+fn field_row(f: &FieldNode, name_width: usize, recursive: bool) -> (String, String) {
     let expandable = !f.children.is_empty() || !f.variants.is_empty();
     let req = if f.required { " (required)" } else { "" };
-    let leaf = if expandable && !recursive { " [+]" } else { "" };
-    let header = format!("{} <{}>{}{}", f.name, f.type_desc, req, leaf);
-    let s = s.status_with(Role::Info, header, |sf| sf.detail(f.description.clone()));
-    if recursive && expandable {
-        s.subsection(f.name.clone(), |sub| {
-            let sub = f
-                .variants
-                .iter()
-                .fold(sub, |sub, v| append_field(sub, v, true));
-            f.children
-                .iter()
-                .fold(sub, |sub, c| append_field(sub, c, true))
-        })
-    } else {
-        s
+    let more = if expandable && !recursive { " [+]" } else { "" };
+    (
+        format!(
+            "{:<name_width$}  <{}>{req}{more}",
+            f.name,
+            f.type_desc,
+            name_width = name_width
+        ),
+        f.description.clone(),
+    )
+}
+
+/// Append one level of fields as an aligned `name <type> — description` list,
+/// followed — when `recursive` — by a subsection per expandable field
+/// carrying its own level.
+///
+/// The rows of a level render as ONE list so the whole level shares one
+/// alignment, with the drill-in subsections after it rather than interleaved
+/// between the rows they expand. Nested indentation comes from the renderer's
+/// section depth, never manual whitespace.
+fn append_fields(s: SectionBuilder, fields: &[&FieldNode], recursive: bool) -> SectionBuilder {
+    let name_width = fields
+        .iter()
+        .map(|f| f.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let s = s.command_list(fields.iter().map(|f| field_row(f, name_width, recursive)));
+    if !recursive {
+        return s;
     }
+    fields.iter().fold(s, |s, f| {
+        let level = drill_level(f);
+        if level.is_empty() {
+            return s;
+        }
+        s.subsection(f.name.clone(), |sub| append_fields(sub, &level, true))
+    })
 }
 
 /// Build the `cfgd explain` (no args) Doc — lists all known schemas.
@@ -372,19 +406,17 @@ pub fn build_explain_index_doc() -> Doc {
 /// Build the `cfgd explain <resource>` Doc — schema overview + top-level fields.
 pub fn build_explain_schema_doc(schema: &ResourceSchema, recursive: bool) -> Doc {
     let output = schema_to_output(schema);
+    let fields: Vec<&FieldNode> = schema.fields.iter().collect();
     Doc::new()
         .heading(format!("{} ({})", schema.name, schema.kind))
-        .status(Role::Info, schema.description.clone())
+        .paragraph(schema.description.clone())
         .kv_block([
             ("apiVersion", schema.api_version.as_str()),
             ("kind", schema.kind.as_str()),
             ("location", schema.location.as_str()),
         ])
         .section("Fields (under spec)", |s| {
-            schema
-                .fields
-                .iter()
-                .fold(s, |s, f| append_field(s, f, recursive))
+            append_fields(s, &fields, recursive)
         })
         .with_data(output)
 }
@@ -415,7 +447,6 @@ pub fn build_explain_drilldown_doc(
         schema.name.to_lowercase(),
         field_path.join(".")
     );
-    let mut doc = Doc::new().heading(path_str.clone());
     // `find_field_node` looks up the field the FULL path names, independent
     // of `resolve_field_path`'s children-returning contract, so the queried
     // object's own name/type/description renders even when it has several
@@ -424,29 +455,32 @@ pub fn build_explain_drilldown_doc(
     // security." never appearing anywhere). Falling back to `fields` keeps
     // this defensive against a path `resolve_field_path` accepted but this
     // walk did not (should not happen: same schema, same path).
-    if let Some(f) = find_field_node(&schema.fields, field_path) {
-        let req = if f.required { " (required)" } else { "" };
-        doc = doc
-            .kv("field", f.name.clone())
-            .kv("type", format!("{}{}", f.type_desc, req))
-            .status(Role::Info, f.description.clone());
-        doc = doc.section_if_nonempty("Variants", &f.variants, |s, variants| {
-            variants
-                .iter()
-                .fold(s, |s, v| append_field(s, v, recursive))
+    let node = find_field_node(&schema.fields, field_path);
+    // The heading carries the queried field's own type, so nothing below has
+    // to restate the path the user just typed as a `field` / `type` pair.
+    let mut doc = Doc::new().heading(match node {
+        Some(f) => {
+            let req = if f.required { " (required)" } else { "" };
+            format!("{path_str} <{}>{req}", f.type_desc)
+        }
+        None => path_str.clone(),
+    });
+    if let Some(f) = node {
+        doc = doc.paragraph(f.description.clone());
+        let variants: Vec<&FieldNode> = f.variants.iter().collect();
+        doc = doc.section_if_nonempty("Variants", &variants, |s, variants| {
+            append_fields(s, variants, recursive)
         });
         // The object's own fields expand ONE level without `--recursive` —
         // the auto-expand this view exists for; `--recursive` still governs
-        // whether each of THOSE fields expands further, via `append_field`.
-        doc = doc.section_if_nonempty("Fields", &f.children, |s, children| {
-            children
-                .iter()
-                .fold(s, |s, c| append_field(s, c, recursive))
+        // whether each of THOSE fields expands further, via `append_fields`.
+        let children: Vec<&FieldNode> = f.children.iter().collect();
+        doc = doc.section_if_nonempty("Fields", &children, |s, children| {
+            append_fields(s, children, recursive)
         });
     } else {
-        doc = doc.section("Fields", |s| {
-            fields.iter().fold(s, |s, f| append_field(s, f, recursive))
-        });
+        let all: Vec<&FieldNode> = fields.iter().collect();
+        doc = doc.section("Fields", |s| append_fields(s, &all, recursive));
     }
     doc.with_data(ExplainDrilldownOutput {
         path: path_str,

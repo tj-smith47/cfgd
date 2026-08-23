@@ -55,6 +55,7 @@ pub(crate) enum TopGroup {
     CodeBlock,
     Note,
     KvBlock,
+    Paragraph,
     Table,
 }
 
@@ -666,6 +667,31 @@ impl Emitting<'_> {
         }
     }
 
+    /// Collect a prose paragraph at `depth`: the folded text, wrapped, with
+    /// every continuation flush to the same column the first line starts at.
+    ///
+    /// No marker, so `wrap_body`'s marker-column hang resolves to the plain
+    /// indent — which is what body text wants: a sentence's tail belongs in
+    /// the same column its first word is in.
+    ///
+    /// Wrapped first and painted after, one physical line at a time (the
+    /// shape `render_note` uses): every row then opens and closes its own
+    /// style run, instead of leaving one run hanging open across the rows
+    /// between the first and the last.
+    pub(crate) fn render_paragraph(&mut self, depth: usize, text: &str) {
+        let prefix = self.open_aligned_block(depth, None);
+        // Every row `wrap_body` returns for a marker-less line opens with
+        // exactly this prefix, and it is ASCII spaces, so the split is by
+        // byte length.
+        let indent = prefix.len();
+        for physical in wrap::wrap_body(&cursor_safe(text), &prefix, self.wrap_cols) {
+            let (lead, body) = physical.split_at(indent);
+            self.out
+                .push(format!("{lead}{}", self.theme.muted.apply_to(body)));
+        }
+        self.mark_top_level_group(TopGroup::Paragraph);
+    }
+
     /// Collect a pre-built raw block (diff, syntax-highlighted code) at
     /// `depth`. Each entry in `lines` is already ONE complete rendered line —
     /// unlike `push_line`, nothing here word-wraps it: a diff row or a
@@ -792,6 +818,25 @@ impl Writer for StringSink {
         let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
         g.push_str(text);
         g.push('\n');
+    }
+}
+
+/// A capture sink that hard-wraps, the way a terminal does. `StringSink`
+/// answers `None` to `wrap_columns`, so any claim about WRAPPING is only ever
+/// provable against one of these — which is also why a golden capture never
+/// re-wraps on a narrower runner. Lives here rather than in one test module
+/// because both surfaces that wrap (`status`, `kv`) need the same sink.
+#[cfg(test)]
+pub(crate) struct NarrowSink(pub(crate) StringSink, pub(crate) usize);
+
+#[cfg(test)]
+impl Writer for NarrowSink {
+    fn write_line(&self, text: &str) {
+        self.0.write_line(text);
+    }
+
+    fn wrap_columns(&self) -> Option<usize> {
+        Some(self.1)
     }
 }
 
@@ -970,6 +1015,21 @@ impl Renderer {
         });
     }
 
+    /// Paragraph: plain wrapped body text, no glyph and no coat of its own.
+    /// Shown at Normal+ like `hint` (NOT Verbose-only like `note`).
+    ///
+    /// Placed through the same preamble an aligned block takes
+    /// (`open_aligned_block`), so a paragraph written directly under a
+    /// top-level heading nests one level beneath it with no blank line
+    /// between: a description belongs to the thing the heading named, exactly
+    /// as a kv block written there does.
+    pub fn render_paragraph(&self, w: &dyn Writer, depth: usize, text: &str) {
+        if self.verbosity == Verbosity::Quiet {
+            return;
+        }
+        self.emit_with(w, |e| e.render_paragraph(depth, text));
+    }
+
     /// Note: multi-line prose. Suppressed at both Quiet and Normal; only Verbose.
     pub fn render_note(&self, w: &dyn Writer, depth: usize, text: &str) {
         if self.verbosity != Verbosity::Verbose {
@@ -1065,6 +1125,7 @@ mod tests {
             r.render_code_block(s, 0, &["c".to_string()])
         });
         assert_styled("note", |r, s| r.render_note(s, 0, "n"));
+        assert_styled("paragraph", |r, s| r.render_paragraph(s, 0, "p"));
         assert_styled("status", |r, s| {
             r.render_status(
                 s,
@@ -1144,6 +1205,50 @@ mod tests {
         r.write_line(&sink, 2, "grand");
         let s = crate::test_helpers::captured_text(&buf);
         assert_eq!(s, "root\n  child\n    grand\n");
+    }
+
+    /// A description belongs to the thing the heading named, so it nests one
+    /// level under it with no blank between — the same binding a kv block
+    /// written there gets. The block that follows is a separate group again.
+    #[test]
+    fn a_paragraph_binds_to_the_heading_above_it() {
+        let (r, sink, buf) = capture();
+        r.render_heading(&sink, "profile.spec.packages.brew <object>");
+        r.render_paragraph(&sink, 0, "Homebrew packages.");
+        r.render_kv_block(&sink, 0, &[crate::output::KvPair::new("kind", "Profile")]);
+        let out = crate::test_helpers::captured_text(&buf);
+        assert_eq!(
+            out, "profile.spec.packages.brew <object>\n  Homebrew packages.\n\nkind  Profile\n",
+            "got: {out:?}"
+        );
+    }
+
+    /// Body text wraps flush to its own indent: with no marker to hang under,
+    /// a continuation column of anything else would read as a nested line.
+    #[test]
+    fn a_wrapped_paragraph_keeps_every_line_in_one_column() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        struct Narrow(StringSink, usize);
+        impl Writer for Narrow {
+            fn write_line(&self, text: &str) {
+                self.0.write_line(text);
+            }
+            fn wrap_columns(&self) -> Option<usize> {
+                Some(self.1)
+            }
+        }
+        let sink = Narrow(StringSink(buf.clone()), 30);
+        let r = Renderer::new(Theme::default(), Verbosity::Normal);
+        r.render_paragraph(&sink, 1, "alpha bravo charlie delta echo foxtrot");
+        let out = crate::test_helpers::captured_text(&buf);
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines.len() > 1, "expected a wrap at 30 columns: {out:?}");
+        for line in &lines {
+            assert!(
+                line.starts_with("  ") && !line.starts_with("   "),
+                "line off the paragraph's column: {line:?}"
+            );
+        }
     }
 
     #[test]

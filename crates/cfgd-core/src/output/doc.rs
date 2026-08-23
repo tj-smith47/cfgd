@@ -233,6 +233,20 @@ impl Doc {
         self
     }
 
+    /// Append a prose paragraph (see [`Component::Paragraph`]) — body text
+    /// about whatever the heading above it named.
+    ///
+    /// Empty text appends nothing, so a caller rendering a description that
+    /// may be absent (a schema field carrying no rustdoc) does not branch and
+    /// cannot leave an empty line behind.
+    pub fn paragraph(mut self, text: impl Into<String>) -> Self {
+        let text = text.into();
+        if !text.is_empty() {
+            self.children.push(Component::Paragraph { text });
+        }
+        self
+    }
+
     pub fn note(mut self, text: impl Into<String>) -> Self {
         self.children.push(Component::Note { text: text.into() });
         self

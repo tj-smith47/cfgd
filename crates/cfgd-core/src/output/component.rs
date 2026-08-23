@@ -28,6 +28,24 @@ pub enum Component {
     Bullet {
         text: String,
     },
+    /// A prose paragraph: wrapped body text with no glyph, no key column and
+    /// no verbatim contract — what a documentation surface says ABOUT the
+    /// thing the heading above it just named (`cfgd explain`'s description of
+    /// a resource or a field).
+    ///
+    /// None of the neighbouring text components carries that: [`Note`] is
+    /// Verbose-only and muted, [`Hint`] prefixes an arrow because it is advice
+    /// about what to do next, [`Bullet`] is a list item, and [`CodeBlock`] is
+    /// verbatim lines that must never wrap. A description is none of those —
+    /// it is the body text of the document.
+    ///
+    /// [`Note`]: Component::Note
+    /// [`Hint`]: Component::Hint
+    /// [`Bullet`]: Component::Bullet
+    /// [`CodeBlock`]: Component::CodeBlock
+    Paragraph {
+        text: String,
+    },
     Status {
         role: Role,
         subject: String,
