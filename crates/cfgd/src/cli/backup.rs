@@ -69,11 +69,14 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry]) -> Doc {
         return doc.with_data(entries);
     }
 
+    // `Snapshots` sits beside `Retention` because the two are one fact read
+    // twice: how many this unit holds, and how many it is allowed to keep.
     let mut t = Table::new([
         "Name",
         "Source",
         "Schedule",
         "Retention",
+        "Snapshots",
         "Last Run",
         "Next Run",
     ]);
@@ -90,6 +93,9 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry]) -> Doc {
             e.source.clone(),
             e.schedule.clone().unwrap_or_else(|| "-".into()),
             e.retention.to_string(),
+            e.snapshots
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "-".into()),
             last_run,
             e.next_run_at.clone().unwrap_or_else(|| "-".into()),
         ]);
@@ -214,10 +220,28 @@ pub fn cmd_backup_list(
             None
         }
     };
+    // Counting a unit's snapshots means resolving its destination, which needs
+    // the state dir as well as the store — so an unreadable state degrades the
+    // count exactly as it degrades the history columns, rather than half-way.
+    let unit_dirs = state.and_then(|_| {
+        cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())
+            .ok()
+            .map(|state_dir| (config_dir(cli), state_dir))
+    });
     let entries: Vec<BackupListEntry> = selected
         .iter()
         .map(|spec| {
             let last = state.and_then(|state| state.latest_backup_run(&spec.name).ok().flatten());
+            let snapshots =
+                unit_dirs
+                    .as_ref()
+                    .zip(state)
+                    .and_then(|((config_dir, state_dir), state)| {
+                        let unit = BackupUnit::new(spec, config_dir, profile_name, state_dir);
+                        cfgd_core::backup::list_snapshots(&unit, state)
+                            .ok()
+                            .map(|s| s.len())
+                    });
             BackupListEntry {
                 name: spec.name.clone(),
                 source: spec.source.posix().to_string(),
@@ -238,6 +262,7 @@ pub fn cmd_backup_list(
                         last.as_ref().map(|r| r.finished_at.as_str()),
                     )
                 }),
+                snapshots,
             }
         })
         .collect();

@@ -86,10 +86,10 @@ $ cfgd backup run missing-name
 $ cfgd backup list
 Backups
 
-Name      Source                         Schedule   Retention  Last Run                        Next Run
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-notes-db  ~/.local/share/notes/notes.db  -          7          success @ 2026-08-13T06:13:06Z  -
-journal   ~/Documents/journal            0 3 * * *  3          success @ 2026-08-13T06:13:06Z  2026-08-14T03:00:00Z
+Name      Source                         Schedule   Retention  Snapshots  Last Run                        Next Run
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+notes-db  ~/.local/share/notes/notes.db  -          7          1          success @ 2026-08-13T06:13:06Z  -
+journal   ~/Documents/journal            0 3 * * *  3          1          success @ 2026-08-13T06:13:06Z  2026-08-14T03:00:00Z
 
 $ cfgd --output json backup run notes-db
 [
@@ -116,10 +116,12 @@ as the payload's `hint` field — and a run whose snapshot did not complete clea
 [Run Semantics](#run-semantics) for what "clean" means — also exits nonzero so a script can
 detect it without parsing output.
 
-`cfgd backup list [name]` (alias `ls`) shows every declared backup — or just the named one — its
-last recorded run, and when the daemon's timer will next fire it (`nextRunAt` in `-o json`); every
-backup command honors the global `-o`/`--output` flag for `json`/`yaml`/`jsonpath`/`template`
-consumers.
+`cfgd backup list [name]` (alias `ls`) shows every declared backup — or just the named one — how
+many snapshots it currently holds (`snapshots` in `-o json`), its last recorded run, and when the
+daemon's timer will next fire it (`nextRunAt` in `-o json`); every backup command honors the global
+`-o`/`--output` flag for `json`/`yaml`/`jsonpath`/`template` consumers. The Snapshots column reads
+`-` when the state store could not be opened, which is the same degradation the Last Run column
+takes: an unknown count is not a count of zero.
 
 `cfgd backup list <name> --snapshots` switches the view from the backup to its snapshots — what
 [`cfgd backup restore`](#restoring) can put back:
@@ -598,7 +600,7 @@ cfgd backup restore notes-db --to /tmp/inspect --yes          # somewhere else, 
 ```
 
 `--to` redirects where the snapshot lands. A path outside the backup's source leaves the live
-source untouched and takes no safety backup; a path at or inside the source is a restore-to-source
+source untouched and takes no safety snapshot; a path at or inside the source is a restore-to-source
 in all but spelling, and behaves like one.
 
 `--at` matches the full snapshot name first, then any snapshot name **containing** the value —
@@ -619,14 +621,14 @@ acquire the unit's lock, re-resolve the selected snapshot under it
       │
       ▼
 stage the selected snapshot into a temp dir beside the target
-      │                                  (before the safety backup — see below)
+      │                                  (before the safety snapshot — see below)
       ▼
 preBackup hooks                          (CFGD_OPERATION=restore)
       │
-      ├──fail──►  safety backup + overlay SKIPPED  ──┐
+      ├──fail──►  safety snapshot + overlay SKIPPED  ──┐
       │ ok                                           │
       ▼                                              │
-safety backup of the CURRENT target      (skipped when the target is not the source,
+safety snapshot of the CURRENT target      (skipped when the target is not the source,
       │                                   or the source is gone; no hooks of its own)
       ▼                                              │
 overlay the staged snapshot onto the target          │
@@ -644,7 +646,7 @@ staging removed      ← on every path, success or failure
 - **A name the snapshot owns is taken back, whatever occupies it.** If the snapshot holds a file at
   a name the target now holds as a directory (or a symlink), that directory is **removed** — with
   everything under it — and replaced by the snapshot's file. It is inside the restore target, so
-  the safety backup captured it and the [safety snapshot](#what-a-restore-does) is the recovery.
+  the [safety snapshot](#what-a-restore-does) captured it and is the recovery.
   The kind check in [What a restore refuses](#what-a-restore-refuses) guards the **top-level**
   target only; nested kind swaps are resolved in the snapshot's favour rather than refused, because
   a restore that stops halfway through a tree is worse than one that completes.
@@ -653,11 +655,11 @@ staging removed      ← on every path, success or failure
   snapshot does **not** own survives untouched. A link sitting at a name the snapshot **does** own
   is **removed and replaced** by the snapshot's own file or directory — never written through.
   Following it would truncate a file, or populate a whole tree, outside the restore target and
-  outside what the safety backup captured.
+  outside what the safety snapshot captured.
 - **The overlay is not atomic as a whole.** Each file is replaced atomically (temp file + rename),
   but a directory restore interrupted halfway leaves the target part old and part new. The safety
-  backup is what recovers it; a single-file backup has no such window.
-- **The safety backup is an ordinary run.** It writes a normal `backup_runs` row and
+  snapshot is what recovers it; a single-file backup has no such window.
+- **The safety snapshot is an ordinary run.** It writes a normal `backup_runs` row and
   **participates in normal retention** — so it counts against `retention` and can evict an older
   snapshot. Its path is reported as `safetySnapshot` in `-o json` and as the `→` line in human
   output. If it fails to produce a snapshot, the restore is **abandoned**: cfgd will not overwrite
@@ -665,17 +667,17 @@ staging removed      ← on every path, success or failure
 - **It is skipped on the target, not on the flag.** `--to` pointing back at the source, or at a
   path inside it, overwrites exactly what a plain restore would, so it still takes one. Only a
   target genuinely outside the source — or a source that does not exist yet — skips it.
-- **Staging comes first for a reason.** The safety backup prunes to `retention`, and the snapshot
+- **Staging comes first for a reason.** The safety snapshot prunes to `retention`, and the snapshot
   being restored can be the one it evicts. Staging the payload beforehand makes the restore immune
-  to that. The safety backup also renders the same `namePattern` — and when a restore runs inside
+  to that. The safety snapshot also renders the same `namePattern` — and when a restore runs inside
   the same second as the snapshot it selects, that renders the same *name*; cfgd appends `-1`,
   `-2`, … so both snapshots survive under distinct names (see [`namePattern`](#namepattern)).
 - **The unit's `preBackup` / `postBackup` hooks run exactly once**, wrapped around the whole
-  restore including the safety backup. The safety backup does not open a second envelope of its
+  restore including the safety snapshot. The safety snapshot does not open a second envelope of its
   own: the unit declares one hook list, and running it twice around a source the restore has
   already quiesced breaks any hook that is not idempotent. Hooks see
   `CFGD_OPERATION=restore` to tell the two directions apart.
-- **A `preBackup` failure skips the safety backup and the overlay**, exactly as it skips the
+- **A `preBackup` failure skips the safety snapshot and the overlay**, exactly as it skips the
   snapshot during a run: the hook exists to quiesce the target, and neither snapshotting nor
   overwriting it after the hook failed is trustworthy. `postBackup` still runs.
 - **One at a time.** A restore takes the same per-unit lock a run does, so it can never interleave
@@ -688,10 +690,10 @@ staging removed      ← on every path, success or failure
 | a target inside the backup's `destination` | restoring there would overwrite the snapshot store |
 | a **top-level** snapshot/target kind mismatch (file over directory, or the reverse) | publishing a file over a directory would delete the whole directory on the way to the rename. Nested names inside a directory overlay are replaced instead of refused — see above |
 | a snapshot that vanished since it was listed | a concurrent prune, or a hand-deleted destination — re-checked *after* the lock is taken, so the window a confirmation prompt opens is covered |
-| a failed safety backup | the current contents were not captured |
+| a failed safety snapshot | the current contents were not captured |
 
 **Restores are not recorded.** The `backup_runs` table is the ledger retention walks, and a
-restore produces no artifact for it to prune. The safety backup it takes *is* recorded, as an
+restore produces no artifact for it to prune. The safety snapshot it takes *is* recorded, as an
 ordinary run. `cfgd rollback` covers cfgd's own file writes and is unrelated to this table.
 
 ### Restoring by hand

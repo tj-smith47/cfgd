@@ -1768,7 +1768,7 @@ fn restore_of_a_file_source_replaces_the_file() {
 }
 
 #[test]
-fn restore_to_redirects_the_target_and_skips_the_safety_backup() {
+fn restore_to_redirects_the_target_and_skips_the_safety_snapshot() {
     let h = Harness::new();
     let source = h.root.join("tree");
     std::fs::create_dir_all(&source).expect("tree");
@@ -1798,12 +1798,12 @@ fn restore_to_redirects_the_target_and_skips_the_safety_backup() {
     assert_eq!(
         h.store.backup_runs("db").expect("history").len(),
         before,
-        "no safety backup means no extra run record"
+        "no safety snapshot means no extra run record"
     );
 }
 
 #[test]
-fn restore_to_source_takes_a_safety_backup_first() {
+fn restore_to_source_takes_a_safety_snapshot_first() {
     let h = Harness::new();
     let source = h.root.join("data.db");
     std::fs::write(&source, "v1").expect("source");
@@ -1819,13 +1819,13 @@ fn restore_to_source_takes_a_safety_backup_first() {
     assert_eq!(
         std::fs::read_to_string(Path::new(safety)).expect("safety snapshot"),
         "live",
-        "the safety backup holds what the restore overwrote"
+        "the safety snapshot holds what the restore overwrote"
     );
     assert_eq!(std::fs::read_to_string(&source).expect("source"), "v1");
 }
 
 #[test]
-fn restore_records_no_run_of_its_own_beyond_the_safety_backup() {
+fn restore_records_no_run_of_its_own_beyond_the_safety_snapshot() {
     let h = Harness::new();
     let source = h.root.join("data.db");
     std::fs::write(&source, "v1").expect("source");
@@ -1837,14 +1837,14 @@ fn restore_records_no_run_of_its_own_beyond_the_safety_backup() {
     assert_eq!(
         runs.len(),
         2,
-        "one row for the original run, one for the safety backup — a restore records nothing"
+        "one row for the original run, one for the safety snapshot — a restore records nothing"
     );
 }
 
 #[test]
-fn the_safety_backup_never_replaces_the_snapshot_being_restored() {
+fn the_safety_snapshot_never_replaces_the_snapshot_being_restored() {
     // A `namePattern` with no `{timestamp}` makes EVERY run render one name, so
-    // the safety backup renders exactly the name of the snapshot being
+    // the safety snapshot renders exactly the name of the snapshot being
     // restored — the worst case the collision suffix exists for.
     let h = Harness::new();
     let source = h.root.join("data.db");
@@ -1865,7 +1865,7 @@ fn the_safety_backup_never_replaces_the_snapshot_being_restored() {
     let safety = outcome.safety_snapshot.clone().expect("safety snapshot");
     assert!(
         safety.ends_with("latest-1"),
-        "the safety backup must take a free name, got: {safety}"
+        "the safety snapshot must take a free name, got: {safety}"
     );
     assert_eq!(
         std::fs::read_to_string(&safety).expect("safety payload"),
@@ -1875,7 +1875,7 @@ fn the_safety_backup_never_replaces_the_snapshot_being_restored() {
 }
 
 #[test]
-fn restore_aborts_when_the_safety_backup_produces_nothing() {
+fn restore_aborts_when_the_safety_snapshot_produces_nothing() {
     let h = Harness::new();
     let source = h.root.join("data.db");
     std::fs::write(&source, "v1").expect("source");
@@ -1899,7 +1899,7 @@ fn restore_aborts_when_the_safety_backup_produces_nothing() {
         "the abort still has to restart whatever preBackup stopped"
     );
     assert!(
-        format!("{err}").contains("safety backup"),
+        format!("{err}").contains("safety snapshot"),
         "expected the safety-backup refusal, got: {err}"
     );
     assert_eq!(
@@ -1932,7 +1932,7 @@ fn restore_abort_carries_a_post_hook_failure_in_the_returned_error() {
         .expect_err("an uncaptured source must not be overwritten");
     let rendered = format!("{err}");
     assert!(
-        rendered.contains("safety backup"),
+        rendered.contains("safety snapshot"),
         "the abort must stay the primary condition, got: {rendered}"
     );
     assert!(
@@ -1947,7 +1947,7 @@ fn restore_abort_carries_a_post_hook_failure_in_the_returned_error() {
 }
 
 #[test]
-fn restore_of_a_missing_source_skips_the_safety_backup() {
+fn restore_of_a_missing_source_skips_the_safety_snapshot() {
     let h = Harness::new();
     let source = h.root.join("tree");
     std::fs::create_dir_all(&source).expect("tree");
@@ -2043,8 +2043,8 @@ fn restore_skips_the_overlay_when_prebackup_fails_but_still_runs_postbackup() {
     h.run(&s);
     std::fs::write(source.join("a.txt"), "live").expect("live edit");
 
-    // `--to` keeps the safety backup out of the way, so this exercises the
-    // RESTORE's own hook envelope rather than the safety backup's.
+    // `--to` keeps the safety snapshot out of the way, so this exercises the
+    // RESTORE's own hook envelope rather than the safety snapshot's.
     let mut hooked = spec("db", &source);
     let post = h.root.join("post.marker");
     hooked.pre_backup = vec![hook("exit 4")];
@@ -2176,7 +2176,7 @@ fn restore_replaces_a_symlink_at_a_name_the_snapshot_owns() {
 
     // The name the snapshot owns is replaced in the live target by a link
     // pointing OUTSIDE it — the shape that turns a plain `fs::copy` into a
-    // write the safety backup never captured.
+    // write the safety snapshot never captured.
     let outsider = h.root.join("outside.txt");
     std::fs::write(&outsider, "do not touch").expect("outsider");
     std::fs::remove_file(source.join("a.txt")).expect("clear a.txt");
@@ -2233,7 +2233,7 @@ fn restore_replaces_a_symlinked_directory_at_a_name_the_snapshot_owns() {
 }
 
 #[test]
-fn restore_to_the_source_itself_still_takes_a_safety_backup() {
+fn restore_to_the_source_itself_still_takes_a_safety_snapshot() {
     let h = Harness::new();
     let source = h.root.join("data.db");
     std::fs::write(&source, "v1").expect("source");
@@ -2256,7 +2256,7 @@ fn restore_to_the_source_itself_still_takes_a_safety_backup() {
 }
 
 #[test]
-fn restore_to_a_path_inside_the_source_still_takes_a_safety_backup() {
+fn restore_to_a_path_inside_the_source_still_takes_a_safety_snapshot() {
     let h = Harness::new();
     let source = h.root.join("tree");
     std::fs::create_dir_all(&source).expect("tree");
@@ -2359,7 +2359,7 @@ fn backup_hooks_see_the_backup_operation() {
 }
 
 #[test]
-fn restore_runs_each_hook_list_exactly_once_around_the_safety_backup() {
+fn restore_runs_each_hook_list_exactly_once_around_the_safety_snapshot() {
     let h = Harness::new();
     let source = h.root.join("data.db");
     std::fs::write(&source, "v1").expect("source");
@@ -2374,7 +2374,7 @@ fn restore_runs_each_hook_list_exactly_once_around_the_safety_backup() {
     let outcome = h.restore(&s, None, None).expect("restore");
     assert!(
         outcome.safety_snapshot.is_some(),
-        "this restore must take a safety backup for the count to mean anything"
+        "this restore must take a safety snapshot for the count to mean anything"
     );
     assert_eq!(
         (hook_runs(&pre_tally), hook_runs(&post_tally)),
@@ -2384,7 +2384,7 @@ fn restore_runs_each_hook_list_exactly_once_around_the_safety_backup() {
 }
 
 #[test]
-fn a_failed_prebackup_skips_the_safety_backup_as_well_as_the_overlay() {
+fn a_failed_prebackup_skips_the_safety_snapshot_as_well_as_the_overlay() {
     let h = Harness::new();
     let source = h.root.join("data.db");
     std::fs::write(&source, "v1").expect("source");

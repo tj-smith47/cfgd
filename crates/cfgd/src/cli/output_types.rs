@@ -609,6 +609,11 @@ pub struct BackupListEntry {
     /// schedule with no upcoming occurrence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_run_at: Option<String>,
+    /// How many snapshots this unit currently holds on disk. `None` when the
+    /// state store could not be read — an unknown count must not be reported
+    /// as zero, which is a unit whose snapshots have all been pruned away.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshots: Option<usize>,
 }
 
 /// One snapshot on disk, for `cfgd backup list <name> --snapshots`.

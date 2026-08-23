@@ -10,7 +10,7 @@
 //!
 //! Restores are not recorded in the state DB. The `backup_runs` table is the
 //! ledger retention pruning walks, and a restore produces no artifact for it to
-//! prune — the safety backup a restore-to-source takes IS recorded, as an
+//! prune — the safety snapshot a restore-to-source takes IS recorded, as an
 //! ordinary run.
 
 use std::path::{Path, PathBuf};
@@ -242,7 +242,7 @@ pub fn select_snapshot<'s>(
 ///    selection happened before the lock, so a concurrent run may have pruned
 ///    it in between;
 /// 2. stage the snapshot into a temp directory beside the target — **before**
-///    the safety backup, because that backup prunes to `spec.retention` and the
+///    the safety snapshot, because that prunes to `spec.retention` and the
 ///    snapshot being restored can be the one it evicts;
 /// 3. `preBackup` hooks;
 /// 4. a safety snapshot of the target's current contents, taken through
@@ -344,7 +344,7 @@ pub fn restore_backup(
         // Retired silently: every outcome below already has its own line —
         // the restore status, or the fatal error the caller renders.
         let mut sp = printer.spinner(format!("Restoring {name}: safety snapshot"));
-        match take_safety_backup(unit, store, printer, &target, &mut failures) {
+        match take_safety_snapshot(unit, store, printer, &target, &mut failures) {
             Ok(taken) => {
                 safety = taken;
                 sp.set_message(format!("Restoring {name}: overlaying files"));
@@ -471,7 +471,7 @@ fn report_path(path: &Path) -> String {
 /// the way out is not fatal: the protection is on disk. Its failure is pushed
 /// onto the restore's own failure list so the caller still reports an unclean
 /// restore.
-fn take_safety_backup(
+fn take_safety_snapshot(
     unit: &BackupUnit<'_>,
     store: &StateStore,
     printer: &Printer,

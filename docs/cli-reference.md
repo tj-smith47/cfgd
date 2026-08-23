@@ -1531,7 +1531,7 @@ Run, inspect, or restore the declarative backups a profile declares in `spec.bac
 ```sh
 cfgd backup run                                       # run every backup declared in the active profile
 cfgd backup run notes-db                              # run just the named backup
-cfgd backup list                                      # inventory + last-run status + next scheduled run; alias: ls
+cfgd backup list                                      # inventory + snapshot count + last-run status + next scheduled run; alias: ls
 cfgd backup list notes-db                             # just that unit's row
 cfgd backup list notes-db --snapshots                 # its snapshots: name, created, size
 cfgd backup restore notes-db                          # newest snapshot, back over the source
@@ -1564,7 +1564,7 @@ Structured output (`-o json`) payload for `backup run`: an array of
 `skipped` (the unit was already running). A refused unit does not add a second document to stdout —
 the payload is always one JSON value and the nonzero exit code carries the failure. For
 `backup list`: an array of
-`{ name, source, schedule?, retention, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`.
+`{ name, source, schedule?, retention, snapshots?, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`.
 For `backup list <name> --snapshots`: an array of `{ name, created, sizeBytes }`, newest first,
 where `name` is the snapshot's path relative to the backup's `destination`. For `backup restore`:
 a single `{ name, snapshot, restoredTo, restored, clean, sizeBytes, safetySnapshot?, error? }` —

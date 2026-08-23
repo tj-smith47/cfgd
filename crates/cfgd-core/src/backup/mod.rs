@@ -290,7 +290,7 @@ struct RunOutcome {
 /// Take the snapshot, record the run, and prune — with **no hooks**, and with
 /// the unit's lock already held by the caller.
 ///
-/// The safety backup [`restore::restore_backup`] takes needs exactly this half
+/// The safety snapshot [`restore::restore_backup`] takes needs exactly this half
 /// of [`run_backup`]: an ordinary row and an ordinary retention prune, inside
 /// the lock and inside the hook envelope the restore already holds open.
 /// Re-entering [`run_backup`] would do neither — the `flock` is per open file

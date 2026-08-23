@@ -442,6 +442,18 @@ fn backup_list_still_reports_the_inventory_when_the_state_store_cannot_open() {
         human.contains("never"),
         "every unit degrades to a 'never' last run: {human}"
     );
+    // The count comes out of the same store, so it degrades with the history
+    // rather than reading zero — which would be a unit whose snapshots are all
+    // gone, the one state that would send someone looking for a bug.
+    let row = human
+        .lines()
+        .find(|l| l.starts_with("docs"))
+        .unwrap_or_else(|| panic!("no docs row in:\n{human}"));
+    let cells: Vec<&str> = row.split_whitespace().collect();
+    assert_eq!(
+        cells[4], "-",
+        "an unknown snapshot count renders '-', never 0: {row}"
+    );
 }
 
 #[test]
@@ -457,6 +469,7 @@ fn build_backup_list_doc_json_matches_serde_roundtrip() {
         last_run_at: Some("2026-01-01T00:00:00Z".to_string()),
         last_run_clean: Some(true),
         next_run_at: None,
+        snapshots: Some(2),
     }];
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_backup_list_doc(&entries));
@@ -975,6 +988,37 @@ fn backup_list_snapshots_human() {
 }
 
 #[test]
+fn backup_list_counts_the_snapshots_a_unit_actually_holds() {
+    // The count is the unit's own snapshots, not the inventory's row count:
+    // `weekly` never ran and must stay at zero while `docs` reports its one.
+    let (config_dir, state_dir, _source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    run_docs(&cli);
+
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_backup_list(&cli, &printer, None, false).unwrap();
+    drop(printer);
+
+    let payload = cap.json().expect("payload");
+    let counts: Vec<(String, i64)> = payload
+        .as_array()
+        .expect("array payload")
+        .iter()
+        .map(|e| {
+            (
+                e["name"].as_str().expect("name").to_string(),
+                e["snapshots"].as_i64().expect("snapshot count"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        counts,
+        vec![("docs".to_string(), 1), ("weekly".to_string(), 0)],
+        "each row counts its own unit's snapshots: {payload}"
+    );
+}
+
+#[test]
 fn backup_list_snapshots_json_shape() {
     let (config_dir, state_dir, _source) = backup_profile_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
@@ -1324,7 +1368,7 @@ fn backup_restore_declined_at_the_prompt_changes_nothing() {
             .unwrap()
             .count(),
         before,
-        "declining must not take a safety backup either"
+        "declining must not take a safety snapshot either"
     );
 
     let payload = cap
