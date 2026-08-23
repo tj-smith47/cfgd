@@ -5,7 +5,7 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::backup::{BackupUnit, SnapshotInfo};
 use cfgd_core::format_bytes;
-use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, renderer::Table};
+use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, TitleLabel, renderer::Table};
 use cfgd_core::state::{BackupRunRecord, BackupRunStatus};
 
 fn backup_not_found_error(name: &str, valid: Vec<String>) -> anyhow::Error {
@@ -362,7 +362,7 @@ pub fn run_backup_restore(
     printer: &Printer,
     args: &RestoreArgs<'_>,
 ) -> anyhow::Result<Option<cfgd_core::backup::RestoreOutcome>> {
-    printer.heading("Restore Backup");
+    printer.heading_title(&TitleLabel::new("Restore", args.name));
 
     let ctx = RunContext::new(cli, printer);
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;

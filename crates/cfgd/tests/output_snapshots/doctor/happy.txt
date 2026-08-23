@@ -1,8 +1,9 @@
 Doctor
-✓ Config file: /home/test/.config/cfgd/cfgd.yaml (valid)
 
-Name     test-host
-Profile  default
+Config
+  ✓ Config file: /home/test/.config/cfgd/cfgd.yaml (valid)
+  Name     test-host
+  Profile  default
 
 Tools
   ✓ git: found

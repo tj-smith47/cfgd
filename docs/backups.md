@@ -580,7 +580,7 @@ overwrite:
 
 ```console
 $ cfgd backup restore notes-db --yes
-Restore Backup
+Restore: notes-db
 ◐ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)"
   0|0|0
 ✓ preBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA wal_checkpoint(TRUNCATE)" (0.1s)

@@ -1,8 +1,8 @@
-Apply #1: Script Output
+Script Output: Apply #1
 
 Entries
   [scripts] script:pre:hello (script)
-    ⊙ hello world
-    ⊙ second line
+    hello world
+    second line
   [scripts] script:post:bye (script)
-    ⊙ goodbye world
+    goodbye world

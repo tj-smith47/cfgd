@@ -14,7 +14,7 @@ use std::path::Path;
 use cfgd::cli::output_types::RollbackOutput;
 use cfgd::cli::rollback::{build_rollback_doc, cmd_rollback};
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
-use cfgd_core::output::{Doc, Printer, PromptAnswer, Role, Verbosity};
+use cfgd_core::output::{Doc, Printer, PromptAnswer, Role, TitleLabel, Verbosity};
 use cfgd_core::reconciler::PhaseName;
 use pretty_assertions::assert_eq;
 
@@ -246,11 +246,11 @@ fn rollback_non_file_script_action_condenses_multiline_bullet() {
     let human = strip_ansi(&cap.human());
     assert!(
         !human.contains("echo line-two"),
-        "Actions bullet must condense away subsequent lines, got: {human}"
+        "Actions row must condense away subsequent lines, got: {human}"
     );
     assert!(
         human.contains("echo line-one"),
-        "condensed bullet should reference the first line, got: {human}"
+        "condensed row should reference the first line, got: {human}"
     );
 
     let json = cap.json().expect("rollback doc carries a payload");
@@ -267,11 +267,8 @@ fn rollback_non_file_script_action_condenses_multiline_bullet() {
 fn rollback_bridge_one_blank_line() {
     let (printer, cap) = Printer::for_test_doc();
 
-    printer.heading("Rollback");
-    printer.kv_block([
-        ("Target apply ID".to_string(), "1".to_string()),
-        ("File backups to restore".to_string(), "1".to_string()),
-    ]);
+    printer.heading_title(&TitleLabel::new("Rollback", "#1"));
+    printer.kv_block([("File backups to restore".to_string(), "1".to_string())]);
     {
         let rb_sec = printer.section_phase(&PhaseName::Files.section_label());
         rb_sec.status_simple(Role::Ok, "1 file processed");

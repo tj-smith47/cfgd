@@ -1,6 +1,6 @@
 use super::*;
 
-use cfgd_core::output::{Doc, Printer, Role, condense_script_label};
+use cfgd_core::output::{Doc, Printer, Role, TitleLabel, condense_script_label};
 
 pub fn cmd_rollback(
     printer: &Printer,
@@ -50,14 +50,11 @@ pub fn cmd_rollback(
         .collect();
     let non_file_count = non_file_actions.len();
 
-    printer.heading("Rollback");
-    let mut kv_pairs: Vec<(String, String)> = vec![
-        ("Target apply ID".to_string(), apply_id.to_string()),
-        (
-            "File backups to restore".to_string(),
-            file_count.to_string(),
-        ),
-    ];
+    printer.heading_title(&TitleLabel::new("Rollback", format!("#{apply_id}")));
+    let mut kv_pairs: Vec<(String, String)> = vec![(
+        "File backups to restore".to_string(),
+        file_count.to_string(),
+    )];
     if non_file_count > 0 {
         kv_pairs.push(("Non-file actions".to_string(), non_file_count.to_string()));
     }
@@ -155,11 +152,11 @@ pub fn cmd_rollback(
         let nf_sec = printer.section("Actions");
         for (action_type, resource_id) in &result.non_file_actions {
             // A "script" resource_id is the raw journal-recorded run_str
-            // body — condense only for this bullet, never the payload below.
+            // body — condense only for this row, never the payload below.
             if action_type == "script" {
-                nf_sec.bullet(condense_script_label(resource_id));
+                nf_sec.kv(action_type, condense_script_label(resource_id));
             } else {
-                nf_sec.bullet(resource_id);
+                nf_sec.kv(action_type, resource_id);
             }
         }
     }

@@ -1,5 +1,4 @@
-Rollback
-  Target apply ID          1
+Rollback: #1
   File backups to restore  1
 
 Phase: Files

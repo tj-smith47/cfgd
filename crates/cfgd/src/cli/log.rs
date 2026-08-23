@@ -48,7 +48,7 @@ fn cmd_log_show_output(
     if entries.is_empty() {
         printer.emit(
             Doc::new()
-                .heading_title(format!("Apply #{apply_id}"), "Script Output")
+                .heading_title("Script Output", format!("Apply #{apply_id}"))
                 .status(
                     Role::Info,
                     format!("No journal entries for apply #{}", apply_id),
@@ -62,8 +62,8 @@ fn cmd_log_show_output(
     }
 
     printer.heading_title(&TitleLabel::new(
-        format!("Apply #{apply_id}"),
         "Script Output",
+        format!("Apply #{apply_id}"),
     ));
 
     let mut payload_entries = Vec::new();
@@ -86,9 +86,9 @@ fn cmd_log_show_output(
                     "[{}] {} ({})",
                     entry.phase, display_id, entry.action_type,
                 ));
-                for line in output.lines() {
-                    entry_sec.status_simple(Role::Info, line);
-                }
+                // One captured blob, not N verdicts: a status glyph per line
+                // would read as an independent outcome for each fragment.
+                entry_sec.code_block(output.lines());
                 payload_entries.push(LogShowEntryOutput {
                     phase: entry.phase.clone(),
                     resource_id: entry.resource_id.clone(),

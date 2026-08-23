@@ -527,7 +527,7 @@ fn collect_doctor_output(
 pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
     let mut doc = Doc::new().heading("Doctor");
 
-    doc = build_config_top(doc, &output.config);
+    doc = doc.section("Config", |s| build_config_section(s, &output.config));
     doc = doc.section("Tools", |s| build_tools_section(s, output.git));
     doc = doc.section("Secrets", |s| build_secrets_section(s, &output.secrets));
     doc = doc.section_if_nonempty(
@@ -553,10 +553,10 @@ pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
     doc.with_data(output)
 }
 
-fn build_config_top(doc: Doc, cfg: &DoctorConfigCheck) -> Doc {
+fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBuilder {
     match cfg.state {
         DoctorConfigState::Valid => {
-            let mut doc = doc.status_with(Role::Ok, "Config file", |f| {
+            let mut s = s.status_with(Role::Ok, "Config file", |f| {
                 f.qualifier(format!("{} (valid)", cfg.path))
             });
             let mut pairs: Vec<(String, String)> = Vec::new();
@@ -567,22 +567,22 @@ fn build_config_top(doc: Doc, cfg: &DoctorConfigCheck) -> Doc {
                 "Profile".into(),
                 cfg.profile.as_deref().unwrap_or("(none)").into(),
             ));
-            doc = doc.kv_block(pairs);
-            doc
+            s = s.kv_block(pairs);
+            s
         }
-        DoctorConfigState::MissingAtDefault => doc.status_with(Role::Warn, "Config file", |sf| {
+        DoctorConfigState::MissingAtDefault => s.status_with(Role::Warn, "Config file", |sf| {
             sf.qualifier(cfg.path.clone()).detail(format!(
                 "{}; run 'cfgd init' to create one",
                 cfgd_core::Absence::NotFound
             ))
         }),
-        DoctorConfigState::MissingAtExplicit => doc.status_with(Role::Fail, "Config file", |sf| {
+        DoctorConfigState::MissingAtExplicit => s.status_with(Role::Fail, "Config file", |sf| {
             sf.qualifier(cfg.path.clone()).detail(format!(
                 "{}; the given --config/--config-dir/CFGD_CONFIG path does not exist",
                 cfgd_core::Absence::NotFound
             ))
         }),
-        DoctorConfigState::Invalid => doc.status_with(Role::Fail, "Config file", |f| {
+        DoctorConfigState::Invalid => s.status_with(Role::Fail, "Config file", |f| {
             f.qualifier(cfg.path.clone())
                 .detail(cfg.error.as_deref().unwrap_or("invalid").to_string())
         }),
@@ -828,7 +828,7 @@ fn all_passed(output: &DoctorOutput) -> bool {
 /// A config missing at the DEFAULT path is a fresh-machine state (rendered as
 /// a Warn), not a failure. A config missing at an explicitly-given path, or a
 /// present-but-unparseable one, fails the verdict. Mirrors the classification
-/// in `build_config_top`.
+/// in `build_config_section`.
 fn config_ok(cfg: &DoctorConfigCheck) -> bool {
     matches!(
         cfg.state,

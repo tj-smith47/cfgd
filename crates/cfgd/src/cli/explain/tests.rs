@@ -582,18 +582,21 @@ fn every_schema_is_reflected_once_per_process_including_the_bad_name_path() {
 
 #[test]
 fn explain_drilldown_renders_the_documented_shape() {
-    // The whole drill-in view, pinned byte-for-byte: the heading carries the
-    // queried field's own type (nothing below it restates the path as a
-    // field/type pair), the description is body text under that heading, and
-    // the field list is a two-column `name <type> — description` list whose
-    // name and type columns each align beneath themselves.
+    // The whole drill-in view, pinned byte-for-byte: the heading is the
+    // `Explain: <path>` TitleLabel every sibling report noun uses, the
+    // description is body text under it, the queried field's own type is a kv
+    // row rather than glue in the title, and the field list is a two-column
+    // `name <type> — description` list whose name and type columns each align
+    // beneath themselves.
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer, Some("profile.spec.packages.brew"), false).unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
     let expected = "\
-profile.spec.packages.brew <object>
+Explain: profile.spec.packages.brew
   Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.
+
+type  <object>
 
 Fields
   casks     <[]string> — Homebrew casks (GUI applications) to install.

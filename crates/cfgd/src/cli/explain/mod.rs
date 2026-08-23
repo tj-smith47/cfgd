@@ -408,7 +408,7 @@ pub fn build_explain_schema_doc(schema: &ResourceSchema, recursive: bool) -> Doc
     let output = schema_to_output(schema);
     let fields: Vec<&FieldNode> = schema.fields.iter().collect();
     Doc::new()
-        .heading(format!("{} ({})", schema.name, schema.kind))
+        .heading_title("Explain", schema.name.clone())
         .paragraph(schema.description.clone())
         .kv_block([
             ("apiVersion", schema.api_version.as_str()),
@@ -456,17 +456,13 @@ pub fn build_explain_drilldown_doc(
     // this defensive against a path `resolve_field_path` accepted but this
     // walk did not (should not happen: same schema, same path).
     let node = find_field_node(&schema.fields, field_path);
-    // The heading carries the queried field's own type, so nothing below has
-    // to restate the path the user just typed as a `field` / `type` pair.
-    let mut doc = Doc::new().heading(match node {
-        Some(f) => {
-            let req = if f.required { " (required)" } else { "" };
-            format!("{path_str} <{}>{req}", f.type_desc)
-        }
-        None => path_str.clone(),
-    });
+    let mut doc = Doc::new().heading_title("Explain", path_str.clone());
     if let Some(f) = node {
         doc = doc.paragraph(f.description.clone());
+        // Same `<type> (required)` vocabulary the field rows below render, so
+        // the drill-in view and the list say a field's type the one way.
+        let req = if f.required { " (required)" } else { "" };
+        doc = doc.kv("type", format!("<{}>{req}", f.type_desc));
         let variants: Vec<&FieldNode> = f.variants.iter().collect();
         doc = doc.section_if_nonempty("Variants", &variants, |s, variants| {
             append_fields(s, variants, recursive)
