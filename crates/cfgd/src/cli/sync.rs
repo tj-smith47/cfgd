@@ -3,6 +3,12 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, OwnerLabel, Role};
 
+/// The display form of a commit id: enough to identify it, short enough to sit
+/// beside a second one on the same line.
+fn short_commit(commit: &str) -> &str {
+    &commit[..commit.len().min(12)]
+}
+
 pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Result<()> {
     printer.heading("Sync");
 
@@ -21,13 +27,23 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
 
     {
         let repo_sec = printer.section("Local Repo");
+        // The repo being pulled is the config DIRECTORY, which the `Config` row
+        // above names only a file inside of — and a pull failure otherwise
+        // reports a remote nothing on screen says where to look for.
+        repo_sec.kv("Path", config_dir.display_posix());
         let sp = repo_sec.spinner("Pulling from remote");
         match cfgd_core::daemon::git_pull_sync(&config_dir) {
-            Ok(true) => {
-                sp.finish_ok("Pulled new changes from remote");
+            Ok(Some(movement)) => {
+                sp.finish_ok("Pulled new changes from remote")
+                    .detail(format!(
+                        "commit: {} {} {}",
+                        short_commit(&movement.from),
+                        printer.arrow(),
+                        short_commit(&movement.to)
+                    ));
                 sync_payload.local_pulled = true;
             }
-            Ok(false) => {
+            Ok(None) => {
                 sp.finish_ok("Already up to date");
             }
             Err(e) => {
@@ -61,6 +77,9 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
 
         for source_spec in &cfg.spec.sources {
             let source_dir = cache_dir.join(&source_spec.name);
+            // Read before the fetch: afterwards the checkout holds only where it
+            // landed, and the line below has to say where it came from.
+            let old_commit = SourceManager::head_commit(&source_dir);
             let old_manifest = if source_dir.exists() {
                 match mgr.parse_manifest(&source_spec.name, &source_dir) {
                     Ok(m) => Some(m),
@@ -114,12 +133,20 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                             }
                         });
 
-                        let commit_short = cached
-                            .last_commit
-                            .as_deref()
-                            .map(|c| &c[..c.len().min(12)])
-                            .unwrap_or("unknown")
-                            .to_string();
+                        // A ref that moved says so; one that did not names the
+                        // commit it stayed on, rather than an arrow from a
+                        // hash to itself.
+                        let commit_detail =
+                            match (old_commit.as_deref(), cached.last_commit.as_deref()) {
+                                (Some(old), Some(new)) if old != new => format!(
+                                    "commit: {} {} {}",
+                                    short_commit(old),
+                                    printer.arrow(),
+                                    short_commit(new)
+                                ),
+                                (_, Some(new)) => format!("commit: {}", short_commit(new)),
+                                (_, None) => "commit: unknown".to_string(),
+                            };
 
                         let had_perm_changes = perm_changes.is_some();
                         let proceed = if let Some(perm_changes) = perm_changes {
@@ -154,8 +181,7 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                                 }
                             }
                         } else {
-                            sp.finish_ok("synced")
-                                .detail(format!("commit: {}", commit_short));
+                            sp.finish_ok("synced").detail(commit_detail.clone());
                             true
                         };
 
@@ -165,9 +191,7 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                             // line so human consumers see "'X' synced —
                             // commit: <hash>".
                             if had_perm_changes {
-                                owner
-                                    .status(Role::Ok, "synced")
-                                    .detail(format!("commit: {}", commit_short));
+                                owner.status(Role::Ok, "synced").detail(commit_detail);
                             }
 
                             // Record the fetch in the state store, the same way

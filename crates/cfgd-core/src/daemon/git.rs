@@ -1,9 +1,22 @@
 use super::*;
 
-pub(crate) fn git_pull(repo_path: &Path) -> std::result::Result<bool, String> {
+/// A fast-forward a pull performed: the commit the local branch left, and the
+/// one it landed on.
+///
+/// Reported rather than collapsed to a bool because a sync that says only "new
+/// changes" leaves the reader with no way to tell WHICH changes arrived, and
+/// both ids are already in hand at the moment the ref moves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefMovement {
+    pub from: String,
+    pub to: String,
+}
+
+pub(crate) fn git_pull(repo_path: &Path) -> std::result::Result<Option<RefMovement>, String> {
     let repo = git2::Repository::open(repo_path).map_err(|e| format!("open repo: {}", e))?;
 
     let head = repo.head().map_err(|e| format!("get HEAD: {}", e))?;
+    let old_commit = head.target().map(|oid| oid.to_string());
     let branch_name = head
         .shorthand()
         .ok()
@@ -49,7 +62,7 @@ pub(crate) fn git_pull(repo_path: &Path) -> std::result::Result<bool, String> {
         .map_err(|e| format!("merge analysis: {}", e))?;
 
     if analysis.is_up_to_date() {
-        return Ok(false);
+        return Ok(None);
     }
 
     if analysis.is_fast_forward() {
@@ -64,7 +77,12 @@ pub(crate) fn git_pull(repo_path: &Path) -> std::result::Result<bool, String> {
             .map_err(|e| format!("set HEAD: {}", e))?;
         repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
             .map_err(|e| format!("checkout: {}", e))?;
-        return Ok(true);
+        return Ok(Some(RefMovement {
+            // A branch with no target is unborn, which cannot fast-forward, so
+            // the fallback is unreachable rather than a stand-in for a real id.
+            from: old_commit.unwrap_or_default(),
+            to: fetch_commit.id().to_string(),
+        }));
     }
 
     Err("cannot fast-forward — remote has diverged".to_string())
@@ -168,6 +186,6 @@ pub(crate) fn git_auto_commit_push(repo_path: &Path) -> std::result::Result<bool
 }
 // --- Public sync functions for CLI commands ---
 
-pub fn git_pull_sync(repo_path: &Path) -> std::result::Result<bool, String> {
+pub fn git_pull_sync(repo_path: &Path) -> std::result::Result<Option<RefMovement>, String> {
     git_pull(repo_path)
 }

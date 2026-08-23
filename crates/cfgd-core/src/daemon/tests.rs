@@ -5142,10 +5142,10 @@ fn git_pull_no_remote_returns_up_to_date() {
     // Now pull — should be up-to-date since we just pushed
     let result = git_pull(&work_dir);
     assert!(result.is_ok(), "git_pull failed: {:?}", result);
-    assert!(!result.unwrap(), "expected no changes");
+    assert!(result.unwrap().is_none(), "expected no changes");
 }
 
-// --- git_pull: repo with new remote commits returns Ok(true) ---
+// --- git_pull: repo with new remote commits reports the ref movement ---
 
 #[test]
 fn git_pull_with_remote_changes_returns_true() {
@@ -5213,9 +5213,25 @@ fn git_pull_with_remote_changes_returns_true() {
     }
 
     // Now git_pull in work_dir should detect changes
+    let before = git2::Repository::open(&work_dir)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .unwrap()
+        .to_string();
+    let pushed = pusher.head().unwrap().target().unwrap().to_string();
     let result = git_pull(&work_dir);
     assert!(result.is_ok(), "git_pull failed: {:?}", result);
-    assert!(result.unwrap(), "expected changes from remote");
+    let movement = result.unwrap().expect("expected changes from remote");
+    assert_eq!(
+        movement,
+        RefMovement {
+            from: before,
+            to: pushed
+        },
+        "the reported movement must be the commit the branch left and the one it landed on"
+    );
 
     // Verify the new file exists after pull
     assert!(
@@ -6821,7 +6837,7 @@ fn git_pull_sync_clean_repo_no_changes() {
 
     let result = git_pull_sync(&work_dir);
     assert!(result.is_ok());
-    assert!(!result.unwrap(), "should be up to date");
+    assert!(result.unwrap().is_none(), "should be up to date");
 }
 
 // --- Notifier: all methods construct without panic ---

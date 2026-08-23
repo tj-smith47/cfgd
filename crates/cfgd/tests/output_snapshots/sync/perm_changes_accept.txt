@@ -3,6 +3,7 @@ Sync
   Profile  tiny
 
 Local Repo
+  Path  <CONFIG_DIR>
   ⚠ Pull failed — open repo: could not find repository at '<CONFIG_DIR>'; class=Repository (6); code=NotFound (-3)
 
 Sources
@@ -10,6 +11,6 @@ Sources
     ⚠ permission changes need approval
     Permission Changes
       - Locked items increased from 0 to 2
-    ✓ synced — commit: <COMMIT>
+    ✓ synced — commit: <COMMIT> → <COMMIT>
 
 ⊙ Sources updated. Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'

@@ -27,7 +27,7 @@ pub(crate) async fn handle_sync(
         // test-home override must survive the thread hop
         let pull_result = crate::spawn_blocking_with_test_home(move || git_pull(&repo)).await;
         match pull_result {
-            Ok(Ok(true)) => {
+            Ok(Ok(Some(movement))) => {
                 // Verify signature on new HEAD after pull if required
                 if require_signed_commits && !allow_unsigned {
                     let src = source_name.to_string();
@@ -58,10 +58,14 @@ pub(crate) async fn handle_sync(
                         }
                     }
                 }
-                tracing::info!("sync: pulled new changes from remote");
+                tracing::info!(
+                    from = %movement.from,
+                    to = %movement.to,
+                    "sync: pulled new changes from remote"
+                );
                 changes = true;
             }
-            Ok(Ok(false)) => tracing::debug!("sync: already up to date"),
+            Ok(Ok(None)) => tracing::debug!("sync: already up to date"),
             Ok(Err(e)) => tracing::warn!(error = %e, "sync: pull failed"),
             Err(e) => tracing::error!(error = %e, "sync: pull task panicked"),
         }

@@ -1,5 +1,6 @@
 use super::*;
 
+use cfgd_core::daemon::RefMovement;
 use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_pull(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
@@ -17,7 +18,7 @@ pub fn cmd_pull(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 /// Render the streaming spinner + buffered Doc for a `git_pull_sync` result.
 /// Heading is emitted by the caller so this helper composes inside both real
 /// `cmd_pull` and snapshot tests that stub the result.
-pub fn render_pull(printer: &Printer, pull_result: &Result<bool, String>) {
+pub fn render_pull(printer: &Printer, pull_result: &Result<Option<RefMovement>, String>) {
     let sp = printer.spinner("Pulling from remote");
     let (role, msg, status, err) = pull_status_from_result(pull_result);
     match role {
@@ -38,11 +39,11 @@ pub fn render_pull(printer: &Printer, pull_result: &Result<bool, String>) {
 }
 
 fn pull_status_from_result(
-    result: &Result<bool, String>,
+    result: &Result<Option<RefMovement>, String>,
 ) -> (Role, &'static str, &'static str, Option<String>) {
     match result {
-        Ok(true) => (Role::Ok, "Pulled new changes from remote", "pulled", None),
-        Ok(false) => (Role::Ok, "Already up to date", "up_to_date", None),
+        Ok(Some(_)) => (Role::Ok, "Pulled new changes from remote", "pulled", None),
+        Ok(None) => (Role::Ok, "Already up to date", "up_to_date", None),
         Err(e) => (Role::Warn, "Pull failed", "failed", Some(e.clone())),
     }
 }

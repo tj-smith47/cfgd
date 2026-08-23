@@ -1102,8 +1102,10 @@ impl SourceManager {
         Ok(())
     }
 
-    /// Get the HEAD commit hash for a repo.
-    fn head_commit(source_dir: &Path) -> Option<String> {
+    /// Get the HEAD commit hash for a repo. `None` when the path is no
+    /// checkout yet, which is how a caller asking BEFORE a fetch learns there
+    /// was nothing to move from.
+    pub fn head_commit(source_dir: &Path) -> Option<String> {
         let repo = Repository::open(source_dir).ok()?;
         let head = repo.head().ok()?;
         head.target().map(|oid| oid.to_string())

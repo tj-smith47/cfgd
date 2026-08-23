@@ -52,10 +52,17 @@ fn normalize_tempdir_paths(raw: &str, config_dir: &Path) -> String {
 /// Replace the commit short-hash (12 hex chars) with a stable placeholder so
 /// goldens don't drift across runs.
 fn normalize_commit_hashes(raw: &str) -> String {
-    let needle = "commit: ";
+    // A ref MOVEMENT renders two hashes on one line (`commit: <old> → <new>`),
+    // so the scan anchors on the arrow as well as on the label. Each anchor
+    // only folds what actually is a hash, so an arrow elsewhere is untouched.
+    const NEEDLES: [&str; 2] = ["commit: ", "→ "];
     let mut out = String::with_capacity(raw.len());
     let mut rest = raw;
-    while let Some(idx) = rest.find(needle) {
+    while let Some((idx, needle)) = NEEDLES
+        .iter()
+        .filter_map(|n| rest.find(n).map(|i| (i, *n)))
+        .min_by_key(|(i, _)| *i)
+    {
         let after = idx + needle.len();
         out.push_str(&rest[..after]);
         let tail = &rest[after..];
@@ -174,6 +181,10 @@ fn sync_perm_changes_accept_human() {
     drop(printer);
 
     let raw = buf.lock().unwrap().clone();
+    // The golden folds both hashes to one placeholder, so the claim that the
+    // two ENDS of the movement differ can only be made here, on the capture
+    // that still holds them.
+    assert_movement_ends_differ(&strip_ansi(&raw));
     let normalized = normalize_tempdir_paths(&raw, config_dir.path());
     let normalized = normalize_commit_hashes(&normalized);
     let stripped = strip_ansi(&normalized);
@@ -181,6 +192,25 @@ fn sync_perm_changes_accept_human() {
         Path::new(SNAPSHOT_ROOT),
         "sync/perm_changes_accept.txt",
         &stripped,
+    );
+}
+
+/// Assert the one `commit: <old> → <new>` line names two different commits.
+fn assert_movement_ends_differ(human: &str) {
+    let line = human
+        .lines()
+        .find(|l| l.contains("commit: "))
+        .unwrap_or_else(|| panic!("no commit line in:\n{human}"));
+    let detail = line.split("commit: ").nth(1).expect("commit detail");
+    let ends: Vec<&str> = detail.split(" → ").collect();
+    assert_eq!(
+        ends.len(),
+        2,
+        "expected a two-ended movement, got: {detail}"
+    );
+    assert_ne!(
+        ends[0], ends[1],
+        "a ref that did not move must render one commit, never an arrow to itself"
     );
 }
 

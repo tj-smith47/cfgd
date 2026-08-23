@@ -15,6 +15,7 @@ use std::path::Path;
 use cfgd::cli::output_types::PullOutput;
 use cfgd::cli::pull::{build_pull_doc, cmd_pull, render_pull};
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
+use cfgd_core::daemon::RefMovement;
 use cfgd_core::output::Printer;
 use pretty_assertions::assert_eq;
 
@@ -29,12 +30,18 @@ fn pulled_output() -> PullOutput {
     }
 }
 
-/// Stubbed `Ok(true)` — new commits were pulled.
+/// Stubbed fast-forward — new commits were pulled.
 #[test]
 fn pull_pulled_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.heading("Pull");
-    render_pull(&printer, &Ok(true));
+    render_pull(
+        &printer,
+        &Ok(Some(RefMovement {
+            from: "1111111111111111111111111111111111111111".to_string(),
+            to: "2222222222222222222222222222222222222222".to_string(),
+        })),
+    );
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -58,12 +65,12 @@ fn pull_pulled_json() {
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "pull/pulled.json");
 }
 
-/// Stubbed `Ok(false)` — remote was up to date, no fast-forward.
+/// Stubbed no-op — remote was up to date, no fast-forward.
 #[test]
 fn pull_up_to_date_human() {
     let (printer, cap) = Printer::for_test_doc();
     printer.heading("Pull");
-    render_pull(&printer, &Ok(false));
+    render_pull(&printer, &Ok(None));
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
