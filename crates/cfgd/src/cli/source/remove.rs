@@ -169,9 +169,17 @@ pub fn cmd_source_remove(
         let modified = hand_modified_files(&resources);
         if !modified.is_empty() {
             for path in &modified {
+                // The confirm below approves exactly these rows, so the path
+                // escapes rather than leaving it to the renderer's fold, which
+                // STRIPS: an operator ruling on a path carrying `\x1b[2K` has
+                // to see those bytes. Same policy as `cli/sync.rs`'s
+                // permission-change bullets.
                 printer.status_simple(
                     Role::Warn,
-                    format!("Modified since cfgd deployed it: {path}"),
+                    format!(
+                        "Modified since cfgd deployed it: {}",
+                        cfgd_core::escape_control_chars(path)
+                    ),
                 );
             }
             let question = format!(

@@ -203,15 +203,6 @@ pub(crate) fn count_policy_items(items: &config::PolicyItems) -> usize {
     count
 }
 
-/// Append a per-source breakdown of pending decisions to a [`SectionBuilder`].
-///
-/// Grouped by source name (BTreeMap → alphabetical order). Each source becomes
-/// a nested subsection headed by its `source:<name>` owner token, whose first
-/// status line carries the count and whose remaining lines list the per-item
-/// tier/resource/summary triplet. Returns the augmented builder so callers can
-/// chain further composition.
-///
-/// The single renderer behind both `cfgd decide`'s listing and `cfgd status`'s
 /// The tier word as it opens a pending-decision status subject, TitleCased to
 /// match every other subject-opening word on the same dashboard.
 ///
@@ -228,6 +219,15 @@ fn title_cased_tier(tier: &str) -> String {
     }
 }
 
+/// Append a per-source breakdown of pending decisions to a [`SectionBuilder`].
+///
+/// Grouped by source name (BTreeMap → alphabetical order). Each source becomes
+/// a nested subsection headed by its `source:<name>` owner token, whose first
+/// status line carries the count and whose remaining lines list the per-item
+/// tier/resource/summary triplet. Returns the augmented builder so callers can
+/// chain further composition.
+///
+/// The single renderer behind both `cfgd decide`'s listing and `cfgd status`'s
 /// Pending Decisions section: the same rows under two headings would let one
 /// screen's grammar drift from the other's.
 pub(crate) fn build_pending_decisions_table_section(
