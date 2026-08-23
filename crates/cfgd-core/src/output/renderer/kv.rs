@@ -400,6 +400,53 @@ mod tests {
         );
     }
 
+    /// Colour is a coat, never a column: the opening prefix carries the key's
+    /// SGR, and measuring that as text wraps every styled row ~13 columns
+    /// early — the default path on any colour terminal, and invisible to every
+    /// other test here because a capture pins colour off.
+    #[test]
+    fn colour_does_not_move_the_wrap_point() {
+        let rows = [(
+            "cfgd apply".to_string(),
+            "reconcile every declared surface on this machine".to_string(),
+        )];
+        let (plain, plain_sink, plain_buf) = narrow(40);
+        plain.render_command_list(&plain_sink, 0, &rows);
+
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = NarrowSink(StringSink(buf.clone()), 40);
+        let colored = Renderer::new(Theme::default().with_colors(true), Verbosity::Normal);
+        colored.render_command_list(&sink, 0, &rows);
+
+        assert!(
+            // raw-capture-ok: the claim IS that SGR was emitted, which a stripping read cannot see
+            buf.lock().expect("capture").contains('\u{1b}'),
+            "the colour-on render carried no SGR, so this proves nothing"
+        );
+        assert_eq!(
+            crate::test_helpers::captured_text(&buf),
+            crate::test_helpers::captured_text(&plain_buf),
+            "styling changed the layout"
+        );
+    }
+
+    /// A hang deep enough to leave no usable column chops words mid-way in a
+    /// phantom column; the row is left for the terminal's own hard wrap.
+    #[test]
+    fn a_hang_with_no_usable_column_leaves_the_row_unwrapped() {
+        let (r, sink, buf) = narrow(60);
+        r.render_command_list(
+            &sink,
+            0,
+            &[(
+                "cfgd module registry add https://example".to_string(),
+                "register a module registry and refresh its index".to_string(),
+            )],
+        );
+        let out = crate::test_helpers::captured_text(&buf);
+        assert_eq!(out.lines().count(), 1, "expected no wrap, got: {out:?}");
+    }
+
     /// A row with no description renders its command alone: the em-dash would
     /// introduce nothing, and the padding ahead of it would be trailing
     /// whitespace on the line.

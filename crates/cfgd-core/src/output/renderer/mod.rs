@@ -670,24 +670,37 @@ impl Emitting<'_> {
     /// Collect a prose paragraph at `depth`: the folded text, wrapped, with
     /// every continuation flush to the same column the first line starts at.
     ///
-    /// No marker, so `wrap_body`'s marker-column hang resolves to the plain
-    /// indent — which is what body text wants: a sentence's tail belongs in
-    /// the same column its first word is in.
+    /// Laid out through `wrap_segment` with the SAME prefix on both sides,
+    /// never through `wrap_body`: `wrap_body` reads a marker column off the
+    /// first word, so a sentence opening with a one-column word ("A reusable
+    /// unit of…") would hang its continuations two columns in as though the
+    /// `A` were a glyph.
     ///
     /// Wrapped first and painted after, one physical line at a time (the
     /// shape `render_note` uses): every row then opens and closes its own
     /// style run, instead of leaving one run hanging open across the rows
     /// between the first and the last.
     pub(crate) fn render_paragraph(&mut self, depth: usize, text: &str) {
+        let folded = cursor_safe(text);
+        if folded.trim().is_empty() {
+            return;
+        }
         let prefix = self.open_aligned_block(depth, None);
-        // Every row `wrap_body` returns for a marker-less line opens with
-        // exactly this prefix, and it is ASCII spaces, so the split is by
-        // byte length.
+        // Every row `wrap_segment` returns opens with exactly this prefix, and
+        // it is ASCII spaces, so the split is by byte length.
         let indent = prefix.len();
-        for physical in wrap::wrap_body(&cursor_safe(text), &prefix, self.wrap_cols) {
-            let (lead, body) = physical.split_at(indent);
-            self.out
-                .push(format!("{lead}{}", self.theme.muted.apply_to(body)));
+        for logical in folded.split('\n') {
+            // A blank line separates paragraphs; indenting it would leave
+            // trailing whitespace with nothing under it.
+            if logical.trim().is_empty() {
+                self.out.push(String::new());
+                continue;
+            }
+            for physical in wrap::wrap_segment(logical, &prefix, &prefix, self.wrap_cols) {
+                let (lead, body) = physical.split_at(indent);
+                self.out
+                    .push(format!("{lead}{}", self.theme.muted.apply_to(body)));
+            }
         }
         self.mark_top_level_group(TopGroup::Paragraph);
     }
@@ -1228,18 +1241,11 @@ mod tests {
     #[test]
     fn a_wrapped_paragraph_keeps_every_line_in_one_column() {
         let buf = Arc::new(Mutex::new(String::new()));
-        struct Narrow(StringSink, usize);
-        impl Writer for Narrow {
-            fn write_line(&self, text: &str) {
-                self.0.write_line(text);
-            }
-            fn wrap_columns(&self) -> Option<usize> {
-                Some(self.1)
-            }
-        }
-        let sink = Narrow(StringSink(buf.clone()), 30);
+        let sink = NarrowSink(StringSink(buf.clone()), 30);
         let r = Renderer::new(Theme::default(), Verbosity::Normal);
-        r.render_paragraph(&sink, 1, "alpha bravo charlie delta echo foxtrot");
+        // A one-column first word is what `wrap_body` reads as a glyph, and
+        // every production description opens with one ("A reusable unit of…").
+        r.render_paragraph(&sink, 1, "A bravo charlie delta echo foxtrot golf");
         let out = crate::test_helpers::captured_text(&buf);
         let lines: Vec<&str> = out.lines().collect();
         assert!(lines.len() > 1, "expected a wrap at 30 columns: {out:?}");
@@ -1249,6 +1255,25 @@ mod tests {
                 "line off the paragraph's column: {line:?}"
             );
         }
+    }
+
+    /// A blank interior line is a paragraph break, and the row carrying it has
+    /// no prefix to split off — the reason the layout runs per logical line.
+    #[test]
+    fn a_paragraph_break_survives_an_indented_paragraph() {
+        let (r, sink, buf) = capture();
+        r.render_paragraph(&sink, 1, "first\n\nsecond");
+        let out = crate::test_helpers::captured_text(&buf);
+        assert_eq!(out, "  first\n\n  second\n", "got: {out:?}");
+    }
+
+    /// The slot owns the invariant, not one builder: an empty description
+    /// renders nothing rather than a line of indent.
+    #[test]
+    fn an_empty_paragraph_renders_nothing() {
+        let (r, sink, buf) = capture();
+        r.render_paragraph(&sink, 1, "   ");
+        assert_eq!(crate::test_helpers::captured_text(&buf), "");
     }
 
     #[test]

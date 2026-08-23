@@ -74,6 +74,14 @@ fn display_width(s: &str) -> usize {
     s.chars().filter_map(UnicodeWidthChar::width).sum()
 }
 
+/// Columns a prefix occupies once its styling is discounted. A prefix may
+/// carry SGR — a `command_list`'s opening holds its key's colour — and
+/// `display_width` drops only the `\x1b` itself, counting `[38;5;212m` as
+/// thirteen columns of text and wrapping the row that far early.
+fn visible_width(s: &str) -> usize {
+    display_width(&super::super::strip_ansi(s))
+}
+
 /// Clamp `text` to `max` display columns, marking the cut with `…`.
 ///
 /// For a line that must stay one physical line no matter what — a spinner
@@ -147,12 +155,19 @@ pub(crate) fn wrap_segment(
     cont_prefix: &str,
     cols: Option<usize>,
 ) -> Vec<String> {
-    let prefix_width = display_width(first_prefix);
+    let prefix_width = visible_width(first_prefix);
+    let cont_width = visible_width(cont_prefix);
     let body_width = display_width(&super::super::strip_ansi(body));
     let Some(cols) = cols else {
         return vec![format!("{first_prefix}{body}")];
     };
-    if cols < MIN_WRAP_WIDTH || prefix_width + body_width <= cols {
+    // A hang taking more than half the terminal leaves a sliver too narrow to
+    // hold a word, so the wrap chops words mid-way in a phantom column; the
+    // terminal's own hard wrap is the lesser evil, and the row is left alone.
+    // The test is proportional rather than `MIN_WRAP_WIDTH`, which describes a
+    // whole line: measured against the remainder, any hang at all would strand
+    // a 24-column terminal unwrapped.
+    if cols < MIN_WRAP_WIDTH || prefix_width + body_width <= cols || cont_width * 2 > cols {
         return vec![format!("{first_prefix}{body}")];
     }
 
@@ -221,7 +236,7 @@ pub(crate) fn wrap_segment(
                 wrote_row = true;
                 current = tail;
             }
-            limit = cols.saturating_sub(display_width(if wrote_row { hang } else { first_prefix }));
+            limit = cols.saturating_sub(if wrote_row { cont_width } else { prefix_width });
             current_width = super::super::strip_ansi(&current)
                 .chars()
                 .filter_map(UnicodeWidthChar::width)
