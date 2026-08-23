@@ -281,7 +281,7 @@ pub fn env_verify_results(
         platform,
     ) {
         match target {
-            EnvTarget::ManagedFile { path, content } => {
+            EnvTarget::ManagedFile { path, content, .. } => {
                 if !primary_checked {
                     primary_checked = true;
                     verify_env_items(
@@ -400,17 +400,25 @@ pub fn env_item_declared_line(
     resource_id: &str,
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
+    modules: &[ResolvedModule],
 ) -> Option<String> {
     let platform = EnvPlatform::current();
+    // The same merge the write and the verify pass ran, so the line shown is
+    // the line the file must hold — including the ` # module:<name>` comment a
+    // module-declared entry carries, which is part of what verify matched on.
+    // A module's entries are not in `env`/`aliases` at all (those are the
+    // profile's own), so without the merge a module-owned row could only ever
+    // answer `None`.
+    let (merged, merged_aliases, origins) = merge_module_env_aliases(env, aliases, modules);
     match resource_type {
-        "env-var" => env
+        "env-var" => merged
             .iter()
             .find(|e| e.name == resource_id)
-            .and_then(|e| super::env_files::primary_env_var_line(e, platform, &Default::default())),
-        "alias" => aliases
+            .and_then(|e| super::env_files::primary_env_var_line(e, platform, &origins)),
+        "alias" => merged_aliases
             .iter()
             .find(|a| a.name == resource_id)
-            .and_then(|a| super::env_files::primary_alias_line(a, platform, &Default::default())),
+            .and_then(|a| super::env_files::primary_alias_line(a, platform, &origins)),
         _ => None,
     }
 }
@@ -427,8 +435,9 @@ pub fn env_item_display_values(
     r: &VerifyResult,
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
+    modules: &[ResolvedModule],
 ) -> (String, String) {
-    match env_item_declared_line(&r.resource_type, &r.resource_id, env, aliases) {
+    match env_item_declared_line(&r.resource_type, &r.resource_id, env, aliases, modules) {
         Some(line) => (line, r.actual.clone()),
         None => (r.expected.clone(), r.actual.clone()),
     }

@@ -126,14 +126,13 @@ pub fn build_log_doc(output: &LogOutput) -> Doc {
                     record.id.to_string(),
                     record.timestamp.clone(),
                     // What the run was scoped to: a profile name, or the
-                    // `module:<name>` list an isolated run records instead. An
-                    // empty cell is a scope nothing could name — never a
-                    // placeholder standing in for one.
-                    if record.profile.trim().is_empty() {
-                        "-".to_string()
-                    } else {
-                        record.profile.clone()
-                    },
+                    // `module:<name>` list an isolated run records instead.
+                    // Judged by the same predicate the status dashboard uses,
+                    // so a legacy row's `unknown` placeholder is refused in
+                    // one place rather than in two that can disagree.
+                    super::status::derivable_profile(&record.profile)
+                        .unwrap_or("-")
+                        .to_string(),
                     record.status.human_str().to_string(),
                     record.summary.clone().unwrap_or_else(|| "-".into()),
                 ]
@@ -274,21 +273,30 @@ mod tests {
 
     /// The Scope column renders what the run was scoped to. A run that named
     /// neither a profile nor a module leaves an empty cell marker, never a
-    /// placeholder word standing in for a scope nothing has.
+    /// placeholder word standing in for a scope nothing has — and a row a
+    /// PREVIOUS cfgd wrote holds the literal `unknown` for exactly that case,
+    /// so both spellings of "nothing" are checked here.
     #[test]
     fn log_scope_column_renders_a_dash_for_a_run_that_named_nothing() {
-        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        let mut output = in_progress_log();
-        output.entries[0].profile = String::new();
-        printer.emit(build_log_doc(&output));
-        drop(printer);
+        for recorded in ["", "unknown"] {
+            let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+            let mut output = in_progress_log();
+            output.entries[0].profile = recorded.to_string();
+            printer.emit(build_log_doc(&output));
+            drop(printer);
 
-        let out = cfgd_core::test_helpers::captured_text(&buf);
-        assert!(out.contains("Scope"), "the column is named Scope: {out}");
-        assert!(
-            !out.contains("unknown"),
-            "an unnamed scope must not render a placeholder word: {out}"
-        );
+            let out = cfgd_core::test_helpers::captured_text(&buf);
+            assert!(out.contains("Scope"), "the column is named Scope: {out}");
+            assert!(
+                !out.contains("unknown"),
+                "a scope nothing named must not render a placeholder word \
+                 (recorded {recorded:?}): {out}"
+            );
+            assert!(
+                out.contains(" - "),
+                "the cell falls back to the empty marker (recorded {recorded:?}): {out}"
+            );
+        }
     }
 
     /// A module-scoped run records the modules it ran, and the column shows

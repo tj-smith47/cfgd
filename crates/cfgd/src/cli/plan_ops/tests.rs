@@ -3981,9 +3981,10 @@ fn a_settled_conflict_sweep_narrates_the_owner_it_is_reading() {
     drop(printer);
 
     let out = cfgd_core::test_helpers::captured_text(&drawn);
+    let label = super::sweep_label(&cfgd_core::reconciler::Owner::module("mymod"));
     assert!(
-        out.contains("Checking existing files for module:mymod"),
-        "the planning bar must name the owner it is reading, got: {out}"
+        out.contains(&label),
+        "the planning bar must name the owner it is reading ({label}), got: {out}"
     );
 }
 
@@ -4015,8 +4016,9 @@ fn an_unsettled_conflict_sweep_opens_no_bar() {
     drop(printer);
 
     let out = cfgd_core::test_helpers::captured_text(&drawn);
+    let label = super::sweep_label(&cfgd_core::reconciler::Owner::module("mymod"));
     assert!(
-        !out.contains("Checking existing files for"),
-        "a prompting sweep must not animate a bar under the prompt, got: {out}"
+        !out.contains(&label),
+        "a prompting sweep must not animate a bar under the prompt ({label}), got: {out}"
     );
 }

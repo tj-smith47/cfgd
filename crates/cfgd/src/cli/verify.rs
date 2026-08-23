@@ -138,8 +138,12 @@ pub fn cmd_verify(
     // returned. Recomputing here is exactly `diff`'s "opaque markers never
     // carry the declared value" rule applied to `verify`'s own render.
     for r in &mut results {
-        let (expected, actual) =
-            reconciler::env_item_display_values(r, &resolved.merged.env, &resolved.merged.aliases);
+        let (expected, actual) = reconciler::env_item_display_values(
+            r,
+            &resolved.merged.env,
+            &resolved.merged.aliases,
+            &resolved_modules,
+        );
         r.expected = expected;
         r.actual = actual;
     }
@@ -398,9 +402,14 @@ mod tests {
             name: "EDITOR".to_string(),
             value: "vim".to_string(),
         }];
-        let declared_line =
-            cfgd_core::reconciler::env_item_declared_line("env-var", "EDITOR", &declared_env, &[])
-                .expect("EDITOR renders a declared line");
+        let declared_line = cfgd_core::reconciler::env_item_declared_line(
+            "env-var",
+            "EDITOR",
+            &declared_env,
+            &[],
+            &[],
+        )
+        .expect("EDITOR renders a declared line");
 
         let state_dir = tmp.path().join("state");
         let mut cli = make_cli(config_path);

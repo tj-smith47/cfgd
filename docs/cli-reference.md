@@ -888,6 +888,12 @@ cfgd log --show-output 42   # show captured script output for apply #42
 The `Scope` column names what each run was scoped to: the profile it applied, or the
 `module:<name>` list a `--module` run isolated itself to. A run that named neither shows `-`.
 
+In `-o json` that value stays in the `profile` field (`cfgd log -o json`, and
+`.lastApply.profile` in `cfgd status -o json`): the field name is a wire contract and
+does not change with the column heading. Read it as the run's scope, not as a profile
+name — it holds `module:nvim` for an isolated run and an empty string for a run that
+resolved no profile, and older rows may still hold the literal `unknown`.
+
 ### `cfgd rollback <apply-id>`
 
 Restore the file backups cfgd took before a previous apply, undoing that apply's file writes.

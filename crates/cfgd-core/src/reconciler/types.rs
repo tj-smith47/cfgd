@@ -103,7 +103,10 @@ pub enum EnvAction {
         content: String,
         /// How many variables and aliases `content` renders, for the action
         /// line's own detail — a write that names a path says nothing about
-        /// what landed in it.
+        /// what landed in it. Counted from THIS file's own rendering, never
+        /// from the run's merged totals: an `environment.d` or launchd
+        /// surface holds no aliases at all, and a run's alias count quoted on
+        /// its write line would describe a different file.
         ///
         /// Display-only, and `#[serde(skip)]` for that reason: the plan hash is
         /// a serialization of the actions, so a counted field that reached it

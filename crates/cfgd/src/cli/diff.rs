@@ -227,6 +227,7 @@ pub fn cmd_diff(
                     &r,
                     &resolved.merged.env,
                     &resolved.merged.aliases,
+                    &resolved_modules,
                 );
                 env_group
                     .status(
@@ -566,6 +567,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                             r,
                             &full_resolved.merged.env,
                             &full_resolved.merged.aliases,
+                            &resolved_modules,
                         );
                         group
                             .status(
@@ -1000,6 +1002,7 @@ mod tests {
             "ll",
             &[],
             std::slice::from_ref(&hand_edited),
+            &[],
         )
         .expect("alias renders a declared line");
         std::fs::write(

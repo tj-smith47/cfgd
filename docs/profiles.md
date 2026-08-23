@@ -234,11 +234,11 @@ Apply
 
 Phase: Prerequisites
   cfgd:env
-    ✓ write /home/you/.cfgd.env — 1 var
+    ✓ write /home/you/.cfgd.env                       — 1 var
     ✓ inject source line into /home/you/.bashrc
     ✓ inject source line into /home/you/.zshenv
     ✓ inject source line into /home/you/.profile
-    ✓ write /home/you/.config/environment.d/cfgd.conf
+    ✓ write /home/you/.config/environment.d/cfgd.conf — 1 var
   cfgd:session
     ✓ publish 1 var to the session manager
 
@@ -246,7 +246,7 @@ Phase: Prerequisites
 
 Caveats
   cfgd:env
-    ⚠ run `source ~/.cfgd.env` — or open a new shell
+    ⚠ run `source ~/.cfgd.env`, or open a new shell
 
 # Now every entry point sees it — no re-login:
 $ ssh localhost 'echo $EDITOR'            # non-interactive ssh command
@@ -256,6 +256,9 @@ nvim
 $ systemctl --user show-environment | grep EDITOR
 EDITOR=nvim                                # systemd --user units + Wayland GUI
 ```
+
+Each write states what went into that file, and only that file: `~/.cfgd.env` carries env
+vars and aliases, while `environment.d` and the macOS LaunchAgent carry env vars alone.
 
 Each generated line names the module that declared it, so a file holding entries from
 several modules says where each came from:

@@ -1237,6 +1237,14 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
     }
 }
 
+/// The Planning bar's label while the sweep reads one owner's targets. Named
+/// so the test asserting a PROMPTING sweep opens no bar can look for the same
+/// string the narrating one writes — a bare literal in that negative goes
+/// vacuous the moment this is reworded.
+fn sweep_label(owner: &reconciler::Owner) -> String {
+    format!("Checking existing files for {}", owner.token())
+}
+
 fn sweep_unmanaged_file_targets(
     plan: &mut reconciler::Plan,
     config_dir: &Path,
@@ -1259,7 +1267,7 @@ fn sweep_unmanaged_file_targets(
     for phase in &mut plan.phases {
         for (owner, actions) in phase.groups_mut() {
             if let Some(sp) = spinner.as_deref_mut() {
-                sp.set_message(format!("Checking existing files for {}", owner.token()));
+                sp.set_message(sweep_label(owner));
             }
             let mut i = 0;
             while i < actions.len() {

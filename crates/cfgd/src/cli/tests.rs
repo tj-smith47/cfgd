@@ -23569,3 +23569,61 @@ fn a_module_scoped_apply_records_its_modules_not_a_profile_placeholder() {
         "an isolated run records the modules it ran, never a placeholder"
     );
 }
+
+/// `cmd_apply` hands the conflict sweep's reservations to the reconciler that
+/// runs the plan. Nothing else carries them: unhooked, the sweep still decides
+/// `Backup` and the write still lands, and the user's file is gone with no
+/// copy anywhere and no error to say so.
+#[test]
+fn an_adopted_file_is_copied_aside_by_a_real_apply() {
+    let (config_dir, state_dir) = setup_test_env();
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+
+    let mod_dir = config_dir.path().join("modules").join("conf-mod");
+    let files_dir = mod_dir.join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join("app.conf"), "from the module\n").unwrap();
+
+    let target_dir = tempfile::tempdir().unwrap();
+    let target = target_dir.path().join("app.conf");
+    std::fs::write(&target, "years of hand edits\n").unwrap();
+
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: conf-mod\nspec:\n  files:\n    - source: files/app.conf\n      target: {}\n      strategy: Copy\n",
+            target.display()
+        ),
+    )
+    .unwrap();
+
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let printer = test_printer();
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Backup,
+        from: None,
+        dry_run: false,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: vec!["conf-mod".to_string()],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    };
+    super::apply::cmd_apply(&cli, &printer, &args).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(target_dir.path().join("app.conf.cfgd-backup")).unwrap(),
+        "years of hand edits\n",
+        "the run copies the adopted file aside before replacing it"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "from the module\n",
+        "and the module's own content lands at the target"
+    );
+}

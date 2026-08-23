@@ -11326,7 +11326,7 @@ fn primary_managed_env_target(
     )
     .into_iter()
     .find_map(|t| match t {
-        EnvTarget::ManagedFile { path, content } => Some((path, content)),
+        EnvTarget::ManagedFile { path, content, .. } => Some((path, content)),
         _ => None,
     })
     .expect("env_targets yields a primary managed file for non-empty env/aliases")
@@ -14246,12 +14246,9 @@ fn planned_env_file_content(plan: &Plan) -> Option<String> {
         .find(|p| p.name == PhaseName::Prerequisites)?
         .actions()
         .find_map(|a| match a {
-            Action::Env(EnvAction::WriteEnvFile {
-                path,
-                content,
-                vars: 0,
-                aliases: 0,
-            }) if path.file_name() == Some(std::ffi::OsStr::new(".cfgd.env")) => {
+            Action::Env(EnvAction::WriteEnvFile { path, content, .. })
+                if path.file_name() == Some(std::ffi::OsStr::new(".cfgd.env")) =>
+            {
                 Some(content.clone())
             }
             _ => None,
@@ -14457,7 +14454,7 @@ fn env_targets_folded_path_dirs_render_into_the_fish_managed_file() {
     let fish_content = t
         .iter()
         .find_map(|target| match target {
-            EnvTarget::ManagedFile { path, content } if path.ends_with("cfgd-env.fish") => {
+            EnvTarget::ManagedFile { path, content, .. } if path.ends_with("cfgd-env.fish") => {
                 Some(content.clone())
             }
             _ => None,
@@ -14487,7 +14484,7 @@ fn env_targets_folded_path_dirs_render_into_the_powershell_managed_file() {
     let ps_content = t
         .iter()
         .find_map(|target| match target {
-            EnvTarget::ManagedFile { path, content } if path.ends_with(".cfgd-env.ps1") => {
+            EnvTarget::ManagedFile { path, content, .. } if path.ends_with(".cfgd-env.ps1") => {
                 Some(content.clone())
             }
             _ => None,
@@ -14498,6 +14495,66 @@ fn env_targets_folded_path_dirs_render_into_the_powershell_managed_file() {
             "$env:PATH = \"/home/linuxbrew/.linuxbrew/bin;/home/linuxbrew/.linuxbrew/sbin;$env:PATH\""
         ),
         "PowerShell must fold the same PATH dirs bash renders, `;`-joined: {ps_content}"
+    );
+}
+
+/// Every managed file reports what IT holds. At `envScope: All` a Linux host
+/// also writes `environment.d`, which has no alias syntax at all — a count
+/// taken from the run's merged totals would have that write claim aliases its
+/// file does not contain. An entry whose name the generator refuses is not
+/// counted either: it renders no line.
+#[test]
+fn every_managed_env_file_counts_its_own_lines() {
+    let env = vec![
+        EnvVar {
+            name: "EDITOR".to_string(),
+            value: "nvim".to_string(),
+        },
+        EnvVar {
+            name: "PAGER".to_string(),
+            value: "less".to_string(),
+        },
+        EnvVar {
+            name: "BAD NAME".to_string(),
+            value: "x".to_string(),
+        },
+    ];
+    let aliases = vec![
+        ShellAlias {
+            name: "v".to_string(),
+            command: "nvim".to_string(),
+        },
+        ShellAlias {
+            name: "bad name".to_string(),
+            command: "true".to_string(),
+        },
+    ];
+    let counts: std::collections::HashMap<String, (usize, usize)> = env_targets(
+        EnvContent::new(&env, &aliases, &[], &Default::default()),
+        EnvScope::All,
+        Path::new("/h"),
+        &env_probe(""),
+        EnvPlatform::Linux,
+    )
+    .into_iter()
+    .filter_map(|t| match t {
+        EnvTarget::ManagedFile { path, rendered, .. } => Some((
+            path.file_name()?.to_string_lossy().into_owned(),
+            (rendered.vars, rendered.aliases),
+        )),
+        _ => None,
+    })
+    .collect();
+
+    assert_eq!(
+        counts.get(".cfgd.env"),
+        Some(&(2, 1)),
+        "the shell file holds the entries whose names the generator accepted: {counts:?}"
+    );
+    assert_eq!(
+        counts.get("cfgd.conf"),
+        Some(&(2, 0)),
+        "environment.d renders env vars only: {counts:?}"
     );
 }
 
@@ -24206,6 +24263,7 @@ fn a_module_owned_env_line_written_with_its_comment_verifies_as_current() {
 
     // Seed the file from the planner itself, so the baseline is the bytes a
     // real apply writes rather than a literal that can drift from them.
+    let mut primary: Option<std::path::PathBuf> = None;
     for action in Reconciler::plan_env_with_home(
         &[],
         &[],
@@ -24219,9 +24277,13 @@ fn a_module_owned_env_line_written_with_its_comment_verifies_as_current() {
     .actions
     {
         if let Action::Env(EnvAction::WriteEnvFile { path, content, .. }) = action {
+            // The primary managed file is the first one planned, and the one
+            // the per-item verify (and its display recompute) reads.
+            primary.get_or_insert_with(|| path.clone());
             std::fs::write(path, content).unwrap();
         }
     }
+    let primary = primary.expect("the planner writes a primary managed env file");
 
     let results = super::verify::env_verify_results(
         &[],
@@ -24245,6 +24307,21 @@ fn a_module_owned_env_line_written_with_its_comment_verifies_as_current() {
             .iter()
             .any(|r| r.resource_type == "env-var" && r.resource_id == "EDITOR" && r.matches),
         "the module-owned var is checked and current: {results:?}"
+    );
+
+    // The display recompute must show the same line: a drift row quoting an
+    // expected line the file is not required to hold sends the reader to fix a
+    // difference that is not the difference.
+    let shown = super::verify::env_item_declared_line("env-var", "EDITOR", &[], &[], &modules)
+        .expect("a module-owned var renders its declared line");
+    let written = std::fs::read_to_string(&primary).unwrap();
+    assert!(
+        shown.contains("# module:nvim"),
+        "the shown line carries the provenance comment verify matched on: {shown}"
+    );
+    assert!(
+        written.lines().any(|line| line == shown),
+        "the shown line is a line the file actually holds: {shown} in {written}"
     );
 }
 

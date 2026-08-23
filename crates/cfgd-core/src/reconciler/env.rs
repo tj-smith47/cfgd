@@ -339,7 +339,11 @@ impl<'a> super::Reconciler<'a> {
         let mut primary_seen = false;
         for target in targets {
             match target {
-                EnvTarget::ManagedFile { path, content } => {
+                EnvTarget::ManagedFile {
+                    path,
+                    content,
+                    rendered,
+                } => {
                     let baseline = super::env_files::read_managed_baseline(&path);
                     let converged = baseline.as_deref() == Some(content.as_str());
                     if !primary_seen {
@@ -369,8 +373,8 @@ impl<'a> super::Reconciler<'a> {
                     actions.push(Action::Env(EnvAction::WriteEnvFile {
                         path,
                         content,
-                        vars: merged.len(),
-                        aliases: merged_aliases.len(),
+                        vars: rendered.vars,
+                        aliases: rendered.aliases,
                     }));
                 }
                 EnvTarget::SourceLine { rc_path, line } => {

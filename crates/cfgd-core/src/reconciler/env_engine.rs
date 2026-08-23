@@ -38,7 +38,16 @@ const MACOS_USER_PLIST_NAME: &str = "com.cfgd.user-environment.plist";
 /// with the expected content.
 pub(super) enum EnvTarget {
     /// A standalone cfgd-owned file — safe to overwrite wholesale.
-    ManagedFile { path: PathBuf, content: String },
+    ///
+    /// `rendered` counts what went into THIS file, not what the run merged:
+    /// the systemd `environment.d` and launchd renderings carry env vars
+    /// only, so a write line quoting the merged alias count would name
+    /// aliases the file does not hold.
+    ManagedFile {
+        path: PathBuf,
+        content: String,
+        rendered: RenderedCounts,
+    },
     /// An idempotent source-line appended into a user-owned dotfile.
     SourceLine { rc_path: PathBuf, line: String },
     /// A live-session refresh (no file; not a verified-drift surface).
@@ -323,6 +332,7 @@ fn unix_targets(
     out.push(EnvTarget::ManagedFile {
         path: home.join(".cfgd.env"),
         content: generate_env_file_content(env, aliases, path_dirs, origins),
+        rendered: RenderedCounts::of(env, aliases),
     });
     let interactive_rc = if probe.shell.contains("zsh") {
         home.join(".zshrc")
@@ -337,6 +347,7 @@ fn unix_targets(
         out.push(EnvTarget::ManagedFile {
             path: home.join(".config/fish/conf.d/cfgd-env.fish"),
             content: generate_fish_env_content(env, aliases, path_dirs, origins),
+            rendered: RenderedCounts::of(env, aliases),
         });
     }
 
@@ -381,6 +392,7 @@ fn unix_targets(
             out.push(EnvTarget::ManagedFile {
                 path: home.join(".config/environment.d/cfgd.conf"),
                 content: generate_environment_d_content(env),
+                rendered: RenderedCounts::of(env, &[]),
             });
         }
         if platform == EnvPlatform::MacOs {
@@ -395,6 +407,7 @@ fn unix_targets(
                         .join("Library/LaunchAgents")
                         .join(MACOS_USER_PLIST_NAME),
                     content: launchd_env_plist(MACOS_USER_PLIST_LABEL, &vars),
+                    rendered: RenderedCounts::vars_only(vars.len()),
                 });
             }
         }
@@ -417,6 +430,7 @@ fn windows_targets(
     out.push(EnvTarget::ManagedFile {
         path: home.join(".cfgd-env.ps1"),
         content: generate_powershell_env_content(env, aliases, path_dirs, origins),
+        rendered: RenderedCounts::of(env, aliases),
     });
     for dir in ["Documents/PowerShell", "Documents/WindowsPowerShell"] {
         out.push(EnvTarget::SourceLine {
@@ -429,11 +443,43 @@ fn windows_targets(
         out.push(EnvTarget::ManagedFile {
             path: home.join(".cfgd.env"),
             content: generate_env_file_content(env, aliases, path_dirs, origins),
+            rendered: RenderedCounts::of(env, aliases),
         });
         out.push(EnvTarget::SourceLine {
             rc_path: home.join(".bashrc"),
             line: UNIX_SOURCE_LINE.to_string(),
         });
+    }
+}
+
+/// How many entries a generated file actually holds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct RenderedCounts {
+    pub(super) vars: usize,
+    pub(super) aliases: usize,
+}
+
+impl RenderedCounts {
+    /// What a shell generator will render from `env` and `aliases`: the
+    /// entries whose names pass the same safety filter every generator
+    /// applies before emitting a line, so the count describes the file rather
+    /// than the declaration list it was derived from.
+    fn of(env: &[EnvVar], aliases: &[ShellAlias]) -> Self {
+        Self {
+            vars: env
+                .iter()
+                .filter(|e| crate::validate_env_var_name(&e.name).is_ok())
+                .count(),
+            aliases: aliases
+                .iter()
+                .filter(|a| crate::validate_alias_name(&a.name).is_ok())
+                .count(),
+        }
+    }
+
+    /// A rendering with no alias syntax at all (`environment.d`, launchd).
+    fn vars_only(vars: usize) -> Self {
+        Self { vars, aliases: 0 }
     }
 }
 

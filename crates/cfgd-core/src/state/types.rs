@@ -183,6 +183,13 @@ mod apply_status_tests {
 pub struct ApplyRecord {
     pub id: i64,
     pub timestamp: String,
+    /// What the run was SCOPED to, which is not always a profile: an isolated
+    /// `--module` run records its `module:<name>` list, and a run that
+    /// resolved no profile records an empty string. Named `profile` because
+    /// the column and the `-o json` field are a wire contract that predates
+    /// module-scoped runs; human surfaces label it `Scope`. Rows written by an
+    /// older cfgd may still hold the literal `unknown`, which no surface
+    /// renders.
     pub profile: String,
     pub plan_hash: String,
     pub status: ApplyStatus,

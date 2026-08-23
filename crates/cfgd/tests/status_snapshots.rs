@@ -216,6 +216,7 @@ fn per_module_output() -> ModuleStatus {
         depends: vec!["base".into()],
         status: "installed".into(),
         last_applied: Some("2026-05-14T10:00:00Z".into()),
+        scope: None,
         package_state: vec![
             ModulePackageStatus {
                 name: "neovim".into(),
@@ -262,6 +263,7 @@ fn per_module_scanned_output() -> ModuleStatus {
         depends: vec!["base".into()],
         status: "installed".into(),
         last_applied: Some("2026-05-14T10:00:00Z".into()),
+        scope: None,
         package_state: vec![
             ModulePackageStatus {
                 name: "neovim".into(),

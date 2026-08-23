@@ -87,6 +87,15 @@ pub struct ModuleStatus {
     pub depends: Vec<String>,
     pub status: String,
     pub last_applied: Option<String>,
+    /// What the run that last applied this module was scoped to, when that was
+    /// an isolated `--module` run (`module:nvim`). A profile-wide run leaves it
+    /// empty: the profile applied every module it carries, and naming it here
+    /// would answer a question about the machine on a report about one module.
+    ///
+    /// Omitted rather than serialized as `null`, so a payload that has no scope
+    /// to state is byte-identical to the one this field was added to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     /// One row per DECLARED package, carrying what the machine holds — the
     /// state half of the count above. Every row reads `notScanned` unless
     /// `--scan` asked a manager.
@@ -381,7 +390,7 @@ fn render_module_drift_section(doc: Doc, drift: &[ModuleDrift], checked_live: bo
 /// RECORDED (an isolated run records its modules, and an underivable profile
 /// records nothing), and is still refused here because a store written by an
 /// older cfgd still holds rows carrying it.
-fn derivable_profile(name: &str) -> Option<&str> {
+pub(super) fn derivable_profile(name: &str) -> Option<&str> {
     match name.trim() {
         "" | "unknown" => None,
         name => Some(name),
@@ -395,7 +404,7 @@ fn derivable_profile(name: &str) -> Option<&str> {
 /// The key is decided by the value because the two are the same column: a
 /// module-scoped run has no profile, and labelling `module:nvim` as a profile
 /// would name a profile that does not exist.
-fn recorded_scope_row(recorded: &str) -> Option<(&'static str, &str)> {
+pub(super) fn recorded_scope_row(recorded: &str) -> Option<(&'static str, &str)> {
     let value = derivable_profile(recorded)?;
     let owner_prefix = format!("{}:", cfgd_core::reconciler::OwnerKind::Module.as_str());
     Some(if value.starts_with(&owner_prefix) {
@@ -570,6 +579,12 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView) ->
     let mut rows = vec![KvPair::role_valued("Status", state_word, role)];
     if let Some(last) = &output.last_applied {
         rows.push(KvPair::new("Last applied", last));
+    }
+    // Only an isolated run's scope: `recorded_scope_row` answers `Profile` for
+    // a profile-wide apply, which belongs to `cfgd status` rather than to one
+    // module's report.
+    if let Some(("Scope", scope)) = output.scope.as_deref().and_then(recorded_scope_row) {
+        rows.push(KvPair::new("Scope", scope));
     }
     // The counts are what the compact view has INSTEAD of the inventories: a
     // report that showed both would state every fact twice.
@@ -751,6 +766,7 @@ pub fn build_module_status_not_found_doc(name: &str) -> Doc {
         depends: Vec::new(),
         status: "not found".into(),
         last_applied: None,
+        scope: None,
         package_state: Vec::new(),
         deployed_files: Vec::new(),
         drift: Vec::new(),
@@ -953,6 +969,7 @@ pub(super) fn cmd_status(
                 r,
                 &resolved.merged.env,
                 &resolved.merged.aliases,
+                &resolved_modules,
             ));
         }
         drift
@@ -1053,6 +1070,14 @@ pub(super) fn cmd_status_module(
         .map(|s| s.status.clone())
         .unwrap_or_else(|| "not applied".into());
     let last_applied = state_rec.as_ref().map(|s| s.installed_at.clone());
+    // The apply this module's recorded state came from is what knows the scope
+    // it ran under; the module row itself records only when it landed.
+    let scope = state_rec
+        .as_ref()
+        .and_then(|s| s.last_applied)
+        .and_then(|id| state.get_apply(id).transpose())
+        .transpose()?
+        .map(|record| record.profile);
 
     // Same live, read-only re-check `diff --module` performs, and the same
     // deliberate gate as the profile-wide command: plain `status --module`
@@ -1127,6 +1152,7 @@ pub(super) fn cmd_status_module(
                             &r,
                             &resolved.merged.env,
                             &resolved.merged.aliases,
+                            &resolved_modules,
                         ),
                         owner,
                         surface: SURFACE_FILES,
@@ -1167,6 +1193,7 @@ pub(super) fn cmd_status_module(
                                     },
                                     &resolved.merged.env,
                                     &resolved.merged.aliases,
+                                    &resolved_modules,
                                 ),
                                 // The module whose resolution declared this
                                 // package, which is not always the one under
@@ -1247,6 +1274,7 @@ pub(super) fn cmd_status_module(
         declared,
         status,
         last_applied,
+        scope,
         package_state,
         deployed_files,
         drift_checked_live: do_scan,
@@ -1969,9 +1997,14 @@ mod tests {
             name: "EDITOR".to_string(),
             value: "vim".to_string(),
         }];
-        let declared_line =
-            cfgd_core::reconciler::env_item_declared_line("env-var", "EDITOR", &declared_env, &[])
-                .expect("EDITOR renders a declared line");
+        let declared_line = cfgd_core::reconciler::env_item_declared_line(
+            "env-var",
+            "EDITOR",
+            &declared_env,
+            &[],
+            &[],
+        )
+        .expect("EDITOR renders a declared line");
 
         let state_dir = tmp.path().join("state");
         std::fs::create_dir_all(&state_dir).unwrap();
@@ -2910,5 +2943,79 @@ mod tests {
         assert_eq!(super::recorded_scope_row("base"), Some(("Profile", "base")));
         assert_eq!(super::recorded_scope_row("unknown"), None);
         assert_eq!(super::recorded_scope_row(""), None);
+    }
+
+    fn module_status_with_scope(scope: Option<&str>) -> ModuleStatus {
+        ModuleStatus {
+            name: "nvim".into(),
+            packages: 0,
+            files: 0,
+            env: 0,
+            aliases: 0,
+            scripts: Vec::new(),
+            declared: cfgd_core::modules::ModuleSurfaces::default(),
+            system: Vec::new(),
+            depends: Vec::new(),
+            status: cfgd_core::state::MODULE_STATUS_INSTALLED.to_string(),
+            last_applied: Some("2026-05-14T10:00:00Z".into()),
+            scope: scope.map(str::to_string),
+            package_state: Vec::new(),
+            deployed_files: Vec::new(),
+            drift: Vec::new(),
+            drift_checked_live: false,
+        }
+    }
+
+    fn module_status_render(scope: Option<&str>) -> String {
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(build_module_status_doc(
+            &module_status_with_scope(scope),
+            ModuleStatusView::Compact,
+        ));
+        drop(printer);
+        cfgd_core::test_helpers::captured_text(&buf)
+    }
+
+    /// A module's report names the scope of the run that last applied it, but
+    /// only when that run was isolated to modules: a profile-wide apply is a
+    /// fact about the machine, which `cfgd status` already states, and
+    /// repeating it here would answer a question nobody asked about this
+    /// module.
+    #[test]
+    fn a_module_report_names_an_isolated_runs_scope_and_no_other() {
+        let isolated = module_status_render(Some("module:nvim"));
+        assert!(
+            isolated.contains("Scope") && isolated.contains("module:nvim"),
+            "an isolated run's scope is named: {isolated}"
+        );
+
+        for recorded in [Some("base"), Some("unknown"), Some(""), None] {
+            let out = module_status_render(recorded);
+            assert!(
+                !out.contains("Scope"),
+                "no Scope row for a recorded {recorded:?}: {out}"
+            );
+        }
+    }
+
+    /// The payload gains a field only when there is a scope to state, so every
+    /// reader of a profile-wide module report sees the object it always saw
+    /// rather than a new `null` key.
+    #[test]
+    fn a_scopeless_module_payload_carries_no_scope_key() {
+        let absent = serde_json::to_value(module_status_with_scope(None))
+            .expect("a module status serializes");
+        assert!(
+            absent.get("scope").is_none(),
+            "no scope key without a scope: {absent}"
+        );
+
+        let present = serde_json::to_value(module_status_with_scope(Some("module:nvim")))
+            .expect("a module status serializes");
+        assert_eq!(
+            present.get("scope").and_then(serde_json::Value::as_str),
+            Some("module:nvim"),
+            "an isolated run's scope reaches the payload: {present}"
+        );
     }
 }
