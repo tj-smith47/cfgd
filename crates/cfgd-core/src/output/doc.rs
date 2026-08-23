@@ -160,6 +160,23 @@ impl Doc {
         self
     }
 
+    /// `kv_block` over rows built by hand, so a row can carry an annotation
+    /// ([`KvPair::annotated`]) or a role-tinted value
+    /// ([`KvPair::role_valued`]) — the buffered counterpart of
+    /// [`crate::output::SectionGuard::kv_rows`].
+    ///
+    /// Those two slots are the ONLY ways styling reaches a kv value: the
+    /// renderer folds every key and value through
+    /// [`crate::output::cursor_safe`], which would eat a coat a caller painted
+    /// on itself. Reach for `kv_block` when no row needs one.
+    pub fn kv_rows(mut self, rows: impl IntoIterator<Item = KvPair>) -> Self {
+        let pairs: Vec<KvPair> = rows.into_iter().collect();
+        if !pairs.is_empty() {
+            self.children.push(Component::KvBlock { pairs });
+        }
+        self
+    }
+
     /// A "command — description" list (see [`Component::CommandList`]) —
     /// `kv_block`'s counterpart for a left column that is a shell command
     /// rather than a data-carrying key.
@@ -405,6 +422,16 @@ impl SectionBuilder {
         V: Into<String>,
     {
         let pairs: Vec<KvPair> = pairs.into_iter().map(|(k, v)| KvPair::new(k, v)).collect();
+        if !pairs.is_empty() {
+            self.children.push(Component::KvBlock { pairs });
+        }
+        self
+    }
+
+    /// [`Doc::kv_rows`], nested: rows built by hand so one can carry an
+    /// annotation or a role-tinted value.
+    pub fn kv_rows(mut self, rows: impl IntoIterator<Item = KvPair>) -> Self {
+        let pairs: Vec<KvPair> = rows.into_iter().collect();
         if !pairs.is_empty() {
             self.children.push(Component::KvBlock { pairs });
         }

@@ -124,6 +124,16 @@ pub struct KvPair {
     /// styled half is always the renderer's — neither can be the other.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotation: Option<String>,
+    /// The role whose theme slot tints this row's VALUE, painted by the
+    /// renderer after the fold. Same split as `annotation` and for the same
+    /// reason: a caller cannot paint a value itself, so a row that must
+    /// colour-code its value names the role and the renderer owns the coat.
+    ///
+    /// Never serialized — like [`Component::Section`]'s `owner`, the tint is
+    /// display-only and a `-o json` reader sees the same plain `value` string
+    /// with or without it.
+    #[serde(skip)]
+    pub value_role: Option<Role>,
 }
 
 impl KvPair {
@@ -132,6 +142,7 @@ impl KvPair {
             key: k.into(),
             value: v.into(),
             annotation: None,
+            value_role: None,
         }
     }
 
@@ -145,6 +156,22 @@ impl KvPair {
             key: k.into(),
             value: v.into(),
             annotation: Some(annotation.into()),
+            value_role: None,
+        }
+    }
+
+    /// A pair whose value is tinted with `role`'s theme slot by the renderer
+    /// (`Status  Drifted` in the warning colour).
+    ///
+    /// `role` is the same vocabulary a status line takes, resolved through the
+    /// one `Role` → theme mapping (`renderer::role_glyph`): `Ok` → success,
+    /// `Warn` → warning, `Fail` → error, `Skipped`/`Pending` → muted.
+    pub fn role_valued(k: impl Into<String>, v: impl Into<String>, role: Role) -> Self {
+        Self {
+            key: k.into(),
+            value: v.into(),
+            annotation: None,
+            value_role: Some(role),
         }
     }
 }

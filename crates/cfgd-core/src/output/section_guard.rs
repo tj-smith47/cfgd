@@ -60,9 +60,10 @@ impl<'p> SectionGuard<'p> {
     }
 
     /// `kv_block` over rows built by hand, so a row can carry an annotation
-    /// ([`crate::output::KvPair::annotated`]) beside its value.
+    /// ([`crate::output::KvPair::annotated`]) beside its value, or a value
+    /// tinted with a role's theme slot ([`crate::output::KvPair::role_valued`]).
     ///
-    /// The annotation slot is the ONE way styling reaches a kv value: every
+    /// Those two slots are the ONLY ways styling reaches a kv value: every
     /// key and value the renderer receives is folded through
     /// [`crate::output::cursor_safe`], which would eat a coat a caller painted
     /// on itself. Reach for `kv_block` when no row needs one.

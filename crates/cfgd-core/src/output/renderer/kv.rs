@@ -179,14 +179,26 @@ impl Emitting<'_> {
         }
     }
 
-    /// The rendered value column of one row: the folded value, plus the
-    /// annotation in the renderer's own muted coat when the row carries one.
+    /// The rendered value column of one row: the folded value, tinted with its
+    /// role's theme slot when the row carries one, plus the annotation in the
+    /// renderer's own muted coat when the row carries that.
+    ///
+    /// The tint goes on AFTER the fold, never before: `cursor_safe` strips
+    /// ANSI, so a coat applied first would be eaten by the very fold that makes
+    /// the untrusted half safe. That ordering is why the role travels in a slot
+    /// of its own rather than as a pre-painted value.
     ///
     /// An annotation with no value of its own stands alone as the row —
     /// parenthesising it would enclose the whole column and read as an aside
     /// about nothing.
     fn compose_kv_value(&self, pair: &KvPair) -> String {
-        let value = cursor_safe(&pair.value);
+        let value = match pair.value_role {
+            Some(role) if !pair.value.is_empty() => {
+                let (_, style) = super::role_glyph(self.theme, role);
+                style.apply_to(cursor_safe(&pair.value)).to_string()
+            }
+            _ => cursor_safe(&pair.value),
+        };
         let Some(annotation) = pair.annotation.as_deref().filter(|a| !a.is_empty()) else {
             return value;
         };
@@ -409,6 +421,96 @@ mod tests {
             out.contains(&theme.muted.apply_to("(skipped)").to_string()),
             "annotation is not painted with the muted slot: {out:?}"
         );
+    }
+
+    /// A role-tinted value takes the SAME theme slot the role's status glyph
+    /// does — the one `Role` → theme mapping, never a second one — and the
+    /// tint covers the value alone: the key keeps `theme.secondary` and the
+    /// gap between them stays unpainted.
+    #[test]
+    #[serial_test::serial]
+    fn a_role_valued_row_paints_its_value_with_the_roles_theme_slot() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        for (role, slot) in [
+            (Role::Ok, &theme.success),
+            (Role::Warn, &theme.warning),
+            (Role::Fail, &theme.error),
+            (Role::Skipped, &theme.muted),
+        ] {
+            let buf = Arc::new(Mutex::new(String::new()));
+            let sink = StringSink(buf.clone());
+            let r = Renderer::new(theme.clone(), Verbosity::Normal);
+            r.render_kv_block(&sink, 0, &[KvPair::role_valued("Status", "Drifted", role)]);
+            // raw-capture-ok: the claim IS the role's SGR around the value, which captured_text would strip
+            let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            assert!(
+                out.contains(&format!(
+                    "{}  {}",
+                    theme.secondary.apply_to("Status"),
+                    slot.apply_to("Drifted")
+                )),
+                "{role:?} value is not painted with its own theme slot: {out:?}"
+            );
+        }
+    }
+
+    /// Colour-only: the same row rendered without colour is byte-identical to
+    /// the plain row it would otherwise have been, so no golden moves when a
+    /// row gains a tint.
+    #[test]
+    fn a_role_valued_row_renders_identically_to_a_plain_row_without_colour() {
+        let (r, sink, buf) = capture();
+        r.render_kv_block(
+            &sink,
+            0,
+            &[KvPair::role_valued("Status", "Drifted", Role::Warn)],
+        );
+        let tinted = crate::test_helpers::captured_text(&buf);
+
+        let (r, sink, buf) = capture();
+        r.render_kv_block(&sink, 0, &[KvPair::new("Status", "Drifted")]);
+        assert_eq!(tinted, crate::test_helpers::captured_text(&buf));
+    }
+
+    /// The tint is composed AFTER the fold. Painted first, `cursor_safe` would
+    /// strip the coat off the very value the role exists to colour — so the
+    /// proof is both halves at once: the hostile bytes stand escaped INSIDE
+    /// the role's own span.
+    #[test]
+    #[serial_test::serial]
+    fn a_role_valued_row_folds_its_value_before_it_tints_it() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(theme.clone(), Verbosity::Normal);
+        r.render_kv_block(
+            &sink,
+            0,
+            &[KvPair::role_valued(
+                "Status",
+                "Drifted\r\u{1b}[2Krepainted",
+                Role::Warn,
+            )],
+        );
+        // raw-capture-ok: the claim is the fold's escapes sitting inside the renderer's own SGR
+        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            out.contains(&theme.warning.apply_to("Drifted\\x0drepainted").to_string()),
+            "the value was not folded before the tint went on: {out:?}"
+        );
+    }
+
+    /// An empty value with a role names nothing to paint, so the annotation
+    /// beside it still stands alone as the row rather than trailing an empty
+    /// styled span.
+    #[test]
+    fn a_role_on_an_empty_value_paints_nothing() {
+        let (r, sink, buf) = capture();
+        let mut pair = KvPair::annotated("Modules", "", "all skipped");
+        pair.value_role = Some(Role::Warn);
+        r.render_kv_block(&sink, 0, &[pair]);
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(out.contains("Modules  all skipped"), "got: {out:?}");
     }
 
     #[test]
