@@ -106,6 +106,12 @@ impl ModuleDeclared {
 /// A module deploying one file answers with that file: it IS the whole of what
 /// the module put on the machine, and naming its parent would claim a
 /// directory cfgd does not manage.
+///
+/// Breadth is the accepted degrade: a module scattering dotfiles directly under
+/// `$HOME` answers with the home directory, which is true but says little. What
+/// is NOT accepted is answering with the filesystem root — targets sharing no
+/// directory at all have no common root worth naming, and the row falls back to
+/// the count alone.
 fn common_target_root(files: &[cfgd_core::modules::ResolvedFile]) -> Option<String> {
     let mut targets = files.iter().map(|f| f.target.as_path());
     let mut root: Vec<std::path::Component<'_>> = targets.next()?.components().collect();
@@ -117,7 +123,13 @@ fn common_target_root(files: &[cfgd_core::modules::ResolvedFile]) -> Option<Stri
             .count();
         root.truncate(shared);
     }
-    if root.is_empty() {
+    // `RootDir` (and a Windows `Prefix`) survives truncation, so an emptiness
+    // test would let `/` and `C:\` through as roots. The question is whether a
+    // DIRECTORY below the filesystem root is still shared.
+    if !root
+        .iter()
+        .any(|c| matches!(c, std::path::Component::Normal(_)))
+    {
         return None;
     }
     Some(cfgd_core::to_posix_string(
@@ -1580,6 +1592,54 @@ mod tests {
             status: "installed".to_string(),
             declared,
         }
+    }
+
+    fn deployed_to(target: &str) -> cfgd_core::modules::ResolvedFile {
+        cfgd_core::modules::ResolvedFile {
+            source: std::path::PathBuf::from("/src"),
+            target: std::path::PathBuf::from(target),
+            is_git_source: false,
+            strategy: None,
+            encryption: None,
+            permissions: None,
+            patch: None,
+        }
+    }
+
+    /// `Component::RootDir` survives the common-prefix truncation, so files
+    /// sharing no directory at all would otherwise report `/` — a root cfgd
+    /// does not manage. The files row falls back to its count instead.
+    #[test]
+    fn files_sharing_no_directory_report_no_root() {
+        assert_eq!(
+            common_target_root(&[
+                deployed_to("/etc/ssh/sshd_config"),
+                deployed_to("/home/u/.bashrc"),
+            ]),
+            None
+        );
+        assert_eq!(
+            module_files_resource("2", Some(&ModuleDeclared::default())),
+            "2 files"
+        );
+    }
+
+    /// A shared directory below the root is still a root worth naming, and one
+    /// file answers with itself.
+    #[test]
+    fn files_sharing_a_directory_report_it() {
+        assert_eq!(
+            common_target_root(&[
+                deployed_to("/home/u/.config/nvim/init.lua"),
+                deployed_to("/home/u/.config/nvim/lua/opts.lua"),
+            ])
+            .as_deref(),
+            Some("/home/u/.config/nvim")
+        );
+        assert_eq!(
+            common_target_root(&[deployed_to("/home/u/.bashrc")]).as_deref(),
+            Some("/home/u/.bashrc")
+        );
     }
 
     /// Profile-level `package` rows are recorded one package per row, which is
