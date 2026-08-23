@@ -8,6 +8,7 @@
 //! pair (`#[derive(Serialize)] #[serde(rename_all = "camelCase")]`) and wire
 //! it into the relevant `*_output_types.rs` wrapper.
 
+use crate::output::Role;
 use serde::Serialize;
 
 /// Apply status for a reconciliation run.
@@ -46,7 +47,8 @@ impl ApplyStatus {
 
     /// camelCase token for the CLI JSON surface (`cfgd apply`/`status -o json`).
     /// Distinct from [`Self::as_str`], which is the snake_case state-store
-    /// persistence form that round-trips through [`Self::from_str`].
+    /// persistence form that round-trips through [`Self::from_str`], and from
+    /// [`Self::human_str`], which is what a person reads.
     pub fn display_str(&self) -> &'static str {
         match self {
             ApplyStatus::Success => "success",
@@ -54,6 +56,24 @@ impl ApplyStatus {
             ApplyStatus::Failed => "failed",
             ApplyStatus::InProgress => "inProgress",
             ApplyStatus::Aborted => "aborted",
+        }
+    }
+
+    /// TitleCase spelling for every HUMAN surface — `cfgd status`'s
+    /// `Last Apply → Result` row and `cfgd log`'s Status column — matching the
+    /// display vocabulary the manifest enums already read in (`Symlink`,
+    /// `NotApplied`).
+    ///
+    /// Split from [`Self::display_str`] because that token is a WIRE value: it
+    /// is what `-o json` carries and what an external matcher greps for, so a
+    /// reword of the words on screen must not be able to reach it.
+    pub fn human_str(&self) -> &'static str {
+        match self {
+            ApplyStatus::Success => "Success",
+            ApplyStatus::Partial => "Partial",
+            ApplyStatus::Failed => "Failed",
+            ApplyStatus::InProgress => "InProgress",
+            ApplyStatus::Aborted => "Aborted",
         }
     }
 
@@ -122,6 +142,38 @@ mod apply_status_tests {
             serde_json::to_value(ApplyStatus::InProgress).expect("serialize"),
             serde_json::Value::String("inProgress".to_string())
         );
+    }
+
+    /// Wire contract, pinned byte-for-byte: the snake_case token stored in
+    /// `applies.status` and the camelCase token every `-o json` payload
+    /// carries. A reword of the words on SCREEN belongs in `human_str`; if it
+    /// reaches either column here it breaks `from_str` against every state DB
+    /// an older cfgd wrote, and changes what an external matcher sees. Break
+    /// this test only on purpose.
+    #[test]
+    fn apply_status_literals_are_a_pinned_wire_contract() {
+        let pins = [
+            (ApplyStatus::Success, "success", "success", "Success"),
+            (ApplyStatus::Partial, "partial", "partial", "Partial"),
+            (ApplyStatus::Failed, "failed", "failed", "Failed"),
+            (
+                ApplyStatus::InProgress,
+                "in_progress",
+                "inProgress",
+                "InProgress",
+            ),
+            (ApplyStatus::Aborted, "aborted", "aborted", "Aborted"),
+        ];
+        for (variant, stored, wire, human) in pins {
+            assert_eq!(variant.as_str(), stored, "stored token drifted");
+            assert_eq!(variant.display_str(), wire, "json token drifted");
+            assert_eq!(variant.human_str(), human, "human spelling drifted");
+            assert_eq!(
+                ApplyStatus::from_str(stored),
+                variant,
+                "stored token no longer round-trips"
+            );
+        }
     }
 }
 
@@ -210,6 +262,91 @@ pub struct SourceConfigHash {
     pub source: String,
     pub config_hash: String,
     pub merged_at: String,
+}
+
+/// The `module_state.status` token for a module whose last apply completed
+/// every one of its actions.
+pub const MODULE_STATUS_INSTALLED: &str = "installed";
+/// The `module_state.status` token for a module at least one of whose actions
+/// failed on its last apply.
+pub const MODULE_STATUS_ERROR: &str = "error";
+
+/// The human vocabulary for a module's state — the ONE derivation of the word
+/// a person reads from the token the state store holds, so `cfgd status`,
+/// `cfgd status --module` and `cfgd module list` can never call one machine
+/// state by three names.
+///
+/// The stored tokens are untouched WIRE values ([`MODULE_STATUS_INSTALLED`] /
+/// [`MODULE_STATUS_ERROR`], pinned by
+/// `module_status_literals_are_a_pinned_wire_contract`), and so are the
+/// no-record spellings a `-o json` payload carries in their place
+/// (`not applied`, `pending`, `available`) — a consumer matching on any of
+/// them sees exactly what it saw before.
+///
+/// `drifted` is the caller's LIVE scan verdict, read from the same results
+/// that fill the report's Drift section, so `Drifted` can never contradict the
+/// rows beneath it. It is deliberately not storable: a recorded "drifted"
+/// would be a claim about a machine nobody has looked at since.
+///
+/// Everything the store does not recognise reads `NotApplied` — the honest
+/// answer about a module no apply has recorded. `cfgd module list`'s
+/// `pending` / `available` split lands there too; the row's `Active` column
+/// already says which of the two it is.
+pub fn module_status_display(stored: &str, drifted: bool) -> (&'static str, Role) {
+    match stored {
+        MODULE_STATUS_ERROR => ("Failed", Role::Fail),
+        MODULE_STATUS_INSTALLED if drifted => ("Drifted", Role::Warn),
+        MODULE_STATUS_INSTALLED => ("Synced", Role::Ok),
+        _ => ("NotApplied", Role::Pending),
+    }
+}
+
+#[cfg(test)]
+mod module_status_tests {
+    use super::*;
+
+    /// Wire contract, pinned byte-for-byte: the two tokens
+    /// `reconciler::apply` writes into `module_state.status` and every
+    /// `-o json` `status` field reports. The words on screen live in
+    /// [`module_status_display`]; a reword there must never reach these.
+    #[test]
+    fn module_status_literals_are_a_pinned_wire_contract() {
+        assert_eq!(MODULE_STATUS_INSTALLED, "installed");
+        assert_eq!(MODULE_STATUS_ERROR, "error");
+    }
+
+    #[test]
+    fn a_stored_token_maps_to_one_display_word_and_one_role() {
+        assert_eq!(
+            module_status_display(MODULE_STATUS_INSTALLED, false),
+            ("Synced", Role::Ok)
+        );
+        assert_eq!(
+            module_status_display(MODULE_STATUS_INSTALLED, true),
+            ("Drifted", Role::Warn)
+        );
+        assert_eq!(
+            module_status_display(MODULE_STATUS_ERROR, false),
+            ("Failed", Role::Fail)
+        );
+        // A failed apply outranks a drift finding: the module is broken, not
+        // merely out of date.
+        assert_eq!(
+            module_status_display(MODULE_STATUS_ERROR, true),
+            ("Failed", Role::Fail)
+        );
+    }
+
+    #[test]
+    fn every_no_record_spelling_reads_not_applied() {
+        for stored in ["not applied", "not yet applied", "pending", "available", ""] {
+            assert_eq!(
+                module_status_display(stored, false),
+                ("NotApplied", Role::Pending),
+                "{stored:?} should read NotApplied"
+            );
+        }
+    }
 }
 
 /// A module's state in the state store.

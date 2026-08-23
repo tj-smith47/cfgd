@@ -6,7 +6,7 @@ Status: dev-tools
   Scripts       postApply
   System        shell
   Dependencies  base
-  Status        installed
+  Status        Synced
   Last applied  2026-05-14T10:00:00Z
 
 Drift

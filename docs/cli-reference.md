@@ -1123,7 +1123,9 @@ failure rather than migrated.
 
 ### `cfgd module list`
 
-List all available modules with status (installed, pending, outdated, error).
+List all available modules with their state: `Synced`, `Failed`, or
+`NotApplied`. The `-o json` payload's `status` field carries the stored
+token instead (`installed`, `error`, `pending`, `available`).
 
 ### `cfgd module show <name>`
 

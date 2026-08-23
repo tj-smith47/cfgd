@@ -521,7 +521,12 @@ Each module is tracked independently. cfgd stores a hash of the resolved package
 - **File drift:** do deployed files still match the source content?
 - **Git source drift:** for modules with git file sources, have new commits appeared upstream since the last apply?
 
-A module's status is one of: `installed` (healthy), `outdated` (upstream has changed), or `error` (a package is missing or a file has diverged).
+A module reads as one of four states: `Synced` (converged), `Drifted` (a live
+scan found a package missing or a file diverged), `Failed` (its last apply had
+a failing action), or `NotApplied` (no apply has recorded it). `Drifted` needs
+a live scan, so only `cfgd status <module> --scan` (and `--exit-code`, which
+implies it) can report it. The `-o json` payload's `status` field carries the
+stored token instead (`installed`, `error`, `not applied`).
 
 Module resources are first-class in compliance reporting, not profile-only. A module's files, packages, and system settings appear in every `cfgd compliance` surface (snapshot, export, diff, history) and in the device checkin summary, attributed to their module — the same effective profile-plus-modules view that `cfgd verify` and `cfgd diff` use. Module file checks are content-aware: a deployed module file present on disk but whose bytes drifted from its source is reported as a violation.
 

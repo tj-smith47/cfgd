@@ -523,7 +523,11 @@ impl<'a> super::Reconciler<'a> {
             let any_failed = results
                 .iter()
                 .any(|r| r.description.starts_with(&module_prefix) && !r.success);
-            let status = if any_failed { "error" } else { "installed" };
+            let status = if any_failed {
+                crate::state::MODULE_STATUS_ERROR
+            } else {
+                crate::state::MODULE_STATUS_INSTALLED
+            };
 
             let packages_hash = hash_sorted_parts(
                 module
@@ -584,8 +588,8 @@ impl<'a> super::Reconciler<'a> {
     /// writer of `module_state` never fires — and since a module's packages are
     /// elided from the plan once the manager already holds them, an empty plan
     /// is exactly what a converged packages-only module produces. Without this
-    /// the module reads "not applied" in `cfgd status` and "pending" in `cfgd
-    /// module list` forever, on a machine where it is fully converged, and its
+    /// the module reads `NotApplied` in both `cfgd status` and `cfgd module
+    /// list` forever, on a machine where it is fully converged, and its
     /// `packages_hash` keeps describing a declared set that has since changed.
     ///
     /// Only correct for a run that planned NOTHING AT ALL: every module in

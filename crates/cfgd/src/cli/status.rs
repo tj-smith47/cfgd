@@ -1,7 +1,9 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::LOCAL_LAYER;
-use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, condense_script_label, renderer::Table};
+use cfgd_core::output::{
+    Doc, KvPair, OwnerLabel, Printer, Role, condense_script_label, renderer::Table,
+};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -306,7 +308,7 @@ pub fn build_fleet_status_doc(
                 let mut s = s
                     .kv("Time", &last.timestamp)
                     .kv("Profile", &last.profile)
-                    .kv("Result", last.status.display_str());
+                    .kv("Result", last.status.human_str());
                 if let Some(summary) = &last.summary {
                     s = s.kv("Summary", summary);
                 }
@@ -366,21 +368,15 @@ pub fn build_fleet_status_doc(
                 m.files,
                 if m.files == 1 { "" } else { "s" }
             );
-            let role = match m.status.as_str() {
-                "installed" => Role::Ok,
-                "not applied" | "not yet applied" => Role::Info,
-                _ => Role::Warn,
-            };
-            let suffix = if m.status == "not applied" {
-                "not yet applied".to_string()
-            } else {
-                m.status.clone()
-            };
+            // The dashboard reads RECORDED state only, so no row here can
+            // claim `Drifted` — this surface's Drift section is what reports
+            // that, and `cfgd status --module --scan` is what derives it.
+            let (state_word, role) = cfgd_core::state::module_status_display(&m.status, false);
             // Subject is the owner token, exactly as the tree that applied the
             // module heads its group; the counts and the state are what the
             // line reports about it.
             s.status_with(role, OwnerLabel::new("module", &m.name).plain(), |f| {
-                f.detail(format!("{summary}, {suffix}"))
+                f.detail(format!("{summary}, {state_word}"))
             })
         })
     });
@@ -415,31 +411,42 @@ pub fn build_fleet_status_doc(
 /// machine holds — the same grammar the fleet doc's module rows read in, so
 /// one report never states a fact the other contradicts.
 pub fn build_module_status_doc(output: &ModuleStatus) -> Doc {
-    let mut doc = Doc::new()
-        .heading_title("Status", &output.name)
-        .kv("Packages", output.packages.to_string())
-        .kv("Files", output.files.to_string());
-
+    // One aligned block: the Status row needs a role-tinted value, which only
+    // `kv_rows` can carry, and `kv_rows` does not coalesce with a preceding
+    // `kv` block — so every row of the header is built here.
+    let mut rows = vec![
+        KvPair::new("Packages", output.packages.to_string()),
+        KvPair::new("Files", output.files.to_string()),
+    ];
     if output.env > 0 {
-        doc = doc.kv("Env", output.env.to_string());
+        rows.push(KvPair::new("Env", output.env.to_string()));
     }
     if output.aliases > 0 {
-        doc = doc.kv("Aliases", output.aliases.to_string());
+        rows.push(KvPair::new("Aliases", output.aliases.to_string()));
     }
     if !output.scripts.is_empty() {
-        doc = doc.kv("Scripts", output.scripts.join(", "));
+        rows.push(KvPair::new("Scripts", output.scripts.join(", ")));
     }
     if !output.system.is_empty() {
-        doc = doc.kv("System", output.system.join(", "));
+        rows.push(KvPair::new("System", output.system.join(", ")));
     }
     if !output.depends.is_empty() {
-        doc = doc.kv("Dependencies", output.depends.join(", "));
+        rows.push(KvPair::new("Dependencies", output.depends.join(", ")));
     }
 
-    doc = doc.kv("Status", &output.status);
+    // `Drifted` is derived, never stored: it is read off the very scan whose
+    // findings fill the Drift section below, so the two can never disagree.
+    // Without a live scan there is no verdict to derive one from.
+    let drifted = output.drift_checked_live && !output.drift.is_empty();
+    let (state_word, role) = cfgd_core::state::module_status_display(&output.status, drifted);
+    rows.push(KvPair::role_valued("Status", state_word, role));
     if let Some(last) = &output.last_applied {
-        doc = doc.kv("Last applied", last);
+        rows.push(KvPair::new("Last applied", last));
     }
+
+    let mut doc = Doc::new()
+        .heading_title("Status", &output.name)
+        .kv_rows(rows);
 
     doc = render_drift_section(doc, &output.drift, output.drift_checked_live);
 
@@ -1344,7 +1351,7 @@ mod tests {
             "should print profile, got: {output}"
         );
         assert!(
-            output.contains("success"),
+            output.contains("Success"),
             "should print success status, got: {output}"
         );
         assert!(
@@ -1814,7 +1821,7 @@ mod tests {
             "module declares 1 package, got: {output}"
         );
         assert!(
-            output.contains("installed"),
+            output.contains("Synced"),
             "should print state-store status, got: {output}"
         );
     }
@@ -1932,7 +1939,7 @@ mod tests {
     /// already holds plans nothing, so `Reconciler::apply` — the only writer of
     /// `module_state` — never runs. The run must still record the module, or
     /// `cfgd status` and `cfgd module list` both call a fully converged module
-    /// "not applied" forever.
+    /// `NotApplied` forever.
     #[test]
     fn a_converged_module_apply_still_records_the_module_as_applied() {
         let tmp_home = tempfile::tempdir().unwrap();
@@ -1997,7 +2004,7 @@ mod tests {
         drop(printer);
         let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            output.contains("installed") && !output.contains("not applied"),
+            output.contains("Synced") && !output.contains("NotApplied"),
             "a converged module must not report itself unapplied, got: {output}"
         );
     }
@@ -2064,7 +2071,7 @@ mod tests {
     }
 
     #[test]
-    fn cmd_status_module_without_state_record_prints_not_applied() {
+    fn cmd_status_module_without_state_record_reads_not_applied() {
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let (_cfg_dir, state_dir, config_path) = setup_env_with_module();
@@ -2077,8 +2084,8 @@ mod tests {
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            output.contains("not applied"),
-            "no state-store record should produce 'not applied', got: {output}"
+            output.contains("NotApplied"),
+            "no state-store record should produce 'NotApplied', got: {output}"
         );
     }
 

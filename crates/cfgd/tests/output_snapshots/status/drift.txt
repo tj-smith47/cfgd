@@ -8,7 +8,7 @@ Status
 Last Apply
   Time     2026-05-14T11:30:00Z
   Profile  default
-  Result   success
+  Result   Success
 
 Drift
   ⚠ file ~/.zshrc                      — want: hash-desired, have: hash-actual
@@ -25,4 +25,4 @@ Pending Decisions
     ⊙ recommended package/curl — install curl 8.5.0 (install)
 
 Modules
-  ✓ module:shell-config — 0 pkgs, 4 files, installed
+  ✓ module:shell-config — 0 pkgs, 4 files, Synced

@@ -6,15 +6,15 @@ Status
 Last Apply
   Time     2026-05-14T10:00:00Z
   Profile  default
-  Result   success
+  Result   Success
   Summary  12 actions applied
 
 Drift
   ✓ No drift recorded — `cfgd diff` checks the live machine
 
 Modules
-  ✓ module:base      — 5 pkgs, 3 files, installed
-  ✓ module:dev-tools — 18 pkgs, 12 files, installed
+  ✓ module:base      — 5 pkgs, 3 files, Synced
+  ✓ module:dev-tools — 18 pkgs, 12 files, Synced
 
 Managed Resources
   Type  Resource   Source

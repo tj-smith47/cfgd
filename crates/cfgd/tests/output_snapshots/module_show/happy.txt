@@ -7,7 +7,7 @@ Module: dev-tools
   Pinned ref     v1.2.3
   Commit         deadbeef1234567890abcdef1234567890abcdef
   Integrity      sha256:cafef00d
-  Status         applied
+  Status         Synced
   Last applied   2026-05-14T10:00:00Z
   Packages hash  abc123def456
   Files hash     789ghi012jkl

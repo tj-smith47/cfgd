@@ -16065,8 +16065,8 @@ spec:
         "should show dependencies, got: {output}"
     );
     assert!(
-        output.contains("not applied"),
-        "should show 'not applied' status, got: {output}"
+        output.contains("NotApplied"),
+        "should show 'NotApplied' status, got: {output}"
     );
 }
 

@@ -31,7 +31,7 @@ fn happy_entries() -> Vec<ModuleListEntry> {
             name: "base".into(),
             active: true,
             source: "local".into(),
-            status: "applied".into(),
+            status: cfgd_core::state::MODULE_STATUS_INSTALLED.into(),
             packages: 3,
             files: 5,
             depends: 0,
@@ -73,7 +73,7 @@ fn happy_show_output() -> ModuleShowOutput {
             packages_hash: "abc123def456".into(),
             files_hash: "789ghi012jkl".into(),
             git_sources: None,
-            status: "applied".into(),
+            status: cfgd_core::state::MODULE_STATUS_INSTALLED.into(),
         }),
         spec: ModuleSpec {
             depends: vec!["base".into()],

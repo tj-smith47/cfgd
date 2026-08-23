@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::ModuleLockEntry;
-use cfgd_core::output::{Doc, Printer, Role, condense_script_label, renderer::Table};
+use cfgd_core::output::{Doc, KvPair, Printer, Role, condense_script_label, renderer::Table};
 
 /// Per-package display row for `cfgd module show`. Computed from package
 /// resolution so the renderer is pure and snapshot-testable without needing a
@@ -30,11 +30,12 @@ fn source_role(source: &str) -> Option<Role> {
     (source == "remote").then_some(Role::Secondary)
 }
 
-/// `accent` (orange) tags rows that need a user action — currently `pending`
-/// (referenced in profile but not applied) and `out-of-date` (state drift
-/// detected). Other states stay plain so the call-to-action stays scannable.
-fn status_role(status: &str) -> Option<Role> {
-    matches!(status, "pending" | "out-of-date").then_some(Role::Accent)
+/// The Status cell: the display word and its tint, both from the workspace's
+/// one module-state vocabulary. No row here can read `Drifted` — that verdict
+/// comes from a live scan, and `module list` reports recorded state only.
+fn status_cell(status: &str) -> (String, Option<Role>) {
+    let (word, role) = cfgd_core::state::module_status_display(status, false);
+    (word.to_string(), Some(role))
 }
 
 /// Build the `cfgd module list` Doc. Caller owns `entries` (constructed from
@@ -58,7 +59,7 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
                 (e.name.clone(), None),
                 (if e.active { "yes" } else { "-" }.to_string(), None),
                 (e.source.clone(), source_role(&e.source)),
-                (e.status.clone(), status_role(&e.status)),
+                status_cell(&e.status),
                 (e.packages.to_string(), None),
                 (e.files.to_string(), None),
                 (e.depends.to_string(), None),
@@ -72,7 +73,7 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
                 (e.name.clone(), None),
                 (if e.active { "yes" } else { "-" }.to_string(), None),
                 (e.source.clone(), source_role(&e.source)),
-                (e.status.clone(), status_role(&e.status)),
+                status_cell(&e.status),
                 (
                     format!("{} pkgs, {} files, {} deps", e.packages, e.files, e.depends),
                     None,
@@ -119,34 +120,40 @@ pub fn build_module_show_doc(
     show_values: bool,
     arrow: &str,
 ) -> Doc {
-    let mut doc = Doc::new().heading_title("Module", &output.name);
-
+    // One aligned block: the Status row needs a role-tinted value, which only
+    // `kv_rows` can carry, and `kv_rows` does not coalesce with a preceding
+    // `kv` block — so every row of the header is built here.
+    let mut rows = Vec::new();
     if let Some(version) = &output.metadata.version {
-        doc = doc.kv("Version", version);
+        rows.push(KvPair::new("Version", version));
     }
     if !output.depends.is_empty() {
-        doc = doc.kv("Dependencies", output.depends.join(", "));
+        rows.push(KvPair::new("Dependencies", output.depends.join(", ")));
     }
-    doc = doc.kv("Directory", &output.directory);
+    rows.push(KvPair::new("Directory", &output.directory));
 
     if let Some(entry) = lock_entry {
-        doc = doc
-            .kv("Source", "remote (locked)")
-            .kv("URL", &entry.url)
-            .kv("Pinned ref", &entry.pinned_ref)
-            .kv("Commit", &entry.commit)
-            .kv("Integrity", &entry.integrity);
+        rows.push(KvPair::new("Source", "remote (locked)"));
+        rows.push(KvPair::new("URL", &entry.url));
+        rows.push(KvPair::new("Pinned ref", &entry.pinned_ref));
+        rows.push(KvPair::new("Commit", &entry.commit));
+        rows.push(KvPair::new("Integrity", &entry.integrity));
     } else {
-        doc = doc.kv("Source", "local");
+        rows.push(KvPair::new("Source", "local"));
     }
 
     if let Some(state_rec) = &output.state {
-        doc = doc
-            .kv("Status", &state_rec.status)
-            .kv("Last applied", &state_rec.installed_at)
-            .kv("Packages hash", &state_rec.packages_hash)
-            .kv("Files hash", &state_rec.files_hash);
+        // Recorded state only, same as the list table — see `status_cell`.
+        let (word, role) = cfgd_core::state::module_status_display(&state_rec.status, false);
+        rows.push(KvPair::role_valued("Status", word, role));
+        rows.push(KvPair::new("Last applied", &state_rec.installed_at));
+        rows.push(KvPair::new("Packages hash", &state_rec.packages_hash));
+        rows.push(KvPair::new("Files hash", &state_rec.files_hash));
     }
+
+    let mut doc = Doc::new()
+        .heading_title("Module", &output.name)
+        .kv_rows(rows);
 
     doc = doc.section_if_nonempty("Packages", packages, |s, pkgs| {
         pkgs.iter().fold(s, |s, pkg| match pkg {
@@ -446,14 +453,27 @@ mod role_mapping_tests {
         assert_eq!(source_role("registry:foo"), None);
     }
 
+    /// The Status cell speaks the workspace's one module-state vocabulary, and
+    /// the two states `module list` derives for a module with no recorded
+    /// apply (`pending` / `available`) both read `NotApplied` — the row's
+    /// `Active` column is what distinguishes them.
     #[test]
-    fn status_role_accents_actionable_states() {
-        assert_eq!(status_role("pending"), Some(Role::Accent));
-        assert_eq!(status_role("out-of-date"), Some(Role::Accent));
-        assert_eq!(status_role("installed"), None);
-        assert_eq!(status_role("available"), None);
-        assert_eq!(status_role("error"), None);
-        assert_eq!(status_role(""), None);
+    fn status_cell_speaks_the_display_vocabulary() {
+        assert_eq!(
+            status_cell("installed"),
+            ("Synced".to_string(), Some(Role::Ok))
+        );
+        assert_eq!(
+            status_cell("error"),
+            ("Failed".to_string(), Some(Role::Fail))
+        );
+        for no_record in ["pending", "available", ""] {
+            assert_eq!(
+                status_cell(no_record),
+                ("NotApplied".to_string(), Some(Role::Pending)),
+                "{no_record:?} should read NotApplied"
+            );
+        }
     }
 }
 

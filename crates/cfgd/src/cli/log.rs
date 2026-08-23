@@ -126,7 +126,7 @@ pub fn build_log_doc(output: &LogOutput) -> Doc {
                     record.id.to_string(),
                     record.timestamp.clone(),
                     record.profile.clone(),
-                    record.status.display_str().to_string(),
+                    record.status.human_str().to_string(),
                     record.summary.clone().unwrap_or_else(|| "-".into()),
                 ]
             })
@@ -159,27 +159,28 @@ mod tests {
         }
     }
 
-    /// The `cfgd log` human table Status column must render the unified
-    /// camelCase token via `display_str`, never the snake_case persistence
-    /// form (`in_progress`) or the bare PascalCase variant (`InProgress`).
+    /// The `cfgd log` human table Status column renders the TitleCase display
+    /// vocabulary (`human_str`), never the snake_case persistence form
+    /// (`in_progress`) and never the camelCase WIRE token (`inProgress`) that
+    /// the `-o json` payload beside it still carries.
     #[test]
-    fn log_table_status_column_is_camelcase_token() {
+    fn log_table_status_column_is_the_titlecase_display_word() {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
         printer.emit(build_log_doc(&in_progress_log()));
         drop(printer);
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            out.contains("inProgress"),
-            "log Status column should render display_str token, got: {out}"
+            out.contains("InProgress"),
+            "log Status column should render human_str word, got: {out}"
         );
         assert!(
             !out.contains("in_progress"),
             "log Status column leaked the snake_case persistence form, got: {out}"
         );
         assert!(
-            !out.contains("InProgress"),
-            "log Status column leaked the bare PascalCase variant, got: {out}"
+            !out.contains("inProgress"),
+            "log Status column leaked the camelCase wire token, got: {out}"
         );
     }
 

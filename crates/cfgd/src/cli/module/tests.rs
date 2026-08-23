@@ -3504,8 +3504,8 @@ fn cmd_module_list_table_active_modules() {
         "should show active=yes, got: {output}"
     );
     assert!(
-        output.contains("pending"),
-        "should show pending status, got: {output}"
+        output.contains("NotApplied"),
+        "should show NotApplied status, got: {output}"
     );
 }
 
