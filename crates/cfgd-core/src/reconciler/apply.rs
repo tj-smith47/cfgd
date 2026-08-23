@@ -323,7 +323,11 @@ fn dispatched_in_lanes(phase: &PhaseName, owner: &Owner) -> bool {
     }
 }
 
-fn hash_sorted_parts(mut parts: Vec<String>) -> String {
+/// The ONE fold from a module's parts to one recorded digest, shared by every
+/// per-module hash cfgd stores: declaration order says nothing about the
+/// machine, so the parts sort before they are joined and two spellings of one
+/// module cannot record two different digests.
+pub(super) fn hash_sorted_parts(mut parts: Vec<String>) -> String {
     parts.sort();
     crate::sha256_hex(parts.join("|").as_bytes())
 }

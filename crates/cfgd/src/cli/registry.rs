@@ -39,8 +39,17 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
         config_dir: &std::path::Path,
         resolved: &ResolvedProfile,
     ) -> cfgd_core::errors::Result<Vec<FileAction>> {
+        Ok(self.plan_files_with_manager(config_dir, resolved)?.0)
+    }
+
+    fn plan_files_with_manager(
+        &self,
+        config_dir: &std::path::Path,
+        resolved: &ResolvedProfile,
+    ) -> cfgd_core::errors::Result<cfgd_core::daemon::PlannedFiles> {
         let fm = build_compliance_file_manager(config_dir, resolved, None)?;
-        fm.plan(&resolved.merged)
+        let actions = fm.plan(&resolved.merged)?;
+        Ok((actions, Some(Box::new(fm))))
     }
 
     fn plan_packages(

@@ -462,11 +462,8 @@ impl<'a> super::Reconciler<'a> {
                     self.record_module_file(action, &target, strategy, apply_id)?;
                 }
 
-                // Keyed on the DECLARED count, not the planned subset: this is
-                // the persisted `managed_resources` id, and a partial deploy
-                // must land on the same row every full deploy wrote.
                 Ok((
-                    format!("module:{}:files:{}", action.module_name, declared_total),
+                    super::format::module_files_description(&action.module_name, *declared_total),
                     deployed_any,
                 ))
             }

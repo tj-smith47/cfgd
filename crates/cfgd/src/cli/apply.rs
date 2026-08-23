@@ -580,7 +580,12 @@ pub fn run_apply(
             {
                 tracing::warn!(error = %e, "failed to record converged module state");
             }
-            refresh_link_deployed_hashes(&reconciler, &registry, &effective_resolved);
+            refresh_link_deployed_hashes(
+                &reconciler,
+                &registry,
+                &effective_resolved,
+                &resolved_modules,
+            );
         }
         report_plan_verdict(printer, 0, Some(&scope));
         printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
@@ -621,7 +626,12 @@ pub fn run_apply(
     // declined run skips this — refusing the apply refuses its writes.
     if store_writes && !matches!(disposition, reconciler::RunDisposition::Declined) {
         reconciler::mint_decisions(state, &review);
-        refresh_link_deployed_hashes(&reconciler, &registry, &effective_resolved);
+        refresh_link_deployed_hashes(
+            &reconciler,
+            &registry,
+            &effective_resolved,
+            &resolved_modules,
+        );
     }
     let (result, backup_reports) = match disposition {
         reconciler::RunDisposition::Applied { result, backups } => (result, backups),
@@ -801,20 +811,23 @@ fn register_abort_handlers(_abort: &cfgd_core::AbortFlag) {
     tracing::debug!("cooperative apply abort handler not available on this platform");
 }
 
-/// Re-record the content hash of every link-deployed managed file whose
-/// recorded value has gone stale — an edit made THROUGH a symlink is the module
-/// source changing, which is never drift, so no action ever revisits the row.
-/// Best-effort and silent: a failure is logged, never propagated, because a
-/// bookkeeping correction must not fail an apply that otherwise succeeded.
+/// Re-record the content hash of every link-deployed file whose recorded value
+/// has gone stale — an edit made THROUGH a symlink is the source changing,
+/// which is never drift, so no action ever revisits the row. Best-effort and
+/// silent: a failure is logged, never propagated, because a bookkeeping
+/// correction must not fail an apply that otherwise succeeded.
+///
+/// The file manager is optional so a `--module` run, which registers none,
+/// still refreshes its modules' aggregate rows.
 fn refresh_link_deployed_hashes(
     reconciler: &cfgd_core::reconciler::Reconciler<'_>,
     registry: &cfgd_core::providers::ProviderRegistry,
     resolved: &cfgd_core::config::ResolvedProfile,
+    modules: &[cfgd_core::modules::ResolvedModule],
 ) {
-    let Some(fm) = registry.file_manager.as_deref() else {
-        return;
-    };
-    if let Err(e) = reconciler.refresh_link_deployed_hashes(fm, resolved) {
+    if let Err(e) =
+        reconciler.refresh_link_deployed_hashes(registry.file_manager.as_deref(), resolved, modules)
+    {
         tracing::warn!(error = %e, "failed to refresh recorded file hashes");
     }
 }

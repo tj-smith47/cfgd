@@ -35,6 +35,14 @@ use crate::providers::{
 };
 use crate::state::StateStore;
 
+/// A file plan together with the manager that produced it — see
+/// [`DaemonHooks::plan_files_with_manager`]. The manager is optional because a
+/// hook may own no concrete `FileManager`.
+pub type PlannedFiles = (
+    Vec<FileAction>,
+    Option<Box<dyn crate::providers::FileManager>>,
+);
+
 /// Trait for binary-specific operations the daemon needs.
 /// The workstation binary (`cfgd`) implements this with concrete provider types.
 pub trait DaemonHooks: Send + Sync {
@@ -43,6 +51,22 @@ pub trait DaemonHooks: Send + Sync {
 
     /// Plan file actions by comparing desired vs actual state.
     fn plan_files(&self, config_dir: &Path, resolved: &ResolvedProfile) -> Result<Vec<FileAction>>;
+
+    /// [`Self::plan_files`] plus the file manager that produced the plan, for a
+    /// caller that needs both and must not pay two constructions — a manager
+    /// carries a config load and a secret-backend build, and the reconcile tick
+    /// both plans files and asks what its link-deployed files now hold.
+    ///
+    /// The default hands back no manager, leaving such a caller with the plan
+    /// alone; a binary that owns a concrete `FileManager` overrides this and
+    /// implements [`Self::plan_files`] in terms of it.
+    fn plan_files_with_manager(
+        &self,
+        config_dir: &Path,
+        resolved: &ResolvedProfile,
+    ) -> Result<PlannedFiles> {
+        Ok((self.plan_files(config_dir, resolved)?, None))
+    }
 
     /// Plan package actions by comparing installed vs desired.
     ///

@@ -522,8 +522,12 @@ pub(crate) fn handle_reconcile(
         .withholding_env_surface(pending_exclusions.withholds_env_surface())
         .diffing_installed(&pkg_cx);
 
-    let file_actions = match hooks.plan_files(&config_dir, resolved) {
-        Ok(a) => a,
+    // ONE file manager per tick: the manager that planned is the manager the
+    // recorded-hash refresh below asks, because building a second one costs another
+    // `cfgd.yaml` load and another secret-backend construction, every interval, for
+    // the same answer.
+    let (file_actions, file_manager) = match hooks.plan_files_with_manager(&config_dir, resolved) {
+        Ok(planned) => planned,
         Err(e) => {
             tracing::error!(error = %e, "reconcile: file planning failed");
             return;
@@ -607,21 +611,19 @@ pub(crate) fn handle_reconcile(
     // and so cannot date a clean scan).
     store.record_scan();
 
-    // A file deployed by symlink is edited THROUGH the link, which is the module
-    // source changing and so is never drift — the tick above found none, and no
-    // action will revisit the row. Correct the recorded content hash here, before
-    // the drift branch, so a clean tick and a drifted one both do it; the write is
+    // A file deployed by symlink is edited THROUGH the link, which is the source
+    // changing and so is never drift — the tick above found none, and no action
+    // will revisit the row. Correct the recorded content hash here, before the
+    // drift branch, so a clean tick and a drifted one both do it; the write is
     // skipped when the hash already agrees, so a settled machine pays nothing per
-    // interval. Built from the hooks rather than the registry: a tick plans files
-    // through `plan_files` and leaves `registry.file_manager` empty.
-    match hooks.build_file_manager(&config_dir, resolved) {
-        Ok(Some(fm)) => {
-            if let Err(e) = reconciler.refresh_link_deployed_hashes(fm.as_ref(), resolved) {
-                tracing::warn!(error = %e, "failed to refresh recorded file hashes");
-            }
-        }
-        Ok(None) => {}
-        Err(e) => tracing::warn!(error = %e, "failed to build file manager for hash refresh"),
+    // interval. The file manager is the one this tick already planned through, and
+    // is absent for a hook that owns none — the module half is refreshed either way.
+    if let Err(e) = reconciler.refresh_link_deployed_hashes(
+        file_manager.as_deref(),
+        resolved,
+        resolved_modules_ref.as_slice(),
+    ) {
+        tracing::warn!(error = %e, "failed to refresh recorded file hashes");
     }
 
     if effective_total == 0 {

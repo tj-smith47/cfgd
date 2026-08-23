@@ -158,9 +158,7 @@ pub fn format_action_description(action: &Action) -> String {
                 format!("module:{}:packages:{}", ma.module_name, names.join(","))
             }
             ModuleActionKind::DeployFiles { declared_total, .. } => {
-                // The DECLARED count, matching the apply-side description, so
-                // a partial deploy matches the row a full deploy recorded.
-                format!("module:{}:files:{}", ma.module_name, declared_total)
+                module_files_description(&ma.module_name, *declared_total)
             }
             ModuleActionKind::RunScript { .. } => {
                 format!("module:{}:script", ma.module_name)
@@ -661,6 +659,17 @@ fn format_module_action_body(action: &ModuleAction) -> String {
 /// colons) keeps the body intact either way: a `run:` script or `-o json` value
 /// containing its own `:` no longer gets silently truncated mid-body.
 const TWO_COLON_PREFIXES: &[&str] = &["file", "secret", "script", "env"];
+
+/// The action description a module's file deployment is recorded under — one
+/// aggregate for the whole module, keyed on the DECLARED file count so a
+/// partial deploy lands on the same `managed_resources` row a full deploy
+/// wrote. Three sites mint this string and match it against each other (the
+/// resource id here, the apply arm's returned description, and the recorded-hash
+/// refresh), so a byte of divergence between any two of them records state
+/// nothing ever reads back.
+pub(super) fn module_files_description(module_name: &str, declared_total: usize) -> String {
+    format!("module:{module_name}:files:{declared_total}")
+}
 
 pub(super) fn parse_resource_from_description(desc: &str) -> (String, String) {
     let Some((prefix, rest)) = desc.split_once(':') else {

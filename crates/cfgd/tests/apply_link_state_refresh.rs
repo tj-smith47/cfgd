@@ -45,6 +45,51 @@ fn setup(strategy: &str) -> (tempfile::TempDir, tempfile::TempDir, PathBuf, Path
     (config_dir, state_dir, source, target)
 }
 
+/// Build a tempdir-backed profile whose one module deploys one file with
+/// `strategy`.
+///
+/// Returns `(config_dir, state_dir, source, target)`. A module's file work is
+/// recorded as ONE aggregate `managed_resources` row rather than a row per file,
+/// which is the half a per-file refresh cannot reach.
+fn setup_module(strategy: &str) -> (tempfile::TempDir, tempfile::TempDir, PathBuf, PathBuf) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let module_dir = config_dir.path().join("modules").join("nvim");
+    std::fs::create_dir_all(module_dir.join("files")).unwrap();
+    let source = module_dir.join("files").join("init.lua");
+    std::fs::write(&source, "-- v1").unwrap();
+
+    let target = config_dir.path().join("out").join("init.lua");
+    let module = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  files:\n    - source: files/init.lua\n      target: {}\n      strategy: {strategy}\n",
+        cfgd_core::to_posix_string(&target)
+    );
+    std::fs::write(module_dir.join("module.yaml"), module).unwrap();
+
+    let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  modules:\n    - nvim\n";
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("tiny.yaml"), profile).unwrap();
+
+    let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: tiny\n";
+    std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
+
+    (config_dir, state_dir, source, target)
+}
+
+/// The recorded hash of the module's one aggregate file row, if cfgd tracks one.
+fn recorded_module_hash(state_dir: &Path, module: &str, declared_total: usize) -> Option<String> {
+    let state = StateStore::open(&state_dir.join("state.db")).unwrap();
+    let id = format!("{module}:files:{declared_total}");
+    state
+        .managed_resources()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.resource_type == "module" && r.resource_id == id)
+        .and_then(|r| r.last_hash)
+}
+
 /// Run one `cfgd apply` against the fixture, returning what it printed.
 fn apply_once(config_dir: &Path, state_dir: &Path) -> String {
     let cli = cli_for(config_dir, state_dir);
@@ -132,6 +177,77 @@ fn apply_refreshes_the_recorded_hash_of_a_file_edited_through_its_symlink() {
             .unwrap()
             .len(),
         "no row minted by the refresh"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_refreshes_a_modules_aggregate_hash_after_an_edit_through_its_symlink() {
+    let (config_dir, state_dir, source, target) = setup_module("Symlink");
+    let home = tempfile::tempdir().unwrap();
+    let apply = || {
+        cfgd_core::with_test_home(home.path(), || {
+            apply_once(config_dir.path(), state_dir.path())
+        })
+    };
+
+    let first = apply();
+    assert!(
+        first.contains("init.lua"),
+        "the first apply deploys the module's file and names it: {first}"
+    );
+    assert!(target.is_symlink(), "deployed by symlink");
+
+    let after_first = recorded_module_hash(state_dir.path(), "nvim", 1);
+    assert!(
+        after_first.is_some(),
+        "the module's aggregate row records a hash once its files are deployed"
+    );
+
+    // Nothing moved, so the row must not: a converged machine writes the same
+    // bytes back forever or it writes nothing at all.
+    let second = apply();
+    assert!(second.contains("Nothing to do"), "converged: {second}");
+    assert_eq!(
+        recorded_module_hash(state_dir.path(), "nvim", 1),
+        after_first,
+        "an apply that changed nothing leaves the recorded aggregate byte-identical"
+    );
+
+    // The user edits the deployed file. Through the link that IS the module's
+    // own source file, so link identity still holds and nothing is planned.
+    std::fs::write(&target, "-- v2").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&source).unwrap(),
+        "-- v2",
+        "the edit landed on the module's own source file"
+    );
+
+    let third = apply();
+    assert!(
+        third.contains("Nothing to do"),
+        "an edit through the link is not drift: {third}"
+    );
+    assert!(
+        !third.contains("init.lua"),
+        "the refresh is silent — nothing names the module's file: {third}"
+    );
+
+    // The aggregate folds `<target>:<content hash>` over the module's converged
+    // links, so it describes the bytes the deployed file now holds — a hash of
+    // the declared paths alone could not move on a content edit.
+    let expected = cfgd_core::sha256_hex(
+        format!(
+            "{}:{}",
+            cfgd_core::to_posix_string(&target),
+            deployed_hash(&target)
+        )
+        .as_bytes(),
+    );
+    assert_eq!(
+        recorded_module_hash(state_dir.path(), "nvim", 1),
+        Some(expected),
+        "the module's recorded aggregate follows an edit made through the link"
     );
 }
 

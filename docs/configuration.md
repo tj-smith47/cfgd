@@ -361,8 +361,10 @@ break the deployed config, Windows hosts without Developer Mode.
 
 Under `Symlink`, editing the target through the link is not drift. The source
 file in your repo owns the bytes, so the edit is already in the repo and there is
-nothing for an apply to repair. cfgd refreshes what it recorded about the file on
-the next apply, without reporting an action.
+nothing for an apply to repair. cfgd refreshes what it recorded on the next apply,
+without reporting an action. A `files.managed` file entry refreshes its own record.
+A module-declared file refreshes the module's, which cfgd keeps as one record for
+all of that module's files.
 
 The remaining strategies are variants of `Copy`: `Template` renders through Tera
 first (per-machine values baked in, so the output cannot be a link), `Hardlink`

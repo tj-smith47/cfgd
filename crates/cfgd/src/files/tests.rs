@@ -1148,14 +1148,14 @@ fn refresh_link_deployed_hashes_writes_once_per_edit_and_nothing_in_between() {
 
     assert_eq!(
         reconciler
-            .refresh_link_deployed_hashes(&fm, &resolved)
+            .refresh_link_deployed_hashes(Some(&fm), &resolved, &[])
             .unwrap(),
         1,
         "the row recorded no hash at all, so the first refresh writes one"
     );
     assert_eq!(
         reconciler
-            .refresh_link_deployed_hashes(&fm, &resolved)
+            .refresh_link_deployed_hashes(Some(&fm), &resolved, &[])
             .unwrap(),
         0,
         "nothing moved since, so the daemon's next tick writes nothing"
@@ -1164,14 +1164,14 @@ fn refresh_link_deployed_hashes_writes_once_per_edit_and_nothing_in_between() {
     fs::write(&target, "edited through the link").unwrap();
     assert_eq!(
         reconciler
-            .refresh_link_deployed_hashes(&fm, &resolved)
+            .refresh_link_deployed_hashes(Some(&fm), &resolved, &[])
             .unwrap(),
         1,
         "the edit through the link moves the recorded hash exactly once"
     );
     assert_eq!(
         reconciler
-            .refresh_link_deployed_hashes(&fm, &resolved)
+            .refresh_link_deployed_hashes(Some(&fm), &resolved, &[])
             .unwrap(),
         0
     );
@@ -1199,7 +1199,7 @@ fn refresh_link_deployed_hashes_never_mints_a_row_for_an_untracked_file() {
 
     assert_eq!(
         reconciler
-            .refresh_link_deployed_hashes(&fm, &resolved)
+            .refresh_link_deployed_hashes(Some(&fm), &resolved, &[])
             .unwrap(),
         0
     );
