@@ -390,6 +390,15 @@ pub struct DaemonStatusResponse {
     pub update_available: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub module_reconcile: Vec<ModuleReconcileStatus>,
+    /// The cadence the running loop is actually on — the shortest of the
+    /// resolved per-module reconcile intervals, re-read after every SIGHUP
+    /// reload. `None` from a daemon that predates the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconcile_interval_secs: Option<u64>,
+    /// The shortest of the resolved per-source sync intervals, on the same
+    /// terms as [`Self::reconcile_interval_secs`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_interval_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -418,6 +427,11 @@ pub(super) struct DaemonState {
     // (used in tests so endpoint returns empty events without touching the
     // user's real `~/.local/state/cfgd/state.db`).
     store_path: Option<PathBuf>,
+    // The pump cadences, held as the live handles the loop itself reads rather
+    // than as copies taken at startup: SIGHUP rewrites both in place, and an
+    // interval reported from a copy describes a timer that is no longer running.
+    reconcile_secs: Option<Arc<std::sync::atomic::AtomicU64>>,
+    sync_secs: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 impl DaemonState {
@@ -438,12 +452,23 @@ impl DaemonState {
             skills_stale_notified: None,
             module_last_reconcile: HashMap::new(),
             store_path: None,
+            reconcile_secs: None,
+            sync_secs: None,
         }
     }
 
     fn with_store_path(mut self, path: PathBuf) -> Self {
         self.store_path = Some(path);
         self
+    }
+
+    fn set_interval_handles(
+        &mut self,
+        reconcile_secs: Arc<std::sync::atomic::AtomicU64>,
+        sync_secs: Arc<std::sync::atomic::AtomicU64>,
+    ) {
+        self.reconcile_secs = Some(reconcile_secs);
+        self.sync_secs = Some(sync_secs);
     }
 
     #[cfg(test)]
@@ -462,6 +487,14 @@ impl DaemonState {
             sources: self.sources.clone(),
             update_available: self.update_available.clone(),
             module_reconcile: vec![],
+            reconcile_interval_secs: self
+                .reconcile_secs
+                .as_ref()
+                .map(|v| v.load(std::sync::atomic::Ordering::Relaxed)),
+            sync_interval_secs: self
+                .sync_secs
+                .as_ref()
+                .map(|v| v.load(std::sync::atomic::Ordering::Relaxed)),
         }
     }
 }
@@ -1044,6 +1077,10 @@ pub(super) async fn run_daemon_with(
     let sync_secs = Arc::new(std::sync::atomic::AtomicU64::new(
         setup.shortest_sync.as_secs(),
     ));
+    state
+        .lock()
+        .await
+        .set_interval_handles(Arc::clone(&reconcile_secs), Arc::clone(&sync_secs));
 
     // Build the triggers + spawn the production pumps/signal handlers, OR
     // adopt the externally-supplied triggers verbatim. The cleanup path at

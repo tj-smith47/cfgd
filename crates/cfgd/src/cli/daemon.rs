@@ -116,6 +116,8 @@ fn placeholder_status() -> cfgd_core::daemon::DaemonStatusResponse {
         sources: vec![],
         update_available: None,
         module_reconcile: vec![],
+        reconcile_interval_secs: None,
+        sync_interval_secs: None,
     }
 }
 
@@ -127,11 +129,21 @@ pub fn build_daemon_status_doc(status: Option<&cfgd_core::daemon::DaemonStatusRe
     match status {
         Some(s) => {
             doc = doc.status(Role::Ok, "Daemon is running");
-            doc = doc.kv_block([
-                ("PID", s.pid.to_string()),
-                ("Uptime", format!("{}s", s.uptime_secs)),
-                ("Drift count", s.drift_count.to_string()),
-            ]);
+            let mut rows = vec![
+                ("PID".to_string(), s.pid.to_string()),
+                ("Uptime".to_string(), format!("{}s", s.uptime_secs)),
+            ];
+            // Omitted rather than guessed when the daemon did not report them:
+            // the loop's cadence is whatever it reloaded last, and this command
+            // holds no config of its own to answer from.
+            if let Some(secs) = s.reconcile_interval_secs {
+                rows.push(("Reconcile interval".to_string(), format!("{secs}s")));
+            }
+            if let Some(secs) = s.sync_interval_secs {
+                rows.push(("Sync interval".to_string(), format!("{secs}s")));
+            }
+            rows.push(("Drift count".to_string(), s.drift_count.to_string()));
+            doc = doc.kv_block(rows);
             if let Some(ref last) = s.last_reconcile {
                 doc = doc.kv("Last reconcile", last);
             }
@@ -449,6 +461,8 @@ mod tests {
             sources: vec![],
             update_available: None,
             module_reconcile: vec![],
+            reconcile_interval_secs: None,
+            sync_interval_secs: None,
         }
     }
 
@@ -611,6 +625,36 @@ mod tests {
         assert_eq!(json["running"], true);
         assert_eq!(json["pid"], 12345);
         assert_eq!(json["driftCount"], 2);
+    }
+
+    #[test]
+    fn build_daemon_status_doc_renders_the_reported_intervals() {
+        let mut status = make_status(true);
+        status.reconcile_interval_secs = Some(300);
+        status.sync_interval_secs = Some(900);
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_daemon_status_doc(Some(&status)));
+        let human = cap.human();
+        assert!(
+            human.contains("Reconcile interval") && human.contains("300s"),
+            "expected the reconcile interval row, got: {human}"
+        );
+        assert!(
+            human.contains("Sync interval") && human.contains("900s"),
+            "expected the sync interval row, got: {human}"
+        );
+    }
+
+    #[test]
+    fn build_daemon_status_doc_omits_intervals_the_daemon_did_not_report() {
+        let status = make_status(true);
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_daemon_status_doc(Some(&status)));
+        let human = cap.human();
+        assert!(
+            !human.contains("Reconcile interval") && !human.contains("Sync interval"),
+            "an unreported cadence must not be rendered at all, got: {human}"
+        );
     }
 
     #[test]

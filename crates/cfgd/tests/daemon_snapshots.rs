@@ -8,8 +8,8 @@
 //!     server from a snapshot test is intractable; the Doc seam covers the
 //!     running-shape branch deterministically.
 //!   - `daemon_status/running_no_timestamps.txt` — hand-rolled; covers the
-//!     `last_reconcile=None && last_sync=None && update_available=None`
-//!     branch.
+//!     `last_reconcile=None && last_sync=None && update_available=None &&
+//!     reconcile_interval_secs=None && sync_interval_secs=None` branch.
 //!   - `daemon_status/running_with_update.txt` — hand-rolled; covers the
 //!     update-available banner.
 //!   - `daemon_install/installed_{linux,macos,windows}.{txt,json}` — hand-rolled
@@ -77,6 +77,8 @@ fn sample_status_basic() -> DaemonStatusResponse {
         ],
         update_available: None,
         module_reconcile: vec![],
+        reconcile_interval_secs: Some(300),
+        sync_interval_secs: Some(900),
     }
 }
 
@@ -97,6 +99,8 @@ fn sample_status_no_timestamps() -> DaemonStatusResponse {
         sources: vec![],
         update_available: None,
         module_reconcile: vec![],
+        reconcile_interval_secs: None,
+        sync_interval_secs: None,
     }
 }
 

@@ -248,6 +248,7 @@ isolation). Query with `cfgd daemon status` to get:
 
 - Whether the daemon is running
 - Last reconcile time
+- The reconcile and sync intervals the loop is currently on (`reconcileIntervalSecs` / `syncIntervalSecs` in `-o json`), so a SIGHUP reload can be confirmed without reading the log
 - Drift count
 - Per-source sync status (when using multi-source config)
 

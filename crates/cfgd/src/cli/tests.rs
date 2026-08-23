@@ -14481,6 +14481,8 @@ fn sample_daemon_status(
         sources,
         update_available,
         module_reconcile: vec![],
+        reconcile_interval_secs: None,
+        sync_interval_secs: None,
     }
 }
 
@@ -14550,6 +14552,8 @@ fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
         sources: vec![],
         update_available: None,
         module_reconcile: vec![],
+        reconcile_interval_secs: None,
+        sync_interval_secs: None,
     };
     printer.emit(super::daemon::build_daemon_status_doc(Some(&status)));
     drop(printer);

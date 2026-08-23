@@ -2779,6 +2779,8 @@ fn daemon_status_response_with_modules_round_trips() {
                 last_reconcile: None,
             },
         ],
+        reconcile_interval_secs: None,
+        sync_interval_secs: None,
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -2806,6 +2808,8 @@ fn daemon_status_response_skips_empty_module_reconcile() {
         sources: vec![],
         update_available: None,
         module_reconcile: vec![],
+        reconcile_interval_secs: None,
+        sync_interval_secs: None,
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -4175,6 +4179,8 @@ fn daemon_status_response_update_available_present() {
         sources: vec![],
         update_available: Some("3.0.0".to_string()),
         module_reconcile: vec![],
+        reconcile_interval_secs: None,
+        sync_interval_secs: None,
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -4707,6 +4713,8 @@ fn daemon_status_response_camel_case_uptime() {
         sources: vec![],
         update_available: None,
         module_reconcile: vec![],
+        reconcile_interval_secs: None,
+        sync_interval_secs: None,
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -6876,6 +6884,8 @@ fn daemon_status_response_roundtrip_symmetry() {
             drift_policy: "Auto".into(),
             last_reconcile: Some("2026-04-01T12:00:00Z".into()),
         }],
+        reconcile_interval_secs: Some(300),
+        sync_interval_secs: Some(900),
     };
 
     let json = serde_json::to_string(&original).unwrap();
@@ -6893,6 +6903,8 @@ fn daemon_status_response_roundtrip_symmetry() {
         roundtripped.module_reconcile.len(),
         original.module_reconcile.len()
     );
+    assert_eq!(roundtripped.reconcile_interval_secs, Some(300));
+    assert_eq!(roundtripped.sync_interval_secs, Some(900));
     assert_eq!(roundtripped.update_available, original.update_available);
 }
 
@@ -10733,6 +10745,8 @@ fn daemon_status_response_camel_case_keys() {
         sources: vec![],
         update_available: None,
         module_reconcile: vec![],
+        reconcile_interval_secs: None,
+        sync_interval_secs: None,
     };
 
     let json = serde_json::to_string(&response).unwrap();
@@ -16248,6 +16262,8 @@ mod query_daemon_status_paths {
                     sources: vec![],
                     update_available: None,
                     module_reconcile: vec![],
+                    reconcile_interval_secs: None,
+                    sync_interval_secs: None,
                 })
                 .unwrap();
                 let _ = write!(
