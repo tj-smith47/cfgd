@@ -4,9 +4,9 @@ Remove source:replace-old
 ✓ removed
 
 Add source:replace-old
-◐ Cloning source 'replace-old'
+◐ Cloning source:replace-old
   Cloning into '<STATE_DIR>/sources/replace-old'...
-✓ Cloning source 'replace-old'
+✓ Cloning source:replace-old
 
 Source Manifest
   Name      replace-new

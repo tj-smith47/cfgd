@@ -1,7 +1,7 @@
 Add source:bridge-src
-◐ Cloning source 'bridge-src'
+◐ Cloning source:bridge-src
   Cloning into '<STATE_DIR>/sources/bridge-src'...
-✓ Cloning source 'bridge-src'
+✓ Cloning source:bridge-src
 
 Source Manifest
   Name      bridge-src

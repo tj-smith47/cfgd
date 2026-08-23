@@ -491,7 +491,7 @@ pub(super) fn clone_repo(
     let mut cmd = crate::git_cmd_safe(Some(&git_src.repo_url), None);
     cmd.args(["clone", &git_src.repo_url, &dest.display().to_string()]);
 
-    let label = format!("Cloning module '{}'", module_name);
+    let label = format!("Cloning module:{}", module_name);
     let cli_result = printer.run(&mut cmd, &label);
     if matches!(&cli_result, Ok(output) if output.status.success()) {
         // A fresh clone transferred every ref the remote offers, so the next
@@ -564,7 +564,7 @@ pub(super) fn fetch_existing_repo(
     let mut cmd = crate::git_cmd_safe(Some(&git_src.repo_url), None);
     cmd.args(["-C", &repo_path.display().to_string(), "fetch", "origin"]);
 
-    let label = format!("Fetching module '{}'", module_name);
+    let label = format!("Fetching module:{}", module_name);
     let cli_result = printer.run(&mut cmd, &label);
     if matches!(&cli_result, Ok(output) if output.status.success()) {
         record_repo_refresh(&git_src.repo_url);

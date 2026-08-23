@@ -1,7 +1,7 @@
 Add source:team-config
-◐ Cloning source 'team-config'
+◐ Cloning source:team-config
   Cloning into '<STATE_DIR>/sources/team-config'...
-✓ Cloning source 'team-config'
+✓ Cloning source:team-config
 
 Source Manifest
   Name      team-config

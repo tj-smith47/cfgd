@@ -664,7 +664,7 @@ impl SourceManager {
             &spec.origin.branch,
         ]);
 
-        let label = format!("Fetching source '{}'", spec.name);
+        let label = format!("Fetching source:{}", spec.name);
         let cli_result = printer.run(&mut cmd, &label);
         let cli_ok = matches!(&cli_result, Ok(output) if output.status.success());
 
@@ -758,7 +758,7 @@ impl SourceManager {
             &source_dir.display().to_string(),
         ]);
 
-        let label = format!("Cloning source '{}'", spec.name);
+        let label = format!("Cloning source:{}", spec.name);
         let cli_result = printer.run(&mut cmd, &label);
         if matches!(&cli_result, Ok(output) if output.status.success()) {
             // Restrict cloned directory to owner-only access
@@ -886,7 +886,7 @@ impl SourceManager {
         ]);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
-        let label = format!("Cloning source '{}'", spec.name);
+        let label = format!("Cloning source:{}", spec.name);
         let cli_result = printer.run(&mut cmd, &label);
         if !matches!(&cli_result, Ok(output) if output.status.success()) {
             return Err(SourceError::FetchFailed {

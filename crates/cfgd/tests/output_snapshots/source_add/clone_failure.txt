@@ -1,11 +1,11 @@
 Add source:doomed-src
-◐ Cloning source 'doomed-src'
+◐ Cloning source:doomed-src
   Cloning into '<STATE_DIR>/sources/doomed-src'...
   fatal: '<BARE>' does not appear to be a git repository
   fatal: Could not read from remote repository.
   Please make sure you have the correct access rights
   and the repository exists.
-✗ Cloning source 'doomed-src' — exit 128
+✗ Cloning source:doomed-src — exit 128
 ✗ Failed to clone source 'doomed-src' (libgit2) — failed to fetch source 'doomed-src': failed to resolve path '<BARE>': <os error>; class=Os (2)
 
 ✗ Failed to load source 'doomed-src': source error: failed to fetch source 'doomed-src': failed to resolve path '<BARE>': <os error>; class=Os (2)

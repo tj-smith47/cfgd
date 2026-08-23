@@ -704,6 +704,22 @@ mod tests {
         );
     }
 
+    /// Two owner-shaped words in one label: the RIGHTMOST wins, because the
+    /// detail after a token belongs to the token it follows.
+    #[test]
+    #[serial_test::serial]
+    fn the_rightmost_owner_token_is_the_one_painted() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        assert_eq!(
+            compose_in_flight_subject(&theme, "module:a source:b"),
+            format!(
+                "{} {}",
+                theme.info.apply_to("module:a"),
+                super::super::OwnerLabel::new("source", "b").styled(&theme)
+            )
+        );
+    }
+
     /// The owner predicate is shape-only, so it has to be TIGHT: a URL, an OCI
     /// reference and a colon that merely punctuates all stay one plain span.
     /// Painting `ghcr.io/acme/mod` as an owner "kind" would claim a structure
@@ -717,6 +733,13 @@ mod tests {
             "Pushing module to ghcr.io/acme/mod:1.0",
             "Restoring daily: staging snapshot",
             "Extracting archive",
+            // Windows paths. The uppercase drive letter is refused as a kind;
+            // a lowercase one is not, so the backslash in the name is the only
+            // thing standing between `c:\Users` and a painted owner token.
+            "Copying C:\\Users\\tj\\cfgd.yaml",
+            "Copying c:\\Users\\tj\\cfgd.yaml",
+            // A bare clock time: digits are not ASCII lowercase letters.
+            "Waiting until 12:30",
         ] {
             assert_eq!(
                 compose_in_flight_subject(&theme, label),

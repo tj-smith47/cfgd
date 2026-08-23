@@ -1,9 +1,9 @@
 Update Sources
-◐ Fetching source 'accept-src'
+◐ Fetching source:accept-src
   From file://<BARE_ROOT>/accept-src-source
    * branch            master     -> FETCH_HEAD
      <SHA>..<SHA>  master     -> origin/master
-✓ Fetching source 'accept-src'
+✓ Fetching source:accept-src
 
 source:accept-src
   Permission Changes
