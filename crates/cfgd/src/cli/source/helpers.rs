@@ -212,6 +212,22 @@ pub(crate) fn count_policy_items(items: &config::PolicyItems) -> usize {
 /// chain further composition.
 ///
 /// The single renderer behind both `cfgd decide`'s listing and `cfgd status`'s
+/// The tier word as it opens a pending-decision status subject, TitleCased to
+/// match every other subject-opening word on the same dashboard.
+///
+/// Display only: `PendingDecision.tier` is the raw `spec.policy` key the user
+/// wrote and the token every `-o json` reader and `cfgd decide` matches on, so
+/// it is never rewritten at the source. Generic rather than a three-arm match
+/// over the known tiers, so a policy key cfgd does not recognise still renders
+/// as itself instead of vanishing.
+fn title_cased_tier(tier: &str) -> String {
+    let mut chars = tier.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 /// Pending Decisions section: the same rows under two headings would let one
 /// screen's grammar drift from the other's.
 pub(crate) fn build_pending_decisions_table_section(
@@ -233,7 +249,7 @@ pub(crate) fn build_pending_decisions_table_section(
             items.iter().fold(sub, |sub, item| {
                 sub.status_with(
                     Role::Info,
-                    format!("{} {}", item.tier, item.resource),
+                    format!("{} {}", title_cased_tier(&item.tier), item.resource),
                     |f| f.detail(format!("{} ({})", item.summary, item.action)),
                 )
             })

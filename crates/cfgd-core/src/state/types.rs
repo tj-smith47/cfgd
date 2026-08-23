@@ -284,15 +284,22 @@ pub const SOURCE_STATUS_ERROR: &str = "error";
 /// by two names.
 ///
 /// The stored tokens ([`SOURCE_STATUS_ACTIVE`] / [`SOURCE_STATUS_ERROR`]) and
-/// the two spellings the CLI substitutes when there is no row to read
-/// (`pending` for a source resolved in `sources.lock` but never fetched,
-/// `unknown` for one with no record at all) are untouched WIRE values — a
-/// `-o json` consumer sees exactly what it saw before.
+/// the spellings the CLI substitutes when there is no row to read (`pending`
+/// for a source resolved in `sources.lock` but never fetched, `unknown` for one
+/// with no record at all) are untouched WIRE values — a `-o json` consumer sees
+/// exactly what it saw before.
+///
+/// `syncing` is the running daemon's LIVE state for a source whose fetch is in
+/// flight ([`crate::daemon::SourceStatus`]), never a `config_sources.status`
+/// row. It reads here rather than through a second mapping of its own, because
+/// `cfgd daemon status` and `cfgd source list` name the same sources and must
+/// not call one state by two words.
 pub fn source_status_display(stored: &str) -> (&'static str, Role) {
     match stored {
         SOURCE_STATUS_ACTIVE => ("Active", Role::Ok),
         SOURCE_STATUS_ERROR => ("Failed", Role::Fail),
         "pending" => ("Pending", Role::Pending),
+        "syncing" => ("Syncing", Role::Running),
         _ => ("Unknown", Role::Pending),
     }
 }
@@ -390,7 +397,8 @@ mod module_status_tests {
             ("Failed", Role::Fail)
         );
         assert_eq!(source_status_display("pending"), ("Pending", Role::Pending));
-        for stored in ["unknown", "syncing", ""] {
+        assert_eq!(source_status_display("syncing"), ("Syncing", Role::Running));
+        for stored in ["unknown", "fetching", ""] {
             assert_eq!(
                 source_status_display(stored),
                 ("Unknown", Role::Pending),
@@ -479,6 +487,25 @@ impl BackupRunStatus {
             "success" => BackupRunStatus::Success,
             _ => BackupRunStatus::Failed,
         }
+    }
+}
+
+/// The word a person reads for a recorded backup run's outcome — the display
+/// counterpart of [`BackupRunStatus::as_str`], which stays the untouched wire
+/// token. Its arms are matched against `as_str()` rather than against literals
+/// of their own, so the stored spelling and the shown one cannot drift apart.
+///
+/// A token neither arm recognises is shown VERBATIM rather than renamed:
+/// [`BackupRunStatus::from_str`] reads one as `Failed` for safety, and a screen
+/// asserting "Failed" about a row cfgd could not interpret would be a claim it
+/// has no basis for.
+pub fn backup_run_status_display(stored: &str) -> &str {
+    if stored == BackupRunStatus::Success.as_str() {
+        "Success"
+    } else if stored == BackupRunStatus::Failed.as_str() {
+        "Failed"
+    } else {
+        stored
     }
 }
 

@@ -175,7 +175,9 @@ fn drift_output() -> StatusOutput {
             last_commit: Some("abc123".into()),
             source_version: Some("3.1.0".into()),
             pinned_version: None,
-            status: "synced".into(),
+            // The token a real writer records; `synced` is not one any
+            // `config_sources.status` row ever holds.
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
         }],
         pending_decisions: vec![PendingDecision {
             id: 5,

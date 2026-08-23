@@ -6,7 +6,7 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::backup::{BackupUnit, SnapshotInfo};
 use cfgd_core::format_bytes;
 use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, TitleLabel, renderer::Table};
-use cfgd_core::state::{BackupRunRecord, BackupRunStatus};
+use cfgd_core::state::BackupRunRecord;
 
 fn backup_not_found_error(name: &str, valid: Vec<String>) -> anyhow::Error {
     let hint = if valid.is_empty() {
@@ -81,11 +81,15 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry]) -> Doc {
         "Next Run",
     ]);
     for e in entries {
+        // TitleCased here and nowhere else: `last_run_status` stays the stored
+        // token every `-o json` reader matches on. No role tint — the cell mixes
+        // a status word with a timestamp, so tinting it would paint the time too.
+        let shown = cfgd_core::state::backup_run_status_display;
         let last_run = match (&e.last_run_status, &e.last_run_at) {
             (Some(status), Some(at)) if e.last_run_clean == Some(false) => {
-                format!("{status} (dirty) @ {at}")
+                format!("{} (dirty) @ {at}", shown(status))
             }
-            (Some(status), Some(at)) => format!("{status} @ {at}"),
+            (Some(status), Some(at)) => format!("{} @ {at}", shown(status)),
             _ => "never".to_string(),
         };
         t = t.row([
@@ -247,10 +251,7 @@ pub fn cmd_backup_list(
                 source: spec.source.posix().to_string(),
                 schedule: spec.schedule.clone(),
                 retention: spec.retention,
-                last_run_status: last.as_ref().map(|r| match r.status {
-                    BackupRunStatus::Success => "success".to_string(),
-                    BackupRunStatus::Failed => "failed".to_string(),
-                }),
+                last_run_status: last.as_ref().map(|r| r.status.as_str().to_string()),
                 last_run_at: last.as_ref().map(|r| r.finished_at.clone()),
                 last_run_clean: last.as_ref().map(BackupRunRecord::is_clean),
                 // Seeded from the same `finished_at` the daemon anchors an

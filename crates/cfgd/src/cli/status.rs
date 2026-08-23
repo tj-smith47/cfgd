@@ -562,11 +562,18 @@ pub fn build_fleet_status_doc(
             } else {
                 let mut t = Table::new(["Source", "Status", "Version", "Last Fetched"]);
                 for rec in &output.sources {
-                    t = t.row([
-                        rec.name.clone(),
-                        rec.status.clone(),
-                        rec.source_version.clone().unwrap_or_else(|| "-".into()),
-                        rec.last_fetched.clone().unwrap_or_else(|| "never".into()),
+                    let (status, role) = cfgd_core::state::source_status_display(&rec.status);
+                    t = t.row_styled([
+                        (rec.name.clone(), None),
+                        (status.to_string(), Some(role)),
+                        (
+                            rec.source_version.clone().unwrap_or_else(|| "-".into()),
+                            None,
+                        ),
+                        (
+                            rec.last_fetched.clone().unwrap_or_else(|| "never".into()),
+                            None,
+                        ),
                     ]);
                 }
                 s.table(t)

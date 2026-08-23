@@ -161,21 +161,18 @@ pub fn build_daemon_status_doc(status: Option<&cfgd_core::daemon::DaemonStatusRe
                 );
             }
 
-            let rows: Vec<Vec<String>> = s
-                .sources
-                .iter()
-                .map(|src| {
-                    vec![
-                        src.name.clone(),
-                        src.status.clone(),
-                        src.drift_count.to_string(),
-                        src.last_sync.clone().unwrap_or_else(|| "-".to_string()),
-                    ]
-                })
-                .collect();
             let mut table = Table::new(["Name", "Status", "Drift", "Last Sync"]);
-            for row in rows {
-                table = table.row(row);
+            for src in &s.sources {
+                let (status, role) = cfgd_core::state::source_status_display(&src.status);
+                table = table.row_styled([
+                    (src.name.clone(), None),
+                    (status.to_string(), Some(role)),
+                    (src.drift_count.to_string(), None),
+                    (
+                        src.last_sync.clone().unwrap_or_else(|| "-".to_string()),
+                        None,
+                    ),
+                ]);
             }
             doc = doc.section("Sources", |sec| sec.table(table));
             doc.with_data(s)
@@ -996,16 +993,18 @@ mod tests {
     fn build_daemon_status_doc_with_sources_emits_table_rows() {
         let mut status = make_status(true);
         status.sources = vec![
+            // The two tokens a running daemon actually reports; `synced` and
+            // `stale` are spellings nothing writes into this field.
             cfgd_core::daemon::SourceStatus {
                 name: "infra".into(),
-                status: "synced".into(),
+                status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
                 drift_count: 0,
                 last_sync: Some("2026-05-22T10:00:00Z".into()),
                 last_reconcile: None,
             },
             cfgd_core::daemon::SourceStatus {
                 name: "apps".into(),
-                status: "stale".into(),
+                status: "syncing".into(),
                 drift_count: 3,
                 last_sync: None,
                 last_reconcile: None,
@@ -1017,9 +1016,11 @@ mod tests {
         let human = cap.human();
         assert!(human.contains("infra"), "infra source must appear: {human}");
         assert!(human.contains("apps"), "apps source must appear: {human}");
+        // The words, not the stored tokens: the cell renders through
+        // `source_status_display` like every other source-status cell.
         assert!(
-            human.contains("synced") || human.contains("stale"),
-            "source status must appear: {human}"
+            human.contains("Active") && human.contains("Syncing"),
+            "each source's status must render as its display word: {human}"
         );
     }
 

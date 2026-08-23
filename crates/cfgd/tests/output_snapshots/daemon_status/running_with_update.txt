@@ -14,5 +14,5 @@ Last sync           2026-05-12T09:55:00Z
 Sources
   Name   Status   Drift  Last Sync           
   ───────────────────────────────────────────
-  local  active   0      -                   
-  team   syncing  7      2026-05-12T09:00:00Z
+  local  Active   0      -                   
+  team   Syncing  7      2026-05-12T09:00:00Z
