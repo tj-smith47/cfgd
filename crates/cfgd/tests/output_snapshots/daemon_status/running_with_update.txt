@@ -12,7 +12,7 @@ Last sync           2026-05-12T09:55:00Z
 ⚠ Update available: 9.9.9 — run 'cfgd upgrade' to install
 
 Sources
-  Name   Status   Drift  Last Sync           
-  ───────────────────────────────────────────
-  local  Active   0      -                   
-  team   Syncing  7      2026-05-12T09:00:00Z
+  Name   Status  Drift  Last Sync           
+  ──────────────────────────────────────────
+  local  Active  0      -                   
+  team   Failed  7      2026-05-12T09:00:00Z

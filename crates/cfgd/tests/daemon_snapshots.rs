@@ -59,20 +59,23 @@ fn sample_status_basic() -> DaemonStatusResponse {
         last_reconcile: Some("2026-05-12T10:00:00Z".to_string()),
         last_sync: Some("2026-05-12T09:55:00Z".to_string()),
         drift_count: 7,
+        // Stored tokens, from the constants: `syncing` is a spelling nothing
+        // writes into this field, so a row seeded with it pinned only what an
+        // unrecognised token renders as.
         sources: vec![
             SourceStatus {
                 name: "local".to_string(),
                 last_sync: None,
                 last_reconcile: None,
                 drift_count: 0,
-                status: "active".to_string(),
+                status: cfgd_core::state::SOURCE_STATUS_ACTIVE.to_string(),
             },
             SourceStatus {
                 name: "team".to_string(),
                 last_sync: Some("2026-05-12T09:00:00Z".to_string()),
                 last_reconcile: None,
                 drift_count: 7,
-                status: "syncing".to_string(),
+                status: cfgd_core::state::SOURCE_STATUS_ERROR.to_string(),
             },
         ],
         update_available: None,

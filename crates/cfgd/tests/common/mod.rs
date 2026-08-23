@@ -1343,7 +1343,7 @@ pub fn rollback_state_with_non_file_actions_setup() -> (tempfile::TempDir, i64) 
             0,
             "packages",
             "package",
-            "package:brew:install:ripgrep",
+            "brew:install:ripgrep",
             None,
         )
         .unwrap();

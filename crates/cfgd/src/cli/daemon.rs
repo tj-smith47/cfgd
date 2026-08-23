@@ -993,8 +993,9 @@ mod tests {
     fn build_daemon_status_doc_with_sources_emits_table_rows() {
         let mut status = make_status(true);
         status.sources = vec![
-            // The two tokens a running daemon actually reports; `synced` and
-            // `stale` are spellings nothing writes into this field.
+            // Stored tokens, from the constants: `synced` and `stale` are
+            // spellings nothing writes into this field, so a row seeded with
+            // either proves only what an unrecognised token renders as.
             cfgd_core::daemon::SourceStatus {
                 name: "infra".into(),
                 status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
@@ -1004,7 +1005,7 @@ mod tests {
             },
             cfgd_core::daemon::SourceStatus {
                 name: "apps".into(),
-                status: "syncing".into(),
+                status: cfgd_core::state::SOURCE_STATUS_ERROR.into(),
                 drift_count: 3,
                 last_sync: None,
                 last_reconcile: None,
@@ -1019,7 +1020,7 @@ mod tests {
         // The words, not the stored tokens: the cell renders through
         // `source_status_display` like every other source-status cell.
         assert!(
-            human.contains("Active") && human.contains("Syncing"),
+            human.contains("Active") && human.contains("Failed"),
             "each source's status must render as its display word: {human}"
         );
     }

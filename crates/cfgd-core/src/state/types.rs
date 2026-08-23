@@ -289,17 +289,16 @@ pub const SOURCE_STATUS_ERROR: &str = "error";
 /// with no record at all) are untouched WIRE values — a `-o json` consumer sees
 /// exactly what it saw before.
 ///
-/// `syncing` is the running daemon's LIVE state for a source whose fetch is in
-/// flight ([`crate::daemon::SourceStatus`]), never a `config_sources.status`
-/// row. It reads here rather than through a second mapping of its own, because
-/// `cfgd daemon status` and `cfgd source list` name the same sources and must
-/// not call one state by two words.
+/// Also what `cfgd daemon status` renders its Sources column from
+/// ([`crate::daemon::SourceStatus`], which the running loop fills with
+/// [`SOURCE_STATUS_ACTIVE`]), so the two screens naming the same sources cannot
+/// call one state by two words. An arm is added here only when something
+/// WRITES the token it maps.
 pub fn source_status_display(stored: &str) -> (&'static str, Role) {
     match stored {
         SOURCE_STATUS_ACTIVE => ("Active", Role::Ok),
         SOURCE_STATUS_ERROR => ("Failed", Role::Fail),
         "pending" => ("Pending", Role::Pending),
-        "syncing" => ("Syncing", Role::Running),
         _ => ("Unknown", Role::Pending),
     }
 }
@@ -355,6 +354,28 @@ mod module_status_tests {
         assert_eq!(MODULE_STATUS_ERROR, "error");
     }
 
+    /// Wire contract, pinned byte-for-byte: the four words this function
+    /// returns are ALSO the `state` field of the `cfgd status <module>`
+    /// `-o json` payload, so a machine consumer matches on them. A reword is a
+    /// wire break and has to be made on purpose here rather than land as an
+    /// incidental find-and-replace.
+    #[test]
+    fn module_status_display_words_are_a_pinned_wire_contract() {
+        assert_eq!(
+            module_status_display(MODULE_STATUS_INSTALLED, false).0,
+            "Synced"
+        );
+        assert_eq!(
+            module_status_display(MODULE_STATUS_INSTALLED, true).0,
+            "Drifted"
+        );
+        assert_eq!(
+            module_status_display(MODULE_STATUS_ERROR, false).0,
+            "Failed"
+        );
+        assert_eq!(module_status_display("", false).0, "NotApplied");
+    }
+
     #[test]
     fn a_stored_token_maps_to_one_display_word_and_one_role() {
         assert_eq!(
@@ -397,8 +418,7 @@ mod module_status_tests {
             ("Failed", Role::Fail)
         );
         assert_eq!(source_status_display("pending"), ("Pending", Role::Pending));
-        assert_eq!(source_status_display("syncing"), ("Syncing", Role::Running));
-        for stored in ["unknown", "fetching", ""] {
+        for stored in ["unknown", "syncing", ""] {
             assert_eq!(
                 source_status_display(stored),
                 ("Unknown", Role::Pending),

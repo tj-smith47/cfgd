@@ -10,7 +10,7 @@ Last reconcile      2026-05-12T10:00:00Z
 Last sync           2026-05-12T09:55:00Z
 
 Sources
-  Name   Status   Drift  Last Sync           
-  ───────────────────────────────────────────
-  local  Active   0      -                   
-  team   Syncing  7      2026-05-12T09:00:00Z
+  Name   Status  Drift  Last Sync           
+  ──────────────────────────────────────────
+  local  Active  0      -                   
+  team   Failed  7      2026-05-12T09:00:00Z

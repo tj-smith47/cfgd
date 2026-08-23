@@ -8,6 +8,6 @@ Phase: Files
 ⚠ 1 non-file action requires manual review
 
 Actions
-  package  package:brew:install:ripgrep
+  package  brew:install:ripgrep
 
 ⊙ No files were changed during rollback
