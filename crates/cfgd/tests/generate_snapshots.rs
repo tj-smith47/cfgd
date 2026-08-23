@@ -67,6 +67,7 @@ fn cli_for(config_dir: &Path) -> cfgd::cli::Cli {
             module: None,
             scan: false,
             exit_code: false,
+            show_values: false,
         }),
     }
 }

@@ -552,6 +552,7 @@ fn test_cli(dir: &Path) -> super::super::Cli {
             module: None,
             scan: false,
             exit_code: false,
+            show_values: false,
         }),
     }
 }
@@ -2968,6 +2969,7 @@ mod profile_update_module_cleanup {
                 module: None,
                 scan: false,
                 exit_code: false,
+                show_values: false,
             }),
         }
     }

@@ -2,7 +2,7 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::LOCAL_LAYER;
 use cfgd_core::output::{
-    Doc, KvPair, OwnerLabel, Printer, Role, condense_script_label, renderer::Table,
+    Doc, KvPair, OwnerLabel, Printer, Role, SectionBuilder, condense_script_label, renderer::Table,
 };
 
 #[derive(Serialize)]
@@ -76,6 +76,12 @@ pub struct ModuleStatus {
     pub aliases: usize,
     /// Lifecycle hooks the module declares, by name (`preApply`, `onDrift`, …).
     pub scripts: Vec<String>,
+    /// The declared surfaces this report renders from: the counts above come
+    /// from it, and the wide inventories list its items. Display-only — every
+    /// fact it carries that a consumer needs is already a field of its own
+    /// beside it, so the payload shape is the same with or without it.
+    #[serde(skip)]
+    pub declared: cfgd_core::modules::ModuleSurfaces,
     /// System configurators the module contributes settings to, by name.
     pub system: Vec<String>,
     pub depends: Vec<String>,
@@ -93,11 +99,62 @@ pub struct ModuleStatus {
     /// Live drift found for this module's files and packages. Always empty
     /// unless `--scan` (or `--exit-code`, which implies it) requested the live
     /// scan — see `drift_checked_live`.
-    pub drift: Vec<cfgd_core::state::DriftEvent>,
+    pub drift: Vec<ModuleDrift>,
     /// Whether `drift` is the verdict of a live scan of this module or just
     /// an unchecked empty default. Mirrors `StatusOutput::drift_checked_live`
     /// so the two `-o json` shapes read the same way.
     pub drift_checked_live: bool,
+}
+
+/// One live-scan finding, carrying both the recorded-shape event a consumer
+/// reads and the three display slots a drift row renders from.
+///
+/// The two halves live on ONE value rather than in two parallel lists so a row
+/// can never name an owner, a surface or an item that belongs to a different
+/// finding. The event is flattened, so `-o json` sees exactly the
+/// [`cfgd_core::state::DriftEvent`] object it always did.
+#[derive(Serialize)]
+pub struct ModuleDrift {
+    #[serde(flatten)]
+    pub event: cfgd_core::state::DriftEvent,
+    /// The module the finding belongs to — the asked module, or one of the
+    /// dependencies its resolution pulled in.
+    #[serde(skip)]
+    pub owner: String,
+    /// Which declared surface it was found on: [`SURFACE_FILES`] or
+    /// [`SURFACE_PACKAGES`].
+    #[serde(skip)]
+    pub surface: &'static str,
+    /// The thing itself — a deployed path, or the package name(s).
+    #[serde(skip)]
+    pub item: String,
+}
+
+/// The two surfaces a per-module live scan looks at, spelled as the module
+/// document's own `spec` keys so a drift row names the block the reader edits.
+pub const SURFACE_FILES: &str = "files";
+pub const SURFACE_PACKAGES: &str = "packages";
+
+/// The terse cause a drift row ends with.
+///
+/// The verbose `want: <expected>, have: <actual>` pair states two content
+/// hashes a reader cannot act on; the row says what KIND of divergence was
+/// found and leaves the bytes to `cfgd diff`. Anything outside the three known
+/// shapes keeps the producer's own phrasing rather than being flattened into a
+/// word that would describe it wrongly.
+fn terse_drift_cause(expected: &str, actual: &str) -> String {
+    if actual == cfgd_core::Absence::Missing.as_str() {
+        return actual.to_string();
+    }
+    if actual.starts_with("content differs") {
+        return "content differs".to_string();
+    }
+    if cfgd_core::parse_loose_version(expected).is_some()
+        && cfgd_core::parse_loose_version(actual).is_some()
+    {
+        return "version mismatch".to_string();
+    }
+    actual.to_string()
 }
 
 /// What a manager reports about one declared package.
@@ -196,21 +253,23 @@ pub struct ModuleFileStatus {
     pub state: ModuleFilePresence,
 }
 
-/// Render the "Drift" section shared by the fleet-wide and per-module status
-/// docs. Both feed it the same `DriftEvent` shape, so a resource-id
-/// condensing rule or an attribution label added here reaches both surfaces
-/// without a second copy drifting out of sync.
-fn render_drift_section(
+/// The "Drift" section's frame, shared by the fleet-wide and per-module status
+/// docs: both state the same thing about an empty scan, and only the rows
+/// inside differ. The empty branch lives here so the one distinction that
+/// matters — a live scan may report a detection, a recorded dashboard may only
+/// report what it holds — cannot be made twice and answered differently.
+fn drift_section<T>(
     doc: Doc,
-    drift: &[cfgd_core::state::DriftEvent],
+    drift: &[T],
     checked_live: bool,
+    row: impl Fn(SectionBuilder, &T) -> SectionBuilder,
 ) -> Doc {
-    if drift.is_empty() {
-        // Only the live scan may claim a detection. The recorded dashboard has
-        // asked nothing of the machine, and "No drift detected" over a host
-        // whose last apply left a declared package uninstalled is an assurance
-        // no query backs.
-        doc.section("Drift", |s| {
+    doc.section("Drift", |s| {
+        if drift.is_empty() {
+            // Only the live scan may claim a detection. The recorded dashboard
+            // has asked nothing of the machine, and "No drift detected" over a
+            // host whose last apply left a declared package uninstalled is an
+            // assurance no query backs.
             if checked_live {
                 s.status(Role::Ok, "No drift detected")
             } else {
@@ -218,46 +277,87 @@ fn render_drift_section(
                     sf.detail("`cfgd diff` checks the live machine")
                 })
             }
-        })
-    } else {
-        doc.section("Drift", |s| {
-            drift.iter().fold(s, |s, event| {
-                // A "script" / "Running script" resource_id is the raw
-                // run_str body (preserved byte-identical for UPSERT matching
-                // against prior drift rows) — condense only here, at the
-                // point it enters a status subject, so a multi-line inline
-                // script never lands raw. Two type strings exist because two
-                // producers persist script actions: `apply_script_action`
-                // (main pre/post-apply phase scripts, format.rs's
-                // `format_action_description`) stamps "script"; `execute_script`
-                // (onChange / module-onChange scripts, reconciler/scripts.rs)
-                // stamps "Running script: {body}" — both must condense here.
-                let display_id =
-                    if event.resource_type == "script" || event.resource_type == "Running script" {
-                        condense_script_label(&event.resource_id)
-                    } else {
-                        event.resource_id.clone()
-                    };
-                let subject = format!("{} {}", event.resource_type, display_id);
-                let expected = event.expected.as_deref().unwrap_or("?");
-                let actual = event.actual.as_deref().unwrap_or("?");
-                if event.source != LOCAL_LAYER {
-                    // Source attribution renders in `secondary` (pink/magenta)
-                    // at end-of-subject; the StatusBuilder API guarantees the
-                    // label lands last so the inner SGR reset is never
-                    // followed by outer-role-styled text. The token is the
-                    // vocabulary `cfgd sync` and `cfgd source *` head their
-                    // groups with, so a reader carries one spelling across the
-                    // three surfaces that name a source.
-                    let label_text = OwnerLabel::new("source", &event.source).plain();
-                    s.status_with(Role::Warn, subject, |f| {
-                        f.drift(expected, actual).label(Role::Secondary, label_text)
-                    })
-                } else {
-                    s.status_with(Role::Warn, subject, |f| f.drift(expected, actual))
-                }
+        } else {
+            drift.iter().fold(s, &row)
+        }
+    })
+}
+
+/// Render the fleet-wide "Drift" section: one row per recorded event, named by
+/// the resource type and id the event was stored under.
+fn render_drift_section(
+    doc: Doc,
+    drift: &[cfgd_core::state::DriftEvent],
+    checked_live: bool,
+) -> Doc {
+    drift_section(doc, drift, checked_live, |s, event| {
+        // A "script" / "Running script" resource_id is the raw run_str body
+        // (preserved byte-identical for UPSERT matching against prior drift
+        // rows) — condense only here, at the point it enters a status subject,
+        // so a multi-line inline script never lands raw. Two type strings exist
+        // because two producers persist script actions: `apply_script_action`
+        // (main pre/post-apply phase scripts, format.rs's
+        // `format_action_description`) stamps "script"; `execute_script`
+        // (onChange / module-onChange scripts, reconciler/scripts.rs) stamps
+        // "Running script: {body}" — both must condense here.
+        let display_id =
+            if event.resource_type == "script" || event.resource_type == "Running script" {
+                condense_script_label(&event.resource_id)
+            } else {
+                event.resource_id.clone()
+            };
+        let subject = format!("{} {}", event.resource_type, display_id);
+        let expected = event.expected.as_deref().unwrap_or("?");
+        let actual = event.actual.as_deref().unwrap_or("?");
+        if event.source != LOCAL_LAYER {
+            // Source attribution renders in `secondary` (pink/magenta) at
+            // end-of-subject; the StatusBuilder API guarantees the label lands
+            // last so the inner SGR reset is never followed by outer-role-styled
+            // text. The token is the vocabulary `cfgd sync` and `cfgd source *`
+            // head their groups with, so a reader carries one spelling across
+            // the three surfaces that name a source.
+            let label_text = OwnerLabel::new("source", &event.source).plain();
+            s.status_with(Role::Warn, subject, |f| {
+                f.drift(expected, actual).label(Role::Secondary, label_text)
             })
-        })
+        } else {
+            s.status_with(Role::Warn, subject, |f| f.drift(expected, actual))
+        }
+    })
+}
+
+/// Render the per-module "Drift" section: one row per finding, named by the
+/// owner and surface it was found on rather than by the id it is stored under
+/// (`module:nvim:files /home/u/.zshrc — content differs`).
+fn render_module_drift_section(doc: Doc, drift: &[ModuleDrift], checked_live: bool) -> Doc {
+    drift_section(doc, drift, checked_live, |s, d| {
+        let subject = format!(
+            "{}:{} {}",
+            OwnerLabel::new("module", &d.owner).plain(),
+            d.surface,
+            d.item
+        );
+        let cause = terse_drift_cause(
+            d.event.expected.as_deref().unwrap_or_default(),
+            d.event.actual.as_deref().unwrap_or_default(),
+        );
+        s.status_with(Role::Warn, subject, |f| f.detail(cause))
+    })
+}
+
+/// The profile name a `Profile` row may state, or `None` when there is none to
+/// state.
+///
+/// A module-scoped run resolves no profile and stamps the placeholder its
+/// callers fall back to (`active_profile_name`), which then reaches the
+/// recorded apply and the dashboard reading it. A row saying the profile is
+/// `unknown` tells a reader that cfgd lost track of something, when the truth
+/// is that the run was never scoped to a profile at all — so the row is left
+/// out instead of naming a profile nothing has.
+fn derivable_profile(name: &str) -> Option<&str> {
+    match name.trim() {
+        "" | "unknown" => None,
+        name => Some(name),
     }
 }
 
@@ -279,8 +379,10 @@ pub fn build_fleet_status_doc(
 ) -> Doc {
     let mut doc = Doc::new()
         .heading("Status")
-        .kv("Config", config_path.display_posix())
-        .kv("Profile", profile_name);
+        .kv("Config", config_path.display_posix());
+    if let Some(profile) = derivable_profile(profile_name) {
+        doc = doc.kv("Profile", profile);
+    }
 
     // Only the recorded-state dashboard needs a staleness signal: a `--scan`/
     // `--exit-code` run just checked the machine itself, so its Drift section
@@ -305,10 +407,11 @@ pub fn build_fleet_status_doc(
     match &output.last_apply {
         Some(last) => {
             doc = doc.section("Last Apply", |s| {
-                let mut s = s
-                    .kv("Time", &last.timestamp)
-                    .kv("Profile", &last.profile)
-                    .kv("Result", last.status.human_str());
+                let mut s = s.kv("Time", &last.timestamp);
+                if let Some(profile) = derivable_profile(&last.profile) {
+                    s = s.kv("Profile", profile);
+                }
+                s = s.kv("Result", last.status.human_str());
                 if let Some(summary) = &last.summary {
                     s = s.kv("Summary", summary);
                 }
@@ -410,68 +513,177 @@ pub fn build_fleet_status_doc(
 /// Every row's subject is the thing's identity and its detail is what the
 /// machine holds — the same grammar the fleet doc's module rows read in, so
 /// one report never states a fact the other contradicts.
-pub fn build_module_status_doc(output: &ModuleStatus) -> Doc {
+pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView) -> Doc {
     // One aligned block: the Status row needs a role-tinted value, which only
     // `kv_rows` can carry, and `kv_rows` does not coalesce with a preceding
     // `kv` block — so every row of the header is built here.
-    let mut rows = vec![
-        KvPair::new("Packages", output.packages.to_string()),
-        KvPair::new("Files", output.files.to_string()),
-    ];
-    if output.env > 0 {
-        rows.push(KvPair::new("Env", output.env.to_string()));
-    }
-    if output.aliases > 0 {
-        rows.push(KvPair::new("Aliases", output.aliases.to_string()));
-    }
-    if !output.scripts.is_empty() {
-        rows.push(KvPair::new("Scripts", output.scripts.join(", ")));
-    }
-    if !output.system.is_empty() {
-        rows.push(KvPair::new("System", output.system.join(", ")));
-    }
-    if !output.depends.is_empty() {
-        rows.push(KvPair::new("Dependencies", output.depends.join(", ")));
-    }
-
+    //
     // `Drifted` is derived, never stored: it is read off the very scan whose
-    // findings fill the Drift section below, so the two can never disagree.
-    // Without a live scan there is no verdict to derive one from.
+    // findings fill the sections below, so the two can never disagree. Without
+    // a live scan there is no verdict to derive one from.
     let drifted = output.drift_checked_live && !output.drift.is_empty();
     let (state_word, role) = cfgd_core::state::module_status_display(&output.status, drifted);
-    rows.push(KvPair::role_valued("Status", state_word, role));
+    let mut rows = vec![KvPair::role_valued("Status", state_word, role)];
     if let Some(last) = &output.last_applied {
         rows.push(KvPair::new("Last applied", last));
+    }
+    // The counts are what the compact view has INSTEAD of the inventories: a
+    // report that showed both would state every fact twice.
+    if view == ModuleStatusView::Compact {
+        rows.push(KvPair::new("Packages", output.packages.to_string()));
+        rows.push(KvPair::new("Files", output.files.to_string()));
+        if output.env > 0 {
+            rows.push(KvPair::new("Env", output.env.to_string()));
+        }
+        if output.aliases > 0 {
+            rows.push(KvPair::new("Aliases", output.aliases.to_string()));
+        }
+        if let Some(scripts) = output.declared.script_summary() {
+            rows.push(KvPair::new("Scripts", scripts));
+        }
+        if !output.system.is_empty() {
+            rows.push(KvPair::new("System", output.system.join(", ")));
+        }
+        if !output.depends.is_empty() {
+            rows.push(KvPair::new("Dependencies", output.depends.join(", ")));
+        }
     }
 
     let mut doc = Doc::new()
         .heading_title("Status", &output.name)
         .kv_rows(rows);
 
-    doc = render_drift_section(doc, &output.drift, output.drift_checked_live);
-
-    doc = doc.section_if_nonempty("Packages", &output.package_state, |s, pkgs| {
-        pkgs.iter().fold(s, |s, pkg| {
-            // The manager rides in the detail beside the verdict it gave,
-            // never in the subject: the subject is the name the user declared,
-            // and an unscanned row has no manager to name.
-            let detail = match &pkg.manager {
-                Some(m) => format!("{} ({m})", pkg.state.label()),
-                None => pkg.state.label().to_string(),
-            };
-            s.status_with(pkg.state.role(), &pkg.name, |f| f.detail(detail))
-        })
-    });
-
-    doc = doc.section_if_nonempty("Deployed Files", &output.deployed_files, |s, files| {
-        files.iter().fold(s, |s, file| {
-            s.status_with(file.state.role(), &file.path, |f| {
-                f.detail(file.state.label())
-            })
-        })
-    });
+    doc = match view {
+        ModuleStatusView::Compact => {
+            render_module_drift_section(doc, &output.drift, output.drift_checked_live)
+        }
+        // No Drift section: every finding is already an inline verdict on the
+        // inventory row for the thing it was found on, and repeating it below
+        // would let one report state a verdict twice.
+        ModuleStatusView::Inventory { show_values } => {
+            render_module_inventories(doc, output, show_values)
+        }
+    };
 
     doc.with_data(output)
+}
+
+/// How much of a module a status report itemizes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleStatusView {
+    /// Counts, then the drift the scan found (the default).
+    Compact,
+    /// One row per declared item, with each one's verdict inline (`-o wide`).
+    /// `show_values` renders the declared value beside a name and a script's
+    /// whole body in place of its condensed label.
+    Inventory { show_values: bool },
+}
+
+/// The wide view's inventories: one section per declared surface, each row
+/// carrying its own verdict.
+fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool) -> Doc {
+    let mut doc =
+        doc.section_if_nonempty("Installed Packages", &output.package_state, |s, pkgs| {
+            let mut sorted: Vec<&ModulePackageStatus> = pkgs.iter().collect();
+            sorted.sort_by(|a, b| a.name.cmp(&b.name));
+            sorted.into_iter().fold(s, |s, pkg| {
+                // An installed row names the manager that has it and nothing else
+                // — the section heading already says installed. Every other row
+                // leads with the verdict, because that is the exception it reports.
+                let detail = match (&pkg.manager, pkg.state) {
+                    (Some(m), ModulePackagePresence::Installed) => m.clone(),
+                    (Some(m), state) => format!("{} ({m})", state.label()),
+                    (None, state) => state.label().to_string(),
+                };
+                s.status_with(pkg.state.role(), &pkg.name, |f| f.detail(detail))
+            })
+        });
+
+    // The cause a drifted file's row carries, keyed by the path the scan found
+    // it under: the inline verdict IS the drift finding, never a second
+    // judgement of the same file.
+    let file_causes: std::collections::HashMap<&str, String> = output
+        .drift
+        .iter()
+        .filter(|d| d.surface == SURFACE_FILES)
+        .map(|d| {
+            (
+                d.item.as_str(),
+                terse_drift_cause(
+                    d.event.expected.as_deref().unwrap_or_default(),
+                    d.event.actual.as_deref().unwrap_or_default(),
+                ),
+            )
+        })
+        .collect();
+
+    doc = doc.section_if_nonempty("Deployed Files", &output.deployed_files, |s, files| {
+        files.iter().fold(s, |s, file| match file.state {
+            // A converged row says the path and stops: "deployed" under a
+            // heading that already says Deployed Files is a word per row that
+            // adds nothing.
+            ModuleFilePresence::Deployed => s.status(Role::Ok, &file.path),
+            ModuleFilePresence::Drifted => {
+                let cause = file_causes
+                    .get(file.path.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| file.state.label().to_string());
+                s.status_with(file.state.role(), &file.path, |f| f.detail(cause))
+            }
+            _ => s.status_with(file.state.role(), &file.path, |f| {
+                f.detail(file.state.label())
+            }),
+        })
+    });
+
+    doc = doc.section_if_nonempty("Env", &output.declared.env, |s, env| {
+        let mut sorted: Vec<&cfgd_core::config::EnvVar> = env.iter().collect();
+        sorted.sort_by(|a, b| a.name.cmp(&b.name));
+        sorted.into_iter().fold(s, |s, ev| {
+            let subject = if show_values {
+                format!("{}={}", ev.name, ev.value)
+            } else {
+                ev.name.clone()
+            };
+            s.status(Role::Ok, subject)
+        })
+    });
+
+    doc = doc.section_if_nonempty("Aliases", &output.declared.aliases, |s, aliases| {
+        let mut sorted: Vec<&cfgd_core::config::ShellAlias> = aliases.iter().collect();
+        sorted.sort_by(|a, b| a.name.cmp(&b.name));
+        sorted.into_iter().fold(s, |s, alias| {
+            let subject = if show_values {
+                format!("{}={}", alias.name, alias.command)
+            } else {
+                alias.name.clone()
+            };
+            s.status(Role::Ok, subject)
+        })
+    });
+
+    // Execution order, never alphabetical: the order is the fact — a
+    // `postApply` that runs after a `preApply` is the only thing the list says
+    // about when either one happens.
+    doc.section_if_nonempty("Scripts", &output.declared.scripts, |s, hooks| {
+        hooks.iter().fold(s, |s, hook| {
+            hook.bodies.iter().fold(s, |s, body| {
+                // The whole body under `--show-values`, line breaks intact:
+                // the renderer lays a multi-line subject out as continuations
+                // indented to its own marker column, so the body stays part of
+                // the row that names the hook it runs in.
+                let subject = if show_values {
+                    cfgd_core::reconciler::DisplaySubject {
+                        marker: Some(hook.hook.to_string()),
+                        body: body.clone(),
+                    }
+                } else {
+                    cfgd_core::reconciler::hook_script_subject(hook.hook, body)
+                };
+                s.status(Role::Ok, subject.to_string())
+            })
+        })
+    })
 }
 
 /// Doc for the `cfgd status <module>` not-found path. Renders the module
@@ -485,6 +697,7 @@ pub fn build_module_status_not_found_doc(name: &str) -> Doc {
         env: 0,
         aliases: 0,
         scripts: Vec::new(),
+        declared: cfgd_core::modules::ModuleSurfaces::default(),
         system: Vec::new(),
         depends: Vec::new(),
         status: "not found".into(),
@@ -506,6 +719,7 @@ pub(super) fn cmd_status(
     module_filter: Option<&str>,
     exit_code: bool,
     scan: bool,
+    show_values: bool,
 ) -> anyhow::Result<()> {
     // `--exit-code` implies the live scan `--scan` names explicitly: a CI
     // gate has to reflect reality regardless of whether the caller also asked
@@ -514,7 +728,15 @@ pub(super) fn cmd_status(
     let do_scan = exit_code || scan;
     let ctx = RunContext::new(cli, printer);
     if let Some(mod_name) = module_filter {
-        return cmd_status_module(&ctx, mod_name, exit_code, do_scan);
+        // `--show-values` is a request to see the declared items themselves,
+        // which only the itemized view has rows for — so it implies it rather
+        // than silently doing nothing beside the counts.
+        let view = if printer.is_wide() || show_values {
+            ModuleStatusView::Inventory { show_values }
+        } else {
+            ModuleStatusView::Compact
+        };
+        return cmd_status_module(&ctx, mod_name, exit_code, do_scan, view);
     }
 
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
@@ -704,27 +926,6 @@ pub(super) fn cmd_status(
     Ok(())
 }
 
-/// The lifecycle hooks a module declares, by the name the YAML spells them
-/// with. Apply opens a phase for each one that has entries, so each has to be
-/// findable in the module's report.
-fn declared_script_hooks(spec: Option<&cfgd_core::config::ScriptSpec>) -> Vec<String> {
-    let Some(spec) = spec else {
-        return Vec::new();
-    };
-    [
-        ("preApply", &spec.pre_apply),
-        ("postApply", &spec.post_apply),
-        ("preReconcile", &spec.pre_reconcile),
-        ("postReconcile", &spec.post_reconcile),
-        ("onDrift", &spec.on_drift),
-        ("onChange", &spec.on_change),
-    ]
-    .into_iter()
-    .filter(|(_, entries)| !entries.is_empty())
-    .map(|(name, _)| name.to_string())
-    .collect()
-}
-
 /// Pair each DECLARED package with the scan verdict resolution produced for it.
 ///
 /// The two lists are joined by name and by ORDER, never by name alone: one name
@@ -775,6 +976,7 @@ pub(super) fn cmd_status_module(
     mod_name: &str,
     exit_code: bool,
     do_scan: bool,
+    view: ModuleStatusView,
 ) -> anyhow::Result<()> {
     let cli = ctx.cli();
     let printer = ctx.printer();
@@ -815,7 +1017,7 @@ pub(super) fn cmd_status_module(
     // sibling scans in `diff`/`verify`: the stamp dates the FLEET-wide
     // dashboard's header, and one module's files and packages are not evidence
     // the machine was checked.
-    let mut drift: Vec<cfgd_core::state::DriftEvent> = Vec::new();
+    let mut drift: Vec<ModuleDrift> = Vec::new();
     // The verify ids of the files this scan found drifted. The Deployed Files
     // rows are judged against it, so the two sections state one verdict per
     // file instead of a content check and a presence check disagreeing.
@@ -863,11 +1065,24 @@ pub(super) fn cmd_status_module(
                 )?;
                 for r in file_results.into_iter().filter(|r| !r.matches) {
                     drifted_ids.insert(r.resource_id.clone());
-                    drift.push(super::live_drift::drift_event_from(
-                        &r,
-                        &resolved.merged.env,
-                        &resolved.merged.aliases,
-                    ));
+                    // The id is where a file finding carries its owner and its
+                    // path; a row names them separately. An id that splits into
+                    // neither attributes itself to the module under report,
+                    // which is the only module a caller asked about.
+                    let (owner, item) =
+                        super::live_drift::split_module_file_resource_id(&r.resource_id)
+                            .map(|(m, target)| (m.to_string(), target))
+                            .unwrap_or_else(|| (mod_name.to_string(), r.resource_id.clone()));
+                    drift.push(ModuleDrift {
+                        event: super::live_drift::drift_event_from(
+                            &r,
+                            &resolved.merged.env,
+                            &resolved.merged.aliases,
+                        ),
+                        owner,
+                        surface: SURFACE_FILES,
+                        item,
+                    });
                 }
 
                 sp.set_message(format!("Scanning module:{mod_name} packages"));
@@ -889,20 +1104,29 @@ pub(super) fn cmd_status_module(
                         } else if let Some(pd) =
                             super::diff::package_missing_drift(pkg, &mgr_map, &pkg_cx)
                         {
-                            drift.push(super::live_drift::drift_event_from(
-                                &cfgd_core::reconciler::VerifyResult {
-                                    resource_type: "package".to_string(),
-                                    resource_id: super::diff::package_resource_id(
-                                        &pd.manager,
-                                        &pd.packages,
-                                    ),
-                                    matches: false,
-                                    expected: "installed".to_string(),
-                                    actual: "missing".to_string(),
-                                },
-                                &resolved.merged.env,
-                                &resolved.merged.aliases,
-                            ));
+                            drift.push(ModuleDrift {
+                                event: super::live_drift::drift_event_from(
+                                    &cfgd_core::reconciler::VerifyResult {
+                                        resource_type: "package".to_string(),
+                                        resource_id: super::diff::package_resource_id(
+                                            &pd.manager,
+                                            &pd.packages,
+                                        ),
+                                        matches: false,
+                                        expected: "installed".to_string(),
+                                        actual: cfgd_core::Absence::Missing.to_string(),
+                                    },
+                                    &resolved.merged.env,
+                                    &resolved.merged.aliases,
+                                ),
+                                // The module whose resolution declared this
+                                // package, which is not always the one under
+                                // report: a dependency's missing package is
+                                // still why the asked module does not work.
+                                owner: resolved_module.name.clone(),
+                                surface: SURFACE_PACKAGES,
+                                item: pd.packages.join(", "),
+                            });
                             ModulePackagePresence::NotInstalled
                         } else {
                             ModulePackagePresence::Installed
@@ -958,15 +1182,20 @@ pub(super) fn cmd_status_module(
         })
         .collect();
 
+    // Every declared count and list in the report is read off ONE tally, so
+    // the count a summary row states and the list the inventory renders cannot
+    // describe different modules.
+    let declared = cfgd_core::modules::ModuleSurfaces::of(&module.spec);
     let output = ModuleStatus {
         name: mod_name.to_string(),
-        packages: module.spec.packages.len(),
-        files: module.spec.files.len(),
-        env: module.spec.env.len(),
-        aliases: module.spec.aliases.len(),
-        scripts: declared_script_hooks(module.spec.scripts.as_ref()),
-        system: module.spec.system.keys().cloned().collect(),
-        depends: module.spec.depends.clone(),
+        packages: declared.packages,
+        files: declared.files,
+        env: declared.env.len(),
+        aliases: declared.aliases.len(),
+        scripts: declared.hook_names(),
+        system: declared.system.clone(),
+        depends: declared.depends.clone(),
+        declared,
         status,
         last_applied,
         package_state,
@@ -975,7 +1204,7 @@ pub(super) fn cmd_status_module(
         drift,
     };
 
-    printer.emit(build_module_status_doc(&output));
+    printer.emit(build_module_status_doc(&output, view));
 
     if exit_code && !output.drift.is_empty() {
         cfgd_core::exit::ExitCode::DriftDetected.exit();
@@ -1290,7 +1519,7 @@ mod tests {
         let cli = test_cli_for(dir.path().join("nope.yaml"), state_dir.path());
         let (printer, _) = test_printers();
 
-        let err = cmd_status(&cli, &printer, None, false, false).unwrap_err();
+        let err = cmd_status(&cli, &printer, None, false, false, false).unwrap_err();
         let msg = err.to_string().to_lowercase();
         assert!(
             msg.contains("not found") || msg.contains("nope.yaml"),
@@ -1304,7 +1533,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false).unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1338,7 +1567,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false).unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1377,7 +1606,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false).unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1412,7 +1641,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false).unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1436,7 +1665,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false).unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1467,7 +1696,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false, false).unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1493,7 +1722,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false, false).unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1519,7 +1748,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, _) = test_printers();
 
-        let res = cmd_status(&cli, &printer, None, false, false);
+        let res = cmd_status(&cli, &printer, None, false, false, false);
         assert!(res.is_ok(), "exit_code=false must return Ok, got: {res:?}");
     }
 
@@ -1532,7 +1761,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, _) = test_printers();
 
-        let res = cmd_status(&cli, &printer, None, true, true);
+        let res = cmd_status(&cli, &printer, None, true, true, false);
         assert!(
             res.is_ok(),
             "exit_code=true with no drift must return Ok, got: {res:?}"
@@ -1559,7 +1788,7 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false, true).unwrap();
+        cmd_status(&cli, &printer, None, false, true, false).unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -1629,7 +1858,7 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false, true).unwrap();
+        cmd_status(&cli, &printer, None, false, true, false).unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -1656,7 +1885,7 @@ mod tests {
         // up there too — assert its content directly rather than trusting the
         // JSON assertion above to stand in for it.
         let (human_printer, human_buf) = test_printers();
-        cmd_status(&cli, &human_printer, None, false, true).unwrap();
+        cmd_status(&cli, &human_printer, None, false, true, false).unwrap();
         drop(human_printer);
         let human = cfgd_core::test_helpers::captured_text(&human_buf);
         let editor_line = human
@@ -1688,7 +1917,7 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false, false).unwrap();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -1721,7 +1950,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, Some("test-mod"), false, false).unwrap();
+        cmd_status(&cli, &printer, Some("test-mod"), false, false, false).unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1749,7 +1978,14 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status_module(&RunContext::new(&cli, &printer), "ghost", false, false).unwrap();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "ghost",
+            false,
+            false,
+            ModuleStatusView::Compact,
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1773,7 +2009,14 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status_module(&RunContext::new(&cli, &printer), "ghost", false, false).unwrap();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "ghost",
+            false,
+            false,
+            ModuleStatusView::Compact,
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -1808,7 +2051,14 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, false).unwrap();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            false,
+            ModuleStatusView::Compact,
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1913,7 +2163,14 @@ mod tests {
 
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
-        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, false).unwrap();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            false,
+            ModuleStatusView::Inventory { show_values: false },
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -2000,7 +2257,14 @@ mod tests {
         );
 
         let (printer, buf) = test_printers();
-        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, false).unwrap();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            false,
+            ModuleStatusView::Compact,
+        )
+        .unwrap();
         drop(printer);
         let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -2079,7 +2343,14 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, false).unwrap();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            false,
+            ModuleStatusView::Compact,
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -2126,7 +2397,14 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, false).unwrap();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            false,
+            ModuleStatusView::Inventory { show_values: false },
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -2169,7 +2447,14 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, false).unwrap();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            false,
+            ModuleStatusView::Compact,
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -2270,10 +2555,10 @@ mod tests {
             .1
     }
 
-    /// P2: a file whose content drifted is reported drifted by the Drift
-    /// section AND by its Deployed Files row. It is present on disk, so the
-    /// bare `Path::exists` check this row used to be rendered it converged
-    /// three lines under its own `want:`/`have:`.
+    /// A file whose content drifted carries that verdict on its own Deployed
+    /// Files row. It is present on disk, so the bare `Path::exists` check this
+    /// row used to be rendered it converged — beside, in the compact view, its
+    /// own drift finding.
     #[test]
     fn cmd_status_module_drifted_file_is_never_ok_under_deployed_files() {
         let env = module_env_with("tampered\n", "[]");
@@ -2281,14 +2566,17 @@ mod tests {
 
         let cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
         let (printer, buf) = test_printers();
-        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, true).unwrap();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            true,
+            ModuleStatusView::Inventory { show_values: false },
+        )
+        .unwrap();
         drop(printer);
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
-        assert!(
-            out.contains("want:"),
-            "the scan must report the tampered file as drift: {out}"
-        );
         let deployed = deployed_files_section(&out);
         let path = cfgd_core::to_posix_string(&env.target);
         let row = deployed
@@ -2296,8 +2584,8 @@ mod tests {
             .find(|l| l.contains(&path))
             .unwrap_or_else(|| panic!("no deployed row for {path}: {out}"));
         assert!(
-            row.contains("drifted"),
-            "the deployed row must carry the same verdict the Drift section gave: {row}"
+            row.contains("content differs"),
+            "the row must carry the cause the scan found, not a bare presence check: {row}"
         );
         assert!(
             !row.contains('✓'),
@@ -2314,7 +2602,14 @@ mod tests {
 
         let cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
         let (printer, buf) = test_printers();
-        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, true).unwrap();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            true,
+            ModuleStatusView::Inventory { show_values: false },
+        )
+        .unwrap();
         drop(printer);
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -2325,8 +2620,8 @@ mod tests {
             .find(|l| l.contains(&path))
             .unwrap_or_else(|| panic!("no deployed row for {path}: {out}"));
         assert!(
-            row.contains("deployed") && !row.contains("drifted"),
-            "a scanned, converged file must read deployed: {row}"
+            row.contains('✓') && !row.contains("content differs"),
+            "a scanned, converged file must read converged: {row}"
         );
     }
 
@@ -2342,12 +2637,19 @@ mod tests {
         );
         let cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
         let (printer, buf) = test_printers();
-        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, true).unwrap();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            true,
+            ModuleStatusView::Inventory { show_values: false },
+        )
+        .unwrap();
         drop(printer);
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            out.contains("\nPackages\n"),
+            out.contains("\nInstalled Packages\n"),
             "the packages phase must have a section of its own: {out}"
         );
         let row = out
@@ -2371,7 +2673,14 @@ mod tests {
 
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
-        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, false).unwrap();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            false,
+            ModuleStatusView::Inventory { show_values: false },
+        )
+        .unwrap();
         drop(printer);
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -2399,7 +2708,14 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", false, true).unwrap();
+        cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            false,
+            true,
+            ModuleStatusView::Compact,
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -2428,7 +2744,13 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        let res = cmd_status_module(&RunContext::new(&cli, &printer), "test-mod", true, true);
+        let res = cmd_status_module(
+            &RunContext::new(&cli, &printer),
+            "test-mod",
+            true,
+            true,
+            ModuleStatusView::Compact,
+        );
         assert!(
             res.is_ok(),
             "exit_code=true with a converged module must return Ok, got: {res:?}"

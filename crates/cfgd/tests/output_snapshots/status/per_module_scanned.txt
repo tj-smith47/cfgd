@@ -1,18 +1,14 @@
 Status: dev-tools
-  Packages      2
-  Files         12
-  Dependencies  base
   Status        Drifted
   Last applied  2026-05-14T10:00:00Z
+  Packages      2
+  Files         12
+  Env           2
+  Aliases       1
+  Scripts       1 preApply, 2 postApply
+  System        shell
+  Dependencies  base
 
 Drift
-  ⚠ module dev-tools/home/user/.zshrc — want: hash-desired, have: hash-actual
-
-Packages
-  ✓ neovim  — installed (brew)
-  ⚠ ripgrep — not installed (brew)
-
-Deployed Files
-  ✓ /home/user/.config/nvim/init.lua — deployed
-  ⚠ /home/user/.zshrc                — drifted
-  ✗ /home/user/.gitconfig            — missing
+  ⚠ module:dev-tools:files /home/user/.zshrc — content differs
+  ⚠ module:dev-tools:packages ripgrep        — version mismatch

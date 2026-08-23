@@ -676,7 +676,9 @@ fn status_module_exit_code_catches_module_file_drift() {
         .code(5);
     let out = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
     assert!(
-        out.contains("conf") && out.contains("want:") && out.contains("have:"),
+        out.contains("module:accmod:files")
+            && out.contains("conf")
+            && out.contains("content differs"),
         "drifted module file must surface in the Drift section, got:\n{out}"
     );
 }

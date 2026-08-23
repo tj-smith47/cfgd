@@ -533,6 +533,8 @@ cfgd status                                 # human-readable table
 cfgd status -o json                         # full status as JSON
 cfgd status -o jsonpath='{.drift}'          # extract drift events
 cfgd status --module nvim                   # status for a single module (no profile required)
+cfgd status --module nvim -o wide           # itemized inventories instead of counts
+cfgd status --module nvim --show-values     # inventories with declared values (implies -o wide)
 cfgd status --scan                          # live scan of this machine right now
 cfgd status --scan --module nvim            # live scan of one module
 cfgd status --module nvim --exit-code       # live scan: exit 5 if the module has drifted
@@ -576,20 +578,65 @@ packages only: it does not evaluate the module's system-config contribution
 (`effective_system_map` folds that into the profile-wide scan) or manager
 drift, matching the scope of `cfgd diff --module`.
 
-The module report states one verdict per thing. Every declared package gets a
-row under `Packages` and every file the module has deployed gets a row under
-`Deployed Files`, each carrying what this run can actually say about it:
+The default module report is a summary: one count per declared surface, then
+what the scan found. The `Scripts` count is per hook, in the order the hooks
+run, so a module's `preApply` work is distinguishable from its `postApply`
+work without opening the module:
 
 ```
-Packages
-  ✓ neovim  — installed (brew)
+Status: nvim
+  Status        Drifted
+  Last applied  2026-08-21T18:58:02Z
+  Packages      27
+  Files         6
+  Env           3
+  Aliases       3
+  Scripts       3 preApply, 6 postApply
+
+Drift
+  ⚠ module:nvim:files /home/tj/.config/nvim/stylua.toml — content differs
+  ⚠ module:nvim:packages ripgrep                        — version mismatch
+```
+
+Each drift row names the module, the `spec` block the finding is on, the item
+itself, and the KIND of divergence (`content differs`, `version mismatch`,
+`missing`) — the bytes are `cfgd diff`'s job. `✓ No drift detected` is claimed
+only after `--scan`; without one the row says nothing was checked.
+
+`-o wide` replaces the counts with the inventories, each row carrying its own
+verdict, and drops the `Drift` section — every finding is already inline on the
+row for the thing it was found on:
+
+```
+Status: nvim
+  Status        Drifted
+  Last applied  2026-08-21T18:58:02Z
+
+Installed Packages
+  ✓ neovim  — brew
   ⚠ ripgrep — not installed (brew)
 
 Deployed Files
-  ✓ ~/.config/nvim/init.lua — deployed
-  ⚠ ~/.zshrc                — drifted
-  ✗ ~/.gitconfig            — missing
+  ✓ /home/tj/.config/nvim/init.lua
+  ⚠ /home/tj/.config/nvim/stylua.toml — content differs
+  ✗ /home/tj/.gitconfig               — missing
+
+Env
+  ✓ EDITOR
+  ✓ PAGER
+
+Aliases
+  ✓ gs
+
+Scripts
+  ✓ preApply: set -euo pipefail …
+  ✓ postApply: nvim --headless '+Lazy! sync' +qa
 ```
+
+Packages, files, env and aliases list alphabetically; scripts stay in
+execution order, because that order is the fact. `--show-values` renders the
+same inventories with each declared value (`EDITOR=nvim`) and each script's
+whole body instead of its condensed first line, and implies `-o wide`.
 
 Without `--scan` nothing has asked a manager and nothing has read a file's
 content, so every package row and every present file reads `not scanned`
@@ -597,14 +644,11 @@ content, so every package row and every present file reads `not scanned`
 `missing` either way). A package the module's own `platforms` gate rules out
 on this host reads `skipped (platform filter)` instead, the same words `cfgd
 module show` uses for it: nothing was ever going to install it, scan or no
-scan. A file the scan found drifted reads `drifted` here and `want:`/`have:`
-under `Drift`, never converged beside its own drift. `-o json` carries the
-same verdicts as `packageState[].state` (`installed`, `notInstalled`,
-`notScanned`, `platformSkipped`) and `deployedFiles[].state` (`deployed`,
-`drifted`, `missing`, `notScanned`). The header adds a count for each
-declared surface the module contributes (`Env`, `Aliases`, `Scripts`,
-`System`) so a phase that ran during `apply` is findable in the report;
-`cfgd module show` itemizes what those counts summarize.
+scan. `-o json` carries the same verdicts as `packageState[].state`
+(`installed`, `notInstalled`, `notScanned`, `platformSkipped`) and
+`deployedFiles[].state` (`deployed`, `drifted`, `missing`, `notScanned`), and
+is identical under every view — `-o wide` and `--show-values` change the human
+render only.
 
 `pendingDecisions` lists the same rows `cfgd decide` offers, including
 classified-but-unrecorded items with `id: 0` (see [`cfgd plan`](#cfgd-plan)).

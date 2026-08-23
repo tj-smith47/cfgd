@@ -1,0 +1,25 @@
+Status: dev-tools
+  Status        Drifted
+  Last applied  2026-05-14T10:00:00Z
+
+Installed Packages
+  ✓ neovim  — brew
+  ⚠ ripgrep — not installed (brew)
+
+Deployed Files
+  ✓ /home/user/.config/nvim/init.lua
+  ⚠ /home/user/.zshrc     — content differs
+  ✗ /home/user/.gitconfig — missing
+
+Env
+  ✓ EDITOR=nvim
+  ✓ PAGER=less -R
+
+Aliases
+  ✓ gs=git status --short
+
+Scripts
+  ✓ preApply: set -euo pipefail
+    mkdir -p ~/.config/nvim
+  ✓ postApply: nvim --headless '+Lazy! sync' +qa
+  ✓ postApply: echo done

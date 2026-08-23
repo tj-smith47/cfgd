@@ -207,6 +207,7 @@ impl CliTestHarness {
                 module: None,
                 scan: false,
                 exit_code: false,
+                show_values: false,
             }),
         }
     }
@@ -551,6 +552,7 @@ fn status_scan_is_a_plain_flag_that_composes_with_exit_code_and_module() {
             module,
             scan,
             exit_code,
+            show_values: _,
         }) = parsed.command
         else {
             panic!("{argv:?} did not parse as status");
@@ -1313,6 +1315,7 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
             module: None,
             scan: false,
             exit_code: false,
+            show_values: false,
         }),
     }
 }
@@ -4619,7 +4622,7 @@ fn setup_test_env() -> (tempfile::TempDir, tempfile::TempDir) {
 #[test]
 fn cmd_status_with_empty_state() {
     let h = CliTestHarness::builder().build();
-    super::status::cmd_status(&h.cli(), h.printer(), None, false, false).unwrap();
+    super::status::cmd_status(&h.cli(), h.printer(), None, false, false, false).unwrap();
     h.assert_header("Status");
     h.assert_output_contains("No applies recorded yet");
 }
@@ -4627,7 +4630,15 @@ fn cmd_status_with_empty_state() {
 #[test]
 fn cmd_status_module_not_found() {
     let h = CliTestHarness::builder().build();
-    super::status::cmd_status(&h.cli(), h.printer(), Some("nonexistent"), false, false).unwrap();
+    super::status::cmd_status(
+        &h.cli(),
+        h.printer(),
+        Some("nonexistent"),
+        false,
+        false,
+        false,
+    )
+    .unwrap();
     h.assert_output_contains("nonexistent");
 }
 
@@ -4636,7 +4647,8 @@ fn cmd_status_module_found() {
     let h = CliTestHarness::builder()
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
-    super::status::cmd_status(&h.cli(), h.printer(), Some("test-mod"), false, false).unwrap();
+    super::status::cmd_status(&h.cli(), h.printer(), Some("test-mod"), false, false, false)
+        .unwrap();
     h.assert_output_contains("test-mod");
 }
 
@@ -4794,6 +4806,7 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
             module: None,
             scan: false,
             exit_code: false,
+            show_values: false,
         }),
     };
     let printer = test_printer();
@@ -5000,7 +5013,7 @@ fn cmd_status_after_apply() {
     };
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
 
-    super::status::cmd_status(&cli, &printer, None, false, false).unwrap();
+    super::status::cmd_status(&cli, &printer, None, false, false, false).unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -5291,7 +5304,7 @@ fn cmd_diff_with_files() {
 #[test]
 fn cmd_status_structured_output() {
     let h = CliTestHarness::builder().json().build();
-    super::status::cmd_status(&h.cli(), h.printer(), None, false, false).unwrap();
+    super::status::cmd_status(&h.cli(), h.printer(), None, false, false, false).unwrap();
     let parsed = h.json_output();
     assert!(
         parsed.get("lastApply").is_some() || parsed.get("modules").is_some(),
@@ -5359,6 +5372,7 @@ fn execute_status_command() {
         module: None,
         scan: false,
         exit_code: false,
+        show_values: false,
     });
     super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
     h.assert_header("Status");
@@ -5888,7 +5902,7 @@ fn cmd_status_with_modules() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     assert!(
-        super::status::cmd_status(&cli, &printer, None, false, false).is_ok(),
+        super::status::cmd_status(&cli, &printer, None, false, false, false).is_ok(),
         "status should succeed when profile references modules"
     );
 
@@ -5949,7 +5963,7 @@ fn cmd_status_with_drift_events() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::status::cmd_status(&cli, &printer, None, false, false).unwrap();
+    super::status::cmd_status(&cli, &printer, None, false, false, false).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -11362,7 +11376,7 @@ fn cmd_status_module_structured_output() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::status::cmd_status(&cli, &printer, Some("json-mod"), false, false).unwrap();
+    super::status::cmd_status(&cli, &printer, Some("json-mod"), false, false, false).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -13867,6 +13881,7 @@ fn cmd_status_module_not_found_output() {
         "nonexistent",
         false,
         false,
+        super::status::ModuleStatusView::Compact,
     )
     .unwrap();
     h.assert_output_contains("nonexistent");
@@ -13881,6 +13896,7 @@ fn cmd_status_module_not_found_json() {
         "ghost-mod",
         false,
         false,
+        super::status::ModuleStatusView::Compact,
     )
     .unwrap();
     let parsed = h.json_output();
@@ -13900,6 +13916,7 @@ fn cmd_status_module_found_output() {
         "my-mod",
         false,
         false,
+        super::status::ModuleStatusView::Compact,
     )
     .unwrap();
     h.assert_output_contains("my-mod");
@@ -13918,6 +13935,7 @@ fn cmd_status_module_found_json() {
         "my-mod",
         false,
         false,
+        super::status::ModuleStatusView::Compact,
     )
     .unwrap();
     let parsed = h.json_output();
@@ -14131,7 +14149,7 @@ fn cmd_compliance_history_json() {
 #[test]
 fn json_schema_status() {
     let h = CliTestHarness::builder().json().build();
-    super::status::cmd_status(&h.cli(), h.printer(), None, false, false).unwrap();
+    super::status::cmd_status(&h.cli(), h.printer(), None, false, false, false).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(
         &parsed,
@@ -14160,6 +14178,7 @@ fn json_schema_status_module() {
         "test-mod",
         false,
         false,
+        super::status::ModuleStatusView::Compact,
     )
     .unwrap();
     let parsed = h.json_output();
@@ -16040,6 +16059,7 @@ spec:
         "status-mod",
         false,
         false,
+        super::status::ModuleStatusView::Compact,
     );
     assert!(
         result.is_ok(),
@@ -16095,6 +16115,7 @@ spec:
         "json-status-mod",
         false,
         false,
+        super::status::ModuleStatusView::Compact,
     );
     assert!(
         result.is_ok(),
@@ -16122,6 +16143,7 @@ fn cmd_status_module_json_output_not_found() {
         "nonexistent-mod",
         false,
         false,
+        super::status::ModuleStatusView::Compact,
     );
     assert!(result.is_ok(), "missing module JSON status should succeed");
 
@@ -16394,7 +16416,7 @@ fn cmd_diff_module_with_files_shows_file_and_package_sections() {
 #[test]
 fn cmd_status_with_sources_shows_source_section() {
     let h = CliTestHarness::builder().rich_config().build();
-    let result = super::status::cmd_status(&h.cli(), h.printer(), None, false, false);
+    let result = super::status::cmd_status(&h.cli(), h.printer(), None, false, false, false);
     assert!(
         result.is_ok(),
         "status with sources should succeed: {:?}",
@@ -22277,7 +22299,7 @@ fn status_lists_only_the_decisions_their_source_can_still_answer() {
         )
         .unwrap();
 
-    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false).unwrap();
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false).unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
     assert!(
@@ -22424,7 +22446,7 @@ fn status_lists_the_unrecorded_item_the_plan_withholds() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::status::cmd_status(&f.h.cli(), &printer, None, false, false).unwrap();
+    super::status::cmd_status(&f.h.cli(), &printer, None, false, false, false).unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
 
@@ -22861,7 +22883,7 @@ fn the_version_conflict_annotation_reaches_the_status_dashboard() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::apply::cmd_apply(&f.h.cli(), &apply_printer, &apply_args(false)).unwrap();
 
-    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false).unwrap();
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false).unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
     assert!(
         output.contains(PINNED_CONFLICT_ANNOTATION),
@@ -22926,7 +22948,7 @@ fn status_names_the_undecidable_source_batch_in_warnings() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::plan::cmd_plan(&f.h.cli(), &warm_printer, &plan_args()).unwrap();
 
-    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false).unwrap();
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false).unwrap();
     let json = f.h.json_output();
     let warnings = json["warnings"]
         .as_array()
@@ -22954,7 +22976,7 @@ fn status_renders_the_undecidable_batch_warning_for_the_operator() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::plan::cmd_plan(&f.h.cli(), &warm_printer, &plan_args()).unwrap();
 
-    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false).unwrap();
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false).unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
     assert!(
         output.contains("pip3.11") && output.contains("'.'"),
@@ -23057,7 +23079,7 @@ fn status_still_renders_when_the_source_classification_is_unreadable() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::status::cmd_status(&f.h.cli(), &printer, None, false, false)
+    super::status::cmd_status(&f.h.cli(), &printer, None, false, false, false)
         .expect("a read-only dashboard renders through a classification failure");
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -23086,7 +23108,7 @@ fn a_degraded_status_json_payload_says_so_structurally() {
     });
     write_broken_manifest(&f.h);
 
-    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false)
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false)
         .expect("a read-only dashboard renders through a classification failure");
     let json = f.h.json_output();
     assert_eq!(
@@ -23115,7 +23137,7 @@ fn a_clean_status_json_payload_marks_classification_undegraded() {
         extra_spec: NOTIFYING_POLICY,
         ..Default::default()
     });
-    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false)
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false)
         .expect("a clean classification renders");
     let json = f.h.json_output();
     assert_eq!(
@@ -23242,7 +23264,7 @@ fn a_sourceless_status_skips_source_classification_entirely() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::status::cmd_status(&h.cli(), &printer, None, false, false)
+    super::status::cmd_status(&h.cli(), &printer, None, false, false, false)
         .expect("no sources, no classification, no failure");
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -23412,7 +23434,7 @@ fn status_payload_marks_the_unrecorded_decision_with_id_zero() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::plan::cmd_plan(&f.h.cli(), &plan_printer, &plan_args()).unwrap();
 
-    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false).unwrap();
+    super::status::cmd_status(&f.h.cli(), f.h.printer(), None, false, false, false).unwrap();
     let json = f.h.json_output();
 
     let pending = json["pendingDecisions"]

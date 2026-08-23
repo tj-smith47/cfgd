@@ -1,5 +1,5 @@
 {
-  "aliases": 0,
+  "aliases": 1,
   "depends": [
     "base"
   ],
@@ -19,18 +19,28 @@
   ],
   "drift": [
     {
-      "actual": "hash-actual",
-      "expected": "hash-desired",
+      "actual": "content differs from source",
+      "expected": "content matches source",
       "id": 20,
       "resolvedBy": null,
       "resourceId": "dev-tools/home/user/.zshrc",
       "resourceType": "module",
       "source": "local",
       "timestamp": "2026-05-14T12:00:00Z"
+    },
+    {
+      "actual": "13.0.0",
+      "expected": "14.1.0",
+      "id": 21,
+      "resolvedBy": null,
+      "resourceId": "ripgrep",
+      "resourceType": "package",
+      "source": "local",
+      "timestamp": "2026-05-14T12:00:01Z"
     }
   ],
   "driftCheckedLive": true,
-  "env": 0,
+  "env": 2,
   "files": 12,
   "lastApplied": "2026-05-14T10:00:00Z",
   "name": "dev-tools",
@@ -47,7 +57,12 @@
     }
   ],
   "packages": 2,
-  "scripts": [],
+  "scripts": [
+    "preApply",
+    "postApply"
+  ],
   "status": "installed",
-  "system": []
+  "system": [
+    "shell"
+  ]
 }

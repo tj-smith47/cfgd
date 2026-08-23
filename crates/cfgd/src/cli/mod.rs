@@ -647,7 +647,7 @@ pub enum Command {
 
     /// Show configuration status and drift
     #[command(
-        long_about = "Show apply status, drift, and pending decisions.\n\nThe display reflects recorded drift (from the daemon or a prior verify/diff/status --scan).\n--scan instead performs a live, read-only drift scan of this machine right now and\nfolds its findings into the display. --exit-code implies --scan (so CI gating works\neven on a host with no daemon and no prior scan) and additionally exits:\n  0  no drift detected\n  1  runtime error\n  5  drift detected\n\nExamples:\n  cfgd status\n  cfgd status --module nettools\n  cfgd status --scan\n  cfgd status --scan --module nettools\n  cfgd status --exit-code"
+        long_about = "Show apply status, drift, and pending decisions.\n\nThe display reflects recorded drift (from the daemon or a prior verify/diff/status --scan).\n--scan instead performs a live, read-only drift scan of this machine right now and\nfolds its findings into the display. --exit-code implies --scan (so CI gating works\neven on a host with no daemon and no prior scan) and additionally exits:\n  0  no drift detected\n  1  runtime error\n  5  drift detected\n\n--module shows one module: counts plus the drift a scan found. `-o wide` replaces\nthose counts with the itemized inventories (packages, files, env, aliases, scripts),\neach row carrying its own verdict. --show-values renders those same inventories with\nthe declared values (and each script's full body), so it implies `-o wide`.\n\nExamples:\n  cfgd status\n  cfgd status --module nettools\n  cfgd status --module nettools -o wide\n  cfgd status --module nettools --show-values\n  cfgd status --scan\n  cfgd status --scan --module nettools\n  cfgd status --exit-code"
     )]
     Status {
         /// Show status for a specific module (no profile required)
@@ -659,6 +659,9 @@ pub enum Command {
         /// Exit 5 when drift is detected (for CI gating); implies --scan
         #[arg(long = "exit-code", short = 'e')]
         exit_code: bool,
+        /// With --module: itemize the inventories and show declared values and full script bodies (implies -o wide)
+        #[arg(long)]
+        show_values: bool,
     },
 
     /// Show detailed diffs
@@ -2290,7 +2293,15 @@ pub fn execute(
             module,
             scan,
             exit_code,
-        } => status::cmd_status(cli, printer, module.as_deref(), *exit_code, *scan),
+            show_values,
+        } => status::cmd_status(
+            cli,
+            printer,
+            module.as_deref(),
+            *exit_code,
+            *scan,
+            *show_values,
+        ),
         Command::Diff { module, exit_code } => {
             diff::cmd_diff(cli, printer, module.as_deref(), *exit_code)
         }

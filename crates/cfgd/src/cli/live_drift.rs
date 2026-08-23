@@ -99,6 +99,30 @@ pub(super) fn module_file_resource_id(module: &str, target: &str) -> String {
     format!("{}/{}", module, target.trim_start_matches('/'))
 }
 
+/// The inverse of [`module_file_resource_id`]: the module a finding belongs to
+/// and the deployed path it names.
+///
+/// A drift row names its owner and its item separately, and the id is the only
+/// place a live file finding carries either. The leading separator the id
+/// trimmed is restored unless what remains is already rooted, so a Windows
+/// `C:/Users/…` target keeps its drive instead of gaining a separator that
+/// names nothing. Judged on the string rather than through `Path::is_absolute`
+/// so one host's answer is every host's — an id is written and read on the
+/// same machine, but the round-trip is proven on whichever one runs the tests.
+pub(super) fn split_module_file_resource_id(id: &str) -> Option<(&str, String)> {
+    let (module, rest) = id.split_once('/')?;
+    if module.is_empty() || rest.is_empty() {
+        return None;
+    }
+    let drive_rooted = matches!(rest.as_bytes(), [d, b':', ..] if d.is_ascii_alphabetic());
+    let target = if drive_rooted {
+        rest.to_string()
+    } else {
+        format!("/{rest}")
+    };
+    Some((module, target))
+}
+
 pub(super) fn module_file_verify_results(
     fm: &CfgdFileManager,
     config_dir: &std::path::Path,
@@ -1293,5 +1317,27 @@ mod tests {
             drift.is_empty(),
             "clean module file must not drift: {drift:?}"
         );
+    }
+
+    /// The id a finding carries and the pair a row renders from are one
+    /// composition read in two directions: a target that does not survive the
+    /// round trip is a drift row naming a path that never existed.
+    #[test]
+    fn a_module_file_id_round_trips_back_to_its_module_and_target() {
+        for target in ["/home/user/.zshrc", "C:/Users/user/.zshrc"] {
+            let id = module_file_resource_id("nvim", target);
+            assert_eq!(
+                split_module_file_resource_id(&id),
+                Some(("nvim", target.to_string())),
+                "round trip failed for {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_id_with_no_target_half_names_nothing() {
+        assert_eq!(split_module_file_resource_id("nvim"), None);
+        assert_eq!(split_module_file_resource_id("nvim/"), None);
+        assert_eq!(split_module_file_resource_id("/home/user/x"), None);
     }
 }

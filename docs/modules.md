@@ -524,9 +524,14 @@ Each module is tracked independently. cfgd stores a hash of the resolved package
 A module reads as one of four states: `Synced` (converged), `Drifted` (a live
 scan found a package missing or a file diverged), `Failed` (its last apply had
 a failing action), or `NotApplied` (no apply has recorded it). `Drifted` needs
-a live scan, so only `cfgd status <module> --scan` (and `--exit-code`, which
-implies it) can report it. The `-o json` payload's `status` field carries the
-stored token instead (`installed`, `error`, `not applied`).
+a live scan, so only `cfgd status --module <name> --scan` (and `--exit-code`,
+which implies it) can report it. The `-o json` payload's `status` field carries
+the stored token instead (`installed`, `error`, `not applied`).
+
+`cfgd status --module <name>` reports the declared counts and the drift a scan
+found; `-o wide` itemizes each surface instead, and `--show-values` adds the
+declared values and full script bodies (see
+[`cfgd status`](cli-reference.md#cfgd-status)).
 
 Module resources are first-class in compliance reporting, not profile-only. A module's files, packages, and system settings appear in every `cfgd compliance` surface (snapshot, export, diff, history) and in the device checkin summary, attributed to their module — the same effective profile-plus-modules view that `cfgd verify` and `cfgd diff` use. Module file checks are content-aware: a deployed module file present on disk but whose bytes drifted from its source is reported as a violation.
 
