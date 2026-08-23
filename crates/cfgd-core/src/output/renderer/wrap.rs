@@ -157,17 +157,34 @@ pub(crate) fn wrap_segment(
 ) -> Vec<String> {
     let prefix_width = visible_width(first_prefix);
     let cont_width = visible_width(cont_prefix);
-    let body_width = display_width(&super::super::strip_ansi(body));
+    let visible_body = super::super::strip_ansi(body);
+    let body_width = display_width(&visible_body);
     let Some(cols) = cols else {
         return vec![format!("{first_prefix}{body}")];
     };
-    // A hang taking more than half the terminal leaves a sliver too narrow to
-    // hold a word, so the wrap chops words mid-way in a phantom column; the
-    // terminal's own hard wrap is the lesser evil, and the row is left alone.
-    // The test is proportional rather than `MIN_WRAP_WIDTH`, which describes a
-    // whole line: measured against the remainder, any hang at all would strand
-    // a 24-column terminal unwrapped.
-    if cols < MIN_WRAP_WIDTH || prefix_width + body_width <= cols || cont_width * 2 > cols {
+    // Two ways a hang is unaffordable, and the row is then left for the
+    // terminal's own hard wrap rather than chopped into a phantom column.
+    //
+    // It takes more than half the terminal, leaving a sliver no prose reads
+    // well in. The test is proportional rather than `MIN_WRAP_WIDTH`, which
+    // describes a whole line: measured against the remainder, any hang at all
+    // would strand a 24-column terminal unwrapped.
+    //
+    // Or it steals the columns a word needed: a word the terminal could hold
+    // WHOLE must never be split just because the continuation column is
+    // narrower than the line. A word longer than the terminal itself is a
+    // different case and still splits, here as everywhere.
+    let longest_word = visible_body
+        .split_whitespace()
+        .map(display_width)
+        .max()
+        .unwrap_or(0);
+    let hang_splits_a_word = longest_word <= cols && longest_word > cols.saturating_sub(cont_width);
+    if cols < MIN_WRAP_WIDTH
+        || prefix_width + body_width <= cols
+        || cont_width * 2 > cols
+        || hang_splits_a_word
+    {
         return vec![format!("{first_prefix}{body}")];
     }
 
@@ -372,6 +389,16 @@ mod tests {
             "alpha bravo charlie"
         );
         assert_eq!(out[1], "delta echo");
+    }
+
+    /// A hang can be small enough to keep half the terminal and still leave
+    /// less room than a word needs. The word fits the line, so the hang is
+    /// what would split it, and the row is left alone instead.
+    #[test]
+    fn a_word_the_terminal_could_hold_whole_is_not_split_by_the_hang() {
+        let hang = " ".repeat(12);
+        let out = wrap_segment("run now please administrator", "", &hang, Some(24));
+        assert_eq!(out, vec!["run now please administrator"], "got: {out:?}");
     }
 
     #[test]
