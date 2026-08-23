@@ -1606,12 +1606,13 @@ mod tests {
 
         let out = crate::test_helpers::captured_text(&buf);
         let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
-        // Byte-identical to the sequence the scoped acquisitions produced: the
-        // drain at the top of `push_line` renders the pending block before the
-        // header line that triggered the drain.
+        // The rows were written INSIDE the section, so they belong under its
+        // header — the anchor's depth is what says so, and the header flush
+        // splits at it. Rows written before the section opened take the other
+        // side of that split and still render above the header.
         assert_eq!(
             lines,
-            vec!["  Key  value", "Section", "  - child"],
+            vec!["Section", "  Key  value", "  - child"],
             "got: {out:?}"
         );
     }

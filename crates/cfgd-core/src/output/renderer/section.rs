@@ -124,9 +124,7 @@ impl Renderer {
             if e.verbosity == Verbosity::Quiet {
                 return;
             }
-            for (styled, depth) in headers {
-                e.push_line(depth, &styled);
-            }
+            e.push_deferred_headers(&headers);
         });
     }
 
@@ -154,8 +152,13 @@ impl Renderer {
         // after the pop they render outside the frame, above the section's own
         // header, and leave the section reporting itself empty. The statuses
         // are the frame's own `pending_statuses`, so the frame popped below is
-        // already empty of them.
-        self.emit_with(w, |e| e.drain_buffers());
+        // already empty of them. A section that leaves no trace is the one
+        // close that must not drain — see `section_collapses_to_nothing`.
+        self.emit_with(w, |e| {
+            if !e.section_collapses_to_nothing() {
+                e.drain_buffers();
+            }
+        });
         let frame = {
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
             s.indent_depth -= 1;
@@ -301,9 +304,56 @@ impl super::Emitting<'_> {
         if self.verbosity == Verbosity::Quiet {
             return;
         }
-        for (styled, depth) in headers {
-            self.push_line(depth, &styled);
+        self.push_deferred_headers(&headers);
+    }
+
+    /// Write collected header lines with the deferred buffers emptied at the
+    /// one point among them where the buffered content belongs.
+    ///
+    /// Rows were written at their anchor's depth, which is what says whether a
+    /// header stands above or below them: a section shallower than the anchor
+    /// was already open when the rows were written, so its header comes first,
+    /// while one at or deeper than the anchor opened afterwards and the rows
+    /// belong above it. `headers` is collected outer-to-inner, so the depths
+    /// ascend and the split is a partition point. Pushing every header through
+    /// the draining [`super::Emitting::push_line`] instead puts ALL buffered
+    /// rows above ALL headers — including the header of the very section the
+    /// rows were written inside.
+    pub(crate) fn push_deferred_headers(&mut self, headers: &[(String, usize)]) {
+        // Nothing to place the buffers around. Draining anyway would empty a
+        // section's pending statuses on every later flush, so each one would
+        // render alone and pad to its own width instead of the section's.
+        if headers.is_empty() {
+            return;
         }
+        // Held statuses need no split: a status is buffered only after the
+        // headers open at that moment were flushed, so a header still deferred
+        // here belongs to a section that opened AFTER the status.
+        self.drain_pending_statuses();
+        let rows_written_at = match self.state.kv_anchor {
+            Some(a) if !self.state.kv_buffer.is_empty() => a.depth,
+            _ => usize::MAX,
+        };
+        let split = headers.partition_point(|(_, depth)| *depth < rows_written_at);
+        for (styled, depth) in &headers[..split] {
+            self.push_line_undrained(*depth, styled, None);
+        }
+        self.drain_kv_buffer();
+        for (styled, depth) in &headers[split..] {
+            self.push_line_undrained(*depth, styled, None);
+        }
+    }
+
+    /// Whether the innermost open section is about to close leaving no trace.
+    ///
+    /// Such a close must NOT drain: nothing visible separates what was emitted
+    /// before the section from what follows it, so a drain here splits one
+    /// alignment group in two over a section that renders nothing.
+    pub(crate) fn section_collapses_to_nothing(&self) -> bool {
+        self.state.kv_buffer.is_empty()
+            && self.state.section_stack.last().is_some_and(|f| {
+                !f.keep_when_empty && !f.children_emitted && f.pending_statuses.is_empty()
+            })
     }
 }
 
@@ -539,6 +589,66 @@ mod tests {
             at("first-status") < at("source"),
             "the status must render above the kv row written after it: {out:?}"
         );
+    }
+
+    /// The kv side of the same defect: rows written INSIDE a section whose
+    /// header is still deferred belong under that header, not above it. The
+    /// header flush pushes through the draining `push_line`, so without the
+    /// anchor-depth split every buffered row overtakes every header — the
+    /// section's own included.
+    #[test]
+    fn a_nested_section_header_renders_above_the_rows_written_inside_it() {
+        use crate::output::{Printer, Role};
+
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let outer = p.section("Outer");
+            let inner = outer.section("Inner");
+            inner.kv("source", "module:nvim");
+            let _ = inner.status(Role::Ok, "applied").detail("ok");
+        }
+        p.flush();
+        let out = crate::test_helpers::captured_text(&buf);
+
+        let at = |needle: &str| {
+            out.find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} missing from {out:?}"))
+        };
+        assert!(at("Outer") < at("Inner"), "got: {out:?}");
+        assert!(
+            at("Inner") < at("source"),
+            "rows written inside a section must render under its header: {out:?}"
+        );
+        assert!(
+            at("source") < at("applied"),
+            "the status emitted after the rows must render below them: {out:?}"
+        );
+    }
+
+    /// A section that leaves no trace separates nothing, so it must not split
+    /// the alignment group either: the two statuses either side of it pad to
+    /// one shared column.
+    #[test]
+    fn an_empty_collapsed_section_keeps_one_alignment_group() {
+        use crate::output::{Printer, Role};
+
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Packages");
+            let _ = s.status(Role::Ok, "fd").detail("installed");
+            drop(s.section_or_collapse("Nothing"));
+            let _ = s.status(Role::Ok, "ripgrep").detail("installed");
+        }
+        p.flush();
+        let out = crate::test_helpers::captured_text(&buf);
+
+        assert!(
+            out.contains("  ✓ fd      — installed\n"),
+            "the shorter subject must pad to the width of the one after the \
+             collapsed section: {out:?}"
+        );
+        assert!(out.contains("  ✓ ripgrep — installed\n"), "got: {out:?}");
+        assert!(!out.contains("Nothing"), "got: {out:?}");
     }
 
     #[test]
