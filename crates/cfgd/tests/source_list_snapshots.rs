@@ -51,7 +51,7 @@ fn happy_entries() -> Vec<SourceListEntry> {
         url: "https://github.com/team/config".into(),
         priority: 100,
         version: Some("1.0.0".into()),
-        status: "synced".into(),
+        status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
         last_fetched: Some("2026-05-14T10:00:00Z".into()),
     }]
 }
@@ -120,6 +120,27 @@ fn source_list_wide_human() {
     printer.emit(build_source_list_doc(&entries, true));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_list/wide.txt");
+}
+
+#[test]
+fn source_list_reads_the_recorded_failure_through_the_shared_vocabulary() {
+    // The stored token stays on the wire; only the cell moves. A row rendering
+    // `error` here would mean the table bypassed `source_status_display`.
+    let mut entries = happy_entries();
+    entries[0].status = cfgd_core::state::SOURCE_STATUS_ERROR.into();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_source_list_doc(&entries, false));
+    drop(printer);
+    let human = strip_ansi(&cap.human());
+    assert!(
+        human.contains("Failed") && !human.contains("error"),
+        "expected the Failed cell and no stored token on screen, got: {human}"
+    );
+    assert_eq!(
+        cap.json().expect("doc captured json")[0]["status"],
+        "error",
+        "the stored token is the wire value and must not follow the display word"
+    );
 }
 
 #[test]

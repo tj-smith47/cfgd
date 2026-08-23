@@ -1,5 +1,6 @@
 use super::*;
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
+use cfgd_core::state::source_status_display;
 
 /// Build the `cfgd source list` Doc from a populated entries vector + `--wide`
 /// flag. Pure; the caller assembles the entries from disk.
@@ -11,34 +12,42 @@ pub fn build_source_list_doc(entries: &[SourceListEntry], wide: bool) -> Doc {
         return doc.with_data(entries);
     }
 
+    // `Source`, not `URL`: the column names where the source comes FROM, which
+    // is what a reader scans for, and the value is not always a URL a browser
+    // would take. The `-o json` field stays `url`.
     if wide {
         let mut t = Table::new([
             "Name",
-            "URL",
+            "Source",
             "Priority",
             "Version",
             "Status",
             "Last Fetched",
         ]);
         for e in entries {
-            t = t.row([
-                e.name.clone(),
-                e.url.clone(),
-                e.priority.to_string(),
-                e.version.clone().unwrap_or_else(|| "-".into()),
-                e.status.clone(),
-                e.last_fetched.clone().unwrap_or_else(|| "never".into()),
+            let (status, role) = source_status_display(&e.status);
+            t = t.row_styled([
+                (e.name.clone(), None),
+                (e.url.clone(), None),
+                (e.priority.to_string(), None),
+                (e.version.clone().unwrap_or_else(|| "-".into()), None),
+                (status.to_string(), Some(role)),
+                (
+                    e.last_fetched.clone().unwrap_or_else(|| "never".into()),
+                    None,
+                ),
             ]);
         }
         doc = doc.table(t);
     } else {
-        let mut t = Table::new(["Name", "URL", "Priority", "Status"]);
+        let mut t = Table::new(["Name", "Source", "Priority", "Status"]);
         for e in entries {
-            t = t.row([
-                e.name.clone(),
-                e.url.clone(),
-                e.priority.to_string(),
-                e.status.clone(),
+            let (status, role) = source_status_display(&e.status);
+            t = t.row_styled([
+                (e.name.clone(), None),
+                (e.url.clone(), None),
+                (e.priority.to_string(), None),
+                (status.to_string(), Some(role)),
             ]);
         }
         doc = doc.table(t);

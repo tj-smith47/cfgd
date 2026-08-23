@@ -6,6 +6,14 @@ use crate::errors::{Result, StateError};
 
 impl StateStore {
     /// Upsert a config source record.
+    ///
+    /// Every caller reaches here having just fetched the source successfully,
+    /// so the row's status returns to [`SOURCE_STATUS_ACTIVE`] on the way in.
+    /// Without that, a single failed `cfgd source update` left the row reading
+    /// `error` for the rest of the source's life: nothing else ever wrote the
+    /// column back, and the schema default only applies on INSERT.
+    ///
+    /// [`SOURCE_STATUS_ACTIVE`]: super::types::SOURCE_STATUS_ACTIVE
     pub fn upsert_config_source(
         &self,
         name: &str,
@@ -26,7 +34,8 @@ impl StateStore {
                     last_fetched = excluded.last_fetched,
                     last_commit = excluded.last_commit,
                     source_version = excluded.source_version,
-                    pinned_version = excluded.pinned_version",
+                    pinned_version = excluded.pinned_version,
+                    status = 'active'",
                 params![name, origin_url, origin_branch, timestamp, last_commit, source_version, pinned_version],
             )
             ?;

@@ -45,7 +45,7 @@
   "state": {
     "lastCommit": "deadbeef1234567890abcdef",
     "lastFetched": "2026-05-14T10:00:00Z",
-    "status": "synced",
+    "status": "active",
     "version": "3.1.0"
   },
   "syncInterval": "1h",

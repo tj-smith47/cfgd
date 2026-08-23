@@ -8,9 +8,9 @@ Source: pinned-source
   Pin Version         v2.0.0
 
 State
-  Status         synced
+  Status         Active
   Last Fetched   2026-06-01T12:00:00Z
   Last Commit    aabbccddeeff
-  Version        2.0.0
-  Locked Ref     v2.0.0
   Locked Commit  aabbccddeeff
+  Locked Ref     v2.0.0
+  Version        2.0.0

@@ -734,6 +734,26 @@ fn update_config_source_status() {
 }
 
 #[test]
+fn a_later_successful_upsert_clears_a_recorded_fetch_failure() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_config_source("acme", "url", "main", None, None, None)
+        .unwrap();
+    store
+        .update_config_source_status("acme", crate::state::SOURCE_STATUS_ERROR)
+        .unwrap();
+
+    // Only a successful fetch reaches the upsert, so the row must stop
+    // claiming the source is broken.
+    store
+        .upsert_config_source("acme", "url", "main", Some("abc123"), None, None)
+        .unwrap();
+
+    let source = store.config_source_by_name("acme").unwrap().unwrap();
+    assert_eq!(source.status, crate::state::SOURCE_STATUS_ACTIVE);
+}
+
+#[test]
 fn record_source_conflict() {
     let store = StateStore::open_in_memory().unwrap();
     store

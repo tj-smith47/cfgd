@@ -2,7 +2,8 @@ use super::*;
 use crate::cli::output_types::SourcePolicyOutput;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::{ConfigSourceDocument, PolicyItems, SourceConstraints, SourceSpec};
-use cfgd_core::output::{Doc, Printer, Role, doc::SectionBuilder, renderer::Table};
+use cfgd_core::output::{Doc, KvPair, Printer, Role, doc::SectionBuilder, renderer::Table};
+use cfgd_core::state::source_status_display;
 
 const SHORT_COMMIT_LEN: usize = 12;
 
@@ -59,25 +60,34 @@ pub fn build_source_show_doc(
 
     if let Some(ref state_info) = output.state {
         doc = doc.section("State", |s| {
-            let mut s = s.kv("Status", &state_info.status);
+            // The two commit rows sit together and Version closes the block:
+            // a reader comparing what is checked out against what the lockfile
+            // pins is comparing two SHAs, and a row between them makes that a
+            // search instead of a glance.
+            let (status, role) = source_status_display(&state_info.status);
+            let mut rows = vec![KvPair::role_valued("Status", status, role)];
             if let Some(ref fetched) = state_info.last_fetched {
-                s = s.kv("Last Fetched", fetched);
+                rows.push(KvPair::new("Last Fetched", fetched));
             }
             if let Some(ref commit) = state_info.last_commit {
-                let short = &commit[..commit.len().min(SHORT_COMMIT_LEN)];
-                s = s.kv("Last Commit", short);
-            }
-            if let Some(ref version) = state_info.version {
-                s = s.kv("Version", version);
-            }
-            if let Some(ref locked_ref) = state_info.locked_ref {
-                s = s.kv("Locked Ref", locked_ref);
+                rows.push(KvPair::new(
+                    "Last Commit",
+                    &commit[..commit.len().min(SHORT_COMMIT_LEN)],
+                ));
             }
             if let Some(ref locked_commit) = state_info.locked_commit {
-                let short = &locked_commit[..locked_commit.len().min(SHORT_COMMIT_LEN)];
-                s = s.kv("Locked Commit", short);
+                rows.push(KvPair::new(
+                    "Locked Commit",
+                    &locked_commit[..locked_commit.len().min(SHORT_COMMIT_LEN)],
+                ));
             }
-            s
+            if let Some(ref locked_ref) = state_info.locked_ref {
+                rows.push(KvPair::new("Locked Ref", locked_ref));
+            }
+            if let Some(ref version) = state_info.version {
+                rows.push(KvPair::new("Version", version));
+            }
+            s.kv_rows(rows)
         });
     }
 

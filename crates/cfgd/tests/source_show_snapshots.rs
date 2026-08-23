@@ -49,7 +49,7 @@ fn happy_output() -> SourceShowOutput {
         auto_apply: false,
         pin_version: Some("v1.2.3".into()),
         state: Some(SourceStateInfo {
-            status: "synced".into(),
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
             last_fetched: Some("2026-05-14T10:00:00Z".into()),
             last_commit: Some("deadbeef1234567890abcdef".into()),
             version: Some("3.1.0".into()),
@@ -274,7 +274,7 @@ fn source_show_state_with_locked_ref_and_commit() {
         auto_apply: false,
         pin_version: Some("v2.0.0".into()),
         state: Some(SourceStateInfo {
-            status: "synced".into(),
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
             last_fetched: Some("2026-06-01T12:00:00Z".into()),
             last_commit: Some("aabbccddeeff00112233445566778899aabbccdd".into()),
             version: Some("2.0.0".into()),

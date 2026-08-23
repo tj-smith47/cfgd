@@ -271,6 +271,32 @@ pub struct SourceConfigHash {
     pub merged_at: String,
 }
 
+/// The `config_sources.status` token for a source whose last fetch succeeded.
+/// Written by the schema's own column default on first record, and restored by
+/// every later successful upsert.
+pub const SOURCE_STATUS_ACTIVE: &str = "active";
+/// The `config_sources.status` token for a source whose last fetch failed.
+pub const SOURCE_STATUS_ERROR: &str = "error";
+
+/// The human vocabulary for a config source's state, the source counterpart of
+/// [`module_status_display`]: one derivation of the word a person reads, so
+/// `cfgd source list` and `cfgd source show` can never call one recorded state
+/// by two names.
+///
+/// The stored tokens ([`SOURCE_STATUS_ACTIVE`] / [`SOURCE_STATUS_ERROR`]) and
+/// the two spellings the CLI substitutes when there is no row to read
+/// (`pending` for a source resolved in `sources.lock` but never fetched,
+/// `unknown` for one with no record at all) are untouched WIRE values — a
+/// `-o json` consumer sees exactly what it saw before.
+pub fn source_status_display(stored: &str) -> (&'static str, Role) {
+    match stored {
+        SOURCE_STATUS_ACTIVE => ("Active", Role::Ok),
+        SOURCE_STATUS_ERROR => ("Failed", Role::Fail),
+        "pending" => ("Pending", Role::Pending),
+        _ => ("Unknown", Role::Pending),
+    }
+}
+
 /// The `module_state.status` token for a module whose last apply completed
 /// every one of its actions.
 pub const MODULE_STATUS_INSTALLED: &str = "installed";
@@ -342,6 +368,35 @@ mod module_status_tests {
             module_status_display(MODULE_STATUS_ERROR, true),
             ("Failed", Role::Fail)
         );
+    }
+
+    /// Wire contract, pinned byte-for-byte: the two tokens the
+    /// `config_sources.status` column ever holds. The words on screen live in
+    /// [`source_status_display`]; a reword there must never reach these.
+    #[test]
+    fn source_status_literals_are_a_pinned_wire_contract() {
+        assert_eq!(SOURCE_STATUS_ACTIVE, "active");
+        assert_eq!(SOURCE_STATUS_ERROR, "error");
+    }
+
+    #[test]
+    fn a_source_token_maps_to_one_display_word_and_one_role() {
+        assert_eq!(
+            source_status_display(SOURCE_STATUS_ACTIVE),
+            ("Active", Role::Ok)
+        );
+        assert_eq!(
+            source_status_display(SOURCE_STATUS_ERROR),
+            ("Failed", Role::Fail)
+        );
+        assert_eq!(source_status_display("pending"), ("Pending", Role::Pending));
+        for stored in ["unknown", "syncing", ""] {
+            assert_eq!(
+                source_status_display(stored),
+                ("Unknown", Role::Pending),
+                "{stored:?} should read Unknown"
+            );
+        }
     }
 
     #[test]

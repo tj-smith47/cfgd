@@ -9,7 +9,7 @@ Source: team-config
   Pin Version         v1.2.3
 
 State
-  Status        synced
+  Status        Active
   Last Fetched  2026-05-14T10:00:00Z
   Last Commit   deadbeef1234
   Version       3.1.0

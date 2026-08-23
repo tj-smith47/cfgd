@@ -1,5 +1,5 @@
 Config Sources
 
-Name         URL                             Priority  Status 
+Name         Source                          Priority  Status 
 ──────────────────────────────────────────────────────────────
-team-config  https://github.com/team/config  100       unknown
+team-config  https://github.com/team/config  100       Unknown
