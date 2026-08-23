@@ -1416,11 +1416,17 @@ re-subscription clones fresh rather than reusing stale contents.
 ```sh
 cfgd source remove acme-corp --keep-all          # keep resources as local
 cfgd source remove acme-corp --remove-all        # remove everything
+cfgd source remove acme-corp --yes --remove-all  # remove everything, no prompts
 cfgd source remove acme-corp --ignore-not-found  # exit 0 if acme-corp isn't subscribed
 ```
 
 `--ignore-not-found` exits `0` with a no-op message instead of the strict
 not-found error (exit `6`) when no source by that name is subscribed.
+
+Removing the source's records also drops the content hash cfgd recorded for
+each file it deployed. Any file whose bytes no longer match that hash is listed
+by path as a warning, and the removal asks for confirmation first (`--yes`
+skips it). See [Source Removal](sources.md#source-removal).
 
 ### `cfgd source update [name]`
 

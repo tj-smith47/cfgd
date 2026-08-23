@@ -669,6 +669,17 @@ cfgd source remove acme-corp --remove-all   # uninstall/delete everything from t
 
 Resources you keep become part of your local config (priority 1000) with no source policy enforcement. They behave exactly like resources you added yourself.
 
+Before removing the source's records, cfgd hashes each deployed file it manages and compares it against the hash recorded when it last applied. A file whose contents no longer match is reported by path, and removal asks for confirmation:
+
+```sh
+$ cfgd source remove acme-corp --remove-all
+Remove source:acme-corp
+⚠ Modified since cfgd deployed it: /home/tj/.config/nvim/init.lua
+? Forget 1 hand-modified file anyway? (y/N)
+```
+
+The recorded hash is the only record that those edits ever diverged from what cfgd deployed, so removing it makes the file indistinguishable from an untouched one. Pass `--yes` to skip the confirmation. Files that match, files cfgd never recorded a hash for, and files that are gone are removed without a prompt.
+
 Removal also discards every decision the source raised, answered or not — otherwise a leftover pending or rejected row would go on withholding that resource path from `plan` and `apply` with no source left to `cfgd decide` against.
 
 ## Publishing a ConfigSource

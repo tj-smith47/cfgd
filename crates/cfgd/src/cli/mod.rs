@@ -92,7 +92,7 @@ use cfgd_core::state::StateStore;
 
 const MSG_RUN_APPLY: &str = "Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'";
 
-fn default_config_file() -> PathBuf {
+pub fn default_config_file() -> PathBuf {
     cfgd_core::default_config_dir().join(cfgd_core::config::CONFIG_FILENAME)
 }
 
@@ -276,6 +276,26 @@ pub fn resolve_color_choice(no_color: bool, color: ColorWhen) -> cfgd_core::outp
     } else {
         color.into()
     }
+}
+
+/// Read the `spec.theme` block every entry point builds its printer from.
+///
+/// Best-effort by design: a missing, unreadable or malformed config falls back
+/// to the default theme rather than failing, because a printer has to exist
+/// before there is anything to report the failure ON.
+///
+/// The whole block travels, not just its name — `overrides` is a documented
+/// field, and a printer built from the preset name alone drops it. Shared by
+/// the primary CLI and the kubectl plugin for the same reason
+/// [`resolve_color_choice`] is: the plugin rendered the default palette on a
+/// themed machine for as long as it resolved this itself, by not resolving it
+/// at all.
+pub fn resolve_theme_config(config_path: &Path) -> Option<cfgd_core::config::ThemeConfig> {
+    config_path
+        .exists()
+        .then(|| cfgd_core::config::load_config(config_path).ok())
+        .flatten()
+        .and_then(|c| c.spec.theme)
 }
 
 #[derive(Debug, Clone)]
@@ -2517,6 +2537,7 @@ pub fn execute(
                 name,
                 *keep_all || (*yes && !*remove_all),
                 *remove_all,
+                *yes,
                 *ignore_not_found,
             ),
             SourceCommand::Update { name } => {

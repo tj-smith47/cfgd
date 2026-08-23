@@ -21,8 +21,10 @@ pub fn cmd_source_replace(
     let old_profile = old_source.and_then(|s| s.subscription.profile.clone());
     let old_priority = old_source.map(|s| s.subscription.priority).unwrap_or(500);
 
-    // Remove old source (keeping resources)
-    cmd_source_remove(cli, printer, old_name, true, false, false)?;
+    // Remove old source (keeping resources). Confirmation-free: a re-home
+    // purges nothing, so there is no forget-my-edits question to ask, and a
+    // replace must not stop mid-way to pose one.
+    cmd_source_remove(cli, printer, old_name, true, false, true, false)?;
 
     // Add new source with same name, carrying over profile and priority
     cmd_source_add(

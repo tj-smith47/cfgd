@@ -380,6 +380,45 @@ fn cli_output_flag_has_short_alias() {
 }
 
 #[test]
+fn resolve_theme_config_carries_the_whole_block_not_just_the_preset_name() {
+    // Both entry points build their printer from this, so an `overrides` block
+    // dropped here is a themed machine rendering the default palette.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cfgd.yaml");
+    std::fs::write(
+        &path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  theme:\n    name: dracula\n    overrides:\n      header: \"#ff0000\"\n",
+    )
+    .expect("write config");
+
+    let theme = super::resolve_theme_config(&path).expect("spec.theme must resolve");
+    assert_eq!(theme.name, "dracula");
+    assert_eq!(
+        theme.overrides.header.as_deref(),
+        Some("#ff0000"),
+        "the overrides block must travel with the preset name"
+    );
+}
+
+#[test]
+fn resolve_theme_config_falls_back_to_the_default_theme_when_it_cannot_read_one() {
+    // A printer has to exist before there is anything to report a config
+    // failure ON, so neither absence nor malformed YAML may be an error here.
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert!(
+        super::resolve_theme_config(&dir.path().join("absent.yaml")).is_none(),
+        "a missing config resolves no theme rather than failing"
+    );
+
+    let broken = dir.path().join("broken.yaml");
+    std::fs::write(&broken, "spec: [this is not a mapping\n").expect("write broken config");
+    assert!(
+        super::resolve_theme_config(&broken).is_none(),
+        "an unparseable config resolves no theme rather than failing"
+    );
+}
+
+#[test]
 fn resolve_color_choice_no_color_wins_over_color_always() {
     // `--no-color --color always` is a contradiction only in spelling; the
     // user's intent is unambiguous because `--no-color` cannot have been
@@ -10584,7 +10623,7 @@ fn cmd_source_remove_not_found() {
     let printer = test_printer();
 
     let result =
-        super::source::cmd_source_remove(&cli, &printer, "nonexistent", true, false, false);
+        super::source::cmd_source_remove(&cli, &printer, "nonexistent", true, false, false, false);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -10596,7 +10635,8 @@ fn cmd_source_remove_keep_all_and_remove_all_conflict() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::source::cmd_source_remove(&cli, &printer, "anything", true, true, false);
+    let result =
+        super::source::cmd_source_remove(&cli, &printer, "anything", true, true, false, false);
     assert!(result.is_err());
     assert!(
         result
@@ -13088,7 +13128,7 @@ fn cmd_source_remove_existing_removes_from_config() {
     assert_eq!(cfg.spec.sources.len(), 1);
 
     let result =
-        super::source::cmd_source_remove(&cli, &printer, "team-config", false, true, false);
+        super::source::cmd_source_remove(&cli, &printer, "team-config", false, true, false, false);
     assert!(
         result.is_ok(),
         "source remove should succeed: {:?}",
@@ -13121,7 +13161,7 @@ fn cmd_source_remove_with_keep_all_transfers_resources_to_local_management() {
         .unwrap();
     drop(store);
 
-    super::source::cmd_source_remove(&cli, &printer, "team-config", true, false, false)
+    super::source::cmd_source_remove(&cli, &printer, "team-config", true, false, false, false)
         .expect("source remove --keep-all should succeed");
 
     // Source dropped from cfgd.yaml.
@@ -13154,7 +13194,7 @@ fn cmd_source_remove_nonexistent_fails() {
     let printer = test_printer();
 
     let result =
-        super::source::cmd_source_remove(&cli, &printer, "nonexistent", false, true, false);
+        super::source::cmd_source_remove(&cli, &printer, "nonexistent", false, true, false, false);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -13176,7 +13216,7 @@ fn cmd_source_remove_deletes_cached_clone() {
     std::fs::write(cached_dir.join("marker"), b"cached").unwrap();
     assert!(cached_dir.exists());
 
-    super::source::cmd_source_remove(&cli, &printer, "team-config", false, true, false)
+    super::source::cmd_source_remove(&cli, &printer, "team-config", false, true, false, false)
         .expect("source remove should succeed");
 
     assert!(
@@ -17131,8 +17171,15 @@ fn cmd_source_remove_keep_all_reassigns_resources_to_local() {
         .upsert_managed_resource("env", "EDITOR", "team-config", Some("hash2"), None)
         .unwrap();
 
-    let result =
-        super::source::cmd_source_remove(&h.cli(), h.printer(), "team-config", true, false, false);
+    let result = super::source::cmd_source_remove(
+        &h.cli(),
+        h.printer(),
+        "team-config",
+        true,
+        false,
+        false,
+        false,
+    );
     assert!(result.is_ok(), "remove with keep_all: {:?}", result.err());
 
     // Source should be gone from config
@@ -17166,8 +17213,15 @@ fn cmd_source_remove_remove_all_does_not_reassign() {
         .upsert_managed_resource("package", "brew/curl", "team-config", None, None)
         .unwrap();
 
-    let result =
-        super::source::cmd_source_remove(&h.cli(), h.printer(), "team-config", false, true, false);
+    let result = super::source::cmd_source_remove(
+        &h.cli(),
+        h.printer(),
+        "team-config",
+        false,
+        true,
+        false,
+        false,
+    );
     assert!(result.is_ok(), "remove with remove_all: {:?}", result.err());
 
     // Source should be gone from config
@@ -17189,8 +17243,16 @@ fn cmd_source_remove_remove_all_does_not_reassign() {
 fn cmd_source_remove_prints_success_message() {
     let h = CliTestHarness::builder().rich_config().build();
 
-    super::source::cmd_source_remove(&h.cli(), h.printer(), "team-config", false, true, false)
-        .unwrap();
+    super::source::cmd_source_remove(
+        &h.cli(),
+        h.printer(),
+        "team-config",
+        false,
+        true,
+        false,
+        false,
+    )
+    .unwrap();
 
     // The heading names the source; the line below it names the outcome.
     h.assert_output_contains("Remove source:team-config");
