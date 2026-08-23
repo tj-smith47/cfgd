@@ -24,6 +24,7 @@ mod run;
 mod scripts;
 mod scripts_apply;
 mod secrets;
+mod sidecar;
 mod system;
 mod types;
 mod verify;
@@ -62,6 +63,7 @@ pub use run::{
     ScopedPhase, align_width, align_width_of, in_scope_tree, pseudo_phase, render_apply_result,
     render_plan_tree, render_run_rollup,
 };
+pub use sidecar::{CFGD_BACKUP_SUFFIX, backup_file, cfgd_backup_path};
 pub use types::{
     Action, ActionResult, ApplyResult, CFGD_GROUP_ORDER, EnvAction, MANAGERS_GROUP, ManagerAction,
     ModuleAction, ModuleActionKind, Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName,
@@ -163,6 +165,23 @@ pub struct Reconciler<'a> {
     /// profile-package planner uses, so one enumeration per manager answers
     /// both halves of the run.
     installed: Option<&'a crate::providers::PackageContext<'a>>,
+    /// Targets an unmanaged-file conflict settled as `Backup`, to be copied
+    /// aside as the action that displaces each one executes.
+    ///
+    /// The decision is made while the plan is built — that is where the policy,
+    /// the prompt and the plan mutation live — but the COPY is a disk mutation,
+    /// and a plan is a preview until the operator confirms it. Carrying the
+    /// decision here defers the write to the phase whose work it is part of, so
+    /// the `Backed up to …` line streams under `Phase: Files` beside the write
+    /// it protects instead of standing above the run's own header.
+    sidecar_backups: std::collections::HashSet<PathBuf>,
+    /// What this run is scoped to, for the `applies` row it records.
+    ///
+    /// `None` falls back to the resolved profile's own name, which is what
+    /// every profile-scoped caller wants. A `--module` run has no profile to
+    /// name and says so here instead, so the recorded row states the truth
+    /// rather than a placeholder every reader then has to special-case.
+    recorded_scope: Option<String>,
 }
 
 impl<'a> Reconciler<'a> {
@@ -175,7 +194,44 @@ impl<'a> Reconciler<'a> {
             secrets: crate::providers::SecretCache::new(),
             config_dir: None,
             installed: None,
+            sidecar_backups: std::collections::HashSet::new(),
+            recorded_scope: None,
         }
+    }
+
+    /// Copy each of `targets` aside (and report where it landed) as the action
+    /// that displaces it executes.
+    ///
+    /// Set from the unmanaged-file conflict pass, which decides the policy but
+    /// no longer carries it out: see [`Self::sidecar_backups`].
+    #[must_use]
+    pub fn backing_up(mut self, targets: std::collections::HashSet<PathBuf>) -> Self {
+        self.sidecar_backups = targets;
+        self
+    }
+
+    /// Copy `target` aside if this run settled it as an adoption.
+    ///
+    /// Called from both file-writing paths — a profile `spec.files` action and
+    /// a module's own deploy loop — immediately before the write that displaces
+    /// the target.
+    fn back_up_adopted_target(
+        &self,
+        target: &Path,
+        printer: &crate::output::Printer,
+    ) -> crate::errors::Result<()> {
+        if self.sidecar_backups.contains(target) {
+            sidecar::backup_file(target, printer)?;
+        }
+        Ok(())
+    }
+
+    /// Record `scope` as what this run was scoped to, in place of the resolved
+    /// profile's name: see [`Self::recorded_scope`].
+    #[must_use]
+    pub fn recording_scope(mut self, scope: impl Into<String>) -> Self {
+        self.recorded_scope = Some(scope.into());
+        self
     }
 
     /// Anchor plan-time `Patch` evaluation under `config_dir`.
@@ -233,6 +289,8 @@ impl<'a> Reconciler<'a> {
             secrets: crate::providers::SecretCache::new(),
             config_dir: None,
             installed: None,
+            sidecar_backups: std::collections::HashSet::new(),
+            recorded_scope: None,
         }
     }
 }

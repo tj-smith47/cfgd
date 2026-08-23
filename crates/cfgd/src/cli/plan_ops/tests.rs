@@ -218,6 +218,8 @@ fn env_write() -> Action {
     Action::Env(EnvAction::WriteEnvFile {
         path: PathBuf::from("/home/user/.cfgd.env"),
         content: "export FOO=bar".to_string(),
+        vars: 0,
+        aliases: 0,
     })
 }
 
@@ -2061,152 +2063,28 @@ fn is_unmanaged_file_managed_path_returns_false() {
     );
 }
 
+/// The Backup policy RESERVES the target rather than copying it: the sidecar
+/// is written by the file action itself, inside the Files phase, so the disk
+/// is untouched while the plan is still being decided.
 #[test]
-fn backup_file_copies_to_cfgd_backup_suffix_and_leaves_the_original() {
-    let tmp = tempfile::tempdir().unwrap();
-    let original = tmp.path().join("myfile.txt");
-    std::fs::write(&original, "original content").unwrap();
-
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    let written = backup_file(&original, &printer).unwrap();
-
-    let backup = tmp.path().join("myfile.txt.cfgd-backup");
-    assert_eq!(written, backup, "backup should land at the sidecar path");
-    assert!(backup.exists(), "backup file should exist at expected path");
-    assert_eq!(
-        std::fs::read_to_string(&backup).unwrap(),
-        "original content",
-        "the sidecar must hold the original bytes"
-    );
-    // The crash window the rename opened: between moving the file away and
-    // writing the managed one, the content existed at neither path.
-    assert!(
-        original.exists(),
-        "the original must stay in place until the apply's own atomic write replaces it"
-    );
-    assert_eq!(
-        std::fs::read_to_string(&original).unwrap(),
-        "original content",
-        "the original content must be untouched by the backup"
-    );
-
-    let out = cfgd_core::test_helpers::captured_text(&buf);
-    assert!(
-        out.contains("Backed up to"),
-        "expected backup confirmation in output, got: {out}"
-    );
-    assert!(
-        out.contains("cfgd-backup"),
-        "output should mention backup path, got: {out}"
-    );
-}
-
-#[test]
-fn backup_file_nonexistent_target_returns_error() {
-    let tmp = tempfile::tempdir().unwrap();
-    let missing = tmp.path().join("does_not_exist.txt");
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-
-    let result = backup_file(&missing, &printer);
-    assert!(result.is_err(), "backup of nonexistent file should fail");
-    let err_msg = result.unwrap_err().to_string();
-    assert!(
-        err_msg.contains("Failed to backup"),
-        "error should describe backup failure, got: {err_msg}"
-    );
-}
-
-#[test]
-fn backup_file_verifies_and_preserves_the_mode_of_its_copy() {
-    let tmp = tempfile::tempdir().unwrap();
-    let original = tmp.path().join("secret.env");
-    std::fs::write(&original, "TOKEN=keep-me\n").unwrap();
-    cfgd_core::set_file_permissions(&original, 0o600).unwrap();
-
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    let backup = backup_file(&original, &printer).unwrap();
-
-    let meta = std::fs::metadata(&backup).unwrap();
-    assert_eq!(
-        cfgd_core::file_permissions_mode(&meta),
-        cfgd_core::file_permissions_mode(&std::fs::metadata(&original).unwrap()),
-        "the sidecar must carry the mode of the file it preserves"
-    );
-    assert_eq!(
-        cfgd_core::sha256_hex(&std::fs::read(&backup).unwrap()),
-        cfgd_core::sha256_hex(&std::fs::read(&original).unwrap()),
-        "the sidecar must hash identically to the original"
-    );
-}
-
-#[test]
-fn backup_file_never_clobbers_an_older_sidecar() {
-    // The primary sidecar holds the content that predates cfgd; a second,
-    // different original is stamped instead of destroying the first.
-    let tmp = tempfile::tempdir().unwrap();
-    let target = tmp.path().join("conf.toml");
-    let primary = tmp.path().join("conf.toml.cfgd-backup");
-    std::fs::write(&primary, "the original").unwrap();
-    std::fs::write(&target, "something else entirely").unwrap();
-
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    let written = backup_file(&target, &printer).unwrap();
-
-    assert_ne!(written, primary, "an occupied sidecar must not be reused");
-    assert_eq!(
-        std::fs::read_to_string(&primary).unwrap(),
-        "the original",
-        "the older sidecar must survive untouched"
-    );
-    assert_eq!(
-        std::fs::read_to_string(&written).unwrap(),
-        "something else entirely"
-    );
-}
-
-#[test]
-fn backup_file_reuses_a_sidecar_that_already_holds_the_same_bytes() {
-    let tmp = tempfile::tempdir().unwrap();
-    let target = tmp.path().join("conf.toml");
-    let primary = tmp.path().join("conf.toml.cfgd-backup");
-    std::fs::write(&target, "same bytes").unwrap();
-    std::fs::write(&primary, "same bytes").unwrap();
-
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    let written = backup_file(&target, &printer).unwrap();
-
-    assert_eq!(
-        written, primary,
-        "an identical sidecar is reused, not stamped"
-    );
-    let entries: Vec<_> = std::fs::read_dir(tmp.path())
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .collect();
-    assert_eq!(entries.len(), 2, "no second sidecar should be created");
-    let out = cfgd_core::test_helpers::captured_text(&buf);
-    assert!(
-        out.contains("Already backed up at"),
-        "a reused sidecar says so, got: {out}"
-    );
-}
-
-#[test]
-fn apply_conflict_policy_backup_copies_file() {
+fn apply_conflict_policy_backup_reserves_the_target_without_touching_disk() {
     let tmp = tempfile::tempdir().unwrap();
     let file = tmp.path().join("target.txt");
     std::fs::write(&file, "content").unwrap();
 
     let mut action = file_create(file.to_str().unwrap());
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    apply_conflict_policy(ResolvedConflict::Backup, &file, &mut action, &printer).unwrap();
+    let mut backups = std::collections::HashSet::new();
+    apply_conflict_policy(ResolvedConflict::Backup, &file, &mut action, &mut backups).unwrap();
 
-    let backup = tmp.path().join("target.txt.cfgd-backup");
     assert!(
-        backup.exists(),
-        "backup file should exist after Backup policy"
+        backups.contains(&file),
+        "Backup policy must reserve the target for the apply-time copy"
     );
-    assert!(file.exists(), "the target must survive the backup");
+    assert!(
+        !tmp.path().join("target.txt.cfgd-backup").exists(),
+        "planning must not write the sidecar"
+    );
+    assert!(file.exists(), "the target must survive planning");
 }
 
 #[test]
@@ -2216,8 +2094,8 @@ fn apply_conflict_policy_skip_converts_action_to_skip() {
     std::fs::write(&file, "content").unwrap();
 
     let mut action = file_create(file.to_str().unwrap());
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    apply_conflict_policy(ResolvedConflict::Skip, &file, &mut action, &printer).unwrap();
+    let mut backups = std::collections::HashSet::new();
+    apply_conflict_policy(ResolvedConflict::Skip, &file, &mut action, &mut backups).unwrap();
 
     assert!(
         matches!(action, Action::File(FileAction::Skip { .. })),
@@ -2227,6 +2105,7 @@ fn apply_conflict_policy_skip_converts_action_to_skip() {
         !tmp.path().join("target.txt.cfgd-backup").exists(),
         "Skip writes no sidecar"
     );
+    assert!(backups.is_empty(), "Skip writes no sidecar");
 }
 
 #[test]
@@ -2236,8 +2115,14 @@ fn apply_conflict_policy_overwrite_leaves_action_unchanged() {
     std::fs::write(&file, "content").unwrap();
 
     let mut action = file_create(file.to_str().unwrap());
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    apply_conflict_policy(ResolvedConflict::Overwrite, &file, &mut action, &printer).unwrap();
+    let mut backups = std::collections::HashSet::new();
+    apply_conflict_policy(
+        ResolvedConflict::Overwrite,
+        &file,
+        &mut action,
+        &mut backups,
+    )
+    .unwrap();
 
     assert!(
         matches!(action, Action::File(FileAction::Create { .. })),
@@ -2247,6 +2132,7 @@ fn apply_conflict_policy_overwrite_leaves_action_unchanged() {
         !tmp.path().join("target.txt.cfgd-backup").exists(),
         "Overwrite keeps no copy"
     );
+    assert!(backups.is_empty(), "Overwrite keeps no copy");
 }
 
 #[test]
@@ -2256,9 +2142,9 @@ fn apply_conflict_policy_fail_aborts_and_touches_nothing() {
     std::fs::write(&file, "content").unwrap();
 
     let mut action = file_create(file.to_str().unwrap());
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    let err =
-        apply_conflict_policy(ResolvedConflict::Fail, &file, &mut action, &printer).unwrap_err();
+    let mut backups = std::collections::HashSet::new();
+    let err = apply_conflict_policy(ResolvedConflict::Fail, &file, &mut action, &mut backups)
+        .unwrap_err();
 
     assert!(
         err.to_string().contains("--on-conflict fail"),
@@ -2318,7 +2204,7 @@ fn every_prompt_option_maps_to_a_settled_policy() {
 }
 
 #[test]
-fn an_unanswerable_prompt_backs_the_file_up_instead_of_overwriting_it() {
+fn an_unanswerable_prompt_reserves_the_file_instead_of_overwriting_it() {
     // No seeded answer and `interactive_stdin: false`, so `prompt_select`
     // fails — the shape a `--dry-run`-less apply piped into a script hits.
     let tmp = tempfile::tempdir().unwrap();
@@ -2329,7 +2215,7 @@ fn an_unanswerable_prompt_backs_the_file_up_instead_of_overwriting_it() {
     let (printer, _) = Printer::for_test_at(Verbosity::Normal);
     let mut plan = one_phase_plan(vec![copy_update(&target)]);
 
-    handle_unmanaged_file_targets(
+    let backups = handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
         &state,
@@ -2340,10 +2226,9 @@ fn an_unanswerable_prompt_backs_the_file_up_instead_of_overwriting_it() {
     )
     .unwrap();
 
-    assert_eq!(
-        std::fs::read_to_string(tmp.path().join("zshrc.cfgd-backup")).unwrap(),
-        "hand written",
-        "a prompt nobody can answer must still preserve the file"
+    assert!(
+        backups.contains(&target),
+        "a prompt nobody can answer must still reserve the file"
     );
 }
 
@@ -2400,7 +2285,7 @@ fn unmanaged_prompt_never_backs_up_a_patch_target() {
         )]);
     let mut plan = one_phase_plan(vec![patch_update(&patch_target), copy_update(&copy_target)]);
 
-    handle_unmanaged_file_targets(
+    let backups = handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
         &state,
@@ -2427,8 +2312,8 @@ fn unmanaged_prompt_never_backs_up_a_patch_target() {
     // The single queued answer went to the non-Patch action, proving the
     // Patch one never prompted.
     assert!(
-        tmp.path().join("zshrc.cfgd-backup").exists(),
-        "a Copy target still honours the Backup choice"
+        backups.contains(&copy_target) && !backups.contains(&patch_target),
+        "a Copy target still honours the Backup choice, a Patch target never does"
     );
 }
 
@@ -2653,66 +2538,6 @@ fn a_skipped_module_file_leaves_the_declared_set_with_it() {
 }
 
 #[test]
-fn two_adoptions_in_the_same_second_land_beside_each_other_never_on_top() {
-    // The stamp has one-second resolution, so it is a hint at a free name and
-    // never a guarantee of one: unchecked, the second adoption of a second
-    // original overwrites the sidecar holding the first.
-    let tmp = tempfile::tempdir().unwrap();
-    let target = tmp.path().join("live.conf");
-    let primary = tmp.path().join("live.conf.cfgd-backup");
-    std::fs::write(&primary, "first original").unwrap();
-
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-
-    std::fs::write(&target, "second original").unwrap();
-    let second = backup_file(&target, &printer).unwrap();
-    std::fs::write(&target, "third original").unwrap();
-    let third = backup_file(&target, &printer).unwrap();
-
-    assert_ne!(second, third, "back-to-back adoptions need distinct names");
-    assert_eq!(std::fs::read_to_string(&primary).unwrap(), "first original");
-    assert_eq!(std::fs::read_to_string(&second).unwrap(), "second original");
-    assert_eq!(std::fs::read_to_string(&third).unwrap(), "third original");
-}
-
-#[test]
-fn a_directory_backup_never_merges_into_an_occupied_sidecar() {
-    // `copy_dir_recursive` writes INTO an existing directory, so an occupied
-    // sidecar silently fuses two different originals into one tree.
-    let tmp = tempfile::tempdir().unwrap();
-    let target = tmp.path().join("conf.d");
-    std::fs::create_dir_all(&target).unwrap();
-    std::fs::write(target.join("new.conf"), "new").unwrap();
-
-    let primary = tmp.path().join("conf.d.cfgd-backup");
-    std::fs::create_dir_all(&primary).unwrap();
-    std::fs::write(primary.join("old.conf"), "old").unwrap();
-
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    let first = backup_file(&target, &printer).unwrap();
-
-    // A second, different original in the same second: the stamp alone would
-    // name the directory the first one just filled.
-    std::fs::remove_file(target.join("new.conf")).unwrap();
-    std::fs::write(target.join("newer.conf"), "newer").unwrap();
-    let second = backup_file(&target, &printer).unwrap();
-
-    assert_ne!(
-        first, primary,
-        "an occupied sidecar directory is not reused"
-    );
-    assert_ne!(first, second, "two originals need two directories");
-    assert_eq!(
-        std::fs::read_dir(&primary).unwrap().count(),
-        1,
-        "the older sidecar must not gain the newer originals' entries"
-    );
-    assert!(primary.join("old.conf").exists());
-    assert!(first.join("new.conf").exists() && !first.join("newer.conf").exists());
-    assert!(second.join("newer.conf").exists() && !second.join("new.conf").exists());
-}
-
-#[test]
 fn an_interrupted_prompt_aborts_while_an_unreachable_one_backs_up() {
     // Ctrl-C and "nobody to ask" are not the same event: resolving the first
     // like the second carries out, file by file, the work the user interrupted
@@ -2766,27 +2591,6 @@ fn the_prompts_abort_answer_stops_the_run_without_touching_the_file() {
     );
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "hand written");
     assert!(!tmp.path().join("zshrc.cfgd-backup").exists());
-}
-
-#[cfg(unix)]
-#[test]
-fn a_sidecar_carries_the_setuid_bit_of_the_file_it_preserves() {
-    // A backup is the file it preserves; a special bit dropped in the copy is
-    // not restorable from it.
-    let tmp = tempfile::tempdir().unwrap();
-    let target = tmp.path().join("helper.sh");
-    std::fs::write(&target, "#!/bin/sh\n").unwrap();
-    cfgd_core::set_file_permissions(&target, 0o4755).unwrap();
-
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    let backup = backup_file(&target, &printer).unwrap();
-
-    let mode = cfgd_core::file_permissions_mode_full(&std::fs::metadata(&backup).unwrap());
-    assert_eq!(
-        mode,
-        Some(0o4755),
-        "the sidecar must reproduce the mode it is a copy of"
-    );
 }
 
 // --- Shell environment reminder ---
@@ -2959,8 +2763,10 @@ fn a_module_target_already_holding_the_desired_bytes_is_never_backed_up() {
     );
 }
 
+/// The sidecar itself is written by the file action inside the Files phase;
+/// what `--yes` decides here is that the target is RESERVED for it.
 #[test]
-fn a_module_target_holding_different_bytes_is_copied_aside_under_yes() {
+fn a_module_target_holding_different_bytes_is_reserved_under_yes() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("src.conf");
     let target = tmp.path().join("live.conf");
@@ -2971,7 +2777,7 @@ fn a_module_target_holding_different_bytes_is_copied_aside_under_yes() {
     let (printer, _) = Printer::for_test_at(Verbosity::Normal);
     let mut plan = module_deploy_plan(vec![module_copy_file(&source, &target)]);
 
-    handle_unmanaged_file_targets(
+    let backups = handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
         &state,
@@ -2982,10 +2788,13 @@ fn a_module_target_holding_different_bytes_is_copied_aside_under_yes() {
     )
     .unwrap();
 
-    assert_eq!(
-        std::fs::read_to_string(tmp.path().join("live.conf.cfgd-backup")).unwrap(),
-        "hand written\n",
-        "--yes must preserve the file it is about to replace"
+    assert!(
+        backups.contains(&target),
+        "--yes must reserve the file it is about to replace"
+    );
+    assert!(
+        !tmp.path().join("live.conf.cfgd-backup").exists(),
+        "planning writes no sidecar; the file action does"
     );
     assert_eq!(
         std::fs::read_to_string(&target).unwrap(),
@@ -3135,10 +2944,10 @@ fn a_profile_target_already_holding_the_planned_content_is_left_alone() {
 }
 
 #[test]
-fn a_crash_between_adoption_and_the_write_leaves_the_users_file_on_disk() {
-    // Adoption runs and the process dies before the reconciler writes a byte:
-    // the state the rename could not survive. Nothing below writes the target,
-    // so what the assertions read IS the post-crash filesystem.
+fn a_reserved_target_is_still_the_users_file_until_the_write_runs() {
+    // Reservation happens while the plan is being decided and the process dies
+    // before the Files phase runs: nothing below writes the target, so what the
+    // assertions read IS the post-crash filesystem.
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("src.conf");
     let target = tmp.path().join("live.conf");
@@ -3149,7 +2958,7 @@ fn a_crash_between_adoption_and_the_write_leaves_the_users_file_on_disk() {
     let (printer, _) = Printer::for_test_at(Verbosity::Normal);
     let mut plan = module_deploy_plan(vec![module_copy_file(&source, &target)]);
 
-    handle_unmanaged_file_targets(
+    let backups = handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
         &state,
@@ -3165,30 +2974,10 @@ fn a_crash_between_adoption_and_the_write_leaves_the_users_file_on_disk() {
         "years of hand edits\n",
         "the user's file must still be at the path they know it by"
     );
-    assert_eq!(
-        std::fs::read_to_string(tmp.path().join("live.conf.cfgd-backup")).unwrap(),
-        "years of hand edits\n",
-        "and at the sidecar, so either survivor is the whole file"
+    assert!(
+        backups.contains(&target),
+        "and it is reserved, so the write that replaces it copies it aside first"
     );
-}
-
-#[test]
-fn a_symlinked_target_is_backed_up_as_a_link_not_as_its_destination() {
-    let tmp = tempfile::tempdir().unwrap();
-    let dest = tmp.path().join("elsewhere.conf");
-    let target = tmp.path().join("live.conf");
-    std::fs::write(&dest, "the destination\n").unwrap();
-    cfgd_core::create_symlink(&dest, &target).unwrap();
-
-    let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-    let backup = backup_file(&target, &printer).unwrap();
-
-    assert_eq!(
-        backup.read_link().unwrap(),
-        dest,
-        "the sidecar must preserve the link, not materialize its destination"
-    );
-    assert!(target.symlink_metadata().is_ok(), "the link stays in place");
 }
 
 #[test]
@@ -4161,5 +3950,73 @@ fn filter_plan_zero_match_token_escapes_embedded_control_chars() {
             .any(|w| w.contains(r"\x0d") && w.contains(r"\x1b")),
         "the control bytes must be rendered as visible \\xNN escapes, got:\n{:?}",
         plan.warnings
+    );
+}
+
+/// A settled policy answers every conflict itself, so the sweep is seconds of
+/// silent hashing between the plan and the Apply header. It renames the
+/// Planning bar per owner, so the wait names what is being read.
+#[test]
+fn a_settled_conflict_sweep_narrates_the_owner_it_is_reading() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("src.conf");
+    let target = tmp.path().join("live.conf");
+    std::fs::write(&source, "from the module\n").unwrap();
+    std::fs::write(&target, "hand written\n").unwrap();
+
+    let state = StateStore::open_in_memory().unwrap();
+    let (printer, drawn) = Printer::for_test_with_live_bars();
+    let mut plan = module_deploy_plan(vec![module_copy_file(&source, &target)]);
+
+    handle_unmanaged_file_targets(
+        &mut plan,
+        tmp.path(),
+        &state,
+        &printer,
+        true,
+        OnConflict::Backup,
+        FileStrategy::Symlink,
+    )
+    .unwrap();
+    drop(printer);
+
+    let out = cfgd_core::test_helpers::captured_text(&drawn);
+    assert!(
+        out.contains("Checking existing files for module:mymod"),
+        "the planning bar must name the owner it is reading, got: {out}"
+    );
+}
+
+/// An unsettled policy prompts per file, which is its own live indicator: an
+/// animated bar cannot share the terminal with `inquire`.
+#[test]
+fn an_unsettled_conflict_sweep_opens_no_bar() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("src.conf");
+    let target = tmp.path().join("live.conf");
+    std::fs::write(&source, "from the module\n").unwrap();
+    std::fs::write(&target, "hand written\n").unwrap();
+
+    let state = StateStore::open_in_memory().unwrap();
+    let (printer, drawn) = Printer::for_test_with_live_bars();
+    let mut plan = module_deploy_plan(vec![module_copy_file(&source, &target)]);
+
+    // No seeded answer: the prompt fails and the sweep falls back to Backup.
+    handle_unmanaged_file_targets(
+        &mut plan,
+        tmp.path(),
+        &state,
+        &printer,
+        false,
+        OnConflict::Ask,
+        FileStrategy::Symlink,
+    )
+    .unwrap();
+    drop(printer);
+
+    let out = cfgd_core::test_helpers::captured_text(&drawn);
+    assert!(
+        !out.contains("Checking existing files for"),
+        "a prompting sweep must not animate a bar under the prompt, got: {out}"
     );
 }

@@ -231,6 +231,9 @@ pub enum FileError {
         "patch script for {path} is blocked: source '{source_name}' is not allowed to run scripts (constraints.noScripts); set subscription.allowScripts: true to opt in"
     )]
     PatchScriptBlocked { path: PathBuf, source_name: String },
+
+    #[error("failed to back up {path}: {message}")]
+    BackupFailed { path: PathBuf, message: String },
 }
 
 #[derive(Debug, thiserror::Error)]

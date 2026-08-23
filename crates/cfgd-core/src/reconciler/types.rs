@@ -101,6 +101,18 @@ pub enum EnvAction {
     WriteEnvFile {
         path: std::path::PathBuf,
         content: String,
+        /// How many variables and aliases `content` renders, for the action
+        /// line's own detail — a write that names a path says nothing about
+        /// what landed in it.
+        ///
+        /// Display-only, and `#[serde(skip)]` for that reason: the plan hash is
+        /// a serialization of the actions, so a counted field that reached it
+        /// would rewrite every stored `plan_hash` for a value nothing matches
+        /// on.
+        #[serde(skip)]
+        vars: usize,
+        #[serde(skip)]
+        aliases: usize,
     },
     /// Inject a source line into a shell rc file (idempotent).
     InjectSourceLine {

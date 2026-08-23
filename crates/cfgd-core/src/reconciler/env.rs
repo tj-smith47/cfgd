@@ -6,7 +6,7 @@ use crate::modules::ResolvedModule;
 use crate::output::Printer;
 use crate::state::StateStore;
 
-use super::env_engine::{EnvHostProbe, EnvPlatform, EnvTarget, env_targets};
+use super::env_engine::{EnvContent, EnvHostProbe, EnvPlatform, EnvTarget, env_targets};
 use super::env_files::detect_rc_env_conflicts;
 use super::format::LIVE_SESSION_RESOURCE_ID;
 use super::types::{Action, EnvAction};
@@ -150,6 +150,10 @@ pub(super) struct PrimaryEnvWrite {
     /// comparison can see it or say whose it was: attribution is
     /// unanswerable, and the gate fails OPEN for every deferred module.
     unclaimed_deletion: bool,
+    /// The same provenance map the desired content was rendered with, so the
+    /// per-entry lines this comparison re-renders are the lines that content
+    /// actually holds.
+    origins: super::env_engine::EnvOrigins,
 }
 
 impl PrimaryEnvWrite {
@@ -182,12 +186,12 @@ impl PrimaryEnvWrite {
         let deployed: HashSet<&str> = baseline.lines().collect();
         let desired: HashSet<&str> = self.desired.lines().collect();
         env.iter()
-            .filter_map(|ev| super::env_files::primary_env_var_line(ev, self.platform))
-            .chain(
-                aliases
-                    .iter()
-                    .filter_map(|a| super::env_files::primary_alias_line(a, self.platform)),
-            )
+            .filter_map(|ev| {
+                super::env_files::primary_env_var_line(ev, self.platform, &self.origins)
+            })
+            .chain(aliases.iter().filter_map(|a| {
+                super::env_files::primary_alias_line(a, self.platform, &self.origins)
+            }))
             .any(|line| deployed.contains(line.as_str()) != desired.contains(line.as_str()))
     }
 }
@@ -277,7 +281,7 @@ impl<'a> super::Reconciler<'a> {
         managed_env_ids: &[String],
         home: &std::path::Path,
     ) -> EnvPlanOutcome {
-        let (mut merged, merged_aliases) =
+        let (mut merged, merged_aliases, origins) =
             merge_module_env_aliases(profile_env, profile_aliases, modules);
 
         // Append secret-backed env vars after regular envs.
@@ -311,9 +315,7 @@ impl<'a> super::Reconciler<'a> {
         }
 
         let targets = env_targets(
-            &merged,
-            &merged_aliases,
-            path_dirs,
+            EnvContent::new(&merged, &merged_aliases, path_dirs, &origins),
             scope,
             home,
             &probe,
@@ -357,13 +359,19 @@ impl<'a> super::Reconciler<'a> {
                                 desired: content.clone(),
                                 platform,
                                 unclaimed_deletion,
+                                origins: origins.clone(),
                             });
                         }
                     }
                     if converged {
                         continue;
                     }
-                    actions.push(Action::Env(EnvAction::WriteEnvFile { path, content }));
+                    actions.push(Action::Env(EnvAction::WriteEnvFile {
+                        path,
+                        content,
+                        vars: merged.len(),
+                        aliases: merged_aliases.len(),
+                    }));
                 }
                 EnvTarget::SourceLine { rc_path, line } => {
                     // Warn when a user-owned shell rc defines a cfgd-managed name
@@ -452,7 +460,13 @@ impl<'a> super::Reconciler<'a> {
             value: String::new(),
         }];
         let neutral = format!("{}\n", super::env_files::ENV_FILE_HEADER);
-        let targets = env_targets(&placeholder, &[], &[], scope, home, probe, platform);
+        let targets = env_targets(
+            EnvContent::new(&placeholder, &[], &[], &Default::default()),
+            scope,
+            home,
+            probe,
+            platform,
+        );
         let rc_paths: HashSet<String> = targets
             .iter()
             .filter_map(|target| match target {
@@ -483,6 +497,8 @@ impl<'a> super::Reconciler<'a> {
                 Action::Env(EnvAction::WriteEnvFile {
                     path,
                     content: neutral.clone(),
+                    vars: 0,
+                    aliases: 0,
                 })
             })
             .collect()
@@ -494,7 +510,7 @@ impl<'a> super::Reconciler<'a> {
         notes: &crate::providers::NoteSink,
     ) -> Result<String> {
         match action {
-            EnvAction::WriteEnvFile { path, content } => {
+            EnvAction::WriteEnvFile { path, content, .. } => {
                 if super::env_files::read_managed_baseline(path).as_ref() == Some(content) {
                     return Ok(format!(
                         "env:write:{}{}",
@@ -565,7 +581,12 @@ mod tests {
     }
 
     fn ps(env: &[EnvVar], aliases: &[ShellAlias], path_dirs: &[String]) -> String {
-        super::super::env_files::generate_powershell_env_content(env, aliases, path_dirs)
+        super::super::env_files::generate_powershell_env_content(
+            env,
+            aliases,
+            path_dirs,
+            &Default::default(),
+        )
     }
 
     // The reconciler-level gate tests run under the host's own

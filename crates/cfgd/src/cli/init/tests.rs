@@ -1957,7 +1957,7 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
     };
     let result = apply_plan(
         &mut plan,
-        &reconciler,
+        reconciler,
         &resolved,
         &[],
         dir.path(),
@@ -2512,7 +2512,7 @@ fn init_apply_copies_an_unmanaged_target_aside_before_writing_it() {
 
     apply_plan(
         &mut plan,
-        &reconciler,
+        reconciler,
         &resolved,
         &[],
         dir.path(),
@@ -2575,7 +2575,7 @@ fn init_dry_run_never_copies_anything_aside() {
 
     apply_plan(
         &mut plan,
-        &reconciler,
+        reconciler,
         &resolved,
         &[],
         dir.path(),
@@ -2636,7 +2636,7 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
 
     let result = apply_plan(
         &mut plan,
-        &reconciler,
+        reconciler,
         &resolved,
         &[],
         dir.path(),
@@ -2710,7 +2710,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
 
     let result = apply_plan(
         &mut plan,
-        &reconciler,
+        reconciler,
         &resolved,
         &[],
         dir.path(),
@@ -2802,7 +2802,7 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
 
     let result = apply_plan(
         &mut plan,
-        &reconciler,
+        reconciler,
         &resolved,
         std::slice::from_ref(&module),
         dir.path(),
@@ -2874,7 +2874,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
 
     let result = apply_plan(
         &mut plan,
-        &reconciler,
+        reconciler,
         &resolved,
         &[],
         dir.path(),
@@ -2938,7 +2938,7 @@ fn apply_plan_dry_run_skips_apply() {
 
     let result = apply_plan(
         &mut plan,
-        &reconciler,
+        reconciler,
         &resolved,
         &[],
         dir.path(),

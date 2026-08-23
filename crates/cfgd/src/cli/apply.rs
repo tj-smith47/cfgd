@@ -388,7 +388,21 @@ pub fn run_apply(
     let reconciler = Reconciler::new(&registry, state)
         .with_config_dir(&config_dir)
         .withholding_env_surface(exclusions.withholds_env_surface())
-        .diffing_installed(&pkg_cx);
+        .diffing_installed(&pkg_cx)
+        // What the recorded apply says this run was scoped to. An isolated
+        // module run resolved no profile, so it names the modules instead of
+        // inheriting the placeholder `active_profile_name` falls back to; a run
+        // whose profile is genuinely underivable records nothing at all, and
+        // every reader omits the row rather than printing a stand-in.
+        .recording_scope(if module_only {
+            module_filter
+                .iter()
+                .map(|m| reconciler::Owner::module(m).token())
+                .collect::<Vec<_>>()
+                .join(", ")
+        } else {
+            profile_label.clone().unwrap_or_default()
+        });
     let mut plan = printer.narrate("Planning", |sp| {
         // Apply's plan preview reads `brew install neovim (0.10.2)`, and the
         // same string is the persisted action description and the module's
@@ -492,7 +506,10 @@ pub fn run_apply(
 
     // Handle unmanaged file targets: a target that already holds a file cfgd
     // never wrote is settled by `--on-conflict` before anything is applied.
-    handle_unmanaged_file_targets(
+    // The copies themselves are deferred to the actions that displace their
+    // targets, so a `Backed up to …` line lands under `Phase: Files` beside
+    // the write it protects rather than above the run's own header.
+    let reconciler = reconciler.backing_up(handle_unmanaged_file_targets(
         &mut plan,
         &config_dir,
         state,
@@ -500,7 +517,7 @@ pub fn run_apply(
         yes,
         args.on_conflict,
         registry.default_file_strategy,
-    )?;
+    )?);
 
     // Self-heal the package-tracking table on a full unscoped apply, BEFORE the
     // no-op early-return: a row whose package vanished (partial-uninstall

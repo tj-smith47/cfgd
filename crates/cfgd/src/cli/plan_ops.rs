@@ -1190,6 +1190,14 @@ const PROMPT_POLICIES: [ResolvedConflict; 4] = [
 /// two cannot describe the same decision differently.
 const UNMANAGED_SKIP_REASON: &str = "skipped: target exists as unmanaged file";
 
+/// Settle every target that already holds a file cfgd never wrote, and report
+/// the ones whose settled policy is `Backup`.
+///
+/// Nothing on disk is touched here. A `Backup` decision is carried out by the
+/// action that displaces the target, inside the phase that runs it
+/// ([`reconciler::Reconciler::backing_up`]) — a plan is a preview until the
+/// operator confirms it, and the line reporting a copy belongs beside the write
+/// it protects rather than above the run's own header.
 pub(in crate::cli) fn handle_unmanaged_file_targets(
     plan: &mut reconciler::Plan,
     config_dir: &Path,
@@ -1198,9 +1206,50 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
     auto_yes: bool,
     requested: OnConflict,
     default_strategy: FileStrategy,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<HashSet<PathBuf>> {
     let policy = resolve_conflict_policy(requested, auto_yes);
+    // A settled policy answers every conflict without asking, so the sweep is a
+    // silent read of every declared target and source — narrated, because it is
+    // seconds of hashing between the plan and the header. An UNSETTLED one
+    // prompts per file, which is its own live indicator and cannot share the
+    // terminal with an animated bar.
+    match policy {
+        Some(_) => printer.narrate("Planning", |sp| {
+            sweep_unmanaged_file_targets(
+                plan,
+                config_dir,
+                state,
+                printer,
+                policy,
+                default_strategy,
+                Some(sp),
+            )
+        }),
+        None => sweep_unmanaged_file_targets(
+            plan,
+            config_dir,
+            state,
+            printer,
+            policy,
+            default_strategy,
+            None,
+        ),
+    }
+}
+
+fn sweep_unmanaged_file_targets(
+    plan: &mut reconciler::Plan,
+    config_dir: &Path,
+    state: &StateStore,
+    printer: &Printer,
+    policy: Option<ResolvedConflict>,
+    default_strategy: FileStrategy,
+    mut spinner: Option<&mut cfgd_core::output::Spinner>,
+) -> anyhow::Result<HashSet<PathBuf>> {
     let options = conflict_prompt_options();
+    // Targets whose settled policy is `Backup`, handed to the reconciler so the
+    // copy runs with the write it protects.
+    let mut backups: HashSet<PathBuf> = HashSet::new();
     // Targets the pass decided to leave alone. Planning emits a `SetPermissions`
     // as a SIBLING of the write, so rewriting only the write leaves a chmod
     // behind — and "skip" would still change the mode of the file it promised
@@ -1208,7 +1257,10 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
     let mut skipped: Vec<PathBuf> = Vec::new();
 
     for phase in &mut plan.phases {
-        for (_owner, actions) in phase.groups_mut() {
+        for (owner, actions) in phase.groups_mut() {
+            if let Some(sp) = spinner.as_deref_mut() {
+                sp.set_message(format!("Checking existing files for {}", owner.token()));
+            }
             let mut i = 0;
             while i < actions.len() {
                 // Profile file actions
@@ -1238,7 +1290,7 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
                         if chosen == ResolvedConflict::Skip {
                             skipped.push(target.clone());
                         }
-                        apply_conflict_policy(chosen, &target, &mut actions[i], printer)?;
+                        apply_conflict_policy(chosen, &target, &mut actions[i], &mut backups)?;
                     }
                 }
 
@@ -1268,7 +1320,7 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
                             )?;
                             match chosen {
                                 ResolvedConflict::Backup => {
-                                    backup_file(&file_target, printer)?;
+                                    backups.insert(file_target.clone());
                                 }
                                 ResolvedConflict::Skip => {
                                     // A dropped module file leaves no action to
@@ -1313,7 +1365,7 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
     }
 
     prune_skipped_leftovers(plan, &skipped);
-    Ok(())
+    Ok(backups)
 }
 
 /// Clear away what a skipped target leaves behind in the plan.
@@ -1435,166 +1487,16 @@ fn settle_prompt_failure(
     }
 }
 
-/// Copy an unmanaged target aside before cfgd overwrites it, and return where
-/// the copy landed.
-///
-/// A COPY, never a rename. The rename this replaced left a window in which the
-/// user's file was at neither path: a crash between the rename and the apply's
-/// own write lost it outright. Copying leaves the original at `target` until
-/// the write rename-replaces it, so at every instant the content exists at the
-/// sidecar, at the target, or at both.
-///
-/// The copied bytes are re-read and hashed before the copy is reported, so a
-/// short write or a full disk is an error rather than a sidecar that silently
-/// holds less than the file it claims to preserve.
-pub(in crate::cli) fn backup_file(target: &Path, printer: &Printer) -> anyhow::Result<PathBuf> {
-    let meta = target
-        .symlink_metadata()
-        .map_err(|e| anyhow::anyhow!("Failed to backup {}: {}", target.posix(), e))?;
-
-    if meta.file_type().is_symlink() {
-        let dest = target
-            .read_link()
-            .map_err(|e| anyhow::anyhow!("Failed to backup symlink {}: {}", target.posix(), e))?;
-        // Reserved unoccupied, so the link is created rather than replacing
-        // whatever a previous adoption left — including a dangling link, which
-        // `symlink_metadata` still counts as an entry someone made.
-        let backup_path = reserve_backup_path(target, None)?;
-        cfgd_core::create_symlink(&dest, &backup_path)
-            .map_err(|e| anyhow::anyhow!("Failed to backup {}: {}", target.posix(), e))?;
-        printer.status_simple(Role::Ok, format!("Backed up to {}", backup_path.posix()));
-        return Ok(backup_path);
-    }
-
-    if meta.is_dir() {
-        // Same reservation, and load-bearing here: `copy_dir_recursive` writes
-        // INTO an existing directory, so an occupied sidecar would silently
-        // merge two different originals into one tree.
-        let backup_path = reserve_backup_path(target, None)?;
-        cfgd_core::copy_dir_recursive(target, &backup_path)
-            .map_err(|e| anyhow::anyhow!("Failed to backup {}: {}", target.posix(), e))?;
-        printer.status_simple(Role::Ok, format!("Backed up to {}", backup_path.posix()));
-        return Ok(backup_path);
-    }
-
-    let content = std::fs::read(target)
-        .map_err(|e| anyhow::anyhow!("Failed to backup {}: {}", target.posix(), e))?;
-    let hash = cfgd_core::sha256_hex(&content);
-    let backup_path = reserve_backup_path(target, Some(&hash))?;
-    // An earlier adoption already preserved these exact bytes; rewriting the
-    // sidecar would only widen the window in which it is half-written.
-    if sidecar_holds(&backup_path, &hash) {
-        printer.status_simple(
-            Role::Ok,
-            format!("Already backed up at {}", backup_path.posix()),
-        );
-        return Ok(backup_path);
-    }
-    cfgd_core::atomic_write(&backup_path, &content)
-        .map_err(|e| anyhow::anyhow!("Failed to backup {}: {}", target.posix(), e))?;
-    if !sidecar_holds(&backup_path, &hash) {
-        return Err(anyhow::anyhow!(
-            "Backup of {} to {} did not verify (content hash mismatch)",
-            target.posix(),
-            backup_path.posix()
-        ));
-    }
-    // Full `0o7777`: a sidecar is the file it preserves, and a setuid or sticky
-    // bit dropped in the copy is not restorable from it.
-    if let Some(mode) = cfgd_core::file_permissions_mode_full(&meta) {
-        cfgd_core::set_file_permissions(&backup_path, mode)
-            .map_err(|e| backup_error(target, &backup_path, e))?;
-    }
-    printer.status_simple(Role::Ok, format!("Backed up to {}", backup_path.posix()));
-    Ok(backup_path)
-}
-
-/// How many `-N` disambiguators are tried before a reservation gives up.
-///
-/// A bound rather than an unbounded scan: past this many distinct originals
-/// adopted at one target within one second, the situation is a loop and the
-/// honest answer is an error, not a hundredth sidecar.
-const BACKUP_DISAMBIGUATOR_LIMIT: u32 = 64;
-
-/// Where this backup may be written without destroying an older one.
-///
-/// The primary `<target>.cfgd-backup` is what `profile update` and module
-/// removal offer to restore, so it keeps the FIRST content adopted there — the
-/// one that predates cfgd. A second, different original is stamped instead of
-/// clobbering it, because a sidecar overwritten by the file that displaced it
-/// is the same data loss the copy exists to prevent.
-///
-/// The stamp has one-second resolution, so it is a hint at a free name and
-/// never a guarantee of one: two adoptions of the same target inside one second
-/// derive the same stamp, and the second would clobber the first. Every
-/// candidate is therefore checked, and a taken one moves to `-1`, `-2`, … until
-/// a free name is found or the limit is reached.
-fn reserve_backup_path(target: &Path, hash: Option<&str>) -> anyhow::Result<PathBuf> {
-    let primary = cfgd_backup_path(target, "");
-    if !sidecar_occupied(&primary, hash) {
-        return Ok(primary);
-    }
-    let stamp = cfgd_core::utc_now_backup_stamp();
-    let stamped = cfgd_backup_path(target, &format!(".{stamp}"));
-    if !sidecar_occupied(&stamped, hash) {
-        return Ok(stamped);
-    }
-    for n in 1..=BACKUP_DISAMBIGUATOR_LIMIT {
-        let candidate = cfgd_backup_path(target, &format!(".{stamp}-{n}"));
-        if !sidecar_occupied(&candidate, hash) {
-            return Ok(candidate);
-        }
-    }
-    Err(anyhow::anyhow!(
-        "No free backup path beside {}: {} and {} disambiguators are all taken",
-        target.posix(),
-        stamped.posix(),
-        BACKUP_DISAMBIGUATOR_LIMIT
-    ))
-}
-
-/// Whether a candidate sidecar path is spoken for.
-///
-/// Judged with `symlink_metadata`, so a dangling link or a directory counts as
-/// an entry someone made — writing over either is the loss the reservation
-/// exists to avoid. `hash` is `Some` only for a regular-file backup, where a
-/// sidecar already holding exactly these bytes is not an obstacle but the same
-/// backup, and reusing it is the whole point.
-fn sidecar_occupied(path: &Path, hash: Option<&str>) -> bool {
-    if path.symlink_metadata().is_err() {
-        return false;
-    }
-    match hash {
-        Some(h) => !sidecar_holds(path, h),
-        None => true,
-    }
-}
-
-/// Whether the sidecar at `path` is a regular file holding exactly `hash`.
-fn sidecar_holds(path: &Path, hash: &str) -> bool {
-    path.symlink_metadata().is_ok_and(|m| m.is_file())
-        && std::fs::read(path).is_ok_and(|bytes| cfgd_core::sha256_hex(&bytes) == hash)
-}
-
-fn backup_error(target: &Path, backup_path: &Path, e: std::io::Error) -> anyhow::Error {
-    anyhow::anyhow!(
-        "Failed to backup {} to {}: {}",
-        target.posix(),
-        backup_path.posix(),
-        e
-    )
-}
-
 /// Carry out one resolved policy against one profile-file action.
 pub(in crate::cli) fn apply_conflict_policy(
     policy: ResolvedConflict,
     target: &Path,
     action: &mut reconciler::Action,
-    printer: &Printer,
+    backups: &mut HashSet<PathBuf>,
 ) -> anyhow::Result<()> {
     match policy {
         ResolvedConflict::Backup => {
-            backup_file(target, printer)?;
+            backups.insert(target.to_path_buf());
         }
         ResolvedConflict::Skip => {
             let origin = match action {

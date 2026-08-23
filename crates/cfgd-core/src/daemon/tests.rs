@@ -2202,6 +2202,8 @@ fn pending_env_decision_withholds_the_whole_env_surface() {
         exclusions.withholds_action(&Action::Env(EnvAction::WriteEnvFile {
             path: PathBuf::from("/home/user/.cfgd.env"),
             content: "export EDITOR=vim".into(),
+            vars: 0,
+            aliases: 0,
         }))
     );
     assert!(
@@ -2224,6 +2226,8 @@ fn pending_env_decision_withholds_the_whole_env_surface() {
         !unrelated.withholds_action(&Action::Env(EnvAction::WriteEnvFile {
             path: PathBuf::from("/home/user/.cfgd.env"),
             content: String::new(),
+            vars: 0,
+            aliases: 0,
         }))
     );
 }
@@ -3071,6 +3075,8 @@ fn action_resource_info_env_write() {
     let action = Action::Env(EnvAction::WriteEnvFile {
         path: PathBuf::from("/home/user/.cfgd.env"),
         content: "export FOO=bar".into(),
+        vars: 0,
+        aliases: 0,
     });
     let (rtype, rid) = action_resource_info(&action);
     assert_eq!(rtype, "env");

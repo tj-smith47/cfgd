@@ -8,7 +8,9 @@ use crate::providers::ProviderRegistry;
 use crate::state::StateStore;
 use crate::to_posix_string;
 
-use super::env_engine::{EnvHostProbe, EnvPlatform, EnvTarget, env_targets};
+use super::env_engine::{
+    EnvContent, EnvHostProbe, EnvOrigins, EnvPlatform, EnvTarget, env_targets,
+};
 
 /// Record a drift event or log a warning if the write fails. Previous sites
 /// used `.ok()` which silently dropped SQLite errors (locked DB, full disk),
@@ -179,18 +181,33 @@ pub struct VerifyResult {
     pub actual: String,
 }
 
+/// Merge every module's `env`/`aliases` over the profile's, and record which
+/// module each merged entry came from.
+///
+/// The origins travel with the merge because they are decided BY it: a later
+/// module overriding an earlier one owns the value that survives, and the same
+/// last-writer rule has to answer "whose is this" or the comment beside a line
+/// names a module whose value is not there. Both surfaces that derive env-file
+/// content call this — the planner and `verify` — so the two cannot disagree
+/// about a file's bytes and report the difference as permanent drift.
 pub(super) fn merge_module_env_aliases(
     profile_env: &[crate::config::EnvVar],
     profile_aliases: &[crate::config::ShellAlias],
     modules: &[ResolvedModule],
-) -> (Vec<crate::config::EnvVar>, Vec<crate::config::ShellAlias>) {
+) -> (
+    Vec<crate::config::EnvVar>,
+    Vec<crate::config::ShellAlias>,
+    EnvOrigins,
+) {
     let mut merged = profile_env.to_vec();
     let mut merged_aliases = profile_aliases.to_vec();
+    let mut origins = EnvOrigins::default();
     for module in modules {
         crate::merge_env(&mut merged, &module.env);
         crate::merge_aliases(&mut merged_aliases, &module.aliases);
+        origins.claim(module);
     }
-    (merged, merged_aliases)
+    (merged, merged_aliases, origins)
 }
 
 /// Verify env file and shell rc source line match expected state, persisting
@@ -239,7 +256,8 @@ pub fn env_verify_results(
     path_dirs: &[String],
 ) -> Vec<VerifyResult> {
     let mut results = Vec::new();
-    let (merged, merged_aliases) = merge_module_env_aliases(profile_env, profile_aliases, modules);
+    let (merged, merged_aliases, origins) =
+        merge_module_env_aliases(profile_env, profile_aliases, modules);
 
     if merged.is_empty() && merged_aliases.is_empty() && path_dirs.is_empty() {
         return results;
@@ -256,9 +274,7 @@ pub fn env_verify_results(
     // whose dialect `verify_env_items` is built to read.
     let mut primary_checked = false;
     for target in env_targets(
-        &merged,
-        &merged_aliases,
-        path_dirs,
+        EnvContent::new(&merged, &merged_aliases, path_dirs, &origins),
         scope,
         &home,
         &probe,
@@ -268,7 +284,14 @@ pub fn env_verify_results(
             EnvTarget::ManagedFile { path, content } => {
                 if !primary_checked {
                     primary_checked = true;
-                    verify_env_items(&path, &merged, &merged_aliases, platform, &mut results);
+                    verify_env_items(
+                        &path,
+                        &merged,
+                        &merged_aliases,
+                        &origins,
+                        platform,
+                        &mut results,
+                    );
                 }
                 verify_env_file(&path, &content, &mut results);
             }
@@ -310,6 +333,7 @@ fn verify_env_items(
     path: &std::path::Path,
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
+    origins: &EnvOrigins,
     platform: EnvPlatform,
     results: &mut Vec<VerifyResult>,
 ) {
@@ -319,7 +343,7 @@ fn verify_env_items(
     let actual_lines: std::collections::HashSet<&str> = actual.lines().collect();
 
     for ev in env {
-        let Some(line) = super::env_files::primary_env_var_line(ev, platform) else {
+        let Some(line) = super::env_files::primary_env_var_line(ev, platform, origins) else {
             continue;
         };
         // Line-anchored, not a substring search: `actual.contains(&line)` would
@@ -346,7 +370,7 @@ fn verify_env_items(
     }
 
     for alias in aliases {
-        let Some(line) = super::env_files::primary_alias_line(alias, platform) else {
+        let Some(line) = super::env_files::primary_alias_line(alias, platform, origins) else {
             continue;
         };
         let matches = actual_lines.contains(line.as_str());
@@ -382,11 +406,11 @@ pub fn env_item_declared_line(
         "env-var" => env
             .iter()
             .find(|e| e.name == resource_id)
-            .and_then(|e| super::env_files::primary_env_var_line(e, platform)),
+            .and_then(|e| super::env_files::primary_env_var_line(e, platform, &Default::default())),
         "alias" => aliases
             .iter()
             .find(|a| a.name == resource_id)
-            .and_then(|a| super::env_files::primary_alias_line(a, platform)),
+            .and_then(|a| super::env_files::primary_alias_line(a, platform, &Default::default())),
         _ => None,
     }
 }

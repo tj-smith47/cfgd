@@ -234,7 +234,7 @@ Apply
 
 Phase: Prerequisites
   cfgd:env
-    ✓ write /home/you/.cfgd.env
+    ✓ write /home/you/.cfgd.env — 1 var
     ✓ inject source line into /home/you/.bashrc
     ✓ inject source line into /home/you/.zshenv
     ✓ inject source line into /home/you/.profile
@@ -256,6 +256,19 @@ nvim
 $ systemctl --user show-environment | grep EDITOR
 EDITOR=nvim                                # systemd --user units + Wayland GUI
 ```
+
+Each generated line names the module that declared it, so a file holding entries from
+several modules says where each came from:
+
+```bash
+# managed by cfgd — do not edit
+export PAGER="less"
+export EDITOR="nvim" # module:nvim
+alias v="nvim" # module:nvim
+```
+
+A line the profile itself declares carries no comment: the file is the profile's own by
+default.
 
 The two owner groups separate what is durable from what is not: `cfgd:env` writes the files
 a future shell reads, `cfgd:session` pushes the same values into the session manager you are

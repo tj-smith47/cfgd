@@ -237,7 +237,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
             apply_status = apply_plan(
                 &mut plan,
-                &reconciler,
+                reconciler,
                 &resolved,
                 &resolved_modules,
                 &target_dir,
@@ -365,7 +365,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
             apply_status = apply_plan(
                 &mut plan,
-                &reconciler,
+                reconciler,
                 &resolved,
                 &resolved_modules,
                 &target_dir,
@@ -568,7 +568,7 @@ pub(super) struct ApplyPlanOpts<'a> {
 /// nothing ran.
 pub(super) fn apply_plan(
     plan: &mut cfgd_core::reconciler::Plan,
-    reconciler: &cfgd_core::reconciler::Reconciler<'_>,
+    reconciler: cfgd_core::reconciler::Reconciler<'_>,
     resolved: &config::ResolvedProfile,
     modules: &[cfgd_core::modules::ResolvedModule],
     config_dir: &Path,
@@ -579,8 +579,10 @@ pub(super) fn apply_plan(
     // wrote, so the conflict pass runs here on the same terms `cfgd apply`
     // gives it — before the plan is borrowed by the run, and never for a
     // preview, which writes nothing to conflict with.
-    if !opts.dry_run {
-        crate::cli::plan_ops::handle_unmanaged_file_targets(
+    let reconciler = if opts.dry_run {
+        reconciler
+    } else {
+        reconciler.backing_up(crate::cli::plan_ops::handle_unmanaged_file_targets(
             plan,
             config_dir,
             opts.state,
@@ -588,8 +590,8 @@ pub(super) fn apply_plan(
             opts.yes,
             opts.on_conflict,
             opts.default_strategy,
-        )?;
-    }
+        )?)
+    };
     let plan = &*plan;
 
     // The names the run acts on, not the names the flags asked for: a module
@@ -637,7 +639,7 @@ pub(super) fn apply_plan(
     // see helpers::run_state_dir — honor --state-dir so init --apply
     // mutually-excludes against `cfgd apply` and the daemon.
     let mut exec = crate::cli::apply::ReconcilerExecutor::unscoped(
-        reconciler,
+        &reconciler,
         resolved,
         config_dir,
         modules,

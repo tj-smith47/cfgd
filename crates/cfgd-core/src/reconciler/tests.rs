@@ -2360,7 +2360,7 @@ fn generate_env_file_quoted_and_unquoted() {
             value: "/usr/local/bin:$PATH".into(),
         },
     ];
-    let content = super::generate_env_file_content(&env, &[], &[]);
+    let content = super::generate_env_file_content(&env, &[], &[], &Default::default());
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("export EDITOR=\"nvim\""));
     // PATH contains $, so double-quoted to allow expansion
@@ -2379,7 +2379,7 @@ fn generate_fish_env_splits_path() {
             value: "/usr/local/bin:/home/user/.cargo/bin:$PATH".into(),
         },
     ];
-    let content = super::generate_fish_env_content(&env, &[], &[]);
+    let content = super::generate_fish_env_content(&env, &[], &[], &Default::default());
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("set -gx EDITOR 'nvim'"));
     assert!(content.contains("set -gx PATH '/usr/local/bin' '/home/user/.cargo/bin' '$PATH'"));
@@ -2404,15 +2404,15 @@ fn generate_env_files_expand_leading_tilde() {
                 value: "~/bin:/usr/bin".into(),
             },
         ];
-        let bash = super::generate_env_file_content(&env, &[], &[]);
+        let bash = super::generate_env_file_content(&env, &[], &[], &Default::default());
         assert!(bash.contains(&format!("export CLIFT_DIR=\"{h}/.local/share/clift\"")));
         assert!(bash.contains(&format!("export PATH=\"{h}/bin:/usr/bin\"")));
 
-        let fish = super::generate_fish_env_content(&env, &[], &[]);
+        let fish = super::generate_fish_env_content(&env, &[], &[], &Default::default());
         assert!(fish.contains(&format!("set -gx CLIFT_DIR '{h}/.local/share/clift'")));
         assert!(fish.contains(&format!("set -gx PATH '{h}/bin' '/usr/bin'")));
 
-        let ps = super::generate_powershell_env_content(&env, &[], &[]);
+        let ps = super::generate_powershell_env_content(&env, &[], &[], &Default::default());
         assert!(ps.contains(&format!("$env:CLIFT_DIR = '{h}/.local/share/clift'")));
     });
 }
@@ -2439,7 +2439,7 @@ fn generate_fish_path_keeps_colon_containing_home_intact() {
             name: "PATH".into(),
             value: "~/bin:/usr/bin".into(),
         }];
-        let fish = super::generate_fish_env_content(&env, &[], &[]);
+        let fish = super::generate_fish_env_content(&env, &[], &[], &Default::default());
         assert!(
             fish.contains(&format!("set -gx PATH '{h}/bin' '/usr/bin'")),
             "drive/colon-containing home must stay one PATH part, got: {fish}"
@@ -2521,7 +2521,7 @@ fn plan_env_generates_file_matching_expected() {
     // Write the expected content to a temp file to simulate "already applied"
     let dir = tempfile::tempdir().unwrap();
     let env_path = dir.path().join(".cfgd.env");
-    let expected = super::generate_env_file_content(&env, &[], &[]);
+    let expected = super::generate_env_file_content(&env, &[], &[], &Default::default());
     std::fs::write(&env_path, &expected).unwrap();
 
     // plan_env checks the real ~/.cfgd.env path, not our temp file,
@@ -2561,7 +2561,7 @@ fn generate_env_file_with_aliases() {
             command: "ls -la".into(),
         },
     ];
-    let content = super::generate_env_file_content(&env, &aliases, &[]);
+    let content = super::generate_env_file_content(&env, &aliases, &[], &Default::default());
     assert!(content.contains("export EDITOR=\"nvim\""));
     assert!(content.contains("alias vim=\"nvim\""));
     assert!(content.contains("alias ll=\"ls -la\""));
@@ -2577,7 +2577,7 @@ fn generate_fish_env_with_aliases() {
         name: "vim".into(),
         command: "nvim".into(),
     }];
-    let content = super::generate_fish_env_content(&env, &aliases, &[]);
+    let content = super::generate_fish_env_content(&env, &aliases, &[], &Default::default());
     assert!(content.contains("set -gx EDITOR 'nvim'"));
     assert!(content.contains("abbr -a vim 'nvim'"));
 }
@@ -2669,7 +2669,7 @@ fn generate_env_file_alias_escapes_quotes() {
         name: "greet".into(),
         command: "echo \"hello world\"".into(),
     }];
-    let content = super::generate_env_file_content(&[], &aliases, &[]);
+    let content = super::generate_env_file_content(&[], &aliases, &[], &Default::default());
     assert!(content.contains("alias greet=\"echo \\\"hello world\\\"\""));
 }
 
@@ -2935,7 +2935,7 @@ fn generate_powershell_env_basic() {
             value: r"C:\Users\user\.cargo\bin;$env:PATH".into(),
         },
     ];
-    let content = super::generate_powershell_env_content(&env, &[], &[]);
+    let content = super::generate_powershell_env_content(&env, &[], &[], &Default::default());
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("$env:EDITOR = 'code'"));
     // PATH references $env: so double-quoted to allow expansion
@@ -2954,7 +2954,7 @@ fn generate_powershell_env_with_aliases() {
             command: "Get-ChildItem -Force".into(),
         },
     ];
-    let content = super::generate_powershell_env_content(&[], &aliases, &[]);
+    let content = super::generate_powershell_env_content(&[], &aliases, &[], &Default::default());
     assert!(content.contains("Set-Alias -Name g -Value 'git'"));
     assert!(content.contains("function ll {"));
     assert!(content.contains("Get-ChildItem -Force @args"));
@@ -2966,14 +2966,14 @@ fn generate_powershell_env_escapes_quotes() {
         name: "GREETING".into(),
         value: r#"say "hello""#.into(),
     }];
-    let content = super::generate_powershell_env_content(&env, &[], &[]);
+    let content = super::generate_powershell_env_content(&env, &[], &[], &Default::default());
     // No $env: reference, so single-quoted (PS single quotes don't need escaping except ')
     assert!(content.contains("$env:GREETING = 'say \"hello\"'"));
 }
 
 #[test]
 fn generate_powershell_env_empty() {
-    let content = super::generate_powershell_env_content(&[], &[], &[]);
+    let content = super::generate_powershell_env_content(&[], &[], &[], &Default::default());
     assert!(content.starts_with("# managed by cfgd"));
     // Only header + trailing newline
     assert_eq!(content.lines().count(), 1);
@@ -3621,11 +3621,13 @@ fn apply_env_write_env_file_to_tempdir() {
             value: "/home/user/.cargo".into(),
         },
     ];
-    let content = super::generate_env_file_content(&env, &[], &[]);
+    let content = super::generate_env_file_content(&env, &[], &[], &Default::default());
 
     let action = EnvAction::WriteEnvFile {
         path: env_path.clone(),
         content: content.clone(),
+        vars: 0,
+        aliases: 0,
     };
 
     let printer = test_printer();
@@ -3650,7 +3652,7 @@ fn apply_env_write_skips_when_content_matches() {
         name: "EDITOR".into(),
         value: "nvim".into(),
     }];
-    let content = super::generate_env_file_content(&env, &[], &[]);
+    let content = super::generate_env_file_content(&env, &[], &[], &Default::default());
 
     // Pre-write identical content
     std::fs::write(&env_path, &content).unwrap();
@@ -3658,6 +3660,8 @@ fn apply_env_write_skips_when_content_matches() {
     let action = EnvAction::WriteEnvFile {
         path: env_path.clone(),
         content,
+        vars: 0,
+        aliases: 0,
     };
 
     let printer = test_printer();
@@ -4485,11 +4489,13 @@ fn apply_env_write_with_aliases_produces_correct_file() {
         name: "ll".into(),
         command: "ls -la".into(),
     }];
-    let content = super::generate_env_file_content(&env, &aliases, &[]);
+    let content = super::generate_env_file_content(&env, &aliases, &[], &Default::default());
 
     let action = EnvAction::WriteEnvFile {
         path: env_path.clone(),
         content: content.clone(),
+        vars: 0,
+        aliases: 0,
     };
 
     let printer = test_printer();
@@ -6511,6 +6517,8 @@ fn action_target_path_env_write() {
     let action = Action::Env(EnvAction::WriteEnvFile {
         path: path.clone(),
         content: "test".into(),
+        vars: 0,
+        aliases: 0,
     });
     assert_eq!(
         super::action_target_path(&action).map(|b| b.path),
@@ -6643,6 +6651,8 @@ fn format_action_description_env_write_and_inject() {
     let write = Action::Env(EnvAction::WriteEnvFile {
         path: PathBuf::from("/home/user/.cfgd.env"),
         content: "content".into(),
+        vars: 0,
+        aliases: 0,
     });
     assert!(format_action_description(&write).starts_with("env:write:"));
 
@@ -7102,6 +7112,8 @@ fn format_plan_items_env_actions() {
             Action::Env(EnvAction::WriteEnvFile {
                 path: PathBuf::from("/home/user/.cfgd.env"),
                 content: "content".into(),
+                vars: 0,
+                aliases: 0,
             }),
             Action::Env(EnvAction::InjectSourceLine {
                 rc_path: PathBuf::from("/home/user/.bashrc"),
@@ -7317,7 +7329,8 @@ fn merge_module_env_aliases_merges_correctly() {
         platform_skip_reason: None,
     }];
 
-    let (env, aliases) = super::merge_module_env_aliases(&profile_env, &profile_aliases, &modules);
+    let (env, aliases, _origins) =
+        super::merge_module_env_aliases(&profile_env, &profile_aliases, &modules);
     // Module overrides profile: A=2 (module wins), B=3 (new)
     assert_eq!(env.len(), 2);
     assert_eq!(env.iter().find(|e| e.name == "A").unwrap().value, "2");
@@ -7333,7 +7346,7 @@ fn generate_powershell_env_escapes_single_quotes() {
         name: "MSG".into(),
         value: "it's a test".into(),
     }];
-    let content = super::generate_powershell_env_content(&env, &[], &[]);
+    let content = super::generate_powershell_env_content(&env, &[], &[], &Default::default());
     // Single quotes in values are doubled in PS
     assert!(content.contains("$env:MSG = 'it''s a test'"));
 }
@@ -7344,7 +7357,7 @@ fn generate_fish_env_escapes_single_quotes() {
         name: "MSG".into(),
         value: "it's a test".into(),
     }];
-    let content = super::generate_fish_env_content(&env, &[], &[]);
+    let content = super::generate_fish_env_content(&env, &[], &[], &Default::default());
     assert!(content.contains("set -gx MSG 'it\\'s a test'"));
 }
 
@@ -10654,7 +10667,7 @@ fn generate_fish_env_content_basic() {
         name: "g".into(),
         command: "git".into(),
     }];
-    let content = super::generate_fish_env_content(&env, &aliases, &[]);
+    let content = super::generate_fish_env_content(&env, &aliases, &[], &Default::default());
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("set -gx EDITOR 'nvim'"));
     assert!(content.contains("set -gx CARGO_HOME '/home/user/.cargo'"));
@@ -10667,7 +10680,7 @@ fn generate_powershell_env_content_with_env_ref() {
         name: "MY_PATH".into(),
         value: r"C:\tools;$env:PATH".into(),
     }];
-    let content = super::generate_powershell_env_content(&env, &[], &[]);
+    let content = super::generate_powershell_env_content(&env, &[], &[], &Default::default());
     // Contains $env: so should be double-quoted
     assert!(
         content.contains(r#"$env:MY_PATH = "C:\tools;$env:PATH""#),
@@ -10683,7 +10696,7 @@ fn generate_powershell_env_function_alias() {
         name: "ll".into(),
         command: "Get-ChildItem -Force".into(),
     }];
-    let content = super::generate_powershell_env_content(&[], &aliases, &[]);
+    let content = super::generate_powershell_env_content(&[], &aliases, &[], &Default::default());
     assert!(content.contains("function ll {"));
     assert!(content.contains("Get-ChildItem -Force @args"));
 }
@@ -10695,7 +10708,7 @@ fn generate_fish_env_path_splitting() {
         name: "PATH".into(),
         value: "/usr/bin:/usr/local/bin:$PATH".into(),
     }];
-    let content = super::generate_fish_env_content(&env, &[], &[]);
+    let content = super::generate_fish_env_content(&env, &[], &[], &Default::default());
     assert!(
         content.contains("set -gx PATH '/usr/bin' '/usr/local/bin' '$PATH'"),
         "content: {}",
@@ -11007,6 +11020,8 @@ fn format_action_description_env_write_file() {
     let action = Action::Env(EnvAction::WriteEnvFile {
         path: PathBuf::from("/home/user/.cfgd.env"),
         content: "export FOO=bar\n".to_string(),
+        vars: 0,
+        aliases: 0,
     });
     let desc = format_action_description(&action);
     assert_eq!(desc, "env:write:/home/user/.cfgd.env");
@@ -11302,13 +11317,19 @@ fn primary_managed_env_target(
 ) -> (PathBuf, String) {
     let probe = EnvHostProbe::detect(home);
     let platform = EnvPlatform::current();
-    env_targets(env, aliases, &[], EnvScope::All, home, &probe, platform)
-        .into_iter()
-        .find_map(|t| match t {
-            EnvTarget::ManagedFile { path, content } => Some((path, content)),
-            _ => None,
-        })
-        .expect("env_targets yields a primary managed file for non-empty env/aliases")
+    env_targets(
+        EnvContent::new(env, aliases, &[], &Default::default()),
+        EnvScope::All,
+        home,
+        &probe,
+        platform,
+    )
+    .into_iter()
+    .find_map(|t| match t {
+        EnvTarget::ManagedFile { path, content } => Some((path, content)),
+        _ => None,
+    })
+    .expect("env_targets yields a primary managed file for non-empty env/aliases")
 }
 
 #[test]
@@ -11371,14 +11392,16 @@ fn env_verify_results_detects_hand_edited_alias_as_drift_without_flagging_untouc
     // mutation is meaningful on whichever dialect this platform writes.
     let (path, content) = primary_managed_env_target(tmp_home.path(), &env, &aliases);
     let platform = EnvPlatform::current();
-    let declared_line = super::env_files::primary_alias_line(&aliases[0], platform)
-        .expect("alias renders a declared line");
+    let declared_line =
+        super::env_files::primary_alias_line(&aliases[0], platform, &Default::default())
+            .expect("alias renders a declared line");
     let hand_edited = ShellAlias {
         name: "ll".to_string(),
         command: "ls -lah".to_string(),
     };
-    let hand_edited_line = super::env_files::primary_alias_line(&hand_edited, platform)
-        .expect("hand-edited alias renders a line");
+    let hand_edited_line =
+        super::env_files::primary_alias_line(&hand_edited, platform, &Default::default())
+            .expect("hand-edited alias renders a line");
     let mutated = content.replace(&declared_line, &hand_edited_line);
     assert_ne!(
         content, mutated,
@@ -11421,14 +11444,16 @@ fn verify_env_persists_drift_for_a_hand_edited_alias() {
     }];
     let (path, content) = primary_managed_env_target(tmp_home.path(), &[], &aliases);
     let platform = EnvPlatform::current();
-    let declared_line = super::env_files::primary_alias_line(&aliases[0], platform)
-        .expect("alias renders a declared line");
+    let declared_line =
+        super::env_files::primary_alias_line(&aliases[0], platform, &Default::default())
+            .expect("alias renders a declared line");
     let hand_edited = ShellAlias {
         name: "ll".to_string(),
         command: "ls -lah".to_string(),
     };
-    let hand_edited_line = super::env_files::primary_alias_line(&hand_edited, platform)
-        .expect("hand-edited alias renders a line");
+    let hand_edited_line =
+        super::env_files::primary_alias_line(&hand_edited, platform, &Default::default())
+            .expect("hand-edited alias renders a line");
     let mutated = content.replace(&declared_line, &hand_edited_line);
     std::fs::write(path, mutated).unwrap();
 
@@ -11540,7 +11565,7 @@ fn verify_env_never_persists_the_declared_value_only_the_opaque_marker() {
 
 #[test]
 fn merge_module_env_aliases_empty() {
-    let (env, aliases) = super::merge_module_env_aliases(&[], &[], &[]);
+    let (env, aliases, _origins) = super::merge_module_env_aliases(&[], &[], &[]);
     assert!(env.is_empty());
     assert!(aliases.is_empty());
 }
@@ -11580,7 +11605,8 @@ fn merge_module_env_aliases_combines_profile_and_modules() {
         platform_skip_reason: None,
     }];
 
-    let (env, aliases) = super::merge_module_env_aliases(&profile_env, &profile_aliases, &modules);
+    let (env, aliases, _origins) =
+        super::merge_module_env_aliases(&profile_env, &profile_aliases, &modules);
     assert_eq!(env.len(), 2);
     assert_eq!(aliases.len(), 2);
 
@@ -11619,7 +11645,7 @@ fn merge_module_env_aliases_module_overrides_profile() {
         platform_skip_reason: None,
     }];
 
-    let (env, _) = super::merge_module_env_aliases(&profile_env, &[], &modules);
+    let (env, _, _) = super::merge_module_env_aliases(&profile_env, &[], &modules);
     // merge_env deduplicates by name, last wins
     let editor = env.iter().find(|e| e.name == "EDITOR").unwrap();
     assert_eq!(
@@ -14220,9 +14246,12 @@ fn planned_env_file_content(plan: &Plan) -> Option<String> {
         .find(|p| p.name == PhaseName::Prerequisites)?
         .actions()
         .find_map(|a| match a {
-            Action::Env(EnvAction::WriteEnvFile { path, content })
-                if path.file_name() == Some(std::ffi::OsStr::new(".cfgd.env")) =>
-            {
+            Action::Env(EnvAction::WriteEnvFile {
+                path,
+                content,
+                vars: 0,
+                aliases: 0,
+            }) if path.file_name() == Some(std::ffi::OsStr::new(".cfgd.env")) => {
                 Some(content.clone())
             }
             _ => None,
@@ -14419,9 +14448,7 @@ fn env_targets_folded_path_dirs_render_into_the_fish_managed_file() {
     probe.fish_present = true;
     let dirs: Vec<String> = BREW_PATH_DIRS.iter().map(|d| d.to_string()).collect();
     let t = env_targets(
-        &[],
-        &[],
-        &dirs,
+        EnvContent::new(&[], &[], &dirs, &Default::default()),
         EnvScope::Interactive,
         home,
         &probe,
@@ -14451,9 +14478,7 @@ fn env_targets_folded_path_dirs_render_into_the_powershell_managed_file() {
     let home = Path::new("/h");
     let dirs: Vec<String> = BREW_PATH_DIRS.iter().map(|d| d.to_string()).collect();
     let t = env_targets(
-        &[],
-        &[],
-        &dirs,
+        EnvContent::new(&[], &[], &dirs, &Default::default()),
         EnvScope::Interactive,
         home,
         &env_probe(""),
@@ -17002,9 +17027,7 @@ fn one_env() -> Vec<EnvVar> {
 fn env_targets_empty_yields_nothing() {
     let home = Path::new("/h");
     let t = env_targets(
-        &[],
-        &[],
-        &[],
+        EnvContent::new(&[], &[], &[], &Default::default()),
         EnvScope::All,
         home,
         &env_probe("/bin/bash"),
@@ -17017,9 +17040,7 @@ fn env_targets_empty_yields_nothing() {
 fn env_targets_interactive_is_env_file_plus_interactive_rc() {
     let home = Path::new("/h");
     let t = env_targets(
-        &one_env(),
-        &[],
-        &[],
+        EnvContent::new(&one_env(), &[], &[], &Default::default()),
         EnvScope::Interactive,
         home,
         &env_probe("/bin/bash"),
@@ -17032,9 +17053,7 @@ fn env_targets_interactive_is_env_file_plus_interactive_rc() {
 fn env_targets_interactive_zsh_uses_zshrc() {
     let home = Path::new("/h");
     let t = env_targets(
-        &one_env(),
-        &[],
-        &[],
+        EnvContent::new(&one_env(), &[], &[], &Default::default()),
         EnvScope::Interactive,
         home,
         &env_probe("/usr/bin/zsh"),
@@ -17048,9 +17067,7 @@ fn env_targets_login_adds_zshenv_only_when_zsh_present() {
     let home = Path::new("/h");
     // zsh in use ⇒ ~/.zshenv is written into the login chain.
     let t = env_targets(
-        &one_env(),
-        &[],
-        &[],
+        EnvContent::new(&one_env(), &[], &[], &Default::default()),
         EnvScope::Login,
         home,
         &env_probe("/bin/zsh"),
@@ -17069,9 +17086,7 @@ fn env_targets_login_adds_zshenv_only_when_zsh_present() {
 
     // bash-only host ⇒ no inert ~/.zshenv for a shell it never runs.
     let t = env_targets(
-        &one_env(),
-        &[],
-        &[],
+        EnvContent::new(&one_env(), &[], &[], &Default::default()),
         EnvScope::Login,
         home,
         &env_probe("/bin/bash"),
@@ -17096,9 +17111,7 @@ fn env_targets_login_injects_existing_bash_profile() {
     let mut probe = env_probe("/bin/bash");
     probe.bash_profile_exists = true;
     let t = env_targets(
-        &one_env(),
-        &[],
-        &[],
+        EnvContent::new(&one_env(), &[], &[], &Default::default()),
         EnvScope::Login,
         home,
         &probe,
@@ -17115,9 +17128,7 @@ fn env_targets_login_falls_back_to_bash_login_when_only_it_exists() {
     let mut probe = env_probe("/bin/bash");
     probe.bash_login_exists = true;
     let t = env_targets(
-        &one_env(),
-        &[],
-        &[],
+        EnvContent::new(&one_env(), &[], &[], &Default::default()),
         EnvScope::Login,
         home,
         &probe,
@@ -17132,9 +17143,7 @@ fn env_targets_login_falls_back_to_bash_login_when_only_it_exists() {
 fn env_targets_all_linux_adds_environment_d_and_session() {
     let home = Path::new("/h");
     let t = env_targets(
-        &one_env(),
-        &[],
-        &[],
+        EnvContent::new(&one_env(), &[], &[], &Default::default()),
         EnvScope::All,
         home,
         &env_probe("/bin/bash"),
@@ -17151,9 +17160,7 @@ fn env_targets_all_linux_adds_environment_d_and_session() {
 fn env_targets_all_macos_adds_launchagent_not_environment_d() {
     let home = Path::new("/h");
     let t = env_targets(
-        &one_env(),
-        &[],
-        &[],
+        EnvContent::new(&one_env(), &[], &[], &Default::default()),
         EnvScope::All,
         home,
         &env_probe("/bin/zsh"),
@@ -17175,9 +17182,7 @@ fn env_targets_all_freebsd_omits_environment_d_and_launchagent() {
     // (inert clutter no consumer reads) nor a macOS LaunchAgent plist.
     let home = Path::new("/h");
     let t = env_targets(
-        &one_env(),
-        &[],
-        &[],
+        EnvContent::new(&one_env(), &[], &[], &Default::default()),
         EnvScope::All,
         home,
         &env_probe("/bin/sh"),
@@ -17196,9 +17201,7 @@ fn env_targets_all_freebsd_omits_environment_d_and_launchagent() {
 fn env_targets_windows_is_ps_profiles_plus_session_on_all() {
     let home = Path::new("/h");
     let t = env_targets(
-        &one_env(),
-        &[],
-        &[],
+        EnvContent::new(&one_env(), &[], &[], &Default::default()),
         EnvScope::All,
         home,
         &env_probe(""),
@@ -17222,18 +17225,14 @@ fn env_targets_match_what_verify_rederives() {
     let home = Path::new("/h");
     let probe = env_probe("/bin/bash");
     let a = env_targets(
-        &one_env(),
-        &[],
-        &[],
+        EnvContent::new(&one_env(), &[], &[], &Default::default()),
         EnvScope::All,
         home,
         &probe,
         EnvPlatform::Linux,
     );
     let b = env_targets(
-        &one_env(),
-        &[],
-        &[],
+        EnvContent::new(&one_env(), &[], &[], &Default::default()),
         EnvScope::All,
         home,
         &probe,
@@ -17680,9 +17679,7 @@ fn env_targets_windows_with_git_bash_adds_unix_env_file_and_bashrc() {
         zsh_present: false,
     };
     let t = env_targets(
-        &one_env(),
-        &[],
-        &[],
+        EnvContent::new(&one_env(), &[], &[], &Default::default()),
         EnvScope::All,
         home,
         &probe,
@@ -17713,9 +17710,7 @@ fn env_targets_fish_present_adds_managed_fish_file() {
         zsh_present: false,
     };
     let t = env_targets(
-        &one_env(),
-        &[],
-        &[],
+        EnvContent::new(&one_env(), &[], &[], &Default::default()),
         EnvScope::Interactive,
         home,
         &probe,
@@ -17882,6 +17877,8 @@ fn apply_env_write_regenerates_a_corrupt_managed_file() {
     let action = EnvAction::WriteEnvFile {
         path: path.clone(),
         content: content.to_string(),
+        vars: 0,
+        aliases: 0,
     };
     let printer = test_printer();
     let desc =
@@ -18191,7 +18188,12 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
 
     assert_eq!(actions.len(), 1, "{actions:?}");
     match &actions[0] {
-        Action::Env(EnvAction::WriteEnvFile { path, content }) => {
+        Action::Env(EnvAction::WriteEnvFile {
+            path,
+            content,
+            vars: 0,
+            aliases: 0,
+        }) => {
             assert_eq!(path, &env_file);
             assert_eq!(content, neutral);
         }
@@ -18384,6 +18386,8 @@ fn apply_env_write_refuses_a_link_redirecting_it_out_of_the_owner_s_tree() {
     let action = EnvAction::WriteEnvFile {
         path: env_path.clone(),
         content: "# managed by cfgd\nexport EVIL=\"1\"\n".to_string(),
+        vars: 0,
+        aliases: 0,
     };
     let printer = test_printer();
 
@@ -21157,6 +21161,8 @@ fn the_managers_group_completes_before_the_env_group_begins() {
         Action::Env(EnvAction::WriteEnvFile {
             path: env_file.clone(),
             content: "export PATH=\"/home/linuxbrew/.linuxbrew/bin:$PATH\"\n".to_string(),
+            vars: 0,
+            aliases: 0,
         }),
     ]);
 
@@ -21801,6 +21807,8 @@ fn every_action_emits_exactly_one_line() {
         Action::Env(EnvAction::WriteEnvFile {
             path: tmp.path().join(".cfgd.env"),
             content: "export A=1\n".to_string(),
+            vars: 0,
+            aliases: 0,
         }),
         Action::Env(EnvAction::InjectSourceLine {
             rc_path: tmp.path().join(".bashrc"),
@@ -24027,5 +24035,271 @@ fn a_missing_source_deploys_nothing_and_claims_no_change() {
     assert!(
         !dir.path().join("never").exists(),
         "a broken declaration leaves no empty directories behind"
+    );
+}
+
+/// The sidecar copy of an adopted file belongs to the action that overwrites
+/// it, not to planning: it runs inside the Files phase, so the run reports it
+/// while it happens and a plan that is never applied leaves the disk alone.
+#[test]
+fn a_reserved_target_is_copied_aside_by_the_file_action_that_replaces_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("src.conf");
+    let target = tmp.path().join("live.conf");
+    std::fs::write(&source, "from the module\n").unwrap();
+    std::fs::write(&target, "years of hand edits\n").unwrap();
+
+    let harness = crate::test_helpers::ReconcilerTestHarness::builder().build();
+    let plan = harness
+        .plan_with_actions(
+            vec![FileAction::Update {
+                source,
+                target: target.clone(),
+                diff: String::new(),
+                origin: "local".to_string(),
+                strategy: crate::config::FileStrategy::Copy,
+                source_hash: None,
+                patch: None,
+            }],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    Reconciler::new(&harness.registry, &harness.state)
+        .backing_up(std::collections::HashSet::from([target.clone()]))
+        .apply(
+            &plan,
+            &harness.resolved,
+            std::path::Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+    drop(printer);
+
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("live.conf.cfgd-backup")).unwrap(),
+        "years of hand edits\n",
+        "the action that replaces the file copies it aside first"
+    );
+    let out = crate::test_helpers::captured_text(&buf);
+    let phase = out.find("Files").expect("the Files phase is announced");
+    let backed = out
+        .find("Backed up to")
+        .expect("the copy is reported as it happens");
+    assert!(
+        phase < backed,
+        "the backup must be reported inside the Files phase, got: {out}"
+    );
+}
+
+/// A target nobody reserved is never copied aside: the reservation is what the
+/// conflict decision produced, and the file action asks for nothing else.
+#[test]
+fn an_unreserved_target_is_not_copied_aside() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("src.conf");
+    let target = tmp.path().join("live.conf");
+    std::fs::write(&source, "from the module\n").unwrap();
+    std::fs::write(&target, "years of hand edits\n").unwrap();
+
+    let harness = crate::test_helpers::ReconcilerTestHarness::builder().build();
+    let plan = harness
+        .plan_with_actions(
+            vec![FileAction::Update {
+                source,
+                target: target.clone(),
+                diff: String::new(),
+                origin: "local".to_string(),
+                strategy: crate::config::FileStrategy::Copy,
+                source_hash: None,
+                patch: None,
+            }],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+
+    Reconciler::new(&harness.registry, &harness.state)
+        .apply(
+            &plan,
+            &harness.resolved,
+            std::path::Path::new("."),
+            &test_printer(),
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    assert!(
+        !tmp.path().join("live.conf.cfgd-backup").exists(),
+        "an unreserved target gets no sidecar"
+    );
+}
+
+/// A module-declared entry carries the module that declared it as a line-end
+/// comment; a profile-declared one carries none, because the file is the
+/// profile's own by default and saying so on every line says nothing.
+#[test]
+fn a_generated_env_line_names_the_module_that_declared_it() {
+    let profile_env = vec![crate::config::EnvVar {
+        name: "PAGER".into(),
+        value: "less".into(),
+    }];
+    let mut module = crate::test_helpers::make_resolved_module("nvim");
+    module.env = vec![crate::config::EnvVar {
+        name: "EDITOR".into(),
+        value: "nvim".into(),
+    }];
+    module.aliases = vec![crate::config::ShellAlias {
+        name: "v".into(),
+        command: "nvim".into(),
+    }];
+
+    let (env, aliases, origins) =
+        super::merge_module_env_aliases(&profile_env, &[], std::slice::from_ref(&module));
+    let content = super::generate_env_file_content(&env, &aliases, &[], &origins);
+
+    assert!(
+        content.contains("export EDITOR=\"nvim\" # module:nvim"),
+        "a module-declared var names its module: {content}"
+    );
+    assert!(
+        content.contains("alias v=\"nvim\" # module:nvim"),
+        "a module-declared alias names its module: {content}"
+    );
+    assert!(
+        content.contains("export PAGER=\"less\"\n"),
+        "a profile-declared var carries no owner comment: {content}"
+    );
+}
+
+/// The provenance comment is part of the line `verify` matches, so a file
+/// written with it must read back as current rather than as permanent drift.
+#[test]
+#[serial_test::serial]
+fn a_module_owned_env_line_written_with_its_comment_verifies_as_current() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+
+    let mut module = crate::test_helpers::make_resolved_module("nvim");
+    module.env = vec![crate::config::EnvVar {
+        name: "EDITOR".into(),
+        value: "nvim".into(),
+    }];
+    module.aliases = vec![crate::config::ShellAlias {
+        name: "v".into(),
+        command: "nvim".into(),
+    }];
+    let modules = vec![module];
+
+    // Seed the file from the planner itself, so the baseline is the bytes a
+    // real apply writes rather than a literal that can drift from them.
+    for action in Reconciler::plan_env_with_home(
+        &[],
+        &[],
+        crate::config::EnvScope::Interactive,
+        &modules,
+        &[],
+        &[],
+        &[],
+        tmp_home.path(),
+    )
+    .actions
+    {
+        if let Action::Env(EnvAction::WriteEnvFile { path, content, .. }) = action {
+            std::fs::write(path, content).unwrap();
+        }
+    }
+
+    let results = super::verify::env_verify_results(
+        &[],
+        &[],
+        crate::config::EnvScope::Interactive,
+        &modules,
+        &[],
+    );
+    // Only the seeded managed file is under test; the rc source line the test
+    // deliberately never injected is a different surface.
+    let drifted: Vec<_> = results
+        .iter()
+        .filter(|r| !r.matches && r.resource_type != "env-rc")
+        .collect();
+    assert!(
+        drifted.is_empty(),
+        "a module-owned entry must not report drift against its own written line: {drifted:?}"
+    );
+    assert!(
+        results
+            .iter()
+            .any(|r| r.resource_type == "env-var" && r.resource_id == "EDITOR" && r.matches),
+        "the module-owned var is checked and current: {results:?}"
+    );
+}
+
+/// `--module` isolates the run from the active profile, so the apply record
+/// names what the run was scoped to instead of a profile it never resolved.
+#[test]
+fn a_module_scoped_apply_records_the_scope_it_ran_under() {
+    let harness = crate::test_helpers::ReconcilerTestHarness::builder().build();
+    let plan = harness.plan().unwrap();
+
+    Reconciler::new(&harness.registry, &harness.state)
+        .recording_scope("module:nvim")
+        .apply(
+            &plan,
+            &harness.resolved,
+            std::path::Path::new("."),
+            &test_printer(),
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    let history = harness.state.history(1).unwrap();
+    assert_eq!(
+        history[0].profile, "module:nvim",
+        "the record names the scope the run was given"
+    );
+}
+
+/// The env write is one action for a whole file, so its line says what went
+/// into the file instead of leaving the reader to open it.
+#[test]
+#[serial_test::serial]
+fn an_env_file_write_reports_what_it_wrote() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+
+    let harness = crate::test_helpers::ReconcilerTestHarness::builder()
+        .profile_yaml(
+            "envScope: Interactive\nenv:\n  - name: EDITOR\n    value: nvim\n  - name: PAGER\n    value: less\n  - name: VISUAL\n    value: nvim\naliases:\n  - name: v\n    command: nvim\n  - name: ll\n    command: ls -la\n",
+        )
+        .build();
+    let plan = harness.plan().unwrap();
+
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    harness.apply(&plan, &printer).unwrap();
+    drop(printer);
+
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains("3 vars, 2 aliases"),
+        "the env write states its own contents: {out}"
     );
 }

@@ -61,6 +61,29 @@ impl ActionOutcome {
     }
 }
 
+/// What an env-file write put in the file, for the detail beside its own line:
+/// `write ~/.cfgd.env — 3 vars, 3 aliases`.
+///
+/// `None` for every other action, and for a write that renders neither (the
+/// neutralizing rewrite of a surface whose declarations all went away) — a
+/// detail reading `0 vars, 0 aliases` states the same thing the empty file
+/// already does.
+fn env_write_summary(action: &Action) -> Option<String> {
+    let Action::Env(super::types::EnvAction::WriteEnvFile { vars, aliases, .. }) = action else {
+        return None;
+    };
+    let mut parts = Vec::new();
+    if *vars > 0 {
+        parts.push(crate::pluralize(*vars, "var"));
+    }
+    if *aliases > 0 {
+        // Not `pluralize`: its plural is a bare `+s`, and this noun's is not.
+        let noun = if *aliases == 1 { "alias" } else { "aliases" };
+        parts.push(format!("{aliases} {noun}"));
+    }
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
+
 /// A planned action that is a no-op by construction. Its subject already states
 /// why nothing happened, so the tree renders it at the role that text implies
 /// and attaches no `unchanged` detail.
@@ -626,14 +649,22 @@ impl<'a> super::Reconciler<'a> {
     ) -> Result<ApplyResult> {
         // Record apply up front as "in-progress" so the journal can reference it
         let plan_hash = crate::state::plan_hash(&plan.to_hash_string());
-        let profile_name = resolved
-            .layers
-            .last()
-            .map(|l| l.profile_name.as_str())
-            .unwrap_or("unknown");
+        // What this run was SCOPED to, which is not always a profile: a
+        // `--module` run resolves none, and the caller says so with
+        // `module:<name>`. An empty string is the honest record of a scope
+        // nothing could name — every surface reading this column omits its row
+        // rather than showing a placeholder, and a placeholder stored here is
+        // one no reader can tell from a profile genuinely called that.
+        let scope = self.recorded_scope.clone().unwrap_or_else(|| {
+            resolved
+                .layers
+                .last()
+                .map(|l| l.profile_name.clone())
+                .unwrap_or_default()
+        });
         let apply_id =
             self.state
-                .record_apply(profile_name, &plan_hash, ApplyStatus::InProgress, None)?;
+                .record_apply(&scope, &plan_hash, ApplyStatus::InProgress, None)?;
 
         // Filter-aware count of the actions this run intends to execute, using
         // the SAME predicate as the loop below — so an aborted run reports
@@ -1644,13 +1675,15 @@ impl<'a> super::Reconciler<'a> {
                     (None, true) => Role::Ok,
                     (None, false) => Role::Skipped,
                 };
-                let detail = (noop.is_none() && !action_changed).then(|| {
-                    if desc.ends_with(ENV_NO_SESSION_MANAGER_SUFFIX) {
+                let detail = if noop.is_none() && !action_changed {
+                    Some(if desc.ends_with(ENV_NO_SESSION_MANAGER_SUFFIX) {
                         "no session manager".to_string()
                     } else {
                         "unchanged".to_string()
-                    }
-                });
+                    })
+                } else {
+                    env_write_summary(action)
+                };
                 let duration = (elapsed >= MIN_REPORTED_DURATION).then_some(elapsed);
                 ActionOutcome {
                     subject,

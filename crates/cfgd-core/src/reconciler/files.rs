@@ -134,6 +134,9 @@ impl<'a> super::Reconciler<'a> {
         config_dir: &std::path::Path,
         printer: &Printer,
     ) -> Result<String> {
+        if let FileAction::Create { target, .. } | FileAction::Update { target, .. } = action {
+            self.back_up_adopted_target(target, printer)?;
+        }
         if let Some(ref fm) = self.registry.file_manager {
             fm.apply(&[action.clone_action()], printer)?;
         } else {

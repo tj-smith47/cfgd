@@ -9959,6 +9959,8 @@ fn action_type_str_env_variants() {
         super::action_type_str(&Action::Env(EnvAction::WriteEnvFile {
             path: "/tmp/env".into(),
             content: String::new(),
+            vars: 0,
+            aliases: 0,
         })),
         "write"
     );
@@ -15537,6 +15539,8 @@ fn action_path_env_write() {
     let action = reconciler::Action::Env(reconciler::EnvAction::WriteEnvFile {
         path: PathBuf::from("/home/user/.config/cfgd/env.sh"),
         content: String::new(),
+        vars: 0,
+        aliases: 0,
     });
     let path = super::action_path(&PhaseName::Prerequisites, &action);
     assert_eq!(path, "prerequisites:/home/user/.config/cfgd/env.sh");
@@ -23520,4 +23524,48 @@ fn dry_run_apply_previews_the_pruned_plan() {
         "a dry run previews the same pruned plan a real apply would run:\n{output}"
     );
     assert!(!f.withheld.exists(), "a dry run writes nothing either way");
+}
+
+/// A `--module` run is isolated from the active profile, so what it records is
+/// the scope it actually ran under. The placeholder an underivable profile used
+/// to stamp said cfgd had lost track of something, when the truth is that the
+/// run was never scoped to a profile at all.
+#[test]
+fn a_module_scoped_apply_records_its_modules_not_a_profile_placeholder() {
+    let (config_dir, state_dir) = setup_test_env();
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+
+    let mod_dir = config_dir.path().join("modules").join("nvim");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  env:\n    - name: EDITOR\n      value: nvim\n",
+    )
+    .unwrap();
+
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let printer = test_printer();
+    let args = ApplyArgs {
+        on_conflict: crate::cli::OnConflict::Ask,
+        from: None,
+        dry_run: false,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: vec!["nvim".to_string()],
+        with_profile: false,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    };
+    super::apply::cmd_apply(&cli, &printer, &args).unwrap();
+
+    let state = cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
+    let history = state.history(1).unwrap();
+    assert_eq!(
+        history[0].profile, "module:nvim",
+        "an isolated run records the modules it ran, never a placeholder"
+    );
 }

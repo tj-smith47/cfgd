@@ -189,24 +189,17 @@ fn reaches_all(scope: EnvScope) -> bool {
 /// state names, so a profile that only bootstraps a manager still gets a
 /// managed file *and* the rc source lines that make it reachable.
 pub(super) fn env_targets(
-    merged_env: &[EnvVar],
-    merged_aliases: &[ShellAlias],
-    path_dirs: &[String],
+    content: EnvContent<'_>,
     scope: EnvScope,
     home: &Path,
     probe: &EnvHostProbe,
     platform: EnvPlatform,
 ) -> Vec<EnvTarget> {
     let mut targets = Vec::new();
-    if merged_env.is_empty() && merged_aliases.is_empty() && path_dirs.is_empty() {
+    if content.env.is_empty() && content.aliases.is_empty() && content.path_dirs.is_empty() {
         return targets;
     }
 
-    let content = EnvContent {
-        env: merged_env,
-        aliases: merged_aliases,
-        path_dirs,
-    };
     match platform {
         EnvPlatform::Windows => windows_targets(content, home, probe, &mut targets),
         EnvPlatform::Linux | EnvPlatform::MacOs | EnvPlatform::FreeBsd => {
@@ -216,7 +209,7 @@ pub(super) fn env_targets(
 
     // Live-session refresh runs last, after the durable files are written.
     if reaches_all(scope) {
-        let vars = valid_export_pairs(merged_env);
+        let vars = valid_export_pairs(content.env);
         if !vars.is_empty() {
             targets.push(EnvTarget::LiveSession { vars });
         }
@@ -225,14 +218,90 @@ pub(super) fn env_targets(
     targets
 }
 
-/// The three desired-state inputs every generated shell file is derived from,
+/// The desired-state inputs every generated shell file is derived from,
 /// bundled so the per-platform target builders take one parameter instead of
-/// three parallel slices that must stay in the same order at each call site.
+/// parallel slices that must stay in the same order at each call site.
 #[derive(Clone, Copy)]
-struct EnvContent<'a> {
+pub(super) struct EnvContent<'a> {
     env: &'a [EnvVar],
     aliases: &'a [ShellAlias],
     path_dirs: &'a [String],
+    origins: &'a EnvOrigins,
+}
+
+impl<'a> EnvContent<'a> {
+    pub(super) fn new(
+        env: &'a [EnvVar],
+        aliases: &'a [ShellAlias],
+        path_dirs: &'a [String],
+        origins: &'a EnvOrigins,
+    ) -> Self {
+        Self {
+            env,
+            aliases,
+            path_dirs,
+            origins,
+        }
+    }
+}
+
+/// Which module each merged env var and alias came from, for the provenance
+/// comment the generated shell files carry beside the line it explains.
+///
+/// Names only — a value is whatever survived the merge, and the comment says
+/// who put it there. An entry the profile itself declares has no origin and
+/// gets no comment: the file is the profile's own by default, and annotating
+/// every line with that would say nothing.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct EnvOrigins {
+    env: std::collections::HashMap<String, String>,
+    aliases: std::collections::HashMap<String, String>,
+}
+
+impl EnvOrigins {
+    /// Record `module` as the owner of every entry it declares, overwriting an
+    /// earlier module's claim exactly as the merge overwrites its value.
+    pub(super) fn claim(&mut self, module: &crate::modules::ResolvedModule) {
+        let owner = crate::reconciler::Owner::module(&module.name).token();
+        for ev in &module.env {
+            self.env.insert(ev.name.clone(), owner.clone());
+        }
+        for alias in &module.aliases {
+            self.aliases.insert(alias.name.clone(), owner.clone());
+        }
+    }
+
+    /// The trailing ` # module:<name>` an env-var line carries, or an empty
+    /// string when nothing owns it.
+    pub(super) fn env_comment(&self, name: &str) -> String {
+        comment(self.env.get(name))
+    }
+
+    /// The same for an alias line.
+    pub(super) fn alias_comment(&self, name: &str) -> String {
+        comment(self.aliases.get(name))
+    }
+}
+
+/// Render an owner token as a trailing shell comment.
+///
+/// A comment is appended OUTSIDE the quoted token every dialect's quoting
+/// helper produced, so it annotates the assignment rather than joining the
+/// value. An owner carrying anything but the token's own alphabet is dropped
+/// rather than escaped: a `\n` would end the assignment and stand the
+/// remainder up as further shell, and there is nothing a comment is worth
+/// risking that for.
+fn comment(owner: Option<&String>) -> String {
+    match owner {
+        Some(owner)
+            if owner
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '_' | '.')) =>
+        {
+            format!(" # {owner}")
+        }
+        _ => String::new(),
+    }
 }
 
 fn unix_targets(
@@ -247,12 +316,13 @@ fn unix_targets(
         env,
         aliases,
         path_dirs,
+        origins,
     } = content;
     // Interactive (all scopes): the cfgd-owned env file + a source line in the
     // user's interactive rc, plus fish when it's in use.
     out.push(EnvTarget::ManagedFile {
         path: home.join(".cfgd.env"),
-        content: generate_env_file_content(env, aliases, path_dirs),
+        content: generate_env_file_content(env, aliases, path_dirs, origins),
     });
     let interactive_rc = if probe.shell.contains("zsh") {
         home.join(".zshrc")
@@ -266,7 +336,7 @@ fn unix_targets(
     if probe.fish_present {
         out.push(EnvTarget::ManagedFile {
             path: home.join(".config/fish/conf.d/cfgd-env.fish"),
-            content: generate_fish_env_content(env, aliases, path_dirs),
+            content: generate_fish_env_content(env, aliases, path_dirs, origins),
         });
     }
 
@@ -341,11 +411,12 @@ fn windows_targets(
         env,
         aliases,
         path_dirs,
+        origins,
     } = content;
     // PowerShell env file + dot-source into both profile locations.
     out.push(EnvTarget::ManagedFile {
         path: home.join(".cfgd-env.ps1"),
-        content: generate_powershell_env_content(env, aliases, path_dirs),
+        content: generate_powershell_env_content(env, aliases, path_dirs, origins),
     });
     for dir in ["Documents/PowerShell", "Documents/WindowsPowerShell"] {
         out.push(EnvTarget::SourceLine {
@@ -357,7 +428,7 @@ fn windows_targets(
     if probe.git_bash_present {
         out.push(EnvTarget::ManagedFile {
             path: home.join(".cfgd.env"),
-            content: generate_env_file_content(env, aliases, path_dirs),
+            content: generate_env_file_content(env, aliases, path_dirs, origins),
         });
         out.push(EnvTarget::SourceLine {
             rc_path: home.join(".bashrc"),

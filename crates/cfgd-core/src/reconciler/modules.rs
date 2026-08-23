@@ -401,6 +401,11 @@ impl<'a> super::Reconciler<'a> {
                         std::fs::create_dir_all(parent)?;
                     }
 
+                    // The user's own file at this target, copied aside before it
+                    // is displaced — the sidecar an adoption promised, written
+                    // here so the write and the line reporting it are one step.
+                    self.back_up_adopted_target(&target, printer)?;
+
                     // Backup existing target before overwriting
                     if let Ok(Some(file_state)) = crate::capture_file_state(&target)
                         && let Err(e) = self.state.store_file_backup(

@@ -1202,7 +1202,7 @@ mod tests {
         // have written.
         std::fs::write(
             tmp_home.path().join(".cfgd.env"),
-            "# managed by cfgd \u{2014} do not edit\nexport PAGER=\"less\"\nexport EDITOR=\"vim\"\n",
+            "# managed by cfgd \u{2014} do not edit\nexport PAGER=\"less\"\nexport EDITOR=\"vim\" # module:env-mod\n",
         )
         .unwrap();
 
