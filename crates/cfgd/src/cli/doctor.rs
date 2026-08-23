@@ -527,9 +527,6 @@ fn collect_doctor_output(
 pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
     let mut doc = Doc::new().heading("Doctor");
 
-    // Config emits at top-level (Status then KVs) rather than nested in a
-    // section because a section's pending_statuses buffer flushes Status
-    // lines after KVs, inverting the intended order.
     doc = build_config_top(doc, &output.config);
     doc = doc.section("Tools", |s| build_tools_section(s, output.git));
     doc = doc.section("Secrets", |s| build_secrets_section(s, &output.secrets));

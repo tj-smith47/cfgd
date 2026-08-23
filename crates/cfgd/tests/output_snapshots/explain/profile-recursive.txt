@@ -6,79 +6,93 @@ kind        Profile
 location    profiles/<name>/profile.yaml
 
 Fields (under spec)
+  ⊙ aliases <[]object> — Shell aliases this profile sets.
   aliases
     ⊙ command <string> (required) — Command the alias expands to.
     ⊙ name <string> (required)    — Alias name, as typed at the shell prompt.
+  ⊙ backups <[]object> — Declarative backup jobs this profile schedules.
   backups
-    postBackup
-      object
-        ⊙ continueOnError <boolean> — Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.
-        ⊙ creates <string>          — Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.
-        ⊙ idleTimeout <string>      — Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
-        ⊙ interactive <boolean>     — Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.
-        ⊙ onlyIf <string>           — Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.
-        ⊙ run <string> (required)   — The command or script body to run.
-        ⊙ shell <string>            — Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
-        ⊙ timeout <string>          — Kill the script if it runs longer than this duration (`"30s"`, `"2m"`). Unset means no timeout.
-        ⊙ unless <string>           — Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.
-        ⊙ workdir <string>          — Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
-      ⊙ string <string> — A bare command string, run with the platform's default shell and no timeout/guard.
-      ⊙ object <object> — 
-    preBackup
-      object
-        ⊙ continueOnError <boolean> — Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.
-        ⊙ creates <string>          — Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.
-        ⊙ idleTimeout <string>      — Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
-        ⊙ interactive <boolean>     — Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.
-        ⊙ onlyIf <string>           — Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.
-        ⊙ run <string> (required)   — The command or script body to run.
-        ⊙ shell <string>            — Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
-        ⊙ timeout <string>          — Kill the script if it runs longer than this duration (`"30s"`, `"2m"`). Unset means no timeout.
-        ⊙ unless <string>           — Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.
-        ⊙ workdir <string>          — Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
-      ⊙ string <string> — A bare command string, run with the platform's default shell and no timeout/guard.
-      ⊙ object <object> — 
     ⊙ destination <string>             — Where snapshots are written. Defaults to `<state_dir>/backups/<name>/` when omitted — resolved by the backup engine, not at parse time, since the state dir depends on runtime scope/overrides.
     ⊙ name <string> (required)         — Unique identifier for this backup within `spec.backups`, unique across the list. Keys the `destination` default, run records, and CLI selection. Becomes a directory component (`<state_dir>/backups/<name>/`) and a lock filename (`<state_dir>/locks/backup-<name>.lock`), so it must be non-empty, non-blank, a single segment (no `/` or `\`), not a directory reference (`.`, `..`), not rooted (`/daily`, `C:/daily`), and free of `:` anywhere — a drive and NTFS data-stream separator on Windows. Windows shapes are rejected on every platform so a name written on one OS stays valid on the others.
     ⊙ namePattern <string>             — Filename template for each snapshot. Supports `{name}`, `{filename}`, and `{timestamp}` (UTC, `%Y%m%dT%H%M%SZ`). Unknown `{var}` tokens are rejected at parse time. A literal `/` nests the snapshot in a subdirectory of the destination. At run time the rendered value must be relative and every segment must name something: `.` and `..` segments, empty segments (`a//b`, `daily/`), rooted values (`/daily`, `C:/daily`, `C:daily`, `\\server\share`), and `:` anywhere are all rejected. Windows shapes are rejected on every platform, so a pattern is valid everywhere or nowhere. A rejection names the `{filename}` it interpolated, so a colon in the source filename points at itself. Defaults to `"{filename}.{timestamp}"`.
     ⊙ postBackup <[](string | object)> — Scripts run after the copy step (e.g. restart the service stopped by `preBackup`). Always attempted, including after a failed `preBackup` or a failed copy.
-    ⊙ preBackup <[](string | object)>  — Scripts run before the snapshot is taken (e.g. stop a service that holds `source` open so the snapshot is consistent). A failure skips the snapshot and records a failed run; `postBackup` still runs.
-    ⊙ retention <integer>              — Number of newest snapshots to keep for this backup; older snapshots are pruned from disk and from the run history. Must be at least 1 (`0` would keep no backups, which is a misconfiguration rather than a supported "unlimited" mode). Defaults to 10.
-    ⊙ schedule <string>                — When to run this backup: a duration interval (e.g. `"6h"`) or a cron expression, validated at parse time. Cron expressions may be 5-field (`minute hour day month weekday`, e.g. `"0 3 * * *"`) or 6-field with a leading seconds field (`second minute hour day month weekday`, e.g. `"30 0 3 * * *"`), and are evaluated in the machine's LOCAL timezone, like a crontab entry. An interval is measured from the unit's last recorded run, so a `"1d"` backup on a machine rebooted daily still fires daily. Setting this hands the backup to the daemon's timers and takes it out of apply; omitted means "run on every apply".
-    ⊙ source <string> (required)       — File or directory to snapshot. A leading `~` expands to the home directory. Must not contain, or sit inside, the resolved `destination` — a nested pair is rejected before any copy, with symlinks resolved on both sides. Its filename is what `{filename}` interpolates, so a source whose filename contains `:` (legal on Unix, a drive and data-stream separator on Windows) needs an explicit `namePattern` that leaves `{filename}` out.
+    postBackup
+      ⊙ string <string> — A bare command string, run with the platform's default shell and no timeout/guard.
+      ⊙ object <object> — 
+      object
+        ⊙ continueOnError <boolean> — Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.
+        ⊙ creates <string>          — Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.
+        ⊙ idleTimeout <string>      — Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+        ⊙ interactive <boolean>     — Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.
+        ⊙ onlyIf <string>           — Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.
+        ⊙ run <string> (required)   — The command or script body to run.
+        ⊙ shell <string>            — Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+        ⊙ timeout <string>          — Kill the script if it runs longer than this duration (`"30s"`, `"2m"`). Unset means no timeout.
+        ⊙ unless <string>           — Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.
+        ⊙ workdir <string>          — Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+    ⊙ preBackup <[](string | object)> — Scripts run before the snapshot is taken (e.g. stop a service that holds `source` open so the snapshot is consistent). A failure skips the snapshot and records a failed run; `postBackup` still runs.
+    preBackup
+      ⊙ string <string> — A bare command string, run with the platform's default shell and no timeout/guard.
+      ⊙ object <object> — 
+      object
+        ⊙ continueOnError <boolean> — Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.
+        ⊙ creates <string>          — Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.
+        ⊙ idleTimeout <string>      — Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+        ⊙ interactive <boolean>     — Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.
+        ⊙ onlyIf <string>           — Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.
+        ⊙ run <string> (required)   — The command or script body to run.
+        ⊙ shell <string>            — Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+        ⊙ timeout <string>          — Kill the script if it runs longer than this duration (`"30s"`, `"2m"`). Unset means no timeout.
+        ⊙ unless <string>           — Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.
+        ⊙ workdir <string>          — Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+    ⊙ retention <integer>        — Number of newest snapshots to keep for this backup; older snapshots are pruned from disk and from the run history. Must be at least 1 (`0` would keep no backups, which is a misconfiguration rather than a supported "unlimited" mode). Defaults to 10.
+    ⊙ schedule <string>          — When to run this backup: a duration interval (e.g. `"6h"`) or a cron expression, validated at parse time. Cron expressions may be 5-field (`minute hour day month weekday`, e.g. `"0 3 * * *"`) or 6-field with a leading seconds field (`second minute hour day month weekday`, e.g. `"30 0 3 * * *"`), and are evaluated in the machine's LOCAL timezone, like a crontab entry. An interval is measured from the unit's last recorded run, so a `"1d"` backup on a machine rebooted daily still fires daily. Setting this hands the backup to the daemon's timers and takes it out of apply; omitted means "run on every apply".
+    ⊙ source <string> (required) — File or directory to snapshot. A leading `~` expands to the home directory. Must not contain, or sit inside, the resolved `destination` — a nested pair is rejected before any copy, with symlinks resolved on both sides. Its filename is what `{filename}` interpolates, so a source whose filename contains `:` (legal on Unix, a drive and data-stream separator on Windows) needs an explicit `namePattern` that leaves `{filename}` out.
+  ⊙ env <[]object> — Environment variables this profile sets.
   env
     ⊙ name <string> (required)  — Variable name. Must be shell-safe and not a reserved `CFGD_*` name.
     ⊙ value <string> (required) — Variable value.
+  ⊙ envScope <string> — How far `spec.env` exports reach across the current user's environment. Omitted means "inherit" (a parent layer's value survives); the resolved default when no layer sets it is `EnvScope::All` — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces.
+  ⊙ files <object>    — Files this profile deploys.
   files
+    ⊙ managed <[]object> — Files to deploy.
     managed
+      ⊙ encryption <object> — Encryption settings for this file.
       encryption
         ⊙ backend <string> (required) — The encryption backend to use (e.g. "sops", "age").
         ⊙ mode <string>               — When encryption must be enforced. Defaults to `InRepo`.
+      ⊙ patch <object> — Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).
       patch
         ⊙ ensure <object> — Keys/values to deep-merge into the target, leaving unmentioned keys untouched. Values are literal (no template rendering). Mutually exclusive with `script`.
         ⊙ format <string> — File format to parse the target as. Inferred from the target's extension when omitted.
         ⊙ script <string> — A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.
-      ⊙ encryption <object>        — Encryption settings for this file.
-      ⊙ patch <object>             — Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).
       ⊙ permissions <string>       — Unix permission bits (e.g. "600", "644") to apply after deployment.
       ⊙ private <boolean>          — When true, the source file is local-only: auto-added to .gitignore, silently skipped on machines where it doesn't exist.
       ⊙ source <string>            — Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).
       ⊙ strategy <string>          — Per-file deployment strategy override. If None, uses the global default.
       ⊙ target <string> (required) — Destination path on the machine. A leading `~` expands to the home directory.
-    ⊙ managed <[]object>   — Files to deploy.
     ⊙ permissions <object> — Octal permission strings (`"0600"`) keyed by target path, applied after deployment.
+  ⊙ inherits <[]string> — Names of base profiles to merge under this one. Later fields in this profile override an inherited base's; lists are unioned.
+  ⊙ modules <[]string>  — Names of modules this profile includes.
+  ⊙ packages <object>   — Packages this profile installs, grouped by manager.
   packages
+    ⊙ apk <[]string> — APK packages (Alpine).
+    ⊙ apt <object>   — APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.
     apt
       ⊙ file <string>       — Path to a package-list file to install from, one name per line.
       ⊙ packages <[]string> — APT package names to install.
+    ⊙ brew <object> — Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.
     brew
       ⊙ casks <[]string>    — Homebrew casks (GUI applications) to install.
       ⊙ file <string>       — Path to a Brewfile to apply instead of (or alongside) the lists below.
       ⊙ formulae <[]string> — Homebrew formulae (CLI packages) to install.
       ⊙ taps <[]string>     — Third-party taps to add before installing formulae/casks.
+    ⊙ cargo <object> — Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.
     cargo
       ⊙ file <string>       — Path to a `Cargo.toml` whose binaries to install instead of the list below.
       ⊙ packages <[]string> — Crate names to install (`cargo install`).
+    ⊙ chocolatey <[]string> — Chocolatey packages (Windows).
+    ⊙ custom <[]object>     — User-defined package managers not built into cfgd, each with its own check/install/uninstall commands.
     custom
       ⊙ check <string> (required)         — Command that exits zero when this manager is available on the machine.
       ⊙ install <string> (required)       — Command template to install a package; `{package}` is substituted.
@@ -87,36 +101,34 @@ Fields (under spec)
       ⊙ packages <[]string>               — Package names to install with this manager.
       ⊙ uninstall <string> (required)     — Command template to uninstall a package; `{package}` is substituted.
       ⊙ update <string>                   — Command to refresh the manager's own package index/cache before installs.
+    ⊙ dnf <[]string>   — DNF packages (Fedora/RHEL).
+    ⊙ flatpak <object> — Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.
     flatpak
       ⊙ packages <[]string> — Flatpak application ids to install.
       ⊙ remote <string>     — Remote to install from (e.g. `flathub`). Falls back to Flatpak's configured default remote when omitted.
+    ⊙ go <[]string>  — Go packages (`go install`).
+    ⊙ nix <[]string> — Nix packages (`nix-env` / `nix profile`).
+    ⊙ npm <object>   — npm global packages. Accepts a bare list or an `NpmSpec` mapping.
     npm
       ⊙ file <string>     — Path to a `package.json` to install dependencies from.
       ⊙ global <[]string> — Package names to install globally (`npm install -g`).
+    ⊙ pacman <[]string> — Pacman packages (Arch).
+    ⊙ pipx <[]string>   — pipx-installed Python applications.
+    ⊙ pkg <[]string>    — pkg packages (FreeBSD).
+    ⊙ scoop <[]string>  — Scoop packages (Windows).
+    ⊙ snap <object>     — Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.
     snap
       ⊙ classic <[]string>  — Snap names installed with `--classic` confinement.
       ⊙ packages <[]string> — Snap names installed with default (strict) confinement.
-    ⊙ apk <[]string>        — APK packages (Alpine).
-    ⊙ apt <object>          — APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.
-    ⊙ brew <object>         — Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.
-    ⊙ cargo <object>        — Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.
-    ⊙ chocolatey <[]string> — Chocolatey packages (Windows).
-    ⊙ custom <[]object>     — User-defined package managers not built into cfgd, each with its own check/install/uninstall commands.
-    ⊙ dnf <[]string>        — DNF packages (Fedora/RHEL).
-    ⊙ flatpak <object>      — Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.
-    ⊙ go <[]string>         — Go packages (`go install`).
-    ⊙ nix <[]string>        — Nix packages (`nix-env` / `nix profile`).
-    ⊙ npm <object>          — npm global packages. Accepts a bare list or an `NpmSpec` mapping.
-    ⊙ pacman <[]string>     — Pacman packages (Arch).
-    ⊙ pipx <[]string>       — pipx-installed Python applications.
-    ⊙ pkg <[]string>        — pkg packages (FreeBSD).
-    ⊙ scoop <[]string>      — Scoop packages (Windows).
-    ⊙ snap <object>         — Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.
-    ⊙ winget <[]string>     — Winget packages (Windows).
-    ⊙ yum <[]string>        — Yum packages (legacy RHEL/CentOS).
-    ⊙ zypper <[]string>     — Zypper packages (openSUSE).
+    ⊙ winget <[]string> — Winget packages (Windows).
+    ⊙ yum <[]string>    — Yum packages (legacy RHEL/CentOS).
+    ⊙ zypper <[]string> — Zypper packages (openSUSE).
+  ⊙ scripts <object> — Lifecycle scripts (`preApply`, `postApply`, …) this profile runs.
   scripts
+    ⊙ onChange <[](string | object)> — Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).
     onChange
+      ⊙ string <string> — A bare command string, run with the platform's default shell and no timeout/guard.
+      ⊙ object <object> — 
       object
         ⊙ continueOnError <boolean> — Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.
         ⊙ creates <string>          — Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.
@@ -128,9 +140,10 @@ Fields (under spec)
         ⊙ timeout <string>          — Kill the script if it runs longer than this duration (`"30s"`, `"2m"`). Unset means no timeout.
         ⊙ unless <string>           — Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.
         ⊙ workdir <string>          — Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
-      ⊙ string <string> — A bare command string, run with the platform's default shell and no timeout/guard.
-      ⊙ object <object> — 
+    ⊙ onDrift <[](string | object)> — Run when the daemon detects drift, before any auto-apply decision.
     onDrift
+      ⊙ string <string> — A bare command string, run with the platform's default shell and no timeout/guard.
+      ⊙ object <object> — 
       object
         ⊙ continueOnError <boolean> — Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.
         ⊙ creates <string>          — Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.
@@ -142,9 +155,10 @@ Fields (under spec)
         ⊙ timeout <string>          — Kill the script if it runs longer than this duration (`"30s"`, `"2m"`). Unset means no timeout.
         ⊙ unless <string>           — Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.
         ⊙ workdir <string>          — Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
-      ⊙ string <string> — A bare command string, run with the platform's default shell and no timeout/guard.
-      ⊙ object <object> — 
+    ⊙ postApply <[](string | object)> — Run once after every action in an apply completes.
     postApply
+      ⊙ string <string> — A bare command string, run with the platform's default shell and no timeout/guard.
+      ⊙ object <object> — 
       object
         ⊙ continueOnError <boolean> — Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.
         ⊙ creates <string>          — Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.
@@ -156,70 +170,56 @@ Fields (under spec)
         ⊙ timeout <string>          — Kill the script if it runs longer than this duration (`"30s"`, `"2m"`). Unset means no timeout.
         ⊙ unless <string>           — Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.
         ⊙ workdir <string>          — Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
-      ⊙ string <string> — A bare command string, run with the platform's default shell and no timeout/guard.
-      ⊙ object <object> — 
-    postReconcile
-      object
-        ⊙ continueOnError <boolean> — Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.
-        ⊙ creates <string>          — Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.
-        ⊙ idleTimeout <string>      — Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
-        ⊙ interactive <boolean>     — Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.
-        ⊙ onlyIf <string>           — Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.
-        ⊙ run <string> (required)   — The command or script body to run.
-        ⊙ shell <string>            — Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
-        ⊙ timeout <string>          — Kill the script if it runs longer than this duration (`"30s"`, `"2m"`). Unset means no timeout.
-        ⊙ unless <string>           — Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.
-        ⊙ workdir <string>          — Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
-      ⊙ string <string> — A bare command string, run with the platform's default shell and no timeout/guard.
-      ⊙ object <object> — 
-    preApply
-      object
-        ⊙ continueOnError <boolean> — Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.
-        ⊙ creates <string>          — Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.
-        ⊙ idleTimeout <string>      — Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
-        ⊙ interactive <boolean>     — Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.
-        ⊙ onlyIf <string>           — Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.
-        ⊙ run <string> (required)   — The command or script body to run.
-        ⊙ shell <string>            — Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
-        ⊙ timeout <string>          — Kill the script if it runs longer than this duration (`"30s"`, `"2m"`). Unset means no timeout.
-        ⊙ unless <string>           — Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.
-        ⊙ workdir <string>          — Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
-      ⊙ string <string> — A bare command string, run with the platform's default shell and no timeout/guard.
-      ⊙ object <object> — 
-    preReconcile
-      object
-        ⊙ continueOnError <boolean> — Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.
-        ⊙ creates <string>          — Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.
-        ⊙ idleTimeout <string>      — Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
-        ⊙ interactive <boolean>     — Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.
-        ⊙ onlyIf <string>           — Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.
-        ⊙ run <string> (required)   — The command or script body to run.
-        ⊙ shell <string>            — Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
-        ⊙ timeout <string>          — Kill the script if it runs longer than this duration (`"30s"`, `"2m"`). Unset means no timeout.
-        ⊙ unless <string>           — Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.
-        ⊙ workdir <string>          — Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
-      ⊙ string <string> — A bare command string, run with the platform's default shell and no timeout/guard.
-      ⊙ object <object> — 
-    ⊙ onChange <[](string | object)>      — Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).
-    ⊙ onDrift <[](string | object)>       — Run when the daemon detects drift, before any auto-apply decision.
-    ⊙ postApply <[](string | object)>     — Run once after every action in an apply completes.
     ⊙ postReconcile <[](string | object)> — Run once after a daemon reconcile tick completes.
-    ⊙ preApply <[](string | object)>      — Run once before any action in an apply.
-    ⊙ preReconcile <[](string | object)>  — Run once before a daemon reconcile tick begins.
+    postReconcile
+      ⊙ string <string> — A bare command string, run with the platform's default shell and no timeout/guard.
+      ⊙ object <object> — 
+      object
+        ⊙ continueOnError <boolean> — Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.
+        ⊙ creates <string>          — Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.
+        ⊙ idleTimeout <string>      — Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+        ⊙ interactive <boolean>     — Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.
+        ⊙ onlyIf <string>           — Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.
+        ⊙ run <string> (required)   — The command or script body to run.
+        ⊙ shell <string>            — Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+        ⊙ timeout <string>          — Kill the script if it runs longer than this duration (`"30s"`, `"2m"`). Unset means no timeout.
+        ⊙ unless <string>           — Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.
+        ⊙ workdir <string>          — Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+    ⊙ preApply <[](string | object)> — Run once before any action in an apply.
+    preApply
+      ⊙ string <string> — A bare command string, run with the platform's default shell and no timeout/guard.
+      ⊙ object <object> — 
+      object
+        ⊙ continueOnError <boolean> — Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.
+        ⊙ creates <string>          — Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.
+        ⊙ idleTimeout <string>      — Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+        ⊙ interactive <boolean>     — Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.
+        ⊙ onlyIf <string>           — Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.
+        ⊙ run <string> (required)   — The command or script body to run.
+        ⊙ shell <string>            — Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+        ⊙ timeout <string>          — Kill the script if it runs longer than this duration (`"30s"`, `"2m"`). Unset means no timeout.
+        ⊙ unless <string>           — Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.
+        ⊙ workdir <string>          — Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+    ⊙ preReconcile <[](string | object)> — Run once before a daemon reconcile tick begins.
+    preReconcile
+      ⊙ string <string> — A bare command string, run with the platform's default shell and no timeout/guard.
+      ⊙ object <object> — 
+      object
+        ⊙ continueOnError <boolean> — Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.
+        ⊙ creates <string>          — Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.
+        ⊙ idleTimeout <string>      — Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: "30s", "2m", etc. If unset, no idle timeout is enforced.
+        ⊙ interactive <boolean>     — Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.
+        ⊙ onlyIf <string>           — Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.
+        ⊙ run <string> (required)   — The command or script body to run.
+        ⊙ shell <string>            — Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+        ⊙ timeout <string>          — Kill the script if it runs longer than this duration (`"30s"`, `"2m"`). Unset means no timeout.
+        ⊙ unless <string>           — Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.
+        ⊙ workdir <string>          — Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+  ⊙ secrets <[]object> — Secrets this profile resolves into files or environment variables.
   secrets
     ⊙ backend <string>           — Secret backend name to resolve `source` with. Falls back to `spec.secrets.backend` from `cfgd.yaml` when omitted.
     ⊙ envs <[]string>            — Environment variable names to export the decrypted value under. Mutually exclusive with `target`.
     ⊙ source <string> (required) — Backend-specific reference to the secret (a 1Password `op://` URI, a Vault path, a sops-encrypted file key, …).
     ⊙ target <string>            — File path to write the decrypted secret to. Mutually exclusive with `envs`.
     ⊙ template <string>          — Template rendered around the decrypted value before writing to `target` (e.g. wrapping it in a config file's expected shape).
-  ⊙ aliases <[]object>  — Shell aliases this profile sets.
-  ⊙ backups <[]object>  — Declarative backup jobs this profile schedules.
-  ⊙ env <[]object>      — Environment variables this profile sets.
-  ⊙ envScope <string>   — How far `spec.env` exports reach across the current user's environment. Omitted means "inherit" (a parent layer's value survives); the resolved default when no layer sets it is `EnvScope::All` — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces.
-  ⊙ files <object>      — Files this profile deploys.
-  ⊙ inherits <[]string> — Names of base profiles to merge under this one. Later fields in this profile override an inherited base's; lists are unioned.
-  ⊙ modules <[]string>  — Names of modules this profile includes.
-  ⊙ packages <object>   — Packages this profile installs, grouped by manager.
-  ⊙ scripts <object>    — Lifecycle scripts (`preApply`, `postApply`, …) this profile runs.
-  ⊙ secrets <[]object>  — Secrets this profile resolves into files or environment variables.
-  ⊙ system <object>     — System configurator settings (`macosDefaults`, `systemd`, `sysctl`, …), keyed by configurator name.
+  ⊙ system <object> — System configurator settings (`macosDefaults`, `systemd`, `sysctl`, …), keyed by configurator name.

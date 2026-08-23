@@ -150,10 +150,12 @@ impl Renderer {
     /// Close the topmost section: pop frame, decrement indent. May emit
     /// the header (if first deferred + non-empty) and/or an `(none)` placeholder.
     pub(crate) fn render_section_close(&self, w: &dyn Writer) {
-        // Rows buffered inside this section belong to it. Drained after the pop
-        // they render outside the frame, above the section's own header, and
-        // leave the section reporting itself empty.
-        self.emit_with(w, |e| e.drain_kv_buffer());
+        // Rows and statuses buffered inside this section belong to it. Drained
+        // after the pop they render outside the frame, above the section's own
+        // header, and leave the section reporting itself empty. The statuses
+        // are the frame's own `pending_statuses`, so the frame popped below is
+        // already empty of them.
+        self.emit_with(w, |e| e.drain_buffers());
         let frame = {
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
             s.indent_depth -= 1;
@@ -162,11 +164,6 @@ impl Renderer {
         let Some(frame) = frame else {
             return;
         };
-
-        // Flush any buffered statuses BEFORE deciding blank-pending. Subject
-        // right-pad is computed across the buffered set so trailing content
-        // aligns in a column.
-        self.flush_pending_statuses(w, &frame.pending_statuses);
 
         // Only TOP-LEVEL sections (header_depth == 0) mark blank-pending on
         // close. Subsection close must NOT produce a blank between siblings —
@@ -219,23 +216,41 @@ impl Renderer {
         let styled = header_line(&self.theme, frame);
         self.write_line(w, frame.header_depth, &styled);
     }
+}
 
-    /// Drain a section's buffered statuses, padding subjects of those that
-    /// carry trailing content (detail|duration|target) to the max subject
+impl super::Emitting<'_> {
+    /// Drain every open section's buffered statuses, padding subjects of those
+    /// that carry trailing content (detail|duration|target) to the max subject
     /// width across that subset. Statuses without trailing content render
     /// as-is (no padding). Width is measured with `console::measure_text_width`
     /// so multi-byte glyphs in subjects count as one column each.
-    pub(crate) fn flush_pending_statuses(&self, w: &dyn Writer, statuses: &[BufferedStatus]) {
-        if statuses.is_empty() {
+    ///
+    /// Called by every emission that writes lines, not only by section close:
+    /// a status held back for alignment must still render BEFORE whatever was
+    /// emitted after it (a diff, a bullet, a nested section's header), or the
+    /// screen reports an order the caller never asked for.
+    ///
+    /// Only the innermost frame ever accumulates statuses, so an outer frame's
+    /// were all buffered before the inner frame existed — which is why walking
+    /// the stack outer-to-inner IS emission order. The width is whatever the
+    /// set holds at this moment; a later status opens a new alignment group.
+    pub(crate) fn drain_pending_statuses(&mut self) {
+        let pending: Vec<BufferedStatus> = self
+            .state
+            .section_stack
+            .iter_mut()
+            .flat_map(|f| std::mem::take(&mut f.pending_statuses))
+            .collect();
+        if pending.is_empty() {
             return;
         }
-        let max_subject_width = statuses
+        let max_subject_width = pending
             .iter()
             .filter(|s| s.has_trailing())
             .map(|s| console::measure_text_width(&s.subject))
             .max()
             .unwrap_or(0);
-        for s in statuses {
+        for s in &pending {
             let fields = super::StatusFields {
                 role: s.role,
                 subject: &s.subject,
@@ -248,10 +263,15 @@ impl Renderer {
             // Per line, not once for the set: capping the shared column by the
             // tightest line in it would drop every line's alignment because
             // one of them carries a long detail.
-            let column = self.affordable_column(w, s.depth, &fields, max_subject_width);
+            let column = super::status::affordable_column(
+                self.theme,
+                self.wrap_cols,
+                s.depth,
+                &fields,
+                max_subject_width,
+            );
             let padded = super::status::pad_subject(&s.subject, column, s.has_trailing());
-            self.render_status_immediate(
-                w,
+            self.emit_status_line(
                 s.depth,
                 &super::StatusFields {
                     subject: padded.as_deref().unwrap_or(&s.subject),
@@ -260,9 +280,7 @@ impl Renderer {
             );
         }
     }
-}
 
-impl super::Emitting<'_> {
     /// Collect any not-yet-emitted section headers, walking the stack
     /// outer-to-inner. Idempotent in output (repeat calls produce no further
     /// header lines), and always marks every frame in the stack as having
@@ -461,6 +479,65 @@ mod tests {
             column("—"),
             column("("),
             "trailing column misaligned across buffered statuses: {out:?}"
+        );
+    }
+
+    /// Holding statuses back for column alignment is a layout decision, never
+    /// a licence to reorder the screen: a status emitted before a diff has to
+    /// render above it. Raw blocks are the shape that proved this — they push
+    /// straight into the line collector instead of going through `push_line` —
+    /// but the claim is about emission order, so the section is closed by a
+    /// second status that must still land last.
+    #[test]
+    fn a_status_renders_above_the_raw_block_emitted_after_it() {
+        use crate::output::{Printer, Role};
+
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Files");
+            let _ = s.status(Role::Ok, "before-the-diff").detail("planned");
+            s.diff("alpha\n", "omega\n");
+            let _ = s.status(Role::Ok, "after-the-diff").detail("applied");
+        }
+        p.flush();
+        let out = crate::test_helpers::captured_text(&buf);
+
+        let at = |needle: &str| {
+            out.find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} missing from {out:?}"))
+        };
+        assert!(
+            at("before-the-diff") < at("-alpha"),
+            "the status emitted before the diff must render above it: {out:?}"
+        );
+        assert!(
+            at("+omega") < at("after-the-diff"),
+            "the status emitted after the diff must render below it: {out:?}"
+        );
+    }
+
+    /// The same claim for the other buffered surface: a kv block written after
+    /// a status must not overtake it at section close.
+    #[test]
+    fn a_status_renders_above_the_kv_rows_emitted_after_it() {
+        use crate::output::{Printer, Role};
+
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Files");
+            let _ = s.status(Role::Ok, "first-status");
+            s.kv("source", "module:nvim");
+        }
+        p.flush();
+        let out = crate::test_helpers::captured_text(&buf);
+
+        let at = |needle: &str| {
+            out.find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} missing from {out:?}"))
+        };
+        assert!(
+            at("first-status") < at("source"),
+            "the status must render above the kv row written after it: {out:?}"
         );
     }
 

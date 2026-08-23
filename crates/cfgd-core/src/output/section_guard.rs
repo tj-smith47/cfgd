@@ -599,8 +599,10 @@ mod tests {
     }
 
     /// A live section emits each status as it arrives; a buffered one holds
-    /// every status until close. The ordering against an interleaved bullet is
-    /// what separates the two.
+    /// every status only until something else has to be written. Either way an
+    /// interleaved bullet renders BELOW the status emitted before it — the
+    /// buffering is for column alignment, and alignment never licenses
+    /// reordering the screen.
     #[test]
     fn live_column_emits_statuses_before_close() {
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
@@ -630,8 +632,8 @@ mod tests {
         let first = buffered.find("first").expect("status missing");
         let after = buffered.find("after").expect("bullet missing");
         assert!(
-            after < first,
-            "a section with no live column must still buffer to close: {buffered:?}"
+            first < after,
+            "a buffered status must flush ahead of the bullet written after it: {buffered:?}"
         );
     }
 

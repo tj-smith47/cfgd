@@ -602,8 +602,9 @@ pub(crate) struct Emitting<'a> {
 impl Emitting<'_> {
     /// Collect one physical line at the given depth, honoring blank-pending.
     ///
-    /// Drains any pending kvs first — otherwise buffered kvs would render
-    /// *after* this non-kv line, inverting the call order.
+    /// Drains both deferred buffers first — otherwise buffered kvs and the
+    /// statuses a section holds back for column alignment would render *after*
+    /// this line, inverting the call order.
     pub(crate) fn push_line(&mut self, depth: usize, body: &str) {
         self.push_line_with_trailer(depth, body, None);
     }
@@ -620,7 +621,26 @@ impl Emitting<'_> {
         body: &str,
         trailer: Option<&str>,
     ) {
+        self.drain_buffers();
+        self.push_line_undrained(depth, body, trailer);
+    }
+
+    /// Empty both deferred buffers, oldest content first.
+    ///
+    /// A section's pending statuses are always older than whatever is still in
+    /// the kv buffer: a status buffered while kv rows were waiting empties them
+    /// on the way in ([`super::status`]'s buffered route), so at most one of
+    /// the two ever holds content that predates the other. Draining them the
+    /// other way round would invert exactly the call order this exists to keep.
+    pub(crate) fn drain_buffers(&mut self) {
+        self.drain_pending_statuses();
         self.drain_kv_buffer();
+    }
+
+    /// [`Self::push_line_with_trailer`] without the drain, for the drains
+    /// themselves: a status flushed out of a section's pending buffer must not
+    /// re-enter the drain, or a kv block written after it slips in first.
+    pub(crate) fn push_line_undrained(&mut self, depth: usize, body: &str, trailer: Option<&str>) {
         // The sink appends its own trailing newline per line, so a trailing
         // newline already in `body` would smuggle a physical line break past
         // the blank-line accounting (a Status subject ending with `\n` would
@@ -657,7 +677,7 @@ impl Emitting<'_> {
     /// emission) and prepends `depth`'s indent to each line.
     pub(crate) fn push_raw_block(&mut self, depth: usize, lines: &[String]) {
         self.flush_section_headers();
-        self.drain_kv_buffer();
+        self.drain_buffers();
         if self.state.leading {
             self.state.leading = false;
             self.state.blank_pending = false;

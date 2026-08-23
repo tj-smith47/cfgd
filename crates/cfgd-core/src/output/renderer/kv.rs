@@ -72,7 +72,7 @@ impl Renderer {
     /// Flush any buffered kvs as one aligned block at the current depth.
     /// Public crate API — wired through `Printer::flush` (see interfaces.md).
     pub(crate) fn flush_kv_buffer(&self, w: &dyn Writer) {
-        self.emit_with(w, |e| e.drain_kv_buffer());
+        self.emit_with(w, |e| e.drain_buffers());
     }
 }
 
@@ -89,6 +89,10 @@ impl Emitting<'_> {
     /// block kind, which is the whole justification for two callers sharing
     /// one preamble instead of one renderer for both.
     fn open_aligned_block(&mut self, depth: usize, bound_to_heading: Option<bool>) -> String {
+        // The rows below are pushed straight into `out`, never through
+        // `push_line`, so this is the block's only chance to let a section's
+        // held-back statuses out ahead of it.
+        self.drain_pending_statuses();
         self.flush_section_headers();
 
         let bump = bound_to_heading.unwrap_or(
