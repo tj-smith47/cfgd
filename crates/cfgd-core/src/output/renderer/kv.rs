@@ -6,11 +6,20 @@
 //!
 //! ## Recursion, and why it is safe here
 //!
-//! `Emitting::push_line` drains the kv buffer at the top of its body (so
-//! pending kvs render *before* a following non-kv line, not after), and the
-//! block below can itself reach `push_line` through a deferred section header.
-//! That recursion terminates because `drain_kv_buffer` takes the buffer before
-//! rendering it, so the nested drain sees an empty one.
+//! `Emitting::push_line` drains both deferred buffers at the top of its body
+//! (so pending kvs render *before* a following non-kv line, not after), and
+//! `open_aligned_block` below reaches `flush_section_headers`, which drains
+//! again between the two halves of its depth-partitioned header push. That
+//! recursion terminates twice over: `drain_kv_buffer` takes the buffer before
+//! rendering it, so the nested drain sees an empty one, and the outer flush
+//! marked every frame `header_emitted` before pushing, so the nested flush
+//! collects no header either.
+//!
+//! Whether a block lands above or below a still-deferred header is decided in
+//! `section::Emitting::push_deferred_headers`, not here: the headers are split
+//! at the rows' anchor depth and the drain runs between the halves, with each
+//! header written through `push_line_undrained` so no header re-enters the
+//! drain and re-orders what it just placed.
 //!
 //! The rule that keeps it safe is structural rather than remembered: the block
 //! is built by a collector holding `&mut RenderState`, which can reach neither

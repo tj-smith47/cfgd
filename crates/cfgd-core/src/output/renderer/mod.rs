@@ -695,13 +695,17 @@ impl Emitting<'_> {
 
     /// Render the buffered kvs, if any, as one aligned block.
     ///
-    /// The `std::mem::take` runs BEFORE rendering, which is what terminates
-    /// the recursion through `flush_section_headers` → `push_line` and what
-    /// keeps a pending kv block rendering above a deferred section header —
-    /// the shape a block written at the top level takes when a section opens
-    /// before the next emission drains it. Rows written INSIDE a section never
-    /// reach that shape: `render_section_close` drains before it pops the
-    /// frame, so they render under their own section's header.
+    /// The `std::mem::take` runs BEFORE rendering, which is what terminates the
+    /// recursion back through `render_kv_block_anchored` →
+    /// `open_aligned_block` → `flush_section_headers`: the re-entered drain
+    /// finds an empty buffer, and the frames that call marked `header_emitted`
+    /// have no header left to collect either.
+    ///
+    /// Where the block lands RELATIVE to a deferred header is not decided here.
+    /// `section::Emitting::push_deferred_headers` partitions the headers at the
+    /// anchor's depth and calls this between the two halves, so rows written at
+    /// the top level render above the section that opened after them while rows
+    /// written inside a section render under its header.
     pub(crate) fn drain_kv_buffer(&mut self) {
         if self.state.kv_buffer.is_empty() {
             return;
@@ -1595,9 +1599,10 @@ mod tests {
     #[test]
     fn deferred_header_and_kv_emit_without_reentry() {
         // Same shape against a plain sink: the recursion
-        // `push_line -> drain_kv_buffer -> render_kv_block ->
-        // flush_section_headers -> push_line` must terminate and land the
-        // lines in call order.
+        // `flush_section_headers -> push_deferred_headers -> drain_kv_buffer ->
+        // render_kv_block -> flush_section_headers` must terminate — the outer
+        // call marked every frame `header_emitted` before it pushed anything,
+        // so the inner one collects nothing — and land the lines in call order.
         let (r, sink, buf) = capture();
         r.render_section_open("Section", true);
         r.render_kv("Key", "value");
