@@ -358,6 +358,43 @@ fn upsert_managed_resource() {
 }
 
 #[test]
+fn refresh_managed_resource_hash_writes_only_when_the_hash_moved() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_managed_resource("file", "/home/.zshrc", "acme", Some("hash1"), None)
+        .unwrap();
+
+    assert!(
+        store
+            .refresh_managed_resource_hash("file", "/home/.zshrc", "hash2")
+            .unwrap(),
+        "a hash that moved is written"
+    );
+    assert!(
+        !store
+            .refresh_managed_resource_hash("file", "/home/.zshrc", "hash2")
+            .unwrap(),
+        "a hash that already agrees costs no write"
+    );
+
+    let resources = store.managed_resources().unwrap();
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0].last_hash.as_deref(), Some("hash2"));
+    assert_eq!(
+        resources[0].source, "acme",
+        "the refresh touches the hash and nothing else"
+    );
+
+    assert!(
+        !store
+            .refresh_managed_resource_hash("file", "/home/.vimrc", "hash3")
+            .unwrap(),
+        "a resource with no row is left alone, never minted"
+    );
+    assert_eq!(store.managed_resources().unwrap().len(), 1);
+}
+
+#[test]
 fn upsert_package_resource_persists_uninstall_cmd() {
     use crate::providers::OrphanedPackage;
 

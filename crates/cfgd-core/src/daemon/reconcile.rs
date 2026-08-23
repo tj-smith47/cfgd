@@ -607,6 +607,23 @@ pub(crate) fn handle_reconcile(
     // and so cannot date a clean scan).
     store.record_scan();
 
+    // A file deployed by symlink is edited THROUGH the link, which is the module
+    // source changing and so is never drift — the tick above found none, and no
+    // action will revisit the row. Correct the recorded content hash here, before
+    // the drift branch, so a clean tick and a drifted one both do it; the write is
+    // skipped when the hash already agrees, so a settled machine pays nothing per
+    // interval. Built from the hooks rather than the registry: a tick plans files
+    // through `plan_files` and leaves `registry.file_manager` empty.
+    match hooks.build_file_manager(&config_dir, resolved) {
+        Ok(Some(fm)) => {
+            if let Err(e) = reconciler.refresh_link_deployed_hashes(fm.as_ref(), resolved) {
+                tracing::warn!(error = %e, "failed to refresh recorded file hashes");
+            }
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!(error = %e, "failed to build file manager for hash refresh"),
+    }
+
     if effective_total == 0 {
         tracing::debug!("reconcile: no drift detected");
 

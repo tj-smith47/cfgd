@@ -1091,6 +1091,25 @@ pub trait FileManager: Send + Sync {
         origin: Option<&str>,
         strategy: Option<crate::config::FileStrategy>,
     ) -> Result<FileDriftResult>;
+
+    /// What each LINK-DEPLOYED managed file currently holds, as
+    /// `(~-expanded target, sha256 hex)` pairs.
+    ///
+    /// One entry per `spec.files.managed` entry the profile deploys by
+    /// Symlink/Hardlink whose target is converged (the link really names the
+    /// managed source) and whose source is a single file. Convergence for those
+    /// two strategies is link IDENTITY, so an edit made through the link is not
+    /// drift and plans no action — which is exactly the case that leaves cfgd's
+    /// recorded content hash describing bytes the deployed file no longer holds.
+    ///
+    /// The hash is taken over the SOURCE bytes because for a link the deployed
+    /// file IS the source file; a Copy/Template entry is not reported here, its
+    /// target being a separate copy whose divergence from the source is real
+    /// drift the plan already carries.
+    fn link_deployed_content_hashes(
+        &self,
+        profile: &crate::config::MergedProfile,
+    ) -> Result<Vec<(PathBuf, String)>>;
 }
 
 // --- PackageAction ---

@@ -152,6 +152,15 @@ impl crate::providers::FileManager for MockFileManager {
             },
         })
     }
+
+    /// The mock deploys nothing, so it reports no link-deployed content: a
+    /// reconciler driven by it refreshes no recorded hash.
+    fn link_deployed_content_hashes(
+        &self,
+        _profile: &crate::config::MergedProfile,
+    ) -> crate::errors::Result<Vec<(PathBuf, String)>> {
+        Ok(Vec::new())
+    }
 }
 
 // ---------------------------------------------------------------------------

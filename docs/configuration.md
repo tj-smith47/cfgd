@@ -359,6 +359,11 @@ repo between applies, or when you want cfgd to police the target's content:
 files an app rewrites at runtime, machines where a broken checkout must not
 break the deployed config, Windows hosts without Developer Mode.
 
+Under `Symlink`, editing the target through the link is not drift. The source
+file in your repo owns the bytes, so the edit is already in the repo and there is
+nothing for an apply to repair. cfgd refreshes what it recorded about the file on
+the next apply, without reporting an action.
+
 The remaining strategies are variants of `Copy`: `Template` renders through Tera
 first (per-machine values baked in, so the output cannot be a link), `Hardlink`
 shares the inode (same filesystem only; instant like a symlink, but severed

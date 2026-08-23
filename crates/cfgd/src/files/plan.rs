@@ -397,6 +397,51 @@ impl super::CfgdFileManager {
     }
 
     /// Show diffs for all managed files, with syntax highlighting.
+    /// The `(target, content hash)` pair of every managed file this profile
+    /// deploys by Symlink/Hardlink whose target is converged on disk — the
+    /// backing implementation of
+    /// [`FileManager::link_deployed_content_hashes`](cfgd_core::providers::FileManager::link_deployed_content_hashes).
+    ///
+    /// Only single-file sources are reported. A directory-shaped entry (a
+    /// module's whole `lua/` tree) has no one content hash to record, and the
+    /// consumer asks a per-file question, so it is left out rather than answered
+    /// with a digest of a tree.
+    pub(super) fn link_deployed_content(
+        &self,
+        profile: &MergedProfile,
+    ) -> Result<Vec<(PathBuf, String)>> {
+        let mut deployed = Vec::new();
+
+        for managed in &profile.files.managed {
+            if managed.strategy == Some(FileStrategy::Patch) {
+                continue;
+            }
+            let source_path = self.resolve_source_path(&managed.source)?;
+            if !source_path.is_file() {
+                continue;
+            }
+            let strategy = self.effective_strategy(&source_path, managed.strategy);
+            if !matches!(strategy, FileStrategy::Symlink | FileStrategy::Hardlink) {
+                continue;
+            }
+            let target_path = expand_tilde(&managed.target);
+            if !is_linked_to(&source_path, &target_path, strategy) {
+                continue;
+            }
+            // A source that exists but cannot be read leaves the question
+            // unanswered, which is not the same as an answer of "unchanged":
+            // report nothing for it and let the recorded hash stand.
+            match fs::read(&source_path) {
+                Ok(bytes) => deployed.push((target_path, cfgd_core::sha256_hex(&bytes))),
+                Err(e) => {
+                    tracing::debug!("cannot hash {}: {}", source_path.posix(), e);
+                }
+            }
+        }
+
+        Ok(deployed)
+    }
+
     /// Render and print file diffs for the profile, returning one
     /// [`FileDriftResult`] per managed file. The caller reports drift when any
     /// record does not match, and serializes the records on the structured

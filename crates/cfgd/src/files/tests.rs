@@ -1033,6 +1033,182 @@ fn symlink_strategy_is_idempotent() {
     );
 }
 
+/// Build a one-entry profile deploying `files/test.txt` to `<config_dir>/output/test.txt`
+/// under `strategy`, apply it, and hand back the manager, the profile and the target.
+fn deployed_one_file(
+    config_dir: &Path,
+    content: &str,
+    strategy: FileStrategy,
+) -> (CfgdFileManager, ResolvedProfile, PathBuf) {
+    let files_dir = config_dir.join("files");
+    fs::create_dir_all(&files_dir).unwrap();
+    fs::write(files_dir.join("test.txt"), content).unwrap();
+
+    let target = config_dir.join("output").join("test.txt");
+    let resolved = make_resolved_profile(
+        vec![],
+        FilesSpec {
+            managed: vec![ManagedFileSpec {
+                patch: None,
+                source: "files/test.txt".to_string(),
+                target: target.clone(),
+                strategy: Some(strategy),
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            }],
+            permissions: HashMap::new(),
+        },
+    );
+
+    let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+    let actions = fm.plan(&resolved.merged).unwrap();
+    fm.apply(&actions, &test_printer()).unwrap();
+    (fm, resolved, target)
+}
+
+#[test]
+#[cfg(unix)]
+fn link_deployed_content_follows_an_edit_made_through_the_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let (fm, resolved, target) = deployed_one_file(dir.path(), "content", FileStrategy::Symlink);
+
+    let deployed = fm.link_deployed_content(&resolved.merged).unwrap();
+    assert_eq!(
+        deployed,
+        vec![(target.clone(), cfgd_core::sha256_hex(b"content"))],
+        "a converged symlink reports the bytes its target resolves to"
+    );
+
+    // The edit a user makes in their editor: the path they open is the target,
+    // the file they write is the source.
+    fs::write(&target, "edited through the link").unwrap();
+    assert!(
+        fm.plan(&resolved.merged).unwrap().is_empty(),
+        "an edit through the link is not drift — the link is still intact"
+    );
+    let deployed = fm.link_deployed_content(&resolved.merged).unwrap();
+    assert_eq!(
+        deployed,
+        vec![(target, cfgd_core::sha256_hex(b"edited through the link"))],
+        "the reported hash follows the edit, so a stale record can be corrected"
+    );
+}
+
+#[test]
+fn link_deployed_content_ignores_a_copy_deployed_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let (fm, resolved, target) = deployed_one_file(dir.path(), "content", FileStrategy::Copy);
+
+    fs::write(&target, "hand-edited").unwrap();
+    assert_eq!(
+        fm.plan(&resolved.merged).unwrap().len(),
+        1,
+        "a Copy target's content edit IS drift, so the plan repairs it"
+    );
+    assert!(
+        fm.link_deployed_content(&resolved.merged)
+            .unwrap()
+            .is_empty(),
+        "a Copy entry owns bytes of its own; its recorded hash is never silently refreshed"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn link_deployed_content_ignores_a_target_that_is_not_the_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let (fm, resolved, target) = deployed_one_file(dir.path(), "content", FileStrategy::Symlink);
+
+    fs::remove_file(&target).unwrap();
+    fs::write(&target, "a plain file where the link belongs").unwrap();
+    assert!(
+        fm.link_deployed_content(&resolved.merged)
+            .unwrap()
+            .is_empty(),
+        "an unlinked target is real drift the plan repairs, not a source edit to record"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn refresh_link_deployed_hashes_writes_once_per_edit_and_nothing_in_between() {
+    let dir = tempfile::tempdir().unwrap();
+    let (fm, resolved, target) = deployed_one_file(dir.path(), "content", FileStrategy::Symlink);
+
+    let state = cfgd_core::state::StateStore::open(&dir.path().join("state.db")).unwrap();
+    let resource_id = cfgd_core::to_posix_string(&target);
+    state
+        .upsert_managed_resource("file", &resource_id, "local", None, None)
+        .unwrap();
+
+    let registry = cfgd_core::providers::ProviderRegistry::new();
+    let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &state);
+
+    assert_eq!(
+        reconciler
+            .refresh_link_deployed_hashes(&fm, &resolved)
+            .unwrap(),
+        1,
+        "the row recorded no hash at all, so the first refresh writes one"
+    );
+    assert_eq!(
+        reconciler
+            .refresh_link_deployed_hashes(&fm, &resolved)
+            .unwrap(),
+        0,
+        "nothing moved since, so the daemon's next tick writes nothing"
+    );
+
+    fs::write(&target, "edited through the link").unwrap();
+    assert_eq!(
+        reconciler
+            .refresh_link_deployed_hashes(&fm, &resolved)
+            .unwrap(),
+        1,
+        "the edit through the link moves the recorded hash exactly once"
+    );
+    assert_eq!(
+        reconciler
+            .refresh_link_deployed_hashes(&fm, &resolved)
+            .unwrap(),
+        0
+    );
+
+    let recorded = state.managed_resources().unwrap();
+    assert_eq!(
+        recorded
+            .iter()
+            .find(|r| r.resource_id == resource_id)
+            .and_then(|r| r.last_hash.clone()),
+        Some(cfgd_core::sha256_hex(b"edited through the link")),
+        "the recorded hash describes the bytes the deployed file now holds"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn refresh_link_deployed_hashes_never_mints_a_row_for_an_untracked_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let (fm, resolved, _target) = deployed_one_file(dir.path(), "content", FileStrategy::Symlink);
+
+    let state = cfgd_core::state::StateStore::open(&dir.path().join("state.db")).unwrap();
+    let registry = cfgd_core::providers::ProviderRegistry::new();
+    let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &state);
+
+    assert_eq!(
+        reconciler
+            .refresh_link_deployed_hashes(&fm, &resolved)
+            .unwrap(),
+        0
+    );
+    assert!(
+        state.managed_resources().unwrap().is_empty(),
+        "a run that only looked at a file must not start claiming it"
+    );
+}
+
 #[test]
 fn hardlink_strategy_creates_hardlink() {
     let dir = tempfile::tempdir().unwrap();

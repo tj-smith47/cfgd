@@ -169,6 +169,13 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
     ) -> Result<FileDriftResult> {
         self.file_drift_one(source, target, origin, strategy)
     }
+
+    fn link_deployed_content_hashes(
+        &self,
+        profile: &cfgd_core::config::MergedProfile,
+    ) -> Result<Vec<(PathBuf, String)>> {
+        self.link_deployed_content(profile)
+    }
 }
 
 /// One `FileAction`'s worth of `apply`'s work, extracted so its many `?`

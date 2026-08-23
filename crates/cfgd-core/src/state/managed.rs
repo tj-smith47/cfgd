@@ -96,6 +96,29 @@ impl StateStore {
             .collect())
     }
 
+    /// Refresh a tracked resource's recorded content hash, leaving every other
+    /// column alone, and report whether the row actually moved.
+    ///
+    /// An `UPDATE` rather than an upsert: a resource cfgd has never applied has
+    /// no row, and minting one here would claim management of something this run
+    /// only looked at. The hash comparison lives in the statement so a row whose
+    /// recorded hash already describes the bytes on disk costs no write at all —
+    /// the daemon asks this on every tick.
+    pub fn refresh_managed_resource_hash(
+        &self,
+        resource_type: &str,
+        resource_id: &str,
+        hash: &str,
+    ) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE managed_resources SET last_hash = ?3
+                 WHERE resource_type = ?1 AND resource_id = ?2
+                   AND (last_hash IS NULL OR last_hash <> ?3)",
+            params![resource_type, resource_id, hash],
+        )?;
+        Ok(changed > 0)
+    }
+
     /// Remove a managed resource record. Idempotent: deleting a row that is not
     /// tracked is a no-op, not an error — so an uninstall of an already-untracked
     /// package succeeds cleanly.
