@@ -5,8 +5,6 @@ use cfgd_core::config::{ConfigSourceDocument, PolicyItems, SourceConstraints, So
 use cfgd_core::output::{Doc, KvPair, Printer, Role, doc::SectionBuilder, renderer::Table};
 use cfgd_core::state::source_status_display;
 
-const SHORT_COMMIT_LEN: usize = 12;
-
 /// Build the not-found error returned by `cmd_source_show`. The central error
 /// sink (`main.rs::render_cli_error`) renders the structured `{error, name,
 /// available}` payload for `-o json` consumers and the user-visible `✗` line
@@ -70,16 +68,10 @@ pub fn build_source_show_doc(
                 rows.push(KvPair::new("Last Fetched", fetched));
             }
             if let Some(ref commit) = state_info.last_commit {
-                rows.push(KvPair::new(
-                    "Last Commit",
-                    &commit[..commit.len().min(SHORT_COMMIT_LEN)],
-                ));
+                rows.push(KvPair::new("Last Commit", short_commit(commit)));
             }
             if let Some(ref locked_commit) = state_info.locked_commit {
-                rows.push(KvPair::new(
-                    "Locked Commit",
-                    &locked_commit[..locked_commit.len().min(SHORT_COMMIT_LEN)],
-                ));
+                rows.push(KvPair::new("Locked Commit", short_commit(locked_commit)));
             }
             if let Some(ref locked_ref) = state_info.locked_ref {
                 rows.push(KvPair::new("Locked Ref", locked_ref));

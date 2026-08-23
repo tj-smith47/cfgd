@@ -3,12 +3,6 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, OwnerLabel, Role};
 
-/// The display form of a commit id: enough to identify it, short enough to sit
-/// beside a second one on the same line.
-fn short_commit(commit: &str) -> &str {
-    &commit[..commit.len().min(12)]
-}
-
 pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Result<()> {
     printer.heading("Sync");
 

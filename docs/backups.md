@@ -625,10 +625,10 @@ stage the selected snapshot into a temp dir beside the target
       ▼
 preBackup hooks                          (CFGD_OPERATION=restore)
       │
-      ├──fail──►  safety snapshot + overlay SKIPPED  ──┐
+      ├──fail──►  safety snapshot + overlay SKIPPED──┐
       │ ok                                           │
       ▼                                              │
-safety snapshot of the CURRENT target      (skipped when the target is not the source,
+safety snapshot of the CURRENT target    (skipped when the target is not the source,
       │                                   or the source is gone; no hooks of its own)
       ▼                                              │
 overlay the staged snapshot onto the target          │

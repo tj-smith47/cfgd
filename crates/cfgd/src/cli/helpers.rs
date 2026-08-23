@@ -1264,5 +1264,11 @@ pub(in crate::cli) fn sign_and_attest(
     })
 }
 
+/// The display form of a commit id: enough to identify it, short enough for
+/// two of them to sit on one line.
+pub(in crate::cli) fn short_commit(commit: &str) -> &str {
+    &commit[..commit.len().min(12)]
+}
+
 #[cfg(test)]
 pub(crate) mod tests;

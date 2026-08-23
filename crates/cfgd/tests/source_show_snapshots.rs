@@ -303,7 +303,7 @@ fn source_show_state_with_locked_ref_and_commit() {
         human.contains("Locked Commit"),
         "Locked Commit kv must appear: {human}"
     );
-    // Commit is truncated to SHORT_COMMIT_LEN (12); check the prefix.
+    // Commit is truncated by `short_commit` (12 chars); check the prefix.
     assert!(
         human.contains("aabbccddeeff"),
         "truncated locked commit must appear: {human}"
