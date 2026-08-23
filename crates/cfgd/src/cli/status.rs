@@ -377,12 +377,32 @@ fn render_module_drift_section(doc: Doc, drift: &[ModuleDrift], checked_live: bo
 /// recorded apply and the dashboard reading it. A row saying the profile is
 /// `unknown` tells a reader that cfgd lost track of something, when the truth
 /// is that the run was never scoped to a profile at all — so the row is left
-/// out instead of naming a profile nothing has.
+/// out instead of naming a profile nothing has. The placeholder is no longer
+/// RECORDED (an isolated run records its modules, and an underivable profile
+/// records nothing), and is still refused here because a store written by an
+/// older cfgd still holds rows carrying it.
 fn derivable_profile(name: &str) -> Option<&str> {
     match name.trim() {
         "" | "unknown" => None,
         name => Some(name),
     }
+}
+
+/// The row a recorded apply's scope renders as: `Profile base` for a
+/// profile-scoped run, `Scope module:nvim` for an isolated one, nothing when
+/// the run named neither.
+///
+/// The key is decided by the value because the two are the same column: a
+/// module-scoped run has no profile, and labelling `module:nvim` as a profile
+/// would name a profile that does not exist.
+fn recorded_scope_row(recorded: &str) -> Option<(&'static str, &str)> {
+    let value = derivable_profile(recorded)?;
+    let owner_prefix = format!("{}:", cfgd_core::reconciler::OwnerKind::Module.as_str());
+    Some(if value.starts_with(&owner_prefix) {
+        ("Scope", value)
+    } else {
+        ("Profile", value)
+    })
 }
 
 /// The recorded-state header's staleness threshold: a daemon's default
@@ -432,8 +452,8 @@ pub fn build_fleet_status_doc(
         Some(last) => {
             doc = doc.section("Last Apply", |s| {
                 let mut s = s.kv("Time", &last.timestamp);
-                if let Some(profile) = derivable_profile(&last.profile) {
-                    s = s.kv("Profile", profile);
+                if let Some((key, value)) = recorded_scope_row(&last.profile) {
+                    s = s.kv(key, value);
                 }
                 s = s.kv("Result", last.status.human_str());
                 if let Some(summary) = &last.summary {
@@ -2870,5 +2890,25 @@ mod tests {
             serde_json::json!([]),
             "a converged module's live scan must find nothing, got: {parsed}"
         );
+    }
+
+    /// The Last Apply block names what the run was scoped to. A profile-scoped
+    /// run reads `Profile`; an isolated one reads `Scope`, because
+    /// `module:nvim` is not a profile and labelling it as one names a profile
+    /// nothing has. A store written by an older cfgd still holds the
+    /// `unknown` placeholder, which renders as no row at all.
+    #[test]
+    fn a_recorded_scope_is_labelled_by_what_it_names() {
+        assert_eq!(
+            super::recorded_scope_row("module:nvim"),
+            Some(("Scope", "module:nvim"))
+        );
+        assert_eq!(
+            super::recorded_scope_row("module:nvim, module:zsh"),
+            Some(("Scope", "module:nvim, module:zsh"))
+        );
+        assert_eq!(super::recorded_scope_row("base"), Some(("Profile", "base")));
+        assert_eq!(super::recorded_scope_row("unknown"), None);
+        assert_eq!(super::recorded_scope_row(""), None);
     }
 }

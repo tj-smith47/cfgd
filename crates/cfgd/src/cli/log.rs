@@ -125,13 +125,21 @@ pub fn build_log_doc(output: &LogOutput) -> Doc {
                 vec![
                     record.id.to_string(),
                     record.timestamp.clone(),
-                    record.profile.clone(),
+                    // What the run was scoped to: a profile name, or the
+                    // `module:<name>` list an isolated run records instead. An
+                    // empty cell is a scope nothing could name — never a
+                    // placeholder standing in for one.
+                    if record.profile.trim().is_empty() {
+                        "-".to_string()
+                    } else {
+                        record.profile.clone()
+                    },
                     record.status.human_str().to_string(),
                     record.summary.clone().unwrap_or_else(|| "-".into()),
                 ]
             })
             .collect();
-        let mut t = Table::new(["ID", "Time", "Profile", "Status", "Summary"]);
+        let mut t = Table::new(["ID", "Time", "Scope", "Status", "Summary"]);
         for row in rows {
             t = t.row(row);
         }
@@ -261,6 +269,42 @@ mod tests {
         assert_eq!(
             cfgd_core::exit::exit_code_for_error(cfgd_err),
             cfgd_core::exit::ExitCode::NotFound
+        );
+    }
+
+    /// The Scope column renders what the run was scoped to. A run that named
+    /// neither a profile nor a module leaves an empty cell marker, never a
+    /// placeholder word standing in for a scope nothing has.
+    #[test]
+    fn log_scope_column_renders_a_dash_for_a_run_that_named_nothing() {
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        let mut output = in_progress_log();
+        output.entries[0].profile = String::new();
+        printer.emit(build_log_doc(&output));
+        drop(printer);
+
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(out.contains("Scope"), "the column is named Scope: {out}");
+        assert!(
+            !out.contains("unknown"),
+            "an unnamed scope must not render a placeholder word: {out}"
+        );
+    }
+
+    /// A module-scoped run records the modules it ran, and the column shows
+    /// them as recorded.
+    #[test]
+    fn log_scope_column_renders_a_module_scoped_run() {
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        let mut output = in_progress_log();
+        output.entries[0].profile = "module:nvim".to_string();
+        printer.emit(build_log_doc(&output));
+        drop(printer);
+
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("module:nvim"),
+            "the recorded scope is shown as recorded: {out}"
         );
     }
 }

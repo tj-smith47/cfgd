@@ -1,7 +1,7 @@
 Apply History
 
-ID  Time                  Profile  Status   Summary       
-──────────────────────────────────────────────────────────
-3   <TIMESTAMP>  gamma    Failed   -             
-2   <TIMESTAMP>  beta     Partial  2 ok, 1 failed
-1   <TIMESTAMP>  alpha    Success  1 file applied
+ID  Time                  Scope  Status   Summary       
+────────────────────────────────────────────────────────
+3   <TIMESTAMP>  gamma  Failed   -             
+2   <TIMESTAMP>  beta   Partial  2 ok, 1 failed
+1   <TIMESTAMP>  alpha  Success  1 file applied

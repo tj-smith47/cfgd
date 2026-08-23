@@ -885,6 +885,9 @@ cfgd log -o json            # JSON apply history
 cfgd log --show-output 42   # show captured script output for apply #42
 ```
 
+The `Scope` column names what each run was scoped to: the profile it applied, or the
+`module:<name>` list a `--module` run isolated itself to. A run that named neither shows `-`.
+
 ### `cfgd rollback <apply-id>`
 
 Restore the file backups cfgd took before a previous apply, undoing that apply's file writes.
