@@ -123,6 +123,21 @@ single-source-of-truth wiring.
   `console` crate's global colour flags) cannot be observed there at all.
   ubuntu-only is deliberate — the race class is not OS-specific, so a matrix
   buys nothing.
+- The `audit` job in ci.yml ends with `anodizer check version-files`, the
+  same check `task ci` runs as `version-files:check`. It exists because a
+  release that fails AFTER `anodizer tag` never lands its bump on master, and
+  every later old→new `version_files` sweep then finds nothing to replace —
+  the literal freezes (v0.8.0 left `chart/cfgd/Chart.yaml` and four docs at
+  0.7.0 through two more releases). Keep it in the audit job, not the
+  release workflow: the point is to fail a PR, before anything is tagged.
+  Its sibling in the `clippy` job is `task chart:tags:check`, which renders
+  the chart with every first-party image enabled and asks ghcr whether each
+  `cfgd*` tag exists — the chart's three components version independently
+  (agent = `appVersion`, operator/csi = their own crate versions), so
+  literals agreeing with each other prove nothing, and the published 0.9.0
+  chart resolved an operator tag nobody had pushed. Both guards are
+  registry/anodizer questions rather than Rust ones; they sit in the jobs
+  that already hold the tools they need (`task`, docker, helm).
 - Self-hosted runner labels for actionlint live in `.github/actionlint.yaml`.
 - Any job that `uses: ./.github/actions/...` MUST have a checkout step
   before it (the local action file only exists on the runner after

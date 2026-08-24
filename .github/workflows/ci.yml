@@ -68,6 +68,11 @@ jobs:
       - name: Chart CRD drift guard
         run: task gen:crds:check
 
+      # The chart's three components version independently, so agreeing literals
+      # prove nothing; render with every first-party image enabled and ask ghcr.
+      - name: Chart image tag guard
+        run: task chart:tags:check
+
   test:
     name: Tests (${{ matrix.os }})
     strategy:
@@ -183,6 +188,14 @@ jobs:
       # in lockstep with `task ci`, which runs audit:test after audit.
       - name: Validate audit rules
         run: task audit:test
+
+      # Mirrors `task version-files:check` in `task ci`: a release that fails after the
+      # tag never lands its bump, and the next sweep silently leaves the old literal.
+      - name: Check enrolled version files via anodizer
+        uses: tj-smith47/anodizer-action@v1
+        with:
+          version: ${{ env.ANODIZER_VERSION }}
+          args: check version-files
 
   msrv:
     name: MSRV check

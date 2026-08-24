@@ -198,6 +198,36 @@ tasks:
     cmds:
       - bash .claude/scripts/audit.sh
 
+  version-files:check:
+    desc: Verify every file enrolled in .anodizer.yaml version_files still carries its crate's current version (CI drift guard).
+    cmds:
+      # A release that fails after `anodizer tag` never lands its bump on master, and the
+      # next old->new sweep then finds nothing to replace, so the literal freezes forever
+      # (v0.8.0 left the chart and four docs at 0.7.0). Caught here instead of by a user.
+      - '${ANODIZER_BIN:-anodizer} check version-files'
+
+  chart:tags:check:
+    desc: Verify every first-party image the chart renders by default exists on ghcr (CI drift guard).
+    cmds:
+      # The chart's three components version independently (agent = appVersion,
+      # operator/csi = their own crate versions), so a bump that lands on one literal
+      # and not another renders a tag nobody ever pushed. Rendering with every
+      # first-party component enabled and asking the registry is the only check that
+      # cannot be fooled by the literals agreeing with each other.
+      - cmd: |
+          set -e
+          missing=0
+          for ref in $(helm template cfgd chart/cfgd --set agent.enabled=true --set csiDriver.enabled=true \
+              | sed -n 's/^ *image: *"\{0,1\}\(ghcr\.io\/tj-smith47\/cfgd[^" ]*\)"\{0,1\} *$/\1/p' | sort -u); do
+            if docker manifest inspect "$ref" >/dev/null 2>&1; then
+              echo "OK       $ref"
+            else
+              echo "MISSING  $ref"
+              missing=1
+            fi
+          done
+          exit $missing
+
   gen:crds:
     desc: Regenerate every CRD copy (Helm chart + OLM bundle + schemas/crds.yaml) from the cfgd-crd spec types.
     deps: [_check:tmp-headroom]
@@ -445,6 +475,8 @@ tasks:
       - task: clippy
       - task: schema:check
       - task: gen:crds:check
+      - task: version-files:check
+      - task: chart:tags:check
       - task: test
       - task: test:threads
       - task: audit
