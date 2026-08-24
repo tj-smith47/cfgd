@@ -282,8 +282,10 @@ fn exemplar_for(kind: SkillKind) -> Exemplar {
             after: include_str!("../../tests/fixtures/exemplar_nvim_after.yaml").to_string(),
             note: "The before fails `cfgd module validate` (kebab-case `min-version` and \
 `post-apply` where the schema spells `minVersion` and `postApply`), hardcodes `/root` \
-where `~` belongs, declares none of the editor's runtime dependencies (C toolchain, node, \
-python, go), runs its bootstrap as one unguarded, untimed command, and explains nothing. \
+where `~` belongs, declares a partial toolchain (gcc, node, python3, go) and none of the \
+rest its plugin set needs (make, unzip, git, npm, python3-venv, pipx, pynvim, cargo, \
+stylua, a clipboard provider), runs its bootstrap as one unguarded, untimed command, and \
+explains nothing. \
 The after declares every transitive dependency beside the plugin that needs it, floors \
 versions only where a feature requires one, gates Linux-only packages, splits the \
 bootstrap into timed steps that tolerate a re-run, and comments each non-obvious choice."

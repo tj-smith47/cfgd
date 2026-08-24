@@ -20,7 +20,7 @@
 use cfgd_core::generate::{SkillKind, skill_model_for};
 use cfgd_core::providers::skill::{
     ClaudeCodeProvider, CodexProvider, CopilotProvider, CursorProvider, GeminiProvider,
-    SkillProvider,
+    SkillProvider, SkillScope,
 };
 
 /// Every author-facing kind, in the registry's stable order.
@@ -95,46 +95,62 @@ fn golden_suffix(provider: &str) -> &'static str {
     }
 }
 
-fn golden_path(provider: &str, token: &str) -> String {
+/// Project goldens keep the bare `{provider}__{kind}` name they were committed
+/// under; the user-scope shape (no embedded fallback schema) is pinned beside it
+/// under a `__user` infix, and only for the providers that HAVE a user-scope
+/// primitive — cursor and copilot answer `None` there, so a user golden for them
+/// would pin bytes nothing can install.
+fn golden_path(provider: &str, token: &str, scope: SkillScope) -> String {
+    let infix = match scope {
+        SkillScope::Project => "",
+        SkillScope::User => "__user",
+    };
     format!(
-        "tests/snapshots/skill/{provider}__{token}.{}",
+        "tests/snapshots/skill/{provider}__{token}{infix}.{}",
         golden_suffix(provider)
     )
 }
 
-/// Bless or assert every (kind) golden for one provider, applying the shared
-/// version normalization so a version bump cannot flip the goldens.
+/// Bless or assert every (kind × supported scope) golden for one provider,
+/// applying the shared version normalization so a version bump cannot flip the
+/// goldens.
 fn check_provider_goldens(provider: &dyn SkillProvider) {
     let bless = std::env::var("CFGD_BLESS_SKILL").is_ok();
     for kind in ALL_KINDS {
         let model = skill_model_for(kind, env!("CARGO_PKG_VERSION"));
-        // Snapshot the bytes the provider actually writes to a fresh target. A
-        // whole-file provider's are its `contents`; a managed-section provider's
-        // (codex) `contents` is empty — its payload is the spliced block — so
-        // `effective_fresh_install` routes through the same `splice_block` writer
-        // `install` uses, keeping the golden byte-faithful instead of vacuously
-        // snapshotting an empty file.
-        let rendered = normalize_version(
-            &provider
-                .render(&model)
-                .expect("render is infallible for these fixtures")
-                .effective_fresh_install(),
-        );
-        let path = golden_path(provider.id(), kind.command_token());
-        if bless {
-            std::fs::write(&path, &rendered)
-                .unwrap_or_else(|e| panic!("failed to write golden {path}: {e}"));
-            continue;
+        for scope in [SkillScope::Project, SkillScope::User] {
+            if provider.target_path(kind, scope).is_none() {
+                continue;
+            }
+            // Snapshot the bytes the provider actually writes to a fresh target. A
+            // whole-file provider's are its `contents`; a managed-section provider's
+            // (codex) `contents` is empty — its payload is the spliced block — so
+            // `effective_fresh_install` routes through the same `splice_block` writer
+            // `install` uses, keeping the golden byte-faithful instead of vacuously
+            // snapshotting an empty file.
+            let rendered = normalize_version(
+                &provider
+                    .render(&model, scope)
+                    .expect("render is infallible for these fixtures")
+                    .effective_fresh_install(),
+            );
+            let path = golden_path(provider.id(), kind.command_token(), scope);
+            if bless {
+                std::fs::write(&path, &rendered)
+                    .unwrap_or_else(|e| panic!("failed to write golden {path}: {e}"));
+                continue;
+            }
+            let golden = std::fs::read_to_string(&path)
+                .unwrap_or_else(|_| panic!("missing golden {path} — run `task skill:bless`"));
+            assert_eq!(
+                rendered.trim_end(),
+                golden.trim_end(),
+                "{} {} {scope:?} skill changed. If intentional: `task skill:bless`, then review \
+the diff.",
+                provider.id(),
+                kind.as_str(),
+            );
         }
-        let golden = std::fs::read_to_string(&path)
-            .unwrap_or_else(|_| panic!("missing golden {path} — run `task skill:bless`"));
-        assert_eq!(
-            rendered.trim_end(),
-            golden.trim_end(),
-            "{} {} skill changed. If intentional: `task skill:bless`, then review the diff.",
-            provider.id(),
-            kind.as_str(),
-        );
     }
 }
 

@@ -182,7 +182,9 @@ pub trait SkillProvider: Send + Sync {
     /// rather than degrade to an empty file that would silently install a broken
     /// skill. Whole-file providers that only `format!` are infallible and return
     /// `Ok`.
-    fn render(&self, model: &SkillModel) -> Result<RenderedSkill>;
+    /// `scope` decides whether the body embeds the fallback JSON schema — see
+    /// [`render_skill_body`] for why a user-scope skill omits it.
+    fn render(&self, model: &SkillModel, scope: SkillScope) -> Result<RenderedSkill>;
 
     /// Render and write the skill for `model.kind` at `scope`, returning the
     /// absolute path written.
@@ -198,7 +200,7 @@ pub trait SkillProvider: Send + Sync {
                 provider: self.id().to_string(),
                 message: format!("no target path for {} at {scope:?}", model.kind.as_str()),
             })?;
-        let rendered = self.render(model)?;
+        let rendered = self.render(model, scope)?;
 
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(SkillError::Write)?;
@@ -235,7 +237,7 @@ pub trait SkillProvider: Send + Sync {
         let Some(target) = self.target_path(kind, scope) else {
             return Ok(None);
         };
-        let rendered = self.render(&crate::generate::skill_model_for(kind, cfgd_version))?;
+        let rendered = self.render(&crate::generate::skill_model_for(kind, cfgd_version), scope)?;
 
         match &rendered.managed_section {
             None => {
@@ -276,7 +278,8 @@ pub trait SkillProvider: Send + Sync {
             let Some(target) = self.target_path(kind, scope) else {
                 continue;
             };
-            let rendered = self.render(&crate::generate::skill_model_for(kind, cfgd_version))?;
+            let rendered =
+                self.render(&crate::generate::skill_model_for(kind, cfgd_version), scope)?;
             let present = match &rendered.managed_section {
                 None => target.exists(),
                 Some(section) => read_to_string_optional(&target)?

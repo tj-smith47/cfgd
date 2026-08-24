@@ -25,7 +25,12 @@ Set Framerate 50
 # running. Publishing a module is k8s.tape's claim, not this one's, so it
 # happens off camera here.
 Hide
-Type "export KUBECONFIG=$HOME/.cache/cfgd-debug/demo-k8s/kubeconfig PATH=$HOME/.cache/cfgd-debug/demo-k8s/bin:$PATH"
+# CFGD_THEME is pinned because this tape records on the HOST, where cfgd (and
+# `kubectl cfgd`, which resolves the same config) reads the recording
+# operator's own ~/.config/cfgd — so an operator whose config names a preset
+# publishes a GIF in that preset while every container-recorded tape shows the
+# default one.
+Type "export KUBECONFIG=$HOME/.cache/cfgd-debug/demo-k8s/kubeconfig PATH=$HOME/.cache/cfgd-debug/demo-k8s/bin:$PATH CFGD_THEME=default"
 Enter
 Sleep 500ms
 Type "cd $HOME/.cache/cfgd-debug/demo-k8s/fixture"

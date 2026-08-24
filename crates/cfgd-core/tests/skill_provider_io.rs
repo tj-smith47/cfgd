@@ -39,7 +39,7 @@ fn install_then_remove_is_clean_roundtrip() {
         assert_eq!(
             on_disk,
             provider
-                .render(&model)
+                .render(&model, SkillScope::Project)
                 .expect("render is infallible for these fixtures")
                 .contents
         );
@@ -201,7 +201,7 @@ fn agents_md_inplace_block_preserves_trailing_user_content() {
             "stale block body must be replaced, got:\n{after}"
         );
         let fresh_body = provider
-            .render(&model)
+            .render(&model, SkillScope::Project)
             .expect("render is infallible for these fixtures")
             .managed_section
             .expect("codex renders a managed section")
@@ -465,19 +465,19 @@ fn concurrent_installs_of_different_kinds_dont_corrupt_delimiters() {
     // Both kinds' bodies are present and the version stamp parses out of the file.
     with_test_home(home.path(), || {
         let profile_body = CodexProvider
-            .render(&skill_model_for(
-                SkillKind::Profile,
-                env!("CARGO_PKG_VERSION"),
-            ))
+            .render(
+                &skill_model_for(SkillKind::Profile, env!("CARGO_PKG_VERSION")),
+                SkillScope::Project,
+            )
             .expect("render is infallible for these fixtures")
             .managed_section
             .expect("profile section")
             .body;
         let source_body = CodexProvider
-            .render(&skill_model_for(
-                SkillKind::Source,
-                env!("CARGO_PKG_VERSION"),
-            ))
+            .render(
+                &skill_model_for(SkillKind::Source, env!("CARGO_PKG_VERSION")),
+                SkillScope::Project,
+            )
             .expect("render is infallible for these fixtures")
             .managed_section
             .expect("source section")

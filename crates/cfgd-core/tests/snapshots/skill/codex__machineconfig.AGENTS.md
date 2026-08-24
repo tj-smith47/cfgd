@@ -23,28 +23,40 @@ Validated resources of this kind, shown for shape and depth. A value like `you@e
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:
+  # replace with the machine's own name and the namespace its team owns
   name: alice-workstation
   namespace: team-platform
 spec:
+  # Must match the machine's real hostname: this is how the agent claims the
+  # resource, so a mismatch leaves the config unapplied rather than misapplied.
   hostname: alice-mbp
   profile: work
   moduleRefs:
+    # required: the reconcile fails if this module cannot be resolved.
     - name: kubectl
       required: true
+    # optional: a missing module is reported and skipped, which is what a
+    # convenience tool wants.
     - name: terraform
       required: false
   packages:
     - name: ripgrep
     - name: fd
+    # Pinned exactly: these two must match the cluster they talk to, and a
+    # floating version is how a workstation drifts a minor ahead of the API
+    # server it is administering.
     - name: kubectl
       version: "1.28.3"
     - name: terraform
       version: "1.6.0"
   files:
+    # replace with your own internal hosts. A separate file rather than an edit
+    # of /etc/hosts, so cfgd owns the whole file it writes.
     - path: /etc/hosts.local
       content: "10.0.1.5  internal.acme.com\n"
       mode: "0644"
   systemSettings:
+    # Required by the local container runtime this workstation runs.
     net.ipv4.ip_forward: "1"
 ```
 

@@ -31,9 +31,13 @@ apiVersion: cfgd.io/v1alpha1
 kind: ConfigPolicy
 metadata:
   name: k8s-node-baseline
+  # replace with the namespace whose machines this policy governs — a
+  # ConfigPolicy is namespaced, so it reaches no further than this
   namespace: team-platform
 spec:
   requiredModules:
+    # A node that cannot run one of these three is not a functioning node, so
+    # every one is required rather than advisory.
     - name: containerd
       required: true
     - name: kubelet
@@ -41,16 +45,24 @@ spec:
     - name: apparmor
       required: true
   packages:
+    # kubelet shells out to both of these for service proxying and for
+    # connection cleanup; neither is pulled in by the kubelet package itself.
     - name: socat
     - name: conntrack
+    # Floors rather than pins: a node may run ahead of the floor, and pinning
+    # here would fight the cluster's own upgrade cadence.
     - name: kubectl
       version: ">=1.28"
     - name: containerd
       version: ">=1.7"
   settings:
+    # Both are hard preconditions for pod networking; kubelet refuses to start
+    # without them on most CNI plugins.
     net.ipv4.ip_forward: "1"
     net.bridge.bridge-nf-call-iptables: "1"
   targetSelector:
+    # Scoped by role rather than by name, so a node joining the pool inherits
+    # the baseline without this file changing.
     matchLabels:
       cfgd.io/role: k8s-node
 ```

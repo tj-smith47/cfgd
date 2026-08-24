@@ -20,7 +20,7 @@ Follow this protocol on every invocation. The quality bar is NOT "valid YAML". I
 
 ## Worked exemplar (the quality bar)
 
-The before fails `cfgd module validate` (kebab-case `min-version` and `post-apply` where the schema spells `minVersion` and `postApply`), hardcodes `/root` where `~` belongs, declares none of the editor's runtime dependencies (C toolchain, node, python, go), runs its bootstrap as one unguarded, untimed command, and explains nothing. The after declares every transitive dependency beside the plugin that needs it, floors versions only where a feature requires one, gates Linux-only packages, splits the bootstrap into timed steps that tolerate a re-run, and comments each non-obvious choice.
+The before fails `cfgd module validate` (kebab-case `min-version` and `post-apply` where the schema spells `minVersion` and `postApply`), hardcodes `/root` where `~` belongs, declares a partial toolchain (gcc, node, python3, go) and none of the rest its plugin set needs (make, unzip, git, npm, python3-venv, pipx, pynvim, cargo, stylua, a clipboard provider), runs its bootstrap as one unguarded, untimed command, and explains nothing. The after declares every transitive dependency beside the plugin that needs it, floors versions only where a feature requires one, gates Linux-only packages, splits the bootstrap into timed steps that tolerate a re-run, and comments each non-obvious choice.
 
 Before (box-checking):
 
@@ -318,6 +318,9 @@ metadata:
 
 spec:
   packages:
+    # go-task is the runner clift shells out to. Homebrew ships it under the
+    # name `go-task`, and the upstream installer covers every distro that does
+    # not package it at all, so the two together reach any host.
     - name: go-task
       prefer: [brew, script]
       aliases:
@@ -325,6 +328,8 @@ spec:
       script: |
         sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b ~/.local/bin
 
+    # jq and yq parse the JSON and YAML task manifests clift generates; gum
+    # draws the prompts its interactive commands use.
     - name: jq
 
     - name: yq
@@ -332,16 +337,24 @@ spec:
     - name: gum
 
   files:
+    # Cloned rather than copied: clift is upstream source, not a dotfile, and
+    # tracking the repo is how a `cfgd apply` picks up new task definitions.
     - source: https://github.com/tj-smith47/clift.git
       target: ~/.local/share/clift
 
   env:
+    # clift resolves its task library relative to this, so it must agree with
+    # the file target above.
     - name: CLIFT_DIR
       value: ~/.local/share/clift
 
   scripts:
     postApply:
-      - touch ~/.local/share/clift/.cfgd-managed
+      # Marker the uninstall path looks for. `creates` makes a second apply a
+      # no-op instead of re-touching the file on every reconcile.
+      - run: touch ~/.local/share/clift/.cfgd-managed
+        timeout: 10s
+        creates: ~/.local/share/clift/.cfgd-managed
 ```
 
 ## Fallback schema (if cfgd is unavailable)

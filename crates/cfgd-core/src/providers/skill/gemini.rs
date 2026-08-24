@@ -52,7 +52,7 @@ impl SkillProvider for GeminiProvider {
         }
     }
 
-    fn render(&self, model: &SkillModel) -> Result<RenderedSkill> {
+    fn render(&self, model: &SkillModel, scope: SkillScope) -> Result<RenderedSkill> {
         let token = model.kind.command_token();
         // `description` and `prompt` are the native fields the Gemini CLI reads;
         // the two `cfgd-*` keys are ignored by Gemini but let
@@ -69,7 +69,7 @@ impl SkillProvider for GeminiProvider {
         );
         table.insert(
             "prompt".to_string(),
-            toml::Value::String(render_skill_body(model)),
+            toml::Value::String(render_skill_body(model, scope)),
         );
         table.insert(
             "cfgd-version".to_string(),
@@ -106,7 +106,7 @@ mod tests {
     fn gemini_renders_valid_toml_command() {
         let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
         let r = GeminiProvider
-            .render(&model)
+            .render(&model, SkillScope::Project)
             .expect("render is infallible for these fixtures");
         assert!(r.relative_path.ends_with("cfgd-module.toml"));
         assert!(r.managed_section.is_none());
@@ -126,7 +126,7 @@ mod tests {
     fn toml_carries_version_stamp_keys_that_parse() {
         let model = skill_model_for(SkillKind::Profile, env!("CARGO_PKG_VERSION"));
         let r = GeminiProvider
-            .render(&model)
+            .render(&model, SkillScope::Project)
             .expect("render is infallible for these fixtures");
         let parsed: toml::Value = toml::from_str(&r.contents).expect("valid TOML");
         assert_eq!(

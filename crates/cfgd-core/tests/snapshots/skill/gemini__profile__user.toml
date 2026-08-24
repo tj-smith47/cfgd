@@ -1,0 +1,138 @@
+cfgd-min-version = "<CFGD_MIN_VERSION>"
+cfgd-version = "<CFGD_VERSION>"
+description = "Author a complete, validated cfgd Profile; use whenever creating or reworking a Profile YAML."
+prompt = """
+<!-- cfgd-version: <CFGD_VERSION> · cfgd-min-version: <CFGD_MIN_VERSION> -->
+
+# Author a high-quality cfgd Profile
+
+Follow this protocol on every invocation. The quality bar is NOT "valid YAML". It is exhaustive field evaluation, external research, and a documented rationale for every choice. A box-checking resource (every field technically present, no investigation behind it) fails this bar. Evaluate EVERY field the kind exposes; for each, either populate it with a justified value or omit it only after investigating enough to conclude it does not apply. Ground every version, ordering, and strategy choice in evidence, never a guess.
+
+## Protocol
+
+0. **Precondition.** Run `cfgd --version`. If cfgd is absent, STOP and tell the user to install cfgd >= <CFGD_MIN_VERSION>; if it is older than <CFGD_MIN_VERSION>, warn that its field list may be incomplete and say so in the summary.
+1. **Enumerate every field.** Run `cfgd explain profile -o json` once. The payload is the complete field list step 3 walks: every field, nested ones under `children`, each with `type`, `description` and `required`; its `location` is the path the finished file goes to. `cfgd explain profile.<field>` (no `-o`) prints one field's docs readably.
+2. **Research THIS subject before choosing values.** Check the subject's own docs, the package managers that ship it (for a tool), and community conventions. On the target machine, `<tool> --version` and the manager's own query (`brew info`, `apt-cache policy`, …) are live evidence and outrank recall. Put what you verified, and where, in the field's WHY comment; where you could not confirm a claim, say so there and in your reply.
+3. **Decide include or omit for EVERY field from step 1, and write the WHY as a comment beside each included one.** Omit a field the subject does not use or whose value would equal the default; note a non-obvious omission in a comment too.
+4. **Draft.** Declare every dependency the subject needs at run time, transitive ones included. Set a version floor only where a feature needs it, and say which. Gate platform-specific entries with `platforms`. Make each script step safe to re-run (`onlyIf` / `unless` / `creates` where the kind offers them, or a command that is itself idempotent), give it a `timeout`, and set `continueOnError: true` only where a failure must not abort the apply. Never write a credential into a value; a secret belongs in the profile's `spec.secrets`. No placeholders, no stub comments.
+5. **Validate:** `cfgd profile validate <file>` (`-` reads stdin; add `-o json` for a parseable report). A non-zero exit lists every error with its line; fix and re-run until it prints `✓ … is valid`.
+6. **Self-critique.** For each field in the step-1 list, name the evidence behind its value or its omission; a field you cannot account for goes back to step 2.
+
+## Ground-truth examples
+
+Validated resources of this kind, shown for shape and depth. A value like `you@example.com` is the example's placeholder; your draft carries the real one.
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: base
+spec:
+  env:
+    # vim rather than a GUI editor: this profile is the one every machine
+    # inherits, including headless ones with no display.
+    - name: EDITOR
+      value: vim
+    # replace with your own name — git refuses to commit without an author
+    - name: GIT_AUTHOR_NAME
+      value: Your Name
+    # replace with your own address — this one is reserved for documentation
+    - name: GIT_AUTHOR_EMAIL
+      value: you@example.com
+
+  packages:
+    # cargo rather than a system manager: these four move faster than distro
+    # packaging does, and cargo is the one source that has current builds of
+    # all of them on every platform this profile targets.
+    cargo:
+      - bat
+      - eza
+      - fd-find
+      - ripgrep
+
+  files:
+    managed:
+      - source: shell/.zshrc
+        target: ~/.zshrc
+      # .tera renders the file per machine, so one source serves hosts whose
+      # git identity or signing key differ.
+      - source: git/.gitconfig.tera
+        target: ~/.gitconfig
+    permissions:
+      # OpenSSH refuses to use a key directory or config that any other user
+      # can read, so these two modes are a precondition rather than a
+      # preference.
+      "~/.ssh": "700"
+      "~/.ssh/config": "600"
+
+  system:
+    # replace with the login shell you actually want; zsh is assumed by the
+    # .zshrc above
+    shell: /bin/zsh
+```
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: work
+spec:
+  # Everything in base applies here too; this profile only states the deltas.
+  inherits:
+    - base
+
+  env:
+    # Overrides base's vim: a work machine has a display, and `--wait` is what
+    # makes git wait for the commit buffer to close.
+    - name: EDITOR
+      value: "code --wait"
+    # replace with your work address — this overrides base's personal one so
+    # work commits carry the right author
+    - name: GIT_AUTHOR_EMAIL
+      value: you@company.com
+
+  packages:
+    brew:
+      taps:
+        # The casks below are not in homebrew-core; this tap is where they live.
+        - homebrew/cask-fonts
+      formulae:
+        - git
+        - jq
+        - kubectl
+        - helm
+      casks:
+        - visual-studio-code
+        - wezterm
+    npm:
+      # Global rather than per-project: the editor's language server reaches
+      # for these on PATH, outside any project's node_modules.
+      global:
+        - typescript
+        - prettier
+
+  files:
+    managed:
+      # .tera so the cluster list is rendered per machine rather than checked
+      # in with one team's clusters baked into it.
+      - source: k8s/kubeconfig.tera
+        target: ~/.kube/config
+
+  secrets:
+    # replace with your own vault reference — a token never belongs in this
+    # file, so it is resolved at apply time and written with 0600
+    - source: 1password://Work/GitHub/token
+      target: ~/.config/gh/token
+
+  scripts:
+    postReconcile:
+      # replace with your own bootstrap script. Object form rather than a bare
+      # string so the run is bounded and idempotent: `unless` skips the step
+      # once the marker exists, and the timeout keeps a hung corporate VPN
+      # prompt from stalling every apply.
+      - run: scripts/setup-work-env.sh
+        timeout: 5m
+        unless: test -f ~/.config/company/.work-env-ready
+```
+
+"""
