@@ -34,7 +34,9 @@ pub struct ModulesConfig {
     #[serde(default)]
     pub registries: Vec<ModuleRegistryEntry>,
 
-    /// Module security settings.
+    /// Signature requirements for modules pulled from these registries.
+    /// Omitted, signatures are not required and an unsigned module tag is
+    /// accepted.
     #[serde(default)]
     pub security: Option<ModuleSecurityConfig>,
 }

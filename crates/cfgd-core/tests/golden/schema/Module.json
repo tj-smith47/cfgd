@@ -44,7 +44,7 @@
           "type": "string"
         },
         "value": {
-          "description": "Variable value.",
+          "description": "Value assigned to the variable, exported verbatim into the shell environment.",
           "type": "string"
         }
       },

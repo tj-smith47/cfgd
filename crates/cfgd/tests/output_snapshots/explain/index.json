@@ -2,6 +2,7 @@
   {
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "A reusable unit of packages, files, scripts, and environment.",
+    "docs": "docs/spec/module.md#fields",
     "fields": [
       {
         "children": [
@@ -21,7 +22,8 @@
         "description": "Shell aliases this module contributes.",
         "name": "aliases",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "ShellAlias"
       },
       {
         "description": "Names of other modules this one requires; cfgd resolves and applies them first.",
@@ -38,7 +40,7 @@
             "type": "string"
           },
           {
-            "description": "Variable value.",
+            "description": "Value assigned to the variable, exported verbatim into the shell environment.",
             "name": "value",
             "required": true,
             "type": "string"
@@ -47,7 +49,8 @@
         "description": "Environment variables this module contributes.",
         "name": "env",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "EnvVar"
       },
       {
         "children": [
@@ -61,15 +64,21 @@
               },
               {
                 "description": "When encryption must be enforced. Defaults to `InRepo`.",
+                "enum": [
+                  "InRepo",
+                  "Always"
+                ],
                 "name": "mode",
                 "required": false,
-                "type": "string"
+                "type": "string",
+                "typeName": "EncryptionMode"
               }
             ],
             "description": "Encryption settings for this module file.",
             "name": "encryption",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "EncryptionSpec"
           },
           {
             "children": [
@@ -81,9 +90,16 @@
               },
               {
                 "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
+                "enum": [
+                  "Ini",
+                  "Json",
+                  "Yaml",
+                  "Toml"
+                ],
                 "name": "format",
                 "required": false,
-                "type": "string"
+                "type": "string",
+                "typeName": "PatchFormat"
               },
               {
                 "description": "A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.",
@@ -95,7 +111,8 @@
             "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
             "name": "patch",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "PatchSpec"
           },
           {
             "description": "Unix permission bits (e.g. \"600\", \"644\") to apply after deployment.",
@@ -117,9 +134,17 @@
           },
           {
             "description": "Per-file deployment strategy override. If None, uses the global default.",
+            "enum": [
+              "Symlink",
+              "Copy",
+              "Template",
+              "Hardlink",
+              "Patch"
+            ],
             "name": "strategy",
             "required": false,
-            "type": "string"
+            "type": "string",
+            "typeName": "FileStrategy"
           },
           {
             "description": "Destination path on the machine. A leading `~` expands to the home directory.",
@@ -131,7 +156,8 @@
         "description": "Files this module deploys.",
         "name": "files",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "ModuleFileEntry"
       },
       {
         "children": [
@@ -199,7 +225,8 @@
         "description": "Packages this module installs.",
         "name": "packages",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "ModulePackageEntry"
       },
       {
         "description": "Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a Skipped action rather than vanishing). Tags are matched against OS / distro / arch via `Platform::matches_any`; the canonical macOS token is `macos`.",
@@ -214,6 +241,7 @@
             "name": "onChange",
             "required": false,
             "type": "[](string | object)",
+            "typeName": "ScriptEntry",
             "variants": [
               {
                 "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -261,9 +289,18 @@
                   },
                   {
                     "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
                     "name": "shell",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "ScriptShell"
                   },
                   {
                     "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -296,6 +333,7 @@
             "name": "onDrift",
             "required": false,
             "type": "[](string | object)",
+            "typeName": "ScriptEntry",
             "variants": [
               {
                 "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -343,9 +381,18 @@
                   },
                   {
                     "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
                     "name": "shell",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "ScriptShell"
                   },
                   {
                     "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -378,6 +425,7 @@
             "name": "postApply",
             "required": false,
             "type": "[](string | object)",
+            "typeName": "ScriptEntry",
             "variants": [
               {
                 "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -425,9 +473,18 @@
                   },
                   {
                     "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
                     "name": "shell",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "ScriptShell"
                   },
                   {
                     "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -460,6 +517,7 @@
             "name": "postReconcile",
             "required": false,
             "type": "[](string | object)",
+            "typeName": "ScriptEntry",
             "variants": [
               {
                 "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -507,9 +565,18 @@
                   },
                   {
                     "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
                     "name": "shell",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "ScriptShell"
                   },
                   {
                     "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -542,6 +609,7 @@
             "name": "preApply",
             "required": false,
             "type": "[](string | object)",
+            "typeName": "ScriptEntry",
             "variants": [
               {
                 "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -589,9 +657,18 @@
                   },
                   {
                     "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
                     "name": "shell",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "ScriptShell"
                   },
                   {
                     "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -624,6 +701,7 @@
             "name": "preReconcile",
             "required": false,
             "type": "[](string | object)",
+            "typeName": "ScriptEntry",
             "variants": [
               {
                 "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -671,9 +749,18 @@
                   },
                   {
                     "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
                     "name": "shell",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "ScriptShell"
                   },
                   {
                     "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -705,7 +792,8 @@
         "description": "Lifecycle scripts (`preApply`, `postApply`, …) this module runs.",
         "name": "scripts",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "ScriptSpec"
       },
       {
         "description": "System configurator settings contributed by this module. Deep-merged into the profile system map; module values override profile values at leaf level.",
@@ -721,6 +809,7 @@
   {
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "A composable layer of modules, packages, files, and settings.",
+    "docs": "docs/spec/profile.md#fields",
     "fields": [
       {
         "children": [
@@ -740,7 +829,8 @@
         "description": "Shell aliases this profile sets.",
         "name": "aliases",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "ShellAlias"
       },
       {
         "children": [
@@ -767,6 +857,7 @@
             "name": "postBackup",
             "required": false,
             "type": "[](string | object)",
+            "typeName": "ScriptEntry",
             "variants": [
               {
                 "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -814,9 +905,18 @@
                   },
                   {
                     "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
                     "name": "shell",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "ScriptShell"
                   },
                   {
                     "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -849,6 +949,7 @@
             "name": "preBackup",
             "required": false,
             "type": "[](string | object)",
+            "typeName": "ScriptEntry",
             "variants": [
               {
                 "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -896,9 +997,18 @@
                   },
                   {
                     "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
                     "name": "shell",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "ScriptShell"
                   },
                   {
                     "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -948,7 +1058,8 @@
         "description": "Declarative backup jobs this profile schedules.",
         "name": "backups",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "BackupSpec"
       },
       {
         "children": [
@@ -959,7 +1070,7 @@
             "type": "string"
           },
           {
-            "description": "Variable value.",
+            "description": "Value assigned to the variable, exported verbatim into the shell environment.",
             "name": "value",
             "required": true,
             "type": "string"
@@ -968,13 +1079,20 @@
         "description": "Environment variables this profile sets.",
         "name": "env",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "EnvVar"
       },
       {
         "description": "How far `spec.env` exports reach across the current user's environment. Omitted means \"inherit\" (a parent layer's value survives); the resolved default when no layer sets it is `EnvScope::All` — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces.",
+        "enum": [
+          "All",
+          "Login",
+          "Interactive"
+        ],
         "name": "envScope",
         "required": false,
-        "type": "string"
+        "type": "string",
+        "typeName": "EnvScope"
       },
       {
         "children": [
@@ -990,15 +1108,21 @@
                   },
                   {
                     "description": "When encryption must be enforced. Defaults to `InRepo`.",
+                    "enum": [
+                      "InRepo",
+                      "Always"
+                    ],
                     "name": "mode",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "EncryptionMode"
                   }
                 ],
                 "description": "Encryption settings for this file.",
                 "name": "encryption",
                 "required": false,
-                "type": "object"
+                "type": "object",
+                "typeName": "EncryptionSpec"
               },
               {
                 "children": [
@@ -1010,9 +1134,16 @@
                   },
                   {
                     "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
+                    "enum": [
+                      "Ini",
+                      "Json",
+                      "Yaml",
+                      "Toml"
+                    ],
                     "name": "format",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "PatchFormat"
                   },
                   {
                     "description": "A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.",
@@ -1024,7 +1155,8 @@
                 "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
                 "name": "patch",
                 "required": false,
-                "type": "object"
+                "type": "object",
+                "typeName": "PatchSpec"
               },
               {
                 "description": "Unix permission bits (e.g. \"600\", \"644\") to apply after deployment.",
@@ -1046,9 +1178,17 @@
               },
               {
                 "description": "Per-file deployment strategy override. If None, uses the global default.",
+                "enum": [
+                  "Symlink",
+                  "Copy",
+                  "Template",
+                  "Hardlink",
+                  "Patch"
+                ],
                 "name": "strategy",
                 "required": false,
-                "type": "string"
+                "type": "string",
+                "typeName": "FileStrategy"
               },
               {
                 "description": "Destination path on the machine. A leading `~` expands to the home directory.",
@@ -1057,10 +1197,11 @@
                 "type": "string"
               }
             ],
-            "description": "Files to deploy.",
+            "description": "Files this profile deploys, each pairing a source in the config directory with a target on the machine. Empty, no files are managed.",
             "name": "managed",
             "required": false,
-            "type": "[]object"
+            "type": "[]object",
+            "typeName": "ManagedFileSpec"
           },
           {
             "description": "Octal permission strings (`\"0600\"`) keyed by target path, applied after deployment.",
@@ -1072,7 +1213,8 @@
         "description": "Files this profile deploys.",
         "name": "files",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "FilesSpec"
       },
       {
         "description": "Names of base profiles to merge under this one. Later fields in this profile override an inherited base's; lists are unioned.",
@@ -1112,7 +1254,8 @@
             "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.",
             "name": "apt",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "AptSpec"
           },
           {
             "children": [
@@ -1144,7 +1287,8 @@
             "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.",
             "name": "brew",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "BrewSpec"
           },
           {
             "children": [
@@ -1164,7 +1308,8 @@
             "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.",
             "name": "cargo",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "CargoSpec"
           },
           {
             "description": "Chocolatey packages (Windows).",
@@ -1220,7 +1365,8 @@
             "description": "User-defined package managers not built into cfgd, each with its own check/install/uninstall commands.",
             "name": "custom",
             "required": false,
-            "type": "[]object"
+            "type": "[]object",
+            "typeName": "CustomManagerSpec"
           },
           {
             "description": "DNF packages (Fedora/RHEL).",
@@ -1246,7 +1392,8 @@
             "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.",
             "name": "flatpak",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "FlatpakSpec"
           },
           {
             "description": "Go packages (`go install`).",
@@ -1278,7 +1425,8 @@
             "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping.",
             "name": "npm",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "NpmSpec"
           },
           {
             "description": "Pacman packages (Arch).",
@@ -1322,7 +1470,8 @@
             "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.",
             "name": "snap",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "SnapSpec"
           },
           {
             "description": "Winget packages (Windows).",
@@ -1346,7 +1495,8 @@
         "description": "Packages this profile installs, grouped by manager.",
         "name": "packages",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "PackagesSpec"
       },
       {
         "children": [
@@ -1355,6 +1505,7 @@
             "name": "onChange",
             "required": false,
             "type": "[](string | object)",
+            "typeName": "ScriptEntry",
             "variants": [
               {
                 "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -1402,9 +1553,18 @@
                   },
                   {
                     "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
                     "name": "shell",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "ScriptShell"
                   },
                   {
                     "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -1437,6 +1597,7 @@
             "name": "onDrift",
             "required": false,
             "type": "[](string | object)",
+            "typeName": "ScriptEntry",
             "variants": [
               {
                 "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -1484,9 +1645,18 @@
                   },
                   {
                     "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
                     "name": "shell",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "ScriptShell"
                   },
                   {
                     "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -1519,6 +1689,7 @@
             "name": "postApply",
             "required": false,
             "type": "[](string | object)",
+            "typeName": "ScriptEntry",
             "variants": [
               {
                 "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -1566,9 +1737,18 @@
                   },
                   {
                     "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
                     "name": "shell",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "ScriptShell"
                   },
                   {
                     "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -1601,6 +1781,7 @@
             "name": "postReconcile",
             "required": false,
             "type": "[](string | object)",
+            "typeName": "ScriptEntry",
             "variants": [
               {
                 "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -1648,9 +1829,18 @@
                   },
                   {
                     "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
                     "name": "shell",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "ScriptShell"
                   },
                   {
                     "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -1683,6 +1873,7 @@
             "name": "preApply",
             "required": false,
             "type": "[](string | object)",
+            "typeName": "ScriptEntry",
             "variants": [
               {
                 "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -1730,9 +1921,18 @@
                   },
                   {
                     "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
                     "name": "shell",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "ScriptShell"
                   },
                   {
                     "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -1765,6 +1965,7 @@
             "name": "preReconcile",
             "required": false,
             "type": "[](string | object)",
+            "typeName": "ScriptEntry",
             "variants": [
               {
                 "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -1812,9 +2013,18 @@
                   },
                   {
                     "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                    "enum": [
+                      "sh",
+                      "bash",
+                      "zsh",
+                      "pwsh",
+                      "cmd",
+                      "auto"
+                    ],
                     "name": "shell",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "ScriptShell"
                   },
                   {
                     "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -1846,7 +2056,8 @@
         "description": "Lifecycle scripts (`preApply`, `postApply`, …) this profile runs.",
         "name": "scripts",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "ScriptSpec"
       },
       {
         "children": [
@@ -1884,7 +2095,8 @@
         "description": "Secrets this profile resolves into files or environment variables.",
         "name": "secrets",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "SecretSpec"
       },
       {
         "description": "System configurator settings (`macosDefaults`, `systemd`, `sysctl`, …), keyed by configurator name.",
@@ -1900,6 +2112,7 @@
   {
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "A published source of modules and profiles for multi-source config.",
+    "docs": "docs/sources.md#configsource-manifest",
     "fields": [
       {
         "children": [
@@ -1927,9 +2140,14 @@
                   },
                   {
                     "description": "If set, restrict which encryption mode is acceptable.",
+                    "enum": [
+                      "InRepo",
+                      "Always"
+                    ],
                     "name": "mode",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "EncryptionMode"
                   },
                   {
                     "description": "Glob patterns or explicit paths that must be encrypted.",
@@ -1941,7 +2159,8 @@
                 "description": "Encryption requirements imposed on files delivered by this source.",
                 "name": "encryption",
                 "required": false,
-                "type": "object"
+                "type": "object",
+                "typeName": "EncryptionConstraint"
               },
               {
                 "description": "Reject lifecycle scripts (profile-layer and module `run:` bodies) this source delivers, unless a subscriber opts in via `subscription.allowScripts`. Default: `true`.",
@@ -1965,7 +2184,8 @@
             "description": "Restrictions this source imposes on how subscribers may compose it.",
             "name": "constraints",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "SourceConstraints"
           },
           {
             "children": [
@@ -1987,7 +2207,8 @@
                 "description": "Shell aliases offered at this tier.",
                 "name": "aliases",
                 "required": false,
-                "type": "[]object"
+                "type": "[]object",
+                "typeName": "ShellAlias"
               },
               {
                 "children": [
@@ -1998,7 +2219,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Variable value.",
+                    "description": "Value assigned to the variable, exported verbatim into the shell environment.",
                     "name": "value",
                     "required": true,
                     "type": "string"
@@ -2007,7 +2228,8 @@
                 "description": "Environment variables offered at this tier.",
                 "name": "env",
                 "required": false,
-                "type": "[]object"
+                "type": "[]object",
+                "typeName": "EnvVar"
               },
               {
                 "children": [
@@ -2021,15 +2243,21 @@
                       },
                       {
                         "description": "When encryption must be enforced. Defaults to `InRepo`.",
+                        "enum": [
+                          "InRepo",
+                          "Always"
+                        ],
                         "name": "mode",
                         "required": false,
-                        "type": "string"
+                        "type": "string",
+                        "typeName": "EncryptionMode"
                       }
                     ],
                     "description": "Encryption settings for this file.",
                     "name": "encryption",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "EncryptionSpec"
                   },
                   {
                     "children": [
@@ -2041,9 +2269,16 @@
                       },
                       {
                         "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
+                        "enum": [
+                          "Ini",
+                          "Json",
+                          "Yaml",
+                          "Toml"
+                        ],
                         "name": "format",
                         "required": false,
-                        "type": "string"
+                        "type": "string",
+                        "typeName": "PatchFormat"
                       },
                       {
                         "description": "A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.",
@@ -2055,7 +2290,8 @@
                     "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
                     "name": "patch",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "PatchSpec"
                   },
                   {
                     "description": "Unix permission bits (e.g. \"600\", \"644\") to apply after deployment.",
@@ -2077,9 +2313,17 @@
                   },
                   {
                     "description": "Per-file deployment strategy override. If None, uses the global default.",
+                    "enum": [
+                      "Symlink",
+                      "Copy",
+                      "Template",
+                      "Hardlink",
+                      "Patch"
+                    ],
                     "name": "strategy",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "FileStrategy"
                   },
                   {
                     "description": "Destination path on the machine. A leading `~` expands to the home directory.",
@@ -2091,7 +2335,8 @@
                 "description": "Files offered at this tier.",
                 "name": "files",
                 "required": false,
-                "type": "[]object"
+                "type": "[]object",
+                "typeName": "ManagedFileSpec"
               },
               {
                 "description": "Module names offered at this tier.",
@@ -2125,7 +2370,8 @@
                     "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.",
                     "name": "apt",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "AptSpec"
                   },
                   {
                     "children": [
@@ -2157,7 +2403,8 @@
                     "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.",
                     "name": "brew",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "BrewSpec"
                   },
                   {
                     "children": [
@@ -2177,7 +2424,8 @@
                     "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.",
                     "name": "cargo",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "CargoSpec"
                   },
                   {
                     "description": "Chocolatey packages (Windows).",
@@ -2233,7 +2481,8 @@
                     "description": "User-defined package managers not built into cfgd, each with its own check/install/uninstall commands.",
                     "name": "custom",
                     "required": false,
-                    "type": "[]object"
+                    "type": "[]object",
+                    "typeName": "CustomManagerSpec"
                   },
                   {
                     "description": "DNF packages (Fedora/RHEL).",
@@ -2259,7 +2508,8 @@
                     "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.",
                     "name": "flatpak",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "FlatpakSpec"
                   },
                   {
                     "description": "Go packages (`go install`).",
@@ -2291,7 +2541,8 @@
                     "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping.",
                     "name": "npm",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "NpmSpec"
                   },
                   {
                     "description": "Pacman packages (Arch).",
@@ -2335,7 +2586,8 @@
                     "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.",
                     "name": "snap",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "SnapSpec"
                   },
                   {
                     "description": "Winget packages (Windows).",
@@ -2359,7 +2611,8 @@
                 "description": "Packages offered at this tier.",
                 "name": "packages",
                 "required": false,
-                "type": "object"
+                "type": "object",
+                "typeName": "PackagesSpec"
               },
               {
                 "description": "Profile names this tier recommends composing in.",
@@ -2403,7 +2656,8 @@
                 "description": "Secrets offered at this tier.",
                 "name": "secrets",
                 "required": false,
-                "type": "[]object"
+                "type": "[]object",
+                "typeName": "SecretSpec"
               },
               {
                 "description": "System configurator settings offered at this tier.",
@@ -2415,7 +2669,8 @@
             "description": "Items every subscriber receives and cannot override locally.",
             "name": "locked",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "PolicyItems"
           },
           {
             "children": [
@@ -2437,7 +2692,8 @@
                 "description": "Shell aliases offered at this tier.",
                 "name": "aliases",
                 "required": false,
-                "type": "[]object"
+                "type": "[]object",
+                "typeName": "ShellAlias"
               },
               {
                 "children": [
@@ -2448,7 +2704,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Variable value.",
+                    "description": "Value assigned to the variable, exported verbatim into the shell environment.",
                     "name": "value",
                     "required": true,
                     "type": "string"
@@ -2457,7 +2713,8 @@
                 "description": "Environment variables offered at this tier.",
                 "name": "env",
                 "required": false,
-                "type": "[]object"
+                "type": "[]object",
+                "typeName": "EnvVar"
               },
               {
                 "children": [
@@ -2471,15 +2728,21 @@
                       },
                       {
                         "description": "When encryption must be enforced. Defaults to `InRepo`.",
+                        "enum": [
+                          "InRepo",
+                          "Always"
+                        ],
                         "name": "mode",
                         "required": false,
-                        "type": "string"
+                        "type": "string",
+                        "typeName": "EncryptionMode"
                       }
                     ],
                     "description": "Encryption settings for this file.",
                     "name": "encryption",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "EncryptionSpec"
                   },
                   {
                     "children": [
@@ -2491,9 +2754,16 @@
                       },
                       {
                         "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
+                        "enum": [
+                          "Ini",
+                          "Json",
+                          "Yaml",
+                          "Toml"
+                        ],
                         "name": "format",
                         "required": false,
-                        "type": "string"
+                        "type": "string",
+                        "typeName": "PatchFormat"
                       },
                       {
                         "description": "A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.",
@@ -2505,7 +2775,8 @@
                     "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
                     "name": "patch",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "PatchSpec"
                   },
                   {
                     "description": "Unix permission bits (e.g. \"600\", \"644\") to apply after deployment.",
@@ -2527,9 +2798,17 @@
                   },
                   {
                     "description": "Per-file deployment strategy override. If None, uses the global default.",
+                    "enum": [
+                      "Symlink",
+                      "Copy",
+                      "Template",
+                      "Hardlink",
+                      "Patch"
+                    ],
                     "name": "strategy",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "FileStrategy"
                   },
                   {
                     "description": "Destination path on the machine. A leading `~` expands to the home directory.",
@@ -2541,7 +2820,8 @@
                 "description": "Files offered at this tier.",
                 "name": "files",
                 "required": false,
-                "type": "[]object"
+                "type": "[]object",
+                "typeName": "ManagedFileSpec"
               },
               {
                 "description": "Module names offered at this tier.",
@@ -2575,7 +2855,8 @@
                     "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.",
                     "name": "apt",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "AptSpec"
                   },
                   {
                     "children": [
@@ -2607,7 +2888,8 @@
                     "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.",
                     "name": "brew",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "BrewSpec"
                   },
                   {
                     "children": [
@@ -2627,7 +2909,8 @@
                     "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.",
                     "name": "cargo",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "CargoSpec"
                   },
                   {
                     "description": "Chocolatey packages (Windows).",
@@ -2683,7 +2966,8 @@
                     "description": "User-defined package managers not built into cfgd, each with its own check/install/uninstall commands.",
                     "name": "custom",
                     "required": false,
-                    "type": "[]object"
+                    "type": "[]object",
+                    "typeName": "CustomManagerSpec"
                   },
                   {
                     "description": "DNF packages (Fedora/RHEL).",
@@ -2709,7 +2993,8 @@
                     "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.",
                     "name": "flatpak",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "FlatpakSpec"
                   },
                   {
                     "description": "Go packages (`go install`).",
@@ -2741,7 +3026,8 @@
                     "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping.",
                     "name": "npm",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "NpmSpec"
                   },
                   {
                     "description": "Pacman packages (Arch).",
@@ -2785,7 +3071,8 @@
                     "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.",
                     "name": "snap",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "SnapSpec"
                   },
                   {
                     "description": "Winget packages (Windows).",
@@ -2809,7 +3096,8 @@
                 "description": "Packages offered at this tier.",
                 "name": "packages",
                 "required": false,
-                "type": "object"
+                "type": "object",
+                "typeName": "PackagesSpec"
               },
               {
                 "description": "Profile names this tier recommends composing in.",
@@ -2853,7 +3141,8 @@
                 "description": "Secrets offered at this tier.",
                 "name": "secrets",
                 "required": false,
-                "type": "[]object"
+                "type": "[]object",
+                "typeName": "SecretSpec"
               },
               {
                 "description": "System configurator settings offered at this tier.",
@@ -2865,7 +3154,8 @@
             "description": "Items a subscriber must explicitly name in `subscription.optIn` to receive.",
             "name": "optional",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "PolicyItems"
           },
           {
             "children": [
@@ -2887,7 +3177,8 @@
                 "description": "Shell aliases offered at this tier.",
                 "name": "aliases",
                 "required": false,
-                "type": "[]object"
+                "type": "[]object",
+                "typeName": "ShellAlias"
               },
               {
                 "children": [
@@ -2898,7 +3189,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Variable value.",
+                    "description": "Value assigned to the variable, exported verbatim into the shell environment.",
                     "name": "value",
                     "required": true,
                     "type": "string"
@@ -2907,7 +3198,8 @@
                 "description": "Environment variables offered at this tier.",
                 "name": "env",
                 "required": false,
-                "type": "[]object"
+                "type": "[]object",
+                "typeName": "EnvVar"
               },
               {
                 "children": [
@@ -2921,15 +3213,21 @@
                       },
                       {
                         "description": "When encryption must be enforced. Defaults to `InRepo`.",
+                        "enum": [
+                          "InRepo",
+                          "Always"
+                        ],
                         "name": "mode",
                         "required": false,
-                        "type": "string"
+                        "type": "string",
+                        "typeName": "EncryptionMode"
                       }
                     ],
                     "description": "Encryption settings for this file.",
                     "name": "encryption",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "EncryptionSpec"
                   },
                   {
                     "children": [
@@ -2941,9 +3239,16 @@
                       },
                       {
                         "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
+                        "enum": [
+                          "Ini",
+                          "Json",
+                          "Yaml",
+                          "Toml"
+                        ],
                         "name": "format",
                         "required": false,
-                        "type": "string"
+                        "type": "string",
+                        "typeName": "PatchFormat"
                       },
                       {
                         "description": "A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.",
@@ -2955,7 +3260,8 @@
                     "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
                     "name": "patch",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "PatchSpec"
                   },
                   {
                     "description": "Unix permission bits (e.g. \"600\", \"644\") to apply after deployment.",
@@ -2977,9 +3283,17 @@
                   },
                   {
                     "description": "Per-file deployment strategy override. If None, uses the global default.",
+                    "enum": [
+                      "Symlink",
+                      "Copy",
+                      "Template",
+                      "Hardlink",
+                      "Patch"
+                    ],
                     "name": "strategy",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "FileStrategy"
                   },
                   {
                     "description": "Destination path on the machine. A leading `~` expands to the home directory.",
@@ -2991,7 +3305,8 @@
                 "description": "Files offered at this tier.",
                 "name": "files",
                 "required": false,
-                "type": "[]object"
+                "type": "[]object",
+                "typeName": "ManagedFileSpec"
               },
               {
                 "description": "Module names offered at this tier.",
@@ -3025,7 +3340,8 @@
                     "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.",
                     "name": "apt",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "AptSpec"
                   },
                   {
                     "children": [
@@ -3057,7 +3373,8 @@
                     "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.",
                     "name": "brew",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "BrewSpec"
                   },
                   {
                     "children": [
@@ -3077,7 +3394,8 @@
                     "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.",
                     "name": "cargo",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "CargoSpec"
                   },
                   {
                     "description": "Chocolatey packages (Windows).",
@@ -3133,7 +3451,8 @@
                     "description": "User-defined package managers not built into cfgd, each with its own check/install/uninstall commands.",
                     "name": "custom",
                     "required": false,
-                    "type": "[]object"
+                    "type": "[]object",
+                    "typeName": "CustomManagerSpec"
                   },
                   {
                     "description": "DNF packages (Fedora/RHEL).",
@@ -3159,7 +3478,8 @@
                     "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.",
                     "name": "flatpak",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "FlatpakSpec"
                   },
                   {
                     "description": "Go packages (`go install`).",
@@ -3191,7 +3511,8 @@
                     "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping.",
                     "name": "npm",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "NpmSpec"
                   },
                   {
                     "description": "Pacman packages (Arch).",
@@ -3235,7 +3556,8 @@
                     "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.",
                     "name": "snap",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "SnapSpec"
                   },
                   {
                     "description": "Winget packages (Windows).",
@@ -3259,7 +3581,8 @@
                 "description": "Packages offered at this tier.",
                 "name": "packages",
                 "required": false,
-                "type": "object"
+                "type": "object",
+                "typeName": "PackagesSpec"
               },
               {
                 "description": "Profile names this tier recommends composing in.",
@@ -3303,7 +3626,8 @@
                 "description": "Secrets offered at this tier.",
                 "name": "secrets",
                 "required": false,
-                "type": "[]object"
+                "type": "[]object",
+                "typeName": "SecretSpec"
               },
               {
                 "description": "System configurator settings offered at this tier.",
@@ -3315,7 +3639,8 @@
             "description": "Items a subscriber receives when `subscription.acceptRecommended` is set.",
             "name": "recommended",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "PolicyItems"
           },
           {
             "children": [
@@ -3337,7 +3662,8 @@
                 "description": "Shell aliases offered at this tier.",
                 "name": "aliases",
                 "required": false,
-                "type": "[]object"
+                "type": "[]object",
+                "typeName": "ShellAlias"
               },
               {
                 "children": [
@@ -3348,7 +3674,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Variable value.",
+                    "description": "Value assigned to the variable, exported verbatim into the shell environment.",
                     "name": "value",
                     "required": true,
                     "type": "string"
@@ -3357,7 +3683,8 @@
                 "description": "Environment variables offered at this tier.",
                 "name": "env",
                 "required": false,
-                "type": "[]object"
+                "type": "[]object",
+                "typeName": "EnvVar"
               },
               {
                 "children": [
@@ -3371,15 +3698,21 @@
                       },
                       {
                         "description": "When encryption must be enforced. Defaults to `InRepo`.",
+                        "enum": [
+                          "InRepo",
+                          "Always"
+                        ],
                         "name": "mode",
                         "required": false,
-                        "type": "string"
+                        "type": "string",
+                        "typeName": "EncryptionMode"
                       }
                     ],
                     "description": "Encryption settings for this file.",
                     "name": "encryption",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "EncryptionSpec"
                   },
                   {
                     "children": [
@@ -3391,9 +3724,16 @@
                       },
                       {
                         "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
+                        "enum": [
+                          "Ini",
+                          "Json",
+                          "Yaml",
+                          "Toml"
+                        ],
                         "name": "format",
                         "required": false,
-                        "type": "string"
+                        "type": "string",
+                        "typeName": "PatchFormat"
                       },
                       {
                         "description": "A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.",
@@ -3405,7 +3745,8 @@
                     "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
                     "name": "patch",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "PatchSpec"
                   },
                   {
                     "description": "Unix permission bits (e.g. \"600\", \"644\") to apply after deployment.",
@@ -3427,9 +3768,17 @@
                   },
                   {
                     "description": "Per-file deployment strategy override. If None, uses the global default.",
+                    "enum": [
+                      "Symlink",
+                      "Copy",
+                      "Template",
+                      "Hardlink",
+                      "Patch"
+                    ],
                     "name": "strategy",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "FileStrategy"
                   },
                   {
                     "description": "Destination path on the machine. A leading `~` expands to the home directory.",
@@ -3441,7 +3790,8 @@
                 "description": "Files offered at this tier.",
                 "name": "files",
                 "required": false,
-                "type": "[]object"
+                "type": "[]object",
+                "typeName": "ManagedFileSpec"
               },
               {
                 "description": "Module names offered at this tier.",
@@ -3475,7 +3825,8 @@
                     "description": "APT packages (Debian/Ubuntu). Accepts a bare list or an `AptSpec` mapping.",
                     "name": "apt",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "AptSpec"
                   },
                   {
                     "children": [
@@ -3507,7 +3858,8 @@
                     "description": "Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.",
                     "name": "brew",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "BrewSpec"
                   },
                   {
                     "children": [
@@ -3527,7 +3879,8 @@
                     "description": "Cargo packages (`cargo install`). Accepts a bare list or a `CargoSpec` mapping.",
                     "name": "cargo",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "CargoSpec"
                   },
                   {
                     "description": "Chocolatey packages (Windows).",
@@ -3583,7 +3936,8 @@
                     "description": "User-defined package managers not built into cfgd, each with its own check/install/uninstall commands.",
                     "name": "custom",
                     "required": false,
-                    "type": "[]object"
+                    "type": "[]object",
+                    "typeName": "CustomManagerSpec"
                   },
                   {
                     "description": "DNF packages (Fedora/RHEL).",
@@ -3609,7 +3963,8 @@
                     "description": "Flatpak packages (Linux). Accepts a bare list or a `FlatpakSpec` mapping.",
                     "name": "flatpak",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "FlatpakSpec"
                   },
                   {
                     "description": "Go packages (`go install`).",
@@ -3641,7 +3996,8 @@
                     "description": "npm global packages. Accepts a bare list or an `NpmSpec` mapping.",
                     "name": "npm",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "NpmSpec"
                   },
                   {
                     "description": "Pacman packages (Arch).",
@@ -3685,7 +4041,8 @@
                     "description": "Snap packages (Linux). Accepts a bare list or a `SnapSpec` mapping.",
                     "name": "snap",
                     "required": false,
-                    "type": "object"
+                    "type": "object",
+                    "typeName": "SnapSpec"
                   },
                   {
                     "description": "Winget packages (Windows).",
@@ -3709,7 +4066,8 @@
                 "description": "Packages offered at this tier.",
                 "name": "packages",
                 "required": false,
-                "type": "object"
+                "type": "object",
+                "typeName": "PackagesSpec"
               },
               {
                 "description": "Profile names this tier recommends composing in.",
@@ -3753,7 +4111,8 @@
                 "description": "Secrets offered at this tier.",
                 "name": "secrets",
                 "required": false,
-                "type": "[]object"
+                "type": "[]object",
+                "typeName": "SecretSpec"
               },
               {
                 "description": "System configurator settings offered at this tier.",
@@ -3765,13 +4124,15 @@
             "description": "Items every subscriber receives unconditionally.",
             "name": "required",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "PolicyItems"
           }
         ],
         "description": "Policy tiers (required/recommended/optional/locked) and constraints this source enforces on subscribers.",
         "name": "policy",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "ConfigSourcePolicy"
       },
       {
         "children": [
@@ -3802,7 +4163,7 @@
                 "type": "[]string"
               },
               {
-                "description": "Profile name.",
+                "description": "Name the profile is published under, and the value `cfgd profile switch` takes to activate it.",
                 "name": "name",
                 "required": true,
                 "type": "string"
@@ -3817,7 +4178,8 @@
             "description": "Published profiles with descriptions, paths, and inheritance — richer than the flat `profiles` list.",
             "name": "profileDetails",
             "required": false,
-            "type": "[]object"
+            "type": "[]object",
+            "typeName": "ConfigSourceProfileEntry"
           },
           {
             "description": "Flat list of published profile names. Superseded by `profile_details` when that list is non-empty.",
@@ -3829,7 +4191,8 @@
         "description": "Profiles and modules this source publishes.",
         "name": "provides",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "ConfigSourceProvides"
       }
     ],
     "kind": "ConfigSource",
@@ -3839,6 +4202,7 @@
   {
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "The root cfgd configuration: active profile, sources, daemon, theme.",
+    "docs": "docs/spec/config.md#fields",
     "fields": [
       {
         "children": [
@@ -3864,7 +4228,8 @@
         "description": "AI assistant configuration: provider, model, and API key env var.",
         "name": "ai",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "AiConfig"
       },
       {
         "description": "CLI aliases: map of alias name → command string. Built-in defaults (add, remove) can be overridden or extended.",
@@ -3884,9 +4249,14 @@
             "children": [
               {
                 "description": "Export file format. Default: `Json`.",
+                "enum": [
+                  "Json",
+                  "Yaml"
+                ],
                 "name": "format",
                 "required": false,
-                "type": "string"
+                "type": "string",
+                "typeName": "ComplianceFormat"
               },
               {
                 "description": "Directory a snapshot file is written into. Default: `~/.local/state/cfgd/compliance/`.",
@@ -3898,7 +4268,8 @@
             "description": "Where and in what format a snapshot is exported.",
             "name": "export",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "ComplianceExport"
           },
           {
             "description": "How often a snapshot is taken, as a duration string. Default: `1h`.",
@@ -3954,13 +4325,15 @@
             "description": "Which surfaces a snapshot covers.",
             "name": "scope",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "ComplianceScope"
           }
         ],
-        "description": "Compliance snapshot configuration.",
+        "description": "Periodic snapshots of machine state, for drift history and audit. Omitted, no snapshots are taken and `cfgd compliance` reports only what it collects on the spot.",
         "name": "compliance",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "ComplianceConfig"
       },
       {
         "children": [
@@ -3980,9 +4353,15 @@
               },
               {
                 "description": "Where a drift notification is delivered. Default: `Desktop`.",
+                "enum": [
+                  "Desktop",
+                  "Stdout",
+                  "Webhook"
+                ],
                 "name": "method",
                 "required": false,
-                "type": "string"
+                "type": "string",
+                "typeName": "NotifyMethod"
               },
               {
                 "description": "Webhook URL to POST to when `method` is `Webhook`. Required only for that method.",
@@ -3994,7 +4373,8 @@
             "description": "How the daemon reports detected drift.",
             "name": "notify",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "NotifyConfig"
           },
           {
             "children": [
@@ -4006,9 +4386,15 @@
               },
               {
                 "description": "Policy for daemon auto-reconciliation of detected drift. `Auto` = silently apply (must opt-in), `NotifyOnly` = notify but don't apply (safe default), `Prompt` = future interactive approval.",
+                "enum": [
+                  "Auto",
+                  "NotifyOnly",
+                  "Prompt"
+                ],
                 "name": "driftPolicy",
                 "required": false,
-                "type": "string"
+                "type": "string",
+                "typeName": "DriftPolicy"
               },
               {
                 "description": "How often the daemon checks for drift, as a duration string. Default: `5m`.",
@@ -4032,9 +4418,15 @@
                   },
                   {
                     "description": "Overrides the global `drift_policy` for the targeted entity.",
+                    "enum": [
+                      "Auto",
+                      "NotifyOnly",
+                      "Prompt"
+                    ],
                     "name": "driftPolicy",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "DriftPolicy"
                   },
                   {
                     "description": "Overrides the global reconcile interval for the targeted entity.",
@@ -4052,39 +4444,63 @@
                 "description": "Per-module or per-profile reconcile overrides (kustomize-style patches). Each patch targets a specific Module or Profile by name and overrides individual reconcile fields. Precedence: Module patch > Profile patch > global.",
                 "name": "patches",
                 "required": false,
-                "type": "[]object"
+                "type": "[]object",
+                "typeName": "ReconcilePatch"
               },
               {
                 "children": [
                   {
                     "description": "Action when a source's recommendation conflicts with a locked version. Default: `Notify`.",
+                    "enum": [
+                      "Notify",
+                      "Accept",
+                      "Reject",
+                      "Ignore"
+                    ],
                     "name": "lockedConflict",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "PolicyAction"
                   },
                   {
                     "description": "Action for a newly available optional module. Default: `Ignore`.",
+                    "enum": [
+                      "Notify",
+                      "Accept",
+                      "Reject",
+                      "Ignore"
+                    ],
                     "name": "newOptional",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "PolicyAction"
                   },
                   {
                     "description": "Action for a newly recommended module. Default: `Notify`.",
+                    "enum": [
+                      "Notify",
+                      "Accept",
+                      "Reject",
+                      "Ignore"
+                    ],
                     "name": "newRecommended",
                     "required": false,
-                    "type": "string"
+                    "type": "string",
+                    "typeName": "PolicyAction"
                   }
                 ],
                 "description": "Auto-apply decisions for new/changed module recommendations.",
                 "name": "policy",
                 "required": false,
-                "type": "object"
+                "type": "object",
+                "typeName": "AutoApplyPolicyConfig"
               }
             ],
-            "description": "Drift-detection and auto-apply settings.",
+            "description": "How often the daemon looks for drift and what it does when it finds some. Omitted, the daemon reconciles on the built-in defaults: every `5m`, notifying rather than applying.",
             "name": "reconcile",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "ReconcileConfig"
           },
           {
             "children": [
@@ -4107,10 +4523,11 @@
                 "type": "string"
               }
             ],
-            "description": "Automatic git push/pull settings.",
+            "description": "Whether the daemon keeps the config directory in step with its git remote, and how often. Omitted, the daemon never touches git and every pull or push stays a manual `cfgd sync`.",
             "name": "sync",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "SyncConfig"
           },
           {
             "description": "Mirror daemon log output into the Windows Event Log under the `cfgd` source, in addition to the default file appender at `%LOCALAPPDATA%\\cfgd\\daemon.log`. No effect on Unix. Read by `cfgd daemon install` to bake `--enable-event-log` into the service binPath; changes require reinstalling the service to take effect.",
@@ -4119,13 +4536,20 @@
             "type": "boolean"
           }
         ],
-        "description": "Background reconcile-daemon settings.",
+        "description": "The background daemon that watches for drift between reconciles. Omitted, no daemon runs and every reconcile is an explicit `cfgd apply`.",
         "name": "daemon",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "DaemonConfig"
       },
       {
         "description": "Global default file deployment strategy. Per-file overrides take precedence. `Patch` is rejected here: it is defined by a per-file `patch:` block, which a file inheriting the global default cannot have.",
+        "enum": [
+          "Symlink",
+          "Copy",
+          "Template",
+          "Hardlink"
+        ],
         "name": "fileStrategy",
         "required": false,
         "type": "string"
@@ -4150,7 +4574,8 @@
             "description": "Module registries — git repos containing modules in a prescribed directory structure.",
             "name": "registries",
             "required": false,
-            "type": "[]object"
+            "type": "[]object",
+            "typeName": "ModuleRegistryEntry"
           },
           {
             "children": [
@@ -4161,16 +4586,18 @@
                 "type": "boolean"
               }
             ],
-            "description": "Module security settings.",
+            "description": "Signature requirements for modules pulled from these registries. Omitted, signatures are not required and an unsigned module tag is accepted.",
             "name": "security",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "ModuleSecurityConfig"
           }
         ],
         "description": "Module configuration: registries and security.",
         "name": "modules",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "ModulesConfig"
       },
       {
         "children": [
@@ -4188,15 +4615,26 @@
           },
           {
             "description": "SSH `StrictHostKeyChecking` policy for git operations. `AcceptNew` (default): accept first-seen keys, reject changed keys. `Yes`: require keys to already exist in known_hosts (high-security). `No`: accept any key (insecure, not recommended).",
+            "enum": [
+              "AcceptNew",
+              "Yes",
+              "No"
+            ],
             "name": "sshStrictHostKeyChecking",
             "required": false,
-            "type": "string"
+            "type": "string",
+            "typeName": "SshHostKeyPolicy"
           },
           {
             "description": "Kind of origin: `Git` (a git remote) or `Server` (the device gateway).",
+            "enum": [
+              "Git",
+              "Server"
+            ],
             "name": "type",
             "required": true,
-            "type": "string"
+            "type": "string",
+            "typeName": "OriginType"
           },
           {
             "description": "The origin's URL (a git remote, or the gateway's base URL).",
@@ -4208,7 +4646,8 @@
         "description": "Git origins this config's changes may be pushed to / pulled from.",
         "name": "origin",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "OriginSpec"
       },
       {
         "description": "Name of the active `ProfileSpec` to reconcile against.",
@@ -4236,7 +4675,8 @@
             "description": "Named backend integrations a `${secret:<name>:<ref>}` reference can select.",
             "name": "integrations",
             "required": false,
-            "type": "[]object"
+            "type": "[]object",
+            "typeName": "SecretIntegration"
           },
           {
             "children": [
@@ -4250,13 +4690,15 @@
             "description": "sops-specific settings, used when `backend` is `sops`.",
             "name": "sops",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "SopsConfig"
           }
         ],
-        "description": "Default secret backend and integrations.",
+        "description": "Which backend resolves a `${secret:…}` reference, and how it is reached. Omitted, no backend is configured and a declared secret reference fails to resolve.",
         "name": "secrets",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "SecretsConfig"
       },
       {
         "children": [
@@ -4270,7 +4712,8 @@
         "description": "Security settings for source signature verification.",
         "name": "security",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "SecurityConfig"
       },
       {
         "children": [
@@ -4296,15 +4739,26 @@
               },
               {
                 "description": "SSH `StrictHostKeyChecking` policy for git operations. `AcceptNew` (default): accept first-seen keys, reject changed keys. `Yes`: require keys to already exist in known_hosts (high-security). `No`: accept any key (insecure, not recommended).",
+                "enum": [
+                  "AcceptNew",
+                  "Yes",
+                  "No"
+                ],
                 "name": "sshStrictHostKeyChecking",
                 "required": false,
-                "type": "string"
+                "type": "string",
+                "typeName": "SshHostKeyPolicy"
               },
               {
                 "description": "Kind of origin: `Git` (a git remote) or `Server` (the device gateway).",
+                "enum": [
+                  "Git",
+                  "Server"
+                ],
                 "name": "type",
                 "required": true,
-                "type": "string"
+                "type": "string",
+                "typeName": "OriginType"
               },
               {
                 "description": "The origin's URL (a git remote, or the gateway's base URL).",
@@ -4316,7 +4770,8 @@
             "description": "Where the source's manifest is fetched from.",
             "name": "origin",
             "required": true,
-            "type": "object"
+            "type": "object",
+            "typeName": "OriginSpec"
           },
           {
             "children": [
@@ -4372,7 +4827,8 @@
             "description": "What this machine accepts from the source and how it applies.",
             "name": "subscription",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "SubscriptionSpec"
           },
           {
             "children": [
@@ -4404,13 +4860,15 @@
             "description": "How often and under what conditions the source is refreshed.",
             "name": "sync",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "SourceSyncSpec"
           }
         ],
         "description": "Additional config sources this machine subscribes to.",
         "name": "sources",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "SourceSpec"
       },
       {
         "children": [
@@ -4552,13 +5010,15 @@
             "description": "Per-color and per-icon overrides applied on top of the named preset.",
             "name": "overrides",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "ThemeOverrides"
           }
         ],
-        "description": "Output theme (preset + overrides).",
+        "description": "Colours and glyphs cfgd renders with: a named preset (`default`, `dracula`, `solarized-dark`, `solarized-light`, `minimal`) plus per-slot overrides. Omitted, the `default` preset applies.",
         "name": "theme",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "ThemeConfig"
       },
       {
         "children": [
@@ -4576,29 +5036,46 @@
           },
           {
             "description": "How update checks for the cfgd binary behave. Defaults to `Prompt`.",
+            "enum": [
+              "Auto",
+              "Prompt",
+              "Notify",
+              "Manual"
+            ],
             "name": "policy",
             "required": false,
-            "type": "string"
+            "type": "string",
+            "typeName": "UpdatePolicy"
           },
           {
             "children": [
               {
                 "description": "How skill update checks behave. Defaults to `Inherit` (defer to the binary-level policy).",
+                "enum": [
+                  "Inherit",
+                  "Auto",
+                  "Prompt",
+                  "Notify",
+                  "Manual"
+                ],
                 "name": "policy",
                 "required": false,
-                "type": "string"
+                "type": "string",
+                "typeName": "SkillUpdatePolicy"
               }
             ],
             "description": "Update policy for authored skills. Defaults to inheriting `policy`.",
             "name": "skills",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "SkillUpdateConfig"
           }
         ],
         "description": "Update policy for the cfgd binary and authored skills.",
         "name": "update",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "UpdateConfig"
       }
     ],
     "kind": "Config",
@@ -4608,41 +5085,43 @@
   {
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "Per-machine desired state reconciled by the cfgd operator.",
+    "docs": "docs/spec/machineconfig.md#fields",
     "fields": [
       {
         "children": [
           {
-            "description": "",
+            "description": "Literal file body, written as-is. Mutually exclusive with `source`.",
             "name": "content",
             "required": false,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Octal permission bits applied after the write. Default: `0644`.",
             "name": "mode",
             "required": false,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Destination path on the machine. A leading `~` expands to the home directory of the user the agent runs as.",
             "name": "path",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Path the body is read from instead of `content`, resolved against the machine's config directory.",
             "name": "source",
             "required": false,
             "type": "string"
           }
         ],
-        "description": "",
+        "description": "Files to write on the machine, either inline or fetched from a source path.",
         "name": "files",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "FileSpec"
       },
       {
-        "description": "",
+        "description": "Hostname of the machine this document describes. The agent reconciles only the MachineConfig whose hostname matches its own.",
         "name": "hostname",
         "required": true,
         "type": "string"
@@ -4650,51 +5129,53 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Name of the cluster-scoped `Module` resource to install.",
             "name": "name",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Whether a failure to resolve or install this module fails the whole reconcile. Default: `false`, so a missing module is reported and the rest of the machine still converges.",
             "name": "required",
             "required": false,
             "type": "boolean"
           }
         ],
-        "description": "",
+        "description": "Modules to install on the machine, each naming a cluster-scoped `Module` resource.",
         "name": "moduleRefs",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "ModuleRef"
       },
       {
         "children": [
           {
-            "description": "",
+            "description": "Package name as the machine's own package manager knows it.",
             "name": "name",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Exact version to pin to. Omitted, whatever the manager currently offers is installed and left alone once present.",
             "name": "version",
             "required": false,
             "type": "string"
           }
         ],
-        "description": "",
+        "description": "Packages to install on top of whatever the profile declares, each optionally version-pinned.",
         "name": "packages",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "PackageRef"
       },
       {
-        "description": "",
+        "description": "Name of the profile the machine reconciles against. Resolved on the machine, from its own config directory or from a subscribed source.",
         "name": "profile",
         "required": true,
         "type": "string"
       },
       {
-        "description": "",
+        "description": "System configurator settings to apply, keyed by `<configurator>.<setting>` (e.g. `sysctl.net.ipv4.ip_forward`). Empty, no system settings are reconciled.",
         "name": "systemSettings",
         "required": false,
         "type": "object"
@@ -4707,17 +5188,18 @@
   {
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "Namespace-scoped policy of required modules, packages, and settings.",
+    "docs": "docs/spec/configpolicy.md#fields",
     "fields": [
       {
         "children": [
           {
-            "description": "",
+            "description": "Name of the cluster-scoped `Module` resource to install.",
             "name": "name",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Whether a failure to resolve or install this module fails the whole reconcile. Default: `false`, so a missing module is reported and the rest of the machine still converges.",
             "name": "required",
             "required": false,
             "type": "boolean"
@@ -4726,50 +5208,53 @@
         "description": "Modules staged as debug-only (CSI volume without volumeMount on declared containers).",
         "name": "debugModules",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "ModuleRef"
       },
       {
         "children": [
           {
-            "description": "",
+            "description": "Package name as the machine's own package manager knows it.",
             "name": "name",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Exact version to pin to. Omitted, whatever the manager currently offers is installed and left alone once present.",
             "name": "version",
             "required": false,
             "type": "string"
           }
         ],
-        "description": "",
+        "description": "Packages every selected MachineConfig must declare, each optionally version-pinned.",
         "name": "packages",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "PackageRef"
       },
       {
         "children": [
           {
-            "description": "",
+            "description": "Name of the cluster-scoped `Module` resource to install.",
             "name": "name",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Whether a failure to resolve or install this module fails the whole reconcile. Default: `false`, so a missing module is reported and the rest of the machine still converges.",
             "name": "required",
             "required": false,
             "type": "boolean"
           }
         ],
-        "description": "",
+        "description": "Modules every selected MachineConfig must carry. A machine missing one is counted non-compliant.",
         "name": "requiredModules",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "ModuleRef"
       },
       {
-        "description": "",
+        "description": "System settings every selected MachineConfig must declare, keyed the same way as `MachineConfig.spec.systemSettings`.",
         "name": "settings",
         "required": false,
         "type": "object"
@@ -4779,40 +5264,49 @@
           {
             "children": [
               {
-                "description": "",
+                "description": "Label key this requirement tests.",
                 "name": "key",
                 "required": true,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "How `values` is compared against the key: `In`, `NotIn`, `Exists`, or `DoesNotExist`.",
+                "enum": [
+                  "In",
+                  "NotIn",
+                  "Exists",
+                  "DoesNotExist"
+                ],
                 "name": "operator",
                 "required": true,
-                "type": "string"
+                "type": "string",
+                "typeName": "SelectorOperator"
               },
               {
-                "description": "",
+                "description": "Values the key is tested against. Required for `In` and `NotIn`, and must be empty for `Exists` and `DoesNotExist`.",
                 "name": "values",
                 "required": false,
                 "type": "[]string"
               }
             ],
-            "description": "",
+            "description": "Set-based requirements a resource must satisfy, evaluated alongside `matchLabels`. Every requirement must hold.",
             "name": "matchExpressions",
             "required": false,
-            "type": "[]object"
+            "type": "[]object",
+            "typeName": "LabelSelectorRequirement"
           },
           {
-            "description": "",
+            "description": "Labels a resource must carry verbatim to match. Every entry must match; an empty map matches everything.",
             "name": "matchLabels",
             "required": false,
             "type": "object"
           }
         ],
-        "description": "Kubernetes-style label selector with match_labels and match_expressions.",
+        "description": "Which MachineConfigs in this namespace the policy applies to. Empty, it applies to all of them.",
         "name": "targetSelector",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "LabelSelector"
       }
     ],
     "kind": "ConfigPolicy",
@@ -4822,17 +5316,18 @@
   {
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "Cluster-scoped policy fanned out across selected namespaces.",
+    "docs": "docs/spec/clusterconfigpolicy.md#fields",
     "fields": [
       {
         "children": [
           {
-            "description": "",
+            "description": "Name of the cluster-scoped `Module` resource to install.",
             "name": "name",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Whether a failure to resolve or install this module fails the whole reconcile. Default: `false`, so a missing module is reported and the rest of the machine still converges.",
             "name": "required",
             "required": false,
             "type": "boolean"
@@ -4841,110 +5336,123 @@
         "description": "Modules staged as debug-only across matching namespaces.",
         "name": "debugModules",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "ModuleRef"
       },
       {
         "children": [
           {
             "children": [
               {
-                "description": "",
+                "description": "Label key this requirement tests.",
                 "name": "key",
                 "required": true,
                 "type": "string"
               },
               {
-                "description": "",
+                "description": "How `values` is compared against the key: `In`, `NotIn`, `Exists`, or `DoesNotExist`.",
+                "enum": [
+                  "In",
+                  "NotIn",
+                  "Exists",
+                  "DoesNotExist"
+                ],
                 "name": "operator",
                 "required": true,
-                "type": "string"
+                "type": "string",
+                "typeName": "SelectorOperator"
               },
               {
-                "description": "",
+                "description": "Values the key is tested against. Required for `In` and `NotIn`, and must be empty for `Exists` and `DoesNotExist`.",
                 "name": "values",
                 "required": false,
                 "type": "[]string"
               }
             ],
-            "description": "",
+            "description": "Set-based requirements a resource must satisfy, evaluated alongside `matchLabels`. Every requirement must hold.",
             "name": "matchExpressions",
             "required": false,
-            "type": "[]object"
+            "type": "[]object",
+            "typeName": "LabelSelectorRequirement"
           },
           {
-            "description": "",
+            "description": "Labels a resource must carry verbatim to match. Every entry must match; an empty map matches everything.",
             "name": "matchLabels",
             "required": false,
             "type": "object"
           }
         ],
-        "description": "Select which namespaces this cluster policy applies to.",
+        "description": "Select which namespaces this cluster policy applies to. Empty, it applies to every namespace in the cluster.",
         "name": "namespaceSelector",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "LabelSelector"
       },
       {
         "children": [
           {
-            "description": "",
+            "description": "Package name as the machine's own package manager knows it.",
             "name": "name",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Exact version to pin to. Omitted, whatever the manager currently offers is installed and left alone once present.",
             "name": "version",
             "required": false,
             "type": "string"
           }
         ],
-        "description": "",
+        "description": "Packages every MachineConfig in a selected namespace must declare.",
         "name": "packages",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "PackageRef"
       },
       {
         "children": [
           {
-            "description": "",
+            "description": "Name of the cluster-scoped `Module` resource to install.",
             "name": "name",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Whether a failure to resolve or install this module fails the whole reconcile. Default: `false`, so a missing module is reported and the rest of the machine still converges.",
             "name": "required",
             "required": false,
             "type": "boolean"
           }
         ],
-        "description": "",
+        "description": "Modules every MachineConfig in a selected namespace must carry.",
         "name": "requiredModules",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "ModuleRef"
       },
       {
         "children": [
           {
-            "description": "",
+            "description": "Whether a module carrying an unsigned OCI artifact may be admitted. Default: `false` — creating any ClusterConfigPolicy at all starts rejecting unsigned modules.",
             "name": "allowUnsigned",
             "required": false,
             "type": "boolean"
           },
           {
-            "description": "",
+            "description": "Registry prefixes a module artifact may be pulled from; a trailing `*` or `/` widens the match. Empty, any registry is accepted.",
             "name": "trustedRegistries",
             "required": false,
             "type": "[]string"
           }
         ],
-        "description": "",
+        "description": "Cluster-wide rules governing which modules may be admitted at all.",
         "name": "security",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "SecurityPolicy"
       },
       {
-        "description": "",
+        "description": "System settings every MachineConfig in a selected namespace must declare, keyed the same way as `MachineConfig.spec.systemSettings`.",
         "name": "settings",
         "required": false,
         "type": "object"
@@ -4957,9 +5465,10 @@
   {
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "A recorded drift event between desired and observed machine state.",
+    "docs": "docs/spec/driftalert.md#fields",
     "fields": [
       {
-        "description": "",
+        "description": "Identifier of the device that reported the drift, as it enrolled.",
         "name": "deviceId",
         "required": true,
         "type": "string"
@@ -4967,54 +5476,63 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "The value the device actually reported.",
             "name": "actual",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "The value the MachineConfig declares.",
             "name": "expected",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Resource id of the field that diverged (e.g. `system:sysctl.net.ipv4.ip_forward`).",
             "name": "field",
             "required": true,
             "type": "string"
           }
         ],
-        "description": "",
+        "description": "One entry per diverging field, each carrying what was expected and what was found.",
         "name": "driftDetails",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "DriftDetail"
       },
       {
         "children": [
           {
-            "description": "",
+            "description": "Name of the referenced MachineConfig.",
             "name": "name",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Namespace the MachineConfig lives in. Omitted, the referring resource's own namespace is used.",
             "name": "namespace",
             "required": false,
             "type": "string"
           }
         ],
-        "description": "Typed reference to a MachineConfig resource.",
+        "description": "The MachineConfig whose desired state the device diverged from.",
         "name": "machineConfigRef",
         "required": true,
-        "type": "object"
+        "type": "object",
+        "typeName": "MachineConfigReference"
       },
       {
-        "description": "",
+        "description": "How serious the divergence is: `Low`, `Medium`, `High`, or `Critical`. Drives alert routing rather than any automatic remediation.",
+        "enum": [
+          "Low",
+          "Medium",
+          "High",
+          "Critical"
+        ],
         "name": "severity",
         "required": true,
-        "type": "string"
+        "type": "string",
+        "typeName": "DriftSeverity"
       }
     ],
     "kind": "DriftAlert",
@@ -5024,9 +5542,10 @@
   {
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "Cluster-side Module CRD: an OCI-packaged module injected via CSI.",
+    "docs": "docs/operator.md#pod-module-injection",
     "fields": [
       {
-        "description": "",
+        "description": "Names of other `Module` resources that must be applied first.",
         "name": "depends",
         "required": false,
         "type": "[]string"
@@ -5034,57 +5553,64 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Append to the variable's existing value with the platform's path separator instead of replacing it. Default: `false`.",
             "name": "append",
             "required": false,
             "type": "boolean"
           },
           {
-            "description": "",
+            "description": "Variable name, as exported into the container or shell environment.",
             "name": "name",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Value assigned to the variable.",
             "name": "value",
             "required": true,
             "type": "string"
           }
         ],
-        "description": "",
+        "description": "Environment variables this module contributes to containers that mount it.",
         "name": "env",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "ModuleEnvVar"
       },
       {
         "children": [
           {
-            "description": "",
+            "description": "Path to the file inside the module artifact.",
             "name": "source",
             "required": true,
             "type": "string"
           },
           {
-            "description": "",
+            "description": "Destination path the file is deployed to inside the pod or on the machine.",
             "name": "target",
             "required": true,
             "type": "string"
           }
         ],
-        "description": "",
+        "description": "Files this module deploys out of its artifact.",
         "name": "files",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "ModuleFileSpec"
       },
       {
         "description": "Controls how the module is mounted in pods. `Always` (default): CSI volume + volumeMount on all declared containers + env vars. `Debug`: CSI volume only — no volumeMount or env on declared containers. Only accessible via ephemeral debug containers (`kubectl cfgd debug`).",
+        "enum": [
+          "Always",
+          "Debug"
+        ],
         "name": "mountPolicy",
         "required": false,
-        "type": "string"
+        "type": "string",
+        "typeName": "MountPolicy"
       },
       {
-        "description": "",
+        "description": "OCI reference the module's content is pulled from (`ghcr.io/acme/nvim:1.2.0`). Omitted, the module carries its content inline and nothing is fetched.",
         "name": "ociArtifact",
         "required": false,
         "type": "string"
@@ -5092,7 +5618,7 @@
       {
         "children": [
           {
-            "description": "",
+            "description": "Default package name, used on every platform with no override below.",
             "name": "name",
             "required": true,
             "type": "string"
@@ -5104,24 +5630,26 @@
             "type": "object"
           }
         ],
-        "description": "",
+        "description": "Packages this module installs, each with optional per-platform name overrides.",
         "name": "packages",
         "required": false,
-        "type": "[]object"
+        "type": "[]object",
+        "typeName": "PackageEntry"
       },
       {
         "children": [
           {
-            "description": "",
+            "description": "Command run once after the module's files and packages are in place. Omitted, nothing runs.",
             "name": "postApply",
             "required": false,
             "type": "string"
           }
         ],
-        "description": "Scripts that run during module lifecycle.",
+        "description": "Lifecycle commands run around the module's deployment.",
         "name": "scripts",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "ModuleScripts"
       },
       {
         "children": [
@@ -5152,16 +5680,18 @@
                 "type": "string"
               }
             ],
-            "description": "Cosign configuration for OCI artifact signature verification.",
+            "description": "How the artifact's cosign signature is verified. Omitted, no signature is required of this module.",
             "name": "cosign",
             "required": false,
-            "type": "object"
+            "type": "object",
+            "typeName": "CosignSignature"
           }
         ],
-        "description": "Signature configuration for a Module's OCI artifact.",
+        "description": "How the artifact's provenance is verified before it is admitted. Omitted, verification is governed by the cluster policy alone.",
         "name": "signature",
         "required": false,
-        "type": "object"
+        "type": "object",
+        "typeName": "ModuleSignature"
       }
     ],
     "kind": "Module",
@@ -5171,15 +5701,16 @@
   {
     "apiVersion": "cfgd.io/v1alpha1",
     "description": "Crossplane composite resource for team-level configuration. Fans out to per-user MachineConfig CRDs via composition function.",
+    "docs": "docs/spec/teamconfig.md#fields",
     "fields": [
       {
-        "description": "Team name",
+        "description": "Name of the team this document configures. Used as the prefix of every MachineConfig the composition generates, so it must be a valid DNS label.",
         "name": "team",
         "required": true,
         "type": "string"
       },
       {
-        "description": "Default profile for team members",
+        "description": "Profile every member inherits unless their own entry overrides it. Omitted, each generated MachineConfig carries no profile and the machine keeps whichever profile it already has active.",
         "name": "profile",
         "required": false,
         "type": "string"
@@ -5187,19 +5718,19 @@
       {
         "children": [
           {
-            "description": "Git URL of the team config repo",
+            "description": "Clone URL of the team config repository, in any form git accepts (HTTPS or SSH).",
             "name": "url",
             "required": true,
             "type": "string"
           },
           {
-            "description": "Git branch (default: master)",
+            "description": "Branch to track. Defaults to the repository's own default branch.",
             "name": "branch",
             "required": false,
             "type": "string"
           }
         ],
-        "description": "Team config source",
+        "description": "Git repository the team's modules and profiles are pulled from. Omitted, members supply their own sources.",
         "name": "source",
         "required": false,
         "type": "object"
@@ -5207,7 +5738,7 @@
       {
         "children": [
           {
-            "description": "Module name",
+            "description": "Module name, matching the directory under `modules/` in the source repository.",
             "name": "name",
             "required": true,
             "type": "string"
@@ -5215,25 +5746,25 @@
           {
             "children": [
               {
-                "description": "Git URL",
+                "description": "Clone URL of the repository holding the module.",
                 "name": "url",
                 "required": true,
                 "type": "string"
               },
               {
-                "description": "Git ref (tag/commit)",
+                "description": "Tag, branch, or commit to pin the module at. Omitted, the repository's default branch is tracked and the module follows it.",
                 "name": "ref",
                 "required": false,
                 "type": "string"
               }
             ],
-            "description": "Remote module source reference",
+            "description": "Repository this module is fetched from, when it does not live in the team's own source. Omitted, the module resolves against `spec.source`.",
             "name": "sourceRef",
             "required": false,
             "type": "object"
           }
         ],
-        "description": "Modules for the team",
+        "description": "Modules delivered to every member of the team. Each entry becomes a module reference on every generated MachineConfig.",
         "name": "modules",
         "required": false,
         "type": "[]object"
@@ -5241,37 +5772,37 @@
       {
         "children": [
           {
-            "description": "Required configuration items",
+            "description": "Configuration keys every member must carry, as a mapping of key to required value. A member whose machine disagrees is reported as non-compliant.",
             "name": "required",
             "required": false,
             "type": "object"
           },
           {
-            "description": "Recommended configuration items",
+            "description": "Configuration keys members are advised to carry, in the same mapping shape as `required`. Reported but never enforced.",
             "name": "recommended",
             "required": false,
             "type": "object"
           },
           {
-            "description": "Locked (non-overridable) items",
+            "description": "Configuration keys members may not override, as a mapping of key to the value the team pins. A local override of a locked key is rejected.",
             "name": "locked",
             "required": false,
             "type": "object"
           },
           {
-            "description": "Modules that must be installed",
+            "description": "Modules that must be installed on every member machine. A missing one is a compliance failure.",
             "name": "requiredModules",
             "required": false,
             "type": "[]string"
           },
           {
-            "description": "Modules that are recommended",
+            "description": "Modules members are advised to install. Surfaced in compliance reports without failing them.",
             "name": "recommendedModules",
             "required": false,
             "type": "[]string"
           }
         ],
-        "description": "Team policy settings",
+        "description": "What the team mandates, suggests, and forbids members from changing. Enforced by the generated ConfigPolicy.",
         "name": "policy",
         "required": false,
         "type": "object"
@@ -5279,31 +5810,31 @@
       {
         "children": [
           {
-            "description": "Username",
+            "description": "Login the member's machine enrolls as. Becomes the name of the generated MachineConfig.",
             "name": "username",
             "required": true,
             "type": "string"
           },
           {
-            "description": "SSH public key for enrollment",
+            "description": "Public key the member's enrollment request is verified against. Omitted, the member enrolls through the device-flow instead.",
             "name": "sshPublicKey",
             "required": false,
             "type": "string"
           },
           {
-            "description": "Profile override for this member",
+            "description": "Profile for this member, overriding the team-wide `spec.profile`.",
             "name": "profile",
             "required": false,
             "type": "string"
           },
           {
-            "description": "Hostname override",
+            "description": "Hostname to reconcile this member's machine as, when it differs from the machine's own.",
             "name": "hostname",
             "required": false,
             "type": "string"
           }
         ],
-        "description": "Team members",
+        "description": "The people on the team. One MachineConfig is generated per entry.",
         "name": "members",
         "required": false,
         "type": "[]object"

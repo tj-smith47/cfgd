@@ -2,14 +2,18 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "definitions": {
     "DriftDetail": {
+      "description": "One diverging field in a drift report.",
       "properties": {
         "actual": {
+          "description": "The value the device actually reported.",
           "type": "string"
         },
         "expected": {
+          "description": "The value the MachineConfig declares.",
           "type": "string"
         },
         "field": {
+          "description": "Resource id of the field that diverged (e.g. `system:sysctl.net.ipv4.ip_forward`).",
           "type": "string"
         }
       },
@@ -33,9 +37,11 @@
       "description": "Typed reference to a MachineConfig resource.",
       "properties": {
         "name": {
+          "description": "Name of the referenced MachineConfig.",
           "type": "string"
         },
         "namespace": {
+          "description": "Namespace the MachineConfig lives in. Omitted, the referring resource's own namespace is used.",
           "type": [
             "string",
             "null"
@@ -50,20 +56,24 @@
   },
   "properties": {
     "deviceId": {
+      "description": "Identifier of the device that reported the drift, as it enrolled.",
       "type": "string"
     },
     "driftDetails": {
       "default": [],
+      "description": "One entry per diverging field, each carrying what was expected and what was found.",
       "items": {
         "$ref": "#/definitions/DriftDetail"
       },
       "type": "array"
     },
     "machineConfigRef": {
-      "$ref": "#/definitions/MachineConfigReference"
+      "$ref": "#/definitions/MachineConfigReference",
+      "description": "The MachineConfig whose desired state the device diverged from."
     },
     "severity": {
-      "$ref": "#/definitions/DriftSeverity"
+      "$ref": "#/definitions/DriftSeverity",
+      "description": "How serious the divergence is: `Low`, `Medium`, `High`, or `Critical`. Drives alert routing rather than any automatic remediation."
     }
   },
   "required": [

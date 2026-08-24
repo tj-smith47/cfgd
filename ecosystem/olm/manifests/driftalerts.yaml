@@ -35,16 +35,26 @@ spec:
           spec:
             properties:
               deviceId:
+                description: Identifier of the device that reported the drift, as it enrolled.
                 type: string
               driftDetails:
                 default: []
+                description: |-
+                  One entry per diverging field, each carrying what was expected and what
+                  was found.
                 items:
+                  description: One diverging field in a drift report.
                   properties:
                     actual:
+                      description: The value the device actually reported.
                       type: string
                     expected:
+                      description: The value the MachineConfig declares.
                       type: string
                     field:
+                      description: |-
+                        Resource id of the field that diverged (e.g.
+                        `system:sysctl.net.ipv4.ip_forward`).
                       type: string
                   required:
                   - actual
@@ -56,17 +66,24 @@ spec:
                 - field
                 x-kubernetes-list-type: map
               machineConfigRef:
-                description: Typed reference to a MachineConfig resource.
+                description: The MachineConfig whose desired state the device diverged from.
                 properties:
                   name:
+                    description: Name of the referenced MachineConfig.
                     type: string
                   namespace:
+                    description: |-
+                      Namespace the MachineConfig lives in. Omitted, the referring
+                      resource's own namespace is used.
                     nullable: true
                     type: string
                 required:
                 - name
                 type: object
               severity:
+                description: |-
+                  How serious the divergence is: `Low`, `Medium`, `High`, or `Critical`.
+                  Drives alert routing rather than any automatic remediation.
                 enum:
                 - Low
                 - Medium

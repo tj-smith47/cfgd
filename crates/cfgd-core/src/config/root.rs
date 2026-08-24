@@ -35,7 +35,8 @@ pub struct CfgdConfig {
     pub kind: String,
     /// Identifying metadata for this config document.
     pub metadata: ConfigMetadata,
-    /// The declared configuration.
+    /// The body of the document: everything cfgd reads to decide what this
+    /// machine should look like.
     pub spec: ConfigSpec,
     /// Deprecation messages collected while parsing (e.g. legacy `theme.overrides.*`
     /// keys). Not part of the schema: never serialized, never compared. A command
@@ -100,11 +101,15 @@ pub struct ConfigSpec {
     #[serde(default)]
     pub origin: Vec<OriginSpec>,
 
-    /// Background reconcile-daemon settings.
+    /// The background daemon that watches for drift between reconciles.
+    /// Omitted, no daemon runs and every reconcile is an explicit
+    /// `cfgd apply`.
     #[serde(default)]
     pub daemon: Option<DaemonConfig>,
 
-    /// Default secret backend and integrations.
+    /// Which backend resolves a `${secret:…}` reference, and how it is
+    /// reached. Omitted, no backend is configured and a declared secret
+    /// reference fails to resolve.
     #[serde(default)]
     pub secrets: Option<SecretsConfig>,
 
@@ -112,7 +117,9 @@ pub struct ConfigSpec {
     #[serde(default)]
     pub sources: Vec<SourceSpec>,
 
-    /// Output theme (preset + overrides).
+    /// Colours and glyphs cfgd renders with: a named preset (`default`,
+    /// `dracula`, `solarized-dark`, `solarized-light`, `minimal`) plus
+    /// per-slot overrides. Omitted, the `default` preset applies.
     #[serde(default)]
     pub theme: Option<ThemeConfig>,
 
@@ -141,7 +148,9 @@ pub struct ConfigSpec {
     #[serde(default)]
     pub ai: Option<AiConfig>,
 
-    /// Compliance snapshot configuration.
+    /// Periodic snapshots of machine state, for drift history and audit.
+    /// Omitted, no snapshots are taken and `cfgd compliance` reports only
+    /// what it collects on the spot.
     #[serde(default)]
     pub compliance: Option<ComplianceConfig>,
 

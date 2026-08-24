@@ -52,14 +52,27 @@ pub const MAX_NON_COMPLIANT_MACHINES: usize = 500;
 )]
 #[serde(rename_all = "camelCase")]
 pub struct MachineConfigSpec {
+    /// Hostname of the machine this document describes. The agent reconciles
+    /// only the MachineConfig whose hostname matches its own.
     pub hostname: String,
+    /// Name of the profile the machine reconciles against. Resolved on the
+    /// machine, from its own config directory or from a subscribed source.
     pub profile: String,
+    /// Modules to install on the machine, each naming a cluster-scoped
+    /// `Module` resource.
     #[serde(default)]
     pub module_refs: Vec<ModuleRef>,
+    /// Packages to install on top of whatever the profile declares, each
+    /// optionally version-pinned.
     #[serde(default)]
     pub packages: Vec<PackageRef>,
+    /// Files to write on the machine, either inline or fetched from a source
+    /// path.
     #[serde(default)]
     pub files: Vec<FileSpec>,
+    /// System configurator settings to apply, keyed by
+    /// `<configurator>.<setting>` (e.g. `sysctl.net.ipv4.ip_forward`). Empty,
+    /// no system settings are reconciled.
     #[serde(default)]
     pub system_settings: BTreeMap<String, serde_json::Value>,
 }
@@ -68,7 +81,10 @@ pub struct MachineConfigSpec {
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageRef {
+    /// Package name as the machine's own package manager knows it.
     pub name: String,
+    /// Exact version to pin to. Omitted, whatever the manager currently offers
+    /// is installed and left alone once present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 }
@@ -77,17 +93,28 @@ pub struct PackageRef {
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleRef {
+    /// Name of the cluster-scoped `Module` resource to install.
     pub name: String,
+    /// Whether a failure to resolve or install this module fails the whole
+    /// reconcile. Default: `false`, so a missing module is reported and the
+    /// rest of the machine still converges.
     #[serde(default)]
     pub required: bool,
 }
 
+/// A file the operator writes on a managed machine.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FileSpec {
+    /// Destination path on the machine. A leading `~` expands to the home
+    /// directory of the user the agent runs as.
     pub path: String,
+    /// Literal file body, written as-is. Mutually exclusive with `source`.
     pub content: Option<String>,
+    /// Path the body is read from instead of `content`, resolved against the
+    /// machine's config directory.
     pub source: Option<String>,
+    /// Octal permission bits applied after the write. Default: `0644`.
     #[serde(default = "default_mode")]
     pub mode: String,
 }
@@ -130,8 +157,12 @@ pub struct Condition {
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LabelSelector {
+    /// Labels a resource must carry verbatim to match. Every entry must match;
+    /// an empty map matches everything.
     #[serde(default)]
     pub match_labels: BTreeMap<String, String>,
+    /// Set-based requirements a resource must satisfy, evaluated alongside
+    /// `matchLabels`. Every requirement must hold.
     #[serde(default)]
     pub match_expressions: Vec<LabelSelectorRequirement>,
 }
@@ -148,8 +179,13 @@ pub enum SelectorOperator {
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LabelSelectorRequirement {
+    /// Label key this requirement tests.
     pub key: String,
+    /// How `values` is compared against the key: `In`, `NotIn`, `Exists`, or
+    /// `DoesNotExist`.
     pub operator: SelectorOperator,
+    /// Values the key is tested against. Required for `In` and `NotIn`, and
+    /// must be empty for `Exists` and `DoesNotExist`.
     #[serde(default)]
     pub values: Vec<String>,
 }
@@ -175,15 +211,23 @@ pub struct LabelSelectorRequirement {
 // allowlist at admission time, so serde-side strictness is redundant here.
 #[serde(rename_all = "camelCase")]
 pub struct ConfigPolicySpec {
+    /// Modules every selected MachineConfig must carry. A machine missing one
+    /// is counted non-compliant.
     #[serde(default)]
     pub required_modules: Vec<ModuleRef>,
     /// Modules staged as debug-only (CSI volume without volumeMount on declared containers).
     #[serde(default)]
     pub debug_modules: Vec<ModuleRef>,
+    /// Packages every selected MachineConfig must declare, each optionally
+    /// version-pinned.
     #[serde(default)]
     pub packages: Vec<PackageRef>,
+    /// System settings every selected MachineConfig must declare, keyed the
+    /// same way as `MachineConfig.spec.systemSettings`.
     #[serde(default)]
     pub settings: BTreeMap<String, serde_json::Value>,
+    /// Which MachineConfigs in this namespace the policy applies to. Empty,
+    /// it applies to all of them.
     #[serde(default)]
     pub target_selector: LabelSelector,
 }
@@ -214,7 +258,10 @@ pub struct ConfigPolicyStatus {
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineConfigReference {
+    /// Name of the referenced MachineConfig.
     pub name: String,
+    /// Namespace the MachineConfig lives in. Omitted, the referring
+    /// resource's own namespace is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
 }
@@ -235,10 +282,16 @@ pub struct MachineConfigReference {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct DriftAlertSpec {
+    /// Identifier of the device that reported the drift, as it enrolled.
     pub device_id: String,
+    /// The MachineConfig whose desired state the device diverged from.
     pub machine_config_ref: MachineConfigReference,
+    /// One entry per diverging field, each carrying what was expected and what
+    /// was found.
     #[serde(default)]
     pub drift_details: Vec<DriftDetail>,
+    /// How serious the divergence is: `Low`, `Medium`, `High`, or `Critical`.
+    /// Drives alert routing rather than any automatic remediation.
     pub severity: DriftSeverity,
 }
 
@@ -251,11 +304,16 @@ pub struct DriftAlertStatus {
     pub conditions: Vec<Condition>,
 }
 
+/// One diverging field in a drift report.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DriftDetail {
+    /// Resource id of the field that diverged (e.g.
+    /// `system:sysctl.net.ipv4.ip_forward`).
     pub field: String,
+    /// The value the MachineConfig declares.
     pub expected: String,
+    /// The value the device actually reported.
     pub actual: String,
 }
 
@@ -289,27 +347,39 @@ pub enum DriftSeverity {
 // `properties:`). K8s admission already gatekeeps unknown fields.
 #[serde(rename_all = "camelCase")]
 pub struct ClusterConfigPolicySpec {
-    /// Select which namespaces this cluster policy applies to.
+    /// Select which namespaces this cluster policy applies to. Empty, it
+    /// applies to every namespace in the cluster.
     #[serde(default)]
     pub namespace_selector: LabelSelector,
+    /// Modules every MachineConfig in a selected namespace must carry.
     #[serde(default)]
     pub required_modules: Vec<ModuleRef>,
     /// Modules staged as debug-only across matching namespaces.
     #[serde(default)]
     pub debug_modules: Vec<ModuleRef>,
+    /// Packages every MachineConfig in a selected namespace must declare.
     #[serde(default)]
     pub packages: Vec<PackageRef>,
+    /// System settings every MachineConfig in a selected namespace must
+    /// declare, keyed the same way as `MachineConfig.spec.systemSettings`.
     #[serde(default)]
     pub settings: BTreeMap<String, serde_json::Value>,
+    /// Cluster-wide rules governing which modules may be admitted at all.
     #[serde(default)]
     pub security: SecurityPolicy,
 }
 
+/// Provenance rules a `Module` must satisfy to be admitted.
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SecurityPolicy {
+    /// Registry prefixes a module artifact may be pulled from; a trailing `*`
+    /// or `/` widens the match. Empty, any registry is accepted.
     #[serde(default)]
     pub trusted_registries: Vec<String>,
+    /// Whether a module carrying an unsigned OCI artifact may be admitted.
+    /// Default: `false` — creating any ClusterConfigPolicy at all starts
+    /// rejecting unsigned modules.
     #[serde(default)]
     pub allow_unsigned: bool,
 }
@@ -340,6 +410,7 @@ pub struct ClusterConfigPolicyStatus {
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageEntry {
+    /// Default package name, used on every platform with no override below.
     pub name: String,
     /// Per-platform package name overrides (e.g. {"brew": "gnu-sed", "apt": "sed"}).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -350,7 +421,10 @@ pub struct PackageEntry {
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleFileSpec {
+    /// Path to the file inside the module artifact.
     pub source: String,
+    /// Destination path the file is deployed to inside the pod or on the
+    /// machine.
     pub target: String,
 }
 
@@ -358,6 +432,8 @@ pub struct ModuleFileSpec {
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleScripts {
+    /// Command run once after the module's files and packages are in place.
+    /// Omitted, nothing runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post_apply: Option<String>,
 }
@@ -366,8 +442,12 @@ pub struct ModuleScripts {
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleEnvVar {
+    /// Variable name, as exported into the container or shell environment.
     pub name: String,
+    /// Value assigned to the variable.
     pub value: String,
+    /// Append to the variable's existing value with the platform's path
+    /// separator instead of replacing it. Default: `false`.
     #[serde(default)]
     pub append: bool,
 }
@@ -394,6 +474,8 @@ pub struct CosignSignature {
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleSignature {
+    /// How the artifact's cosign signature is verified. Omitted, no signature
+    /// is required of this module.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cosign: Option<CosignSignature>,
 }
@@ -413,18 +495,30 @@ pub struct ModuleSignature {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleSpec {
+    /// Packages this module installs, each with optional per-platform name
+    /// overrides.
     #[serde(default)]
     pub packages: Vec<PackageEntry>,
+    /// Files this module deploys out of its artifact.
     #[serde(default)]
     pub files: Vec<ModuleFileSpec>,
+    /// Lifecycle commands run around the module's deployment.
     #[serde(default)]
     pub scripts: ModuleScripts,
+    /// Environment variables this module contributes to containers that mount
+    /// it.
     #[serde(default)]
     pub env: Vec<ModuleEnvVar>,
+    /// Names of other `Module` resources that must be applied first.
     #[serde(default)]
     pub depends: Vec<String>,
+    /// OCI reference the module's content is pulled from
+    /// (`ghcr.io/acme/nvim:1.2.0`). Omitted, the module carries its content
+    /// inline and nothing is fetched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oci_artifact: Option<String>,
+    /// How the artifact's provenance is verified before it is admitted.
+    /// Omitted, verification is governed by the cluster policy alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<ModuleSignature>,
     /// Controls how the module is mounted in pods.

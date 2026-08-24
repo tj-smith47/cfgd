@@ -38,12 +38,15 @@
       "properties": {
         "append": {
           "default": false,
+          "description": "Append to the variable's existing value with the platform's path separator instead of replacing it. Default: `false`.",
           "type": "boolean"
         },
         "name": {
+          "description": "Variable name, as exported into the container or shell environment.",
           "type": "string"
         },
         "value": {
+          "description": "Value assigned to the variable.",
           "type": "string"
         }
       },
@@ -57,9 +60,11 @@
       "description": "A file managed by a Module.",
       "properties": {
         "source": {
+          "description": "Path to the file inside the module artifact.",
           "type": "string"
         },
         "target": {
+          "description": "Destination path the file is deployed to inside the pod or on the machine.",
           "type": "string"
         }
       },
@@ -73,6 +78,7 @@
       "description": "Scripts that run during module lifecycle.",
       "properties": {
         "postApply": {
+          "description": "Command run once after the module's files and packages are in place. Omitted, nothing runs.",
           "type": [
             "string",
             "null"
@@ -92,7 +98,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "How the artifact's cosign signature is verified. Omitted, no signature is required of this module."
         }
       },
       "type": "object"
@@ -116,6 +123,7 @@
       "description": "An entry in a Module's package list with optional per-platform overrides.",
       "properties": {
         "name": {
+          "description": "Default package name, used on every platform with no override below.",
           "type": "string"
         },
         "platforms": {
@@ -135,6 +143,7 @@
   "properties": {
     "depends": {
       "default": [],
+      "description": "Names of other `Module` resources that must be applied first.",
       "items": {
         "type": "string"
       },
@@ -142,6 +151,7 @@
     },
     "env": {
       "default": [],
+      "description": "Environment variables this module contributes to containers that mount it.",
       "items": {
         "$ref": "#/definitions/ModuleEnvVar"
       },
@@ -149,6 +159,7 @@
     },
     "files": {
       "default": [],
+      "description": "Files this module deploys out of its artifact.",
       "items": {
         "$ref": "#/definitions/ModuleFileSpec"
       },
@@ -160,6 +171,7 @@
       "description": "Controls how the module is mounted in pods. `Always` (default): CSI volume + volumeMount on all declared containers + env vars. `Debug`: CSI volume only — no volumeMount or env on declared containers. Only accessible via ephemeral debug containers (`kubectl cfgd debug`)."
     },
     "ociArtifact": {
+      "description": "OCI reference the module's content is pulled from (`ghcr.io/acme/nvim:1.2.0`). Omitted, the module carries its content inline and nothing is fetched.",
       "type": [
         "string",
         "null"
@@ -167,6 +179,7 @@
     },
     "packages": {
       "default": [],
+      "description": "Packages this module installs, each with optional per-platform name overrides.",
       "items": {
         "$ref": "#/definitions/PackageEntry"
       },
@@ -174,7 +187,8 @@
     },
     "scripts": {
       "$ref": "#/definitions/ModuleScripts",
-      "default": {}
+      "default": {},
+      "description": "Lifecycle commands run around the module's deployment."
     },
     "signature": {
       "anyOf": [
@@ -184,7 +198,8 @@
         {
           "type": "null"
         }
-      ]
+      ],
+      "description": "How the artifact's provenance is verified before it is admitted. Omitted, verification is governed by the cluster policy alone."
     }
   },
   "title": "ModuleSpec",

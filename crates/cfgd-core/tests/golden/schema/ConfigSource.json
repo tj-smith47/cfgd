@@ -181,7 +181,7 @@
           "type": "array"
         },
         "name": {
-          "description": "Profile name.",
+          "description": "Name the profile is published under, and the value `cfgd profile switch` takes to activate it.",
           "type": "string"
         },
         "path": {
@@ -362,7 +362,7 @@
           "type": "string"
         },
         "value": {
-          "description": "Variable value.",
+          "description": "Value assigned to the variable, exported verbatim into the shell environment.",
           "type": "string"
         }
       },

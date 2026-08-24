@@ -987,7 +987,28 @@ cfgd explain --recursive machineconfig     # expand all fields
 ```
 
 Schemas are derived from the live resource types (the `cfgd-core` kind
-registry), so `explain` always matches what cfgd actually accepts.
+registry), so `explain` always matches what cfgd actually accepts. Every kind's
+header carries a `docs` row pointing at the page in `docs/` that describes it in
+prose.
+
+A field's type is rendered as the named type it resolves to
+(`files <[]ModuleFileEntry>`, `scripts <ScriptSpec>`); a field whose schema is an
+inline anonymous object keeps the shape word (`system <object>`). The `-o json`
+`type` field is unchanged and still carries the shape word: the named type is an
+additive `typeName` field beside it.
+
+A field that accepts a fixed set of values lists them:
+
+```
+strategy  <FileStrategy> — How the file is deployed. enum: Symlink, Copy, Template, Hardlink, Patch
+```
+
+`-o json` carries the same list in an additive `enum` field, present only on
+fields that have one.
+
+`--recursive` renders the structure alone: one `name <type> (required)` row per
+field, children indented under their own row, accepted values on an indented
+`enum:` line, and descriptions omitted. Drop the flag for the described view.
 
 Drilling into an array-of-object field (`profile.backups`) lists the
 element's own fields, same as `kubectl explain`. A field that accepts more

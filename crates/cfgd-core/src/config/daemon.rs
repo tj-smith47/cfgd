@@ -21,10 +21,14 @@ pub struct DaemonConfig {
     /// Whether the daemon runs at all. Default: `false`.
     #[serde(default)]
     pub enabled: bool,
-    /// Drift-detection and auto-apply settings.
+    /// How often the daemon looks for drift and what it does when it finds
+    /// some. Omitted, the daemon reconciles on the built-in defaults: every
+    /// `5m`, notifying rather than applying.
     #[serde(default)]
     pub reconcile: Option<ReconcileConfig>,
-    /// Automatic git push/pull settings.
+    /// Whether the daemon keeps the config directory in step with its git
+    /// remote, and how often. Omitted, the daemon never touches git and every
+    /// pull or push stays a manual `cfgd sync`.
     #[serde(default)]
     pub sync: Option<SyncConfig>,
     /// How the daemon reports detected drift.

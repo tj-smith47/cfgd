@@ -283,7 +283,8 @@ pub struct ConfigSourceProvides {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceProfileEntry {
-    /// Profile name.
+    /// Name the profile is published under, and the value `cfgd profile
+    /// switch` takes to activate it.
     pub name: String,
     /// A one-line human summary of the profile.
     #[serde(default)]
@@ -342,7 +343,8 @@ pub struct ConfigSourcePolicy {
 pub struct EnvVar {
     /// Variable name. Must be shell-safe and not a reserved `CFGD_*` name.
     pub name: String,
-    /// Variable value.
+    /// Value assigned to the variable, exported verbatim into the shell
+    /// environment.
     pub value: String,
 }
 

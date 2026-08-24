@@ -260,7 +260,7 @@
           "type": "string"
         },
         "value": {
-          "description": "Variable value.",
+          "description": "Value assigned to the variable, exported verbatim into the shell\nenvironment.",
           "type": "string"
         }
       },
@@ -306,7 +306,7 @@
       "properties": {
         "managed": {
           "default": [],
-          "description": "Files to deploy.",
+          "description": "Files this profile deploys, each pairing a source in the config\ndirectory with a target on the machine. Empty, no files are managed.",
           "items": {
             "$ref": "#/definitions/ManagedFileSpec"
           },

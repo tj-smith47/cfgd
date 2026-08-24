@@ -6,6 +6,7 @@
       "properties": {
         "matchExpressions": {
           "default": [],
+          "description": "Set-based requirements a resource must satisfy, evaluated alongside `matchLabels`. Every requirement must hold.",
           "items": {
             "$ref": "#/definitions/LabelSelectorRequirement"
           },
@@ -16,6 +17,7 @@
             "type": "string"
           },
           "default": {},
+          "description": "Labels a resource must carry verbatim to match. Every entry must match; an empty map matches everything.",
           "type": "object"
         }
       },
@@ -25,13 +27,16 @@
       "description": "A single requirement for label selector expressions.",
       "properties": {
         "key": {
+          "description": "Label key this requirement tests.",
           "type": "string"
         },
         "operator": {
-          "$ref": "#/definitions/SelectorOperator"
+          "$ref": "#/definitions/SelectorOperator",
+          "description": "How `values` is compared against the key: `In`, `NotIn`, `Exists`, or `DoesNotExist`."
         },
         "values": {
           "default": [],
+          "description": "Values the key is tested against. Required for `In` and `NotIn`, and must be empty for `Exists` and `DoesNotExist`.",
           "items": {
             "type": "string"
           },
@@ -48,10 +53,12 @@
       "description": "Reference to a module that should be installed on the machine.",
       "properties": {
         "name": {
+          "description": "Name of the cluster-scoped `Module` resource to install.",
           "type": "string"
         },
         "required": {
           "default": false,
+          "description": "Whether a failure to resolve or install this module fails the whole reconcile. Default: `false`, so a missing module is reported and the rest of the machine still converges.",
           "type": "boolean"
         }
       },
@@ -64,9 +71,11 @@
       "description": "Reference to a package with optional version pin.",
       "properties": {
         "name": {
+          "description": "Package name as the machine's own package manager knows it.",
           "type": "string"
         },
         "version": {
+          "description": "Exact version to pin to. Omitted, whatever the manager currently offers is installed and left alone once present.",
           "type": [
             "string",
             "null"
@@ -99,6 +108,7 @@
     },
     "packages": {
       "default": [],
+      "description": "Packages every selected MachineConfig must declare, each optionally version-pinned.",
       "items": {
         "$ref": "#/definitions/PackageRef"
       },
@@ -106,6 +116,7 @@
     },
     "requiredModules": {
       "default": [],
+      "description": "Modules every selected MachineConfig must carry. A machine missing one is counted non-compliant.",
       "items": {
         "$ref": "#/definitions/ModuleRef"
       },
@@ -114,6 +125,7 @@
     "settings": {
       "additionalProperties": true,
       "default": {},
+      "description": "System settings every selected MachineConfig must declare, keyed the same way as `MachineConfig.spec.systemSettings`.",
       "type": "object"
     },
     "targetSelector": {
@@ -121,7 +133,8 @@
       "default": {
         "matchExpressions": [],
         "matchLabels": {}
-      }
+      },
+      "description": "Which MachineConfigs in this namespace the policy applies to. Empty, it applies to all of them."
     }
   },
   "title": "ConfigPolicySpec",

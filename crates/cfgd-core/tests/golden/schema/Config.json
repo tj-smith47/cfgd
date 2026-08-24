@@ -204,7 +204,7 @@
             }
           ],
           "default": null,
-          "description": "Compliance snapshot configuration."
+          "description": "Periodic snapshots of machine state, for drift history and audit. Omitted, no snapshots are taken and `cfgd compliance` reports only what it collects on the spot."
         },
         "daemon": {
           "anyOf": [
@@ -216,7 +216,7 @@
             }
           ],
           "default": null,
-          "description": "Background reconcile-daemon settings."
+          "description": "The background daemon that watches for drift between reconciles. Omitted, no daemon runs and every reconcile is an explicit `cfgd apply`."
         },
         "fileStrategy": {
           "default": "Symlink",
@@ -267,7 +267,7 @@
             }
           ],
           "default": null,
-          "description": "Default secret backend and integrations."
+          "description": "Which backend resolves a `${secret:…}` reference, and how it is reached. Omitted, no backend is configured and a declared secret reference fails to resolve."
         },
         "security": {
           "anyOf": [
@@ -299,7 +299,7 @@
             }
           ],
           "default": null,
-          "description": "Output theme (preset + overrides)."
+          "description": "Colours and glyphs cfgd renders with: a named preset (`default`, `dracula`, `solarized-dark`, `solarized-light`, `minimal`) plus per-slot overrides. Omitted, the `default` preset applies."
         },
         "update": {
           "anyOf": [
@@ -347,7 +347,7 @@
             }
           ],
           "default": null,
-          "description": "Drift-detection and auto-apply settings."
+          "description": "How often the daemon looks for drift and what it does when it finds some. Omitted, the daemon reconciles on the built-in defaults: every `5m`, notifying rather than applying."
         },
         "sync": {
           "anyOf": [
@@ -359,7 +359,7 @@
             }
           ],
           "default": null,
-          "description": "Automatic git push/pull settings."
+          "description": "Whether the daemon keeps the config directory in step with its git remote, and how often. Omitted, the daemon never touches git and every pull or push stays a manual `cfgd sync`."
         },
         "windowsEventLog": {
           "default": false,
@@ -442,7 +442,7 @@
             }
           ],
           "default": null,
-          "description": "Module security settings."
+          "description": "Signature requirements for modules pulled from these registries. Omitted, signatures are not required and an unsigned module tag is accepted."
         }
       },
       "type": "object"
@@ -1163,7 +1163,7 @@
     },
     "spec": {
       "$ref": "#/definitions/ConfigSpec",
-      "description": "The declared configuration."
+      "description": "The body of the document: everything cfgd reads to decide what this machine should look like."
     }
   },
   "required": [

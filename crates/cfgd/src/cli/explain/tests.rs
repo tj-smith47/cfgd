@@ -229,8 +229,8 @@ fn explain_cmd_field_path_multi_child_object_shows_own_header_and_tree_stays_col
         "expected registries' own fields to stay collapsed without --recursive, got: {output}"
     );
     assert!(
-        !output.contains("Short name / alias for this source"),
-        "grandchild field description must not appear without --recursive, got: {output}"
+        !output.contains("requireSignatures"),
+        "grandchild field must not appear without --recursive, got: {output}"
     );
 
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
@@ -242,15 +242,17 @@ fn explain_cmd_field_path_multi_child_object_shows_own_header_and_tree_stays_col
         "recursive expansion must leave no unexpanded markers, got: {output}"
     );
     assert!(
-        output.contains("Short name / alias for this source"),
+        output.contains("\n    requireSignatures  <boolean>"),
         "expected grandchild field expanded under --recursive, got: {output}"
     );
 }
 
 #[test]
 fn explain_cmd_field_descriptions_render_documented_ai_fields() {
+    // Non-recursive on purpose: descriptions belong to the field-list view.
+    // `--recursive` renders the structure alone.
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    cmd_explain(&printer, Some("Config.ai"), true).unwrap();
+    cmd_explain(&printer, Some("Config.ai"), false).unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -583,20 +585,17 @@ fn every_schema_is_reflected_once_per_process_including_the_bad_name_path() {
 #[test]
 fn explain_drilldown_renders_the_documented_shape() {
     // The whole drill-in view, pinned byte-for-byte: the heading is the
-    // `Explain: <path>` TitleLabel every sibling report noun uses, the
-    // description is body text under it, the queried field's own type is a kv
-    // row rather than glue in the title, and the field list is a two-column
-    // `name <type> — description` list whose name and type columns each align
-    // beneath themselves.
+    // `Explain: <path>` TitleLabel every sibling report noun uses and carries
+    // the queried field's own type, the description is body text under it, and
+    // the field list is a two-column `name <type> — description` list whose
+    // name and type columns each align beneath themselves.
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer, Some("profile.spec.packages.brew"), false).unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
     let expected = "\
-Explain: profile.spec.packages.brew
+Explain: profile.spec.packages.brew <BrewSpec>
   Homebrew packages (macOS/Linux). Accepts a bare list of formulae or a `BrewSpec` mapping.
-
-type  <object>
 
 Fields
   casks     <[]string> — Homebrew casks (GUI applications) to install.
@@ -605,4 +604,118 @@ Fields
   taps      <[]string> — Third-party taps to add before installing formulae/casks.
 ";
     pretty_assertions::assert_eq!(output, expected);
+}
+
+// --- named types, enum values, docs pointer ---
+
+#[test]
+fn explain_renders_the_named_defs_type_and_keeps_the_wire_shape_word() {
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    cmd_explain(&printer, Some("module"), false).unwrap();
+    printer.flush();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        output.contains("files      <[]ModuleFileEntry>"),
+        "expected the named element type in the human view, got: {output}"
+    );
+
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_explain(&printer, Some("module"), false).unwrap();
+    drop(printer);
+    let json = cap.json().expect("explain doc carries with_data");
+    let files = json["fields"]
+        .as_array()
+        .expect("fields array")
+        .iter()
+        .find(|f| f["name"] == "files")
+        .expect("files field");
+    // The shape word is the wire value and never moves; the named type is an
+    // additive field beside it.
+    assert_eq!(files["type"], "[]object");
+    assert_eq!(files["typeName"], "ModuleFileEntry");
+    let depends = json["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "depends")
+        .expect("depends field");
+    assert!(
+        depends.get("typeName").is_none(),
+        "a field resolving through no named definition carries no typeName, got: {depends:?}"
+    );
+}
+
+#[test]
+fn explain_renders_enum_values_in_both_views_and_in_json() {
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    cmd_explain(&printer, Some("profile.files.managed.strategy"), false).unwrap();
+    printer.flush();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        output.contains("enum: Symlink, Copy, Template, Hardlink, Patch"),
+        "expected the accepted values after the description, got: {output}"
+    );
+
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    cmd_explain(&printer, Some("profile.files.managed"), true).unwrap();
+    printer.flush();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        output.contains("\n  strategy")
+            && output.contains("\n    enum: Symlink, Copy, Template, Hardlink, Patch"),
+        "expected the enum line indented under its own field row, got: {output}"
+    );
+
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_explain(&printer, Some("profile.files.managed.strategy"), false).unwrap();
+    drop(printer);
+    let json = cap.json().expect("drilldown doc carries with_data");
+    let field = &json["fields"].as_array().expect("fields array")[0];
+    let values: Vec<&str> = field["enum"]
+        .as_array()
+        .expect("enum array")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        values,
+        vec!["Symlink", "Copy", "Template", "Hardlink", "Patch"]
+    );
+    // Additive: a field with no accepted-value list carries no `enum` key.
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_explain(&printer, Some("module"), false).unwrap();
+    drop(printer);
+    let json = cap.json().expect("explain doc carries with_data");
+    let depends = json["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "depends")
+        .unwrap();
+    assert!(depends.get("enum").is_none());
+}
+
+#[test]
+fn explain_points_every_kind_at_its_docs_page() {
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    cmd_explain(&printer, Some("module"), false).unwrap();
+    printer.flush();
+    let output = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        output.contains("docs        docs/spec/module.md#fields"),
+        "expected the docs row beneath location, got: {output}"
+    );
+
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_explain(&printer, None, false).unwrap();
+    drop(printer);
+    let json = cap.json().expect("index doc carries with_data");
+    for schema in json.as_array().expect("index array") {
+        let docs = schema["docs"].as_str().unwrap_or_default();
+        assert!(
+            docs.starts_with("docs/") && docs.contains('#'),
+            "every kind points at a docs anchor, {} does not: {docs:?}",
+            schema["kind"]
+        );
+    }
 }

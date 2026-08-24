@@ -1,6 +1,7 @@
 {
   "apiVersion": "cfgd.io/v1alpha1",
   "description": "A reusable unit of packages, files, scripts, and environment.",
+  "docs": "docs/spec/module.md#fields",
   "fields": [
     {
       "children": [
@@ -20,7 +21,8 @@
       "description": "Shell aliases this module contributes.",
       "name": "aliases",
       "required": false,
-      "type": "[]object"
+      "type": "[]object",
+      "typeName": "ShellAlias"
     },
     {
       "description": "Names of other modules this one requires; cfgd resolves and applies them first.",
@@ -37,7 +39,7 @@
           "type": "string"
         },
         {
-          "description": "Variable value.",
+          "description": "Value assigned to the variable, exported verbatim into the shell environment.",
           "name": "value",
           "required": true,
           "type": "string"
@@ -46,7 +48,8 @@
       "description": "Environment variables this module contributes.",
       "name": "env",
       "required": false,
-      "type": "[]object"
+      "type": "[]object",
+      "typeName": "EnvVar"
     },
     {
       "children": [
@@ -60,15 +63,21 @@
             },
             {
               "description": "When encryption must be enforced. Defaults to `InRepo`.",
+              "enum": [
+                "InRepo",
+                "Always"
+              ],
               "name": "mode",
               "required": false,
-              "type": "string"
+              "type": "string",
+              "typeName": "EncryptionMode"
             }
           ],
           "description": "Encryption settings for this module file.",
           "name": "encryption",
           "required": false,
-          "type": "object"
+          "type": "object",
+          "typeName": "EncryptionSpec"
         },
         {
           "children": [
@@ -80,9 +89,16 @@
             },
             {
               "description": "File format to parse the target as. Inferred from the target's extension when omitted.",
+              "enum": [
+                "Ini",
+                "Json",
+                "Yaml",
+                "Toml"
+              ],
               "name": "format",
               "required": false,
-              "type": "string"
+              "type": "string",
+              "typeName": "PatchFormat"
             },
             {
               "description": "A script path or an inline command that receives the target's current content on stdin and writes the new content to stdout. A relative path resolves against the module directory for a module file (`spec.files[]`) and against the config directory for a profile file (`spec.files.managed[]`); a value that resolves to no file is run as an inline command. Mutually exclusive with `ensure`.",
@@ -94,7 +110,8 @@
           "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
           "name": "patch",
           "required": false,
-          "type": "object"
+          "type": "object",
+          "typeName": "PatchSpec"
         },
         {
           "description": "Unix permission bits (e.g. \"600\", \"644\") to apply after deployment.",
@@ -116,9 +133,17 @@
         },
         {
           "description": "Per-file deployment strategy override. If None, uses the global default.",
+          "enum": [
+            "Symlink",
+            "Copy",
+            "Template",
+            "Hardlink",
+            "Patch"
+          ],
           "name": "strategy",
           "required": false,
-          "type": "string"
+          "type": "string",
+          "typeName": "FileStrategy"
         },
         {
           "description": "Destination path on the machine. A leading `~` expands to the home directory.",
@@ -130,7 +155,8 @@
       "description": "Files this module deploys.",
       "name": "files",
       "required": false,
-      "type": "[]object"
+      "type": "[]object",
+      "typeName": "ModuleFileEntry"
     },
     {
       "children": [
@@ -198,7 +224,8 @@
       "description": "Packages this module installs.",
       "name": "packages",
       "required": false,
-      "type": "[]object"
+      "type": "[]object",
+      "typeName": "ModulePackageEntry"
     },
     {
       "description": "Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a Skipped action rather than vanishing). Tags are matched against OS / distro / arch via `Platform::matches_any`; the canonical macOS token is `macos`.",
@@ -213,6 +240,7 @@
           "name": "onChange",
           "required": false,
           "type": "[](string | object)",
+          "typeName": "ScriptEntry",
           "variants": [
             {
               "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -260,9 +288,18 @@
                 },
                 {
                   "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "enum": [
+                    "sh",
+                    "bash",
+                    "zsh",
+                    "pwsh",
+                    "cmd",
+                    "auto"
+                  ],
                   "name": "shell",
                   "required": false,
-                  "type": "string"
+                  "type": "string",
+                  "typeName": "ScriptShell"
                 },
                 {
                   "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -295,6 +332,7 @@
           "name": "onDrift",
           "required": false,
           "type": "[](string | object)",
+          "typeName": "ScriptEntry",
           "variants": [
             {
               "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -342,9 +380,18 @@
                 },
                 {
                   "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "enum": [
+                    "sh",
+                    "bash",
+                    "zsh",
+                    "pwsh",
+                    "cmd",
+                    "auto"
+                  ],
                   "name": "shell",
                   "required": false,
-                  "type": "string"
+                  "type": "string",
+                  "typeName": "ScriptShell"
                 },
                 {
                   "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -377,6 +424,7 @@
           "name": "postApply",
           "required": false,
           "type": "[](string | object)",
+          "typeName": "ScriptEntry",
           "variants": [
             {
               "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -424,9 +472,18 @@
                 },
                 {
                   "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "enum": [
+                    "sh",
+                    "bash",
+                    "zsh",
+                    "pwsh",
+                    "cmd",
+                    "auto"
+                  ],
                   "name": "shell",
                   "required": false,
-                  "type": "string"
+                  "type": "string",
+                  "typeName": "ScriptShell"
                 },
                 {
                   "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -459,6 +516,7 @@
           "name": "postReconcile",
           "required": false,
           "type": "[](string | object)",
+          "typeName": "ScriptEntry",
           "variants": [
             {
               "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -506,9 +564,18 @@
                 },
                 {
                   "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "enum": [
+                    "sh",
+                    "bash",
+                    "zsh",
+                    "pwsh",
+                    "cmd",
+                    "auto"
+                  ],
                   "name": "shell",
                   "required": false,
-                  "type": "string"
+                  "type": "string",
+                  "typeName": "ScriptShell"
                 },
                 {
                   "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -541,6 +608,7 @@
           "name": "preApply",
           "required": false,
           "type": "[](string | object)",
+          "typeName": "ScriptEntry",
           "variants": [
             {
               "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -588,9 +656,18 @@
                 },
                 {
                   "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "enum": [
+                    "sh",
+                    "bash",
+                    "zsh",
+                    "pwsh",
+                    "cmd",
+                    "auto"
+                  ],
                   "name": "shell",
                   "required": false,
-                  "type": "string"
+                  "type": "string",
+                  "typeName": "ScriptShell"
                 },
                 {
                   "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -623,6 +700,7 @@
           "name": "preReconcile",
           "required": false,
           "type": "[](string | object)",
+          "typeName": "ScriptEntry",
           "variants": [
             {
               "description": "A bare command string, run with the platform's default shell and no timeout/guard.",
@@ -670,9 +748,18 @@
                 },
                 {
                   "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
+                  "enum": [
+                    "sh",
+                    "bash",
+                    "zsh",
+                    "pwsh",
+                    "cmd",
+                    "auto"
+                  ],
                   "name": "shell",
                   "required": false,
-                  "type": "string"
+                  "type": "string",
+                  "typeName": "ScriptShell"
                 },
                 {
                   "description": "Kill the script if it runs longer than this duration (`\"30s\"`, `\"2m\"`). Unset means no timeout.",
@@ -704,7 +791,8 @@
       "description": "Lifecycle scripts (`preApply`, `postApply`, …) this module runs.",
       "name": "scripts",
       "required": false,
-      "type": "object"
+      "type": "object",
+      "typeName": "ScriptSpec"
     },
     {
       "description": "System configurator settings contributed by this module. Deep-merged into the profile system map; module values override profile values at leaf level.",

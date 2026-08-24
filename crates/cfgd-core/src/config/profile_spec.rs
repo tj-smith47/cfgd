@@ -724,7 +724,8 @@ pub struct CustomManagerSpec {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FilesSpec {
-    /// Files to deploy.
+    /// Files this profile deploys, each pairing a source in the config
+    /// directory with a target on the machine. Empty, no files are managed.
     #[serde(default)]
     pub managed: Vec<ManagedFileSpec>,
     /// Octal permission strings (`"0600"`) keyed by target path, applied after

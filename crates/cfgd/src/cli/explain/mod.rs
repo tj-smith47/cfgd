@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use cfgd_core::output::{Doc, Printer, SectionBuilder, renderer::Table};
+use cfgd_core::output::{CommandPair, Doc, Printer, SectionBuilder, renderer::Table};
 use cfgd_core::schema::{FieldNode, KIND_REGISTRY};
 
 // cfgd explain — schema documentation for all resource types
@@ -26,6 +26,8 @@ pub struct ResourceSchema {
     pub kind: String,
     /// File-location hint.
     pub location: String,
+    /// Path (plus heading anchor) into the repo's `docs/` tree.
+    pub docs: String,
     /// Short description.
     pub description: String,
     /// Top-level fields under spec (or root for non-KRM), schemars-derived.
@@ -47,14 +49,7 @@ mod tests;
 /// expressed directly rather than derived from schemars.
 fn teamconfig_schema() -> ResourceSchema {
     fn leaf(name: &str, type_desc: &str, required: bool, description: &str) -> FieldNode {
-        FieldNode {
-            name: name.to_string(),
-            type_desc: type_desc.to_string(),
-            required,
-            description: description.to_string(),
-            children: Vec::new(),
-            variants: Vec::new(),
-        }
+        obj(name, type_desc, required, description, Vec::new())
     }
     fn obj(
         name: &str,
@@ -66,6 +61,11 @@ fn teamconfig_schema() -> ResourceSchema {
         FieldNode {
             name: name.to_string(),
             type_desc: type_desc.to_string(),
+            // TeamConfig's shapes are declared in a Crossplane XRD rather than
+            // in a Rust type, so there is no `$defs` entry to name and no
+            // schemars enum to enumerate.
+            type_name: String::new(),
+            enum_values: Vec::new(),
             required,
             description: description.to_string(),
             children,
@@ -78,33 +78,34 @@ fn teamconfig_schema() -> ResourceSchema {
         api_version: cfgd_core::API_VERSION.to_string(),
         kind: "TeamConfig".to_string(),
         location: "Crossplane Composite Resource (XR)".to_string(),
+        docs: "docs/spec/teamconfig.md#fields".to_string(),
         description: "Crossplane composite resource for team-level configuration. Fans out to per-user MachineConfig CRDs via composition function.".to_string(),
         fields: vec![
-            leaf("team", "string", true, "Team name"),
-            leaf("profile", "string", false, "Default profile for team members"),
-            obj("source", "object", false, "Team config source", vec![
-                leaf("url", "string", true, "Git URL of the team config repo"),
-                leaf("branch", "string", false, "Git branch (default: master)"),
+            leaf("team", "string", true, "Name of the team this document configures. Used as the prefix of every MachineConfig the composition generates, so it must be a valid DNS label."),
+            leaf("profile", "string", false, "Profile every member inherits unless their own entry overrides it. Omitted, each generated MachineConfig carries no profile and the machine keeps whichever profile it already has active."),
+            obj("source", "object", false, "Git repository the team's modules and profiles are pulled from. Omitted, members supply their own sources.", vec![
+                leaf("url", "string", true, "Clone URL of the team config repository, in any form git accepts (HTTPS or SSH)."),
+                leaf("branch", "string", false, "Branch to track. Defaults to the repository's own default branch."),
             ]),
-            obj("modules", "[]object", false, "Modules for the team", vec![
-                leaf("name", "string", true, "Module name"),
-                obj("sourceRef", "object", false, "Remote module source reference", vec![
-                    leaf("url", "string", true, "Git URL"),
-                    leaf("ref", "string", false, "Git ref (tag/commit)"),
+            obj("modules", "[]object", false, "Modules delivered to every member of the team. Each entry becomes a module reference on every generated MachineConfig.", vec![
+                leaf("name", "string", true, "Module name, matching the directory under `modules/` in the source repository."),
+                obj("sourceRef", "object", false, "Repository this module is fetched from, when it does not live in the team's own source. Omitted, the module resolves against `spec.source`.", vec![
+                    leaf("url", "string", true, "Clone URL of the repository holding the module."),
+                    leaf("ref", "string", false, "Tag, branch, or commit to pin the module at. Omitted, the repository's default branch is tracked and the module follows it."),
                 ]),
             ]),
-            obj("policy", "object", false, "Team policy settings", vec![
-                leaf("required", "object", false, "Required configuration items"),
-                leaf("recommended", "object", false, "Recommended configuration items"),
-                leaf("locked", "object", false, "Locked (non-overridable) items"),
-                leaf("requiredModules", "[]string", false, "Modules that must be installed"),
-                leaf("recommendedModules", "[]string", false, "Modules that are recommended"),
+            obj("policy", "object", false, "What the team mandates, suggests, and forbids members from changing. Enforced by the generated ConfigPolicy.", vec![
+                leaf("required", "object", false, "Configuration keys every member must carry, as a mapping of key to required value. A member whose machine disagrees is reported as non-compliant."),
+                leaf("recommended", "object", false, "Configuration keys members are advised to carry, in the same mapping shape as `required`. Reported but never enforced."),
+                leaf("locked", "object", false, "Configuration keys members may not override, as a mapping of key to the value the team pins. A local override of a locked key is rejected."),
+                leaf("requiredModules", "[]string", false, "Modules that must be installed on every member machine. A missing one is a compliance failure."),
+                leaf("recommendedModules", "[]string", false, "Modules members are advised to install. Surfaced in compliance reports without failing them."),
             ]),
-            obj("members", "[]object", false, "Team members", vec![
-                leaf("username", "string", true, "Username"),
-                leaf("sshPublicKey", "string", false, "SSH public key for enrollment"),
-                leaf("profile", "string", false, "Profile override for this member"),
-                leaf("hostname", "string", false, "Hostname override"),
+            obj("members", "[]object", false, "The people on the team. One MachineConfig is generated per entry.", vec![
+                leaf("username", "string", true, "Login the member's machine enrolls as. Becomes the name of the generated MachineConfig."),
+                leaf("sshPublicKey", "string", false, "Public key the member's enrollment request is verified against. Omitted, the member enrolls through the device-flow instead."),
+                leaf("profile", "string", false, "Profile for this member, overriding the team-wide `spec.profile`."),
+                leaf("hostname", "string", false, "Hostname to reconcile this member's machine as, when it differs from the machine's own."),
             ]),
         ],
     }
@@ -148,6 +149,7 @@ fn build_all_schemas() -> Vec<ResourceSchema> {
                 api_version: e.api_version.to_string(),
                 kind: e.kind.to_string(),
                 location: e.location.to_string(),
+                docs: e.docs.to_string(),
                 description: e.description.to_string(),
                 fields: e.field_tree(),
             }
@@ -267,6 +269,9 @@ pub struct ExplainOutput {
     pub api_version: String,
     pub kind: String,
     pub location: String,
+    /// Where this kind is documented in the repo's `docs/` tree. Additive:
+    /// a consumer reading only the fields it already knows sees no change.
+    pub docs: String,
     pub description: String,
     pub fields: Vec<ExplainField>,
 }
@@ -275,8 +280,20 @@ pub struct ExplainOutput {
 #[serde(rename_all = "camelCase")]
 pub struct ExplainField {
     pub name: String,
+    /// The SHAPE word (`object`, `[]object`, `[](string | object)`) — the wire
+    /// value, byte-identical to what it has always been. The named type a
+    /// human sees instead travels in `typeName`.
     #[serde(rename = "type")]
     pub type_desc: String,
+    /// The named `$defs` type behind this field, when it resolved through one
+    /// (`ModuleFileEntry`). Absent for an inline anonymous schema. Additive:
+    /// `type` is unchanged whether or not this is present.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub type_name: String,
+    /// The accepted values of a unit-variant enum field, in declared order.
+    /// Absent for every other field.
+    #[serde(rename = "enum", skip_serializing_if = "Vec::is_empty")]
+    pub enum_values: Vec<String>,
     pub required: bool,
     pub description: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -302,6 +319,8 @@ fn schema_field_to_explain(field: &FieldNode) -> ExplainField {
     ExplainField {
         name: field.name.clone(),
         type_desc: field.type_desc.clone(),
+        type_name: field.type_name.clone(),
+        enum_values: field.enum_values.clone(),
         required: field.required,
         description: field.description.clone(),
         children: field.children.iter().map(schema_field_to_explain).collect(),
@@ -315,21 +334,63 @@ fn schema_to_output(schema: &ResourceSchema) -> ExplainOutput {
         api_version: schema.api_version.clone(),
         kind: schema.kind.clone(),
         location: schema.location.clone(),
+        docs: schema.docs.clone(),
         description: schema.description.clone(),
         fields: schema.fields.iter().map(schema_field_to_explain).collect(),
     }
 }
 
 /// The level a field drills into: every accepted shape of a multi-shape
-/// union field, then the object's own children.
+/// union field, then the object's own children sorted by name.
 ///
 /// A node carries one or the other and never both — a union field has no
 /// children of its own (see [`resolve_field_path`]) — so the two are one list
 /// rather than two sections. A `variants` entry is a [`FieldNode`] named by
 /// its own type description (`string`, `object`, …); see
-/// `cfgd_core::schema::union_variants`.
+/// `cfgd_core::schema::union_variants`. Variants keep their declared order —
+/// they are shapes, not names, and the declared order matches the union's own
+/// type description (`string | object`).
 fn drill_level(f: &FieldNode) -> Vec<&FieldNode> {
-    f.variants.iter().chain(f.children.iter()).collect()
+    f.variants
+        .iter()
+        .chain(sorted_by_name(f.children.iter()))
+        .collect()
+}
+
+/// A level's fields sorted by name, so a reader scanning for one has an
+/// ordering to rely on. Every rendered level sorts through this — the
+/// schemars-derived kinds happen to arrive alphabetical, but the hand-authored
+/// TeamConfig does not, and nothing guarantees the derived order either.
+/// Display-only: the `-o json` payload keeps schema-walk order.
+fn sorted_by_name<'a>(fields: impl IntoIterator<Item = &'a FieldNode>) -> Vec<&'a FieldNode> {
+    let mut v: Vec<&FieldNode> = fields.into_iter().collect();
+    v.sort_by(|a, b| a.name.cmp(&b.name));
+    v
+}
+
+/// The `<type>` span of a field row — the substring the renderer paints with
+/// its own type colour, and the one place the angle brackets are composed.
+fn type_span(f: &FieldNode) -> String {
+    format!("<{}>", f.displayed_type())
+}
+
+/// A field's description with its accepted enum values appended, in the one
+/// spelling every surface uses (`enum: Copy, Symlink, Patch`). The description
+/// alone for a field that is not a unit-variant enum.
+fn described_with_enum(f: &FieldNode) -> String {
+    if f.enum_values.is_empty() {
+        return f.description.clone();
+    }
+    let values = enum_line(f);
+    if f.description.is_empty() {
+        return values;
+    }
+    format!("{} {values}", f.description)
+}
+
+/// The enum vocabulary line itself (`enum: Copy, Symlink, Patch`).
+fn enum_line(f: &FieldNode) -> String {
+    format!("enum: {}", f.enum_values.join(", "))
 }
 
 /// One row of a field list: the `name <type>` left column and the description
@@ -340,46 +401,87 @@ fn drill_level(f: &FieldNode) -> Vec<&FieldNode> {
 /// column the renderer then aligns against the other rows — with the same
 /// two-space gap a kv block puts between its key and its value. Char padding
 /// is column padding here because a schema field name is an ASCII identifier.
-fn field_row(f: &FieldNode, name_width: usize, recursive: bool) -> (String, String) {
+fn field_row(f: &FieldNode, name_width: usize) -> CommandPair {
     let expandable = !f.children.is_empty() || !f.variants.is_empty();
     let req = if f.required { " (required)" } else { "" };
-    let more = if expandable && !recursive { " [+]" } else { "" };
-    (
+    let more = if expandable { " [+]" } else { "" };
+    let type_span = type_span(f);
+    CommandPair::typed(
         format!(
-            "{:<name_width$}  <{}>{req}{more}",
+            "{:<name_width$}  {type_span}{req}{more}",
             f.name,
-            f.type_desc,
             name_width = name_width
         ),
-        f.description.clone(),
+        type_span,
+        described_with_enum(f),
     )
 }
 
-/// Append one level of fields as an aligned `name <type> — description` list,
-/// followed — when `recursive` — by a subsection per expandable field
-/// carrying its own level.
+/// Append one level of fields.
 ///
-/// The rows of a level render as ONE list so the whole level shares one
-/// alignment, with the drill-in subsections after it rather than interleaved
-/// between the rows they expand. Nested indentation comes from the renderer's
-/// section depth, never manual whitespace.
+/// Non-recursive: an aligned `name <type> — description` list, with `[+]`
+/// marking each field that expands.
+///
+/// Recursive: one structure tree — `name <type>` per field, each field's own
+/// level indented directly beneath its row, descriptions omitted (the
+/// `kubectl explain --recursive` shape: the tree is a map of the schema, and
+/// a field's documentation is one drill-down away). The whole tree is one
+/// `command_list`, so a level's siblings share an alignment; the indentation
+/// is tree structure — data, composed into the left column — not a section
+/// nesting, so no field name repeats as a heading.
 fn append_fields(s: SectionBuilder, fields: &[&FieldNode], recursive: bool) -> SectionBuilder {
+    if recursive {
+        let mut rows = Vec::new();
+        push_tree_rows(&mut rows, fields, 0);
+        return s.command_list(rows);
+    }
     let name_width = fields
         .iter()
         .map(|f| f.name.chars().count())
         .max()
         .unwrap_or(0);
-    let s = s.command_list(fields.iter().map(|f| field_row(f, name_width, recursive)));
-    if !recursive {
-        return s;
-    }
-    fields.iter().fold(s, |s, f| {
-        let level = drill_level(f);
-        if level.is_empty() {
-            return s;
+    s.command_list(fields.iter().map(|f| field_row(f, name_width)))
+}
+
+/// Collect the recursive structure tree: a `name <type> (required)` row per
+/// field, then its drill-in level indented one step deeper. Alignment is per
+/// level — siblings pad to their own widest name, measured from the same
+/// indent — so a level's type column lines up beneath itself.
+///
+/// A unit-variant enum's accepted values ride one line below the field, at the
+/// depth its children would occupy: the values ARE what the field expands into,
+/// and the tree has no other place to put a fact about one row.
+fn push_tree_rows(rows: &mut Vec<CommandPair>, fields: &[&FieldNode], depth: usize) {
+    let name_width = fields
+        .iter()
+        .map(|f| f.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    for f in fields {
+        let req = if f.required { " (required)" } else { "" };
+        let type_span = type_span(f);
+        rows.push(CommandPair::typed(
+            format!(
+                "{:indent$}{:<name_width$}  {type_span}{req}",
+                "",
+                f.name,
+                indent = depth * 2,
+                name_width = name_width
+            ),
+            type_span,
+            String::new(),
+        ));
+        if !f.enum_values.is_empty() {
+            rows.push(CommandPair::new(
+                format!("{:indent$}{}", "", enum_line(f), indent = (depth + 1) * 2),
+                String::new(),
+            ));
         }
-        s.subsection(f.name.clone(), |sub| append_fields(sub, &level, true))
-    })
+        let level = drill_level(f);
+        if !level.is_empty() {
+            push_tree_rows(rows, &level, depth + 1);
+        }
+    }
 }
 
 /// Build the `cfgd explain` (no args) Doc — lists all known schemas.
@@ -406,7 +508,7 @@ pub fn build_explain_index_doc() -> Doc {
 /// Build the `cfgd explain <resource>` Doc — schema overview + top-level fields.
 pub fn build_explain_schema_doc(schema: &ResourceSchema, recursive: bool) -> Doc {
     let output = schema_to_output(schema);
-    let fields: Vec<&FieldNode> = schema.fields.iter().collect();
+    let fields = sorted_by_name(schema.fields.iter());
     Doc::new()
         .heading_title("Explain", schema.name.clone())
         .paragraph(schema.description.clone())
@@ -414,6 +516,7 @@ pub fn build_explain_schema_doc(schema: &ResourceSchema, recursive: bool) -> Doc
             ("apiVersion", schema.api_version.as_str()),
             ("kind", schema.kind.as_str()),
             ("location", schema.location.as_str()),
+            ("docs", schema.docs.as_str()),
         ])
         .section("Fields (under spec)", |s| {
             append_fields(s, &fields, recursive)
@@ -456,13 +559,19 @@ pub fn build_explain_drilldown_doc(
     // this defensive against a path `resolve_field_path` accepted but this
     // walk did not (should not happen: same schema, same path).
     let node = find_field_node(&schema.fields, field_path);
-    let mut doc = Doc::new().heading_title("Explain", path_str.clone());
+    // The queried field's own type belongs to the heading — the same
+    // `<type> (required)` vocabulary the field rows render, on the line that
+    // names the field, so no lone kv row repeats it below.
+    let title = match node {
+        Some(f) => {
+            let req = if f.required { " (required)" } else { "" };
+            format!("{path_str} <{}>{req}", f.displayed_type())
+        }
+        None => path_str.clone(),
+    };
+    let mut doc = Doc::new().heading_title("Explain", title);
     if let Some(f) = node {
-        doc = doc.paragraph(f.description.clone());
-        // Same `<type> (required)` vocabulary the field rows below render, so
-        // the drill-in view and the list say a field's type the one way.
-        let req = if f.required { " (required)" } else { "" };
-        doc = doc.kv("type", format!("<{}>{req}", f.type_desc));
+        doc = doc.paragraph(described_with_enum(f));
         let variants: Vec<&FieldNode> = f.variants.iter().collect();
         doc = doc.section_if_nonempty("Variants", &variants, |s, variants| {
             append_fields(s, variants, recursive)
@@ -470,12 +579,12 @@ pub fn build_explain_drilldown_doc(
         // The object's own fields expand ONE level without `--recursive` —
         // the auto-expand this view exists for; `--recursive` still governs
         // whether each of THOSE fields expands further, via `append_fields`.
-        let children: Vec<&FieldNode> = f.children.iter().collect();
+        let children = sorted_by_name(f.children.iter());
         doc = doc.section_if_nonempty("Fields", &children, |s, children| {
             append_fields(s, children, recursive)
         });
     } else {
-        let all: Vec<&FieldNode> = fields.iter().collect();
+        let all = sorted_by_name(fields.iter());
         doc = doc.section("Fields", |s| append_fields(s, &all, recursive));
     }
     doc.with_data(ExplainDrilldownOutput {
