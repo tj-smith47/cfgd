@@ -29,9 +29,13 @@ Set Framerate 50
 # PATH export is what makes `cfgd` and `kubectl cfgd` mean the tree that was
 # just built rather than whatever release happens to be installed. The empty
 # COSIGN_PASSWORD matches the passwordless demo key, so the signing pushes
-# never stop at a prompt the recording cannot answer.
+# never stop at a prompt the recording cannot answer. CFGD_THEME is pinned
+# because this tape records on the HOST, where cfgd reads the recording
+# operator's own ~/.config/cfgd — an operator whose config names a preset would
+# publish a GIF in that preset while every container-recorded tape shows the
+# default one.
 Hide
-Type "export KUBECONFIG=$HOME/.cache/cfgd-debug/demo-k8s/kubeconfig PATH=$HOME/.cache/cfgd-debug/demo-k8s/bin:$PATH COSIGN_PASSWORD="
+Type "export KUBECONFIG=$HOME/.cache/cfgd-debug/demo-k8s/kubeconfig PATH=$HOME/.cache/cfgd-debug/demo-k8s/bin:$PATH COSIGN_PASSWORD= CFGD_THEME=default"
 Enter
 Sleep 500ms
 Type "cd $HOME/.cache/cfgd-debug/demo-k8s/fixture"
