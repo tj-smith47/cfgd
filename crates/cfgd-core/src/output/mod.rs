@@ -12,7 +12,7 @@ pub mod theme;
 pub use theme::Theme;
 
 pub mod component;
-pub use component::{Component, KvPair};
+pub use component::{CommandPair, Component, KvPair};
 
 pub mod renderer;
 

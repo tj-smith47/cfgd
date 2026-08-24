@@ -37,11 +37,7 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
             renderer.render_kv_block(sink, depth, pairs);
         }
         Component::CommandList { pairs } => {
-            let pairs: Vec<(String, String)> = pairs
-                .iter()
-                .map(|p| (p.key.clone(), p.value.clone()))
-                .collect();
-            renderer.render_command_list(sink, depth, &pairs);
+            renderer.render_command_list(sink, depth, pairs);
         }
         Component::Bullet { text } => {
             renderer.render_bullet(sink, depth, text, None);

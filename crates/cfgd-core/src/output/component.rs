@@ -199,17 +199,27 @@ impl KvPair {
     }
 }
 
-/// A `command_list` row: a shell command and its description, nothing else.
+/// A `command_list` row: a shell command (or a `name <type>` pair) and its
+/// description.
 ///
 /// `KvPair`'s `annotation` slot exists so a data-carrying row can style a
-/// trailing note about its value; a `command_list` row has no such slot
-/// rendered anywhere (`render_doc` converts `CommandList` to bare
-/// `(String, String)` pairs before handing them to the renderer), so this
-/// type carries only what can actually reach the screen.
+/// trailing note about its value; a `command_list` row has no such slot, so
+/// this type carries only what can actually reach the screen.
 #[derive(Debug, Clone, Serialize)]
 pub struct CommandPair {
     pub key: String,
     pub value: String,
+    /// A span INSIDE `key` the renderer paints with its own type colour — the
+    /// `<[]ModuleFileEntry>` half of a `cfgd explain` field row, so a field's
+    /// name and its type read as two columns rather than one coat.
+    ///
+    /// The same split `KvPair::value_role` takes, for the same reason: the
+    /// renderer folds `key` through [`crate::output::cursor_safe`], which
+    /// would eat a coat a caller applied itself, so the caller names the span
+    /// and the renderer owns the paint. Never serialized — display-only, and a
+    /// `-o json` reader sees the same `{key, value}` row with or without it.
+    #[serde(skip)]
+    pub type_span: Option<String>,
 }
 
 impl CommandPair {
@@ -217,7 +227,24 @@ impl CommandPair {
         Self {
             key: k.into(),
             value: v.into(),
+            type_span: None,
         }
+    }
+
+    /// A row whose `type_span` substring of `key` is painted with the
+    /// renderer's type colour.
+    pub fn typed(k: impl Into<String>, type_span: impl Into<String>, v: impl Into<String>) -> Self {
+        Self {
+            key: k.into(),
+            value: v.into(),
+            type_span: Some(type_span.into()),
+        }
+    }
+}
+
+impl<K: Into<String>, V: Into<String>> From<(K, V)> for CommandPair {
+    fn from((k, v): (K, V)) -> Self {
+        Self::new(k, v)
     }
 }
 

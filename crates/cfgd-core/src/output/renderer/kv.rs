@@ -27,7 +27,7 @@
 use unicode_width::UnicodeWidthStr;
 
 use super::{Emitting, Renderer, Writer, indent_prefix};
-use crate::output::{KvPair, Verbosity, cursor_safe};
+use crate::output::{CommandPair, KvPair, Verbosity, cursor_safe};
 
 /// `text` followed by enough spaces to reach `width` TERMINAL COLUMNS.
 ///
@@ -72,12 +72,7 @@ impl Renderer {
 
     /// Render a CommandList immediately. Public crate entry — the Doc render
     /// path reaches the renderer here.
-    pub(crate) fn render_command_list(
-        &self,
-        w: &dyn Writer,
-        depth: usize,
-        pairs: &[(String, String)],
-    ) {
+    pub(crate) fn render_command_list(&self, w: &dyn Writer, depth: usize, pairs: &[CommandPair]) {
         self.emit_with(w, |e| e.render_command_list(depth, pairs));
     }
 
@@ -223,6 +218,34 @@ impl Emitting<'_> {
         }
     }
 
+    /// The rendered left column of one `command_list` row: the folded key in
+    /// the renderer's own key coat, with the row's `type_span` (when it names
+    /// one) painted `theme.accent` instead.
+    ///
+    /// The coat goes on AFTER the fold, exactly as `compose_kv_value`'s role
+    /// tint does and for the same reason: `cursor_safe` strips ANSI, so a
+    /// caller that painted the span itself would have it eaten by the very
+    /// fold that makes the untrusted half safe. With colour off every
+    /// `apply_to` is the identity, so the three joined spans are byte-identical
+    /// to the single-coat row this replaced.
+    ///
+    /// A span the key does not contain paints nothing — a row cannot half-tint
+    /// itself over a key the fold reshaped.
+    fn paint_command_key(&self, key: &str, type_span: &Option<String>) -> String {
+        let Some(span) = type_span.as_deref().filter(|s| !s.is_empty()) else {
+            return self.theme.secondary.apply_to(key).to_string();
+        };
+        let Some(at) = key.find(span) else {
+            return self.theme.secondary.apply_to(key).to_string();
+        };
+        format!(
+            "{}{}{}",
+            self.theme.secondary.apply_to(&key[..at]),
+            self.theme.accent.apply_to(span),
+            self.theme.secondary.apply_to(&key[at + span.len()..]),
+        )
+    }
+
     /// Collect one aligned "command — description" block at `depth`.
     ///
     /// `render_kv_block`'s counterpart for a list whose left column names a
@@ -243,7 +266,7 @@ impl Emitting<'_> {
     /// A row with no description at all renders its left column alone: the
     /// em-dash would introduce nothing, and the padding ahead of it would be
     /// trailing whitespace.
-    pub(crate) fn render_command_list(&mut self, depth: usize, pairs: &[(String, String)]) {
+    pub(crate) fn render_command_list(&mut self, depth: usize, pairs: &[CommandPair]) {
         if self.verbosity == Verbosity::Quiet || pairs.is_empty() {
             return;
         }
@@ -251,22 +274,31 @@ impl Emitting<'_> {
         // Folded before the key column is measured, for the same reason
         // `render_kv_block` folds: the width has to describe the text that
         // actually renders.
-        let rows: Vec<(String, String)> = pairs
+        let rows: Vec<(String, String, Option<String>)> = pairs
             .iter()
-            .map(|(k, v)| (cursor_safe(k), cursor_safe(v)))
+            .map(|p| {
+                (
+                    cursor_safe(&p.key),
+                    cursor_safe(&p.value),
+                    p.type_span.as_deref().map(cursor_safe),
+                )
+            })
             .collect();
         let key_col = rows
             .iter()
-            .map(|(k, _)| UnicodeWidthStr::width(k.as_str()))
+            .map(|(k, _, _)| UnicodeWidthStr::width(k.as_str()))
             .max()
             .unwrap_or(0);
-        for (k, v) in &rows {
+        for (k, v, type_span) in &rows {
             if v.is_empty() {
-                self.out
-                    .push(format!("{}{}", prefix, self.theme.secondary.apply_to(k)));
+                self.out.push(format!(
+                    "{}{}",
+                    prefix,
+                    self.paint_command_key(k, type_span)
+                ));
                 continue;
             }
-            let key = self.theme.secondary.apply_to(pad_to_width(k, key_col));
+            let key = self.paint_command_key(&pad_to_width(k, key_col), type_span);
             let opening = format!("{}{} {} ", prefix, key, GLUE_DASH);
             // Measured from the parts rather than from `opening`, which
             // carries the key's SGR: the prefix is spaces, the padded key is
@@ -298,6 +330,10 @@ mod tests {
     }
 
     use super::super::NarrowSink;
+
+    fn cp(k: &str, v: &str) -> crate::output::CommandPair {
+        crate::output::CommandPair::from((k, v))
+    }
 
     fn narrow(cols: usize) -> (Renderer, NarrowSink, Arc<Mutex<String>>) {
         let (r, sink, buf) = capture();
@@ -345,9 +381,9 @@ mod tests {
         r.render_command_list(
             &sink,
             0,
-            &[(
-                "cfgd apply".to_string(),
-                "reconcile every declared surface on this machine".to_string(),
+            &[cp(
+                "cfgd apply",
+                "reconcile every declared surface on this machine",
             )],
         );
         let out = crate::test_helpers::captured_text(&buf);
@@ -377,11 +413,8 @@ mod tests {
             &sink,
             0,
             &[
-                (
-                    "ls".to_string(),
-                    "list every declared module by name".to_string(),
-                ),
-                ("cfgd module list".to_string(), "short".to_string()),
+                cp("ls", "list every declared module by name"),
+                cp("cfgd module list", "short"),
             ],
         );
         let out = crate::test_helpers::captured_text(&buf);
@@ -406,9 +439,9 @@ mod tests {
     /// other test here because a capture pins colour off.
     #[test]
     fn colour_does_not_move_the_wrap_point() {
-        let rows = [(
-            "cfgd apply".to_string(),
-            "reconcile every declared surface on this machine".to_string(),
+        let rows = [cp(
+            "cfgd apply",
+            "reconcile every declared surface on this machine",
         )];
         let (plain, plain_sink, plain_buf) = narrow(40);
         plain.render_command_list(&plain_sink, 0, &rows);
@@ -438,9 +471,9 @@ mod tests {
         r.render_command_list(
             &sink,
             0,
-            &[(
-                "cfgd module registry add https://example".to_string(),
-                "register a module registry and refresh its index".to_string(),
+            &[cp(
+                "cfgd module registry add https://example",
+                "register a module registry and refresh its index",
             )],
         );
         let out = crate::test_helpers::captured_text(&buf);
@@ -456,10 +489,7 @@ mod tests {
         r.render_command_list(
             &sink,
             0,
-            &[
-                ("object".to_string(), String::new()),
-                ("string".to_string(), "a bare command string".to_string()),
-            ],
+            &[cp("object", ""), cp("string", "a bare command string")],
         );
         let out = crate::test_helpers::captured_text(&buf);
         let lines: Vec<&str> = out.lines().collect();
@@ -472,14 +502,7 @@ mod tests {
     #[test]
     fn command_list_aligns_a_multibyte_command_by_columns_not_bytes() {
         let (r, sink, buf) = capture();
-        r.render_command_list(
-            &sink,
-            0,
-            &[
-                ("größe".to_string(), "one".to_string()),
-                ("ls".to_string(), "two".to_string()),
-            ],
-        );
+        r.render_command_list(&sink, 0, &[cp("größe", "one"), cp("ls", "two")]);
         let out = crate::test_helpers::captured_text(&buf);
         assert!(out.contains("größe — one"), "got: {out:?}");
         assert!(out.contains("ls    — two"), "got: {out:?}");
@@ -688,11 +711,7 @@ mod tests {
     #[test]
     fn command_list_glues_with_em_dash_not_a_whitespace_gap() {
         let (r, sink, buf) = capture();
-        r.render_command_list(
-            &sink,
-            0,
-            &[("cfgd apply".into(), "apply configuration".into())],
-        );
+        r.render_command_list(&sink, 0, &[cp("cfgd apply", "apply configuration")]);
         let out = crate::test_helpers::captured_text(&buf);
         assert!(
             out.contains("cfgd apply — apply configuration"),
@@ -708,7 +727,7 @@ mod tests {
     fn command_list_never_wraps_a_key_past_the_kv_width_cap() {
         let (r, sink, buf) = capture();
         let long_command = "cfgd module create <name>"; // 26 chars, > KEY_WIDTH_CAP
-        r.render_command_list(&sink, 0, &[(long_command.into(), "create a module".into())]);
+        r.render_command_list(&sink, 0, &[cp(long_command, "create a module")]);
         let out = crate::test_helpers::captured_text(&buf);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 1, "expected one line, got: {out:?}");
@@ -726,8 +745,8 @@ mod tests {
             &sink,
             0,
             &[
-                ("cfgd apply".into(), "apply configuration".into()),
-                ("cfgd module create <name>".into(), "create a module".into()),
+                cp("cfgd apply", "apply configuration"),
+                cp("cfgd module create <name>", "create a module"),
             ],
         );
         let out = crate::test_helpers::captured_text(&buf);
@@ -752,11 +771,7 @@ mod tests {
     fn command_list_nests_under_a_top_level_heading_with_no_blank() {
         let (r, sink, buf) = capture();
         r.render_heading(&sink, "Next Steps");
-        r.render_command_list(
-            &sink,
-            0,
-            &[("cfgd apply".into(), "apply configuration".into())],
-        );
+        r.render_command_list(&sink, 0, &[cp("cfgd apply", "apply configuration")]);
         let out = crate::test_helpers::captured_text(&buf);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(
@@ -891,7 +906,7 @@ mod tests {
         let buf = Arc::new(Mutex::new(String::new()));
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Quiet);
-        r.render_command_list(&sink, 0, &[("cfgd apply".into(), "apply".into())]);
+        r.render_command_list(&sink, 0, &[cp("cfgd apply", "apply")]);
         assert!(crate::test_helpers::captured_text(&buf).is_empty());
     }
 }

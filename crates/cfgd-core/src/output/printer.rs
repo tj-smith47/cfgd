@@ -486,17 +486,13 @@ impl Printer {
     /// A "command — description" list — `kv_block`'s counterpart for a left
     /// column that is a shell command rather than a data-carrying key. See
     /// `Renderer::render_command_list` for why it needs its own layout.
-    pub fn command_list<I, K, V>(&self, pairs: I)
+    pub fn command_list<I>(&self, pairs: I)
     where
-        I: IntoIterator<Item = (K, V)>,
-        K: Into<String>,
-        V: Into<String>,
+        I: IntoIterator,
+        I::Item: Into<crate::output::CommandPair>,
     {
         let depth = self.renderer.enforce_structural_top_level(0);
-        let pairs: Vec<(String, String)> = pairs
-            .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
-            .collect();
+        let pairs: Vec<crate::output::CommandPair> = pairs.into_iter().map(Into::into).collect();
         self.renderer
             .render_command_list(self.sink_stderr.as_ref(), depth, &pairs);
     }

@@ -180,16 +180,12 @@ impl Doc {
     /// A "command — description" list (see [`Component::CommandList`]) —
     /// `kv_block`'s counterpart for a left column that is a shell command
     /// rather than a data-carrying key.
-    pub fn command_list<I, K, V>(mut self, pairs: I) -> Self
+    pub fn command_list<I>(mut self, pairs: I) -> Self
     where
-        I: IntoIterator<Item = (K, V)>,
-        K: Into<String>,
-        V: Into<String>,
+        I: IntoIterator,
+        I::Item: Into<CommandPair>,
     {
-        let pairs: Vec<CommandPair> = pairs
-            .into_iter()
-            .map(|(k, v)| CommandPair::new(k, v))
-            .collect();
+        let pairs: Vec<CommandPair> = pairs.into_iter().map(Into::into).collect();
         if !pairs.is_empty() {
             self.children.push(Component::CommandList { pairs });
         }
@@ -456,16 +452,12 @@ impl SectionBuilder {
     /// A "command — description" list (see [`Component::CommandList`]) —
     /// `kv_block`'s counterpart for a left column that is a shell command
     /// rather than a data-carrying key.
-    pub fn command_list<I, K, V>(mut self, pairs: I) -> Self
+    pub fn command_list<I>(mut self, pairs: I) -> Self
     where
-        I: IntoIterator<Item = (K, V)>,
-        K: Into<String>,
-        V: Into<String>,
+        I: IntoIterator,
+        I::Item: Into<CommandPair>,
     {
-        let pairs: Vec<CommandPair> = pairs
-            .into_iter()
-            .map(|(k, v)| CommandPair::new(k, v))
-            .collect();
+        let pairs: Vec<CommandPair> = pairs.into_iter().map(Into::into).collect();
         if !pairs.is_empty() {
             self.children.push(Component::CommandList { pairs });
         }

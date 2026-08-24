@@ -9,13 +9,14 @@
 #[cfg(feature = "test-helpers")]
 mod baseline;
 #[cfg(feature = "test-helpers")]
+mod command_type_span;
+#[cfg(feature = "test-helpers")]
 mod corners;
 #[cfg(feature = "test-helpers")]
 mod cursor_safe_slots;
 mod fences;
 #[cfg(feature = "test-helpers")]
 mod indent;
-#[cfg(feature = "test-helpers")]
 mod kv_role;
 #[cfg(feature = "test-helpers")]
 mod regression;
