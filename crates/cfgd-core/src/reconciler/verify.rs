@@ -423,24 +423,54 @@ pub fn env_item_declared_line(
     }
 }
 
-/// The DISPLAY `(expected, actual)` pair for one [`VerifyResult`], recomputing
-/// an env-var/alias row's real declared line via [`env_item_declared_line`]
-/// and passing every other kind through unchanged — the one place that
-/// recompute happens, so a display surface reaches for this instead of
-/// hand-rolling the same `Some(line) => ... None => ...` match at each call
-/// site. Same "never call this on a value about to be persisted or shipped to
-/// the gateway" rule as `env_item_declared_line`: this is a display-only
-/// recompute, not a second source of truth for what gets recorded.
+/// The line the primary managed env file ACTUALLY holds for `resource_id`
+/// right now: the deployed line whose dialect-rendered prefix the CURRENT
+/// declaration of that name claims, so a hand-edited value is recognized as
+/// this item's line rather than as a stranger's. `None` when nothing on disk
+/// claims the name (never written, or deleted by hand) or when the file
+/// cannot be read at all — both of which a caller words as an absence.
+fn deployed_env_item_line(resource_type: &str, resource_id: &str) -> Option<String> {
+    let platform = EnvPlatform::current();
+    let home = expand_tilde(std::path::Path::new("~"));
+    let content =
+        std::fs::read_to_string(super::env_engine::primary_env_file_path(&home, platform)).ok()?;
+    let claims: Vec<String> = match resource_type {
+        "env-var" => super::env_files::env_var_line_prefix(resource_id, platform)
+            .into_iter()
+            .collect(),
+        "alias" => super::env_files::alias_line_prefixes(resource_id, platform),
+        _ => return None,
+    };
+    content
+        .lines()
+        .find(|line| claims.iter().any(|p| line.starts_with(p.as_str())))
+        .map(|line| line.trim_end().to_string())
+}
+
+/// The DISPLAY `(want, have)` pair for one env-var/alias row, recomputed from
+/// the machine: `want` is the line the current declaration renders as
+/// ([`env_item_declared_line`]), `have` is the line the managed file actually
+/// holds ([`deployed_env_item_line`]), or [`crate::Absence::Missing`] when no
+/// deployed line claims the name. `None` for any other resource kind, and for
+/// an item no longer declared — the caller keeps the operands it already has.
+///
+/// This is the one place that recompute happens, so `diff`, `verify`,
+/// `status` and `status --scan` cannot word the same env var four ways. Same
+/// "never call this on a value about to be persisted or shipped to the
+/// gateway" rule as `env_item_declared_line`: both halves are real values,
+/// which is exactly what the opaque `current` / `missing or changed` markers
+/// exist to keep out of `drift_events`.
 pub fn env_item_display_values(
-    r: &VerifyResult,
+    resource_type: &str,
+    resource_id: &str,
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
     modules: &[ResolvedModule],
-) -> (String, String) {
-    match env_item_declared_line(&r.resource_type, &r.resource_id, env, aliases, modules) {
-        Some(line) => (line, r.actual.clone()),
-        None => (r.expected.clone(), r.actual.clone()),
-    }
+) -> Option<(String, String)> {
+    let declared = env_item_declared_line(resource_type, resource_id, env, aliases, modules)?;
+    let deployed = deployed_env_item_line(resource_type, resource_id)
+        .unwrap_or_else(|| crate::Absence::Missing.as_str().to_string());
+    Some((declared, deployed))
 }
 
 /// Verify a single env file's content matches expected.

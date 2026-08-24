@@ -745,7 +745,7 @@ Packages
 
 Shell
   profile:work
-    ⚠ alias: ll — want: alias ll="ls -la", have: missing or changed
+    ⚠ alias: ll — want: alias ll="ls -la", have: alias ll="ls -lah"
 
 System
   profile:work
@@ -841,7 +841,9 @@ A managed file whose `source` cannot be found is reported as drift here and by `
 `actual`. `kind` matches `cfgd verify`'s `resourceType` for the same check byte-for-byte, so a
 consumer joining this against a `cfgd verify` or recorded-drift row needs no second vocabulary.
 `env-var` and `alias` are per-declared-item checks (a mismatched line in `~/.cfgd.env`); `env`
-and `env-rc` are whole-file and rc-source-line checks that predate them:
+and `env-rc` are whole-file and rc-source-line checks that predate them. Both operands of a
+per-item check are real values: `expected` is the line the declaration renders as, `actual` is
+the line the managed file holds right now, or `missing` when no line in it claims that name:
 
 ```json
 {
@@ -850,7 +852,7 @@ and `env-rc` are whole-file and rc-source-line checks that predate them:
       "kind": "alias",
       "name": "ll",
       "expected": "alias ll=\"ls -la\"",
-      "actual": "missing or changed"
+      "actual": "alias ll=\"ls -lah\""
     }
   ]
 }

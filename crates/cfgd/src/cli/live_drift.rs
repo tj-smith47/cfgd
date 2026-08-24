@@ -25,7 +25,8 @@ use crate::packages;
 /// reaching here, and `DriftEvent` carries no field for it.
 ///
 /// `env`/`aliases`/`modules` recompute an env-var/alias row's opaque
-/// `current`/`missing or changed` marker into the real declared line via
+/// `current`/`missing or changed` markers into the real declared line and the
+/// real line the managed file holds, via
 /// [`cfgd_core::reconciler::env_item_display_values`] — safe here precisely
 /// because `id: 0` means this `DriftEvent` is never persisted or shipped to
 /// the gateway, only rendered into this command's own human/`-o json`
@@ -41,8 +42,14 @@ pub(super) fn drift_event_from(
     aliases: &[cfgd_core::config::ShellAlias],
     modules: &[cfgd_core::modules::ResolvedModule],
 ) -> cfgd_core::state::DriftEvent {
-    let (expected, actual) =
-        cfgd_core::reconciler::env_item_display_values(r, env, aliases, modules);
+    let (expected, actual) = cfgd_core::reconciler::env_item_display_values(
+        &r.resource_type,
+        &r.resource_id,
+        env,
+        aliases,
+        modules,
+    )
+    .unwrap_or_else(|| (r.expected.clone(), r.actual.clone()));
     cfgd_core::state::DriftEvent {
         id: 0,
         timestamp: cfgd_core::utc_now_iso8601(),

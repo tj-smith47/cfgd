@@ -224,15 +224,17 @@ pub fn cmd_diff(
             for r in results {
                 drift = true;
                 // An env-var/alias row's `expected`/`actual` are opaque markers —
-                // the declared value never flows into a persisted or gateway-shipped
-                // drift record — so recompute the real line here, for this
-                // terminal/`-o json` display only.
+                // neither real value ever flows into a persisted or gateway-shipped
+                // drift record — so recompute both here, for this terminal/`-o json`
+                // display only.
                 let (expected, actual) = cfgd_core::reconciler::env_item_display_values(
-                    &r,
+                    &r.resource_type,
+                    &r.resource_id,
                     &resolved.merged.env,
                     &resolved.merged.aliases,
                     &resolved_modules,
-                );
+                )
+                .unwrap_or_else(|| (r.expected.clone(), r.actual.clone()));
                 let (expected, actual) =
                     cfgd_core::output::drift_operands(&r.resource_type, &expected, &actual);
                 // The payload keeps every finding; only the human report drops
@@ -609,14 +611,16 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                             && owns.contains(r.resource_id.as_str())
                     }) {
                         drift = true;
-                        // Opaque markers never carry the declared value — recompute the
-                        // real line here, for this terminal/`-o json` display only.
+                        // Opaque markers carry neither real value — recompute both
+                        // here, for this terminal/`-o json` display only.
                         let (expected, actual) = cfgd_core::reconciler::env_item_display_values(
-                            r,
+                            &r.resource_type,
+                            &r.resource_id,
                             &full_resolved.merged.env,
                             &full_resolved.merged.aliases,
                             &resolved_modules,
-                        );
+                        )
+                        .unwrap_or_else(|| (r.expected.clone(), r.actual.clone()));
                         let (expected, actual) =
                             cfgd_core::output::drift_operands(&r.resource_type, &expected, &actual);
                         group
@@ -1084,6 +1088,29 @@ mod tests {
         assert!(
             human.contains("alias: ll"),
             "the drifted alias must be named: {human}"
+        );
+        // The row names both real lines: what the declaration renders as, and
+        // what the file was hand-edited to hold. Pinned against production's
+        // own renderer and the exact bytes the fixture wrote, so a regression
+        // back to an opaque `have` marker fails here.
+        let declared = cfgd_core::config::ShellAlias {
+            name: "ll".to_string(),
+            command: "ls -la".to_string(),
+        };
+        let declared_line = cfgd_core::reconciler::env_item_declared_line(
+            "alias",
+            "ll",
+            &[],
+            std::slice::from_ref(&declared),
+            &[],
+        )
+        .expect("alias renders a declared line");
+        assert!(
+            human.contains(&cfgd_core::output::drift_detail(
+                &declared_line,
+                &hand_edited_line
+            )),
+            "the row must show the declared line against the line on disk: {human}"
         );
     }
 

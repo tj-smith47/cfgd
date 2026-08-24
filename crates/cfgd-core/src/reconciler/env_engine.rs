@@ -313,6 +313,18 @@ fn comment(owner: Option<&String>) -> String {
     }
 }
 
+/// The primary managed env file for `platform` — the first `ManagedFile`
+/// [`env_targets`] pushes, and the only one the per-item checks read. Named
+/// once here because a display surface reads that file back to show what a
+/// drifted item ACTUALLY holds, and a second spelling of the path would let
+/// the reader and the writer disagree about which file that is.
+pub(super) fn primary_env_file_path(home: &Path, platform: EnvPlatform) -> PathBuf {
+    match platform {
+        EnvPlatform::Windows => home.join(".cfgd-env.ps1"),
+        EnvPlatform::Linux | EnvPlatform::MacOs | EnvPlatform::FreeBsd => home.join(".cfgd.env"),
+    }
+}
+
 fn unix_targets(
     content: EnvContent<'_>,
     scope: EnvScope,
@@ -330,7 +342,7 @@ fn unix_targets(
     // Interactive (all scopes): the cfgd-owned env file + a source line in the
     // user's interactive rc, plus fish when it's in use.
     out.push(EnvTarget::ManagedFile {
-        path: home.join(".cfgd.env"),
+        path: primary_env_file_path(home, platform),
         content: generate_env_file_content(env, aliases, path_dirs, origins),
         rendered: RenderedCounts::of(env, aliases),
     });
@@ -428,7 +440,7 @@ fn windows_targets(
     } = content;
     // PowerShell env file + dot-source into both profile locations.
     out.push(EnvTarget::ManagedFile {
-        path: home.join(".cfgd-env.ps1"),
+        path: primary_env_file_path(home, EnvPlatform::Windows),
         content: generate_powershell_env_content(env, aliases, path_dirs, origins),
         rendered: RenderedCounts::of(env, aliases),
     });

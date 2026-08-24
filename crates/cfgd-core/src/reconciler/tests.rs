@@ -11561,6 +11561,78 @@ fn verify_env_never_persists_the_declared_value_only_the_opaque_marker() {
     }
 }
 
+/// The counterpart of the rule above: the opaque markers stay OUT of the
+/// stored row, and the display recompute puts real values back at render
+/// time — the declared line against the line the managed file actually
+/// holds. A row rendering `have: missing or changed` names no value at all,
+/// so the reader cannot tell a hand-edited value from a deleted one without
+/// opening the file themselves.
+#[test]
+#[serial_test::serial]
+fn a_drifted_env_row_shows_the_line_the_file_holds_against_the_declared_one() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+
+    let declared = vec![EnvVar {
+        name: "EDITOR".to_string(),
+        value: "nvim".to_string(),
+    }];
+    let edited = vec![EnvVar {
+        name: "EDITOR".to_string(),
+        value: "emacs".to_string(),
+    }];
+    // Both lines come from production's own renderer rather than a POSIX
+    // literal, so the fixture holds whatever dialect this platform writes.
+    let edited_line = super::verify::env_item_declared_line("env-var", "EDITOR", &edited, &[], &[])
+        .expect("the edited var renders a line");
+    let (path, _) = primary_managed_env_target(tmp_home.path(), &declared, &[]);
+    std::fs::write(path, format!("{ENV_FILE_HEADER}\n{edited_line}\n")).unwrap();
+
+    let (want, have) =
+        super::verify::env_item_display_values("env-var", "EDITOR", &declared, &[], &[])
+            .expect("a declared env var recomputes both operands");
+    assert_eq!(
+        want,
+        super::verify::env_item_declared_line("env-var", "EDITOR", &declared, &[], &[]).unwrap(),
+        "want is the line the declaration renders as"
+    );
+    assert_eq!(
+        have, edited_line,
+        "have is the line the file actually holds, not a marker"
+    );
+}
+
+/// A declared item no deployed line claims reads as the shared absence word,
+/// never as a second spelling of it — and a kind that has no managed line at
+/// all recomputes nothing, leaving the caller's own operands standing.
+#[test]
+#[serial_test::serial]
+fn an_env_item_the_file_does_not_hold_reads_as_the_shared_absence_word() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+
+    let declared = vec![EnvVar {
+        name: "EDITOR".to_string(),
+        value: "nvim".to_string(),
+    }];
+    let (path, _) = primary_managed_env_target(tmp_home.path(), &declared, &[]);
+    std::fs::write(path, format!("{ENV_FILE_HEADER}\n")).unwrap();
+
+    let (_, have) =
+        super::verify::env_item_display_values("env-var", "EDITOR", &declared, &[], &[])
+            .expect("a declared env var recomputes both operands");
+    assert_eq!(have, crate::Absence::Missing.as_str());
+
+    assert!(
+        super::verify::env_item_display_values("file", "~/.zshrc", &declared, &[], &[]).is_none(),
+        "a kind with no managed env line recomputes nothing"
+    );
+    assert!(
+        super::verify::env_item_display_values("env-var", "PAGER", &declared, &[], &[]).is_none(),
+        "an item no longer declared recomputes nothing"
+    );
+}
+
 // --- merge_module_env_aliases tests ---
 
 #[test]

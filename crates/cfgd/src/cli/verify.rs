@@ -135,17 +135,19 @@ pub fn cmd_verify(
     // never reach `drift_events`) — but this `results` vec is the DISPLAY
     // copy, rendered below into `build_verify_doc`'s human/`-o json` output,
     // and persistence already happened inside `reconciler::verify` before it
-    // returned. Recomputing here is exactly `diff`'s "opaque markers never
-    // carry the declared value" rule applied to `verify`'s own render.
+    // returned. Recomputing here is exactly `diff`'s "opaque markers carry
+    // neither real value" rule applied to `verify`'s own render.
     for r in &mut results {
-        let (expected, actual) = reconciler::env_item_display_values(
-            r,
+        if let Some((expected, actual)) = reconciler::env_item_display_values(
+            &r.resource_type,
+            &r.resource_id,
             &resolved.merged.env,
             &resolved.merged.aliases,
             &resolved_modules,
-        );
-        r.expected = expected;
-        r.actual = actual;
+        ) {
+            r.expected = expected;
+            r.actual = actual;
+        }
     }
     // A FLEET-wide verify just checked the machine itself, whatever it found —
     // the recorded-state `status` header dates its display from here, and a

@@ -1194,6 +1194,24 @@ pub(super) fn cmd_status(
         last_scan_at,
     };
 
+    // A RECORDED env-var/alias row holds the opaque markers `verify_env_items`
+    // persists, so without this the dashboard and `--scan` word the same env
+    // var two different ways — one naming no value at all. Same display-only
+    // recompute `drift_event_from` runs for a live finding, and the same
+    // reason it is safe: nothing here is written back.
+    for event in &mut output.drift {
+        if let Some((expected, actual)) = cfgd_core::reconciler::env_item_display_values(
+            &event.resource_type,
+            &event.resource_id,
+            &resolved.merged.env,
+            &resolved.merged.aliases,
+            &resolved_modules,
+        ) {
+            event.expected = Some(expected);
+            event.actual = Some(actual);
+        }
+    }
+
     // Plain `status` (no --scan/--exit-code) keeps the fast RECORDED-drift
     // dashboard by deliberate design. `--scan` (and `--exit-code`, which
     // implies it), however, must reflect REALITY: a host with no daemon and no
@@ -2506,6 +2524,91 @@ mod tests {
             !editor_line.contains("want: current"),
             "the EDITOR row must not show the opaque marker, got: {editor_line}"
         );
+        assert!(
+            editor_line.contains(&cfgd_core::output::drift_detail(
+                &declared_line,
+                cfgd_core::Absence::Missing.as_str()
+            )),
+            "both operands must be real: the declared line against the absence \
+             the file reports, got: {editor_line}"
+        );
+    }
+
+    /// Plain `cfgd status` renders RECORDED rows and `--scan` renders live
+    /// ones, and both used to word the same drifted env var differently: the
+    /// scan recomputed the declared line while the dashboard printed the
+    /// stored `want: current, have: missing or changed`, which names no value
+    /// at all. Seeds a recorded row carrying exactly the opaque markers
+    /// production persists, then pins that both modes render the same line.
+    #[test]
+    fn plain_status_words_a_recorded_env_row_the_same_way_a_scan_does() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Interactive\n  env:\n    - name: EDITOR\n      value: vim\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("modules")).unwrap();
+
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        std::fs::write(
+            tmp_home
+                .path()
+                .join(crate::cli::helpers::tests::primary_env_file_name()),
+            "# managed by cfgd \u{2014} do not edit\n",
+        )
+        .unwrap();
+
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        {
+            let state = cfgd_core::state::StateStore::open(&state_dir.join("state.db")).unwrap();
+            state
+                .record_drift(
+                    "env-var",
+                    "EDITOR",
+                    Some("current"),
+                    Some("missing or changed"),
+                    cfgd_core::config::LOCAL_LAYER,
+                )
+                .unwrap();
+        }
+
+        let declared_env = vec![cfgd_core::config::EnvVar {
+            name: "EDITOR".to_string(),
+            value: "vim".to_string(),
+        }];
+        let declared_line = cfgd_core::reconciler::env_item_declared_line(
+            "env-var",
+            "EDITOR",
+            &declared_env,
+            &[],
+            &[],
+        )
+        .expect("EDITOR renders a declared line");
+        let expected_detail =
+            cfgd_core::output::drift_detail(&declared_line, cfgd_core::Absence::Missing.as_str());
+
+        let cli = test_cli_for(config_path, &state_dir);
+        for scan in [false, true] {
+            let (printer, buf) = test_printers();
+            cmd_status(&cli, &printer, None, false, scan, false).unwrap();
+            drop(printer);
+            let human = cfgd_core::test_helpers::captured_text(&buf);
+            let editor_line = human
+                .lines()
+                .find(|l| l.contains("env: EDITOR"))
+                .unwrap_or_else(|| panic!("expected an EDITOR env drift line, got: {human}"));
+            assert!(
+                editor_line.contains(&expected_detail),
+                "scan={scan} must render the same real operands, got: {editor_line}"
+            );
+        }
     }
 
     #[test]
