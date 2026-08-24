@@ -1176,7 +1176,7 @@ spec: {}
     let config: CfgdConfig = serde_yaml::from_str(yaml).unwrap();
     let ai = config.spec.ai.unwrap_or_default();
     assert_eq!(ai.provider, "claude");
-    assert_eq!(ai.model, "claude-sonnet-4-6");
+    assert_eq!(ai.model, "claude-sonnet-5");
     assert_eq!(ai.api_key_env, "ANTHROPIC_API_KEY");
 }
 
@@ -1190,12 +1190,12 @@ metadata:
 spec:
   ai:
     provider: claude
-    model: claude-opus-4-6
+    model: claude-opus-5
     apiKeyEnv: MY_CLAUDE_KEY
 "#;
     let config: CfgdConfig = serde_yaml::from_str(yaml).unwrap();
     let ai = config.spec.ai.unwrap_or_default();
-    assert_eq!(ai.model, "claude-opus-4-6");
+    assert_eq!(ai.model, "claude-opus-5");
     assert_eq!(ai.api_key_env, "MY_CLAUDE_KEY");
 }
 
@@ -1545,6 +1545,52 @@ fn secret_spec_neither_target_nor_envs_fails_validation() {
         "unexpected error: {}",
         err_msg
     );
+}
+
+/// A `template` on a sops FILE source is refused: a decrypted file is content,
+/// not a value, so there is nothing for `${secret:value}` to stand for.
+#[test]
+fn secret_spec_template_is_refused_on_an_encrypted_file_source() {
+    let specs = vec![SecretSpec {
+        source: "secrets/api-key.enc".to_string(),
+        target: Some(std::path::PathBuf::from("~/.config/app/key")),
+        template: Some("key: ${secret:value}".to_string()),
+        backend: None,
+        envs: None,
+    }];
+    let err = validate_secret_specs(&specs).unwrap_err().to_string();
+    assert!(
+        err.contains("'template' applies only to a provider reference"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        err.contains("op://"),
+        "the error names the accepted schemes: {err}"
+    );
+}
+
+/// A `template` without the placeholder would write the template and drop
+/// the secret on the floor; it is refused at validation instead.
+#[test]
+fn secret_spec_template_must_carry_the_value_placeholder() {
+    let specs = vec![SecretSpec {
+        source: "op://Work/GitHub/token".to_string(),
+        target: Some(std::path::PathBuf::from("~/.config/gh/token")),
+        template: Some("token: ${secret:token}".to_string()),
+        backend: None,
+        envs: None,
+    }];
+    let err = validate_secret_specs(&specs).unwrap_err().to_string();
+    assert!(
+        err.contains("must contain ${secret:value}"),
+        "unexpected error: {err}"
+    );
+
+    let ok = vec![SecretSpec {
+        template: Some("token: ${secret:value}".to_string()),
+        ..specs.into_iter().next().unwrap()
+    }];
+    validate_secret_specs(&ok).expect("a provider reference with the placeholder validates");
 }
 
 #[test]

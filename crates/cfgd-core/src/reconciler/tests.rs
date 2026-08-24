@@ -6603,6 +6603,7 @@ fn format_action_description_secret_resolve_env() {
         provider: "vault".into(),
         reference: "secret/data/gh#token".into(),
         envs: vec!["GH_TOKEN".into(), "GITHUB_TOKEN".into()],
+        template: None,
         origin: "local".into(),
     });
     let desc = format_action_description(&action);
@@ -7078,12 +7079,14 @@ fn format_plan_items_secret_actions() {
                 provider: "vault".into(),
                 reference: "secret/gh#token".into(),
                 target: PathBuf::from("/tmp/token"),
+                template: None,
                 origin: "local".into(),
             }),
             Action::Secret(SecretAction::ResolveEnv {
                 provider: "1password".into(),
                 reference: "Vault/Secret".into(),
                 envs: vec!["TOKEN".into()],
+                template: None,
                 origin: "local".into(),
             }),
             Action::Secret(SecretAction::Skip {
@@ -8086,6 +8089,7 @@ fn apply_secret_resolve_writes_provider_value_to_file() {
                 provider: "vault".to_string(),
                 reference: "secret/data/app#key".to_string(),
                 target: target.clone(),
+                template: None,
                 origin: "local".to_string(),
             })],
         )],
@@ -8120,6 +8124,59 @@ fn apply_secret_resolve_writes_provider_value_to_file() {
     assert_eq!(content, "provider-secret-value");
 }
 
+/// `spec.secrets[].template` wraps the resolved value on BOTH delivery paths
+/// of one entry: the file gets the rendered template, and so does every env
+/// var, so a reader of either sees the same bytes. The value is substituted
+/// for every `${secret:value}` and nothing else in the template is touched.
+#[test]
+fn apply_secret_resolve_renders_template_around_the_value_for_file_and_env() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("gh-token.yaml");
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.secret_providers.push(Box::new(
+        MockSecretProvider::new("1password").with_resolve_result("ghp_abc123"),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+    let template = Some("token: ${secret:value}\nhome: $HOME\n".to_string());
+
+    let mut collector: Vec<(String, String)> = Vec::new();
+    reconciler
+        .apply_secret_action(
+            &SecretAction::Resolve {
+                provider: "1password".to_string(),
+                reference: "Work/GitHub/token".to_string(),
+                target: target.clone(),
+                template: template.clone(),
+                origin: "local".to_string(),
+            },
+            dir.path(),
+            &mut collector,
+        )
+        .expect("resolve should succeed");
+    reconciler
+        .apply_secret_action(
+            &SecretAction::ResolveEnv {
+                provider: "1password".to_string(),
+                reference: "Work/GitHub/token".to_string(),
+                envs: vec!["GITHUB_TOKEN".to_string()],
+                template,
+                origin: "local".to_string(),
+            },
+            dir.path(),
+            &mut collector,
+        )
+        .expect("resolve-env should succeed");
+
+    let rendered = "token: ghp_abc123\nhome: $HOME\n";
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), rendered);
+    assert_eq!(
+        collector,
+        vec![("GITHUB_TOKEN".to_string(), rendered.to_string())]
+    );
+}
+
 #[test]
 fn apply_secret_resolve_unknown_provider_errors() {
     let dir = tempfile::tempdir().unwrap();
@@ -8139,6 +8196,7 @@ fn apply_secret_resolve_unknown_provider_errors() {
                 provider: "vault".to_string(),
                 reference: "secret/data/app#key".to_string(),
                 target: target.clone(),
+                template: None,
                 origin: "local".to_string(),
             })],
         )],
@@ -8186,6 +8244,7 @@ fn apply_secret_resolve_env_collects_env_vars() {
         provider: "vault".to_string(),
         reference: "secret/data/gh#token".to_string(),
         envs: vec!["GH_TOKEN".to_string(), "GITHUB_TOKEN".to_string()],
+        template: None,
         origin: "local".to_string(),
     };
 
@@ -8245,6 +8304,7 @@ fn apply_secret_action_resource_ids_fold_the_target_path_to_posix() {
                 provider: "vault".to_string(),
                 reference: "secret/data/gh#token".to_string(),
                 target: tmp.path().join(r"win\resolved.txt"),
+                template: None,
                 origin: "local".to_string(),
             },
             format!(
@@ -8330,6 +8390,7 @@ fn one_reference_spawns_its_provider_once_across_both_of_its_occurrences() {
                 provider: "vault".to_string(),
                 reference: "secret/data/gh#token".to_string(),
                 target: tmp.path().join("token.txt"),
+                template: None,
                 origin: "local".to_string(),
             },
             tmp.path(),
@@ -8342,6 +8403,7 @@ fn one_reference_spawns_its_provider_once_across_both_of_its_occurrences() {
                 provider: "vault".to_string(),
                 reference: "secret/data/gh#token".to_string(),
                 envs: vec!["GH_TOKEN".to_string()],
+                template: None,
                 origin: "local".to_string(),
             },
             tmp.path(),
@@ -8386,6 +8448,7 @@ fn two_references_of_one_provider_each_spawn_their_own_resolution() {
                     provider: "vault".to_string(),
                     reference: reference.to_string(),
                     envs: vec!["TOKEN".to_string()],
+                    template: None,
                     origin: "local".to_string(),
                 },
                 tmp.path(),
@@ -8468,6 +8531,7 @@ fn a_second_run_resolves_its_own_secrets() {
                     provider: "vault".to_string(),
                     reference: "secret/data/gh#token".to_string(),
                     envs: vec!["GH_TOKEN".to_string()],
+                    template: None,
                     origin: "local".to_string(),
                 },
                 tmp.path(),
@@ -8495,6 +8559,7 @@ fn apply_secret_resolve_env_unknown_provider_errors() {
                 provider: "vault".to_string(),
                 reference: "secret/data/gh#token".to_string(),
                 envs: vec!["GH_TOKEN".to_string()],
+                template: None,
                 origin: "local".to_string(),
             })],
         )],
@@ -16010,6 +16075,7 @@ fn apply_resolve_env_action_collects_secret_into_env_actions() {
         provider: "vault".to_string(),
         reference: "kv/data/token".to_string(),
         envs: vec!["API_TOKEN".to_string()],
+        template: None,
         origin: "local".to_string(),
     });
     let plan = Plan {
@@ -22091,6 +22157,7 @@ fn every_action_emits_exactly_one_line() {
             provider: "vault".to_string(),
             reference: "secret/data/app#key".to_string(),
             target: tmp.path().join("resolved.txt"),
+            template: None,
             origin: "local".to_string(),
         }),
         Action::Secret(SecretAction::Skip {
@@ -22158,6 +22225,7 @@ fn a_resolve_env_action_emits_one_line() {
                 provider: "vault".to_string(),
                 reference: "secret/data/gh#token".to_string(),
                 envs: vec!["GH_TOKEN".to_string()],
+                template: None,
                 origin: "local".to_string(),
             })],
         )],

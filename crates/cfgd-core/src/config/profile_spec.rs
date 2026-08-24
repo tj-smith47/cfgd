@@ -770,13 +770,6 @@ impl FileStrategy {
     pub fn valid_as_global_default(self) -> bool {
         !matches!(self, FileStrategy::Patch)
     }
-
-    /// Whether this is the strategy an omitted `spec.fileStrategy` already
-    /// means, so a config rewrite leaves the key out instead of writing
-    /// `fileStrategy: Symlink` into a file the user never put it in.
-    pub fn is_default(&self) -> bool {
-        *self == Self::default()
-    }
 }
 
 /// File format used to interpret and re-serialize a `Patch`-strategy target.
@@ -920,14 +913,16 @@ pub struct ManagedFileSpec {
     pub patch: Option<PatchSpec>,
 }
 
-// `target` XOR `envs` (at least one required) is enforced at runtime by
+// "At least one of `target` / `envs`" is enforced at runtime by
 // `validate_secret_specs`, not in the JSON schema: both are plain `Option`
-// fields, so the generated schema marks them optional. Expressing the XOR
-// would require a hand-written `oneOf`, which would drift from this struct —
-// the by-construction generation is the priority, runtime validation is the
-// backstop.
-/// One entry of `spec.secrets[]`: a secret resolved into a file or into
-/// environment variables. Exactly one of `target` / `envs` must be set.
+// fields, so the generated schema marks them optional. Expressing the
+// constraint would require a hand-written `anyOf`, which would drift from
+// this struct — the by-construction generation is the priority, runtime
+// validation is the backstop.
+/// One entry of `spec.secrets[]`: a secret resolved into a file, into
+/// environment variables, or both. At least one of `target` / `envs` must be
+/// set; an entry carrying both writes the file AND exports the variables from
+/// one resolution.
 ///
 /// ```yaml
 /// secrets:
@@ -935,6 +930,9 @@ pub struct ManagedFileSpec {
 ///     envs: [GITHUB_TOKEN]
 ///   - source: ssh_key
 ///     target: ~/.ssh/id_ed25519
+///   - source: vault://secret/data/api#key
+///     target: ~/.config/api-key
+///     envs: [API_KEY]
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -942,19 +940,22 @@ pub struct SecretSpec {
     /// Backend-specific reference to the secret (a 1Password `op://` URI, a
     /// Vault path, a sops-encrypted file key, …).
     pub source: String,
-    /// File path to write the decrypted secret to. Mutually exclusive with `envs`.
+    /// File path to write the decrypted secret to. May be combined with `envs`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<PathBuf>,
-    /// Template rendered around the decrypted value before writing to `target`
-    /// (e.g. wrapping it in a config file's expected shape).
+    /// Template rendered around the resolved value before it is written to
+    /// `target` or exported under `envs`: every `${secret:value}` in it is
+    /// replaced by the value (`template: "token: ${secret:value}"`). Only a
+    /// provider reference (`op://`, `vault://`, …) resolves to a single value,
+    /// so `template` is rejected on a sops-encrypted file source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
     /// Secret backend name to resolve `source` with. Falls back to
     /// `spec.secrets.backend` from `cfgd.yaml` when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
-    /// Environment variable names to export the decrypted value under.
-    /// Mutually exclusive with `target`.
+    /// Environment variable names to export the decrypted value under. May be
+    /// combined with `target`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub envs: Option<Vec<String>>,
 }
@@ -1055,7 +1056,11 @@ pub fn validate_managed_file_specs(specs: &[ManagedFileSpec]) -> Result<()> {
     Ok(())
 }
 
-/// Validate that each secret has at least one delivery target (`target` or `envs`).
+/// Validate that each secret has at least one delivery target (`target` or
+/// `envs`), and that a `template` names a value it can wrap: it must sit on a
+/// provider reference (a sops file decrypts to content, not a value) and must
+/// contain the `${secret:value}` placeholder, or the resolved secret would be
+/// silently dropped on the floor.
 pub fn validate_secret_specs(specs: &[SecretSpec]) -> Result<()> {
     for spec in specs {
         if spec.target.is_none() && spec.envs.as_ref().is_none_or(|e| e.is_empty()) {
@@ -1066,6 +1071,32 @@ pub fn validate_secret_specs(specs: &[SecretSpec]) -> Result<()> {
                 ),
             }
             .into());
+        }
+        if let Some(template) = &spec.template {
+            if crate::providers::parse_secret_reference(&spec.source).is_none() {
+                return Err(ConfigError::Invalid {
+                    message: format!(
+                        "secret '{}': 'template' applies only to a provider reference ({}), not to an encrypted file",
+                        spec.source,
+                        crate::providers::SECRET_REFERENCE_SCHEMES
+                            .iter()
+                            .map(|(scheme, _)| *scheme)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                }
+                .into());
+            }
+            if !template.contains(crate::providers::SECRET_TEMPLATE_PLACEHOLDER) {
+                return Err(ConfigError::Invalid {
+                    message: format!(
+                        "secret '{}': 'template' must contain {} where the value goes",
+                        spec.source,
+                        crate::providers::SECRET_TEMPLATE_PLACEHOLDER
+                    ),
+                }
+                .into());
+            }
         }
     }
     Ok(())

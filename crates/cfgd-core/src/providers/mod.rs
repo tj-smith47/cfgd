@@ -1178,6 +1178,9 @@ pub enum SecretAction {
         provider: String,
         reference: String,
         target: PathBuf,
+        /// `spec.secrets[].template`: rendered around the resolved value
+        /// before it is written (see [`render_secret_template`]).
+        template: Option<String>,
         origin: String,
     },
     /// Resolve a secret and inject its value as environment variables into the
@@ -1186,6 +1189,9 @@ pub enum SecretAction {
         provider: String,
         reference: String,
         envs: Vec<String>,
+        /// `spec.secrets[].template`: rendered around the resolved value
+        /// before it is exported (see [`render_secret_template`]).
+        template: Option<String>,
         origin: String,
     },
     Skip {
@@ -1466,26 +1472,49 @@ impl Default for ProviderRegistry {
     }
 }
 
+/// The placeholder a `spec.secrets[].template` carries where the resolved
+/// value goes. Distinct from the file-content `${secret:<ref>}` syntax, which
+/// names a reference; this one stands for the value of the entry it is on.
+pub const SECRET_TEMPLATE_PLACEHOLDER: &str = "${secret:value}";
+
+/// Render `spec.secrets[].template` around a resolved value: every
+/// [`SECRET_TEMPLATE_PLACEHOLDER`] in `template` is replaced by `value`.
+/// Nothing else in the template is interpreted, so a `$HOME` or a `${other}`
+/// in it reaches the target byte-for-byte.
+pub fn render_secret_template(template: &str, value: &str) -> String {
+    template.replace(SECRET_TEMPLATE_PLACEHOLDER, value)
+}
+
+/// Every `spec.secrets[].source` scheme cfgd accepts, paired with the provider
+/// it selects. A provider may answer to more than one scheme: the long form
+/// names the provider, the short form is the spelling its own CLI already uses
+/// (`op://` is what `op read` takes, `bw://` mirrors it for Bitwarden), so a
+/// reference copied out of 1Password's UI works unchanged. Schemes must stay
+/// distinct from every real URI scheme cfgd reads elsewhere (`file://`,
+/// `https://`, `ssh://`, `git://`).
+pub const SECRET_REFERENCE_SCHEMES: &[(&str, &str)] = &[
+    ("1password://", "1password"),
+    ("op://", "1password"),
+    ("bitwarden://", "bitwarden"),
+    ("bw://", "bitwarden"),
+    ("lastpass://", "lastpass"),
+    ("lpass://", "lastpass"),
+    ("lp://", "lastpass"),
+    ("vault://", "vault"),
+];
+
 /// Parse a secret reference string to determine the provider.
-/// Formats:
-///   - `1password://Vault/Item/Field` → 1Password
-///   - `bitwarden://folder/item` → Bitwarden
-///   - `lastpass://folder/item/field` → LastPass
+/// Formats (see [`SECRET_REFERENCE_SCHEMES`]):
+///   - `1password://Vault/Item/Field` or `op://Vault/Item/Field` → 1Password
+///   - `bitwarden://folder/item` or `bw://folder/item` → Bitwarden
+///   - `lastpass://folder/item/field`, `lpass://…` or `lp://…` → LastPass
 ///   - `vault://secret/path#field` → HashiCorp Vault
 ///
 /// Returns (provider_name, reference_path).
 pub fn parse_secret_reference(source: &str) -> Option<(&str, &str)> {
-    if let Some(rest) = source.strip_prefix("1password://") {
-        Some(("1password", rest))
-    } else if let Some(rest) = source.strip_prefix("bitwarden://") {
-        Some(("bitwarden", rest))
-    } else if let Some(rest) = source.strip_prefix("lastpass://") {
-        Some(("lastpass", rest))
-    } else if let Some(rest) = source.strip_prefix("vault://") {
-        Some(("vault", rest))
-    } else {
-        None
-    }
+    SECRET_REFERENCE_SCHEMES
+        .iter()
+        .find_map(|(scheme, provider)| source.strip_prefix(scheme).map(|rest| (*provider, rest)))
 }
 
 /// Configurable mock for `PackageManager`. Available to all test modules within cfgd-core.
@@ -2276,6 +2305,79 @@ mod tests {
         assert!(parse_secret_reference("plaintext").is_none());
         assert!(parse_secret_reference("file:///etc/passwd").is_none());
         assert!(parse_secret_reference("").is_none());
+    }
+
+    /// The short schemes are the spellings the provider CLIs themselves use,
+    /// and they resolve to the SAME provider and path as the long form, so a
+    /// reference pasted from `op` works unchanged.
+    #[test]
+    fn parse_secret_reference_short_schemes_alias_the_long_ones() {
+        assert_eq!(
+            parse_secret_reference("op://Vault/Item/Field"),
+            parse_secret_reference("1password://Vault/Item/Field")
+        );
+        assert_eq!(
+            parse_secret_reference("bw://folder/item"),
+            parse_secret_reference("bitwarden://folder/item")
+        );
+        for short in ["lpass://folder/item/field", "lp://folder/item/field"] {
+            assert_eq!(
+                parse_secret_reference(short),
+                parse_secret_reference("lastpass://folder/item/field"),
+                "{short}"
+            );
+        }
+        assert_eq!(
+            parse_secret_reference("op://Vault/Item/Field"),
+            Some(("1password", "Vault/Item/Field"))
+        );
+        assert_eq!(
+            parse_secret_reference("bw://folder/item"),
+            Some(("bitwarden", "folder/item"))
+        );
+    }
+
+    /// Every accepted scheme is documented, and every documented scheme is
+    /// accepted: `docs/secrets.md`'s provider table is the user's only list, and
+    /// a scheme that appears on one side only is either an undocumented feature
+    /// or a documented lie.
+    #[test]
+    fn every_secret_reference_scheme_is_documented_in_secrets_md() {
+        let docs = include_str!("../../../../docs/secrets.md");
+        for (scheme, provider) in SECRET_REFERENCE_SCHEMES {
+            assert!(
+                docs.contains(&format!("`{scheme}")),
+                "docs/secrets.md never names the `{scheme}` scheme ({provider})"
+            );
+        }
+        let documented: std::collections::BTreeSet<&str> = docs
+            .split('`')
+            .filter_map(|span| {
+                let end = span.find("://")?;
+                Some(&span[..end + 3])
+            })
+            .filter(|s| {
+                s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == ':' || c == '/')
+            })
+            .collect();
+        let accepted: std::collections::BTreeSet<&str> =
+            SECRET_REFERENCE_SCHEMES.iter().map(|(s, _)| *s).collect();
+        let stray: Vec<&str> = documented
+            .iter()
+            .filter(|s| {
+                !accepted.contains(*s)
+                    && !matches!(
+                        **s,
+                        "file://" | "https://" | "http://" | "ssh://" | "git://"
+                    )
+            })
+            .copied()
+            .collect();
+        assert!(
+            stray.is_empty(),
+            "docs/secrets.md documents schemes cfgd does not accept: {stray:?}"
+        );
     }
 
     #[test]

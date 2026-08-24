@@ -2977,6 +2977,7 @@ fn action_resource_info_secret_resolve() {
         provider: "1password".into(),
         reference: "op://vault/item/field".into(),
         target: PathBuf::from("/tmp/secret"),
+        template: None,
         origin: "local".into(),
     });
     let (rtype, rid) = action_resource_info(&action);
@@ -2992,6 +2993,7 @@ fn action_resource_info_secret_resolve_env() {
         provider: "vault".into(),
         reference: "secret/data/app".into(),
         envs: vec!["API_KEY".into(), "DB_PASS".into()],
+        template: None,
         origin: "local".into(),
     });
     let (rtype, rid) = action_resource_info(&action);

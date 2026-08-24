@@ -432,6 +432,7 @@ impl<'a> super::Reconciler<'a> {
                             provider: provider_name.to_string(),
                             reference: reference.to_string(),
                             target: crate::expand_tilde(target),
+                            template: secret.template.clone(),
                             origin: LOCAL_LAYER.to_string(),
                         }));
                     }
@@ -442,6 +443,7 @@ impl<'a> super::Reconciler<'a> {
                             provider: provider_name.to_string(),
                             reference: reference.to_string(),
                             envs: secret.envs.clone().unwrap_or_default(),
+                            template: secret.template.clone(),
                             origin: LOCAL_LAYER.to_string(),
                         }));
                     }
