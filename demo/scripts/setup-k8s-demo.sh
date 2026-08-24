@@ -381,15 +381,31 @@ spec:
       target: bin/hello.sh
 EOF
 
+    # A greeting with a name in it, so the tape's v2 act (sed TJ -> Taylor,
+    # push, roll the pod) has a one-word diff the viewer can track across
+    # detection and convergence.
     cat > "$fixture/tools/bin/hello.sh" <<'EOF'
 #!/bin/sh
-echo "hello from the tools module"
+echo "Hello, TJ!"
 EOF
     chmod +x "$fixture/tools/bin/hello.sh"
 
+    # The signing key the tape's `cfgd module push --sign --key` beats use,
+    # generated fresh per bring-up so no key material outlives the demo. An
+    # empty COSIGN_PASSWORD keeps generation (and the tape's signing pushes)
+    # non-interactive.
+    (cd "$fixture" && COSIGN_PASSWORD="" cosign generate-key-pair >/dev/null 2>&1)
+    if [ ! -s "$fixture/cosign.pub" ]; then
+        echo "cosign generate-key-pair left no cosign.pub in $fixture." >&2
+        return 1
+    fi
+
     # `ociArtifact` names the registry the way the CLUSTER reaches it. The host
     # pushes to the same registry through its published port
-    # (localhost:5001), so the two spellings address one registry.
+    # (localhost:5001), so the two spellings address one registry. The CRD
+    # carries the public half of the demo key: that is what the operator's
+    # verification check reads, and what flips `kubectl cfgd status` from
+    # `unverified` to `verified`.
     cat > "$fixture/module.yaml" <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module
@@ -399,6 +415,10 @@ spec:
   packages: []
   ociArtifact: "${REGISTRY_NAME}:5000/demo/tools:v1"
   mountPolicy: Always
+  signature:
+    cosign:
+      publicKey: |
+$(sed 's/^/        /' "$fixture/cosign.pub")
 EOF
 
     cat > "$fixture/pod.yaml" <<'EOF'
@@ -439,6 +459,7 @@ up() {
     require docker
     require cargo
     require cargo-zigbuild
+    require cosign
 
     # A stage that fails half way leaves a kind cluster, a registry container
     # and a work dir standing; the caller's next run then starts from a state

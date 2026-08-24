@@ -1585,6 +1585,36 @@ else
   log_ok "Owner::sort_key applied at exactly one site"
 fi
 
+# --- Every demo tape has a Taskfile target ---
+# A tape is recorded through `demo/scripts/record.sh <name>`, and the Taskfile
+# target wrapping it is the only thing that also runs the tape's font gate and
+# the environment the tape assumes (image build, cluster or machine rig, and
+# its teardown). A tape without one is re-recordable only by hand, and the
+# hand-run skips exactly the checks the target exists to enforce — sync.tape
+# shipped that way and sat behind a setup script nobody could reach from
+# `task --list`. `init.tape` is the bare `record.sh` call (the script's
+# default name), so it is matched by its own spelling.
+
+log_section "Demo tapes (one Taskfile target each)"
+
+tape_gap=""
+for tape in demo/*.tape; do
+    [ -e "$tape" ] || continue
+    name="$(basename "$tape" .tape)"
+    if [ "$name" = "init" ]; then
+        pat='^\s*- bash demo/scripts/record\.sh\s*$'
+    else
+        pat="^\s*- bash demo/scripts/record\.sh ${name}\s*$"
+    fi
+    grep -Eq "$pat" Taskfile.yml || tape_gap="${tape_gap}${tape}"$'\n'
+done
+if [ -n "$tape_gap" ]; then
+    log_error "Demo tapes with no Taskfile target running demo/scripts/record.sh <name>:"
+    printf '%s' "$tape_gap"
+else
+    log_ok "Every demo/*.tape is recorded by a Taskfile target"
+fi
+
 # --- Summary ---
 printf "\n"
 _bold; printf "=== Audit Complete: %d errors, %d warnings ===\n" "$ERRORS" "$WARNINGS"; _reset

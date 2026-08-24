@@ -37,6 +37,18 @@ Type "source ~/.cfgd.env"
 Enter
 Wait@30s /cfgd\$$/
 
+# The nvim module leaves this container with two npms (brew's node and apt's
+# npm). The hidden init installed neovim/yarn through apt's, and sourcing
+# ~/.cfgd.env put brew's first on PATH, so every visible scan below would
+# otherwise report both packages `not installed` under the npm the shell now
+# uses — package drift this tape is not about, on a take whose opening beat
+# claims a converged machine. Re-running the package phase alone installs
+# them through brew's npm; `--phase packages` keeps the module's postApply
+# hooks out of it.
+Type "cfgd apply --module nvim --phase packages --yes"
+Enter
+Wait@30m /cfgd\$$/
+
 # The real tj-smith47/cfgd-config `base` profile also declares two modules
 # this container can never converge (jarvis: private repo, no SSH credentials
 # baked in; clift: needs charm's apt repo, not present on a bare Ubuntu

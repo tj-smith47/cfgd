@@ -57,12 +57,13 @@ Enter
 Wait@30s /machine-b:~\$$/
 Sleep 5s
 
-# Beat 3: BEFORE — a real file in B's nvim, with the absolute line numbers
-# the shared config ships today (`require("config.options")` is line 3 and
-# its gutter says 3).
-Type "nvim ~/.config/nvim/init.lua"
+# Beat 3: BEFORE — the module's own options file in B's nvim, opened at the
+# line that declares the numbering (`opt.number = true`, line 52), with the
+# absolute line numbers the shared config ships today: every gutter row
+# counts from the top of the file.
+Type "nvim +52 ~/.config/nvim/lua/config/options.lua"
 Enter
-Wait+Screen@20s /3 require\("config\.options"\)/
+Wait+Screen@20s /52 opt\.number = true/
 Sleep 5s
 Type ":qa"
 Enter
@@ -91,14 +92,15 @@ Wait@15s /machine-a:~\$$/
 Sleep 2s
 
 # Beat 5: the config dir IS a git clone of the shared source — turn on
-# relative line numbers in the nvim module (appended to the module's
-# init.lua, which runs the option late enough that nothing overrides it),
-# and read the diff back before it ships.
+# relative line numbers in the nvim module, right beneath the module's own
+# `opt.number = true` in options.lua (inserted there rather than appended:
+# the file ends in an early-returning notification block, so a tail append
+# can be dead code), and read the diff back before it ships.
 Type "cd .config/cfgd"
 Enter
 Wait@10s /cfgd\$$/
 Sleep 1s
-Type "echo 'vim.opt.relativenumber = true' >> modules/nvim/files/init.lua"
+Type "sed -i '/^opt.number = true/a opt.relativenumber = true' modules/nvim/files/lua/config/options.lua"
 Enter
 Wait@10s /cfgd\$$/
 Sleep 1s
@@ -156,19 +158,28 @@ Enter
 Wait+Screen@10s /relative line numbers/
 Sleep 4s
 
-# Beat 10: AFTER — the same file, reopened: the appended option is the new
-# last line, and the gutter now counts relative to the cursor (the appended
-# line sits 14 below it). The synced module content is live through the
-# deployed symlinks the moment the daemon's pull lands.
-Type "nvim ~/.config/nvim/init.lua"
+# Beat 9b: ask for a pull by hand — there is nothing left to pull, because
+# the daemon already did the work. One line, and it doubles as the manual
+# escape hatch the docs point at for machines that don't run the daemon.
+Type "cfgd pull"
 Enter
-Wait+Screen@20s /14 vim\.opt\.relativenumber = true/
+Wait@30s /machine-b:~\$$/
+Sleep 3s
+
+# Beat 10: AFTER — the same file at the same line, reopened: the inserted
+# option now sits directly beneath `opt.number = true`, and the gutter
+# counts relative to the cursor (the new line reads 1, not 53). The synced
+# module content is live through the deployed symlinks the moment the
+# daemon's pull lands.
+Type "nvim +52 ~/.config/nvim/lua/config/options.lua"
+Enter
+Wait+Screen@20s /1 opt\.relativenumber = true/
 # lazy.nvim's update toast slides in ~2s after open and covers the tail of the
-# appended line for its 5s nvim-notify timeout. Sleep past its whole lifecycle,
+# inserted line for its 5s nvim-notify timeout. Sleep past its whole lifecycle,
 # then re-gate on the full line: while the toast is up, `= true` is covered and
 # the regex cannot match, so the dwell that follows is provably clean.
 Sleep 9s
-Wait+Screen@15s /14 vim\.opt\.relativenumber = true/
+Wait+Screen@15s /1 opt\.relativenumber = true/
 Sleep 5s
 Type ":qa"
 Enter

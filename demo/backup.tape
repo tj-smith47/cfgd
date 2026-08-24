@@ -51,11 +51,15 @@ Wait@30s /cfgd\$$/
 # The cloned config declares no spec.backups — there is no CLI verb to add
 # one (cfgd profile update carries no --backup flag), so this is a direct,
 # hidden edit of the profile YAML: a small legible data file, then a single
-# backups entry naming it. Both edits are setup, never shown.
+# backups entry naming it. Both edits are setup, never shown. The block is
+# APPENDED rather than substituted over a `backups: []` anchor: the cloned
+# profile never had one, and the rewrite `profile update` just performed
+# prunes every empty section, so there is no line to anchor on. `spec` is
+# the document's last key, so a two-space-indented block at EOF is inside it.
 Type "printf '%s\n' '# Notes' '' '- Buy milk' '- Pay rent' '- Ship the demo' > ~/notes.md"
 Enter
 Wait@10s /cfgd\$$/
-Type "sed -i 's/  backups: \[\]/  backups:\n  - name: notes\n    source: ~\/notes.md\n    retention: 5/' ~/.config/cfgd/profiles/base.yaml"
+Type "printf '%s\n' '  backups:' '  - name: notes' '    source: ~/notes.md' '    retention: 5' >> ~/.config/cfgd/profiles/base.yaml"
 Enter
 Wait@10s /cfgd\$$/
 Type "clear"
@@ -93,6 +97,13 @@ Sleep 4s
 # deterministic recording (the CLI reference's own examples restore this
 # way); cat proves the original content is back.
 Type "cfgd backup restore notes --yes && cat ~/notes.md"
+Enter
+Wait@10s /cfgd\$$/
+Sleep 4s
+
+# Beat 6: close the loop on the ledger — the Snapshots column now counts
+# what the run wrote, and Last Run is stamped.
+Type "cfgd backup list"
 Enter
 Wait@10s /cfgd\$$/
 Sleep 4s

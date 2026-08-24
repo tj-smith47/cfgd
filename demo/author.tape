@@ -135,4 +135,4 @@ Sleep 5s
 
 # Closing hold — breathing room before the loop snaps back to the opening
 # frame, matching drift.tape's closing beat.
-Sleep 8s
+Sleep 4s

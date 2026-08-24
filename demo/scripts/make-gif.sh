@@ -42,6 +42,12 @@ TAIL=37
 # 26s halves that to ~15x, which is fast enough to stay a montage and slow
 # enough to read what is being installed.
 MIDDLE=26
+# Output seconds each speed transition takes. A hard cut from 1:1 straight to
+# ~15x reads as a glitch, not a montage; easing through sqrt(speed) for a few
+# seconds on each side keeps the acceleration legible (1x → ~4x → ~15x → ~4x
+# → 1x). The eases spend their seconds inside MIDDLE, so the GIF's total
+# length does not move.
+EASE=3
 
 if [ ! -f "$RAW" ]; then
     echo "$RAW does not exist — record the take first." >&2
@@ -50,7 +56,20 @@ fi
 
 dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$RAW")
 mid_end=$(awk -v d="$dur" -v t="$TAIL" 'BEGIN { printf "%.3f", d - t }')
-speed=$(awk -v s="$HEAD" -v e="$mid_end" -v m="$MIDDLE" 'BEGIN { printf "%.4f", (e - s) / m }')
+# The fast span's speed, solved so the whole compressed region (ease in + fast
+# span + ease out) still plays in exactly MIDDLE output seconds with each ease
+# running at sqrt(speed): with x = sqrt(speed), E = EASE and F = MIDDLE - 2E,
+# the source span satisfies F*x^2 + 2E*x - span = 0, whose positive root is
+# x = (-E + sqrt(E^2 + F*span)) / F.
+speed=$(awk -v s="$HEAD" -v e="$mid_end" -v m="$MIDDLE" -v ez="$EASE" 'BEGIN {
+    span = e - s; f = m - 2 * ez
+    x = (-ez + sqrt(ez * ez + f * span)) / f
+    printf "%.4f", x * x
+}')
+ease_speed=$(awk -v sp="$speed" 'BEGIN { printf "%.4f", sqrt(sp) }')
+# Source-time boundaries of the two ease segments.
+ease_in_end=$(awk -v h="$HEAD" -v ez="$EASE" -v es="$ease_speed" 'BEGIN { printf "%.3f", h + ez * es }')
+ease_out_start=$(awk -v e="$mid_end" -v ez="$EASE" -v es="$ease_speed" 'BEGIN { printf "%.3f", e - ez * es }')
 
 if ! awk -v s="$speed" 'BEGIN { exit (s > 1) ? 0 : 1 }'; then
     echo "Take is ${dur}s — too short to ramp with a ${HEAD}s head and ${TAIL}s tail." >&2
@@ -76,9 +95,11 @@ fi
 # than a few frames. Same stats_mode, same dither, same output — only the
 # memory shape changes.
 RAMP="[0:v]trim=0:${HEAD},setpts=PTS-STARTPTS[a];\
-[0:v]trim=${HEAD}:${mid_end},setpts=(PTS-STARTPTS)/${speed}[b];\
-[0:v]trim=${mid_end},setpts=PTS-STARTPTS[c];\
-[a][b][c]concat=n=3:v=1:a=0[v];\
+[0:v]trim=${HEAD}:${ease_in_end},setpts=(PTS-STARTPTS)/${ease_speed}[b];\
+[0:v]trim=${ease_in_end}:${ease_out_start},setpts=(PTS-STARTPTS)/${speed}[c];\
+[0:v]trim=${ease_out_start}:${mid_end},setpts=(PTS-STARTPTS)/${ease_speed}[d];\
+[0:v]trim=${mid_end},setpts=PTS-STARTPTS[e];\
+[a][b][c][d][e]concat=n=5:v=1:a=0[v];\
 [v]fps=50[vf]"
 
 PALETTE=demo/.out/palette.png
@@ -90,4 +111,4 @@ ${RAMP};[vf]palettegen=max_colors=256:stats_mode=diff" "$PALETTE"
 ffmpeg -y -loglevel error -i "$RAW" -i "$PALETTE" -filter_complex "\
 ${RAMP};[vf][1:v]paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle" "$OUT"
 
-echo "Wrote $OUT ($(du -h "$OUT" | cut -f1), ${dur}s take ramped ${speed}x in the middle)"
+echo "Wrote $OUT ($(du -h "$OUT" | cut -f1), ${dur}s take ramped ${speed}x in the middle, ${ease_speed}x eases)"
