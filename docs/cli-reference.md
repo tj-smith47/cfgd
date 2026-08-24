@@ -600,7 +600,8 @@ Drift
 
 Each drift row names the module, the `spec` block the finding is on, the item
 itself, and the KIND of divergence (`content differs`, `version mismatch`,
-`missing`) — the bytes are `cfgd diff`'s job. Rows are grouped by surface
+`missing` for a declared file, `not installed` for a declared package) — the
+bytes are `cfgd diff`'s job. Rows are grouped by surface
 (files, then packages, then any other surface alphabetically) and sorted by
 item within each group, so two runs that found the same drift render the same
 section rather than reordering it by whatever the scan reached first.
@@ -736,13 +737,13 @@ Files
 
 Packages
   profile:work
-    ⚠ brew: missing — extra-tool
-    ⚠ nix: missing  — hello
+    ⚠ brew: not installed — extra-tool
+    ⚠ nix: not installed  — hello
   cfgd:managers
     ⚠ pipx: not installed — can bootstrap via pip install pipx
     ⚠ snap: not installed — cannot bootstrap: no available system manager
 
-Env
+Shell
   profile:work
     ⚠ alias: ll — want: alias ll="ls -la", have: missing or changed
 
@@ -750,10 +751,10 @@ System
   profile:work
     ⚠ sysctl.net.core.somaxconn — want 8192, have 4096
 
-⚠ Drift detected — 2 files, 2 packages, 1 env item, 1 system setting
+⚠ Drift detected — 2 files, 2 packages, 1 shell item, 1 system setting
 ```
 
-Surfaces render in a fixed order (files, packages, env, system) and items sort
+Surfaces render in a fixed order (files, packages, shell, system) and items sort
 alphabetically within each, so two runs that found the same drift read the same
 rather than reordering by whatever the check reached first.
 
@@ -761,11 +762,11 @@ The closing line carries the tally, and names the surfaces that were checked and
 came back clean — the only place a converged surface is mentioned at all:
 
 ```
-⚠ Drift detected — 1 file (packages, env, system clean)
+⚠ Drift detected — 1 file (packages, shell, system clean)
 ```
 
 A surface whose check could not RUN is named by neither half; the reason it could
-not is on the same line (`⚠ Drift detected — 1 file (packages, env clean); a system
+not is on the same line (`⚠ Drift detected — 1 file (packages, shell clean); a system
 check could not run`). A run with nothing to report is a single line:
 
 ```
@@ -785,10 +786,10 @@ Files
     -# not mine
     +indent_type = "Spaces"
 
-⚠ Drift detected — 1 file (packages, env clean)
+⚠ Drift detected — 1 file (packages, shell clean)
 ```
 
-The Env surface checks the declared `spec.env` vars and `spec.aliases` against the managed env
+The Shell surface checks the declared `spec.env` vars and `spec.aliases` against the managed env
 files cfgd owns (`~/.cfgd.env` and its platform siblings) and the rc source lines that load
 them. It never reads a live shell session: a var or alias exported only by hand, outside those
 files, is invisible to this check by design.

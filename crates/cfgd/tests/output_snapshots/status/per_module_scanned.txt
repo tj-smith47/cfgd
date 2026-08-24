@@ -12,4 +12,4 @@ Status: dev-tools
 Drift
   ⚠ module:dev-tools:files /home/user/.config/nvim/init.lua — content differs
   ⚠ module:dev-tools:files /home/user/.zshrc                — content differs
-  ⚠ module:dev-tools:packages ripgrep                       — missing
+  ⚠ module:dev-tools:packages ripgrep                       — not installed

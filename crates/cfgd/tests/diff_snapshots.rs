@@ -359,7 +359,8 @@ fn diff_bridge_one_blank_line() {
         let pkg_sec = printer.section("Packages");
         let group = pkg_sec.section_owner(&OwnerLabel::new("profile", "tiny"));
         group
-            .status(Role::Warn, "drift-mgr: missing")
+            .status(Role::Warn, "drift-mgr")
+            .qualifier(cfgd_core::Absence::NotInstalled.as_str())
             .detail("pkg-a");
     }
 

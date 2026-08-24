@@ -248,28 +248,6 @@ pub struct ModuleDrift {
 pub const SURFACE_FILES: &str = "files";
 pub const SURFACE_PACKAGES: &str = "packages";
 
-/// The terse cause a drift row ends with.
-///
-/// The verbose `want: <expected>, have: <actual>` pair states two content
-/// hashes a reader cannot act on; the row says what KIND of divergence was
-/// found and leaves the bytes to `cfgd diff`. Anything outside the three known
-/// shapes keeps the producer's own phrasing rather than being flattened into a
-/// word that would describe it wrongly.
-fn terse_drift_cause(expected: &str, actual: &str) -> String {
-    if actual == cfgd_core::Absence::Missing.as_str() {
-        return actual.to_string();
-    }
-    if actual.starts_with("content differs") {
-        return "content differs".to_string();
-    }
-    if cfgd_core::parse_loose_version(expected).is_some()
-        && cfgd_core::parse_loose_version(actual).is_some()
-    {
-        return "version mismatch".to_string();
-    }
-    actual.to_string()
-}
-
 /// What a manager reports about one declared package.
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -403,7 +381,14 @@ fn render_drift_section(
     drift: &[cfgd_core::state::DriftEvent],
     checked_live: bool,
 ) -> Doc {
-    drift_section(doc, drift, checked_live, |s, event| {
+    let drop_env_file_row = cfgd_core::output::env_file_row_is_redundant(
+        drift.iter().map(|e| e.resource_type.as_str()),
+    );
+    let rows: Vec<&cfgd_core::state::DriftEvent> = drift
+        .iter()
+        .filter(|e| !(drop_env_file_row && e.resource_type == "env"))
+        .collect();
+    drift_section(doc, &rows, checked_live, |s, event| {
         // A "script" / "Running script" resource_id is the raw run_str body
         // (preserved byte-identical for UPSERT matching against prior drift
         // rows) — condense only here, at the point it enters a status subject,
@@ -419,9 +404,12 @@ fn render_drift_section(
             } else {
                 event.resource_id.clone()
             };
-        let subject = format!("{} {}", event.resource_type, display_id);
-        let expected = event.expected.as_deref().unwrap_or("?");
-        let actual = event.actual.as_deref().unwrap_or("?");
+        let subject = cfgd_core::output::drift_item_subject(&event.resource_type, &display_id);
+        let (expected, actual) = cfgd_core::output::drift_operands(
+            &event.resource_type,
+            event.expected.as_deref().unwrap_or("?"),
+            event.actual.as_deref().unwrap_or("?"),
+        );
         if event.source != LOCAL_LAYER {
             // Source attribution renders in `secondary` (pink/magenta) at
             // end-of-subject; the StatusBuilder API guarantees the label lands
@@ -474,7 +462,8 @@ fn render_module_drift_section(doc: Doc, drift: &[ModuleDrift], checked_live: bo
             d.surface,
             d.item
         );
-        let cause = terse_drift_cause(
+        let cause = cfgd_core::output::drift_terse_cause(
+            &d.event.resource_type,
             d.event.expected.as_deref().unwrap_or_default(),
             d.event.actual.as_deref().unwrap_or_default(),
         );
@@ -939,7 +928,8 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
         .map(|d| {
             (
                 super::live_drift::module_file_resource_id(&d.owner, &d.item),
-                terse_drift_cause(
+                cfgd_core::output::drift_terse_cause(
+                    &d.event.resource_type,
                     d.event.expected.as_deref().unwrap_or_default(),
                     d.event.actual.as_deref().unwrap_or_default(),
                 ),
@@ -2123,22 +2113,6 @@ mod tests {
         );
     }
 
-    /// The three shapes a cause is condensed into, and the pass-through for a
-    /// producer whose phrasing matches none of them.
-    #[test]
-    fn a_terse_cause_names_the_kind_of_divergence() {
-        assert_eq!(
-            terse_drift_cause("content matches source", "content differs from source"),
-            "content differs"
-        );
-        assert_eq!(terse_drift_cause("installed", "missing"), "missing");
-        assert_eq!(terse_drift_cause("14.1.0", "13.0.0"), "version mismatch");
-        assert_eq!(
-            terse_drift_cause("present", "unreadable: permission denied"),
-            "unreadable: permission denied"
-        );
-    }
-
     #[test]
     fn cmd_status_missing_config_returns_err() {
         let state_dir = tempfile::tempdir().unwrap();
@@ -2522,8 +2496,8 @@ mod tests {
         let human = cfgd_core::test_helpers::captured_text(&human_buf);
         let editor_line = human
             .lines()
-            .find(|l| l.contains("env-var EDITOR"))
-            .unwrap_or_else(|| panic!("expected an EDITOR env-var drift line, got: {human}"));
+            .find(|l| l.contains("env: EDITOR"))
+            .unwrap_or_else(|| panic!("expected an EDITOR env drift line, got: {human}"));
         assert!(
             editor_line.contains(&declared_line),
             "the human render must show the declared line, got: {editor_line}"

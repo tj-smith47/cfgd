@@ -183,20 +183,18 @@ pub fn build_verify_doc(output: &VerifyOutput) -> Doc {
         return doc.with_data(output.clone());
     }
 
+    // No env-file-freshness suppression here, unlike the two drift REPORTS:
+    // `verify` is a ledger whose closing line counts its own rows, so a row
+    // hidden from the list is a row the tally still charges for.
     doc = doc.section("Resources", |s| {
         output.results.iter().fold(s, |s, r| {
+            let subject = cfgd_core::output::drift_item_subject(&r.resource_type, &r.resource_id);
+            let (expected, actual) =
+                cfgd_core::output::drift_operands(&r.resource_type, &r.expected, &r.actual);
             if r.matches {
-                s.status_with(
-                    Role::Ok,
-                    format!("{} {}", r.resource_type, r.resource_id),
-                    |sf| sf.detail(&r.expected),
-                )
+                s.status_with(Role::Ok, subject, |sf| sf.detail(expected))
             } else {
-                s.status_with(
-                    Role::Fail,
-                    format!("{} {}", r.resource_type, r.resource_id),
-                    |sf| sf.drift(&r.expected, &r.actual),
-                )
+                s.status_with(Role::Fail, subject, |sf| sf.drift(&expected, &actual))
             }
         })
     });
@@ -423,8 +421,8 @@ mod tests {
         let human = cap.human();
         let editor_line = human
             .lines()
-            .find(|l| l.contains("env-var EDITOR"))
-            .unwrap_or_else(|| panic!("expected an env-var EDITOR line, got: {human}"));
+            .find(|l| l.contains("env: EDITOR"))
+            .unwrap_or_else(|| panic!("expected an env EDITOR line, got: {human}"));
         assert!(
             editor_line.contains(&declared_line),
             "the declared line must be visible, got: {editor_line}"

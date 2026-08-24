@@ -9,6 +9,6 @@ Files
 
 Packages
   profile:tiny
-    ⚠ drift-mgr: missing — drifted-pkg
+    ⚠ drift-mgr: not installed — drifted-pkg
 
-⚠ Drift detected — 1 file, 1 package (env, system clean)
+⚠ Drift detected — 1 file, 1 package (shell, system clean)

@@ -7,4 +7,4 @@ Files
     ⊙ <TARGET> (new file)
     hello world
 
-⚠ Drift detected — 1 file (packages, env, system clean)
+⚠ Drift detected — 1 file (packages, shell, system clean)

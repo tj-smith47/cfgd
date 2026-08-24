@@ -213,6 +213,133 @@ pub fn drift_detail(expected: impl std::fmt::Display, actual: impl std::fmt::Dis
     format!("want: {expected}, have: {actual}")
 }
 
+/// The word a drift row reads for a stored `resource_type`.
+///
+/// The stored types are a state-matching vocabulary and never move
+/// (`drift_events.resource_type` is half of the UPSERT key); `env-var` is the
+/// one of them that is internal jargon rather than a word a reader of the
+/// report would use, so the display says `env` and the store keeps `env-var`.
+/// Every other kind is already the word, and passes through.
+#[must_use]
+pub fn drift_kind_label(resource_type: &str) -> &str {
+    match resource_type {
+        "env-var" => "env",
+        other => other,
+    }
+}
+
+/// Whether a kind belongs to the shell surface — the managed env file, its rc
+/// source line, and the declared env vars and aliases inside it.
+///
+/// One predicate rather than four literals at each site, because three
+/// surfaces (`diff`, `verify`, `status`) each have to answer the same question
+/// twice: how to name the row, and whether the file-freshness row beside it is
+/// redundant.
+#[must_use]
+pub fn is_shell_drift_kind(resource_type: &str) -> bool {
+    matches!(resource_type, "env" | "env-rc" | "env-var" | "alias")
+}
+
+/// The subject a drift/verify item row reads.
+///
+/// A shell row names its kind with a colon (`env: EDITOR`, `alias: gs`) so the
+/// kind reads as a label on the item rather than as the first word of a
+/// sentence; every other kind keeps the `<kind> <id>` shape the id itself
+/// completes (`package ripgrep`, `file ~/.zshrc`). One composer so the three
+/// surfaces cannot spell one row two ways.
+#[must_use]
+pub fn drift_item_subject(resource_type: &str, resource_id: &str) -> String {
+    let label = drift_kind_label(resource_type);
+    if is_shell_drift_kind(resource_type) {
+        format!("{label}: {resource_id}")
+    } else {
+        format!("{label} {resource_id}")
+    }
+}
+
+/// The DISPLAY wording of one drift row's `want`/`have` operands.
+///
+/// The ONE derivation of how each resource kind words the two halves of
+/// [`drift_detail`], and what every display producer folds a stored or freshly
+/// computed pair through before rendering it. It exists because the detectors
+/// each invented their own absence word for the same fact — a missing package
+/// was `missing` from the reconciler's verify pass and `not installed` from
+/// the live scan, so one host answered two spellings depending on which
+/// command asked. The [`crate::Absence`] enum is the vocabulary; this is where
+/// each kind is mapped onto it.
+///
+/// DISPLAY only. The stored `drift_events` pair, the `-o json` `shape` field
+/// and every compliance-snapshot string keep the producer's own literals —
+/// those are matched and hashed, and re-wording one re-hashes every stored
+/// snapshot for no real drift.
+#[must_use]
+pub fn drift_operands(resource_type: &str, expected: &str, actual: &str) -> (String, String) {
+    (
+        drift_operand(resource_type, expected),
+        drift_operand(resource_type, actual),
+    )
+}
+
+/// One side of [`drift_operands`].
+fn drift_operand(resource_type: &str, operand: &str) -> String {
+    let absent = match resource_type {
+        // A manager or package could exist on this host and the manager says
+        // it does not — `NotInstalled`, whichever detector phrased it.
+        "package" | "manager" => crate::Absence::NotInstalled,
+        // Everything else the user DECLARED and the machine does not hold.
+        _ => crate::Absence::Missing,
+    };
+    match operand.trim() {
+        // A system value the host has no setting for at all renders as an
+        // empty operand — `have: ` states nothing where the whole point of
+        // the row is what the machine holds instead.
+        "" => absent.as_str().to_string(),
+        "missing" | "not installed" | "missing or changed" => absent.as_str().to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// The terse cause a drift row ends with when the report has no room for both
+/// operands (`cfgd status <module>`'s per-surface rows and its `-o wide`
+/// inventories).
+///
+/// The verbose pair states two content hashes a reader cannot act on; this
+/// says what KIND of divergence was found and leaves the bytes to `cfgd diff`.
+/// It lives beside [`drift_operands`] because the two answer one question at
+/// two lengths and must agree about the absence word they reach for. Anything
+/// outside the known shapes keeps the producer's own phrasing rather than
+/// being flattened into a word that would describe it wrongly.
+#[must_use]
+pub fn drift_terse_cause(resource_type: &str, expected: &str, actual: &str) -> String {
+    let actual = drift_operand(resource_type, actual);
+    if actual == crate::Absence::Missing.as_str() || actual == crate::Absence::NotInstalled.as_str()
+    {
+        return actual;
+    }
+    if actual.starts_with("content differs") {
+        return "content differs".to_string();
+    }
+    if crate::parse_loose_version(expected).is_some()
+        && crate::parse_loose_version(&actual).is_some()
+    {
+        return "version mismatch".to_string();
+    }
+    actual
+}
+
+/// Whether the managed env FILE's own freshness row is redundant in a report
+/// that also carries `kinds`.
+///
+/// `want: current, have: stale` names no value and explains nothing a reader
+/// can act on; when the per-item rows beneath it already say WHICH declared
+/// env var or alias the file is missing, the freshness row is the same finding
+/// stated a second time and less usefully. It survives only when it stands
+/// alone — a file that is stale for a reason no item row names (a hand-added
+/// line, a reordering) still has to be reported by something.
+pub fn env_file_row_is_redundant<'a>(kinds: impl IntoIterator<Item = &'a str>) -> bool {
+    kinds.into_iter().any(|k| matches!(k, "env-var" | "alias"))
+}
+
 /// Rendered width cap for [`condense_script_label`], in `char`s.
 ///
 /// Eighty columns is the terminal width a status subject can assume without
@@ -374,6 +501,106 @@ mod drift_detail_tests {
         // recorded (`Option::as_deref().unwrap_or("?")`) — the composer
         // does not special-case it.
         assert_eq!(drift_detail("?", "present"), "want: ?, have: present");
+    }
+}
+
+#[cfg(test)]
+mod drift_vocabulary_tests {
+    use super::{
+        drift_item_subject, drift_kind_label, drift_operands, drift_terse_cause,
+        env_file_row_is_redundant,
+    };
+
+    #[test]
+    fn the_stored_env_var_type_reads_as_env_and_every_other_kind_passes_through() {
+        assert_eq!(drift_kind_label("env-var"), "env");
+        for kind in ["alias", "env", "env-rc", "package", "file", "system"] {
+            assert_eq!(drift_kind_label(kind), kind);
+        }
+    }
+
+    #[test]
+    fn a_shell_row_labels_its_kind_with_a_colon_and_the_rest_do_not() {
+        assert_eq!(drift_item_subject("env-var", "EDITOR"), "env: EDITOR");
+        assert_eq!(drift_item_subject("alias", "gs"), "alias: gs");
+        assert_eq!(drift_item_subject("package", "ripgrep"), "package ripgrep");
+        assert_eq!(
+            drift_item_subject("system", "sysctl.vm.swappiness"),
+            "system sysctl.vm.swappiness"
+        );
+    }
+
+    /// The point of the derivation: two detectors word one missing package
+    /// two ways, and both rows read the same after the fold.
+    #[test]
+    fn one_absent_package_reads_the_same_whichever_detector_worded_it() {
+        assert_eq!(
+            drift_operands("package", "installed", "missing"),
+            drift_operands("package", "installed", "not installed")
+        );
+        assert_eq!(
+            drift_operands("package", "installed", "missing").1,
+            "not installed"
+        );
+    }
+
+    #[test]
+    fn a_declared_item_the_machine_does_not_hold_reads_as_missing() {
+        assert_eq!(
+            drift_operands("env-var", "export EDITOR=\"vim\"", "missing or changed").1,
+            "missing"
+        );
+        // An unset system value arrives as an empty operand; `have: ` states
+        // nothing where the whole row is about what the machine holds.
+        assert_eq!(drift_operands("system", "/opt/bin", "").1, "missing");
+    }
+
+    #[test]
+    fn an_unrecognized_phrase_keeps_the_producers_own_wording() {
+        assert_eq!(
+            drift_operands(
+                "file",
+                "content matches source",
+                "content differs from source"
+            ),
+            (
+                "content matches source".to_string(),
+                "content differs from source".to_string()
+            )
+        );
+    }
+
+    /// The three shapes a cause is condensed into, and the pass-through for a
+    /// producer whose phrasing matches none of them.
+    #[test]
+    fn a_terse_cause_names_the_kind_of_divergence() {
+        assert_eq!(
+            drift_terse_cause(
+                "file",
+                "content matches source",
+                "content differs from source"
+            ),
+            "content differs"
+        );
+        assert_eq!(
+            drift_terse_cause("package", "installed", "missing"),
+            "not installed"
+        );
+        assert_eq!(
+            drift_terse_cause("package", "14.1.0", "13.0.0"),
+            "version mismatch"
+        );
+        assert_eq!(
+            drift_terse_cause("file", "present", "unreadable: permission denied"),
+            "unreadable: permission denied"
+        );
+    }
+
+    #[test]
+    fn the_env_file_freshness_row_survives_only_when_it_stands_alone() {
+        assert!(!env_file_row_is_redundant(["env", "env-rc"]));
+        assert!(env_file_row_is_redundant(["env", "alias"]));
+        assert!(env_file_row_is_redundant(["env-var", "env"]));
     }
 }
 

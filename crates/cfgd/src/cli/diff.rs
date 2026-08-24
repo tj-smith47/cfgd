@@ -191,7 +191,7 @@ pub fn cmd_diff(
     };
 
     let has_env_drift = {
-        let env_sec = printer.section_or_collapse("Env");
+        let env_sec = printer.section_or_collapse("Shell");
         let mut drift = false;
         {
             let env_group = env_sec.section_owner_or_collapse(&owner_label(&profile_owner));
@@ -211,13 +211,17 @@ pub fn cmd_diff(
                     )
                 })
                 .unwrap_or_default();
-            for r in env_drift_ordered(cfgd_core::reconciler::env_verify_results(
+            let results = env_drift_ordered(cfgd_core::reconciler::env_verify_results(
                 &resolved.merged.env,
                 &resolved.merged.aliases,
                 resolved.merged.env_scope,
                 &resolved_modules,
                 &path_dirs,
-            )) {
+            ));
+            let drop_env_file_row = cfgd_core::output::env_file_row_is_redundant(
+                results.iter().map(|r| r.resource_type.as_str()),
+            );
+            for r in results {
                 drift = true;
                 // An env-var/alias row's `expected`/`actual` are opaque markers —
                 // the declared value never flows into a persisted or gateway-shipped
@@ -229,12 +233,18 @@ pub fn cmd_diff(
                     &resolved.merged.aliases,
                     &resolved_modules,
                 );
-                env_group
-                    .status(
-                        Role::Warn,
-                        format!("{}: {}", r.resource_type, r.resource_id),
-                    )
-                    .drift(&expected, &actual);
+                let (expected, actual) =
+                    cfgd_core::output::drift_operands(&r.resource_type, &expected, &actual);
+                // The payload keeps every finding; only the human report drops
+                // the freshness row the item rows beneath it already explain.
+                if !(drop_env_file_row && r.resource_type == "env") {
+                    env_group
+                        .status(
+                            Role::Warn,
+                            cfgd_core::output::drift_item_subject(&r.resource_type, &r.resource_id),
+                        )
+                        .drift(&expected, &actual);
+                }
                 diff_payload.env.push(EnvDriftOutput {
                     kind: r.resource_type,
                     name: r.resource_id,
@@ -270,9 +280,17 @@ pub fn cmd_diff(
                         has_system_drift = true;
                         drifts.sort_by(|a, b| a.key.cmp(&b.key));
                         for drift in &drifts {
+                            // A configurator that found no setting at all hands
+                            // back an empty `actual`; the fold states the
+                            // absence instead of rendering `have: `.
+                            let (expected, actual) = cfgd_core::output::drift_operands(
+                                "system",
+                                &drift.expected,
+                                &drift.actual,
+                            );
                             sys_group
                                 .status(Role::Warn, format!("{}.{}", key, drift.key))
-                                .drift(&drift.expected, &drift.actual);
+                                .drift(&expected, &actual);
                             diff_payload.system.push(SystemDriftOutput {
                                 key: format!("{}.{}", key, drift.key),
                                 expected: drift.expected.clone(),
@@ -449,7 +467,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                     has_pkg_drift = true;
                     group
                         .status(Role::Warn, pkg.manager.clone())
-                        .qualifier(cfgd_core::Absence::Missing.as_str())
+                        .qualifier(cfgd_core::Absence::NotInstalled.as_str())
                         .detail(pkg.resolved_name.clone());
                     diff_payload.packages.push(drift);
                 }
@@ -518,6 +536,26 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                     &path_dirs,
                 ));
 
+                // Judged over the item rows this run will actually RENDER: a
+                // file made stale by a profile-level entry no resolved module
+                // owns has no item row to explain it, so its freshness row
+                // still stands.
+                let rendered_items: std::collections::HashSet<&str> = resolved_modules
+                    .iter()
+                    .flat_map(|m| {
+                        m.env
+                            .iter()
+                            .map(|e| e.name.as_str())
+                            .chain(m.aliases.iter().map(|a| a.name.as_str()))
+                    })
+                    .collect();
+                let drop_env_file_row = cfgd_core::output::env_file_row_is_redundant(
+                    all_results
+                        .iter()
+                        .filter(|r| rendered_items.contains(r.resource_id.as_str()))
+                        .map(|r| r.resource_type.as_str()),
+                );
+
                 // The file/rc rows are the profile's shared artifacts, not any one
                 // module's — report them once, under the profile itself, whichever
                 // declared item made the file stale.
@@ -530,17 +568,27 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                         .filter(|r| matches!(r.resource_type.as_str(), "env" | "env-rc"))
                     {
                         drift = true;
-                        group
-                            .status(
-                                Role::Warn,
-                                format!("{}: {}", r.resource_type, r.resource_id),
-                            )
-                            .drift(&r.expected, &r.actual);
+                        let (expected, actual) = cfgd_core::output::drift_operands(
+                            &r.resource_type,
+                            &r.expected,
+                            &r.actual,
+                        );
+                        if !(drop_env_file_row && r.resource_type == "env") {
+                            group
+                                .status(
+                                    Role::Warn,
+                                    cfgd_core::output::drift_item_subject(
+                                        &r.resource_type,
+                                        &r.resource_id,
+                                    ),
+                                )
+                                .drift(&expected, &actual);
+                        }
                         diff_payload.env.push(EnvDriftOutput {
                             kind: r.resource_type.clone(),
                             name: r.resource_id.clone(),
-                            expected: r.expected.clone(),
-                            actual: r.actual.clone(),
+                            expected,
+                            actual,
                         });
                     }
                 }
@@ -569,10 +617,15 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                             &full_resolved.merged.aliases,
                             &resolved_modules,
                         );
+                        let (expected, actual) =
+                            cfgd_core::output::drift_operands(&r.resource_type, &expected, &actual);
                         group
                             .status(
                                 Role::Warn,
-                                format!("{}: {}", r.resource_type, r.resource_id),
+                                cfgd_core::output::drift_item_subject(
+                                    &r.resource_type,
+                                    &r.resource_id,
+                                ),
                             )
                             .drift(&expected, &actual);
                         diff_payload.env.push(EnvDriftOutput {
@@ -752,10 +805,13 @@ pub(super) fn print_package_drift(
                 } => {
                     group
                         .status(Role::Warn, manager.clone())
-                        .qualifier(cfgd_core::Absence::Missing.as_str())
+                        .qualifier(cfgd_core::Absence::NotInstalled.as_str())
                         .detail(packages.join(", "));
                     payload.packages.push(PackageDrift {
                         manager: manager.clone(),
+                        // The persisted/`-o json` shape stays the literal it
+                        // has always been; only the rendered qualifier moves
+                        // to the one absence word every surface now uses.
                         shape: cfgd_core::Absence::Missing.to_string(),
                         packages: packages.clone(),
                         bootstrap_method: None,
@@ -814,8 +870,8 @@ fn drift_tally(output: &DiffOutput, scope: DiffScope) -> String {
             true,
         ),
         (
-            "env",
-            "env item",
+            "shell",
+            "shell item",
             output.env.len(),
             s.has_env_drift,
             !s.env_check_failed,
@@ -865,7 +921,7 @@ pub fn build_diff_doc(output: &DiffOutput, scope: DiffScope) -> Doc {
         reasons.push("a system check could not run".to_string());
     }
     if output.summary.env_check_failed {
-        reasons.push("the env check could not run".to_string());
+        reasons.push("the shell check could not run".to_string());
     }
     if any_drift {
         // Drift AND a check that could not run: the verdict names the drift,
@@ -1022,8 +1078,8 @@ mod tests {
         drop(printer);
         let human = strip_ansi(&cfgd_core::test_helpers::captured_text(&buf));
         assert!(
-            human.contains("\nEnv\n"),
-            "the Env surface must render, since it has a finding: {human}"
+            human.contains("\nShell\n"),
+            "the Shell surface must render, since it has a finding: {human}"
         );
         assert!(
             human.contains("alias: ll"),
@@ -1479,7 +1535,7 @@ mod tests {
             !tally.contains("system"),
             "an unrun check is neither drifted nor clean: {tally}"
         );
-        assert_eq!(tally, "1 file (packages, env clean)");
+        assert_eq!(tally, "1 file (packages, shell clean)");
     }
 
     /// The `diff --module` sibling of the test above: an unrelated module's
@@ -1552,7 +1608,7 @@ mod tests {
             "the drift it did find is still the verdict: {doc_human}"
         );
         assert!(
-            doc_human.contains("the env check could not run"),
+            doc_human.contains("the shell check could not run"),
             "the reason for exit 1 must be on the line that carries it: {doc_human}"
         );
         assert_eq!(
@@ -1663,7 +1719,7 @@ mod tests {
 
         let output = strip_ansi(&cap.human());
         assert!(
-            output.contains("cargo: missing") && output.contains("ripgrep"),
+            output.contains("cargo: not installed") && output.contains("ripgrep"),
             "should show missing cargo packages, got: {output}"
         );
         assert!(

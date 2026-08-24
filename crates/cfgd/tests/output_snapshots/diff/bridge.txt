@@ -2,6 +2,6 @@ Diff
 
 Packages
   profile:tiny
-    ⚠ drift-mgr: missing — pkg-a
+    ⚠ drift-mgr: not installed — pkg-a
 
 ⚠ Drift detected
