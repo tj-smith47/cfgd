@@ -67,6 +67,42 @@ impl StateStore {
         Ok(())
     }
 
+    /// Resolve every unresolved drift row whose `(resource_type, resource_id)`
+    /// IS in `keys`, linking each to `apply_id`.
+    ///
+    /// The set-based counterpart of [`Self::resolve_drift`], for a caller
+    /// holding many keys at once: `drift_events` carries no index on those two
+    /// columns, so a per-key call is a full table scan per merged env var and
+    /// alias, paid inside the apply transaction. Only `resolved_by` is
+    /// written — the stored operands describe the row they were recorded with
+    /// and must stay byte-exact.
+    pub fn resolve_drift_keys(&self, apply_id: i64, keys: &[(String, String)]) -> Result<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+
+        // Same composite-key match `resolve_drift_not_in` uses: a `\x1f`-joined
+        // concatenation (the unit separator never appears in a resource type or
+        // a POSIX-folded id), every value a bound param.
+        let placeholders = std::iter::repeat_n("?", keys.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "UPDATE drift_events SET resolved_by = ?1
+                 WHERE resolved_by IS NULL AND resolved_at IS NULL
+                 AND (resource_type || char(31) || resource_id) IN ({placeholders})",
+        );
+
+        let mut bound: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(keys.len() + 1);
+        bound.push(Box::new(apply_id));
+        for (rtype, rid) in keys {
+            bound.push(Box::new(format!("{rtype}\u{1f}{rid}")));
+        }
+        let refs: Vec<&dyn rusqlite::ToSql> = bound.iter().map(|b| b.as_ref()).collect();
+        self.conn.execute(&sql, refs.as_slice())?;
+        Ok(())
+    }
+
     /// Mark every unresolved drift row whose `(resource_type, resource_id)` is
     /// NOT in `current` as resolved. Used by the daemon reconcile snapshot: the
     /// plan's action set is the ground truth for what is drifting right now, so

@@ -1607,13 +1607,19 @@ impl<'a> super::Reconciler<'a> {
             &resolved.merged.aliases,
             modules,
         );
-        for ev in &env {
-            self.state.resolve_drift(apply_id, "env-var", &ev.name)?;
-        }
-        for alias in &aliases {
-            self.state.resolve_drift(apply_id, "alias", &alias.name)?;
-        }
-        Ok(())
+        // One statement for the whole merged set: `drift_events` has no index on
+        // `(resource_type, resource_id)`, so a per-entry resolve is a full table
+        // scan per declared env var and alias, inside the apply transaction.
+        let keys: Vec<(String, String)> = env
+            .iter()
+            .map(|ev| ("env-var".to_string(), ev.name.clone()))
+            .chain(
+                aliases
+                    .iter()
+                    .map(|alias| ("alias".to_string(), alias.name.clone())),
+            )
+            .collect();
+        self.state.resolve_drift_keys(apply_id, &keys)
     }
 
     /// Turn one finished action into its journal completion, its result row and

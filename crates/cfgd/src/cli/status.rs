@@ -1231,9 +1231,14 @@ pub(super) fn cmd_status(
         // The recompute just read the machine: a row whose declared line is
         // the line the file holds has HEALED since it was recorded, and
         // rendering it would put `want: X, have: X` under a warning glyph —
-        // a finding that refutes itself. Dropped from the display only; plain
-        // `status` reads state and never writes it, and the stored row clears
-        // on the next apply or scan that touches it.
+        // a finding that refutes itself. It leaves the `-o json` payload with
+        // the human row (this vector IS `drift[]`), which is the point: a
+        // machine consumer must read the same converged verdict a reader does.
+        // The exit code stays in agreement for free — it counts the LIVE
+        // scan's findings, and a content-aware scan does not report a
+        // converged entry either. Nothing is written back: plain `status`
+        // reads state, and the stored row clears on the next apply or scan
+        // that touches it.
         if want == have {
             return false;
         }
@@ -1276,6 +1281,22 @@ pub(super) fn cmd_status(
         if let Some(stamped) = state.record_scan() {
             output.last_scan_at = Some(stamped);
         }
+        // A recorded row and this scan can report the SAME
+        // `(resource_type, resource_id)` — the env recompute above keeps the
+        // recorded row when the entry is still drifting, and the scan then
+        // finds the same entry and words it identically, so the report rendered
+        // one drift as two rows and `drift[]` carried it twice. The scan is the
+        // fresher reading of the same machine and carries the same recompute,
+        // so its finding REPLACES the recorded row. Matched on the exact key,
+        // which is what keeps a recorded row of a kind this scan never looked
+        // at (nothing produced a key for it) standing.
+        let scanned: std::collections::HashSet<(&str, &str)> = drift
+            .iter()
+            .map(|r| (r.resource_type.as_str(), r.resource_id.as_str()))
+            .collect();
+        output
+            .drift
+            .retain(|e| !scanned.contains(&(e.resource_type.as_str(), e.resource_id.as_str())));
         for r in &drift {
             output.drift.push(super::live_drift::drift_event_from(
                 r,
@@ -2730,7 +2751,7 @@ mod tests {
                 .unwrap();
         }
 
-        let cli = test_cli_for(config_path, &state_dir);
+        let cli = test_cli_for(config_path.clone(), &state_dir);
         for scan in [false, true] {
             let (printer, buf) = test_printers();
             cmd_status(&cli, &printer, None, false, scan, false).unwrap();
@@ -2748,6 +2769,121 @@ mod tests {
                 "scan={scan} must never render a row that refutes itself, got: {human}"
             );
         }
+
+        // The drop is a payload fact, not a display trim: the vector the
+        // recompute filters IS `drift[]`, so a machine consumer must read the
+        // same converged verdict the human row shows.
+        for scan in [false, true] {
+            let mut cli = test_cli_for(config_path.clone(), &state_dir);
+            cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+            let (printer, buf) = test_printers_json();
+            cmd_status(&cli, &printer, None, false, scan, false).unwrap();
+            drop(printer);
+            let captured = cfgd_core::test_helpers::captured_text(&buf);
+            let parsed: serde_json::Value = serde_json::from_str(captured.trim())
+                .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {captured}"));
+            let drift = parsed["drift"].as_array().expect("drift array");
+            assert!(
+                !drift
+                    .iter()
+                    .any(|e| e["resourceType"] == "env-var" && e["resourceId"] == "EDITOR"),
+                "scan={scan}: a healed row must leave drift[] with the human row, got: {parsed}"
+            );
+        }
+    }
+
+    /// A recorded row and a live scan reporting the SAME entry render once.
+    ///
+    /// The env recompute keeps a recorded row that is still drifting, and a
+    /// `--scan` of the same machine then finds the same entry and words it
+    /// identically — without the dedupe the report rendered one drift as two
+    /// rows and `drift[]` carried it twice. The scan's finding replaces the
+    /// recorded row, matched on the exact key, so a recorded row of a kind the
+    /// scan produced no key for (here a package this profile never declared)
+    /// must stand untouched.
+    #[test]
+    fn a_recorded_row_the_scan_also_reports_renders_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Interactive\n  env:\n    - name: EDITOR\n      value: vim\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("modules")).unwrap();
+
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        // The managed env file exists but holds no EDITOR line: the entry is
+        // genuinely drifting, so the recompute keeps the recorded row and the
+        // live scan reports the same key.
+        std::fs::write(
+            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
+            "# managed by cfgd \u{2014} do not edit\n",
+        )
+        .unwrap();
+
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        {
+            let state = cfgd_core::state::StateStore::open(&state_dir.join("state.db")).unwrap();
+            state
+                .record_drift(
+                    "env-var",
+                    "EDITOR",
+                    Some("current"),
+                    Some("missing or changed"),
+                    cfgd_core::config::LOCAL_LAYER,
+                )
+                .unwrap();
+            state
+                .record_drift(
+                    "package",
+                    "ghost-tool",
+                    Some("installed"),
+                    Some("not installed"),
+                    cfgd_core::config::LOCAL_LAYER,
+                )
+                .unwrap();
+        }
+
+        let cli = test_cli_for(config_path.clone(), &state_dir);
+        let (printer, buf) = test_printers();
+        cmd_status(&cli, &printer, None, false, true, false).unwrap();
+        drop(printer);
+        let human = cfgd_core::test_helpers::captured_text(&buf);
+        assert_eq!(
+            human.matches("env: EDITOR").count(),
+            1,
+            "one drift must render as one row, got: {human}"
+        );
+
+        let mut cli = test_cli_for(config_path, &state_dir);
+        cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+        let (printer, buf) = test_printers_json();
+        cmd_status(&cli, &printer, None, false, true, false).unwrap();
+        drop(printer);
+        let captured = cfgd_core::test_helpers::captured_text(&buf);
+        let parsed: serde_json::Value = serde_json::from_str(captured.trim())
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {captured}"));
+        let drift = parsed["drift"].as_array().expect("drift array");
+        assert_eq!(
+            drift
+                .iter()
+                .filter(|e| e["resourceType"] == "env-var" && e["resourceId"] == "EDITOR")
+                .count(),
+            1,
+            "drift[] must carry one entry for one drift, got: {parsed}"
+        );
+        assert!(
+            drift
+                .iter()
+                .any(|e| e["resourceType"] == "package" && e["resourceId"] == "ghost-tool"),
+            "a recorded row of a kind the scan never keyed must stand, got: {parsed}"
+        );
     }
 
     #[test]
