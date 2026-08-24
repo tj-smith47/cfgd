@@ -107,7 +107,7 @@
               "type": "string"
             }
           ],
-          "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
+          "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise.",
           "name": "patch",
           "required": false,
           "type": "object",
@@ -126,13 +126,13 @@
           "type": "boolean"
         },
         {
-          "description": "Path to the source file, relative to the module directory. Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
+          "description": "Path to the source file, relative to the module directory. Not required when `strategy` is `Patch`; required otherwise.",
           "name": "source",
           "required": false,
           "type": "string"
         },
         {
-          "description": "Per-file deployment strategy override. If None, uses the global default.",
+          "description": "Per-file deployment strategy override. Omitted, the module-wide default applies.",
           "enum": [
             "Symlink",
             "Copy",
@@ -228,7 +228,7 @@
       "typeName": "ModulePackageEntry"
     },
     {
-      "description": "Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a Skipped action rather than vanishing). Tags are matched against OS / distro / arch via `Platform::matches_any`; the canonical macOS token is `macos`.",
+      "description": "Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a skipped action rather than vanishing). Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS.",
       "name": "platforms",
       "required": false,
       "type": "[]string"

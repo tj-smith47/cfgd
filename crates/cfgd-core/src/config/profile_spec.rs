@@ -297,9 +297,9 @@ pub struct ProfileSpec {
 
     /// How far `spec.env` exports reach across the current user's environment.
     /// Omitted means "inherit" (a parent layer's value survives); the resolved
-    /// default when no layer sets it is `EnvScope::All` — every standard user
-    /// entry point cfgd can safely touch. Narrow it to `Login` or `Interactive`
-    /// to opt out of the broader session surfaces.
+    /// default when no layer sets it is `All` — every standard user entry point
+    /// cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out
+    /// of the broader session surfaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_scope: Option<EnvScope>,
 
@@ -364,7 +364,7 @@ case_insensitive_enum!(EnvScope {
 /// `spec.packages`: packages to install, grouped by package manager.
 ///
 /// Every manager field accepts either a bare list of names or (for the
-/// managers with their own options struct) a mapping:
+/// managers with options of their own) a mapping:
 ///
 /// ```yaml
 /// packages:
@@ -610,9 +610,9 @@ impl FromPackageList for NpmSpec {
     }
 }
 
-/// Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`)
-/// and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the
-/// shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.
+/// Cargo package spec. The `cargo` field accepts both a list form
+/// (`cargo: [bat, ripgrep]`) and an object form
+/// (`cargo: { file: Cargo.toml, packages: [...] }`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CargoSpec {
@@ -781,7 +781,7 @@ pub enum PatchFormat {
     Json,
     /// YAML; comments are NOT preserved across a merge (see docs for the caveat).
     Yaml,
-    /// TOML, edited via `toml_edit` to preserve comments and layout.
+    /// TOML, edited in place to preserve comments and layout.
     Toml,
 }
 
@@ -882,14 +882,15 @@ pub struct EncryptionConstraint {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedFileSpec {
-    /// Not required when `strategy` is `Patch`; required otherwise
-    /// (enforced by `validate_managed_file_specs`, not the JSON schema).
+    /// Path to the source file. Not required when `strategy` is `Patch`;
+    /// required otherwise.
     #[serde(default)]
     pub source: String,
     /// Destination path on the machine. A leading `~` expands to the home
     /// directory.
     pub target: PathBuf,
-    /// Per-file deployment strategy override. If None, uses the global default.
+    /// Per-file deployment strategy override. Omitted, the profile-wide
+    /// default applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strategy: Option<FileStrategy>,
     /// When true, the source file is local-only: auto-added to .gitignore,
@@ -907,8 +908,7 @@ pub struct ManagedFileSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<String>,
     /// Structured merge or script configuration for `strategy: Patch`.
-    /// Required when `strategy` is `Patch`, rejected otherwise (enforced by
-    /// `validate_managed_file_specs`, not the JSON schema).
+    /// Required when `strategy` is `Patch`, rejected otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch: Option<PatchSpec>,
 }

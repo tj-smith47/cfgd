@@ -63,7 +63,7 @@ pub struct ReconcileConfig {
     #[serde(default)]
     pub on_change: bool,
     /// Apply new/changed source-recommended modules automatically. Default:
-    /// `false`. Independent of `drift_policy`, which governs already-declared
+    /// `false`. Independent of `driftPolicy`, which governs already-declared
     /// drift instead.
     #[serde(default)]
     pub auto_apply: bool,
@@ -96,10 +96,10 @@ pub struct ReconcilePatch {
     /// Overrides the global reconcile interval for the targeted entity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interval: Option<String>,
-    /// Overrides the global `auto_apply` for the targeted entity.
+    /// Overrides the global `autoApply` for the targeted entity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_apply: Option<bool>,
-    /// Overrides the global `drift_policy` for the targeted entity.
+    /// Overrides the global `driftPolicy` for the targeted entity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drift_policy: Option<DriftPolicy>,
 }
@@ -116,7 +116,8 @@ case_insensitive_enum!(ReconcilePatchKind {
     "Profile" => ReconcilePatchKind::Profile,
 });
 
-/// Daemon drift reconciliation policy. PascalCase values match K8s enum conventions.
+/// Daemon drift reconciliation policy. Values are PascalCase, matching
+/// Kubernetes API conventions.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub enum DriftPolicy {
     /// Apply drift corrections automatically (current behavior, now opt-in).

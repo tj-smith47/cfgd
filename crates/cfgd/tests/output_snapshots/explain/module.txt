@@ -12,6 +12,6 @@ Fields (under spec)
   env        <[]EnvVar> [+]             — Environment variables this module contributes.
   files      <[]ModuleFileEntry> [+]    — Files this module deploys.
   packages   <[]ModulePackageEntry> [+] — Packages this module installs.
-  platforms  <[]string>                 — Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a Skipped action rather than vanishing). Tags are matched against OS / distro / arch via `Platform::matches_any`; the canonical macOS token is `macos`.
+  platforms  <[]string>                 — Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a skipped action rather than vanishing). Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS.
   scripts    <ScriptSpec> [+]           — Lifecycle scripts (`preApply`, `postApply`, …) this module runs.
   system     <object>                   — System configurator settings contributed by this module. Deep-merged into the profile system map; module values override profile values at leaf level.

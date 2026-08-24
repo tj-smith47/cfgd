@@ -275,7 +275,7 @@
       "typeName": "EnvVar"
     },
     {
-      "description": "How far `spec.env` exports reach across the current user's environment. Omitted means \"inherit\" (a parent layer's value survives); the resolved default when no layer sets it is `EnvScope::All` — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces.",
+      "description": "How far `spec.env` exports reach across the current user's environment. Omitted means \"inherit\" (a parent layer's value survives); the resolved default when no layer sets it is `All` — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces.",
       "enum": [
         "All",
         "Login",
@@ -344,7 +344,7 @@
                   "type": "string"
                 }
               ],
-              "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+              "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise.",
               "name": "patch",
               "required": false,
               "type": "object",
@@ -363,13 +363,13 @@
               "type": "boolean"
             },
             {
-              "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+              "description": "Path to the source file. Not required when `strategy` is `Patch`; required otherwise.",
               "name": "source",
               "required": false,
               "type": "string"
             },
             {
-              "description": "Per-file deployment strategy override. If None, uses the global default.",
+              "description": "Per-file deployment strategy override. Omitted, the profile-wide default applies.",
               "enum": [
                 "Symlink",
                 "Copy",

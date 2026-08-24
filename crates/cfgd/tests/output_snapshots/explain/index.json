@@ -108,7 +108,7 @@
                 "type": "string"
               }
             ],
-            "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
+            "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise.",
             "name": "patch",
             "required": false,
             "type": "object",
@@ -127,13 +127,13 @@
             "type": "boolean"
           },
           {
-            "description": "Path to the source file, relative to the module directory. Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_module_file_entries`, not the JSON schema).",
+            "description": "Path to the source file, relative to the module directory. Not required when `strategy` is `Patch`; required otherwise.",
             "name": "source",
             "required": false,
             "type": "string"
           },
           {
-            "description": "Per-file deployment strategy override. If None, uses the global default.",
+            "description": "Per-file deployment strategy override. Omitted, the module-wide default applies.",
             "enum": [
               "Symlink",
               "Copy",
@@ -229,7 +229,7 @@
         "typeName": "ModulePackageEntry"
       },
       {
-        "description": "Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a Skipped action rather than vanishing). Tags are matched against OS / distro / arch via `Platform::matches_any`; the canonical macOS token is `macos`.",
+        "description": "Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a skipped action rather than vanishing). Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS.",
         "name": "platforms",
         "required": false,
         "type": "[]string"
@@ -1083,7 +1083,7 @@
         "typeName": "EnvVar"
       },
       {
-        "description": "How far `spec.env` exports reach across the current user's environment. Omitted means \"inherit\" (a parent layer's value survives); the resolved default when no layer sets it is `EnvScope::All` — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces.",
+        "description": "How far `spec.env` exports reach across the current user's environment. Omitted means \"inherit\" (a parent layer's value survives); the resolved default when no layer sets it is `All` — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces.",
         "enum": [
           "All",
           "Login",
@@ -1152,7 +1152,7 @@
                     "type": "string"
                   }
                 ],
-                "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise.",
                 "name": "patch",
                 "required": false,
                 "type": "object",
@@ -1171,13 +1171,13 @@
                 "type": "boolean"
               },
               {
-                "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                "description": "Path to the source file. Not required when `strategy` is `Patch`; required otherwise.",
                 "name": "source",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Per-file deployment strategy override. If None, uses the global default.",
+                "description": "Per-file deployment strategy override. Omitted, the profile-wide default applies.",
                 "enum": [
                   "Symlink",
                   "Copy",
@@ -2287,7 +2287,7 @@
                         "type": "string"
                       }
                     ],
-                    "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise.",
                     "name": "patch",
                     "required": false,
                     "type": "object",
@@ -2306,13 +2306,13 @@
                     "type": "boolean"
                   },
                   {
-                    "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "description": "Path to the source file. Not required when `strategy` is `Patch`; required otherwise.",
                     "name": "source",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "Per-file deployment strategy override. If None, uses the global default.",
+                    "description": "Per-file deployment strategy override. Omitted, the profile-wide default applies.",
                     "enum": [
                       "Symlink",
                       "Copy",
@@ -2772,7 +2772,7 @@
                         "type": "string"
                       }
                     ],
-                    "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise.",
                     "name": "patch",
                     "required": false,
                     "type": "object",
@@ -2791,13 +2791,13 @@
                     "type": "boolean"
                   },
                   {
-                    "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "description": "Path to the source file. Not required when `strategy` is `Patch`; required otherwise.",
                     "name": "source",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "Per-file deployment strategy override. If None, uses the global default.",
+                    "description": "Per-file deployment strategy override. Omitted, the profile-wide default applies.",
                     "enum": [
                       "Symlink",
                       "Copy",
@@ -3257,7 +3257,7 @@
                         "type": "string"
                       }
                     ],
-                    "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise.",
                     "name": "patch",
                     "required": false,
                     "type": "object",
@@ -3276,13 +3276,13 @@
                     "type": "boolean"
                   },
                   {
-                    "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "description": "Path to the source file. Not required when `strategy` is `Patch`; required otherwise.",
                     "name": "source",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "Per-file deployment strategy override. If None, uses the global default.",
+                    "description": "Per-file deployment strategy override. Omitted, the profile-wide default applies.",
                     "enum": [
                       "Symlink",
                       "Copy",
@@ -3742,7 +3742,7 @@
                         "type": "string"
                       }
                     ],
-                    "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "description": "Structured merge or script configuration for `strategy: Patch`. Required when `strategy` is `Patch`, rejected otherwise.",
                     "name": "patch",
                     "required": false,
                     "type": "object",
@@ -3761,13 +3761,13 @@
                     "type": "boolean"
                   },
                   {
-                    "description": "Not required when `strategy` is `Patch`; required otherwise (enforced by `validate_managed_file_specs`, not the JSON schema).",
+                    "description": "Path to the source file. Not required when `strategy` is `Patch`; required otherwise.",
                     "name": "source",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "Per-file deployment strategy override. If None, uses the global default.",
+                    "description": "Per-file deployment strategy override. Omitted, the profile-wide default applies.",
                     "enum": [
                       "Symlink",
                       "Copy",
@@ -4182,7 +4182,7 @@
             "typeName": "ConfigSourceProfileEntry"
           },
           {
-            "description": "Flat list of published profile names. Superseded by `profile_details` when that list is non-empty.",
+            "description": "Flat list of published profile names. Superseded by `profileDetails` when that list is non-empty.",
             "name": "profiles",
             "required": false,
             "type": "[]string"
@@ -4379,7 +4379,7 @@
           {
             "children": [
               {
-                "description": "Apply new/changed source-recommended modules automatically. Default: `false`. Independent of `drift_policy`, which governs already-declared drift instead.",
+                "description": "Apply new/changed source-recommended modules automatically. Default: `false`. Independent of `driftPolicy`, which governs already-declared drift instead.",
                 "name": "autoApply",
                 "required": false,
                 "type": "boolean"
@@ -4411,13 +4411,13 @@
               {
                 "children": [
                   {
-                    "description": "Overrides the global `auto_apply` for the targeted entity.",
+                    "description": "Overrides the global `autoApply` for the targeted entity.",
                     "name": "autoApply",
                     "required": false,
                     "type": "boolean"
                   },
                   {
-                    "description": "Overrides the global `drift_policy` for the targeted entity.",
+                    "description": "Overrides the global `driftPolicy` for the targeted entity.",
                     "enum": [
                       "Auto",
                       "NotifyOnly",
@@ -4881,37 +4881,37 @@
           {
             "children": [
               {
-                "description": "Fills `Theme::accent`, the style for `Role::Accent` status lines (\"attention without alarm\"). Hex color.",
+                "description": "Color for accent status lines: attention without alarm. Hex color.",
                 "name": "accent",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Fills `Theme::diff_add`, the style for an added diff line. Hex color.",
+                "description": "Color for an added diff line. Hex color.",
                 "name": "diffAdd",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Fills `Theme::diff_context`, the style for an unchanged diff context line. Hex color.",
+                "description": "Color for an unchanged diff context line. Hex color.",
                 "name": "diffContext",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Fills `Theme::diff_remove`, the style for a removed diff line. Hex color.",
+                "description": "Color for a removed diff line. Hex color.",
                 "name": "diffRemove",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Fills `Theme::error`, the style for `Role::Fail` status lines. Hex color.",
+                "description": "Color for failure status lines. Hex color.",
                 "name": "error",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Fills `Theme::header`, the style for a top-level heading. Hex color (`\"#ff0000\"`).",
+                "description": "Color for a top-level heading. Hex color (`\"#ff0000\"`).",
                 "name": "header",
                 "required": false,
                 "type": "string"
@@ -4923,85 +4923,85 @@
                 "type": "string"
               },
               {
-                "description": "Glyph for `Role::Fail` status lines. Default varies by preset (e.g. `✗`).",
+                "description": "Glyph for failure status lines. Default varies by preset (e.g. `✗`).",
                 "name": "iconFail",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Glyph for `Role::Info` status lines. Default varies by preset.",
+                "description": "Glyph for informational status lines. Default varies by preset.",
                 "name": "iconInfo",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Glyph for `Role::Ok` status lines. Default varies by preset (e.g. `✓`).",
+                "description": "Glyph for success status lines. Default varies by preset (e.g. `✓`).",
                 "name": "iconOk",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Glyph for `Role::Pending` status lines. Default varies by preset.",
+                "description": "Glyph for pending status lines. Default varies by preset.",
                 "name": "iconPending",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Glyph for `Role::Running` status lines. Default varies by preset.",
+                "description": "Glyph for in-progress status lines. Default varies by preset.",
                 "name": "iconRunning",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Glyph for `Role::Skipped` status lines. Default varies by preset.",
+                "description": "Glyph for skipped status lines. Default varies by preset.",
                 "name": "iconSkipped",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Glyph for `Role::Warn` status lines. Default varies by preset (e.g. `⚠`).",
+                "description": "Glyph for warning status lines. Default varies by preset (e.g. `⚠`).",
                 "name": "iconWarn",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Fills `Theme::info`, the style for `Role::Info` status lines. Hex color.",
+                "description": "Color for informational status lines. Hex color.",
                 "name": "info",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Fills `Theme::muted`, the style for de-emphasized text (hints, notes, qualifiers). Hex color.",
+                "description": "Color for de-emphasized text (hints, notes, qualifiers). Hex color.",
                 "name": "muted",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Fills `Theme::primary`, the style an action subject at the deepest level of the run tree is painted with. Presets that carry no palette foreground of their own leave it unset.",
+                "description": "Color for action lines at the deepest nesting level of a run. Hex color (`\"#ff0000\"`). Presets that carry no palette foreground of their own leave it unset.",
                 "name": "primary",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Fills `Theme::running`, the style for `Role::Running` status lines and in-flight spinner labels. Hex color.",
+                "description": "Color for in-progress status lines and spinner labels. Hex color.",
                 "name": "running",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Fills `Theme::secondary`, the style for `Role::Secondary` status lines (structural pivots, labels, identifiers). Hex color.",
+                "description": "Color for secondary status lines: structural pivots, labels, and identifiers. Hex color.",
                 "name": "secondary",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Fills `Theme::success`, the style for `Role::Ok` status lines. Hex color.",
+                "description": "Color for success status lines. Hex color.",
                 "name": "success",
                 "required": false,
                 "type": "string"
               },
               {
-                "description": "Fills `Theme::warning`, the style for `Role::Warn` status lines. Hex color.",
+                "description": "Color for warning status lines. Hex color.",
                 "name": "warning",
                 "required": false,
                 "type": "string"

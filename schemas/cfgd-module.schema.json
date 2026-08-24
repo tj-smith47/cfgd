@@ -106,7 +106,7 @@
               "type": "null"
             }
           ],
-          "description": "Structured merge or script configuration for `strategy: Patch`.\nRequired when `strategy` is `Patch`, rejected otherwise (enforced by\n`validate_module_file_entries`, not the JSON schema)."
+          "description": "Structured merge or script configuration for `strategy: Patch`.\nRequired when `strategy` is `Patch`, rejected otherwise."
         },
         "permissions": {
           "description": "Unix permission bits (e.g. \"600\", \"644\") to apply after deployment.",
@@ -121,7 +121,7 @@
         },
         "source": {
           "default": "",
-          "description": "Path to the source file, relative to the module directory. Not\nrequired when `strategy` is `Patch`; required otherwise\n(enforced by `validate_module_file_entries`, not the JSON schema).",
+          "description": "Path to the source file, relative to the module directory. Not\nrequired when `strategy` is `Patch`; required otherwise.",
           "type": "string"
         },
         "strategy": {
@@ -133,7 +133,7 @@
               "type": "null"
             }
           ],
-          "description": "Per-file deployment strategy override. If None, uses the global default."
+          "description": "Per-file deployment strategy override. Omitted, the module-wide default\napplies."
         },
         "target": {
           "description": "Destination path on the machine. A leading `~` expands to the home\ndirectory.",
@@ -289,7 +289,7 @@
           "type": "array"
         },
         "platforms": {
-          "description": "Platform tags gating the whole module. When non-empty and the current\nplatform matches none of them, the module is skipped entirely (it\nappears as a Skipped action rather than vanishing). Tags are matched\nagainst OS / distro / arch via `Platform::matches_any`; the canonical\nmacOS token is `macos`.",
+          "description": "Platform tags gating the whole module. When non-empty and the current\nplatform matches none of them, the module is skipped entirely (it\nappears as a skipped action rather than vanishing). Tags are matched\nagainst the machine's OS, distro, and arch; use `macos` for macOS.",
           "items": {
             "type": "string"
           },
@@ -334,7 +334,7 @@
         },
         {
           "const": "Toml",
-          "description": "TOML, edited via `toml_edit` to preserve comments and layout.",
+          "description": "TOML, edited in place to preserve comments and layout.",
           "type": "string"
         }
       ]

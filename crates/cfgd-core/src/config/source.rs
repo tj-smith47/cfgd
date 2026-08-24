@@ -266,7 +266,7 @@ pub struct ConfigSourceSpec {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceProvides {
-    /// Flat list of published profile names. Superseded by `profile_details`
+    /// Flat list of published profile names. Superseded by `profileDetails`
     /// when that list is non-empty.
     #[serde(default)]
     pub profiles: Vec<String>,

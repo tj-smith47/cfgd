@@ -370,7 +370,7 @@
       "type": "object"
     },
     "DriftPolicy": {
-      "description": "Daemon drift reconciliation policy. PascalCase values match K8s enum conventions.",
+      "description": "Daemon drift reconciliation policy. Values are PascalCase, matching Kubernetes API conventions.",
       "oneOf": [
         {
           "const": "Auto",
@@ -551,7 +551,7 @@
       "properties": {
         "autoApply": {
           "default": false,
-          "description": "Apply new/changed source-recommended modules automatically. Default: `false`. Independent of `drift_policy`, which governs already-declared drift instead.",
+          "description": "Apply new/changed source-recommended modules automatically. Default: `false`. Independent of `driftPolicy`, which governs already-declared drift instead.",
           "type": "boolean"
         },
         "driftPolicy": {
@@ -597,7 +597,7 @@
       "description": "A kustomize-style reconcile patch targeting a specific module or profile. When `name` is omitted, the patch applies to all entities of the given kind.",
       "properties": {
         "autoApply": {
-          "description": "Overrides the global `auto_apply` for the targeted entity.",
+          "description": "Overrides the global `autoApply` for the targeted entity.",
           "type": [
             "boolean",
             "null"
@@ -612,7 +612,7 @@
               "type": "null"
             }
           ],
-          "description": "Overrides the global `drift_policy` for the targeted entity."
+          "description": "Overrides the global `driftPolicy` for the targeted entity."
         },
         "interval": {
           "description": "Overrides the global reconcile interval for the targeted entity.",
@@ -941,42 +941,42 @@
     "ThemeOverrides": {
       "properties": {
         "accent": {
-          "description": "Fills `Theme::accent`, the style for `Role::Accent` status lines (\"attention without alarm\"). Hex color.",
+          "description": "Color for accent status lines: attention without alarm. Hex color.",
           "type": [
             "string",
             "null"
           ]
         },
         "diffAdd": {
-          "description": "Fills `Theme::diff_add`, the style for an added diff line. Hex color.",
+          "description": "Color for an added diff line. Hex color.",
           "type": [
             "string",
             "null"
           ]
         },
         "diffContext": {
-          "description": "Fills `Theme::diff_context`, the style for an unchanged diff context line. Hex color.",
+          "description": "Color for an unchanged diff context line. Hex color.",
           "type": [
             "string",
             "null"
           ]
         },
         "diffRemove": {
-          "description": "Fills `Theme::diff_remove`, the style for a removed diff line. Hex color.",
+          "description": "Color for a removed diff line. Hex color.",
           "type": [
             "string",
             "null"
           ]
         },
         "error": {
-          "description": "Fills `Theme::error`, the style for `Role::Fail` status lines. Hex color.",
+          "description": "Color for failure status lines. Hex color.",
           "type": [
             "string",
             "null"
           ]
         },
         "header": {
-          "description": "Fills `Theme::header`, the style for a top-level heading. Hex color (`\"#ff0000\"`).",
+          "description": "Color for a top-level heading. Hex color (`\"#ff0000\"`).",
           "type": [
             "string",
             "null"
@@ -990,98 +990,98 @@
           ]
         },
         "iconFail": {
-          "description": "Glyph for `Role::Fail` status lines. Default varies by preset (e.g. `✗`).",
+          "description": "Glyph for failure status lines. Default varies by preset (e.g. `✗`).",
           "type": [
             "string",
             "null"
           ]
         },
         "iconInfo": {
-          "description": "Glyph for `Role::Info` status lines. Default varies by preset.",
+          "description": "Glyph for informational status lines. Default varies by preset.",
           "type": [
             "string",
             "null"
           ]
         },
         "iconOk": {
-          "description": "Glyph for `Role::Ok` status lines. Default varies by preset (e.g. `✓`).",
+          "description": "Glyph for success status lines. Default varies by preset (e.g. `✓`).",
           "type": [
             "string",
             "null"
           ]
         },
         "iconPending": {
-          "description": "Glyph for `Role::Pending` status lines. Default varies by preset.",
+          "description": "Glyph for pending status lines. Default varies by preset.",
           "type": [
             "string",
             "null"
           ]
         },
         "iconRunning": {
-          "description": "Glyph for `Role::Running` status lines. Default varies by preset.",
+          "description": "Glyph for in-progress status lines. Default varies by preset.",
           "type": [
             "string",
             "null"
           ]
         },
         "iconSkipped": {
-          "description": "Glyph for `Role::Skipped` status lines. Default varies by preset.",
+          "description": "Glyph for skipped status lines. Default varies by preset.",
           "type": [
             "string",
             "null"
           ]
         },
         "iconWarn": {
-          "description": "Glyph for `Role::Warn` status lines. Default varies by preset (e.g. `⚠`).",
+          "description": "Glyph for warning status lines. Default varies by preset (e.g. `⚠`).",
           "type": [
             "string",
             "null"
           ]
         },
         "info": {
-          "description": "Fills `Theme::info`, the style for `Role::Info` status lines. Hex color.",
+          "description": "Color for informational status lines. Hex color.",
           "type": [
             "string",
             "null"
           ]
         },
         "muted": {
-          "description": "Fills `Theme::muted`, the style for de-emphasized text (hints, notes, qualifiers). Hex color.",
+          "description": "Color for de-emphasized text (hints, notes, qualifiers). Hex color.",
           "type": [
             "string",
             "null"
           ]
         },
         "primary": {
-          "description": "Fills `Theme::primary`, the style an action subject at the deepest level of the run tree is painted with. Presets that carry no palette foreground of their own leave it unset.",
+          "description": "Color for action lines at the deepest nesting level of a run. Hex color (`\"#ff0000\"`). Presets that carry no palette foreground of their own leave it unset.",
           "type": [
             "string",
             "null"
           ]
         },
         "running": {
-          "description": "Fills `Theme::running`, the style for `Role::Running` status lines and in-flight spinner labels. Hex color.",
+          "description": "Color for in-progress status lines and spinner labels. Hex color.",
           "type": [
             "string",
             "null"
           ]
         },
         "secondary": {
-          "description": "Fills `Theme::secondary`, the style for `Role::Secondary` status lines (structural pivots, labels, identifiers). Hex color.",
+          "description": "Color for secondary status lines: structural pivots, labels, and identifiers. Hex color.",
           "type": [
             "string",
             "null"
           ]
         },
         "success": {
-          "description": "Fills `Theme::success`, the style for `Role::Ok` status lines. Hex color.",
+          "description": "Color for success status lines. Hex color.",
           "type": [
             "string",
             "null"
           ]
         },
         "warning": {
-          "description": "Fills `Theme::warning`, the style for `Role::Warn` status lines. Hex color.",
+          "description": "Color for warning status lines. Hex color.",
           "type": [
             "string",
             "null"
