@@ -2,7 +2,7 @@
 
 The cluster-side component of cfgd. Watches [Custom Resource Definitions](https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/) (CRDs) for machine configuration, runs an [admission webhook](https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/) to validate specs before they're persisted, and optionally serves a device gateway for enrollment and checkin.
 
-No [Crossplane](https://www.crossplane.io/) dependency — CRDs can be managed by any GitOps tool (ArgoCD, Flux, Helm, or plain `kubectl apply`). For team config distribution via Crossplane, see [team-config.md](team-config.md).
+No [Crossplane](https://www.crossplane.io/) dependency: CRDs can be managed by any GitOps tool (ArgoCD, Flux, Helm, or plain `kubectl apply`). For team config distribution via Crossplane, see [team-config.md](team-config.md).
 
 ## CRDs
 
@@ -18,22 +18,22 @@ API group: `cfgd.io/v1alpha1`
 
 ### Installing the CRDs
 
-The Helm chart installs the CRDs automatically — nothing extra is needed:
+The Helm chart installs the CRDs automatically:
 
 ```sh
 helm install cfgd oci://ghcr.io/tj-smith47/charts/cfgd
 ```
 
 To register the CRDs without Helm (ArgoCD/Flux, a bare `kubectl`, or CI), apply
-the single-file bundle published with each release — one command, no clone:
+the single-file bundle published with each release:
 
 ```sh
 kubectl apply -f https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-crds.yaml
 ```
 
 Pin a specific version by swapping `latest/download` for `download/v<VERSION>`.
-The bundle is generated from the `cfgd-crd` spec types (`task gen:crds`) and is
-byte-identical to the CRDs the Helm chart and the OLM bundle install.
+The bundle is generated from the CRD spec types and is byte-identical to the
+CRDs the Helm chart and the OLM bundle install.
 
 ### MachineConfig
 
@@ -116,7 +116,7 @@ spec:
 
 ### ClusterConfigPolicy
 
-The cluster-scoped sibling of `ConfigPolicy`. It selects whole namespaces (via `namespaceSelector`, not a per-MachineConfig label selector) and adds a cluster-wide `security` block governing module provenance. On conflicts with a namespaced `ConfigPolicy`, the cluster policy wins — see [multi-tenancy.md](multi-tenancy.md#policy-merge-semantics). Full field reference: [spec/clusterconfigpolicy.md](spec/clusterconfigpolicy.md).
+The cluster-scoped sibling of `ConfigPolicy`. It selects whole namespaces (via `namespaceSelector`, not a per-MachineConfig label selector) and adds a cluster-wide `security` block governing module provenance. On conflicts with a namespaced `ConfigPolicy`, the cluster policy wins; see [multi-tenancy.md](multi-tenancy.md#policy-merge-semantics). Full field reference: [spec/clusterconfigpolicy.md](spec/clusterconfigpolicy.md).
 
 ```yaml
 apiVersion: cfgd.io/v1alpha1
@@ -162,9 +162,9 @@ spec:
 
 The operator runs [kube-rs](https://kube.rs/) controllers that watch and reconcile each CRD type:
 
-- **MachineConfig controller** — validates specs, checks compliance against ConfigPolicy, tracks status conditions
-- **ConfigPolicy controller** — evaluates all MachineConfigs matching the target selector, reports compliant/non-compliant counts
-- **DriftAlert controller** — tracks acknowledgment and resolution state
+- **MachineConfig controller**: validates specs, checks compliance against ConfigPolicy, tracks status conditions
+- **ConfigPolicy controller**: evaluates all MachineConfigs matching the target selector, reports compliant/non-compliant counts
+- **DriftAlert controller**: tracks acknowledgment and resolution state
 
 ## Admission Webhook
 
@@ -271,7 +271,7 @@ CFGD_SERVER_DB_PATH=/data/cfgd-gateway.db \
   cfgd-operator
 ```
 
-`DEVICE_GATEWAY_STANDALONE` implies the gateway is enabled — there is no need to also set `DEVICE_GATEWAY_ENABLED`. Standalone is an explicit opt-in: there is intentionally no silent fallback to it when a cluster connection fails, so a real cluster outage in the normal path surfaces as an error rather than being masked.
+`DEVICE_GATEWAY_STANDALONE` implies the gateway is enabled; there is no need to also set `DEVICE_GATEWAY_ENABLED`. Standalone is an explicit opt-in: there is intentionally no silent fallback to it when a cluster connection fails, so a real cluster outage in the normal path surfaces as an error rather than being masked.
 
 ### Checkin API
 
@@ -289,7 +289,7 @@ An admin (or the cluster operator) pushes desired configuration to a device via 
 POST /api/v1/devices/{id}/config
 ```
 
-Every accepted push — even one whose `configHash` is unchanged — advances the device's **`generation`** counter and records **`lastPushedAt`**, so operators can confirm that a push was received and processed without having to wait for a checkin cycle:
+Every accepted push, even one whose `configHash` is unchanged, advances the device's `generation` counter and records `lastPushedAt`, so operators can confirm that a push was received and processed without waiting for a checkin cycle:
 
 ```json
 {
@@ -301,7 +301,7 @@ Every accepted push — even one whose `configHash` is unchanged — advances th
 }
 ```
 
-The gateway enforces a **10 MiB** config-size limit. A config that exceeds this limit is rejected with `400` and an actionable message (`"config exceeds 10MB size limit"`), not a generic `413 Payload Too Large`. A `413` indicates the request body itself — including envelope overhead — exceeded the 12 MiB transport backstop (a misconfigured client, not an oversized config).
+The gateway enforces a 10 MiB config-size limit. A config that exceeds it is rejected with `400` and an actionable message (`"config exceeds 10MB size limit"`), not a generic `413 Payload Too Large`. A `413` indicates the request body itself, envelope overhead included, exceeded the 12 MiB transport backstop: a misconfigured client, not an oversized config.
 
 ### Enrollment
 
@@ -340,7 +340,7 @@ Real-time event feed at `/api/v1/events/stream` for monitoring integrations.
 
 ## Binary CLI
 
-The `cfgd-operator` binary supports a minimal CLI surface before entering the serving loop:
+The `cfgd-operator` binary answers `--version` and `--help` instantly, rejects unknown arguments with a non-zero exit, and starts the serving loop only when invoked with no arguments:
 
 ```sh
 cfgd-operator --version   # print version and exit 0
@@ -349,19 +349,19 @@ cfgd-operator             # run the operator / gateway (no-arg invocation)
 cfgd-operator --unknown   # exit non-zero immediately (no hang)
 ```
 
-Previously the binary had no argv handling — any flag, including `--version`, would block indefinitely waiting for a Kubernetes cluster connection. The binary now answers `--version` and `--help` instantly and rejects unknown arguments fast. The no-argument form starts the operator or gateway as before.
+All runtime configuration is via environment variables (`DEVICE_GATEWAY_*`, `WEBHOOK_CERT_DIR`, ...); there are no serving-mode flags.
 
 ## DaemonSet Mode
 
 The same `cfgd daemon` binary can be deployed as a Kubernetes [DaemonSet](https://kubernetes.io/docs/concepts/workloads/controllers/daemonset/) (a pod that runs on every node in the cluster). Config is mounted via ConfigMap. Profiles target node-level [system configurators](system-configurators.md):
 
-- `sysctl` — kernel parameters
-- `kernelModules` — br_netfilter, overlay, ip_vs
-- `containerd` — container runtime config
-- `kubelet` — kubelet configuration
-- `apparmor` — security profiles
-- `seccomp` — syscall filtering
-- `certificates` — X.509 cert management
+- `sysctl`: kernel parameters
+- `kernelModules`: br_netfilter, overlay, ip_vs
+- `containerd`: container runtime config
+- `kubelet`: kubelet configuration
+- `apparmor`: security profiles
+- `seccomp`: syscall filtering
+- `certificates`: X.509 cert management
 
 Reports status to the device gateway via checkin API. Managed by the cluster, not by systemd/launchd.
 
@@ -388,3 +388,5 @@ Install:
 helm install cfgd ./chart/cfgd \
   --set deviceGateway.enabled=true
 ```
+
+See the [chart README](../chart/cfgd/README.md) for the full values reference.

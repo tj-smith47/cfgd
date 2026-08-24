@@ -1,14 +1,12 @@
 # AI-Guided Generation
 
-`cfgd generate` scans your system and uses an AI model to propose a structured cfgd configuration — modules for each tool, profiles tying them together, and any dotfiles to bring under management. You review each generated file before it is written.
+`cfgd generate` scans your system and uses an AI model to propose a structured cfgd configuration: modules for each tool, profiles tying them together, and any dotfiles to bring under management. You review each generated file before it is written.
 
 ## What `cfgd generate` Does
 
-Instead of writing YAML by hand, `cfgd generate` does the following:
-
 1. Scans your installed packages, dotfiles, shell config (aliases, exports, PATH), and system settings.
 2. Sends the scan results to an AI model (Claude by default).
-3. The AI proposes a module and profile structure — which tools warrant their own modules, how profiles should inherit, what dependencies exist.
+3. The AI proposes a module and profile structure: which tools warrant their own modules, how profiles should inherit, what dependencies exist.
 4. For each generated YAML file, you see the full content and choose: accept, reject, give feedback, or step through it section by section.
 5. Accepted files are written to `modules/<name>/module.yaml` and `profiles/<name>/profile.yaml` in your config repo.
 6. When all files have been reviewed, you're offered the option to commit them.
@@ -27,22 +25,23 @@ cfgd apply                 # apply to the machine
 
 cfgd scans:
 
-- **Installed packages** — queries all available package managers (brew, apt, cargo, npm, pipx, dnf, etc.) for their installed package lists.
-- **Dotfiles** — walks `~` and `~/.config/` for config files, identifies which tool each belongs to.
-- **Shell config** — parses your RC files (`.zshrc`, `.bashrc`, `config.fish`) to extract aliases, exports, PATH additions, sourced files, and plugin managers.
-- **System settings** — macOS defaults domains, systemd user units, LaunchAgents, gsettings schemas, Windows registry values, and Windows services (platform-dependent).
+- **Installed packages**: queries all available package managers (brew, apt, cargo, npm, pipx, dnf, etc.) for their installed package lists.
+- **Dotfiles**: walks `~` and `~/.config/` for config files, identifies which tool each belongs to.
+- **Shell config**: parses your RC files (`.zshrc`, `.bashrc`, `config.fish`) to extract aliases, exports, PATH additions, sourced files, and plugin managers.
+- **System settings**: macOS defaults domains, systemd user units, LaunchAgents, gsettings schemas, Windows registry values, and Windows services (platform-dependent).
 
 ### AI Proposes Structure
 
-The AI receives the scan results and proposes which tools should become modules (nvim, tmux, zsh, git, etc.) and how profiles should be organized. Dependencies are inferred — if your nvim config requires Node.js for LSP, the AI will set `depends: [node]`.
+The AI receives the scan results and proposes which tools should become modules (nvim, tmux, zsh, git, etc.) and how profiles should be organized. Dependencies are inferred: if your nvim config requires Node.js for LSP, the AI will set `depends: [node]`.
 
 ### Per-Component Generation
 
 The AI generates modules first (leaf dependencies first, dependents last), then profiles. For each generated document, it calls the `present_yaml` tool, which shows you the YAML with syntax highlighting:
 
 ```
-Generated Module — neovim: editor configuration with Lazy.nvim and LSP
-─────────────────────────────────────────────────────────────
+Generated Module
+  Description  neovim: editor configuration with Lazy.nvim and LSP
+
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
@@ -59,7 +58,7 @@ spec:
   scripts:
     postApply:
       - nvim --headless "+Lazy! sync" +qa
-─────────────────────────────────────────────────────────────
+
 What would you like to do?
 > Accept
   Reject
@@ -67,20 +66,20 @@ What would you like to do?
   Step through
 ```
 
-- **Accept** — write the file to the repo.
-- **Reject** — skip this file; the AI continues to the next.
-- **Give feedback** — type a message; the AI revises and presents again.
-- **Step through** — the AI breaks the document into smaller pieces and presents each separately.
+- **Accept**: write the file to the repo.
+- **Reject**: skip this file; the AI continues to the next.
+- **Give feedback**: type a message; the AI revises and presents again.
+- **Step through**: the AI breaks the document into smaller pieces and presents each separately.
 
 ### File Writing and Optional Commit
 
 After all components have been reviewed, cfgd shows a summary of written files and offers to commit them:
 
 ```
-Generated files
-  module/nvim: modules/nvim/module.yaml
-  module/tmux: modules/tmux/module.yaml
-  profile/base: profiles/base/profile.yaml
+Generated Files
+  ✓ module/nvim: modules/nvim/module.yaml
+  ✓ module/tmux: modules/tmux/module.yaml
+  ✓ profile/base: profiles/base/profile.yaml
 
 Commit all generated files? [Y/n]
 ```
@@ -128,16 +127,16 @@ metadata:
 spec:
   ai:
     provider: claude
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5
     apiKeyEnv: ANTHROPIC_API_KEY
 ```
 
-All three fields have defaults — you only need this section if you want to override something.
+All three fields have defaults; you only need this section to override something.
 
 | Field | Default | Description |
 |---|---|---|
 | `provider` | `claude` | AI provider name |
-| `model` | `claude-sonnet-4-6` | Model ID |
+| `model` | `claude-sonnet-5` | Model ID |
 | `apiKeyEnv` | `ANTHROPIC_API_KEY` | Environment variable holding the API key |
 
 ### Provider and Model Overrides
@@ -145,13 +144,13 @@ All three fields have defaults — you only need this section if you want to ove
 Override via CLI flags without touching `cfgd.yaml`:
 
 ```sh
-cfgd generate --model claude-opus-4-20250514
+cfgd generate --model claude-opus-5
 cfgd generate --provider claude --model claude-haiku-4-5
 ```
 
 ### API Key Setup
 
-Set the API key as an environment variable. Never put it in `cfgd.yaml` — the config file is typically committed to git.
+Set the API key as an environment variable. Never put it in `cfgd.yaml`: the config file is typically committed to git.
 
 ```sh
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -171,7 +170,7 @@ export MY_ANTHROPIC_KEY=sk-ant-...
 cfgd generate
 ```
 
-For persistent configuration, add the export to your shell RC file (outside of cfgd management — you don't want cfgd managing the file that sets up cfgd's own key).
+For persistent configuration, add the export to your shell RC file, outside of cfgd management: you don't want cfgd managing the file that sets up cfgd's own key.
 
 ## CLI Flags
 
@@ -179,7 +178,6 @@ For persistent configuration, add the export to your shell RC file (outside of c
 |---|---|
 | `--model <model-id>` | Override AI model |
 | `--provider <name>` | Override AI provider |
-| `--yes`, `-y` | Skip confirmation prompts; auto-accept all generated YAML |
 | `--scan-only` | Scan and print findings without starting the AI conversation |
 | `--shell <name>` | Override shell for config scanning (default: auto-detect from `$SHELL`) |
 | `--home <path>` | Override home directory for scanning |
@@ -195,11 +193,11 @@ cfgd ships two MCP servers, for two different jobs:
 
 `cfgd mcp` is covered in [Serving the CLI itself](#serving-the-cli-itself) below.
 
-`cfgd mcp-server` exposes the same generation tools over the [Model Context Protocol](https://modelcontextprotocol.io/) (MCP). This lets any MCP-compatible AI client (Claude Code, Cursor, etc.) call cfgd's scan and write tools directly — without the embedded CLI client.
+`cfgd mcp-server` exposes the same generation tools over the [Model Context Protocol](https://modelcontextprotocol.io/) (MCP). This lets any MCP-compatible AI client (Claude Code, Cursor, etc.) call cfgd's scan and write tools directly, without the embedded CLI client.
 
 ### What MCP Is
 
-MCP is a protocol for connecting AI models to external tools via a JSON-RPC stdin/stdout transport. When a client connects to `cfgd mcp-server`, it can call tools, read resources, and use prompts — all defined by cfgd and executed locally on your machine.
+MCP is a protocol for connecting AI models to external tools via a JSON-RPC stdin/stdout transport. When a client connects to `cfgd mcp-server`, it can call tools, read resources, and use prompts, all defined by cfgd and executed locally on your machine.
 
 ### Running the MCP Server
 
@@ -207,11 +205,17 @@ MCP is a protocol for connecting AI models to external tools via a JSON-RPC stdi
 cfgd mcp-server
 ```
 
-The server reads JSON-RPC messages from stdin and writes responses to stdout. It runs until stdin is closed. Most users don't run this directly — they configure their AI client to launch it automatically.
+The server reads JSON-RPC messages from stdin and writes responses to stdout. It runs until stdin is closed. Most users don't run this directly; they configure their AI client to launch it automatically.
 
 ### Claude Code Setup
 
-Add to your Claude Code settings (`~/.config/claude/settings.json` or the project-level `.claude/settings.json`):
+Register the server with the `claude` CLI:
+
+```sh
+claude mcp add cfgd -- cfgd mcp-server
+```
+
+Or add it to a project's `.mcp.json` (checked in, shared with the team):
 
 ```json
 {
@@ -224,7 +228,7 @@ Add to your Claude Code settings (`~/.config/claude/settings.json` or the projec
 }
 ```
 
-After restarting Claude Code, the cfgd tools are available in any conversation. You can ask Claude to scan your system and generate a cfgd config, and it will call the tools directly.
+The cfgd tools are then available in any conversation. You can ask Claude to scan your system and generate a cfgd config, and it will call the tools directly.
 
 ### Cursor Setup
 
@@ -293,7 +297,7 @@ Prompts are ready-made conversation starters the client can inject:
 
 ## Serving the CLI Itself
 
-`cfgd mcp` is a second server, built on [brontes](https://github.com/tj-smith47/brontes), that turns cfgd's own command tree into tools. Where `mcp-server` helps an assistant *write* config, `mcp` lets it *run* cfgd — plan a reconcile, read drift, pull a source.
+`cfgd mcp` is a second server, built on [brontes](https://github.com/tj-smith47/brontes), that turns cfgd's own command tree into tools. Where `mcp-server` helps an assistant *write* config, `mcp` lets it *run* cfgd: plan a reconcile, read drift, pull a source.
 
 ```sh
 cfgd mcp claude enable       # register with Claude Desktop (also: vscode, cursor, zed)
@@ -305,10 +309,11 @@ cfgd mcp tools --groups      # list the groups below
 
 ### What It Serves by Default
 
-cfgd's tree walks out to 86 tools, which is more list than a client's context should spend on one server. A server started with no selection flags serves the **core** group — the nine commands for reconciling a machine:
+cfgd's tree walks out to 89 tools, which is more list than a client's context should spend on one server. A server started with no selection flags serves the **core** group: the twelve tools for reconciling a machine.
 
 ```
-apply  plan  status  diff  verify  log  rollback  doctor  paths
+apply  plan  status  diff  verify  log  doctor  paths  rollback
+backup_run  backup_list  backup_restore
 ```
 
 `mcp-server`, `daemon run`, `man`, `completion`, and the `$EDITOR`-blocking `* edit` commands are never served: each either hangs a tool call or starts a second server inside this one.
@@ -318,11 +323,11 @@ apply  plan  status  diff  verify  log  rollback  doctor  paths
 Selections union, so `--group` adds to the default rather than replacing it. Hiding the default is how you get under it:
 
 ```sh
-cfgd mcp tools                                     # 9  — the default
-cfgd mcp tools --group secrets                     # 12 — core plus secrets
-cfgd mcp tools --group modules                     # 28 — core plus modules
-cfgd mcp tools --group modules --hide-group core   # 19 — modules alone
-cfgd mcp tools --all                               # 86 — everything
+cfgd mcp tools                                     # 12 (the default)
+cfgd mcp tools --group secrets                     # 15 (core plus secrets)
+cfgd mcp tools --group modules                     # 31 (core plus modules)
+cfgd mcp tools --group modules --hide-group core   # 19 (modules alone)
+cfgd mcp tools --all                               # 89 (everything)
 ```
 
 `--hide-group core` on its own is refused: narrowing has to say what it narrows *to*, and an empty selection would mean "serve everything except core".
@@ -334,17 +339,17 @@ cfgd mcp tools --all                               # 86 — everything
 | `modules` | Author, publish and consume cfgd modules |
 | `profiles` | Per-machine profile selection and authoring |
 | `secrets` | Encrypt and decrypt sops-managed secrets |
-| `authoring` | Scaffolding, CRD validation, schema docs, aliases, skills |
-| `fleet` | Device-gateway enrollment, daemon lifecycle, compliance evidence |
+| `authoring` | Write cfgd resources: scaffolding, CRD validation, schema docs, aliases, skills |
+| `fleet` | Device-gateway enrollment, daemon lifecycle and compliance evidence |
 | `image` | Pack a host directory into an OCI image |
 
-The same flags work on `mcp start`, `mcp stream`, and `mcp <editor> enable` — the editor installers write them into the argv they register, so a trim survives the install.
+The same flags work on `mcp start`, `mcp stream`, and `mcp <editor> enable`: the editor installers write them into the argv they register, so a trim survives the install.
 
 ### Safety Hints and Long Runs
 
-Every tool carries annotations a client can gate on: `plan` is `readOnlyHint`, `apply` is `destructiveHint`, and the `* remove` / `rollback` commands are marked non-idempotent. `backup run` and `backup restore` join them — retention pruning removes superseded snapshots, their hooks stop and start services, and repeating either takes another snapshot rather than being a no-op. A client can prompt on a write without prompting on a preview.
+Every tool carries annotations a client can gate on: `plan` is `readOnlyHint`, `apply` is `destructiveHint`, and the `* remove` / `rollback` commands are marked non-idempotent. `backup run` and `backup restore` join them: retention pruning removes superseded snapshots, their hooks stop and start services, and repeating either takes another snapshot rather than being a no-op. A client can prompt on a write without prompting on a preview.
 
-Eleven commands routinely run for minutes — `apply`, `sync`, `pull`, `upgrade`, `image pack`, the `module build/pull/push/upgrade` set, and daemon install/uninstall. Those return a task handle rather than holding the request open, so a client that speaks the MCP tasks extension can poll for progress and cancel.
+Eleven commands routinely run for minutes (`apply`, `sync`, `pull`, `upgrade`, `image pack`, the `module build/pull/push/upgrade` set, and daemon install/uninstall). Those return a task handle rather than holding the request open, so a client that speaks the MCP tasks extension can poll for progress and cancel.
 
 ### Structured Output
 
@@ -364,21 +369,21 @@ Every command's flags are on the tool schema, including `--output`, so an assist
 - Dotfile paths (not contents, until the AI calls `read_file` for a specific file)
 - Shell aliases, exports, and PATH additions parsed from RC files
 - System settings metadata (macOS defaults values, systemd unit names)
-- Config file contents when the AI calls `read_file` — subject to the constraints below
+- Config file contents when the AI calls `read_file`, subject to the constraints below
 
-Nothing else leaves your machine. The API call is made directly from cfgd to the provider's HTTPS endpoint — no cfgd servers are involved.
+Nothing else leaves your machine. The API call is made directly from cfgd to the provider's HTTPS endpoint; no cfgd servers are involved.
 
 ### File Access Constraints
 
 The `read_file` and `list_directory` tools enforce a strict boundary:
 
-- **Home and repo boundary** — files must be within `$HOME` or the cfgd config repo. Paths resolving outside these roots (including symlinks pointing elsewhere) are rejected.
-- **64 KB limit** — files larger than 64 KB are truncated. The AI sees the first 64 KB and a truncation notice.
-- **Credential blocklist** — paths matching any of the following patterns are blocked unconditionally, regardless of location:
-  - `.ssh/id_` — SSH private keys
-  - `.gnupg/private-keys` — GnuPG private keys
-  - `.pem`, `.key` — PEM and raw key files
-  - `credentials`, `secret`, `token` — common credential file names
+- **Home and repo boundary**: files must be within `$HOME` or the cfgd config repo. Paths resolving outside these roots (including symlinks pointing elsewhere) are rejected.
+- **64 KB limit**: files larger than 64 KB are truncated. The AI sees the first 64 KB and a truncation notice.
+- **Credential blocklist**: paths matching any of the following patterns are blocked unconditionally, regardless of location:
+  - `.ssh/id_` (SSH private keys)
+  - `.gnupg/private-keys` (GnuPG private keys)
+  - `.pem`, `.key` (PEM and raw key files)
+  - `credentials`, `secret`, `token` (common credential file names)
 
 ### Consent Disclosure
 
@@ -423,7 +428,7 @@ cfgd generate --model claude-haiku-4-5
 
 ### Rate Limiting
 
-If you hit rate limits during a long generation session, the API will return a `429` error. cfgd does not retry automatically. Wait a moment and re-run. For large configs, consider generating one module at a time:
+If you hit rate limits during a long generation session, the API returns a `429` error. cfgd does not retry automatically. Wait a moment and re-run. For large configs, consider generating one module at a time:
 
 ```sh
 cfgd generate module nvim
@@ -433,24 +438,18 @@ cfgd generate module zsh
 
 ### Scan-Only Mode
 
-Use `--scan-only` to inspect what cfgd finds on your system without starting an AI conversation — useful for debugging scan output or verifying what would be sent to the API:
+Use `--scan-only` to inspect what cfgd finds on your system without starting an AI conversation. Useful for debugging scan output or verifying what would be sent to the API:
 
-```sh
-cfgd generate --scan-only
-```
+```console
+$ cfgd generate --scan-only
+Scanning Dotfiles
+  Entries         23
+  Detected tools  git, nvim, starship, tmux, zsh
 
-Output example:
+Scanning zsh Config
+  Aliases         14
+  Exports         8
+  PATH additions  3
 
-```
-Scanning dotfiles
-  Found 23 dotfile entries
-  Detected tools: git, nvim, starship, tmux, zsh
-
-Scanning zsh config
-  Found 14 aliases
-  Found 8 exports
-  Found 3 PATH additions
-  Plugin manager: oh-my-zsh
-
-Scan complete — use without --scan-only to generate config
+✓ Scan complete — use without --scan-only to generate config
 ```

@@ -108,7 +108,7 @@ The field is optional, and a module without it loads exactly as before. Two surf
 
 - The release workflow written by `cfgd workflow generate` tags a changed module `<name>/v<version>`.
   A module with no `version` fails that job rather than being tagged with a guessed value, and an
-  already-published tag fails it too — bump `metadata.version` instead of rewriting a tag.
+  already-published tag fails it too; bump `metadata.version` instead of rewriting a tag.
 - `cfgd module show <name>` reports it, so CI reads a module's version from cfgd rather than
   grepping YAML:
 
@@ -153,7 +153,7 @@ spec:
 ### spec.platforms[]
 
 A platform filter gating the **whole module**. When `platforms` is non-empty and the current
-platform matches none of the listed tags, the module is skipped in its entirety — its packages,
+platform matches none of the listed tags, the module is skipped in its entirety: its packages,
 files, scripts, env, and aliases are all omitted. Tags match against the platform's OS
 (`linux`, `macos`, `freebsd`, `windows`), distro (`ubuntu`, `fedora`, `arch`, ...), or
 architecture (`x86_64`, `aarch64`). The canonical macOS token is `macos` (not `darwin`). Omit
@@ -170,7 +170,7 @@ only some packages within an otherwise cross-platform module are.
 platform. Doing so is a configuration error (the dependency would never be applied). Gate the
 dependent module with the same `platforms` if it should also be platform-specific.
 
-**Example — a macOS-only module:**
+**Example (a macOS-only module):**
 ```yaml
 apiVersion: cfgd.io/v1alpha1
 kind: Module
@@ -207,7 +207,7 @@ based on `prefer` order and platform availability.
 | `deny` | list of string | No | `[]` | Package manager names that must not be used for this package, even if available. |
 | `platforms` | list of string | No | `[]` | Platform filter. When set, this entry is skipped on non-matching platforms. Values: OS (`linux`, `macos`), distro (`ubuntu`, `fedora`, `arch`), or architecture (`x86_64`, `aarch64`). Omit to match all platforms. |
 
-**Example — cross-platform tool with manager aliases:**
+**Example (cross-platform tool with manager aliases):**
 ```yaml
 packages:
   - name: neovim
@@ -225,7 +225,7 @@ packages:
     prefer: [pipx]
 ```
 
-**Example — platform-specific entry:**
+**Example (platform-specific entry):**
 ```yaml
 packages:
   - name: xdg-utils
@@ -235,7 +235,7 @@ packages:
     platforms: [macos]
 ```
 
-**Example — custom install script:**
+**Example (custom install script):**
 ```yaml
 packages:
   - name: my-tool
@@ -247,14 +247,14 @@ packages:
 A `prefer: [script]` install has no installed-package set to query, so cfgd
 cannot tell whether the tool is already present. **Without a guard the script
 runs on every apply** (reported as changed) and is invisible to drift
-detection — making the script idempotent is the author's responsibility. Add a
+detection: making the script idempotent is the author's responsibility. Add a
 `creates`, `onlyIf`, or `unless` guard to make the install re-run-safe: the
 guards are evaluated before the script (`creates` → `onlyIf` → `unless`, all
 must permit running) and any guard that says "skip" turns the install into a
 no-op reported as unchanged. They share the semantics of the
 [lifecycle-script guards](#specscripts).
 
-**Example — idempotent install via `creates`:**
+**Example (idempotent install via `creates`):**
 ```yaml
 packages:
   - name: rustup
@@ -363,7 +363,7 @@ aliases:
 
 ### spec.system
 
-System configurator settings for this module. Keys map to configurator names; values are passed directly to the configurator. Follows the same schema as `spec.system` in profiles — see `docs/system-configurators.md` for the full list of available configurators.
+System configurator settings for this module. Keys map to configurator names; values are passed directly to the configurator. Follows the same schema as `spec.system` in profiles: see `docs/system-configurators.md` for the full list of available configurators.
 
 Module system values are deep-merged into the activating profile's system config during reconciliation. Module values win on conflict, consistent with other merge rules.
 
@@ -415,11 +415,11 @@ The guards make a script re-run-safe by construction, so authors no longer need 
 
 When more than one guard is set, **all** must permit running for the body to run. `onlyIf`/`unless` commands run with the same shell, working directory, and environment as the body, bounded by a timeout so a guard can never hang. A guard command that fails to spawn (e.g. a missing interpreter) is a hard error, distinct from a non-zero exit.
 
-`creates` path resolution: a leading `~` expands to the home directory; a relative path resolves against the script's working directory (the home directory by default — see below); an absolute path is used as-is. Existence follows symlinks.
+`creates` path resolution: a leading `~` expands to the home directory; a relative path resolves against the script's working directory (the home directory by default; see below); an absolute path is used as-is. Existence follows symlinks.
 
 ### Working directory
 
-Scripts run in the user's **home directory** by default, never the module source tree, so a relative write can't pollute the config repo. Reach module assets via the injected `$CFGD_MODULE_DIR` / `$CFGD_CONFIG_DIR` variables. Set `workdir` to override — a leading `~` expands to home and `$VAR` / `${VAR}` expand against the script environment (including `$CFGD_MODULE_DIR`):
+Scripts run in the user's **home directory** by default, never the module source tree, so a relative write can't pollute the config repo. Reach module assets via the injected `$CFGD_MODULE_DIR` / `$CFGD_CONFIG_DIR` variables. Set `workdir` to override (a leading `~` expands to home; `$VAR` / `${VAR}` expand against the script environment, including `$CFGD_MODULE_DIR`):
 
 ```yaml
 postApply:
@@ -433,11 +433,11 @@ See [Lifecycle Scripts](../lifecycle-scripts.md#working-directory) for the full 
 
 ### Interactive scripts
 
-Set `interactive: true` on a script entry that needs to prompt the user — for example, pausing until a manual step is done. The script runs **attached to the terminal** (inherited stdin/stdout/stderr, no spinner, no output capture) and is **not** subject to the idle timeout, because an interactive step is attended by definition.
+Set `interactive: true` on a script entry that needs to prompt the user (for example, pausing until a manual step is done). The script runs **attached to the terminal** (inherited stdin/stdout/stderr, no spinner, no output capture) and is **not** subject to the idle timeout, because an interactive step is attended by definition.
 
-An interactive script requires a TTY. When stdin is **not** a terminal — CI, piped input, or any run by the `cfgd daemon` (the daemon never has a TTY) — the script is **skipped with a warning** rather than hanging on instant EOF, and reports `changed=false`. This is the intended daemon-safe behavior: interactive steps run only during an attended `cfgd apply`, never under unattended reconcile.
+An interactive script requires a TTY. When stdin is **not** a terminal (CI, piped input, or any run by the `cfgd daemon`, which never has a TTY), the script is **skipped with a warning** rather than hanging on instant EOF, and reports `changed=false`. This is the intended daemon-safe behavior: interactive steps run only during an attended `cfgd apply`, never under unattended reconcile.
 
-The child shares cfgd's own process group instead of getting a new detached one, so the terminal's foreground group still includes it: a Ctrl-C typed at the terminal reaches the script directly, and a raw-mode TUI or a `sudo` password prompt behaves normally. By default an interactive script has **no timeout at all** — force-killing a step that's mid-raw-mode or waiting on a password would be worse than an unbounded wait. Set `timeout:` on the entry when a step does need a ceiling; once it elapses cfgd terminates the script (SIGTERM, then SIGKILL after a grace period).
+The child shares cfgd's own process group instead of getting a new detached one, so the terminal's foreground group still includes it: a Ctrl-C typed at the terminal reaches the script directly, and a raw-mode TUI or a `sudo` password prompt behaves normally. By default an interactive script has **no timeout at all**: force-killing a step that's mid-raw-mode or waiting on a password would be worse than an unbounded wait. Set `timeout:` on the entry when a step does need a ceiling; once it elapses cfgd terminates the script (SIGTERM, then SIGKILL after a grace period).
 
 ```yaml
 scripts:
@@ -553,7 +553,7 @@ merged spec using the following rules:
 | `system` | Deep merge — module keys overwrite profile keys at the leaf level. |
 | `scripts` | Each hook list is appended after the profile's corresponding hook list. |
 
-This merged (effective) view drives every read surface, not just apply: a module's files, packages, and system settings are first-class in `cfgd verify`, `cfgd diff`, and `cfgd compliance` (snapshot, export, diff, history) and in the device checkin summary — no longer profile-only. Compliance file checks are content-aware on module files (a deployed module file whose bytes drifted is a violation).
+This merged (effective) view drives every read surface, not only apply: a module's files, packages, and system settings are first-class in `cfgd verify`, `cfgd diff`, `cfgd compliance` (snapshot, export, diff, history), and the device checkin summary. Compliance file checks are content-aware on module files (a deployed module file whose bytes drifted is a violation).
 
 ---
 
@@ -583,13 +583,13 @@ Remote module versions are pinned in `modules.lock` at the config root. Run `cfg
 to fetch new versions (`cfgd module update` edits a local module's spec, it does not re-fetch).
 
 A registry reference without an explicit `@tag` (e.g. `acme/nvim`) resolves to the module's
-**latest published git tag** — module versions are git tags named `<module>/<version>` — never a
+**latest published git tag** (module versions are git tags named `<module>/<version>`), never a
 branch HEAD. If the registry exposes no tags for that module, the reference is rejected with
 `No tags found for module '<name>' in registry '<registry>'`. To pin a specific version, append the
 tag: `acme/nvim@v1.4.0`.
 
 cfgd never tracks a floating branch for a remote module. A direct git URL carrying a branch ref
-(`...repo.git?ref=main`) — or one with no ref at all — is rejected with *"remote module requires a
+(`...repo.git?ref=main`), or one with no ref at all, is rejected with *"remote module requires a
 pinned ref (tag or commit) — branch tracking is not allowed for security"*. This is a deliberate
 supply-chain safety choice: a branch ref lets an upstream push silently change the code cfgd
 executes, so only immutable refs (tags or commit SHAs) are accepted.

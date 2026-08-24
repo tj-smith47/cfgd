@@ -8,41 +8,37 @@ For the complete field-by-field reference, see the [Config spec reference](spec/
 
 ## Editor Support
 
-cfgd publishes JSON Schemas for each config document — `cfgd.yaml`, modules
+cfgd publishes JSON Schemas for each config document: `cfgd.yaml`, modules
 (`modules/<name>/module.yaml`), profiles (`profiles/<name>/profile.yaml`), and
-config sources (`cfgd-source.yaml`) — so editors with a YAML language server
-(VS Code, Neovim, JetBrains, …) can offer completion and inline validation.
+config sources (`cfgd-source.yaml`). Editors with a YAML language server
+(VS Code, Neovim, JetBrains) use them for completion and inline validation.
 
-The schemas are self-hosted at `https://cfgd.io/schemas/` and registered with
-[SchemaStore](https://www.schemastore.org/) on each release, so for the standard
-file names above no setup is needed once your editor's YAML extension picks up
-the SchemaStore catalog. To pin a schema explicitly (or for non-standard file
-names), add a modeline to the top of the file:
+The schemas live under [`schemas/`](../schemas/) in the cfgd repository and are
+served from the release tag, so a file pins the schema of the cfgd version that
+wrote it. Add a modeline to the top of the file:
 
 ```yaml
-# yaml-language-server: $schema=https://cfgd.io/schemas/cfgd-config.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/tj-smith47/cfgd/v0.9.0/schemas/cfgd-config.schema.json
 apiVersion: cfgd.io/v1alpha1
 kind: Config
 # ...
 ```
 
-Swap the URL for `cfgd-module`, `cfgd-profile`, or `cfgd-source` as appropriate.
+Swap the filename for `cfgd-module`, `cfgd-profile`, or `cfgd-source` as appropriate.
 
 cfgd's scaffolders (`cfgd init`, `cfgd profile create`, `cfgd module create`, and
 AI generate) emit this modeline as the first line of every manifest they write, so
-generated files validate immediately even where the SchemaStore catalog does not
-match — including legacy flat profiles (`profiles/<name>.yaml`), files reached
-through a dot-directory, and hand-renamed manifests. The SchemaStore catalog
-associates the canonical bundle path `profiles/<name>/profile.yaml`; the modeline
-covers everything else.
+generated files validate immediately wherever they live: legacy flat profiles
+(`profiles/<name>.yaml`), files reached through a dot-directory, and hand-renamed
+manifests.
 
 CLI commands that rewrite a manifest in place (`cfgd config set`, `cfgd module
 update`, `cfgd profile switch`, `cfgd profile update`, source mutations, …)
-preserve the file's **leading** comment block — the modeline and any banner
+preserve the file's **leading** comment block: the modeline and any banner
 comments above the first YAML key survive the rewrite. Comments elsewhere in
 the document are not preserved.
 
-## Root Config — `cfgd.yaml`
+## Root Config: `cfgd.yaml`
 
 The entry point. Tells cfgd which profile to activate, where config is stored, and how the daemon behaves.
 
@@ -122,7 +118,7 @@ spec:
 | `spec.update.channel` | no | — | Release channel to track (e.g. `stable`, `prerelease`); unset uses cfgd's built-in default channel |
 | `spec.update.skills.policy` | no | `Inherit` | Authored-skill refresh policy: `Inherit` (follow `spec.update.policy`), `Auto`, `Prompt`, `Notify`, or `Manual` |
 | `spec.secrets.backend` | no | `sops` | `sops` or `age` (see [secrets.md](secrets.md) for when to use which) |
-| `spec.theme` | no | `default` | Theme name (string) or object with `name` + `overrides` |
+| `spec.theme` | no | `default` | Theme name (string) or object with `name` + `overrides`. `--theme` / `CFGD_THEME` override the name for one invocation |
 | `spec.fileStrategy` | no | `Symlink` | `Symlink`, `Copy`, `Template`, or `Hardlink` (Windows: `Symlink` requires Developer Mode or elevation) |
 | `spec.aliases.<name>` | no | — | CLI command aliases (e.g. `add: "profile update --file"`) |
 | `spec.compliance` | no | — | Continuous compliance snapshot settings. Reports the effective desired state (profile + modules), and file checks are content-aware (see [spec/config.md](spec/config.md#speccompliance)) |
@@ -130,11 +126,11 @@ spec:
 
 All fields can be read and written programmatically via `cfgd config get <key>` and `cfgd config set <key> <value>`. See the [CLI reference](cli-reference.md) for details.
 
-Enum-valued fields (e.g. `spec.fileStrategy`, `spec.daemon.driftPolicy`, `spec.daemon.notify.method`, the profile-level `spec.envScope`, `spec.compliance.export.format`) are parsed case-insensitively — `Symlink`, `symlink`, and `SYMLINK` are all accepted. The documented PascalCase form is canonical and is what cfgd writes back.
+Enum-valued fields (e.g. `spec.fileStrategy`, `spec.daemon.reconcile.driftPolicy`, `spec.daemon.notify.method`, the profile-level `spec.envScope`, `spec.compliance.export.format`) are parsed case-insensitively: `Symlink`, `symlink`, and `SYMLINK` are all accepted. The documented PascalCase form is canonical and is what cfgd writes back.
 
 ## Update behavior (`spec.update`)
 
-cfgd can check for its own updates (it doesn't by default — `cfgd upgrade` is
+cfgd can check for its own updates (it doesn't by default; `cfgd upgrade` is
 otherwise purely manual), and separately decide whether installed [authoring
 skills](skill.md) are re-rendered when cfgd moves. Both are governed by
 `spec.update`:
@@ -171,8 +167,8 @@ The binary policy (`spec.update.policy`) is an `UpdatePolicy`:
 | `Notify` | check and surface/record availability; never apply, never prompt |
 | `Manual` | cfgd does nothing automatically — no check, no notice; you drive it |
 
-The skill policy (`spec.update.skills.policy`) is a `SkillUpdatePolicy` — the
-same four values **plus** `Inherit`, which is its default:
+The skill policy (`spec.update.skills.policy`) is a `SkillUpdatePolicy`, the
+same four values **plus** `Inherit` (its default):
 
 | Skill policy | Meaning |
 |---|---|
@@ -192,17 +188,17 @@ order:
 | `DO_NOT_TRACK` | [consoledonottrack.com](https://consoledonottrack.com) |
 
 A variable counts as "set" when it is present and, after lowercasing and
-trimming, is not one of `""`, `"0"`, or `"false"` — so `DO_NOT_TRACK=0` means
+trimming, is not one of `""`, `"0"`, or `"false"`, so `DO_NOT_TRACK=0` means
 "do track", not "opt out". The same rule applies to all three; there is no
 per-variable special case.
 
 ```sh
 DO_NOT_TRACK=1 cfgd status   # no "Update available" line, ever
-DO_NOT_TRACK=0 cfgd status   # NOT an opt-out — checks run as normal
+DO_NOT_TRACK=0 cfgd status   # NOT an opt-out: checks run as normal
 ```
 
-**Explicit `cfgd upgrade` (and `cfgd upgrade --check`) is never suppressed** —
-the opt-out silences the automatic check only; a user who asks for an update
+**Explicit `cfgd upgrade` (and `cfgd upgrade --check`) is never suppressed**: the
+opt-out silences the automatic check only; a user who asks for an update
 check always gets one. `cfgd doctor` reports which variable, if any, is
 currently suppressing the automatic check.
 
@@ -210,25 +206,25 @@ currently suppressing the automatic check.
 
 Skill staleness is a *consequence* of a binary version change (a skill is stale
 only when the running cfgd is newer than its stamp), so the two surfaces are
-naturally serialized — binary first, skills after. Three rules dedup the only
+naturally serialized: binary first, skills after. Three rules dedup the only
 collision (skills left stale from a past skipped refresh *and* a newer binary
 now available), so you'll never see two update prompts:
 
 1. **Binary outranks skills.** While a binary update is pending/available, the
-   skill surface is suppressed — only the binary surface shows. (Refreshing
+   skill surface is suppressed: only the binary surface shows. (Refreshing
    skills against a binary you're about to replace is wasted work.)
 2. **Ride-along.** When a binary upgrade actually happens (`Auto`, an accepted
    `Prompt`, or a manual `cfgd upgrade`), the user-scope skill refresh is part of
-   **that same action and output block** — never a second prompt.
+   **that same action and output block**, never a second prompt.
 3. **One consolidated skill surface.** When skills are surfaced standalone
    (binary current, skills stale), a single notice covers both user- and
-   project-scope staleness — never one notice per scope.
+   project-scope staleness, never one notice per scope.
 
 ### Scope governs auto vs manual (the git-safety invariant)
 
 > **cfgd never auto-rewrites tracked project files.** Ride-along and
 > `Auto`/`Inherit→Auto` refresh touch **user-scope (home) skills only**.
-> **Project-scope skills are always manual** — regardless of policy — because
+> **Project-scope skills are always manual**, regardless of policy, because
 > they are committed, and a surprise diff is unacceptable. The consolidated
 > surface (rule 3) tells you project skills are stale so you can run
 > `cfgd skill update` and commit deliberately.
@@ -249,7 +245,7 @@ my-config/
 ├── cfgd.yaml              # root config
 ├── profiles/              # each profile is a bundle: <name>/profile.yaml + payload
 │   ├── base/
-│   │   └── profile.yaml   # base profile — shared across machines
+│   │   └── profile.yaml   # base profile, shared across machines
 │   ├── work/
 │   │   ├── profile.yaml   # inherits base, adds work config
 │   │   └── files/         # profile-owned file payload (created by --file)
@@ -278,7 +274,7 @@ my-config/
 ```
 
 Each `modules/<name>/module.yaml` may declare its own release version under
-`metadata.version` (strict semver, optional) — the value `cfgd workflow generate`'s
+`metadata.version` (strict semver, optional): the value `cfgd workflow generate`'s
 release job tags and `cfgd module show <name> -o jsonpath='{.metadata.version}'` reports:
 
 ```yaml
@@ -299,18 +295,18 @@ are rejected at parse time. See the [Module spec reference](spec/module.md#metad
 Each profile is a self-contained bundle: a fixed-name `profiles/<name>/profile.yaml`
 manifest alongside its own `files/` payload directory (mirroring the
 `modules/<name>/module.yaml` shape). The legacy flat form `profiles/<name>.yaml`
-remains fully supported — both forms load, and existing flat profiles keep working
+remains fully supported: both forms load, and existing flat profiles keep working
 untouched. Run `cfgd profile migrate <name>` (or `--all`) to move a flat profile
 into the canonical bundle form. Having both `profiles/work/profile.yaml` and
 `profiles/work.yaml` on disk is a hard error (ambiguous); migrate or delete one.
 
 Profile files support five deployment strategies:
 
-- **Symlink** (default) — creates a symbolic link from target to source. Changes to the source are immediately reflected.
-- **Copy** — copies the source file to the target path. The target is independent of the source after apply.
-- **Template** — renders the file through [Tera](templates.md) before copying. Auto-detected for `.tera` extension.
-- **Hardlink** — creates a hard link. Both paths share the same inode.
-- **Patch** — merges structured keys/values into an existing target, or pipes it through a script, leaving everything else untouched. Requires a `patch:` block; `source` is not required.
+- **Symlink** (default): creates a symbolic link from target to source. Changes to the source are immediately reflected.
+- **Copy**: copies the source file to the target path. The target is independent of the source after apply.
+- **Template**: renders the file through [Tera](templates.md) before copying. Auto-detected for `.tera` extension.
+- **Hardlink**: creates a hard link. Both paths share the same inode.
+- **Patch**: merges structured keys/values into an existing target, or pipes it through a script, leaving everything else untouched. Requires a `patch:` block; `source` is not required.
 
 ```yaml
 files:
@@ -400,7 +396,7 @@ the rest.
 
 ### Partial-file edits (`strategy: Patch`)
 
-`Patch` is the strategy for files cfgd must *share* rather than own — a
+`Patch` is the strategy for files cfgd must *share* rather than own: a
 distro-shipped config, a file another tool also writes, a target that already has
 hand-written content worth keeping. cfgd owns only the keys the spec names;
 everything else in the target survives byte-for-byte where the format allows it.
@@ -414,8 +410,8 @@ silently ignored: `encryption` and `private` are both validation errors on a
 
 #### What survives besides the unnamed keys
 
-The target keeps its identity, not just its content — the other strategies
-replace the path, `Patch` rewrites the file in place:
+The target keeps its identity, not only its content. The other strategies
+replace the path; `Patch` rewrites the file in place:
 
 | Property of the target | After a `Patch` apply |
 |---|---|
@@ -423,20 +419,20 @@ replace the path, `Patch` rewrites the file in place:
 | Symlink | followed, not replaced. `~/.gitconfig -> ~/dotfiles/gitconfig` keeps the link and the merge lands in `~/dotfiles/gitconfig`, so a dotfiles repo stays the source of truth. A dangling link is written at the link path itself, matching how a missing target is treated as empty content |
 | Content the spec does not name | byte-for-byte, where the format allows it |
 
-Declaring `permissions:` on a `Patch` entry still applies — it is the way to
+Declaring `permissions:` on a `Patch` entry still applies: it is the way to
 *change* the mode deliberately, on top of a merge that otherwise leaves it alone.
 
 Following the link has one consequence worth stating: the bytes are written at
 the link's *destination*. When the entry comes from a source constrained by
 [`allowedTargetPaths`](sources.md#allowedtargetpaths), the allow-list is matched
 against the declared `target`, so a target you have symlinked out of an allowed
-directory receives the merge at the real path — outside the allow-list. Point
+directory receives the merge at the real path, outside the allow-list. Point
 `target` at the real file if you need the constraint to bind where the bytes land.
 
-#### `ensure` — structured merge
+#### `ensure`: structured merge
 
 `ensure` is deep-merged into the target. Nested mappings merge recursively; a
-scalar, list, or type change replaces the value at that key. Values are literal —
+scalar, list, or type change replaces the value at that key. Values are literal:
 `Patch` never renders Tera templates, so `{{ … }}` lands in the file verbatim.
 Re-applying the same `ensure` is a no-op.
 
@@ -462,7 +458,7 @@ The format decides how much of the target's original text survives:
 | `Yaml` | `serde_yaml` | **lost** | preserved | The document is reflowed |
 
 A JSON target that repeats an object key keeps the last occurrence, matching how
-`serde_json` and every browser parse it — a duplicate key is tolerated, not an
+`serde_json` and every browser parse it: a duplicate key is tolerated, not an
 error, because the target belongs to the user, not to cfgd.
 
 A trailing comment behaves differently in the two comment-preserving formats,
@@ -479,7 +475,7 @@ there, so cfgd never tries to keep part of a value). Comments on their *own*
 line are untouched in both.
 
 > **YAML comment caveat.** The YAML engine parses the target and re-serializes
-> it, so comments, blank lines, and anchors are lost — the data and its key
+> it, so comments, blank lines, and anchors are lost: the data and its key
 > order survive, nothing else. When a YAML target's comments matter, use
 > `script` mode and edit the text with a comment-preserving tool (`yq`, `sed`,
 > a Python script) instead.
@@ -511,12 +507,12 @@ INI specifics, which follow from editing lines rather than reparsing the file:
 
 - A mapping under `ensure` is a `[section]`; a scalar is a key in the file's
   global area, above the first section header.
-- Values must be scalars — INI has no list or nested-mapping syntax, and cfgd
+- Values must be scalars: INI has no list or nested-mapping syntax, and cfgd
   errors rather than inventing one.
 - An updated key keeps its original spacing around `=`; a new key adopts the
   neighbouring keys' style (`key = value` vs `key=value`). CRLF files stay CRLF.
-- Anything after `=` is replaced, including a trailing `; comment` — INI dialects
-  disagree on whether that starts a comment, so cfgd never keeps part of a value.
+- Anything after `=` is replaced, including a trailing `; comment` (INI dialects
+  disagree on whether that starts a comment, so cfgd never keeps part of a value).
 - A duplicated key is rewritten at every occurrence, and a repeated `[section]`
   header is edited in every block, so the ensured value wins regardless of which
   duplicate the consuming parser honours (`git config` and `systemd` take the
@@ -527,11 +523,11 @@ INI specifics, which follow from editing lines rather than reparsing the file:
   has no escape syntax, so writing one would make the merge unable to find its
   own key again and re-append it on every reconcile.
 
-#### `script` — pipe the file through a command
+#### `script`: pipe the file through a command
 
 The target's current content goes in on stdin; whatever the script writes to
 stdout becomes the new content. A non-zero exit aborts with the script's stderr
-attached — nothing is written. This is the escape hatch for formats cfgd has no
+attached: nothing is written. This is the escape hatch for formats cfgd has no
 engine for, and for edits that must preserve YAML comments.
 
 ```yaml
@@ -553,7 +549,7 @@ printf '%s\n' "$content" | grep -q '10.0.0.5 build.internal' \
 ```
 
 Like a lifecycle `run:`, `script:` is a path relative to the module (or config)
-directory when one resolves, and an inline command otherwise — so a one-liner
+directory when one resolves, and an inline command otherwise, so a one-liner
 works without a script file:
 
 ```yaml
@@ -577,7 +573,7 @@ it to be idempotent for the same reason: cfgd runs it on every reconcile.
 #### When a `Patch` file fails
 
 A target that cannot be parsed for its declared format, and a `script` that exits
-non-zero, both fail with a typed error and write nothing — the target is left
+non-zero, both fail with a typed error and write nothing: the target is left
 byte-for-byte as it was. The merge always runs before the existing target is
 touched, so a failure never leaves a half-written file.
 
@@ -628,7 +624,7 @@ unset):
 `XDG_CONFIG_HOME` is honored on **every** platform (including macOS and Windows)
 when it is set to a non-empty, absolute path; an empty or relative value is
 ignored per the XDG Base Directory spec. Setting `XDG_CONFIG_HOME` relocates the
-config dir on any platform — and is the supported way to keep config under
+config dir on any platform, and is the supported way to keep config under
 `~/.config` on macOS.
 
 ### System scope
@@ -647,23 +643,30 @@ Windows is always system-scope; `--scope system` is a no-op there.
 
 ```console
 $ cfgd --scope system paths
-cfgd directories (scope: system)
+cfgd directories
+  scope  system
 
 Config
-  dir    /etc/cfgd
-  source default
+  dir     /etc/cfgd
+  source  default
+  file    /etc/cfgd/cfgd.yaml
 
 State
-  dir    /var/lib/cfgd
-  source default
+  dir        /var/lib/cfgd
+  source     default
+  db         /var/lib/cfgd/state.db
+  applyLock  /var/lib/cfgd/apply.lock
 
 Cache
-  dir    /var/cache/cfgd
-  source default
+  dir      /var/cache/cfgd
+  source   default
+  sources  /var/cache/cfgd/sources
+  modules  /var/cache/cfgd/modules
 
 Runtime
-  dir    /run/cfgd
-  source default
+  dir     /run/cfgd
+  source  default
+  socket  /run/cfgd/cfgd.sock
 ```
 
 ### Overriding a directory root
@@ -692,7 +695,7 @@ The XDG base per role (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`,
 | Cache | `--cache-dir <dir>` | `CFGD_CACHE_DIR` |
 | Runtime | `--runtime-dir <dir>` | `CFGD_RUNTIME_DIR` |
 
-The roots are independent — overriding one does not move the others. `--config`
+The roots are independent: overriding one does not move the others. `--config`
 names the config *file* (or a directory cfgd searches for `cfgd.yaml`/`cfgd.toml`)
 and takes precedence over `--config-dir`. `--cache-dir` relocates **both** the
 source and module caches (they share one root). `--runtime-dir` relocates the
@@ -702,12 +705,13 @@ daemon socket and lock files, and is honored by both `cfgd daemon` and
 ### `cfgd paths`
 
 `cfgd paths` reports the four resolved roots, the effective source of each
-(`flag`, `env`, or `default`), and the files cfgd owns in each — so you never
+(`flag`, `env`, or `default`), and the files cfgd owns in each, so you never
 have to guess where a host is reading or writing:
 
 ```console
 $ cfgd paths
 cfgd directories
+  scope  user
 
 Config
   dir     /home/you/.config/cfgd
@@ -715,16 +719,16 @@ Config
   file    /home/you/.config/cfgd/cfgd.yaml
 
 State
-  dir       /home/you/.local/state/cfgd
-  source    default
-  db        /home/you/.local/state/cfgd/state.db
-  applyLock /home/you/.local/state/cfgd/apply.lock
+  dir        /home/you/.local/state/cfgd
+  source     default
+  db         /home/you/.local/state/cfgd/state.db
+  applyLock  /home/you/.local/state/cfgd/apply.lock
 
 Cache
-  dir     /home/you/.cache/cfgd
-  source  default
-  sources /home/you/.cache/cfgd/sources
-  modules /home/you/.cache/cfgd/modules
+  dir      /home/you/.cache/cfgd
+  source   default
+  sources  /home/you/.cache/cfgd/sources
+  modules  /home/you/.cache/cfgd/modules
 
 Runtime
   dir     /run/user/1000/cfgd
@@ -765,7 +769,7 @@ Your cfgd config is at ~/.config/cfgd, but the native macOS location is now
   preserved; cfgd refuses if the destination already exists).
 - **Keep** sets `XDG_CONFIG_HOME` for the current session and persists it so all
   future shells resolve there. The export is written to the file your shell
-  sources for **every** invocation (not just interactive ones): `~/.zshenv` for
+  sources for **every** invocation (not only interactive ones): `~/.zshenv` for
   zsh, `~/.profile` for bash, `~/.config/fish/conf.d/cfgd-xdg.fish` for fish. A
   symlinked rc (e.g. into a dotfiles repo) is followed and edited in place, and
   an existing `XDG_CONFIG_HOME` assignment is left untouched. Unrecognized shells
@@ -774,7 +778,7 @@ Your cfgd config is at ~/.config/cfgd, but the native macOS location is now
 The prompt is suppressed when `XDG_CONFIG_HOME` or `--config`/`CFGD_CONFIG`
 already pins the location, after you've chosen **Keep** once, for `cfgd daemon`,
 and in non-interactive sessions (`--yes`/`CFGD_YES`, no TTY, or structured `-o`
-output) — there cfgd silently keeps reading the legacy dir in place. Only the
+output); there cfgd silently keeps reading the legacy dir in place. Only the
 config dir is affected; **state** and **runtime** data stay under
 `~/Library/Application Support/cfgd`. That split is intentional: managed-file
 symlink targets are declared explicitly in each file entry, so they don't depend
@@ -786,11 +790,11 @@ Earlier builds kept the state DB and the source cache together in one data dir
 (`~/.local/share/cfgd` on Linux, `~/Library/Application Support/cfgd` on macOS,
 `%LOCALAPPDATA%\cfgd` on Windows). cfgd now resolves **state** and **cache** to
 their own roots (the table above). On the first run after upgrading, cfgd
-relocates that data to the new defaults automatically — **no prompt**. Unlike the
+relocates that data to the new defaults automatically, with **no prompt**. Unlike the
 config dir, state and cache are app-managed (not hand-authored, not git-tracked),
 so there is nothing to ask: the state DB (with its WAL sidecars and the device
 credential), the queued server config, and the `sources/` cache move to their
-new homes, while the module cache — already in the cache root — stays put.
+new homes, while the module cache (already in the cache root) stays put.
 
 The migration is safe by construction:
 
@@ -837,7 +841,7 @@ On Windows, cfgd supports the same configuration structure with these platform-s
 
 ## Aliases
 
-Define command aliases in `cfgd.yaml`. `cfgd init` scaffolds default aliases — edit or remove them as needed.
+Define command aliases in `cfgd.yaml`. `cfgd init` scaffolds default aliases; edit or remove them as needed.
 
 ```yaml
 spec:
@@ -853,7 +857,7 @@ Default aliases (scaffolded by `cfgd init`):
 - `add <path>` → `profile update --file <path>`
 - `remove -<path>` → `profile update --file -<path>` (prefix with `-` to remove)
 
-These are not hardcoded — they live in your cfgd.yaml and can be changed or removed.
+These are not hardcoded: they live in your cfgd.yaml and can be changed or removed.
 
 ## AI Configuration
 
@@ -863,7 +867,7 @@ Configure the AI provider for `cfgd generate`:
 spec:
   ai:
     provider: claude              # AI provider (default: claude)
-    model: claude-sonnet-4-6      # Model ID (default: claude-sonnet-4-6)
+    model: claude-sonnet-5      # Model ID (default: claude-sonnet-5)
     apiKeyEnv: ANTHROPIC_API_KEY # Env var containing API key (default: ANTHROPIC_API_KEY)
 ```
 
@@ -883,8 +887,10 @@ These flags work with any subcommand:
 | `--profile <name>` | | `CFGD_PROFILE` | Override the active profile |
 | `--verbose` | `-v` | `CFGD_VERBOSE` | Show debug output (`-vv` = trace) |
 | `--quiet` | `-q` | `CFGD_QUIET` | Suppress all non-error output |
+| `--yes` | `-y` | `CFGD_YES` | Skip confirmation prompts (answer yes to every question). Accepted before or after the subcommand; what each command does under it is described on that command |
 | `--color <auto\|always\|never>` | | `CFGD_COLOR` | When to colorize terminal output. `auto` (default) follows the terminal, `NO_COLOR` and `TERM=dumb`; `always` colorizes even when stderr is not a terminal, for a pager that renders escapes (`less -R`) or a captured transcript; `never` disables it. Colour is never emitted under `-o json`/`yaml`/`name`/`jsonpath`/`template` whatever this says — an escape inside a payload string is corrupt data |
 | `--no-color` | | `NO_COLOR` | Disable colored terminal output (alias for `--color never`) |
+| `--theme <name>` | | `CFGD_THEME` | Theme preset for this invocation. Replaces `spec.theme.name` only; `spec.theme.overrides` still apply on top. Unknown names are rejected at the flag with the preset list |
 | `--output <format>` | `-o` | | Output format: `table` (default), `wide`, `json`, `yaml`, `name`, `jsonpath=EXPR`, `template=TMPL`, `template-file=PATH` |
 | `--list-envelope` | | `CFGD_LIST_ENVELOPE` | Under `-o json`/`-o yaml`, wrap a top-level array in a KRM `List` envelope (`{apiVersion, kind: List, items}`) |
 | `--scope <user\|system>` | | `CFGD_SCOPE` | Installation scope: `user` (default) or `system`. `system` switches all four directory roots to system/FHS defaults (`/etc/cfgd`, `/var/lib/cfgd`, …). See [System scope](configuration.md#system-scope). |
@@ -892,10 +898,10 @@ These flags work with any subcommand:
 | | | `NO_UPDATE_NOTIFIER` | Same, via npm's `update-notifier` convention |
 | | | `DO_NOT_TRACK` | Same, via the [consoledonottrack.com](https://consoledonottrack.com) convention |
 
-Boolean env vars accept shell-truthy spellings, not just `true`/`false`. The
+Boolean env vars accept shell-truthy spellings, not only `true`/`false`. The
 accept-set matches `CFGD_YES`: `1`/`y`/`yes`/`t`/`true`/`on` (case-insensitive)
 enable, `0`/`n`/`no`/`f`/`false`/`off` disable. The three update-check opt-out
-variables above are the exception — they follow the npm/consoledonottrack
+variables above are the exception: they follow the npm/consoledonottrack
 rule instead (anything except `""`/`"0"`/`"false"` opts out); see
 [Suppressing the automatic check](#suppressing-the-automatic-check).
 
@@ -907,13 +913,13 @@ CFGD_VERBOSE=on cfgd plan                  # same as -v; bare integers still wor
 #### Structured output shapes (`jsonpath` / `template`)
 
 List commands emit a **bare top-level array**, not a kubectl-style `{"items": [...]}`
-envelope. Index into it directly — `[0]`, not `.items[0]`:
+envelope. Index into it directly (`[0]`, not `.items[0]`):
 
 ```sh
 cfgd profile list -o json                       # [ { "name": "base", ... }, ... ]
 cfgd profile list -o 'jsonpath={[0].name}'      # base
 cfgd profile list -o 'jsonpath={[*].name}'      # one name per line
-cfgd profile list -o 'jsonpath={.items[0]}'     # empty — no `items` key on a bare array
+cfgd profile list -o 'jsonpath={.items[0]}'     # empty: no `items` key on a bare array
 ```
 
 ##### KRM `List` envelope (`--list-envelope`)
@@ -922,7 +928,7 @@ If you'd rather consume list output as a Kubernetes-style `List` object, pass
 the global `--list-envelope` flag (or set `CFGD_LIST_ENVELOPE=1`). It wraps the
 top-level array under an `apiVersion: cfgd.io/v1alpha1`, `kind: List`, and an
 `items` array carrying the original elements. The default (flag absent) stays a
-bare array — this is purely opt-in:
+bare array; the envelope is opt-in:
 
 ```sh
 cfgd source list -o json
@@ -943,8 +949,8 @@ cfgd source list -o yaml --list-envelope
 # kind: List
 ```
 
-(Object keys serialize alphabetically — `apiVersion`, `items`, `kind` — as with
-every cfgd JSON/YAML payload; key order is not semantically meaningful.)
+Object keys serialize alphabetically (`apiVersion`, `items`, `kind`), as with
+every cfgd JSON/YAML payload; key order is not semantically meaningful.
 
 The envelope shifts the path of every element: a bare-array `[0].name` becomes
 `.items[0].name` under the envelope. It applies **only** to `-o json` and
@@ -966,7 +972,7 @@ cfgd status -o 'jsonpath={.drift}'              # extract drift events
 A malformed `jsonpath` or `template` expression is rejected at parse time with a
 usage error (exit `2`); a template that fails to render against the data, or a
 `template-file` that cannot be read, writes the error to `stderr` and exits non-zero
-(exit `1`) — the structured data channel on `stdout` is never polluted with an error
+(exit `1`): the structured data channel on `stdout` is never polluted with an error
 message, and a failure never reports exit `0`.
 
 The standalone `--jsonpath EXPR` flag is **deprecated** in favor of
@@ -975,5 +981,5 @@ The standalone `--jsonpath EXPR` flag is **deprecated** in favor of
 
 ```sh
 cfgd profile list --jsonpath '{[0].name}'   # stdout: base; stderr: deprecation notice
-cfgd profile list -o 'jsonpath={[0].name}'  # canonical — no notice
+cfgd profile list -o 'jsonpath={[0].name}'  # canonical, no notice
 ```

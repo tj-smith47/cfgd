@@ -4,41 +4,36 @@ The daemon runs as a long-lived process that watches for drift and optionally au
 
 ## What It Does
 
-1. **File watching** — Uses the OS's built-in file change notification system (inotify on Linux, FSEvents on macOS) to detect when managed files change. Multiple rapid changes are batched together (500ms window) to avoid redundant work — saving a file in your editor won't trigger three reconciles.
+1. **File watching**: uses the OS's file change notification system (inotify on Linux, FSEvents on macOS) to detect when managed files change. Rapid changes are batched (500ms window), so saving a file in your editor does not trigger three reconciles.
 
-2. **Reconciliation loop** — On a configurable interval (default 5 minutes), diffs the entire desired state against actual state and reports or fixes drift.
+2. **Reconciliation loop**: on a configurable interval (default 5 minutes), diffs the entire desired state against actual state and reports or fixes drift.
 
-3. **Sync loop** — Pulls from the git remote on interval. Optionally auto-commits and pushes local changes. When using [multi-source config](sources.md), syncs each source independently.
+3. **Sync loop**: pulls from the git remote on interval. Optionally auto-commits and pushes local changes. When using [multi-source config](sources.md), syncs each source independently.
 
-4. **Backup timers** — Runs each `spec.backups[]` entry that declares a `schedule`, on its own interval or cron. See [Declarative Backups](backups.md#daemon-scheduling).
+4. **Backup timers**: runs each `spec.backups[]` entry that declares a `schedule`, on its own interval or cron. See [Declarative Backups](backups.md#daemon-scheduling).
+
+![an edit committed on machine A landing on machine B through the daemon's sync and reconcile loops](../demo/cfgd-sync.gif)
 
 ## Architecture
 
 ```
-┌──────────────────────┐
-│     Daemon Main      │
-│  tokio::select!      │
-└──────┬───────────────┘
-       │
-  ┌────┼───────┬────────────┐
-  │    │       │            │
-┌─▼──┐ ┌─▼──┐ ┌─▼────┐ ┌───▼────┐
-│File│ │Sync│ │Backup│ │Health  │
-│Watch│ │Timer│ │Timers│ │API     │
-│    │ │    │ │      │ │(socket)│
-└─┬──┘ └─┬──┘ └─┬────┘ └────────┘
-  │      │      │
-  └──┬───┘      ▼
-     ▼      ┌────────┐
- ┌────────┐ │ Backup │
- │Reconcile│ │ engine │
- │+ Notify │ └────────┘
- └────────┘
+                 ┌─────────────┐
+                 │ daemon main │
+                 └──────┬──────┘
+        ┌──────────┬────┴─────────┬──────────────┐
+┌───────▼──────┐ ┌─▼──────────┐ ┌─▼────────────┐ ┌▼───────────────┐
+│ file watcher │ │ sync timer │ │ backup timers│ │ health API     │
+└───────┬──────┘ └─┬──────────┘ └─┬────────────┘ │ (unix socket)  │
+        └────┬─────┘              │              └────────────────┘
+     ┌───────▼─────┐      ┌───────▼───────┐
+     │ reconcile   │      │ backup engine │
+     │ + notify    │      └───────────────┘
+     └─────────────┘
 ```
 
 The daemon runs as a single tokio async runtime. Shutdown is graceful via SIGTERM/SIGINT (Unix) or the Windows Service control manager stop signal (Windows).
 
-The signal handlers are installed **before** the `Daemon running` banner is printed, so the banner is a promise you can act on immediately: a supervisor that starts cfgd and signals it in the same breath gets the clean shutdown path, not an abrupt kill.
+The signal handlers are installed **before** the `Daemon running` banner is printed: a supervisor that starts cfgd and signals it immediately gets the clean shutdown path, not an abrupt kill.
 
 ## Configuration
 
@@ -82,18 +77,17 @@ When `policy` is omitted entirely, the defaults are:
 | `newOptional` | `Ignore` | New optional items are silently skipped |
 | `lockedConflict` | `Notify` | Conflicts with locked items create a pending decision |
 
-When `autoApply: false`, policies have no effect. In manual mode, `cfgd plan` shows all items and you decide interactively.
+When `autoApply: false`, policies have no effect: no decision row is created and every source item applies.
 
-Setting `lockedConflict: Accept` causes the daemon to automatically remove your local overrides when they conflict with a locked item from a source. This is destructive — your local value is replaced without confirmation. The `Notify` default is safer: cfgd flags the conflict and waits for you to resolve it with `cfgd decide`.
+Setting `lockedConflict: Accept` causes the daemon to automatically remove your local overrides when they conflict with a locked item from a source. This is destructive: your local value is replaced without confirmation. The `Notify` default is safer: cfgd flags the conflict and waits for you to resolve it with `cfgd decide`.
 
 See [sources.md](sources.md#automatic-apply-decisions) for the full decision workflow.
 
 ## What a Tick Prints
 
-A foreground `cfgd daemon` reports a reconcile tick with the same header, phase → owner
-tree and rollup a `cfgd apply` prints — one skeleton, so a tick and a manual run are read
-the same way. Only the title differs, and the header gains a `Trigger` row naming what
-woke the tick:
+A foreground `cfgd daemon` reports a reconcile tick with the same header, phase and owner
+tree, and rollup that `cfgd apply` prints, so a tick and a manual run read the same way.
+Only the title differs, and the header gains a `Trigger` row naming what woke the tick:
 
 ```console
 $ cfgd daemon
@@ -123,18 +117,18 @@ Phase: Files
 
 The `tracing` lines around it are unchanged, so existing log consumers keep working; the
 tree is strictly additional. Under `driftPolicy: NotifyOnly` (or `Prompt`, which has no
-terminal to prompt at in daemon context) the same header renders with the *preview* tree —
-what drifted, never what was done — and closes on
+terminal to prompt at in daemon context) the same header renders with the *preview* tree
+(what drifted, never what was done) and closes on
 `⚠ Drift detected — N actions; policy is notify-only, nothing applied` instead of a
 completion rollup. Daemon lifecycle lines (the startup banner, SIGHUP reload, shutdown) stay flat
 status lines at column 0: they describe the process, not a run over a plan.
 
 Scheduled `spec.backups[]` fires render the same way, as a `Backup` run over a `Backups`
-group per unit — see [Declarative Backups](backups.md#daemon-scheduling).
+group per unit; see [Declarative Backups](backups.md#daemon-scheduling).
 
 ## Drift Hooks
 
-When the daemon detects drift, it runs any `onDrift` scripts defined in the active profile before deciding how to handle the drift (`autoApply`, notify, or prompt). This fires regardless of the drift policy — `onDrift` is observability, not remediation.
+When the daemon detects drift, it runs any `onDrift` scripts defined in the active profile before deciding how to handle the drift (`autoApply`, notify, or prompt). This fires regardless of the drift policy: `onDrift` is observability, not remediation.
 
 ```yaml
 # In your profile
@@ -159,24 +153,23 @@ Drift Hooks
     ✓ onDrift: scripts/snapshot-state.sh (0.1s)
 ```
 
-The heading carries no `Phase: ` prefix, and that is the rule rather than an accident:
-`Phase: ` marks a phase the plan produced, and hooks are not planned. An `onDrift` failure
-renders as a warning, never as a run failure — the hooks observe drift, they do not fix it.
+The heading carries no `Phase: ` prefix: `Phase: ` marks a phase the plan produced, and
+hooks are not planned. An `onDrift` failure renders as a warning, never as a run failure.
 
 ## Drift Accounting
 
-The `driftCount` reported by `cfgd daemon status` is the **current** number of managed targets diverging from desired state — not a lifetime total. It rises when targets drift and returns to `0` once everything is healed or clean:
+The `driftCount` reported by `cfgd daemon status` is the **current** number of managed targets diverging from desired state, not a lifetime total. It rises when targets drift and returns to `0` once everything is healed or clean:
 
 - A reconcile tick that finds **no drift** resets the count to `0`.
 - With `driftPolicy: Auto`, a successful heal applies the fix and drives the count back to `0` in the same tick. A partial-failure heal leaves only the still-diverging targets counted.
 
-Only a managed target diverging **out-of-band** (edited or removed outside cfgd) counts as drift. Changes to your config **sources** — the git-synced config directory (`.git/`, `profiles/`, `files/`, `cfgd.yaml`) — are desired-state updates: they *trigger* a reconcile (the GitOps pull→apply path) but are never counted as drift themselves.
+Only a managed target diverging **out-of-band** (edited or removed outside cfgd) counts as drift. Changes to your config **sources** (the git-synced config directory: `.git/`, `profiles/`, `files/`, `cfgd.yaml`) are desired-state updates: they *trigger* a reconcile (the GitOps pull-then-apply path) but are never counted as drift themselves.
 
 The `/status` endpoint's `driftCount` and the `/drift` endpoint's events list always reflect the same current set of unresolved drift, so the count and the event detail stay consistent.
 
 ## Reconcile Patches
 
-Override reconcile settings for specific modules or profiles. Patches live in your `cfgd.yaml` — you control your machine's sync behavior regardless of what upstream profiles or modules recommend.
+Override reconcile settings for specific modules or profiles. Patches live in your `cfgd.yaml`: you control your machine's sync behavior regardless of what upstream profiles or modules recommend.
 
 ```yaml
 spec:
@@ -210,7 +203,7 @@ Most specific wins, fields resolve independently:
 Named Module patch > Kind-wide Module patch > Named Profile patch > Kind-wide Profile patch > Global
 ```
 
-When multiple Profile patches match the inheritance chain (e.g., `base` and `work`), the leaf profile (the active one) wins — consistent with how profile inheritance resolves other conflicts.
+When multiple Profile patches match the inheritance chain (e.g., `base` and `work`), the leaf profile (the active one) wins, consistent with how profile inheritance resolves other conflicts.
 
 ### Conflict resolution
 
@@ -220,25 +213,25 @@ When multiple Profile patches match the inheritance chain (e.g., `base` and `wor
 | Two Profile patches in inheritance chain set `interval` | Leaf profile wins |
 | Module patch sets `driftPolicy: Auto`, global is `NotifyOnly` | Module patch wins |
 | Same module patched twice in the list | Last entry wins (warning logged) |
-| Patch references a module/profile that doesn't exist | Silently ignored |
+| Patch references a module/profile that does not exist | Silently ignored |
 
 ## Notifications
 
 When drift is detected, the daemon notifies via:
 
-- **Desktop** (default) — native OS notification APIs
-- **Stdout** — logs to stdout (useful under systemd, which captures journal output)
-- **Webhook** — POSTs a JSON payload to a configured URL
+- **Desktop** (default): native OS notification APIs
+- **Stdout**: logs to stdout (useful under systemd, which captures journal output)
+- **Webhook**: POSTs a JSON payload to a configured URL
 
 ## Health API
 
 The daemon exposes a health endpoint on a per-user Unix socket. The socket is
 placed in the first writable runtime directory:
 
-- **Linux** — `$XDG_RUNTIME_DIR/cfgd/cfgd.sock` (typically `/run/user/<uid>/cfgd/cfgd.sock`),
+- **Linux**: `$XDG_RUNTIME_DIR/cfgd/cfgd.sock` (typically `/run/user/<uid>/cfgd/cfgd.sock`),
   falling back to `~/.cache/cfgd/cfgd.sock` if `$XDG_RUNTIME_DIR` is unset.
-- **macOS** — `~/Library/Application Support/cfgd/cfgd.sock`.
-- **Windows** — named pipe `\\.\pipe\cfgd` (per-session in the kernel namespace).
+- **macOS**: `~/Library/Application Support/cfgd/cfgd.sock`.
+- **Windows**: named pipe `\\.\pipe\cfgd` (per-session in the kernel namespace).
 
 The parent directory is created with mode `0700` and the bound socket is
 chmodded to `0600` before the first connection is accepted, so the IPC surface
@@ -265,9 +258,9 @@ cfgd daemon uninstall      # stop the running daemon and remove the service
 `uninstall` is the exact inverse of `install`: it stops and disables the
 running service (`systemctl --user disable --now` on Linux, `launchctl bootout`
 on macOS, `sc stop` on Windows) **before** removing the unit/plist/registration,
-so no orphaned daemon process is left running. The stop step is best-effort — if
-the session can't reach its service manager (e.g. a headless SSH login with no
-user systemd), `uninstall` still removes the file and prints a warning plus the
+so no orphaned daemon process is left running. The stop step is best-effort: if
+the session cannot reach its service manager (a headless SSH login with no user
+systemd), `uninstall` still removes the file and prints a warning plus the
 manual stop command rather than aborting.
 
 ## Live config reload (SIGHUP)
@@ -288,12 +281,12 @@ kill -HUP "$(cfgd daemon status --output json | jq .pid)"
 Fields that **do** reload on SIGHUP:
 - `daemon.reconcile.interval`
 - `daemon.sync.interval`
-- `backups` (add, remove, or reschedule a `spec.backups[]` entry — a unit whose
+- `backups` (add, remove, or reschedule a `spec.backups[]` entry; a unit whose
   `schedule` did not change keeps its pending deadline rather than restarting
   the clock)
 
 The backup-timer swap is all-or-nothing. A reload whose config does not fully
-resolve — a profile saved mid-edit, a source cache being rewritten — keeps the
+resolve (a profile saved mid-edit, a source cache being rewritten) keeps the
 schedules already running and retries on its own, rather than swapping in a
 partial set:
 
@@ -304,11 +297,10 @@ partial set:
 
 The same retry covers startup: a daemon that boots while its profile is
 unreadable starts with no backup timers, reports `backups=0 scheduled (profile
-unresolved)` in its banner, and re-resolves on its own — it does not sit
-backup-less until someone restarts it. With no timers running there is nothing
-to protect, so the first resolution that produces a set is adopted even if
-sources are still unavailable. That adoption is reported as a warning naming
-what is still missing, never as an all-clear:
+unresolved)` in its banner, and re-resolves on its own. With no timers running
+there is nothing to protect, so the first resolution that produces a set is
+adopted even if sources are still unavailable. That adoption is reported as a
+warning naming what is still missing, never as an all-clear:
 
 ```sh
 # → status: "Backup schedules reloaded: 1 added, 0 removed, 0 rescheduled
@@ -327,14 +319,10 @@ Restart with `cfgd daemon` (foreground) or the service-manager equivalent
 (`systemctl --user restart cfgd`, `launchctl kickstart -k gui/$UID/com.cfgd.daemon`,
 `sc.exe stop cfgd && sc.exe start cfgd`).
 
-> Why so narrow? Reconcile / sync intervals are read from atomics each tick, so
-> they can change in-flight without races, and a backup timer owns no long-lived
-> machinery — rebuilding the set is a pure swap of deadlines. The other fields are baked into
-> the watcher set, the `DaemonLoopContext`, and the source-status state
-> machine at startup; changing them in-flight would require tearing down and
-> rebuilding those structures, which is not implemented and would race
-> against in-flight reconciles. Rather than partially-reload and risk subtle
-> inconsistency, SIGHUP refuses to touch them and tells the user to restart.
+> Why so narrow? Intervals and backup deadlines can be swapped mid-flight
+> without races. The other fields are baked into the file watcher and the
+> daemon's loop state at startup; reloading them in-flight would race against
+> running reconciles, so SIGHUP refuses to touch them and tells you to restart.
 
 ## Service Management
 
@@ -378,7 +366,7 @@ and loaded with `launchctl bootstrap system`. Logs go to `/var/log/cfgd.log` and
 The generated service bakes `--scope system` into `ExecStart` (Linux) and `ProgramArguments`
 (macOS), so the daemon and any `cfgd --scope system <command>` admin-CLI invocations resolve
 the same roots. Any `--state-dir` / `--runtime-dir` the install itself ran under is baked in the
-same way — the installed service is a fresh process with none of the invoking shell's flags, so
+same way: the installed service is a fresh process with none of the invoking shell's flags, so
 without that the daemon would write its state somewhere the CLI never looks:
 
 ```bash
@@ -409,7 +397,7 @@ non-login shell, CI, container, provisioning script) usually has no
 `XDG_RUNTIME_DIR`. cfgd detects this and self-sets `XDG_RUNTIME_DIR` to
 `/run/user/<uid>` when that directory exists, noting it in the output. If no
 user session bus exists at all, cfgd installs the unit, reports that it could
-not start it, and points you at lingering — enable it so the user service can
+not start it, and points you at lingering. Enable it so the user service can
 run without an active login:
 
 ```bash
@@ -441,7 +429,7 @@ Get-Content -Wait -Tail 200 $env:LOCALAPPDATA\cfgd\daemon.log
 
 When the service runs as the default `LocalSystem`, the file lives under
 `C:\Windows\System32\config\systemprofile\AppData\Local\cfgd\daemon.log`
-instead — change the service's logon account (Services → cfgd → Properties → Log On) if you want logs under your interactive user profile.
+instead. Change the service's logon account (Services → cfgd → Properties → Log On) if you want logs under your interactive user profile.
 
 **Event Log (opt-in).** Mirror the same stream into Event Viewer / Windows Event Forwarding / SIEM ingestion by setting:
 
@@ -455,7 +443,7 @@ spec:
 Then run `cfgd daemon install` (or `uninstall` then `install`, if the service was already registered). Install does two things when the flag is set:
 
 1. Bakes `--enable-event-log` into the service binPath, so the daemon installs a second `tracing` Layer that writes to the `cfgd` Event Log source on every event.
-2. Creates `HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application\cfgd` pointing `EventMessageFile` at `%SystemRoot%\System32\EventCreate.exe`, which is what makes Event Viewer show your messages cleanly instead of "The description for Event ID 1 cannot be found." Both writes require elevation — `cfgd daemon install` already runs elevated, so no extra step is needed.
+2. Creates `HKLM\SYSTEM\CurrentControlSet\Services\EventLog\Application\cfgd` pointing `EventMessageFile` at `%SystemRoot%\System32\EventCreate.exe`, which is what makes Event Viewer show your messages cleanly instead of "The description for Event ID 1 cannot be found." Both writes require elevation; `cfgd daemon install` already runs elevated, so no extra step is needed.
 
 Once the service is reinstalled, find cfgd events in:
 
@@ -478,7 +466,7 @@ cfgd daemon uninstall
 cfgd daemon install
 ```
 
-For ad-hoc testing without reinstalling, set `CFGD_WINDOWS_EVENT_LOG=1` in the running process's environment — `init_windows_logging` consults both the CLI arg and the env var on every start.
+For ad-hoc testing without reinstalling, set `CFGD_WINDOWS_EVENT_LOG=1` in the running process's environment: the daemon consults both the CLI arg and the env var on every start.
 
 `cfgd daemon uninstall` removes the Event Log registry source automatically, so reverting to file-only is also a single command pair.
 

@@ -3,7 +3,7 @@
 A Profile document declares everything cfgd should manage on a machine: packages, files,
 environment variables, shell aliases, system configurators, secrets, and lifecycle scripts.
 Profiles are stored under `profiles/` in your config directory and referenced by name.
-The canonical layout is a bundle — `profiles/<name>/profile.yaml` alongside an optional
+The canonical layout is a bundle: `profiles/<name>/profile.yaml` alongside an optional
 `files/` payload directory (mirroring `modules/<name>/module.yaml`). The legacy flat form
 `profiles/<name>.yaml` remains fully supported; `cfgd profile migrate` moves a flat profile
 into the canonical bundle.
@@ -216,8 +216,8 @@ spec:
 
 Environment variables to export for the **current user**. cfgd writes a managed env file
 (`~/.cfgd.env`) and wires it into the user's shells and session managers according to
-[`spec.envScope`](#specenvscope) — by default every standard user context. For **system-wide**
-(all-users, privileged) variables, use [`spec.system.environment`](system-configurators.md)
+[`spec.envScope`](#specenvscope): by default every standard user context. For **system-wide**
+(all-users, privileged) variables, use [`spec.system.environment`](../system-configurators.md)
 instead; the two differ by *scope of affected users*, not by which shells.
 
 | Field | Type | Required | Default | Description |
@@ -254,7 +254,7 @@ interactive-only regardless of scope; fish `conf.d` always covers every fish ses
 cfgd never overwrites a user-owned dotfile: it owns the standalone `~/.cfgd.env` (and the
 `environment.d`/plist files) outright, and only appends an idempotent `source` line into shell rc
 files. It will **not create** a `~/.bash_profile` that didn't exist, because bash reads the first
-existing of `~/.bash_profile`, `~/.bash_login`, `~/.profile` and stops — creating one would shadow
+existing of `~/.bash_profile`, `~/.bash_login`, `~/.profile` and stops; creating one would shadow
 your `~/.profile`.
 
 > `~/.config/environment.d` is read by `systemd --user` and Wayland sessions started through it;
@@ -264,18 +264,18 @@ your `~/.profile`.
 `~/.cfgd.env` is written even when `spec.env` and `spec.aliases` are both empty, as long as cfgd
 **itself bootstrapped** a package manager the profile still names. When a bootstrap succeeds, cfgd
 records the `PATH` directories that install contributed and exports them from `~/.cfgd.env`. A
-manager you installed yourself contributes nothing here — cfgd never claims ownership of a machine
+manager you installed yourself contributes nothing here: cfgd never claims ownership of a machine
 change it did not make, so your rc files are left alone. Drop the manager from the profile and its
 directories age out of the file.
 
 Those directories are exported **first**, ahead of your own variables, so a `spec.env` value may
-reference a binary the manager just installed. cfgd knows most managers' install locations before
+reference a binary that manager's bootstrap installed. cfgd knows most managers' install locations before
 the bootstrap even runs, so the plan folds a to-be-provisioned manager's declared directories into
-the `Env` phase's write up front — the first apply on a bare machine is already correct. The one
+the `Env` phase's write up front: the first apply on a bare machine is already correct. The one
 exception is a manager whose install location is only knowable once its bootstrap finishes (npm's
 global prefix depends on which Node install method wins); that manager still converges inside the
-same run — cfgd re-derives the file once every phase completes and the real directory is recorded.
-cfgd prints a reminder after any apply that wrote the file or injected a source line — your
+same run: cfgd re-derives the file once every phase completes and the real directory is recorded.
+cfgd prints a reminder after any apply that wrote the file or injected a source line: your
 already-running shell does not pick either up until you `source ~/.cfgd.env` or open a new one.
 
 **Example:**
@@ -388,7 +388,7 @@ form.
 | `file` | string | No | | Path to a `Cargo.toml` (installs all `[dependencies]`). |
 | `packages` | list of string | No | `[]` | Crate names to install via `cargo install`. |
 
-**List shorthand** — when no `file` is needed:
+**List shorthand** (when no `file` is needed):
 ```yaml
 packages:
   cargo:
@@ -397,7 +397,7 @@ packages:
     - ripgrep
 ```
 
-**Object form** — when mixing a file with additional packages:
+**Object form** (when mixing a file with additional packages):
 ```yaml
 packages:
   cargo:
@@ -626,10 +626,10 @@ config repository in plaintext.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `source` | string | Yes | | Secret reference URI. Format depends on backend: SOPS file path, `1password://vault/item/field`, `bitwarden://item/field`, or `vault://path/key`. |
-| `target` | string | No | | Absolute path to write the decrypted secret. Supports `~/` expansion. At least one of `target` or `envs` must be set. |
-| `envs` | list | No | | Environment variable names to inject with the resolved secret value. At least one of `target` or `envs` must be set. See [Environment variable injection from secrets](#environment-variable-injection-from-secrets). |
-| `template` | string | No | | Inline template string. When set, the secret value is injected into this template before writing to `target`. |
+| `source` | string | Yes | | Secret reference URI. Format depends on backend: SOPS file path, `1password://vault/item/field` (`op://`), `bitwarden://item/field` (`bw://`), `lastpass://folder/item/field` (`lpass://`, `lp://`), or `vault://path/key`. |
+| `target` | string | No | | Absolute path to write the decrypted secret. Supports `~/` expansion. At least one of `target` or `envs` must be set; both may be set. |
+| `envs` | list | No | | Environment variable names to inject with the resolved secret value. At least one of `target` or `envs` must be set; both may be set. See [Environment variable injection from secrets](#environment-variable-injection-from-secrets). |
+| `template` | string | No | | Wraps a provider-resolved value: `${secret:value}` is replaced with the secret, the rest is written verbatim, for `target` and `envs` alike. Must contain `${secret:value}`; refused on an encrypted-file `source`. |
 | `backend` | string | No | | Override the secret backend for this entry. Defaults to `spec.secrets.backend` in `cfgd.yaml`. |
 
 **Example:**
@@ -645,7 +645,7 @@ secrets:
 
 #### Environment variable injection from secrets
 
-When `envs` is set, cfgd resolves the secret and writes the value to the managed shell environment file alongside regular `env:` entries. `target` and `envs` can both be set on the same entry — the secret is placed as a file and injected as an env var.
+When `envs` is set, cfgd resolves the secret and writes the value to the managed shell environment file alongside regular `env:` entries. `target` and `envs` can both be set on the same entry: the secret is placed as a file and injected as an env var.
 
 ```yaml
 secrets:
@@ -660,7 +660,7 @@ secrets:
     envs:
       - API_KEY
 
-  # Multiple env vars from one provider — use explicit field references
+  # Multiple env vars from one provider: use explicit field references
   - source: vault://secret/data/aws#aws_access_key_id
     envs:
       - AWS_ACCESS_KEY_ID
@@ -669,7 +669,7 @@ secrets:
       - AWS_SECRET_ACCESS_KEY
 ```
 
-When `envs` has multiple entries and the source resolves to a single value, all named env vars receive that value. The daemon refreshes secret-backed env vars on every reconcile cycle. Compliance snapshots record that the env var exists and its source — never the value.
+When `envs` has multiple entries and the source resolves to a single value, all named env vars receive that value. The daemon refreshes secret-backed env vars on every reconcile cycle. Compliance snapshots record that the env var exists and its source, never the value.
 
 ---
 
@@ -698,11 +698,11 @@ The idempotency guards `onlyIf`, `unless`, and `creates` make a script re-run-sa
 | `onlyIf` | string (command) | the command exits **non-zero** (the condition to run is not met) |
 | `unless` | string (command) | the command exits **zero** (the guarded state already holds) |
 
-When more than one guard is set, **all** must permit running for the body to run. `onlyIf`/`unless` commands run with the same shell, working directory, and environment as the body, bounded by a timeout so a guard can never hang; a guard command that fails to spawn (e.g. a missing interpreter) is a hard error. For `creates`, a leading `~` expands to the home directory and a relative path resolves against the script's working directory (the home directory by default — see below); existence follows symlinks.
+When more than one guard is set, **all** must permit running for the body to run. `onlyIf`/`unless` commands run with the same shell, working directory, and environment as the body, bounded by a timeout so a guard can never hang; a guard command that fails to spawn (e.g. a missing interpreter) is a hard error. For `creates`, a leading `~` expands to the home directory and a relative path resolves against the script's working directory (the home directory by default; see below); existence follows symlinks.
 
 ### Working directory
 
-Scripts run in the user's **home directory** by default, never the config source tree, so a relative write can't pollute the config repo. Reach the config root via the injected `$CFGD_CONFIG_DIR` variable. Set `workdir` to override — a leading `~` expands to home and `$VAR` / `${VAR}` expand against the script environment:
+Scripts run in the user's **home directory** by default, never the config source tree, so a relative write can't pollute the config repo. Reach the config root via the injected `$CFGD_CONFIG_DIR` variable. Set `workdir` to override (a leading `~` expands to home; `$VAR` / `${VAR}` expand against the script environment):
 
 ```yaml
 scripts:
@@ -715,11 +715,11 @@ See [Lifecycle Scripts](../lifecycle-scripts.md#working-directory) for the full 
 
 ### Interactive scripts
 
-Set `interactive: true` on a script entry that must prompt the user — for example, pausing a `postApply` step until a manual install is done. The script runs **attached to the terminal** (inherited stdin/stdout/stderr, no spinner, no output capture) and is **not** subject to the idle timeout, since an interactive step is attended by definition.
+Set `interactive: true` on a script entry that must prompt the user (for example, pausing a `postApply` step until a manual install is done). The script runs **attached to the terminal** (inherited stdin/stdout/stderr, no spinner, no output capture) and is **not** subject to the idle timeout, since an interactive step is attended by definition.
 
-An interactive script requires a TTY. When stdin is **not** a terminal — CI, piped input, or any run by the `cfgd daemon` (the daemon never has a TTY) — the script is **skipped with a warning** instead of hanging on instant EOF, and reports `changed=false`. Interactive steps therefore run only during an attended `cfgd apply`, never under unattended reconcile.
+An interactive script requires a TTY. When stdin is **not** a terminal (CI, piped input, or any run by the `cfgd daemon`, which never has a TTY), the script is **skipped with a warning** instead of hanging on instant EOF, and reports `changed=false`. Interactive steps therefore run only during an attended `cfgd apply`, never under unattended reconcile.
 
-The child shares cfgd's own process group instead of getting a new detached one, so the terminal's foreground group still includes it: a Ctrl-C typed at the terminal reaches the script directly, and a raw-mode TUI or a `sudo` password prompt behaves normally. By default an interactive script has **no timeout at all** — force-killing a step that's mid-raw-mode or waiting on a password would be worse than an unbounded wait. Set `timeout:` on the entry when a step does need a ceiling; once it elapses cfgd terminates the script (SIGTERM, then SIGKILL after a grace period).
+The child shares cfgd's own process group instead of getting a new detached one, so the terminal's foreground group still includes it: a Ctrl-C typed at the terminal reaches the script directly, and a raw-mode TUI or a `sudo` password prompt behaves normally. By default an interactive script has **no timeout at all**: force-killing a step that's mid-raw-mode or waiting on a password would be worse than an unbounded wait. Set `timeout:` on the entry when a step does need a ceiling; once it elapses cfgd terminates the script (SIGTERM, then SIGKILL after a grace period).
 
 ```yaml
 scripts:
@@ -798,8 +798,8 @@ backups:
       - run: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"
 ```
 
-CRD parity for `spec.backups[]` is not yet implemented — this field is available in the YAML/TOML
-profile config path only.
+`spec.backups[]` exists only in the YAML/TOML profile config path; the `MachineConfig` CRD does not
+carry it.
 
 Every run is recorded in the state database's `backup_runs` table (source, destination, size,
 status, error, start/finish timestamps), and retention pruning walks those records rather than

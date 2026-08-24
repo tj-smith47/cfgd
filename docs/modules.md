@@ -1,16 +1,16 @@
 # Modules
 
-Modules are self-contained, portable configuration packages. A module bundles everything needed for one tool — packages (cross-platform), config files (local or git-sourced), and lifecycle scripts — into a single deployable unit.
+Modules are self-contained, portable configuration packages. A module bundles everything needed for one tool (cross-platform packages, local or git-sourced config files, lifecycle scripts) into a single deployable unit.
 
 For the complete field-by-field reference, see the [Module spec reference](spec/module.md).
 
 ## Why Modules
 
-Without modules, profiles declare packages by manager: `brew: [neovim]`, `apt: [neovim]`. This means no portability (a profile for macOS doesn't work on Ubuntu), no granularity (you can't apply "just my nvim setup"), and no dependency tracking (nvim needs Node.js for LSP but that's implicit).
+Without modules, profiles declare packages by manager: `brew: [neovim]`, `apt: [neovim]`. This means no portability (a profile for macOS doesn't work on Ubuntu), no granularity (you can't apply only your nvim setup), and no dependency tracking (nvim needs Node.js for LSP but that's implicit).
 
 ### Modules vs. Profile Packages
 
-Use **modules** when the config is self-contained and shareable — a tool with its own config files, dependencies, and setup scripts. Use **profile packages** for machine-specific package lists that don't need to be portable or shared.
+Use **modules** when the config is self-contained and shareable: a tool with its own config files, dependencies, and setup scripts. Use **profile packages** for machine-specific package lists that don't need to be portable or shared.
 
 Rule of thumb: if you'd share it with a coworker or use it across machines with different OSes, it's a module. If it's "install these five tools on my work laptop," it's a profile package list.
 
@@ -68,12 +68,12 @@ spec:
 
 ### Module Version
 
-`metadata.version` is the module's own release version — strict semver (`1.4.0`, `2.0.0-rc.1`),
+`metadata.version` is the module's own release version: strict semver (`1.4.0`, `2.0.0-rc.1`),
 never a `v` prefix and never a two-part `0.10`. It is optional; modules without it load unchanged.
 
 Declare it on any module you release: the workflow written by `cfgd workflow generate` cuts the tag
 `<name>/v<version>` when the module changes, fails the job when the version is missing rather than
-guessing one, and fails it again if that tag already exists (bump the version — published tags are
+guessing one, and fails it again if that tag already exists (bump the version; published tags are
 never rewritten). Read it back with:
 
 ```sh
@@ -85,7 +85,7 @@ New modules from `cfgd module create` start at `0.1.0`.
 ### Module-Level Platform Filter
 
 `spec.platforms` gates the **whole module**. When it is non-empty and the current platform matches
-none of the listed tags, the entire module is skipped — packages, files, scripts, env, and aliases
+none of the listed tags, the entire module is skipped: packages, files, scripts, env, and aliases
 included. Tags match the platform's OS (`linux`, `macos`, `freebsd`, `windows`), distro, or arch.
 The canonical macOS token is `macos` (not `darwin`). A skipped module shows up as a **Skipped**
 action in the plan rather than vanishing, and an active module may not `depends` on a module that
@@ -113,6 +113,7 @@ spec:
 | `name` | yes | string | Canonical package name |
 | `minVersion` | no | string | Minimum acceptable version (semver) |
 | `prefer` | no | list | Ordered list of managers to try. `"script"` uses the `script` field as a custom installer. If omitted, uses platform's native manager. |
+| `deny` | no | list | Managers to never use for this package, even if available and preferred |
 | `aliases` | no | map | Per-manager name overrides when the package name differs |
 | `script` | no | string | Inline shell script or path. Used when `prefer` includes `"script"` |
 | `creates` | no | string | Idempotency guard for a `prefer: [script]` install: skip the script if this path exists. Ignored for manager-backed installs |
@@ -126,6 +127,8 @@ spec:
 |---|---|---|---|
 | `source` | yes | string | Local path (relative to module dir), or git URL |
 | `target` | yes | string | Absolute target path on the machine |
+
+File entries also accept `strategy` (`Symlink`/`Copy`/`Template`/`Hardlink`/`Patch`), `permissions`, `private`, `encryption`, and `patch`, with the same semantics as profile managed files. See [spec.files[]](spec/module.md#specfiles) for the full table.
 
 ### Env Vars
 
@@ -156,7 +159,7 @@ running anything. What each shell still expands at startup differs:
 
 A declared reference like `PATH: /opt/bin:$PATH` therefore picks up the surrounding
 environment on bash/zsh and under systemd, and is a literal string on fish and
-PowerShell — write the full path there, or declare a per-platform value. Command
+PowerShell: write the full path there, or declare a per-platform value. Command
 substitution never runs, on any platform: cfgd is not a place to compute a value.
 
 ```yaml
@@ -170,7 +173,7 @@ spec:
 
 ### Aliases
 
-Modules can declare shell aliases. These are merged with profile aliases using the same conflict rules as env vars — module wins on conflict by name.
+Modules can declare shell aliases. These are merged with profile aliases using the same conflict rules as env vars: module wins on conflict by name.
 
 ```yaml
 spec:
@@ -217,7 +220,7 @@ The full resolution logic for each package entry:
 1. **Platform filter.** If `platforms` is non-empty and the current OS, distro, or arch doesn't match, the entry is skipped entirely.
 2. **Determine candidate managers.** If `prefer` is specified, walk that list in order. If `prefer` is omitted, use the platform's native manager (e.g., `apt` on Ubuntu, `brew` on macOS).
 3. **For each candidate manager:**
-   - If the candidate is `"script"` — the `script` field must be present (error if missing). Scripts are always considered "available," and version checks are skipped (the script manages its own versioning). See [Script Execution](#script-execution) below.
+   - If the candidate is `"script"`, the `script` field must be present (error if missing). Scripts are always considered "available," and version checks are skipped (the script manages its own versioning). See [Script Execution](#script-execution) below.
    - Otherwise, check that the manager is installed and available on this machine. If not, skip to the next candidate.
    - Resolve the package name: use `aliases[manager]` if present, otherwise fall back to `name`.
    - If `minVersion` is specified, query the manager for the available version. If the package is not found or the version is below the minimum, skip this manager.
@@ -240,12 +243,12 @@ Version strings are normalized to semver: `"0.9"` becomes `"0.9.0"`, `"18"` beco
 
 ### Cross-Scope Deduplication
 
-A package declared in more than one scope — the profile and a module, or two modules — installs **once**. cfgd dedupes the combined profile + module install set keyed on `(manager, name)`. The module side contributes its alias-resolved name; the profile side matches on the name as literally declared (profiles have no per-package alias mechanism). When both sides land on the same effective `(manager, name)`, only one install runs — a module that aliases a package to a name different from the profile's literal entry does not collide, so both install (which is correct):
+A package declared in more than one scope (the profile and a module, or two modules) installs **once**. cfgd dedupes the combined install set keyed on `(manager, name)`: the module side contributes its alias-resolved name, the profile side its name as literally declared (profiles have no alias mechanism). A module that aliases a package away from the profile's literal name therefore does not collide, and both install.
 
 - **Same manager + same name across scopes** → installed once; the duplicates are dropped.
 - **Different managers** → both install. `ripgrep` via `brew` in the profile and via `cargo` in a module are two distinct installs.
 - **Module installs win** over profile duplicates, and an **earlier module wins** over a later one. Module-owned package work is dispatched ahead of profile-owned work inside the Packages phase, so a module's own `postApply` script can rely on the package already being present.
-- **`prefer: [script]` entries are never deduped.** A custom install script is not package-manager-idempotent — two same-named scripts may differ, so both always run (subject to each entry's own `creates`/`onlyIf`/`unless` guards).
+- **`prefer: [script]` entries are never deduped.** Two same-named install scripts may differ, so both always run (subject to each entry's own `creates`/`onlyIf`/`unless` guards).
 - Dedup is **silent**: no warning is emitted for a dropped duplicate.
 
 ```yaml
@@ -287,7 +290,7 @@ packages:
 **Idempotency.** A `prefer: [script]` install has no installed-package set to
 query, so cfgd cannot detect whether the tool is already present: it is
 invisible to drift/`verify`, and **without a guard the script runs on every
-apply** (reported as changed). Make the script idempotent — either internally,
+apply** (reported as changed). Make the script idempotent, either internally
 or by attaching a `creates`/`onlyIf`/`unless` guard to the package entry. The
 guards share the [lifecycle-script semantics](#script-lifecycle): they are
 evaluated before the script (`creates` → `onlyIf` → `unless`, all must permit
@@ -320,7 +323,7 @@ cfgd detects the current OS, distro, and architecture, then maps to the native p
 
 ## Dependency Resolution
 
-Modules declare `depends: [node, python]`. cfgd builds a dependency graph and figures out the install order — dependencies are installed before the modules that need them. Circular dependencies are detected and reported as errors. If two modules share a dependency (A→C, B→C), it's resolved and installed once.
+Modules declare `depends: [node, python]`. cfgd builds a dependency graph and installs dependencies before the modules that need them. Circular dependencies are detected and reported as errors. If two modules share a dependency (A→C, B→C), it's resolved and installed once.
 
 Processing order: leaf dependencies first (node, python), then dependents (nvim).
 
@@ -337,9 +340,21 @@ Modules support lifecycle hooks that run at different points during apply and re
 | `onChange` | After apply/reconcile, only if this module's resources actually changed |
 | `onDrift` | In the daemon, when drift is detected in this module's own resources |
 
-`onDrift` scripts are observability, not remediation: they fire before the daemon decides how to handle the drift (`autoApply`, notify, or prompt), regardless of the drift policy. A module's `onDrift` fires only when that module's own packages, files, or scripts drift — both on a whole-profile reconcile tick and on a per-module tick. Profiles also have `onDrift` (see the [Profile spec reference](spec/profile.md#specscripts)); the two are independent.
+`onDrift` scripts are observability, not remediation: they fire before the daemon decides how to handle the drift (`autoApply`, notify, or prompt), regardless of the drift policy. A module's `onDrift` fires only when that module's own packages, files, or scripts drift, on both whole-profile and per-module reconcile ticks. Profiles also have `onDrift` (see the [Profile spec reference](spec/profile.md#specscripts)); the two are independent.
 
-Each entry can be a simple string (`"scripts/rebuild-index.sh"`) or a full object with `run`, `timeout`, `idleTimeout`, `continueOnError`, `interactive`, and the idempotency guards `onlyIf`/`unless`/`creates` fields. Default timeout for module scripts is 2 minutes. `idleTimeout` kills scripts that produce no output for the specified duration (e.g. `30s`). The guards make a script re-run-safe: `creates` skips when a path exists, `onlyIf` runs only on a zero-exit condition, `unless` runs only on a non-zero-exit condition. Set `interactive: true` to run a script attached to the terminal so it can prompt the user (e.g. `echo "press Enter"; read`); it requires a TTY and is skipped with a warning when none is present (CI, piped stdin, or the daemon). See the [Module spec reference](spec/module.md#specscripts) for the complete field reference, defaults, and environment variables available to scripts.
+Each entry can be a simple string (`"scripts/rebuild-index.sh"`) or a full object:
+
+```yaml
+scripts:
+  postApply:
+    - run: scripts/rebuild-index.sh
+      timeout: 5m            # default 2m
+      idleTimeout: 30s       # kill after 30s with no output
+      continueOnError: true
+      creates: ~/.cache/index.db   # skip when this path exists
+```
+
+The guards make a script re-run-safe: `creates` skips when a path exists, `onlyIf` runs only when a command exits zero, `unless` only when it exits non-zero. Set `interactive: true` to attach a script to the terminal so it can prompt the user; it requires a TTY and is skipped with a warning when none is present (CI, piped stdin, or the daemon). See the [Module spec reference](spec/module.md#specscripts) for the complete field reference, defaults, and environment variables available to scripts.
 
 ## Profile Integration
 
@@ -353,7 +368,7 @@ metadata:
 spec:
   modules: [nvim, tmux, git, zsh]
 
-  # Existing fields still work — modules don't replace them
+  # Existing fields still work; modules don't replace them
   packages:
     brew:
       formulae: [extra-tool]
@@ -385,7 +400,7 @@ files:
   - source: git@github.com:user/repo.git@v2.1.0         # SSH with tag
 ```
 
-Git sources are cached in `~/.cache/cfgd/modules/` (Linux; under the cache dir on every platform — see `configuration.md`) and updated on `cfgd apply` or daemon sync.
+Git sources are cached in `~/.cache/cfgd/modules/` (Linux; under the cache dir on every platform, see `configuration.md`) and updated on `cfgd apply` or daemon sync.
 
 cfgd honors your local git configuration when cloning and fetching, so
 `url.<base>.insteadOf` rewrite rules, `http.proxy`, and similar settings apply.
@@ -417,14 +432,14 @@ my-config/
       config/
         tmux.conf
     node/
-      module.yaml     # just packages, no files
+      module.yaml     # packages only, no files
 ```
 
 ## Module Registries
 
-Registries are git repos that host multiple reusable modules. Think of them as community or organization module collections — you browse and install from them instead of writing everything yourself.
+Registries are git repos that host multiple reusable modules: community or organization collections you browse and install from instead of writing everything yourself.
 
-This is different from [config sources](sources.md), which provide full profiles with policy enforcement. Registries are simpler: just a directory of modules, no policy tiers.
+This is different from [config sources](sources.md), which provide full profiles with policy enforcement. Registries are plain directories of modules, with no policy tiers.
 
 ```
 # Registry repo structure
@@ -446,11 +461,10 @@ cfgd module registry list
 cfgd module registry remove community
 ```
 
-A registry URL may be any git URL, or the GitHub shorthand `owner/repo`. Both are
-equally supported — the shorthand is a convenience for GitHub, never a requirement:
+A registry URL may be any git URL, or the GitHub shorthand `owner/repo`:
 
 ```sh
-# GitHub shorthand — expands to https://github.com/cfgd-community/modules.git,
+# GitHub shorthand: expands to https://github.com/cfgd-community/modules.git,
 # and the registry name defaults to the org (`cfgd-community`)
 cfgd module registry add cfgd-community/modules
 
@@ -460,17 +474,14 @@ cfgd module registry add https://gitlab.example.com/myorg/modules.git --name myo
 cfgd module registry add git@git.example.com:myorg/modules.git --name myorg
 ```
 
-A value whose first segment carries a dot (`gitlab.example.com/myorg/modules`) is a URL
-for that host, not a GitHub owner, so it is passed through untouched; a dotless host
-(`gitserver/modules`) cannot be told from an owner by the value alone, so name it with a
-scheme (`http://gitserver/modules --name myorg`). An existing local path also wins over
-the shorthand: run inside a directory holding `myorg/modules` and `cfgd module registry
-add myorg/modules --name myorg` registers that local repository rather than a same-named
-GitHub one (only a GitHub URL can supply a default name, so `--name` is required).
+The shorthand follows the same rules as [naming a source](sources.md#naming-a-source):
+a dotted first segment is a host, not a GitHub owner, and an existing local path wins
+over the shorthand. Registries on non-GitHub hosts need `--name` (only a GitHub URL can
+supply a default name).
 
 ### Registry Tag Convention
 
-Registries use per-module git tags in the format `<module>/<version>` — for example, `tmux/v1.0.0`, `nvim/v2.3.1`. This allows a single git repo to host multiple modules with independent version histories. When you install a module at a specific version, cfgd checks out the tag matching that module name.
+Registries use per-module git tags in the format `<module>/<version>` (for example `tmux/v1.0.0`, `nvim/v2.3.1`), so a single git repo can host multiple modules with independent version histories. When you install a module at a specific version, cfgd checks out the tag matching that module name.
 
 ### Module Source Configuration
 
@@ -512,7 +523,7 @@ Modules
   ⚠ module:git  — 1 pkg, 0 files, outdated
 ```
 
-Each line is headed by the module's owner token — the same `module:<name>` the
+Each line is headed by the module's owner token: the same `module:<name>` the
 plan and apply trees head that module's group with.
 
 Each module is tracked independently. cfgd stores a hash of the resolved package list and deployed file tree. When the daemon runs its reconciliation loop, it checks:
@@ -521,19 +532,24 @@ Each module is tracked independently. cfgd stores a hash of the resolved package
 - **File drift:** do deployed files still match the source content?
 - **Git source drift:** for modules with git file sources, have new commits appeared upstream since the last apply?
 
-A module reads as one of four states: `Synced` (converged), `Drifted` (a live
-scan found a package missing or a file diverged), `Failed` (its last apply had
-a failing action), or `NotApplied` (no apply has recorded it). `Drifted` needs
-a live scan, so only `cfgd status --module <name> --scan` (and `--exit-code`,
-which implies it) can report it. The `-o json` payload's `status` field carries
-the stored token instead (`installed`, `error`, `not applied`).
+A module reads as one of four states:
+
+| State | Meaning | Where it can appear |
+|---|---|---|
+| `Synced` | converged | any status surface |
+| `Drifted` | a live scan found a package missing or a file diverged | only `--scan` (and `--exit-code`, which implies it) |
+| `Failed` | its last apply had a failing action | any status surface |
+| `NotApplied` | no apply has recorded it | any status surface |
+
+The `-o json` payload's `status` field carries the stored token instead
+(`installed`, `error`, `not applied`).
 
 `cfgd status --module <name>` reports the declared counts and the drift a scan
 found; `-o wide` itemizes each surface instead, and `--show-values` adds the
 declared values and full script bodies (see
 [`cfgd status`](cli-reference.md#cfgd-status)).
 
-Module resources are first-class in compliance reporting, not profile-only. A module's files, packages, and system settings appear in every `cfgd compliance` surface (snapshot, export, diff, history) and in the device checkin summary, attributed to their module — the same effective profile-plus-modules view that `cfgd verify` and `cfgd diff` use. Module file checks are content-aware: a deployed module file present on disk but whose bytes drifted from its source is reported as a violation.
+Module resources are first-class in compliance reporting, not profile-only. A module's files, packages, and system settings appear in every `cfgd compliance` surface (snapshot, export, diff, history) and in the device checkin summary, attributed to their module: the same effective profile-plus-modules view that `cfgd verify` and `cfgd diff` use. Module file checks are content-aware: a deployed module file present on disk but whose bytes drifted from its source is reported as a violation.
 
 ## Plan Output Format
 
@@ -576,22 +592,16 @@ Phase: Post-Scripts
 
 A module's package line names the manager that won resolution, the manager-specific package
 name being installed, and the version that manager reports. When the module entry's own
-name differs from the manager-specific one, it follows after `alias:` —
+name differs from the manager-specific one, it follows after `alias:`:
 `npm install neovim (5.4.0, alias: neovim-npm)` installs npm's `neovim` for a module entry
-named `neovim-npm`. A profile's own package lines carry
-neither: a profile names a manager and a package directly, so there is nothing resolved to
-report. A deploy naming more than three targets lists the first two and a count
-(`deploy a, b (12 files)`).
+named `neovim-npm`. A profile's own package lines carry neither, since a profile names a
+manager and a package directly. A deploy naming more than three targets lists the first
+two and a count (`deploy a, b (12 files)`).
 
-Each phase groups its actions by the owner that declared them — `profile:<name>`
-for the profile's own work, `module:<name>` for a module's — so a bullet's owner
-is visible without reading the action text.
-
-A module's work sits in the phase whose kind it is, beside the profile's, and
-each bullet reads the same whether the profile or a module planned it — a
-manager/package or file-target name, not a `[<module>]` tag. Module-owned
-package work is dispatched before profile-owned work in the Packages phase,
-whatever order the two read in.
+Each phase groups its actions by the owner that declared them (`profile:<name>`,
+`module:<name>`), so a bullet's owner is visible without reading the action text.
+Module-owned package work is dispatched before profile-owned work in the Packages
+phase, whatever order the two read in.
 
 ## Lockfile
 
@@ -623,12 +633,12 @@ The daemon is long-lived, so the same repository is re-fetched at most once ever
 
 ## Modules from Config Sources
 
-[Config sources](sources.md) can deliver module bodies via `spec.provides.modules` in their `cfgd-source.yaml` manifest. This makes the source a **module library** in addition to (or instead of) providing profiles. The `provides.modules` list is the delivery allow-list — only modules named there are made available to subscribers.
+[Config sources](sources.md) can deliver module bodies via `spec.provides.modules` in their `cfgd-source.yaml` manifest. This makes the source a **module library** in addition to (or instead of) providing profiles. The `provides.modules` list is the delivery allow-list: only modules named there are made available to subscribers.
 
 Resolution order when a profile references a module by name:
 
 1. **Local modules** (`<config-dir>/modules/`) always win over source-delivered modules.
-2. **Source priority** — when the module exists in multiple subscribed sources, the higher-priority source wins. Equal priority is tie-broken alphabetically by source name.
+2. **Source priority**: when the module exists in multiple subscribed sources, the higher-priority source wins. Equal priority is tie-broken alphabetically by source name.
 
 Referencing a module that is neither local nor offered by any subscribed source is a **fatal error**. A source-delivered module's plan lines end with the delivering source, so its provenance is visible where its work is:
 
@@ -652,7 +662,7 @@ Modules
   ⊙ shell
 ```
 
-A source that delivers only modules (no profiles) is valid — see [Source-Delivered Module Bodies](sources.md#source-delivered-module-bodies) for the full contract.
+A source that delivers only modules (no profiles) is valid; see [Source-Delivered Module Bodies](sources.md#source-delivered-module-bodies) for the full contract.
 
 ## CLI Commands
 
@@ -664,14 +674,18 @@ cfgd module create my-tool          # create a new local module
 cfgd module update nvim --package ripgrep  # modify a module
 cfgd module edit nvim               # open in $EDITOR
 cfgd module delete nvim             # restore adopted files, delete module
-cfgd module delete nvim --purge    # remove deployed target files, delete module
+cfgd module delete nvim --purge     # remove deployed target files, delete module
 ```
+
+The same discover → edit → preview → apply loop drives every authoring command:
+
+![the CLI authoring loop: explain a field, update the config, plan, apply](../demo/cfgd-author.gif)
 
 ### File Adoption
 
 When you create a module with `--file`, cfgd **adopts** the file: it copies it into the module directory (`modules/<name>/files/`) and replaces the original with a symlink pointing back to the repo copy. This means the file is now version-controlled in your cfgd repo while still accessible at its original location.
 
-`cfgd module delete` reverses this — any target that is still a symlink pointing into the module directory is restored to a regular file before the module is removed. Use `--purge` to instead remove all deployed target files entirely (skipping restoration).
+`cfgd module delete` reverses this: any target that is still a symlink pointing into the module directory is restored to a regular file before the module is removed. Use `--purge` to instead remove all deployed target files entirely (skipping restoration).
 
 ### Adding Modules
 
@@ -698,7 +712,7 @@ CFGD_YES=1 cfgd profile update --module community/tmux
 cfgd profile update --module community/experimental-tool --yes --allow-unsigned
 ```
 
-You can also reference remote modules directly in your profile YAML — cfgd resolves them on the next apply:
+You can also reference remote modules directly in your profile YAML; cfgd resolves them on the next apply:
 
 ```yaml
 spec:
@@ -719,12 +733,12 @@ cfgd module upgrade tmux --ref tmux/v2.0.0   # specific version
 ```
 
 Without `--ref`, "latest" is the **highest published version tag** for the
-module — module versions are git tags named `<module>/<version>` (e.g.
+module. Module versions are git tags named `<module>/<version>` (e.g.
 `tmux/v2.0.0`), and cfgd queries the remote (`git ls-remote --tags`) so a newer
 tag is found even when the local cache holds only the installed version. The
 lockfile is re-pinned to the full resolved tag. If the repo exposes no
-`<module>/v*` tags, the upgrade fails with a clear error rather than tracking a
-branch — remote modules must always resolve to a pinned tag.
+`<module>/v*` tags, the upgrade fails rather than tracking a branch: remote
+modules must always resolve to a pinned tag.
 
 ### Searching
 
@@ -750,7 +764,7 @@ cfgd init --from git@github.com:jane/dotfiles.git --apply-module nvim
 cfgd init --from https://gitlab.example.com/jane/dotfiles.git --apply-module nvim
 ```
 
-Clones the repo, finds the module, resolves deps, detects platform, and applies just that module.
+Clones the repo, finds the module, resolves deps, detects platform, and applies only that module.
 
 ## Security
 
@@ -786,10 +800,10 @@ with [cosign](https://github.com/sigstore/cosign). cfgd uses two distinct trust 
   cfgd module pull ghcr.io/org/mymod:v1 --dir ./out --require-signature --key ./keys/cosign.pub
   ```
   `--key` also accepts a KMS URI (`awskms://`, `azurekms://`, `gcpkms://`, `hashivault://`,
-  `k8s://`) or a PKCS#11 URI (`pkcs11:token=...;object=...`, RFC 7512 — HSM-backed keys); both
+  `k8s://`) or a PKCS#11 URI (`pkcs11:token=...;object=...`, RFC 7512, HSM-backed keys); both
   are passed straight through to cosign. cfgd cannot derive a public key from a sibling
   `cosign.pub` file for these (there is no filesystem path to look next to), so `cfgd module push
-  --sign --key <kms-or-pkcs11-uri>` warns and leaves `spec.signature.cosign.publicKey` unset —
+  --sign --key <kms-or-pkcs11-uri>` warns and leaves `spec.signature.cosign.publicKey` unset:
   run `cosign public-key --key <uri>` and set it manually if the operator enforces
   `disallowUnsigned`.
 - **Keyless (Fulcio/Rekor).** Omit `--key` to sign with a short-lived certificate from the public
@@ -807,4 +821,4 @@ named in `--artifacts`. SLSA provenance attestations follow the same keyed/keyle
 
 ### Lockfile Integrity
 
-The lockfile (`modules.lock`) stores a sha256 hash of each module's directory contents. On every apply, cfgd recomputes the hash and compares it to the locked value. A mismatch means the module content has changed since it was locked — cfgd will refuse to apply and report the discrepancy. Run `cfgd module upgrade` to re-lock at the new content.
+The lockfile (`modules.lock`) stores a sha256 hash of each module's directory contents. On every apply, cfgd recomputes the hash and compares it to the locked value. A mismatch means the module content has changed since it was locked: cfgd refuses to apply and reports the discrepancy. Run `cfgd module upgrade` to re-lock at the new content.

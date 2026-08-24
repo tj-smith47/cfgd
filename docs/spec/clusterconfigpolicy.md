@@ -9,7 +9,7 @@ for module provenance. The cfgd operator evaluates it against all matching `Mach
 resources and reports compliance counts in the status.
 
 When both a `ClusterConfigPolicy` and a namespaced `ConfigPolicy` apply to the same
-`MachineConfig`, the cluster policy takes precedence on conflicts — see
+`MachineConfig`, the cluster policy takes precedence on conflicts. See
 [multi-tenancy.md](../multi-tenancy.md#policy-merge-semantics) for the full merge rules.
 
 **API group:** `cfgd.io/v1alpha1`
@@ -91,7 +91,7 @@ status:
 ### spec.security
 
 A fleet-wide module-provenance gate. Unlike the other fields (which assert desired state on matched
-machines), `security` constrains where module content may come from and whether it must be signed —
+machines), `security` constrains where module content may come from and whether it must be signed:
 a control only a cluster administrator should set, which is why it lives on the cluster-scoped policy
 rather than on the namespaced `ConfigPolicy`.
 

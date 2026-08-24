@@ -14,7 +14,7 @@ metadata:
 spec:
   profile: string
 
-  # Origin — where this config lives remotely (single object or list)
+  # Origin: where this config lives remotely (single object or list)
   origin:
     type: Git | Server
     url: string
@@ -256,7 +256,7 @@ Controls the long-running daemon process started with `cfgd daemon`.
 |-------|------|----------|---------|-------------|
 | `interval` | string | No | `5m` | How often to check for drift. Duration string: `30s`, `5m`, `1h`. |
 | `onChange` | bool | No | `false` | Also trigger reconciliation when config files change on disk (inotify/kqueue). |
-| `autoApply` | bool | No | `false` | Automatically apply detected drift without user confirmation. |
+| `autoApply` | bool | No | `false` | Apply new or changed source-recommended items automatically, through the [policy](#specdaemonreconcilepolicy) tiers. Independent of `driftPolicy`, which governs drift in items already declared. |
 | `driftPolicy` | enum | No | `NotifyOnly` | Governs what the daemon does when drift is detected. See [DriftPolicy values](#driftpolicy-values). |
 | `policy` | object | No | | Fine-grained `autoApply` policy per change category. See [spec.daemon.reconcile.policy](#specdaemonreconcilepolicy). |
 | `patches` | list | No | `[]` | Per-module or per-profile reconcile overrides. See [spec.daemon.reconcile.patches[]](#specdaemonreconcilepatches). |
@@ -308,7 +308,7 @@ Precedence: Module patch > Profile patch > global reconcile settings.
 | `autoApply` | bool | No | | Override `autoApply` for this target. |
 | `driftPolicy` | enum | No | | Override `driftPolicy` for this target. See [DriftPolicy values](#driftpolicy-values). |
 
-**Example** — disable `autoApply` for a sensitive module while enabling it everywhere else:
+**Example** (disable `autoApply` for a sensitive module while enabling it everywhere else):
 ```yaml
 daemon:
   reconcile:
@@ -426,7 +426,7 @@ that publishes profiles and modules. See `docs/sources.md` for the full multi-so
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `interval` | string | No | `1h` | How often to pull updates from this source. Duration string: `30s`, `5m`, `1h`. |
-| `autoApply` | bool | No | `false` | Automatically apply changes from this source without user confirmation. |
+| `autoApply` | bool | No | `false` | After a refresh that changed this source, reconcile the whole profile on that tick with the drift policy forced to `Auto`, regardless of `spec.daemon.reconcile.driftPolicy`. The source-decision gate (`spec.daemon.reconcile.autoApply`) is untouched. |
 | `pinVersion` | string | No | | Pin this source to a git ref resolved against the repo's tags or commits. Accepts a semver range (`~2`, `^1.5`, `>=1.0.0`) selecting the highest matching tag, an exact tag name, or a commit SHA (7–40 hex, immutable). Mutually exclusive with `branch`; branches are not allowed as a pin. |
 | `required` | bool | No | `false` | Fail-closed marker. When `true`, a failure to load this source (fetch, manifest, signature, or an unresolvable `pinVersion`) is fatal — apply/plan/compose abort rather than silently dropping the source. When `false`, load failures warn and continue. Use it for security or team baselines that must always be composed in. |
 
@@ -560,14 +560,14 @@ AI assistant configuration for `cfgd generate` and the MCP server.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `provider` | string | No | `claude` | AI provider identifier. Currently `claude` (Anthropic) is supported. |
-| `model` | string | No | `claude-sonnet-4-6` | Model identifier passed to the provider API. |
+| `model` | string | No | `claude-sonnet-5` | Model identifier passed to the provider API. |
 | `apiKeyEnv` | string | No | `ANTHROPIC_API_KEY` | Name of the environment variable that holds the API key. |
 
 **Example:**
 ```yaml
 ai:
   provider: claude
-  model: claude-opus-4-5
+  model: claude-opus-5
   apiKeyEnv: ANTHROPIC_API_KEY
 ```
 
@@ -575,14 +575,14 @@ ai:
 
 ### spec.compliance
 
-Continuous compliance snapshot configuration. When enabled, the daemon captures machine state on its own interval (independent of the reconcile interval) and writes structured snapshot files. Snapshots are content-hashed — if nothing changed since the last snapshot, no new file is written.
+Continuous compliance snapshot configuration. When enabled, the daemon captures machine state on its own interval (independent of the reconcile interval) and writes structured snapshot files. Snapshots are content-hashed: if nothing changed since the last snapshot, no new file is written.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `enabled` | bool | No | `false` | Enable compliance snapshots. |
 | `interval` | duration | No | `1h` | How often to capture a snapshot. Duration string: `30s`, `5m`, `1h`. |
 | `retention` | duration | No | `30d` | How long to keep snapshots locally before the daemon deletes them. Duration string: `30s`, `5m`, `1h`, `30d`. |
-| `scope.files` | bool | No | `true` | Include managed file state. Each present file is content-checked: its on-disk bytes are compared to its rendered source, so a file that exists but drifted is a violation (not just existence + permissions + encryption status). |
+| `scope.files` | bool | No | `true` | Include managed file state. Each present file is content-checked: its on-disk bytes are compared to its rendered source, so a file that exists but drifted is a violation (not only existence + permissions + encryption status). |
 | `scope.packages` | bool | No | `true` | Include managed package state (installed version per manager). |
 | `scope.system` | bool | No | `true` | Include system configurator state (covers `sshKeys`, `gpgKeys`, `git`, and all other configurators). |
 | `scope.secrets` | bool | No | `true` | Include secret target existence and permissions. Secret values are never recorded. |
@@ -614,11 +614,11 @@ compliance:
     path: ~/.local/state/cfgd/compliance/
 ```
 
-Compliance reports the **effective** desired state — the active profile combined with the modules it pulls in — so files, packages, and system settings contributed by a module are first-class in every compliance surface (snapshot, export, diff, history) and in the checkin summary, exactly as they appear in `cfgd verify` and `cfgd diff`. Module resources are attributed to their module in the check detail. File checks are content-aware on both profile and module files.
+Compliance reports the **effective** desired state (the active profile combined with the modules it pulls in), so files, packages, and system settings contributed by a module are first-class in every compliance surface (snapshot, export, diff, history) and in the checkin summary, exactly as they appear in `cfgd verify` and `cfgd diff`. Module resources are attributed to their module in the check detail. File checks are content-aware on both profile and module files.
 
 Snapshot summaries are included in device checkin payloads to the operator gateway. The fleet dashboard shows per-device compliance scores. Use `cfgd compliance` to run a snapshot on demand, `cfgd compliance history` to list past snapshots, and `cfgd compliance diff <id1> <id2>` to compare two snapshots.
 
-**History records changes, not ticks.** The daemon collects a snapshot every interval but stores one only when its content differs from the newest stored row — the comparison is a hash of the snapshot with its collection timestamp excluded, so an unchanged machine hashes identically every time. A machine that has stopped changing therefore stops adding rows, and the newest row's timestamp is the last time something *changed*, not the last time cfgd looked. Do not read row arrival as a liveness signal: a device that is healthy and stable is indistinguishable in `compliance history` from one whose daemon has stopped. Use the daemon's own liveness surfaces for that — `cfgd daemon status`, the checkin timestamp on the gateway, or the service manager. `cfgd compliance` run by hand always stores its snapshot, because you asked for one.
+**History records changes, not ticks.** The daemon collects a snapshot every interval but stores one only when its content differs from the newest stored row: the comparison is a hash of the snapshot with its collection timestamp excluded, so an unchanged machine hashes identically every time. A machine that has stopped changing therefore stops adding rows, and the newest row's timestamp is the last time something *changed*, not the last time cfgd looked. Do not read row arrival as a liveness signal: a device that is healthy and stable is indistinguishable in `compliance history` from one whose daemon has stopped. Use the daemon's own liveness surfaces for that: `cfgd daemon status`, the checkin timestamp on the gateway, or the service manager. `cfgd compliance` run by hand always stores its snapshot, because you asked for one.
 
 ---
 
@@ -649,7 +649,7 @@ Values are matched case-insensitively.
 
 Any of `CFGD_NO_UPDATE_CHECK`, `NO_UPDATE_NOTIFIER` (npm's `update-notifier`
 convention), or `DO_NOT_TRACK` (consoledonottrack.com) silences the automatic
-check regardless of `policy` — see
+check regardless of `policy`; see
 [configuration.md](../configuration.md#suppressing-the-automatic-check) for
 the full precedence and value rules. `cfgd upgrade` (explicit) is unaffected.
 

@@ -29,8 +29,8 @@ Package managers that aren't installed on the current system are silently skippe
 
 ## npm global-install prefix
 
-Global npm installs (`npm install -g`) write into npm's configured `prefix` —
-on a system where Node came from a package manager (apt, dnf, an msi), that
+Global npm installs (`npm install -g`) write into npm's configured `prefix`.
+On a system where Node came from a package manager (apt, dnf, an msi), that
 prefix is root-owned (e.g. `/usr/local`), so an unelevated `npm install -g`
 fails with `EACCES`. cfgd resolves a writable prefix once per operation and
 applies the same one to `install`, `uninstall`, `update`, and both listing
@@ -41,7 +41,7 @@ as installed:
    environment, cfgd leaves it alone.
 2. If cfgd is running elevated, cfgd leaves npm's prefix alone.
 3. Otherwise cfgd asks npm for its configured prefix and write-probes it
-   (create-and-remove a temp entry — never a mode-bit read, which lies under
+   (create-and-remove a temp entry, never a mode-bit read, which lies under
    ACLs and is meaningless on Windows). A writable answer is used as-is.
 4. If the probe fails, cfgd falls back to `$HOME/.npm-global`, creating it if
    absent, and passes `--prefix $HOME/.npm-global` on the npm command line.
@@ -59,7 +59,7 @@ resolved prefix stays visible even if a later run's live inputs (elevation,
 write-probe result, project-local npm config) would resolve differently.
 Revalidation covers both directions automatically: a persisted prefix that
 becomes unwritable is discarded and re-resolved, and while cfgd is on the
-fallback it re-checks npm's configured prefix on each resolve — fix the
+fallback it re-checks npm's configured prefix on each resolve: fix the
 permissions that pushed npm onto `$HOME/.npm-global` (say, on `/usr/local`)
 and the next `install`/`uninstall`/`update`/list call promotes back onto the
 configured prefix on its own. Nothing needs to be cleared by hand.
@@ -93,8 +93,8 @@ Phase: Prerequisites
 ```
 
 so every prefix an install needs exists before the `Packages` phase starts.
-Those manager nodes are a graph — a provision waits for the tool it shells out
-to, and for the manager it installs through — and everything whose edges are
+Those manager nodes are a graph (a provision waits for the tool it shells out
+to, and for the manager it installs through) and everything whose edges are
 satisfied provisions at the same time. A node whose dependency failed does not
 run at all; its line names the failure that stopped it.
 
@@ -117,12 +117,12 @@ keeps its own node and its own command. Provisions that stay separate but share
 a mediator still take that mediator's lane and run one at a time.
 Inside `Packages`, work runs one lane per manager family concurrently. The lane
 is per *family* rather than per name because `brew`, `brew-tap` and `brew-cask`
-drive one binary — formulae, taps and casks queue behind each other so only one
+drive one binary: formulae, taps and casks queue behind each other so only one
 `brew` process ever runs.
 
 **The `via` on a provision line is binding, not a preview.** cfgd resolves the
-mediator while planning — that is the manager named on the line you read, and
-the lane the node is serialized on — and execution runs exactly that one:
+mediator while planning (that is the manager named on the line you read, and
+the lane the node is serialized on) and execution runs exactly that one:
 
 ```
 Phase: Prerequisites
@@ -142,11 +142,11 @@ provisioned and why, instead of naming one and failing on it.
 
 The same directories reach lifecycle scripts (see
 [lifecycle-scripts.md](lifecycle-scripts.md)), the generated env file, and the
-environment of every package-manager command cfgd runs afterwards — so a
+environment of every package-manager command cfgd runs afterwards, so a
 `postApply` step, an `npm install` that shells out to `node`, and your next
 login shell all resolve the binary identically.
-Your *current* shell is the one exception — it predates the env file, which is
-why `cfgd apply`, `cfgd init --apply*`, and `cfgd module add --apply` all end
+Your *current* shell is the one exception: it predates the env file, which is
+why `cfgd apply`, `cfgd init --apply*`, and `cfgd module create --apply` all end
 by naming the file to source.
 
 ## Index refresh
@@ -166,8 +166,8 @@ Phase: Prerequisites
 
 A refresh touches METADATA ONLY. cfgd never upgrades a package you did not
 declare on its way to installing one you did, so a manager whose only "update"
-command is a machine-wide upgrade — `npm update -g`, `pipx upgrade-all`,
-`choco upgrade all -y`, `winget upgrade --all`, a bare `snap refresh` — gets no
+command is a machine-wide upgrade (`npm update -g`, `pipx upgrade-all`,
+`choco upgrade all -y`, `winget upgrade --all`, a bare `snap refresh`) gets no
 refresh action at all. Neither does a manager that resolves its remote on every
 install and so has no index to go stale: `cargo`, `go`, `nix`. Where a manager
 has both forms, cfgd runs the metadata half: `scoop update` (bucket manifests,
@@ -249,13 +249,13 @@ Every package manager accepts **both** a bare list of package names and a struct
 with named fields. The two forms below are identical:
 
 ```yaml
-# list form — shortest; the list maps to the manager's primary package list
+# list form: shortest; the list maps to the manager's primary package list
 packages:
   flatpak: [org.gnome.Calculator, com.spotify.Client]
 ```
 
 ```yaml
-# struct form — same packages, plus access to manager-specific knobs
+# struct form: same packages, plus access to manager-specific knobs
 packages:
   flatpak:
     packages: [org.gnome.Calculator, com.spotify.Client]
@@ -265,8 +265,8 @@ packages:
 This holds uniformly: `cargo: [bat, eza]` equals `cargo: {packages: [bat, eza]}`,
 `apt: [curl]` equals `apt: {packages: [curl]}`, `nix: [hello]` equals
 `nix: {packages: [hello]}`, and so on for all 18 managers. The bare list maps to
-each manager's primary list — `packages` for most, `global` for npm, `formulae`
-for brew:
+each manager's primary list (`packages` for most, `global` for npm, `formulae`
+for brew):
 
 ```yaml
 packages:
@@ -274,7 +274,7 @@ packages:
   brew: [git, ripgrep]       # == brew: {formulae: [git, ripgrep]}
 ```
 
-Use the struct form when you need a manager's extra fields — brew `taps`/`casks`,
+Use the struct form when you need a manager's extra fields: brew `taps`/`casks`,
 a `file` manifest (Brewfile, package.json, Cargo.toml, apt list), flatpak `remote`,
 or snap `classic`. The struct form still rejects unknown keys, so a typo like
 `flatpak: {packges: [...]}` is reported loudly rather than silently dropped.
@@ -322,10 +322,10 @@ spec:
 
 > **Case-insensitive matching.** `winget`, `chocolatey`, and `scoop` treat package
 > names case-insensitively, so `Wget` and `wget` refer to the same package. cfgd
-> matches your declared name against installed state without regard to case — a
+> matches your declared name against installed state without regard to case: a
 > package listed as `Wget` in your profile stays converged even though `choco list`
 > reports it as `Wget` and the tracking key is normalized to `wget`. The Unix-side
-> managers (`apt`, `dnf`, `brew`, `cargo`, `npm`, `pipx`) are case-**sensitive** —
+> managers (`apt`, `dnf`, `brew`, `cargo`, `npm`, `pipx`) are case-**sensitive**:
 > declare those exactly as the manager expects.
 
 ## Module Packages
@@ -345,13 +345,13 @@ cfgd picks the first available manager that satisfies the version constraint, us
 
 ## Declarative removal
 
-cfgd tracks the packages it installs. When a package leaves the desired set — you remove it from a profile, or remove the last module that required it — the next full `cfgd apply` (and the daemon's reconcile loop) uninstalls it through the owning manager.
+cfgd tracks the packages it installs. When a package leaves the desired set (you remove it from a profile, or remove the last module that required it) the next full `cfgd apply` (and the daemon's reconcile loop) uninstalls it through the owning manager.
 
 Removal is deliberately conservative:
 
-- **Only packages cfgd installed are ever removed.** A package already present the first time cfgd would have installed it is treated as pre-existing: cfgd never recorded it, so it is never uninstalled — even if it appears in no profile. cfgd will not remove software you installed yourself.
+- **Only packages cfgd installed are ever removed.** A package already present the first time cfgd would have installed it is treated as pre-existing: cfgd never recorded it, so it is never uninstalled, even if it appears in no profile. cfgd will not remove software you installed yourself.
 - **Shared packages survive until the last consumer is dropped.** The desired set is the merge of the active profile and *all* its modules, so a package required by more than one module is removed only when the final module that wants it is removed.
-- **Only a full apply prunes.** A scoped run — `--module`, `--phase`, `--only`, `--skip` — never uninstalls, because it sees only part of the desired set and a package it omits may still be needed by something not applied this run.
+- **Only a full apply prunes.** A scoped run (`--module`, `--phase`, `--only`, `--skip`) never uninstalls, because it sees only part of the desired set and a package it omits may still be needed by something not applied this run.
 - **Tracking self-heals.** If a tracked package is removed out of band, cfgd drops its tracking on the next full apply, so it is not "re-removed" or otherwise acted on.
 - **Custom managers can prune even after their definition is deleted.** Built-in managers derive their uninstall command from code, but a custom (scripted) manager's uninstall lives only in its config block, so cfgd handles it specially:
   - **Persist + delete-block flow.** cfgd persists the uninstall script alongside each package a custom manager installs. If you later delete the whole custom-manager block, the next full apply (and the daemon reconcile) still runs the persisted script to remove its packages, then drops the tracking.

@@ -6,7 +6,7 @@ For the complete field-by-field reference, see the [Profile spec reference](spec
 
 ## Layout
 
-Profiles live under `profiles/` in your config dir. The canonical layout is a **bundle** — a
+Profiles live under `profiles/` in your config dir. The canonical layout is a **bundle**: a
 directory per profile holding `profile.yaml` next to a `files/` payload:
 
 ```
@@ -19,13 +19,13 @@ profiles/
         └── gitconfig
 ```
 
-The legacy **flat** form — `profiles/<name>.yaml` (or `.yml`) — is still read, so existing
+The legacy **flat** form (`profiles/<name>.yaml` or `.yml`) is still read, so existing
 configs keep working. Run [`cfgd profile migrate`](cli-reference.md#cfgd-profile-migrate-name)
 to move a flat profile into its bundle. If more than one form exists for one name, cfgd
-fails closed rather than guess which wins — the error names every coexisting path; delete
+fails closed rather than guess which wins: the error names every coexisting path; delete
 or migrate all but one. The blast radius is scoped to the ambiguous profile itself: direct
-operations on it (apply, switch, show, delete) fail, while unrelated operations — creating
-or deleting other profiles, listing, workflow generation — warn about it and continue.
+operations on it (apply, switch, show, delete) fail, while unrelated operations (creating
+or deleting other profiles, listing, workflow generation) warn about it and continue.
 
 ## Profile YAML
 
@@ -188,6 +188,7 @@ core → base → macos → work
 | `system` | Deep merge — later profile overrides at the leaf key level |
 | `secrets` | Append — deduplicated by target path, later wins on conflict |
 | `scripts` | Append — all scripts from all layers run in resolution order |
+| `backups` | Append: deduplicated by `name`, later layer overrides |
 | `modules` | Union — all modules from all layers combined, deduplicated |
 
 ## Env Vars
@@ -216,7 +217,7 @@ any apply that touched either.
 ### Example: make `EDITOR` reach everywhere
 
 ```yaml
-# profiles/workstation/profile.yaml
+# profiles/envdemo/profile.yaml
 spec:
   env:
     - name: EDITOR
@@ -248,7 +249,7 @@ Caveats
   cfgd:env
     ⚠ run `source ~/.cfgd.env`, or open a new shell
 
-# Now every entry point sees it — no re-login:
+# Now every entry point sees it, no re-login:
 $ ssh localhost 'echo $EDITOR'            # non-interactive ssh command
 nvim
 $ bash -lc 'echo $EDITOR'                 # login shell
@@ -276,10 +277,10 @@ default.
 The two owner groups separate what is durable from what is not: `cfgd:env` writes the files
 a future shell reads, `cfgd:session` pushes the same values into the session manager you are
 already logged into. A host with no live user session reports that group's action as
-unchanged and carries the reason as a warning under it — the files are still correct.
+unchanged and carries the reason as a warning under it; the files are still correct.
 
-To opt out of the broader surfaces, narrow the scope — e.g. `envScope: Interactive` restores the
-classic "interactive shells only" behavior, writing just `~/.cfgd.env` + the `~/.bashrc`/`~/.zshrc`
+To opt out of the broader surfaces, narrow the scope: `envScope: Interactive` restores the
+classic "interactive shells only" behavior, writing only `~/.cfgd.env` + the `~/.bashrc`/`~/.zshrc`
 source line.
 
 ## Shell Aliases

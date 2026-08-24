@@ -2,7 +2,7 @@
 
 `DriftAlert` is a namespaced Kubernetes custom resource (`cfgd.io/v1alpha1`) created by the cfgd
 operator when a device's reported state diverges from the desired state declared in its
-`MachineConfig`. Alerts are created automatically — you do not create them manually. They are the
+`MachineConfig`. Alerts are created automatically; you do not create them manually. They are the
 primary mechanism for surfacing fleet drift in the operator dashboard and via external alerting
 integrations.
 
