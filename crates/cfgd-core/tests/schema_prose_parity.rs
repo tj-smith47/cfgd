@@ -85,3 +85,38 @@ fn profile_prose_schema_matches_structs() {
 fn config_prose_schema_matches_structs() {
     assert_parity("Config", SchemaKind::Config, "cfgd-config.schema.json");
 }
+
+/// Every kind's `docs` pointer names a real file under `docs/` and a heading
+/// that really exists in it. A pointer is only worth printing if it lands.
+#[test]
+fn every_kind_docs_pointer_names_a_real_heading() {
+    fn slug(heading: &str) -> String {
+        heading
+            .to_lowercase()
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == ' ' || *c == '-')
+            .map(|c| if c == ' ' { '-' } else { c })
+            .collect()
+    }
+
+    for entry in cfgd_core::schema::KIND_REGISTRY {
+        let (rel, anchor) = entry
+            .docs
+            .split_once('#')
+            .unwrap_or_else(|| panic!("{} docs pointer carries no anchor", entry.kind));
+        let path = repo_root().join(rel);
+        let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!("{} points at {rel}, which cannot be read: {e}", entry.kind)
+        });
+        let found = body
+            .lines()
+            .filter_map(|l| l.strip_prefix('#'))
+            .map(|l| slug(l.trim_start_matches('#').trim()))
+            .any(|s| s == anchor);
+        assert!(
+            found,
+            "{} points at {rel}#{anchor}, which is no heading in that file",
+            entry.kind
+        );
+    }
+}
