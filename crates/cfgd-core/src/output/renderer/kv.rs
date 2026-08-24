@@ -225,17 +225,21 @@ impl Emitting<'_> {
     /// The coat goes on AFTER the fold, exactly as `compose_kv_value`'s role
     /// tint does and for the same reason: `cursor_safe` strips ANSI, so a
     /// caller that painted the span itself would have it eaten by the very
-    /// fold that makes the untrusted half safe. With colour off every
-    /// `apply_to` is the identity, so the three joined spans are byte-identical
-    /// to the single-coat row this replaced.
+    /// fold that makes the untrusted half safe. Stripped, the three joined
+    /// spans are byte-identical to the single-coat row this replaced; with
+    /// colour off but styling live the accent slot still emits its own
+    /// attributes, as every attribute-carrying slot in the product does.
     ///
     /// A span the key does not contain paints nothing — a row cannot half-tint
-    /// itself over a key the fold reshaped.
+    /// itself over a key the fold reshaped. The match is anchored at the END of
+    /// the key, because every producer composes the span as the key's tail: a
+    /// field name that happens to repeat the span's text would otherwise tint
+    /// the earlier run and leave the real type bare.
     fn paint_command_key(&self, key: &str, type_span: &Option<String>) -> String {
         let Some(span) = type_span.as_deref().filter(|s| !s.is_empty()) else {
             return self.theme.secondary.apply_to(key).to_string();
         };
-        let Some(at) = key.find(span) else {
+        let Some(at) = key.rfind(span) else {
             return self.theme.secondary.apply_to(key).to_string();
         };
         format!(

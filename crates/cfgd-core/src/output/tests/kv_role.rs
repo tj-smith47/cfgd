@@ -60,7 +60,9 @@ fn a_streaming_kv_row_paints_the_same_bytes_as_the_doc_path() {
 #[test]
 fn without_colour_a_tinted_row_is_byte_identical_to_a_plain_one() {
     let render = |doc: Doc| {
-        let (p, buf) = Printer::for_test();
+        // Not `for_test()`: it captures at Quiet, where a kv block renders
+        // nothing at all and the comparison below holds vacuously.
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         p.emit(doc);
         p.flush();
         crate::test_helpers::captured_text(&buf)
