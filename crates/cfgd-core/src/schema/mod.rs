@@ -1422,6 +1422,33 @@ mod tests {
         ));
     }
 
+    /// [`FieldNode::displayed_type`] carries the `[]` prefix over from
+    /// `type_desc` and takes the rest of the word from `type_name`, on the
+    /// premise that a named definition is never itself array-shaped. A def that
+    /// were would render `[][]Thing` or swallow the prefix, so the premise is
+    /// pinned here rather than left to the first reader who trips it.
+    #[test]
+    fn no_named_definition_in_the_registry_is_itself_array_shaped() {
+        for entry in KIND_REGISTRY {
+            let schema = entry.canonical_schema_value();
+            let Some(defs) = schema
+                .get("$defs")
+                .or_else(|| schema.get("definitions"))
+                .and_then(Value::as_object)
+            else {
+                continue;
+            };
+            for (name, def) in defs {
+                assert_ne!(
+                    def.get("type").and_then(Value::as_str),
+                    Some("array"),
+                    "{}'s $defs entry {name} is array-shaped, which breaks displayed_type's [] prefix rule",
+                    entry.kind
+                );
+            }
+        }
+    }
+
     fn module_field(name: &str) -> FieldNode {
         KIND_REGISTRY
             .iter()

@@ -719,3 +719,41 @@ fn explain_points_every_kind_at_its_docs_page() {
         );
     }
 }
+
+/// Every docs pointer `explain` prints names a real file and a heading that
+/// really exists in it. cfgd-core pins the registry-derived kinds; TeamConfig
+/// is hand-authored here and reaches no registry entry, so its pointer would
+/// otherwise be the one nobody checks.
+#[test]
+fn every_explain_docs_pointer_names_a_real_heading() {
+    fn slug(heading: &str) -> String {
+        heading
+            .to_lowercase()
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == ' ' || *c == '-')
+            .map(|c| if c == ' ' { '-' } else { c })
+            .collect()
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for schema in all_schemas() {
+        let (rel, anchor) = schema
+            .docs
+            .split_once('#')
+            .unwrap_or_else(|| panic!("{} docs pointer carries no anchor", schema.name));
+        let path = root.join(rel);
+        let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!("{} points at {rel}, which cannot be read: {e}", schema.name)
+        });
+        let found = body
+            .lines()
+            .filter_map(|l| l.strip_prefix('#'))
+            .map(|l| slug(l.trim_start_matches('#').trim()))
+            .any(|s| s == anchor);
+        assert!(
+            found,
+            "{} points at {rel}#{anchor}, which is no heading in that file",
+            schema.name
+        );
+    }
+}
