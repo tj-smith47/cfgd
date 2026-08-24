@@ -144,15 +144,17 @@ pub(crate) struct ReconcileCtx<'a> {
     /// When set, restrict reconcile to actions targeting this module name.
     /// Used by per-module reconcile ticks fired from `ReconcilePatch` entries;
     /// the plan is filtered to retain only `Action::Module` entries whose
-    /// `module_name` matches, plus `auto_apply_override` and
-    /// `drift_policy_override` take effect when present so the per-module patch
-    /// fields (`autoApply`, `driftPolicy`) actually drive behavior.
+    /// `module_name` matches, and the two overrides below carry the per-module
+    /// patch fields (`autoApply`, `driftPolicy`) so they actually drive
+    /// behavior.
     pub module_filter: Option<&'a str>,
-    /// Override for `cfg.spec.daemon.reconcile.auto_apply`. Only consulted when
-    /// `module_filter` is set; otherwise the global config wins.
+    /// Override for `cfg.spec.daemon.reconcile.auto_apply`, the source-decision
+    /// gate. Unset falls back to the global config.
     pub auto_apply_override: Option<bool>,
-    /// Override for `cfg.spec.daemon.reconcile.drift_policy`. Only consulted
-    /// when `module_filter` is set; otherwise the global config wins.
+    /// Override for `cfg.spec.daemon.reconcile.drift_policy`. Unset falls back
+    /// to the global config. Set by a per-module tick (from its patch entry)
+    /// and by a post-sync reconcile, which forces `Auto` because the source
+    /// that changed asked for its refresh to be applied.
     pub drift_policy_override: Option<config::DriftPolicy>,
     /// Deployment scope that selects FHS vs XDG directory roots for module/source
     /// cache directories.

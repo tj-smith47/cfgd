@@ -12725,6 +12725,241 @@ spec:
         assert!(tasks[0].last_synced.is_some());
     }
 
+    // ----- sync.autoApply: the post-sync reconcile -----
+
+    /// A working clone whose upstream carries ONE commit the clone has not
+    /// seen, so the tick's pull really moves and `handle_sync` reports a
+    /// change. `make_bare_and_clone` alone leaves the clone up to date, which
+    /// short-circuits every branch below it.
+    fn clone_with_pending_upstream_commit(tmp: &tempfile::TempDir) -> PathBuf {
+        let (_bare, work) = make_bare_and_clone(tmp);
+        let src = tmp.path().join("src");
+        let src_repo = git2::Repository::open(&src).unwrap();
+        std::fs::write(src.join("SECOND.md"), "second").unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(std::path::Path::new("SECOND.md")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        let parent = src_repo.head().unwrap().peel_to_commit().unwrap();
+        src_repo
+            .commit(Some("HEAD"), &sig, &sig, "second", &tree, &[&parent])
+            .unwrap();
+        drop(tree);
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        let mut remote = src_repo.find_remote("origin").unwrap();
+        remote
+            .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+            .unwrap();
+        work
+    }
+
+    /// A config whose daemon block names no `driftPolicy`, so the reconcile
+    /// default (NotifyOnly) applies — the value a post-sync tick has to
+    /// override for `sync.autoApply` to mean anything.
+    const NOTIFY_ONLY_DEFAULT_CONFIG: &str = "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n";
+
+    /// Write `NOTIFY_ONLY_DEFAULT_CONFIG` plus an empty `default` profile under
+    /// `tmp`, returning the config path.
+    fn write_sync_apply_fixture(tmp: &tempfile::TempDir, config: &str) -> PathBuf {
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, config).unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        config_path
+    }
+
+    fn sync_task_with_auto_apply(repo_path: PathBuf, auto_apply: bool) -> SyncTask {
+        SyncTask {
+            source_name: "local".to_string(),
+            repo_path,
+            auto_pull: true,
+            auto_push: false,
+            auto_apply,
+            interval: StdDuration::from_secs(60),
+            last_synced: None,
+            require_signed_commits: false,
+            allow_unsigned: true,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sync_tick_with_auto_apply_applies_under_the_notify_only_default() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let work = clone_with_pending_upstream_commit(&tmp);
+        let config_path = write_sync_apply_fixture(&tmp, NOTIFY_ONLY_DEFAULT_CONFIG);
+
+        let source = tmp.path().join("src.txt");
+        std::fs::write(&source, "hello").unwrap();
+        let target = tmp.path().join("dst.txt");
+
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        ctx.hooks = Arc::new(DriftingFileHooks {
+            source,
+            target: target.clone(),
+        });
+
+        let mut tasks = vec![sync_task_with_auto_apply(work, true)];
+        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+
+        assert!(
+            target.exists(),
+            "a changed source with sync.autoApply must reconcile and apply on the same tick, \
+             even though the reconcile default is notify-only"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sync_tick_without_auto_apply_does_not_apply() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let work = clone_with_pending_upstream_commit(&tmp);
+        let config_path = write_sync_apply_fixture(&tmp, NOTIFY_ONLY_DEFAULT_CONFIG);
+
+        let source = tmp.path().join("src.txt");
+        std::fs::write(&source, "hello").unwrap();
+        let target = tmp.path().join("dst.txt");
+
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        ctx.hooks = Arc::new(DriftingFileHooks {
+            source,
+            target: target.clone(),
+        });
+
+        let mut tasks = vec![sync_task_with_auto_apply(work, false)];
+        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+
+        assert!(
+            !target.exists(),
+            "sync.autoApply off keeps the refresh a recording — nothing may be written"
+        );
+    }
+
+    /// Two file actions from one subscribed source, one of them awaiting a
+    /// decision. The forced-`Auto` tick must still respect the withhold.
+    struct DecidedAndWithheldFileHooks {
+        source: PathBuf,
+        kept: PathBuf,
+        withheld: PathBuf,
+    }
+
+    impl DaemonHooks for DecidedAndWithheldFileHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            ProviderRegistry::new()
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![
+                FileAction::Create {
+                    source: self.source.clone(),
+                    target: self.kept.clone(),
+                    origin: "acme".into(),
+                    strategy: crate::config::FileStrategy::Copy,
+                    source_hash: None,
+                    patch: None,
+                },
+                FileAction::Create {
+                    source: self.source.clone(),
+                    target: self.withheld.clone(),
+                    origin: "acme".into(),
+                    strategy: crate::config::FileStrategy::Copy,
+                    source_hash: None,
+                    patch: None,
+                },
+            ])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
+            _: &PackageContext<'_>,
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn sync_tick_auto_apply_still_withholds_an_undecided_item() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let cache_root = tmp.path().join("cache-root-empty").join("cfgd");
+        std::fs::create_dir_all(&cache_root).unwrap();
+        let _cache =
+            crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+
+        let work = clone_with_pending_upstream_commit(&tmp);
+        let config_path = write_sync_apply_fixture(
+            &tmp,
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.test/acme.git\n      subscription:\n        profile: team\n",
+        );
+
+        // make_test_ctx points the tick's state dir at `tmp` itself.
+        {
+            let seed = StateStore::open_in_dir(tmp.path()).unwrap();
+            seed.upsert_pending_decision(
+                "acme",
+                "files.~/withheld.txt",
+                "recommended",
+                "install",
+                "recommended files.~/withheld.txt (from acme)",
+            )
+            .unwrap();
+        }
+
+        let source = tmp.path().join("src.txt");
+        std::fs::write(&source, "hello").unwrap();
+        let kept = tmp.path().join("kept.txt");
+        let withheld = crate::expand_tilde(Path::new("~/withheld.txt"));
+
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        ctx.hooks = Arc::new(DecidedAndWithheldFileHooks {
+            source,
+            kept: kept.clone(),
+            withheld: withheld.clone(),
+        });
+
+        let mut tasks = vec![sync_task_with_auto_apply(work, true)];
+        runner::handle_sync_tick(&ctx, &mut tasks).await.unwrap();
+
+        assert!(
+            kept.exists(),
+            "a resource with no pending decision still applies on the forced tick"
+        );
+        assert!(
+            !withheld.exists(),
+            "forcing the drift policy must not bypass the source-decision gate"
+        );
+    }
+
     // ----- handle_reconcile with files+packages in profile -----
     //
     // Plan with a non-empty profile exercises file/package planning paths.

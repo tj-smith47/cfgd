@@ -945,7 +945,7 @@
     },
     "SecretSpec": {
       "additionalProperties": false,
-      "description": "One entry of `spec.secrets[]`: a secret resolved into a file or into\nenvironment variables. Exactly one of `target` / `envs` must be set.\n\n```yaml\nsecrets:\n  - source: op://Personal/GitHub/token\n    envs: [GITHUB_TOKEN]\n  - source: ssh_key\n    target: ~/.ssh/id_ed25519\n```",
+      "description": "One entry of `spec.secrets[]`: a secret resolved into a file, into\nenvironment variables, or both. At least one of `target` / `envs` must be\nset; an entry carrying both writes the file AND exports the variables from\none resolution.\n\n```yaml\nsecrets:\n  - source: op://Personal/GitHub/token\n    envs: [GITHUB_TOKEN]\n  - source: ssh_key\n    target: ~/.ssh/id_ed25519\n  - source: vault://secret/data/api#key\n    target: ~/.config/api-key\n    envs: [API_KEY]\n```",
       "properties": {
         "backend": {
           "description": "Secret backend name to resolve `source` with. Falls back to\n`spec.secrets.backend` from `cfgd.yaml` when omitted.",
@@ -955,7 +955,7 @@
           ]
         },
         "envs": {
-          "description": "Environment variable names to export the decrypted value under.\nMutually exclusive with `target`.",
+          "description": "Environment variable names to export the decrypted value under. May be\ncombined with `target`.",
           "items": {
             "type": "string"
           },
@@ -969,14 +969,14 @@
           "type": "string"
         },
         "target": {
-          "description": "File path to write the decrypted secret to. Mutually exclusive with `envs`.",
+          "description": "File path to write the decrypted secret to. May be combined with `envs`.",
           "type": [
             "string",
             "null"
           ]
         },
         "template": {
-          "description": "Template rendered around the decrypted value before writing to `target`\n(e.g. wrapping it in a config file's expected shape).",
+          "description": "Template rendered around the resolved value before it is written to\n`target` or exported under `envs`: every `${secret:value}` in it is\nreplaced by the value (`template: \"token: ${secret:value}\"`). Only a\nprovider reference (`op://`, `vault://`, …) resolves to a single value,\nso `template` is rejected on a sops-encrypted file source.",
           "type": [
             "string",
             "null"

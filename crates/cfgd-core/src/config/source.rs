@@ -165,8 +165,12 @@ pub struct SourceSyncSpec {
     /// Default: `1h`.
     #[serde(default = "default_sync_interval")]
     pub interval: String,
-    /// Apply the source's changes automatically on refresh rather than only
-    /// recording them. Default: `false`.
+    /// After a refresh that CHANGED this source, reconcile the whole profile
+    /// immediately and apply, forcing `Auto` for that tick regardless of
+    /// `spec.daemon.reconcile.driftPolicy`. The source-decision gate is
+    /// untouched: an item awaiting a decision is withheld exactly as it would
+    /// be on any other tick. Default: `false`, which records the change and
+    /// leaves the apply to the ordinary reconcile tick or to `cfgd sync`.
     #[serde(default)]
     pub auto_apply: bool,
     /// Pin to a specific git tag/branch/commit instead of tracking the origin's

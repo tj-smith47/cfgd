@@ -4844,7 +4844,7 @@
           {
             "children": [
               {
-                "description": "Apply the source's changes automatically on refresh rather than only recording them. Default: `false`.",
+                "description": "After a refresh that CHANGED this source, reconcile the whole profile immediately and apply, forcing `Auto` for that tick regardless of `spec.daemon.reconcile.driftPolicy`. The source-decision gate is untouched: an item awaiting a decision is withheld exactly as it would be on any other tick. Default: `false`, which records the change and leaves the apply to the ordinary reconcile tick or to `cfgd sync`.",
                 "name": "autoApply",
                 "required": false,
                 "type": "boolean"

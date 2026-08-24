@@ -400,6 +400,10 @@ pub(super) async fn handle_sync_tick(
 ) -> Result<()> {
     tracing::trace!("sync tick");
     let now = Instant::now();
+    // Collected across the loop rather than fired per source: two sources
+    // changing in one tick want ONE reconcile of the whole profile, not one
+    // each against a machine the first already converged.
+    let mut apply_after_sync: Vec<String> = Vec::new();
     for task in sync_tasks.iter_mut() {
         if let Some(last) = task.last_synced
             && now.duration_since(last) < task.interval
@@ -425,7 +429,9 @@ pub(super) async fn handle_sync_tick(
             // so the next reconcile must re-derive rather than compare
             // fingerprints against a tree that is no longer the one it read.
             ctx.tick_cache.invalidate();
-            if !task.auto_apply {
+            if task.auto_apply {
+                apply_after_sync.push(task.source_name.clone());
+            } else {
                 tracing::info!(
                     source = %task.source_name,
                     "changes detected but auto-apply is disabled — run 'cfgd sync' interactively"
@@ -433,6 +439,57 @@ pub(super) async fn handle_sync_tick(
             }
         }
     }
+
+    if !apply_after_sync.is_empty() {
+        tracing::info!(
+            sources = %apply_after_sync.join(", "),
+            "source changed and auto-apply is enabled — reconciling now"
+        );
+        // `sync.autoApply` says "apply what the refresh brought" and is set per
+        // source, so the reconcile it triggers forces `Auto` for this tick
+        // alone rather than deferring to `daemon.reconcile.driftPolicy`, whose
+        // default (NotifyOnly) would otherwise make the flag a no-op. The
+        // source-decision gate is untouched — `auto_apply_override` stays unset,
+        // so a Notify-tier item is still withheld exactly as on any other tick.
+        let cp = ctx.config_path.clone();
+        let po = ctx.profile_override.clone();
+        let st = Arc::clone(&ctx.state);
+        let nt = Arc::clone(&ctx.notifier);
+        let notify_drift = ctx.notify_on_drift;
+        let hk = Arc::clone(&ctx.hooks);
+        let state_dir = ctx.state_dir_override.clone();
+        let explicit = ctx.explicit_state_dir;
+        let printer = Arc::clone(&ctx.printer);
+        let scope = ctx.scope;
+        let abort = Arc::clone(&ctx.abort);
+        let cache = Arc::clone(&ctx.tick_cache);
+        crate::spawn_blocking_with_test_home(move || {
+            handle_reconcile(
+                &cp,
+                po.as_deref(),
+                ReconcileCtx {
+                    state: &st,
+                    notifier: &nt,
+                    notify_on_drift: notify_drift,
+                    hooks: &*hk,
+                    state_dir_override: state_dir.as_deref(),
+                    explicit_state_dir: explicit,
+                    printer: &printer,
+                    module_filter: None,
+                    auto_apply_override: None,
+                    drift_policy_override: Some(config::DriftPolicy::Auto),
+                    scope,
+                    abort: &abort,
+                    cache: &cache,
+                },
+            );
+        })
+        .await
+        .map_err(|e| DaemonError::WatchError {
+            message: format!("post-sync reconcile task failed: {}", e),
+        })?;
+    }
+
     Ok(())
 }
 

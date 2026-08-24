@@ -5,7 +5,7 @@
   "definitions": {
     "AiConfig": {
       "additionalProperties": false,
-      "description": "`spec.ai`: settings for `cfgd generate`'s AI-guided session.\n\n```yaml\nai:\n  provider: claude\n  model: claude-sonnet-4-6\n  apiKeyEnv: ANTHROPIC_API_KEY\n```",
+      "description": "`spec.ai`: settings for `cfgd generate`'s AI-guided session.\n\n```yaml\nai:\n  provider: claude\n  model: claude-sonnet-5\n  apiKeyEnv: ANTHROPIC_API_KEY\n```",
       "properties": {
         "apiKeyEnv": {
           "default": "ANTHROPIC_API_KEY",
@@ -13,8 +13,8 @@
           "type": "string"
         },
         "model": {
-          "default": "claude-sonnet-4-6",
-          "description": "The model identifier to request. Default: `claude-sonnet-4-6`.",
+          "default": "claude-sonnet-5",
+          "description": "The model identifier to request. Default: `claude-sonnet-5`.",
           "type": "string"
         },
         "provider": {
@@ -807,7 +807,7 @@
       "properties": {
         "autoApply": {
           "default": false,
-          "description": "Apply the source's changes automatically on refresh rather than only\nrecording them. Default: `false`.",
+          "description": "After a refresh that CHANGED this source, reconcile the whole profile\nimmediately and apply, forcing `Auto` for that tick regardless of\n`spec.daemon.reconcile.driftPolicy`. The source-decision gate is\nuntouched: an item awaiting a decision is withheld exactly as it would\nbe on any other tick. Default: `false`, which records the change and\nleaves the apply to the ordinary reconcile tick or to `cfgd sync`.",
           "type": "boolean"
         },
         "interval": {

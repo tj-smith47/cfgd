@@ -1174,7 +1174,9 @@ pub struct SourceAddArgs {
     /// Sync interval (e.g., "30m", "1h", "6h")
     #[arg(long)]
     pub sync_interval: Option<String>,
-    /// Automatically apply changes on sync
+    /// Reconcile and apply immediately after a refresh that changed this
+    /// source, regardless of `daemon.reconcile.driftPolicy`. The decision
+    /// policy still applies: an item awaiting a decision stays withheld
     #[arg(long)]
     pub auto_apply: bool,
     /// Pin to a semver version range (e.g., "~1.0", ">=2.0")
