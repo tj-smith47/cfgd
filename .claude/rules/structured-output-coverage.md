@@ -33,7 +33,7 @@ missing from the table.
 | daemon_status                | yes               | daemon health queried by scripts                   |
 | daemon_uninstall             | no                | one-shot teardown; no scripting consumer           |
 | debug                        | no                | kubectl plugin dev-tooling                         |
-| decide                       | no                | interactive flow                                   |
+| decide                       | yes               | pending-decision listing + resolution records      |
 | deploy                       | yes               | image-volume pin rewrites consumed by CI           |
 | diff                         | yes               | drift reporting                                    |
 | diff_module                  | yes               | per-module drift reporting                         |

@@ -50,12 +50,22 @@ pub(super) struct DecideListOutput {
 pub(super) fn cmd_decide(
     cli: &Cli,
     printer: &Printer,
-    action: DecideAction,
+    action: Option<DecideAction>,
     resource: Option<&str>,
     source: Option<&str>,
     all: bool,
 ) -> anyhow::Result<()> {
-    let resolution = action.resolution();
+    // A target without a verb is unanswerable: nothing says which way the
+    // named decision(s) should go, and guessing either way resolves rows the
+    // operator never asked to resolve. The bare form (no verb, no target) is
+    // the read-only listing below.
+    let resolution = match action {
+        Some(action) => Some(action.resolution()),
+        None if all || source.is_some() || resource.is_some() => {
+            anyhow::bail!("specify an action (accept or reject) to resolve pending decisions")
+        }
+        None => None,
+    };
     let ctx = RunContext::new(cli, printer);
     let state = ctx.state()?;
 
@@ -90,39 +100,44 @@ pub(super) fn cmd_decide(
     };
     let classification = source_classification(&ctx, state, writes);
 
-    if all {
-        let count = state.resolve_all_decisions(resolution)?;
-        if count == 0
-            && let Err(e) = classification
-        {
-            return Err(e.context("no recorded decisions, and the unrecorded items could not be classified to answer them"));
+    // A verb with no target falls through to the same listing the bare form
+    // renders: there is nothing to resolve, and showing what could be is more
+    // useful than refusing.
+    if let Some(resolution) = resolution {
+        if all {
+            let count = state.resolve_all_decisions(resolution)?;
+            if count == 0
+                && let Err(e) = classification
+            {
+                return Err(e.context("no recorded decisions, and the unrecorded items could not be classified to answer them"));
+            }
+            printer.emit(build_decide_bulk_doc(resolution, count, None));
+            return Ok(());
         }
-        printer.emit(build_decide_bulk_doc(resolution, count, None));
-        return Ok(());
-    }
 
-    if let Some(source_name) = source {
-        let count = state.resolve_decisions_for_source(source_name, resolution)?;
-        if count == 0
-            && let Err(e) = classification
-        {
-            return Err(e.context(format!(
-                "no recorded decisions for source '{source_name}', and its unrecorded items could not be classified to answer them"
-            )));
+        if let Some(source_name) = source {
+            let count = state.resolve_decisions_for_source(source_name, resolution)?;
+            if count == 0
+                && let Err(e) = classification
+            {
+                return Err(e.context(format!(
+                    "no recorded decisions for source '{source_name}', and its unrecorded items could not be classified to answer them"
+                )));
+            }
+            printer.emit(build_decide_bulk_doc(resolution, count, Some(source_name)));
+            return Ok(());
         }
-        printer.emit(build_decide_bulk_doc(resolution, count, Some(source_name)));
-        return Ok(());
-    }
 
-    if let Some(resource_path) = resource {
-        let resolved = state.resolve_decision(resource_path, resolution)?;
-        if !resolved && let Err(e) = classification {
-            return Err(e.context(format!(
-                "no recorded decision matches '{resource_path}', and the unrecorded items could not be classified to answer it"
-            )));
+        if let Some(resource_path) = resource {
+            let resolved = state.resolve_decision(resource_path, resolution)?;
+            if !resolved && let Err(e) = classification {
+                return Err(e.context(format!(
+                    "no recorded decision matches '{resource_path}', and the unrecorded items could not be classified to answer it"
+                )));
+            }
+            printer.emit(build_decide_single_doc(resolution, resource_path, resolved));
+            return Ok(());
         }
-        printer.emit(build_decide_single_doc(resolution, resource_path, resolved));
-        return Ok(());
     }
 
     // Only rows this machine can still act on. A config that will not parse

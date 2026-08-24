@@ -6071,7 +6071,7 @@ fn cmd_decide_accept_all_empty() {
     let result = super::decide::cmd_decide(
         &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         true,
@@ -6099,7 +6099,7 @@ fn cmd_decide_reject_all_empty() {
     let result = super::decide::cmd_decide(
         &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Reject,
+        Some(super::DecideAction::Reject),
         None,
         None,
         true,
@@ -6131,7 +6131,7 @@ fn cmd_decide_accept_specific_resource() {
     let result = super::decide::cmd_decide(
         &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         Some("packages.brew.curl"),
         None,
         false,
@@ -6162,7 +6162,7 @@ fn cmd_decide_reject_by_source() {
     let result = super::decide::cmd_decide(
         &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Reject,
+        Some(super::DecideAction::Reject),
         None,
         Some("acme"),
         false,
@@ -10802,7 +10802,7 @@ fn cmd_decide_no_args_shows_pending() {
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -10815,6 +10815,63 @@ fn cmd_decide_no_args_shows_pending() {
         output.contains("No pending") || output.contains("Pending"),
         "decide should show pending decisions info, got: {output}"
     );
+}
+
+// The listing must be reachable as the CLI's own bare spelling — the docs
+// promise `cfgd decide` lists pending decisions, and the parse layer is the
+// only place that promise can break while every direct cmd_decide test stays
+// green.
+#[test]
+fn decide_bare_parses_and_lists() {
+    assert!(Cli::try_parse_from(["cfgd", "decide"]).is_ok());
+
+    let state_dir = tempfile::tempdir().unwrap();
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::decide::cmd_decide(
+        &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
+        &printer,
+        None,
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    drop(printer);
+
+    let output = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        output.contains("No pending") || output.contains("Pending"),
+        "bare decide should render the pending listing, got: {output}"
+    );
+}
+
+// A target names WHICH rows to resolve but not which way — guessing would
+// resolve rows the operator never answered, so the verb is required.
+#[test]
+fn decide_target_without_action_is_refused() {
+    let state_dir = tempfile::tempdir().unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    for (resource, source, all) in [
+        (None, None, true),
+        (Some("packages.brew.k9s"), None, false),
+        (None, Some("team"), false),
+    ] {
+        let err = super::decide::cmd_decide(
+            &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
+            &printer,
+            None,
+            resource,
+            source,
+            all,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("accept or reject"),
+            "expected the action-required refusal, got: {err:#}"
+        );
+    }
 }
 
 #[test]
@@ -10837,7 +10894,7 @@ fn cmd_decide_with_pending_decision() {
     let result = super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         Some("packages.brew.curl"),
         None,
         false,
@@ -10885,7 +10942,7 @@ fn cmd_decide_accept_all_with_pending() {
     let result = super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         true,
@@ -10930,7 +10987,7 @@ fn cmd_decide_reject_by_source_with_pending() {
     let result = super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Reject,
+        Some(super::DecideAction::Reject),
         None,
         Some("team"),
         false,
@@ -11284,7 +11341,7 @@ fn execute_decide_accept_all() {
     let dir = tempfile::tempdir().unwrap();
     let cli = Cli {
         command: Some(Command::Decide {
-            action: super::DecideAction::Accept,
+            action: Some(super::DecideAction::Accept),
             resource: None,
             source: None,
             all: true,
@@ -18508,7 +18565,7 @@ fn cmd_decide_no_args_no_pending_shows_info() {
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -18541,7 +18598,7 @@ fn cmd_decide_no_args_with_pending_shows_list() {
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -18601,7 +18658,7 @@ fn cmd_decide_reject_specific_resource_verifies_resolution() {
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Reject,
+        Some(super::DecideAction::Reject),
         Some("packages.brew.jq"),
         None,
         false,
@@ -18641,7 +18698,7 @@ fn cmd_decide_accept_specific_resource_verifies_messaging() {
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         Some("file/bashrc"),
         None,
         false,
@@ -18673,7 +18730,7 @@ fn cmd_decide_accept_nonexistent_resource_warns() {
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         Some("no.such.resource"),
         None,
         false,
@@ -18714,7 +18771,7 @@ fn cmd_decide_accept_all_reports_count() {
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         true,
@@ -18760,7 +18817,7 @@ fn cmd_decide_reject_by_source_preserves_other_sources() {
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Reject,
+        Some(super::DecideAction::Reject),
         None,
         Some("alpha"),
         false,
@@ -18803,7 +18860,7 @@ fn cmd_decide_reject_by_source_with_no_matching_decisions() {
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Reject,
+        Some(super::DecideAction::Reject),
         None,
         Some("nonexistent-source"),
         false,
@@ -18836,7 +18893,7 @@ fn cmd_decide_accept_single_item_singular_message() {
     super::decide::cmd_decide(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         true,
@@ -21916,7 +21973,7 @@ fn apply_executes_a_resource_once_its_decision_is_accepted() {
     super::decide::cmd_decide(
         &f.h.cli(),
         f.h.printer(),
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         Some(&f.resource()),
         None,
         false,
@@ -21945,7 +22002,7 @@ fn apply_never_executes_a_resource_whose_decision_was_rejected() {
     super::decide::cmd_decide(
         &f.h.cli(),
         f.h.printer(),
-        super::DecideAction::Reject,
+        Some(super::DecideAction::Reject),
         Some(&f.resource()),
         None,
         false,
@@ -22412,7 +22469,7 @@ fn decide_lists_only_the_decisions_their_source_can_still_answer() {
     super::decide::cmd_decide(
         &f.h.cli(),
         f.h.printer(),
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -22454,7 +22511,7 @@ fn decide_answers_an_item_no_run_has_recorded_yet() {
     super::decide::cmd_decide(
         &f.h.cli(),
         &printer,
-        super::DecideAction::Reject,
+        Some(super::DecideAction::Reject),
         Some(&f.resource()),
         None,
         false,
@@ -22496,7 +22553,7 @@ fn decide_lists_the_unrecorded_item_without_recording_it() {
     super::decide::cmd_decide(
         &f.h.cli(),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -22563,7 +22620,7 @@ fn decide_answers_one_item_without_consuming_the_other_items_notification() {
     super::decide::cmd_decide(
         &f.h.cli(),
         &printer,
-        super::DecideAction::Reject,
+        Some(super::DecideAction::Reject),
         Some(&f.resource()),
         None,
         false,
@@ -22990,7 +23047,7 @@ fn the_version_conflict_annotation_reaches_the_decide_listing() {
     super::decide::cmd_decide(
         &f.h.cli(),
         f.h.printer(),
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -23086,7 +23143,7 @@ fn decide_listing_names_the_undecidable_source_batch() {
     super::decide::cmd_decide(
         &f.h.cli(),
         f.h.printer(),
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -23122,7 +23179,7 @@ fn decide_listing_renders_the_undecidable_batch_warning() {
     super::decide::cmd_decide(
         &f.h.cli(),
         f.h.printer(),
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -23255,7 +23312,7 @@ fn a_degraded_decide_json_listing_says_so_structurally() {
     super::decide::cmd_decide(
         &f.h.cli(),
         f.h.printer(),
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -23299,7 +23356,7 @@ fn a_clean_decide_json_listing_marks_classification_undegraded() {
     super::decide::cmd_decide(
         &f.h.cli(),
         f.h.printer(),
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -23381,7 +23438,7 @@ fn a_sourceless_decide_answers_the_store_without_classifying() {
     super::decide::cmd_decide(
         &h.cli(),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         Some("no.such.resource"),
         None,
         false,
@@ -23414,7 +23471,7 @@ fn a_degraded_decide_refuses_rather_than_denying_the_decision_exists() {
     let err = super::decide::cmd_decide(
         &f.h.cli(),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         Some(&f.resource()),
         None,
         false,
@@ -23452,7 +23509,7 @@ fn a_degraded_decide_listing_still_shows_the_recorded_rows() {
     super::decide::cmd_decide(
         &f.h.cli(),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,
@@ -23489,7 +23546,7 @@ fn decide_still_answers_a_recorded_row_when_the_picture_is_unreadable() {
     super::decide::cmd_decide(
         &f.h.cli(),
         &printer,
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         Some(&f.resource()),
         None,
         false,
@@ -23552,7 +23609,7 @@ fn decide_listing_payload_marks_the_unrecorded_item_with_id_zero() {
     super::decide::cmd_decide(
         &f.h.cli(),
         f.h.printer(),
-        super::DecideAction::Accept,
+        Some(super::DecideAction::Accept),
         None,
         None,
         false,

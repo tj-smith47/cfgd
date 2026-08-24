@@ -816,12 +816,12 @@ pub enum Command {
 
     /// Accept or reject pending source decisions
     #[command(
-        long_about = "Accept or reject pending decisions from subscribed sources.\n\nExamples:\n  cfgd decide accept packages.brew.ripgrep\n  cfgd decide reject --source team\n  cfgd decide accept --all"
+        long_about = "Accept or reject pending decisions from subscribed sources.\n\nWith no arguments, lists the pending decisions without resolving anything.\n\nExamples:\n  cfgd decide\n  cfgd decide accept packages.brew.ripgrep\n  cfgd decide reject --source team\n  cfgd decide accept --all"
     )]
     Decide {
-        /// Action: accept or reject
+        /// Action: accept or reject. Omit to list pending decisions
         #[arg(value_enum)]
-        action: DecideAction,
+        action: Option<DecideAction>,
 
         /// Resource path to decide on (e.g. packages.brew.k9s). Omit for batch operations.
         #[arg(conflicts_with_all = ["source", "all"])]
