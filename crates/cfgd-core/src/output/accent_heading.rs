@@ -29,10 +29,9 @@ impl AccentHeading {
     }
 
     /// Styled through `Role::Accent`, no `.bold()` — bold never pairs with
-    /// colour on a colour-bearing slot (`default`/`dracula`/the two
-    /// `solarized` presets), and `minimal`'s accent already carries the
-    /// distinction as italic rather than as an attribute this heading would
-    /// have to add on top.
+    /// colour on a colour-bearing slot (every named colour preset), and
+    /// `minimal`'s accent already carries the distinction as italic rather
+    /// than as an attribute this heading would have to add on top.
     pub(super) fn styled(&self, theme: &Theme) -> String {
         let (_, accent) = super::renderer::role_glyph(theme, Role::Accent);
         accent.apply_to(&self.0).to_string()

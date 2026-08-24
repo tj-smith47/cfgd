@@ -104,7 +104,7 @@ repository reference — `cfgd apply --from`, `cfgd plan --from`,
 | `--yes`, `-y` | Skip confirmation prompts (used with --apply) |
 | `--on-conflict <ask\|backup\|overwrite\|skip\|fail>` | What the `--apply` step does with a target that already holds a file cfgd never wrote (default `ask`; see [`cfgd apply`](#unmanaged-files-at-a-managed-target)) |
 | `--install-daemon` | Install daemon service after init |
-| `--theme <name>` | Theme name (default, dracula, solarized-dark, solarized-light, minimal) |
+| `--theme <name>` | Theme name (default, dracula, solarized-dark, solarized-light, nord, monokai, adventure-time, catppuccin-mocha, gruvbox-dark, tokyo-night, one-dark, minimal) |
 
 `init` never writes over a config directory that already has a `cfgd.yaml`: it
 reports `Already initialized at <dir>` and neither clones nor re-scaffolds. With

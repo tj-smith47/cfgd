@@ -118,8 +118,10 @@ pub struct ConfigSpec {
     pub sources: Vec<SourceSpec>,
 
     /// Colours and glyphs cfgd renders with: a named preset (`default`,
-    /// `dracula`, `solarized-dark`, `solarized-light`, `minimal`) plus
-    /// per-slot overrides. Omitted, the `default` preset applies.
+    /// `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`,
+    /// `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`,
+    /// `one-dark`, `minimal`) plus per-slot overrides. Omitted, the
+    /// `default` preset applies.
     #[serde(default)]
     pub theme: Option<ThemeConfig>,
 

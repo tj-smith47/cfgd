@@ -435,6 +435,13 @@ impl Theme {
             "dracula" => Self::dracula(),
             "solarized-dark" => Self::solarized_dark(),
             "solarized-light" => Self::solarized_light(),
+            "nord" => Self::nord(),
+            "monokai" => Self::monokai(),
+            "adventure-time" => Self::adventure_time(),
+            "catppuccin-mocha" => Self::catppuccin_mocha(),
+            "gruvbox-dark" => Self::gruvbox_dark(),
+            "tokyo-night" => Self::tokyo_night(),
+            "one-dark" => Self::one_dark(),
             "minimal" => Self::minimal(),
             _ => Self::default(),
         }
@@ -465,18 +472,31 @@ impl Theme {
 
     fn solarized_dark() -> Self {
         Self {
+            // base2 — solarized's own ANSI white, the canonical bright text
+            // for the dark background.
             primary: Some(hex("#eee8d5")),
+            // The vim canon's Title is BOLD ORANGE; colour never pairs with
+            // bold here, and stripped of it the heading collides with accent
+            // (#cb4b16). Blue is the canon-supported fallback: Directory,
+            // MoreMsg and Identifier all map to it.
             header: hex("#268bd2"),
             success: hex("#859900"),
+            // The vim canon's WarningMsg is BOLD RED, which stripped of bold
+            // collides with error — ANSI yellow is the fallback.
             warning: hex("#b58900"),
             error: hex("#dc322f"),
             info: hex("#268bd2"),
+            // Comment's COLOUR only: the vim canon italicizes comments, but
+            // this slot also paints skipped/pending/diff-context rows, which
+            // are not comments.
             muted: hex("#586e75"),
             running: hex("#2aa198"),
             diff_add: hex("#859900"),
             diff_remove: hex("#dc322f"),
             diff_context: hex("#586e75"),
             accent: hex("#cb4b16"),
+            // The vim canon's Identifier is blue, which collides with
+            // header/info — ANSI magenta is the fallback pivot.
             secondary: hex("#d33682"),
             // Solarized's own syntax mapping puts `Type` on yellow, unstyled
             // of attributes. It does not collide with the magenta field-name
@@ -493,19 +513,29 @@ impl Theme {
     fn solarized_light() -> Self {
         Self {
             // base02, not a light tone: on a light background the deliberate
-            // contrast colour is the dark end of the palette.
+            // contrast colour is the dark end of the palette — solarized's
+            // own ANSI black.
             primary: Some(hex("#073642")),
+            // Same stated fallback as the dark variant: canon Title is bold
+            // orange, bold is banned, and blue is what Directory/MoreMsg/
+            // Identifier carry.
             header: hex("#268bd2"),
             success: hex("#859900"),
+            // Canon WarningMsg is bold red — collides error once bold is
+            // stripped, so ANSI yellow.
             warning: hex("#b58900"),
             error: hex("#dc322f"),
             info: hex("#268bd2"),
+            // Comment's colour only, without the vim canon's italic — this
+            // slot also paints skipped/pending/diff-context rows.
             muted: hex("#93a1a1"),
             running: hex("#2aa198"),
             diff_add: hex("#859900"),
             diff_remove: hex("#dc322f"),
             diff_context: hex("#93a1a1"),
             accent: hex("#cb4b16"),
+            // Canon Identifier is blue (collides header/info) — ANSI magenta
+            // is the fallback pivot, as in the dark variant.
             secondary: hex("#d33682"),
             // Same official `Type` yellow as the dark variant: the palette is
             // one, and both backgrounds are designed against it. It shares
@@ -513,6 +543,194 @@ impl Theme {
             // does — an eight-colour palette doubles slots by design, and no
             // surface renders a type beside a warning.
             type_hint: hex("#b58900"),
+            ..Self::default()
+        }
+    }
+
+    fn nord() -> Self {
+        Self {
+            // nord6: the spec's "plain text and syntax structures" for dark
+            // ambiance designs.
+            primary: Some(hex("#eceff4")),
+            // nord8: "the bright and shiny primary accent color", and the
+            // vim port's own markdownH1/asciidoc title colour.
+            header: hex("#88c0d0"),
+            success: hex("#a3be8c"), // nord14, success states + strings
+            warning: hex("#ebcb8b"), // nord13, warning states
+            error: hex("#bf616a"),   // nord11, error states
+            info: hex("#81a1c1"),    // nord9
+            muted: hex("#4c566a"),   // nord3, comments
+            running: hex("#88c0d0"),
+            diff_add: hex("#a3be8c"),    // DiffAdd/diffAdded, nord14
+            diff_remove: hex("#bf616a"), // DiffDelete/diffRemoved, nord11
+            diff_context: hex("#4c566a"),
+            // nord12, "annotations and decorators" — the palette's one orange.
+            accent: hex("#d08770"),
+            // nord15 — nord has no pink; its purple is the label pivot.
+            secondary: hex("#b48ead"),
+            // nord7, "used for classes, types and primitives" (spec verbatim).
+            // The spec's own types-vs-functions distinction is nord7 vs nord8,
+            // so sitting one step from `header` is the palette's design, not a
+            // collision. No attribute: the spec gives colour roles only.
+            type_hint: hex("#8fbcbb"),
+            ..Self::default()
+        }
+    }
+
+    fn monokai() -> Self {
+        Self {
+            primary: Some(hex("#f8f8f2")),
+            // markup.heading is green BOLD, and colour never pairs with bold
+            // here — stripped of it the heading collides with success on the
+            // same screen, so the slot falls back to the constants purple:
+            // the one palette colour no other slot spends.
+            header: hex("#ae81ff"),
+            success: hex("#a6e22e"),
+            warning: hex("#e6db74"),
+            // The shipped theme's own `invalid` foreground — classic Monokai
+            // has no red apart from the keyword pink, which `secondary` owns.
+            error: hex("#f44747"),
+            info: hex("#66d9ef"),
+            muted: hex("#88846f"), // comment
+            running: hex("#66d9ef"),
+            diff_add: hex("#a6e22e"), // markup.inserted
+            // markup.deleted — the keyword pink doubles as the deletion
+            // colour in the shipped theme, and a diff body renders no
+            // secondary labels beside it.
+            diff_remove: hex("#f92672"),
+            diff_context: hex("#88846f"),
+            accent: hex("#fd971f"),    // the parameter orange
+            secondary: hex("#f92672"), // the keyword pink — Monokai's signature
+            // storage.type is cyan italic in the shipped theme; sharing
+            // info/running's hex is the same pattern dracula documents.
+            type_hint: hex("#66d9ef").italic(),
+            ..Self::default()
+        }
+    }
+
+    fn adventure_time() -> Self {
+        Self {
+            primary: Some(hex("#f8dcc0")), // terminal foreground
+            header: hex("#1997c6"),        // bright blue
+            success: hex("#9eff6e"),       // bright green
+            warning: hex("#efc11a"),       // bright yellow
+            error: hex("#fc5f5a"),         // bright red
+            info: hex("#70a598"),          // cyan
+            muted: hex("#4e7cbf"),         // bright black
+            running: hex("#70a598"),
+            diff_add: hex("#9eff6e"),
+            diff_remove: hex("#fc5f5a"),
+            diff_context: hex("#4e7cbf"),
+            // The palette's ansi-yellow slot is literally orange.
+            accent: hex("#e7741e"),
+            secondary: hex("#665993"), // purple
+            // A terminal palette carries no syntax spec, so this preset takes
+            // the stated fallback: the accent value, zero visual change from
+            // the pre-split behaviour.
+            type_hint: hex("#e7741e"),
+            ..Self::default()
+        }
+    }
+
+    fn catppuccin_mocha() -> Self {
+        Self {
+            primary: Some(hex("#cdd6f4")), // text
+            header: hex("#cba6f7"),        // mauve
+            success: hex("#a6e3a1"),       // green
+            warning: hex("#f9e2af"),       // yellow
+            error: hex("#f38ba8"),         // red
+            info: hex("#94e2d5"),          // teal, the guide's "Information"
+            muted: hex("#9399b2"),         // overlay2, the guide's comment colour
+            running: hex("#89dceb"),       // sky — no guide role names a spinner
+            diff_add: hex("#a6e3a1"),
+            diff_remove: hex("#f38ba8"),
+            diff_context: hex("#9399b2"),
+            accent: hex("#fab387"),    // peach
+            secondary: hex("#f5c2e7"), // pink
+            // Style guide: "Classes, Interfaces, ... Types" → Yellow. Sharing
+            // warning's exact value is the same deliberate doubling both
+            // Solarized variants document; the guide assigns colours only, so
+            // no attribute rides along.
+            type_hint: hex("#f9e2af"),
+            ..Self::default()
+        }
+    }
+
+    fn gruvbox_dark() -> Self {
+        Self {
+            primary: Some(hex("#ebdbb2")), // fg1
+            // Title/Directory are green BOLD, and colour never pairs with
+            // bold here — stripped of it the heading collides with success,
+            // so the slot falls back to the one bright colour no outcome
+            // row spends.
+            header: hex("#83a598"),  // bright_blue
+            success: hex("#b8bb26"), // bright_green
+            warning: hex("#fabd2f"), // bright_yellow
+            error: hex("#fb4934"),   // bright_red
+            info: hex("#83a598"),
+            muted: hex("#928374"),       // gray, the scheme's Comment colour
+            running: hex("#8ec07c"),     // bright_aqua
+            diff_add: hex("#b8bb26"),    // diffAdded → GruvboxGreen
+            diff_remove: hex("#fb4934"), // diffRemoved → GruvboxRed
+            diff_context: hex("#928374"),
+            accent: hex("#fe8019"),    // bright_orange, the scheme's signature
+            secondary: hex("#d3869b"), // bright_purple
+            // gruvbox.vim: `hi! link Type GruvboxYellow`, no attribute. Shares
+            // warning's value the way both Solarized variants do.
+            type_hint: hex("#fabd2f"),
+            ..Self::default()
+        }
+    }
+
+    fn tokyo_night() -> Self {
+        Self {
+            primary: Some(hex("#a9b1d6")), // editor foreground
+            // The reference maps Markdown headings to the terminal cyan;
+            // doubling `info` is the same pairing the default preset ships.
+            header: hex("#7dcfff"),
+            success: hex("#73daca"), // terminal green
+            warning: hex("#e0af68"), // terminal yellow
+            error: hex("#f7768e"),   // terminal red
+            info: hex("#7dcfff"),    // terminal cyan
+            muted: hex("#565f89"),   // comments
+            running: hex("#7dcfff"),
+            diff_add: hex("#73daca"),
+            diff_remove: hex("#f7768e"),
+            diff_context: hex("#565f89"),
+            accent: hex("#ff9e64"),    // number/boolean constants orange
+            secondary: hex("#bb9af7"), // terminal magenta, control keywords
+            // The reference maps "Storage Types" to the same magenta
+            // `secondary` owns — byte-identical to the field-name column a
+            // type span sits beside, so that mapping collides. Class names
+            // map to the variables white, which reads unstyled. With no
+            // non-colliding official mapping the slot keeps its accent value.
+            type_hint: hex("#ff9e64"),
+            ..Self::default()
+        }
+    }
+
+    fn one_dark() -> Self {
+        Self {
+            primary: Some(hex("#abb2bf")), // mono-1, default text
+            // markup.heading is hue-5, byte-identical to `error` — colliding
+            // on any failing report — so the slot takes hue-2, the colour
+            // the scheme's other heading/identity scopes carry.
+            header: hex("#61afef"),
+            success: hex("#98c379"), // hue-4 green
+            warning: hex("#e5c07b"), // hue-6-2
+            error: hex("#e06c75"),   // hue-5 red
+            info: hex("#56b6c2"),    // hue-1 cyan
+            muted: hex("#5c6370"),   // mono-3, comments
+            running: hex("#56b6c2"),
+            diff_add: hex("#98c379"),    // markup.inserted → hue-4
+            diff_remove: hex("#e06c75"), // markup.deleted → hue-5
+            diff_context: hex("#5c6370"),
+            accent: hex("#d19a66"),    // hue-6 orange, numeric constants
+            secondary: hex("#c678dd"), // hue-3 purple, keywords
+            // one-dark-syntax maps entity.name.type.class to hue-6-2; the
+            // only italic in its base mapping is comments, so none here.
+            // Shares warning's value the way both Solarized variants do.
+            type_hint: hex("#e5c07b"),
             ..Self::default()
         }
     }
@@ -1430,7 +1648,19 @@ mod tests {
     /// those two).
     #[test]
     fn named_colour_presets_never_pair_bold_with_colour() {
-        for name in ["default", "dracula", "solarized-dark", "solarized-light"] {
+        for name in [
+            "default",
+            "dracula",
+            "solarized-dark",
+            "solarized-light",
+            "nord",
+            "monokai",
+            "adventure-time",
+            "catppuccin-mocha",
+            "gruvbox-dark",
+            "tokyo-night",
+            "one-dark",
+        ] {
             let t = Theme::from_preset(name);
             let mut slots: Vec<(&str, &ThemedStyle)> = vec![
                 ("header", &t.header),
@@ -1499,8 +1729,100 @@ mod tests {
             assert!(!t.type_hint.attrs.italic, "{name}");
         }
 
+        // nord's spec maps types to nord7 teal, colour only.
+        let nord = Theme::from_preset("nord");
+        assert_eq!(nord.type_hint.rgb, Some((0x8f, 0xbc, 0xbb)));
+        assert!(!nord.type_hint.attrs.italic);
+
+        // monokai's shipped theme maps storage.type to cyan ITALIC — the one
+        // new preset whose canon carries the attribute.
+        let monokai = Theme::from_preset("monokai");
+        assert_eq!(monokai.type_hint.rgb, Some((0x66, 0xd9, 0xef)));
+        assert!(monokai.type_hint.attrs.italic);
+
+        // catppuccin, gruvbox and one-dark each map types to their own
+        // yellow, colour only.
+        for (name, rgb) in [
+            ("catppuccin-mocha", (0xf9, 0xe2, 0xaf)),
+            ("gruvbox-dark", (0xfa, 0xbd, 0x2f)),
+            ("one-dark", (0xe5, 0xc0, 0x7b)),
+        ] {
+            let t = Theme::from_preset(name);
+            assert_eq!(t.type_hint.rgb, Some(rgb), "{name}");
+            assert!(!t.type_hint.attrs.italic, "{name}");
+        }
+
+        // adventure-time has no syntax spec and tokyo-night's official type
+        // mappings all collide — both take the stated fallback: the accent
+        // value, unattributed.
+        for name in ["adventure-time", "tokyo-night"] {
+            let t = Theme::from_preset(name);
+            assert_eq!(t.type_hint.rgb, t.accent.rgb, "{name}");
+            assert!(!t.type_hint.attrs.italic, "{name}");
+        }
+
         let minimal = Theme::from_preset("minimal");
         assert!(!minimal.type_hint.has_color);
         assert!(minimal.type_hint.attrs.italic);
+    }
+
+    /// Each new preset's palette is pinned on the slots nothing else pins
+    /// (accent/secondary live in themes_raw.rs, type_hint above), so a hex
+    /// edit has to move a test on purpose.
+    #[test]
+    fn new_preset_palettes_pin_their_distinctive_slots() {
+        for (name, primary, header, muted) in [
+            (
+                "nord",
+                (0xec, 0xef, 0xf4),
+                (0x88, 0xc0, 0xd0),
+                (0x4c, 0x56, 0x6a),
+            ),
+            (
+                "monokai",
+                (0xf8, 0xf8, 0xf2),
+                (0xae, 0x81, 0xff),
+                (0x88, 0x84, 0x6f),
+            ),
+            (
+                "adventure-time",
+                (0xf8, 0xdc, 0xc0),
+                (0x19, 0x97, 0xc6),
+                (0x4e, 0x7c, 0xbf),
+            ),
+            (
+                "catppuccin-mocha",
+                (0xcd, 0xd6, 0xf4),
+                (0xcb, 0xa6, 0xf7),
+                (0x93, 0x99, 0xb2),
+            ),
+            (
+                "gruvbox-dark",
+                (0xeb, 0xdb, 0xb2),
+                (0x83, 0xa5, 0x98),
+                (0x92, 0x83, 0x74),
+            ),
+            (
+                "tokyo-night",
+                (0xa9, 0xb1, 0xd6),
+                (0x7d, 0xcf, 0xff),
+                (0x56, 0x5f, 0x89),
+            ),
+            (
+                "one-dark",
+                (0xab, 0xb2, 0xbf),
+                (0x61, 0xaf, 0xef),
+                (0x5c, 0x63, 0x70),
+            ),
+        ] {
+            let t = Theme::from_preset(name);
+            assert_eq!(
+                t.primary.as_ref().and_then(|s| s.rgb),
+                Some(primary),
+                "{name} primary"
+            );
+            assert_eq!(t.header.rgb, Some(header), "{name} header");
+            assert_eq!(t.muted.rgb, Some(muted), "{name} muted");
+        }
     }
 }

@@ -1,0 +1,11 @@
+Status
+  Profile  dev
+  Modules  12
+
+Drift
+  ⚠ shell-config
+  ⚠ git-config
+
+Highlights
+  new release available
+  from registry: stable

@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThemeConfig {
-    /// Preset name (`default`, `dracula`, `solarized`, `minimal`, …). Default: `default`.
+    /// Preset name (`default`, `dracula`, `solarized-dark`, `solarized-light`,
+    /// `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`,
+    /// `tokyo-night`, `one-dark`, `minimal`). Default: `default`.
     #[serde(default = "default_theme_name")]
     pub name: String,
     /// Per-color and per-icon overrides applied on top of the named preset.

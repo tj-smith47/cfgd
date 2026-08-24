@@ -202,6 +202,13 @@ mod tests {
             "dracula",
             "solarized-dark",
             "solarized-light",
+            "nord",
+            "monokai",
+            "adventure-time",
+            "catppuccin-mocha",
+            "gruvbox-dark",
+            "tokyo-night",
+            "one-dark",
             "minimal",
         ] {
             let t = Theme::from_preset(preset);

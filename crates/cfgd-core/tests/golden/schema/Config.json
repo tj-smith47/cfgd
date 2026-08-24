@@ -299,7 +299,7 @@
             }
           ],
           "default": null,
-          "description": "Colours and glyphs cfgd renders with: a named preset (`default`, `dracula`, `solarized-dark`, `solarized-light`, `minimal`) plus per-slot overrides. Omitted, the `default` preset applies."
+          "description": "Colours and glyphs cfgd renders with: a named preset (`default`, `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`, `one-dark`, `minimal`) plus per-slot overrides. Omitted, the `default` preset applies."
         },
         "update": {
           "anyOf": [
@@ -928,7 +928,7 @@
       "properties": {
         "name": {
           "default": "default",
-          "description": "Preset name (`default`, `dracula`, `solarized`, `minimal`, …). Default: `default`.",
+          "description": "Preset name (`default`, `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`, `one-dark`, `minimal`). Default: `default`.",
           "type": "string"
         },
         "overrides": {

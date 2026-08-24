@@ -516,7 +516,7 @@ theme:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | No | `default` | Built-in theme name. |
+| `name` | string | No | `default` | Built-in theme name: `default`, `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`, `one-dark`, or `minimal`. |
 | `overrides` | object | No | | Per-colour/icon overrides. See [spec.theme.overrides](#specthemeoverrides). |
 
 ---

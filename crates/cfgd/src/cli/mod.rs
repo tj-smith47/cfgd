@@ -635,7 +635,7 @@ pub enum Command {
         #[arg(long)]
         install_daemon: bool,
 
-        /// Theme name (default, dracula, solarized-dark, solarized-light, minimal)
+        /// Theme name (default, dracula, solarized-dark, solarized-light, nord, monokai, adventure-time, catppuccin-mocha, gruvbox-dark, tokyo-night, one-dark, minimal)
         #[arg(long)]
         theme: Option<String>,
 

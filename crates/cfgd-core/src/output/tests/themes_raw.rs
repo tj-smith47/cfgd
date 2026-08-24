@@ -32,11 +32,18 @@ fn accent_emits_truecolor_sgr_per_preset() {
     // Each preset's accent hex value (cf. theme.rs preset bodies).
     // Truecolor SGR: \x1b[38;2;R;G;Bm
     let cases = [
-        ("default", (0xd7, 0x87, 0x00)),        // #d78700 italic
-        ("dracula", (0xff, 0xb8, 0x6c)),        // #ffb86c
-        ("solarized-dark", (0xcb, 0x4b, 0x16)), // #cb4b16
-        ("solarized-light", (0xcb, 0x4b, 0x16)), // #cb4b16
-                                                // minimal has no hex — uses italic only. Verified separately.
+        ("default", (0xd7, 0x87, 0x00)),          // #d78700 italic
+        ("dracula", (0xff, 0xb8, 0x6c)),          // #ffb86c
+        ("solarized-dark", (0xcb, 0x4b, 0x16)),   // #cb4b16
+        ("solarized-light", (0xcb, 0x4b, 0x16)),  // #cb4b16
+        ("nord", (0xd0, 0x87, 0x70)),             // #d08770
+        ("monokai", (0xfd, 0x97, 0x1f)),          // #fd971f
+        ("adventure-time", (0xe7, 0x74, 0x1e)),   // #e7741e
+        ("catppuccin-mocha", (0xfa, 0xb3, 0x87)), // #fab387
+        ("gruvbox-dark", (0xfe, 0x80, 0x19)),     // #fe8019
+        ("tokyo-night", (0xff, 0x9e, 0x64)),      // #ff9e64
+        ("one-dark", (0xd1, 0x9a, 0x66)),         // #d19a66
+                                                  // minimal has no hex — uses italic only. Verified separately.
     ];
     let _no_color = EnvVarGuard::unset("NO_COLOR");
     let _term = EnvVarGuard::set("COLORTERM", "truecolor");
@@ -59,10 +66,17 @@ fn accent_emits_truecolor_sgr_per_preset() {
 #[serial]
 fn secondary_emits_truecolor_sgr_per_preset() {
     let cases = [
-        ("default", (0xaf, 0x5f, 0xd7)),         // #af5fd7
-        ("dracula", (0xff, 0x79, 0xc6)),         // #ff79c6
-        ("solarized-dark", (0xd3, 0x36, 0x82)),  // #d33682
-        ("solarized-light", (0xd3, 0x36, 0x82)), // #d33682
+        ("default", (0xaf, 0x5f, 0xd7)),          // #af5fd7
+        ("dracula", (0xff, 0x79, 0xc6)),          // #ff79c6
+        ("solarized-dark", (0xd3, 0x36, 0x82)),   // #d33682
+        ("solarized-light", (0xd3, 0x36, 0x82)),  // #d33682
+        ("nord", (0xb4, 0x8e, 0xad)),             // #b48ead
+        ("monokai", (0xf9, 0x26, 0x72)),          // #f92672
+        ("adventure-time", (0x66, 0x59, 0x93)),   // #665993
+        ("catppuccin-mocha", (0xf5, 0xc2, 0xe7)), // #f5c2e7
+        ("gruvbox-dark", (0xd3, 0x86, 0x9b)),     // #d3869b
+        ("tokyo-night", (0xbb, 0x9a, 0xf7)),      // #bb9af7
+        ("one-dark", (0xc6, 0x78, 0xdd)),         // #c678dd
     ];
     let _no_color = EnvVarGuard::unset("NO_COLOR");
     let _term = EnvVarGuard::set("COLORTERM", "truecolor");
