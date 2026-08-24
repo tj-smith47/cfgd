@@ -133,7 +133,7 @@ pub struct ConfigSpec {
     ///
     /// `Patch` is rejected here: it is defined by a per-file `patch:` block,
     /// which a file inheriting the global default cannot have.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "FileStrategy::is_default")]
     #[schemars(schema_with = "global_file_strategy_schema")]
     pub file_strategy: FileStrategy,
 

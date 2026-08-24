@@ -1946,3 +1946,80 @@ fn the_desired_state_registers_each_custom_manager_exactly_once() {
         .count();
     assert_eq!(mise, 1);
 }
+
+// Every user-owned document a command rewrites through `rewrite_user_yaml`
+// — the machine config, a profile, a module — comes back holding only what
+// its author declared. A serde round-trip of the typed struct otherwise writes
+// `daemon: null`, `origin: []`, `packages: null`, `system: {}`, … for every
+// section the file never had, and a `daemon: null` was what `cfgd config set
+// daemon.reconcile.autoApply` refused to traverse after `cfgd init --from`.
+// Parsing each document from its minimal YAML (rather than building the struct
+// by hand) is what makes this walk the population: a field added to any of
+// these specs later defaults into the round-trip and is checked here without
+// anyone naming it.
+#[test]
+fn rewriting_a_user_document_writes_no_absent_sections() {
+    let dir = tempdir().unwrap();
+    let cases: [(&str, &str); 3] = [
+        (
+            "cfgd.yaml",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: probe\nspec:\n  profile: base\n",
+        ),
+        (
+            "base.yaml",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  modules:\n    - nvim\n",
+        ),
+        (
+            "module.yaml",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  packages:\n    - name: neovim\n",
+        ),
+    ];
+    for (file, source) in cases {
+        let path = dir.path().join(file);
+        std::fs::write(&path, source).unwrap();
+        match file {
+            "cfgd.yaml" => {
+                let doc: CfgdConfig = serde_yaml::from_str(source).unwrap();
+                rewrite_user_yaml(&path, &doc).unwrap();
+            }
+            "base.yaml" => {
+                let doc: cfgd_core::config::ProfileDocument = serde_yaml::from_str(source).unwrap();
+                rewrite_user_yaml(&path, &doc).unwrap();
+            }
+            _ => {
+                let doc: cfgd_core::config::ModuleDocument = serde_yaml::from_str(source).unwrap();
+                rewrite_user_yaml(&path, &doc).unwrap();
+            }
+        }
+        let written = std::fs::read_to_string(&path).unwrap();
+        for litter in [": null", ": []", ": {}", "fileStrategy: Symlink"] {
+            assert!(
+                !written.contains(litter),
+                "{file}: rewrite wrote {litter:?} for a section the author never declared:\n{written}"
+            );
+        }
+        // Symmetric round-trip: what was written parses back as the same document
+        // kind, so pruning dropped nothing a reader needs.
+        let reparsed: serde_yaml::Value = serde_yaml::from_str(&written).unwrap();
+        let original: serde_yaml::Value = serde_yaml::from_str(source).unwrap();
+        assert_eq!(
+            reparsed, original,
+            "{file}: rewrite changed the document's content"
+        );
+    }
+}
+
+// The one shape the prune must never touch: a sequence ELEMENT is data even
+// when it is empty or null, and the document's top-level keys stay whatever
+// the type serialized.
+#[test]
+fn prune_absent_sections_keeps_sequence_elements_and_top_level_keys() {
+    let mut tree: serde_yaml::Value = serde_yaml::from_str(
+        "spec:\n  files:\n    - source: a\n      mode: null\n    - {}\n  empty: []\nmeta: null\n",
+    )
+    .unwrap();
+    prune_absent_sections(&mut tree, 0);
+    let expected: serde_yaml::Value =
+        serde_yaml::from_str("spec:\n  files:\n    - source: a\n    - {}\nmeta: null\n").unwrap();
+    assert_eq!(tree, expected);
+}

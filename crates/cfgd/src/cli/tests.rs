@@ -2223,13 +2223,10 @@ fn profile_update_scripts() {
     };
     profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
+    // Emptied of every hook, the scripts section is pruned from the file
+    // rather than left behind as `scripts: {preApply: [], …}`.
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
-    let scripts = doc.spec.scripts.as_ref().unwrap();
-    assert!(scripts.pre_apply.is_empty());
-    assert!(scripts.post_apply.is_empty());
-    assert!(scripts.pre_reconcile.is_empty());
-    assert!(scripts.post_reconcile.is_empty());
-    assert!(scripts.on_change.is_empty());
+    assert!(doc.spec.scripts.is_none(), "got {:?}", doc.spec.scripts);
 }
 
 #[test]
@@ -11835,9 +11832,16 @@ fn profile_update_packages_add_and_remove() {
     };
     profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
+    // The removal emptied the brew block, which is pruned from the file
+    // rather than written back as `brew: {formulae: []}`.
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
-    let brew = doc.spec.packages.as_ref().unwrap().brew.as_ref().unwrap();
-    assert!(!brew.formulae.contains(&"jq".to_string()));
+    let jq_declared = doc
+        .spec
+        .packages
+        .as_ref()
+        .and_then(|p| p.brew.as_ref())
+        .is_some_and(|b| b.formulae.contains(&"jq".to_string()));
+    assert!(!jq_declared, "got {:?}", doc.spec.packages);
 }
 
 // --- Profile create with aliases, secrets, scripts ---
@@ -11946,9 +11950,9 @@ fn profile_update_on_drift_scripts() {
     };
     profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
+    // Its only hook removed, the scripts section is pruned from the file.
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
-    let scripts = doc.spec.scripts.as_ref().unwrap();
-    assert!(scripts.on_drift.is_empty());
+    assert!(doc.spec.scripts.is_none(), "got {:?}", doc.spec.scripts);
 }
 
 // --- Module update add/remove env ---

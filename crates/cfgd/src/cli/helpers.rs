@@ -51,12 +51,54 @@ pub(in crate::cli) fn rewrite_user_yaml_with_original<T: serde::Serialize>(
     original: &str,
     value: &T,
 ) -> anyhow::Result<()> {
-    let yaml = serde_yaml::to_string(value)?;
+    let mut tree = serde_yaml::to_value(value)?;
+    prune_absent_sections(&mut tree, 0);
+    let yaml = serde_yaml::to_string(&tree)?;
     cfgd_core::atomic_write_str(
         path,
         &cfgd_core::config::with_leading_comments(original, &yaml),
     )?;
     Ok(())
+}
+
+/// Drop every mapping entry whose value is `null`, `[]` or `{}` — what a
+/// typed config's `None` and empty-collection fields serialize as. A serde
+/// round-trip of a user's `cfgd.yaml` otherwise writes `daemon: null`,
+/// `origin: []`, `secrets: null`, … for every section they never declared,
+/// and a `daemon: null` is also what `config set daemon.…` used to refuse to
+/// traverse. Pruning here, at the one write every doc rewrite funnels through,
+/// covers every doc type and every field added later without a per-field
+/// `skip_serializing_if`. Deserialization is unaffected: every one of those
+/// fields is `#[serde(default)]`, so an absent key reads back as the same
+/// `None`/empty value that was written. The document's own top-level keys
+/// (`spec`, `metadata`) are never dropped, and a sequence element is data and
+/// is never dropped either.
+fn prune_absent_sections(value: &mut serde_yaml::Value, depth: usize) {
+    match value {
+        serde_yaml::Value::Mapping(map) => {
+            for entry in map.values_mut() {
+                prune_absent_sections(entry, depth + 1);
+            }
+            if depth > 0 {
+                map.retain(|_, v| !is_absent_section(v));
+            }
+        }
+        serde_yaml::Value::Sequence(seq) => {
+            for entry in seq.iter_mut() {
+                prune_absent_sections(entry, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_absent_section(value: &serde_yaml::Value) -> bool {
+    match value {
+        serde_yaml::Value::Null => true,
+        serde_yaml::Value::Sequence(seq) => seq.is_empty(),
+        serde_yaml::Value::Mapping(map) => map.is_empty(),
+        _ => false,
+    }
 }
 
 /// Surface every deprecation message `warn_on_legacy_theme_keys` collected

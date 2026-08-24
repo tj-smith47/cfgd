@@ -770,6 +770,13 @@ impl FileStrategy {
     pub fn valid_as_global_default(self) -> bool {
         !matches!(self, FileStrategy::Patch)
     }
+
+    /// Whether this is the strategy an omitted `spec.fileStrategy` already
+    /// means, so a config rewrite leaves the key out instead of writing
+    /// `fileStrategy: Symlink` into a file the user never put it in.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// File format used to interpret and re-serialize a `Patch`-strategy target.

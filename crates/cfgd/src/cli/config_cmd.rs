@@ -184,6 +184,15 @@ pub(super) fn walk_yaml_path<'a>(
                     ))
                 })?;
             }
+            // `daemon:` with nothing beneath it parses as Null and means the
+            // section is absent, so a key asked for under it is not found —
+            // only a genuine scalar is "not a mapping".
+            serde_yaml::Value::Null => {
+                let partial = segments[..=i].join(".");
+                return Err(anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
+                    cfgd_core::errors::ConfigError::KeyNotFound { key: partial },
+                )));
+            }
             _ => {
                 let partial = segments[..i].join(".");
                 anyhow::bail!("'{}' is not a mapping", partial);
@@ -205,23 +214,28 @@ pub(super) fn walk_yaml_path_mut<'a>(
         anyhow::bail!("invalid key path '{}': contains empty segment", path);
     }
 
+    // A bare `spec:` is the same "nothing here yet" as a Null section below it.
+    if value.is_null() {
+        *value = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+    }
     let mut current = value;
     // Walk to the parent of the final segment, creating intermediate maps
-    for segment in &segments[..segments.len() - 1] {
+    for (i, segment) in segments[..segments.len() - 1].iter().enumerate() {
         let key = serde_yaml::Value::String((*segment).to_string());
-        if !current.as_mapping().is_some_and(|m| m.contains_key(&key)) {
-            // Create intermediate mapping
-            let map = current
-                .as_mapping_mut()
-                .ok_or_else(|| anyhow::anyhow!("cannot traverse into non-mapping"))?;
+        let map = current.as_mapping_mut().ok_or_else(|| {
+            let partial = segments[..i].join(".");
+            anyhow::anyhow!("'{}' is not a mapping", partial)
+        })?;
+        // An absent key and a `daemon:` holding nothing (Null, which is also
+        // how a serialized `None` section reads back) both mean there is no
+        // section here yet, so both get a fresh mapping to descend into.
+        if matches!(map.get(&key), None | Some(serde_yaml::Value::Null)) {
             map.insert(
                 key.clone(),
                 serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
             );
         }
-        current = current
-            .as_mapping_mut()
-            .ok_or_else(|| anyhow::anyhow!("cannot traverse into non-mapping"))?
+        current = map
             .get_mut(&key)
             .ok_or_else(|| anyhow::anyhow!("failed to create intermediate mapping"))?;
     }
@@ -1107,17 +1121,78 @@ spec:
         );
     }
 
-    // Target 3: walk_yaml_path_mut errors with "cannot traverse into non-mapping"
-    // when an intermediate segment resolves to a scalar.
+    // Target 3: walk_yaml_path_mut names the segment that resolved to a scalar,
+    // the same spelling the read walk uses.
     // `a: 1` → attempting `a.b.c` finds `a` = scalar 1, not a mapping.
     #[test]
     fn walk_yaml_path_mut_non_mapping_intermediate_errs() {
         let mut yaml: serde_yaml::Value = serde_yaml::from_str("a: 1\n").unwrap();
         let err = walk_yaml_path_mut(&mut yaml, "a.b.c").unwrap_err();
         let msg = err.to_string();
-        assert!(
-            msg.contains("cannot traverse into non-mapping"),
-            "expected 'cannot traverse into non-mapping', got: {msg:?}"
+        assert_eq!(msg, "'a' is not a mapping");
+    }
+
+    // `daemon: null` is how a serialized `None` section reads back (and how a
+    // hand-written bare `daemon:` parses); it is the section being absent, not
+    // a scalar standing in the way, so the walk descends through it exactly as
+    // it does through a missing key.
+    #[test]
+    fn walk_yaml_path_mut_descends_through_a_null_section() {
+        let mut yaml: serde_yaml::Value = serde_yaml::from_str("daemon: null\n").unwrap();
+        {
+            let (parent, leaf) =
+                walk_yaml_path_mut(&mut yaml, "daemon.reconcile.autoApply").unwrap();
+            assert_eq!(leaf, "autoApply");
+            parent.insert("autoApply".into(), serde_yaml::Value::Bool(true));
+        }
+        assert_eq!(
+            yaml["daemon"]["reconcile"]["autoApply"],
+            serde_yaml::Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn walk_yaml_path_mut_null_root_becomes_a_mapping() {
+        let mut yaml = serde_yaml::Value::Null;
+        let (parent, leaf) = walk_yaml_path_mut(&mut yaml, "a.b").unwrap();
+        assert_eq!(leaf, "b");
+        assert!(parent.is_empty());
+    }
+
+    #[test]
+    fn walk_yaml_path_null_section_reads_as_key_not_found() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str("daemon: null\n").unwrap();
+        let err = walk_yaml_path(&yaml, "daemon.reconcile").unwrap_err();
+        match err.downcast_ref::<cfgd_core::errors::CfgdError>() {
+            Some(cfgd_core::errors::CfgdError::Config(
+                cfgd_core::errors::ConfigError::KeyNotFound { key },
+            )) => assert_eq!(key, "daemon.reconcile"),
+            other => panic!("expected KeyNotFound, got {other:?}"),
+        }
+    }
+
+    // The command-level shape of the bug: a config `cfgd init --from` rewrote
+    // carried `daemon: null`, and `cfgd config set daemon.reconcile.autoApply
+    // true` refused to traverse it.
+    #[test]
+    fn cmd_config_set_writes_through_a_null_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        std::fs::write(
+            &path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: base\n  daemon: null\n",
+        )
+        .unwrap();
+        let cli = test_cli_for(path.clone());
+        let printer = test_printer();
+
+        cmd_config_set(&cli, &printer, "daemon.reconcile.autoApply", "true").unwrap();
+
+        let written: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            written["spec"]["daemon"]["reconcile"]["autoApply"],
+            serde_yaml::Value::Bool(true)
         );
     }
 
