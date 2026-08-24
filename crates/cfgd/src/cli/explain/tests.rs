@@ -745,11 +745,21 @@ fn every_explain_docs_pointer_names_a_real_heading() {
         let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
             panic!("{} points at {rel}, which cannot be read: {e}", schema.name)
         });
-        let found = body
-            .lines()
-            .filter_map(|l| l.strip_prefix('#'))
-            .map(|l| slug(l.trim_start_matches('#').trim()))
-            .any(|s| s == anchor);
+        // A `#` inside a fenced block is a shell comment or a YAML key, not a
+        // heading, so an anchor could otherwise pass against text no renderer
+        // ever turns into a link target.
+        let mut in_fence = false;
+        let found = body.lines().any(|line| {
+            if line.trim_start().starts_with("```") {
+                in_fence = !in_fence;
+                return false;
+            }
+            if in_fence {
+                return false;
+            }
+            line.strip_prefix('#')
+                .is_some_and(|h| slug(h.trim_start_matches('#').trim()) == anchor)
+        });
         assert!(
             found,
             "{} points at {rel}#{anchor}, which is no heading in that file",

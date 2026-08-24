@@ -1439,9 +1439,15 @@ mod tests {
                 continue;
             };
             for (name, def) in defs {
-                assert_ne!(
-                    def.get("type").and_then(Value::as_str),
-                    Some("array"),
+                // A union spelling (`"type": ["array", "null"]`) is as array-shaped
+                // as the bare string, so both spellings have to trip the guard.
+                let ty = def.get("type");
+                let is_array = ty.and_then(Value::as_str) == Some("array")
+                    || ty
+                        .and_then(Value::as_array)
+                        .is_some_and(|types| types.iter().any(|t| t.as_str() == Some("array")));
+                assert!(
+                    !is_array,
                     "{}'s $defs entry {name} is array-shaped, which breaks displayed_type's [] prefix rule",
                     entry.kind
                 );
