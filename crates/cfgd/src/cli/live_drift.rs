@@ -59,6 +59,12 @@ pub(super) fn drift_event_from(
         actual: Some(actual),
         resolved_by: None,
         source: cfgd_core::config::LOCAL_LAYER.to_string(),
+        // A live finding IS the recompute — `id: 0` and a `timestamp` minted
+        // by this scan, so `expected`/`actual` describe the row exactly. The
+        // additive pair is for a RECORDED row, whose stored operands must
+        // keep describing the row that was stored.
+        want: None,
+        have: None,
     }
 }
 
@@ -648,9 +654,7 @@ mod tests {
         )
         .expect("alias renders a declared line");
         std::fs::write(
-            tmp_home
-                .path()
-                .join(crate::cli::helpers::tests::primary_env_file_name()),
+            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
             format!("# managed by cfgd \u{2014} do not edit\n{hand_edited_line}\n"),
         )
         .unwrap();

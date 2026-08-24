@@ -216,14 +216,18 @@ pub fn drift_detail(expected: impl std::fmt::Display, actual: impl std::fmt::Dis
 /// The word a drift row reads for a stored `resource_type`.
 ///
 /// The stored types are a state-matching vocabulary and never move
-/// (`drift_events.resource_type` is half of the UPSERT key); `env-var` is the
-/// one of them that is internal jargon rather than a word a reader of the
-/// report would use, so the display says `env` and the store keeps `env-var`.
-/// Every other kind is already the word, and passes through.
+/// (`drift_events.resource_type` is half of the UPSERT key); two of them are
+/// re-worded here. `env-var` is internal jargon rather than a word a reader of
+/// the report would use, so the display says `env` and the store keeps
+/// `env-var`. `env` is the managed env FILE, and letting it inherit that same
+/// word puts `env: EDITOR` and `env: /home/u/.cfgd.env` side by side in one
+/// report — two different kinds under one label — so the file row reads
+/// `env file`. Every other kind is already the word, and passes through.
 #[must_use]
 pub fn drift_kind_label(resource_type: &str) -> &str {
     match resource_type {
         "env-var" => "env",
+        "env" => "env file",
         other => other,
     }
 }
@@ -336,6 +340,7 @@ pub fn drift_terse_cause(resource_type: &str, expected: &str, actual: &str) -> S
 /// stated a second time and less usefully. It survives only when it stands
 /// alone — a file that is stale for a reason no item row names (a hand-added
 /// line, a reordering) still has to be reported by something.
+#[must_use]
 pub fn env_file_row_is_redundant<'a>(kinds: impl IntoIterator<Item = &'a str>) -> bool {
     kinds.into_iter().any(|k| matches!(k, "env-var" | "alias"))
 }
@@ -514,9 +519,21 @@ mod drift_vocabulary_tests {
     #[test]
     fn the_stored_env_var_type_reads_as_env_and_every_other_kind_passes_through() {
         assert_eq!(drift_kind_label("env-var"), "env");
-        for kind in ["alias", "env", "env-rc", "package", "file", "system"] {
+        for kind in ["alias", "env-rc", "package", "file", "system"] {
             assert_eq!(drift_kind_label(kind), kind);
         }
+    }
+
+    /// The item rows and the FILE row are two different kinds; one label for
+    /// both is what put `env: EDITOR` and `env: /home/u/.cfgd.env` in one list.
+    #[test]
+    fn the_managed_env_file_row_is_labelled_apart_from_the_item_rows() {
+        assert_eq!(drift_kind_label("env"), "env file");
+        assert_ne!(drift_kind_label("env"), drift_kind_label("env-var"));
+        assert_eq!(
+            drift_item_subject("env", "/home/u/.cfgd.env"),
+            "env file: /home/u/.cfgd.env"
+        );
     }
 
     #[test]

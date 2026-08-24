@@ -5,6 +5,7 @@ use crate::errors::{ConfigError, Result};
 use crate::modules::ResolvedModule;
 use crate::output::{OwnerLabel, Printer, Role, SectionGuard, collapse_to_subject_line};
 use crate::state::ApplyStatus;
+use crate::to_posix_string;
 
 use super::format::{
     action_display_subject, condense_action_desc_for_display, format_action_description,
@@ -1164,7 +1165,7 @@ impl<'a> super::Reconciler<'a> {
         // for the actions that did run, then record an `Aborted` marker and
         // return the signal exit code. The lock releases via the caller's Drop.
         if let Some(code) = aborted_code {
-            self.record_managed_resources(apply_id, &results)?;
+            self.record_managed_resources(apply_id, &results, resolved, module_actions)?;
             self.update_module_state(module_actions, Some(apply_id), &results)?;
             let succeeded = results.iter().filter(|r| r.success).count();
             // `total` is what the run PLANNED, not what it reached: an aborted
@@ -1440,7 +1441,7 @@ impl<'a> super::Reconciler<'a> {
         self.state.in_transaction(|| {
             self.state
                 .update_apply_status(apply_id, status.clone(), Some(&summary))?;
-            self.record_managed_resources(apply_id, &results)?;
+            self.record_managed_resources(apply_id, &results, resolved, module_actions)?;
             // Update module state and file manifests for successfully applied modules
             self.update_module_state(module_actions, Some(apply_id), &results)?;
             self.snapshot_touched_files(apply_id, resolved, module_actions)
@@ -1507,7 +1508,13 @@ impl<'a> super::Reconciler<'a> {
     /// actions in `results`. Shared by the normal completion path and the
     /// cooperative-abort path, which both need state to reflect exactly the
     /// resources that actually changed.
-    fn record_managed_resources(&self, apply_id: i64, results: &[ActionResult]) -> Result<()> {
+    fn record_managed_resources(
+        &self,
+        apply_id: i64,
+        results: &[ActionResult],
+        resolved: &ResolvedProfile,
+        modules: &[ResolvedModule],
+    ) -> Result<()> {
         for result in results {
             if !result.success {
                 continue;
@@ -1563,6 +1570,48 @@ impl<'a> super::Reconciler<'a> {
             self.state
                 .upsert_managed_resource(&rtype, &rid, LOCAL_LAYER, None, Some(apply_id))?;
             self.state.resolve_drift(apply_id, &rtype, &rid)?;
+            if rtype == "env" {
+                self.resolve_env_item_drift(apply_id, &rid, resolved, modules)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve the per-item `env-var`/`alias` drift rows a successful write of
+    /// the PRIMARY managed env file converged.
+    ///
+    /// `verify_env_items` records one row per declared entry, keyed by the
+    /// entry's own name, but the action that heals every one of them is a
+    /// single `env:write:<path>` whose description parses to
+    /// `("env", <path>)` — so the file's own row resolved and the item rows
+    /// beneath it stayed open forever, and a converged machine kept reporting
+    /// drift about entries the file already holds. Nothing here rewrites an
+    /// operand: the rows are resolved exactly as the file's own row is, so the
+    /// stored `current` / `missing or changed` markers stay byte-exact.
+    ///
+    /// Gated on the PRIMARY file because that is the only one the per-item
+    /// checks read; a write of `environment.d` or the launchd plist says
+    /// nothing about whether the entry landed in the file that was verified.
+    fn resolve_env_item_drift(
+        &self,
+        apply_id: i64,
+        written: &str,
+        resolved: &ResolvedProfile,
+        modules: &[ResolvedModule],
+    ) -> Result<()> {
+        if written != to_posix_string(super::primary_env_file(&self.home)) {
+            return Ok(());
+        }
+        let (env, aliases, _) = super::verify::merge_module_env_aliases(
+            &resolved.merged.env,
+            &resolved.merged.aliases,
+            modules,
+        );
+        for ev in &env {
+            self.state.resolve_drift(apply_id, "env-var", &ev.name)?;
+        }
+        for alias in &aliases {
+            self.state.resolve_drift(apply_id, "alias", &alias.name)?;
         }
         Ok(())
     }

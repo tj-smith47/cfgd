@@ -208,6 +208,22 @@ pub struct DriftEvent {
     pub actual: Option<String>,
     pub resolved_by: Option<i64>,
     pub source: String,
+    /// The DISPLAY operands a surface recomputed from the machine for this row,
+    /// when it could — the real declared line and the real line the managed env
+    /// file holds, in place of the opaque `current` / `missing or changed`
+    /// markers `verify_env_items` persists.
+    ///
+    /// Additive and skip-if-empty, and deliberately NOT written over
+    /// `expected`/`actual`: those describe the row that was STORED under this
+    /// `id` at this `timestamp`, and a keyed record whose operands were
+    /// silently replaced with a fresher reading describes a row nobody wrote.
+    /// A consumer wanting today's truth reads these; one reconciling against
+    /// the stored row reads the pair above. Both empty on a row nothing
+    /// recomputed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub want: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub have: Option<String>,
 }
 
 /// A managed resource tracked in the state store.

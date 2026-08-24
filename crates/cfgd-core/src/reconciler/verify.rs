@@ -409,17 +409,23 @@ pub fn env_item_declared_line(
     // A module's entries are not in `env`/`aliases` at all (those are the
     // profile's own), so without the merge a module-owned row could only ever
     // answer `None`.
+    // Answered before the merge, not inside it: the merge clones the profile's
+    // env and aliases and folds every resolved module in, and a caller looping
+    // over a whole drift report would pay that per file/package/system row only
+    // to be told the kind has no declared line at all.
+    if !matches!(resource_type, "env-var" | "alias") {
+        return None;
+    }
     let (merged, merged_aliases, origins) = merge_module_env_aliases(env, aliases, modules);
     match resource_type {
         "env-var" => merged
             .iter()
             .find(|e| e.name == resource_id)
             .and_then(|e| super::env_files::primary_env_var_line(e, platform, &origins)),
-        "alias" => merged_aliases
+        _ => merged_aliases
             .iter()
             .find(|a| a.name == resource_id)
             .and_then(|a| super::env_files::primary_alias_line(a, platform, &origins)),
-        _ => None,
     }
 }
 
@@ -427,32 +433,47 @@ pub fn env_item_declared_line(
 /// right now: the deployed line whose dialect-rendered prefix the CURRENT
 /// declaration of that name claims, so a hand-edited value is recognized as
 /// this item's line rather than as a stranger's. `None` when nothing on disk
-/// claims the name (never written, or deleted by hand) or when the file
-/// cannot be read at all — both of which a caller words as an absence.
-fn deployed_env_item_line(resource_type: &str, resource_id: &str) -> Option<String> {
+/// claims the name — either because the file is not there at all, or because
+/// nothing in it starts with the prefix the declaration renders.
+///
+/// `Err` is reserved for "I could not look": a file that exists and cannot be
+/// read (a lost `+r`, a sharing violation) says nothing about whether the entry
+/// is deployed, and answering `Missing` there would report an absence the
+/// machine never confirmed. Only `NotFound` reads as absent.
+fn deployed_env_item_line(
+    resource_type: &str,
+    resource_id: &str,
+) -> std::io::Result<Option<String>> {
     let platform = EnvPlatform::current();
-    let home = expand_tilde(std::path::Path::new("~"));
-    let content =
-        std::fs::read_to_string(super::env_engine::primary_env_file_path(&home, platform)).ok()?;
     let claims: Vec<String> = match resource_type {
         "env-var" => super::env_files::env_var_line_prefix(resource_id, platform)
             .into_iter()
             .collect(),
         "alias" => super::env_files::alias_line_prefixes(resource_id, platform),
-        _ => return None,
+        _ => return Ok(None),
     };
-    content
+    let home = expand_tilde(std::path::Path::new("~"));
+    let content =
+        match std::fs::read_to_string(super::env_engine::primary_env_file_path(&home, platform)) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+    Ok(content
         .lines()
         .find(|line| claims.iter().any(|p| line.starts_with(p.as_str())))
-        .map(|line| line.trim_end().to_string())
+        .map(|line| line.trim_end().to_string()))
 }
 
 /// The DISPLAY `(want, have)` pair for one env-var/alias row, recomputed from
 /// the machine: `want` is the line the current declaration renders as
 /// ([`env_item_declared_line`]), `have` is the line the managed file actually
 /// holds ([`deployed_env_item_line`]), or [`crate::Absence::Missing`] when no
-/// deployed line claims the name. `None` for any other resource kind, and for
-/// an item no longer declared — the caller keeps the operands it already has.
+/// deployed line claims the name. `None` for any other resource kind, for an
+/// item no longer declared, and for a managed file that exists but could not be
+/// read — the caller keeps the operands it already has. Being unable to LOOK is
+/// not the same fact as the entry being gone, and only the second may be
+/// reported as an absence.
 ///
 /// This is the one place that recompute happens, so `diff`, `verify`,
 /// `status` and `status --scan` cannot word the same env var four ways. Same
@@ -468,8 +489,11 @@ pub fn env_item_display_values(
     modules: &[ResolvedModule],
 ) -> Option<(String, String)> {
     let declared = env_item_declared_line(resource_type, resource_id, env, aliases, modules)?;
-    let deployed = deployed_env_item_line(resource_type, resource_id)
-        .unwrap_or_else(|| crate::Absence::Missing.as_str().to_string());
+    let deployed = match deployed_env_item_line(resource_type, resource_id) {
+        Ok(Some(line)) => line,
+        Ok(None) => crate::Absence::Missing.as_str().to_string(),
+        Err(_) => return None,
+    };
     Some((declared, deployed))
 }
 

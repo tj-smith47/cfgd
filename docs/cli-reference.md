@@ -562,6 +562,18 @@ pointing at `--scan`, so a stale dashboard says so rather than reading as a clea
 machine. `-o json` carries the same fact as `lastScanAt` (an ISO 8601 timestamp,
 absent when there has been no scan).
 
+A recorded `env-var` or `alias` row is re-read against the machine before it is
+shown. If the declared line is the line the managed env file now holds, the row
+healed since it was recorded and is not reported at all (state clears it on the
+next apply or scan). If it still differs, the human row states both real lines,
+and `-o json` adds `want` and `have` beside the row's stored `expected` and
+`actual`. The stored pair keeps the bytes the row was written with (the opaque
+`current` / `missing or changed` markers a keyed record describes itself by); the
+additive pair carries what the re-read found. Both additive fields are omitted
+when nothing was re-read, which includes every live `--scan` finding: those are
+minted by the scan itself, so their `expected` and `actual` already are the
+re-read.
+
 `--scan` performs the live, read-only scan `diff`/`verify` do and folds its
 findings into the display: `driftCheckedLive` flips to `true` and `drift`
 reflects what the scan actually found. A fleet-wide `--scan` also records the
@@ -793,6 +805,12 @@ The Shell surface checks the declared `spec.env` vars and `spec.aliases` against
 files cfgd owns (`~/.cfgd.env` and its platform siblings) and the rc source lines that load
 them. It never reads a live shell session: a var or alias exported only by hand, outside those
 files, is invisible to this check by design.
+
+Per-item rows are labelled `env:` or `alias:` (`env: EDITOR`); the whole-file row
+is labelled `env file:` (`env file: /home/you/.cfgd.env`), so the file and the
+entries inside it do not read as one kind. The whole-file row is omitted whenever
+the item rows below it already name which entry the file is missing, and the
+closing tally counts only the rows the report showed.
 
 `cfgd:managers` reports package **managers** the plan itself would provision or
 refuse — not something the profile declared missing, but something `apply` would

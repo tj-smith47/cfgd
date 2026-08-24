@@ -228,6 +228,8 @@ impl StateStore {
                     actual: row.get(5)?,
                     resolved_by: row.get(6)?,
                     source: row.get(7)?,
+                    want: None,
+                    have: None,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;

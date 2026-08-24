@@ -11633,6 +11633,138 @@ fn an_env_item_the_file_does_not_hold_reads_as_the_shared_absence_word() {
     );
 }
 
+/// A managed file that EXISTS and cannot be read says nothing about whether
+/// the entry is deployed, and reporting `have: missing` there claims an
+/// absence the machine never confirmed. Only `NotFound` may read as absent;
+/// every other error leaves the caller holding its own operands.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn an_unreadable_managed_env_file_recomputes_nothing_rather_than_claiming_absence() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Root ignores the mode bits entirely, so the unreadable file is readable
+    // and the branch under test is not the one that runs.
+    if crate::is_root() {
+        return;
+    }
+
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+
+    let declared = vec![EnvVar {
+        name: "EDITOR".to_string(),
+        value: "nvim".to_string(),
+    }];
+    let (path, _) = primary_managed_env_target(tmp_home.path(), &declared, &[]);
+    std::fs::write(&path, format!("{ENV_FILE_HEADER}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let recomputed =
+        super::verify::env_item_display_values("env-var", "EDITOR", &declared, &[], &[]);
+
+    // Restore before asserting so a failure does not leave the tempdir
+    // undeletable.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(
+        recomputed.is_none(),
+        "a file that could not be read must not be reported as an absent entry: {recomputed:?}"
+    );
+}
+
+/// A successful write of the primary managed env file converges every entry
+/// inside it, so the per-item `env-var`/`alias` rows heal with the file.
+///
+/// Before this, only the file's own `("env", <path>)` row resolved — the item
+/// rows are keyed by the entry's NAME and no action ever names one, so they
+/// stayed open forever and a converged machine kept reporting drift about
+/// entries the file already holds. The resolution never touches an operand:
+/// the stored `current` / `missing or changed` markers are a wire contract,
+/// and a row that is still open must still read back exactly as it was
+/// written.
+#[test]
+#[serial_test::serial]
+fn a_successful_env_apply_resolves_the_per_item_rows_it_converged() {
+    let home = tempfile::tempdir().unwrap();
+    let _home_guard = crate::with_test_home_guard(home.path());
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::with_home(&registry, &state, home.path());
+
+    let mut resolved = make_empty_resolved();
+    resolved.merged.env = vec![EnvVar {
+        name: "EDITOR".to_string(),
+        value: "nvim".to_string(),
+    }];
+    resolved.merged.aliases = vec![ShellAlias {
+        name: "ll".to_string(),
+        command: "ls -la".to_string(),
+    }];
+    resolved.merged.env_scope = EnvScope::Interactive;
+
+    for (rtype, rid) in [
+        ("env-var", "EDITOR"),
+        ("alias", "ll"),
+        // Declared by nobody: the resolution is scoped to what the write
+        // covered, so this row must survive with its operands untouched.
+        ("env-var", "PAGER"),
+    ] {
+        state
+            .record_drift(
+                rtype,
+                rid,
+                Some("current"),
+                Some("missing or changed"),
+                crate::config::LOCAL_LAYER,
+            )
+            .unwrap();
+    }
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+    let printer = test_printer();
+    reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap();
+
+    let open = state.unresolved_drift().unwrap();
+    for (rtype, rid) in [("env-var", "EDITOR"), ("alias", "ll")] {
+        assert!(
+            !open
+                .iter()
+                .any(|d| d.resource_type == rtype && d.resource_id == rid),
+            "the apply wrote {rid} into the managed file, so its row must resolve: {open:?}"
+        );
+    }
+    let pager = open
+        .iter()
+        .find(|d| d.resource_type == "env-var" && d.resource_id == "PAGER")
+        .unwrap_or_else(|| panic!("an undeclared item's row must survive the write: {open:?}"));
+    assert_eq!(
+        (pager.expected.as_deref(), pager.actual.as_deref()),
+        (Some("current"), Some("missing or changed")),
+        "resolution never rewrites an operand: {pager:?}"
+    );
+}
+
 // --- merge_module_env_aliases tests ---
 
 #[test]

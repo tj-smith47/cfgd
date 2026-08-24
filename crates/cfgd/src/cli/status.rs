@@ -405,10 +405,21 @@ fn render_drift_section(
                 event.resource_id.clone()
             };
         let subject = cfgd_core::output::drift_item_subject(&event.resource_type, &display_id);
+        // The recomputed pair when a surface could read one off the machine,
+        // the stored pair otherwise — the human row states today's truth while
+        // the payload keeps the bytes the row was stored with.
         let (expected, actual) = cfgd_core::output::drift_operands(
             &event.resource_type,
-            event.expected.as_deref().unwrap_or("?"),
-            event.actual.as_deref().unwrap_or("?"),
+            event
+                .want
+                .as_deref()
+                .or(event.expected.as_deref())
+                .unwrap_or("?"),
+            event
+                .have
+                .as_deref()
+                .or(event.actual.as_deref())
+                .unwrap_or("?"),
         );
         if event.source != LOCAL_LAYER {
             // Source attribution renders in `secondary` (pink/magenta) at
@@ -1196,21 +1207,40 @@ pub(super) fn cmd_status(
 
     // A RECORDED env-var/alias row holds the opaque markers `verify_env_items`
     // persists, so without this the dashboard and `--scan` word the same env
-    // var two different ways — one naming no value at all. Same display-only
-    // recompute `drift_event_from` runs for a live finding, and the same
-    // reason it is safe: nothing here is written back.
-    for event in &mut output.drift {
-        if let Some((expected, actual)) = cfgd_core::reconciler::env_item_display_values(
+    // var two different ways — one naming no value at all. The recompute lands
+    // in the ADDITIVE display pair rather than over `expected`/`actual`: those
+    // describe the row stored under this `id`, and a fresher reading written
+    // into them describes a row nobody wrote. Nothing here is written back.
+    //
+    // Only a shell kind can answer at all, and the gate is what keeps a file,
+    // package or system row from paying the profile-and-modules env merge to
+    // be told so.
+    output.drift.retain_mut(|event| {
+        if !cfgd_core::output::is_shell_drift_kind(&event.resource_type) {
+            return true;
+        }
+        let Some((want, have)) = cfgd_core::reconciler::env_item_display_values(
             &event.resource_type,
             &event.resource_id,
             &resolved.merged.env,
             &resolved.merged.aliases,
             &resolved_modules,
-        ) {
-            event.expected = Some(expected);
-            event.actual = Some(actual);
+        ) else {
+            return true;
+        };
+        // The recompute just read the machine: a row whose declared line is
+        // the line the file holds has HEALED since it was recorded, and
+        // rendering it would put `want: X, have: X` under a warning glyph —
+        // a finding that refutes itself. Dropped from the display only; plain
+        // `status` reads state and never writes it, and the stored row clears
+        // on the next apply or scan that touches it.
+        if want == have {
+            return false;
         }
-    }
+        event.want = Some(want);
+        event.have = Some(have);
+        true
+    });
 
     // Plain `status` (no --scan/--exit-code) keeps the fast RECORDED-drift
     // dashboard by deliberate design. `--scan` (and `--exit-code`, which
@@ -2453,9 +2483,7 @@ mod tests {
         // declared var as drifted (opaque "missing or changed" before this
         // fix; the real declared line after it).
         std::fs::write(
-            tmp_home
-                .path()
-                .join(crate::cli::helpers::tests::primary_env_file_name()),
+            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
             "# managed by cfgd \u{2014} do not edit\n",
         )
         .unwrap();
@@ -2557,9 +2585,7 @@ mod tests {
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         std::fs::write(
-            tmp_home
-                .path()
-                .join(crate::cli::helpers::tests::primary_env_file_name()),
+            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
             "# managed by cfgd \u{2014} do not edit\n",
         )
         .unwrap();
@@ -2594,7 +2620,7 @@ mod tests {
         let expected_detail =
             cfgd_core::output::drift_detail(&declared_line, cfgd_core::Absence::Missing.as_str());
 
-        let cli = test_cli_for(config_path, &state_dir);
+        let mut cli = test_cli_for(config_path, &state_dir);
         for scan in [false, true] {
             let (printer, buf) = test_printers();
             cmd_status(&cli, &printer, None, false, scan, false).unwrap();
@@ -2607,6 +2633,119 @@ mod tests {
             assert!(
                 editor_line.contains(&expected_detail),
                 "scan={scan} must render the same real operands, got: {editor_line}"
+            );
+        }
+
+        // The recompute is a DISPLAY truth. The payload's `expected`/`actual`
+        // stay the bytes the row was stored with — a keyed record describes
+        // its own row — and the recompute rides the additive pair beside them.
+        cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+        let (printer, buf) = test_printers_json();
+        cmd_status(&cli, &printer, None, false, false, false).unwrap();
+        drop(printer);
+        let captured = cfgd_core::test_helpers::captured_text(&buf);
+        let parsed: serde_json::Value = serde_json::from_str(captured.trim())
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {captured}"));
+        let row = parsed["drift"]
+            .as_array()
+            .and_then(|d| {
+                d.iter()
+                    .find(|d| d["resourceType"] == "env-var" && d["resourceId"] == "EDITOR")
+            })
+            .unwrap_or_else(|| panic!("expected a recorded EDITOR row: {parsed}"));
+        assert_eq!(
+            (&row["expected"], &row["actual"]),
+            (
+                &serde_json::json!("current"),
+                &serde_json::json!("missing or changed")
+            ),
+            "the stored operands describe the stored row and must not move: {row}"
+        );
+        assert_eq!(
+            (&row["want"], &row["have"]),
+            (
+                &serde_json::json!(declared_line),
+                &serde_json::json!(cfgd_core::Absence::Missing.as_str())
+            ),
+            "the recompute rides its own additive pair: {row}"
+        );
+    }
+
+    /// A recorded env row the machine has since converged must leave no trace.
+    ///
+    /// The recompute reads the machine, so a row whose declared line IS the
+    /// line the file holds has healed since it was recorded — rendering it
+    /// puts `want: X, have: X` under a warning glyph, a finding that refutes
+    /// itself. Dropped from the display on BOTH modes: plain `status` reads
+    /// the recorded row and `--scan` renders it beside the live findings, so
+    /// a fix on one surface alone leaves the other still self-refuting.
+    #[test]
+    fn a_recorded_env_row_the_machine_has_since_converged_is_not_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Interactive\n  env:\n    - name: EDITOR\n      value: vim\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("modules")).unwrap();
+
+        let declared_env = vec![cfgd_core::config::EnvVar {
+            name: "EDITOR".to_string(),
+            value: "vim".to_string(),
+        }];
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let declared_line = cfgd_core::reconciler::env_item_declared_line(
+            "env-var",
+            "EDITOR",
+            &declared_env,
+            &[],
+            &[],
+        )
+        .expect("EDITOR renders a declared line");
+        // The machine HOLDS the declared line: whatever the recorded row says,
+        // this entry is converged right now.
+        std::fs::write(
+            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
+            format!("# managed by cfgd \u{2014} do not edit\n{declared_line}\n"),
+        )
+        .unwrap();
+
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        {
+            let state = cfgd_core::state::StateStore::open(&state_dir.join("state.db")).unwrap();
+            state
+                .record_drift(
+                    "env-var",
+                    "EDITOR",
+                    Some("current"),
+                    Some("missing or changed"),
+                    cfgd_core::config::LOCAL_LAYER,
+                )
+                .unwrap();
+        }
+
+        let cli = test_cli_for(config_path, &state_dir);
+        for scan in [false, true] {
+            let (printer, buf) = test_printers();
+            cmd_status(&cli, &printer, None, false, scan, false).unwrap();
+            drop(printer);
+            let human = cfgd_core::test_helpers::captured_text(&buf);
+            assert!(
+                !human.contains("env: EDITOR"),
+                "scan={scan} must not report a converged entry, got: {human}"
+            );
+            assert!(
+                !human.contains(&cfgd_core::output::drift_detail(
+                    &declared_line,
+                    &declared_line
+                )),
+                "scan={scan} must never render a row that refutes itself, got: {human}"
             );
         }
     }

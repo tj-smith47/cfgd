@@ -295,6 +295,16 @@ impl<'a> Reconciler<'a> {
     }
 }
 
+/// The primary managed env file under `home` on THIS host — the one file the
+/// per-item env checks read back, and the one the env engine always writes
+/// first. Named once for every caller outside this module, so a consumer
+/// cannot mint a second platform split and end up pointing at a file the
+/// verifier does not read.
+#[must_use]
+pub fn primary_env_file(home: &Path) -> PathBuf {
+    env_engine::primary_env_file_path(home, env_engine::EnvPlatform::current())
+}
+
 #[cfg(not(any(test, feature = "test-helpers")))]
 fn resolved_home() -> PathBuf {
     crate::expand_tilde(std::path::Path::new("~"))

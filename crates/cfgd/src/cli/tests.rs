@@ -16391,7 +16391,7 @@ fn cmd_diff_full_profile_converged_names_no_surface() {
         output.contains("Diff"),
         "should show Diff header, got: {output}"
     );
-    for surface in ["Files", "Packages", "Env", "System"] {
+    for surface in ["Files", "Packages", "Shell", "System"] {
         assert!(
             !output.contains(surface),
             "a converged {surface} surface must leave no trace, got: {output}"

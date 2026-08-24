@@ -488,7 +488,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     // Printer emits (module-resolution status, git-fetch warnings), and
     // nesting that call inside an already-open `SectionGuard` tripped the
     // renderer's structural-depth guard and mis-indented that output under
-    // the Env section instead of at the top level.
+    // the Shell section instead of at the top level.
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     let full_desired_result = resolve_desired_state(
         ctx,
@@ -506,7 +506,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     // whole reorder exists to avoid, so its lifetime is bounded to this block
     // rather than left open to the end of the function.
     let (has_env_drift, env_check_failed) = {
-        let env_sec = printer.section_or_collapse("Env");
+        let env_sec = printer.section_or_collapse("Shell");
         match full_desired_result {
             // A module UNRELATED to the one this run was scoped to (a different
             // module in the same profile, failing to resolve) must not discard
@@ -857,13 +857,25 @@ pub enum DiffScope {
 }
 
 /// The closing line's tally: what drifted, and which of the surfaces this run
-/// checked came back clean (`1 file (packages, env clean)`).
+/// checked came back clean (`1 file (packages, shell clean)`).
 ///
 /// A surface whose check could not RUN is named by neither half — the same
 /// line already carries the reason it could not, and calling it clean or
 /// drifted would both be claims the run cannot make.
 fn drift_tally(output: &DiffOutput, scope: DiffScope) -> String {
     let s = &output.summary;
+    // The payload keeps every finding; the REPORT drops the env file's own
+    // freshness row when the item rows beneath it already explain it. The
+    // tally counts what the reader can see, so a report showing one row cannot
+    // close by charging for two — the same predicate the render applied, read
+    // back off the payload the render filled.
+    let shell_rows =
+        if cfgd_core::output::env_file_row_is_redundant(output.env.iter().map(|e| e.kind.as_str()))
+        {
+            output.env.iter().filter(|e| e.kind != "env").count()
+        } else {
+            output.env.len()
+        };
     let surfaces = [
         ("files", "file", output.files.len(), s.has_file_drift, true),
         (
@@ -876,7 +888,7 @@ fn drift_tally(output: &DiffOutput, scope: DiffScope) -> String {
         (
             "shell",
             "shell item",
-            output.env.len(),
+            shell_rows,
             s.has_env_drift,
             !s.env_check_failed,
         ),
@@ -1066,9 +1078,7 @@ mod tests {
         )
         .expect("alias renders a declared line");
         std::fs::write(
-            tmp_home
-                .path()
-                .join(crate::cli::helpers::tests::primary_env_file_name()),
+            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
             format!("# managed by cfgd \u{2014} do not edit\n{hand_edited_line}\n"),
         )
         .unwrap();
@@ -1322,7 +1332,7 @@ mod tests {
     /// enough to fail the FULL-profile resolution the env check needs, and
     /// the Files and Packages diffs of the module actually asked about must
     /// survive it. Restoring the `?` on that resolution — or moving the call
-    /// back inside the Env section — turns `cfgd diff --module nvim` into an
+    /// back inside the Shell section — turns `cfgd diff --module nvim` into an
     /// error that renders nothing, on any machine whose profile also declares
     /// a module with a broken dependency.
     #[test]
@@ -1398,6 +1408,14 @@ mod tests {
                 .any(|f| f["resourceId"] == target_posix.as_str() && f["matches"] == false),
             "the asked-for module's file diff must survive the other module's \
              failure: {json}"
+        );
+        // The `--module` path's combined env/alias section carries the same
+        // name the machine path's does; the two are separate call sites and
+        // only a positive assertion on each keeps them one word.
+        let human = strip_ansi(&cap.human());
+        assert!(
+            human.contains("\nShell\n"),
+            "the module path names its shell surface Shell too: {human}"
         );
     }
 

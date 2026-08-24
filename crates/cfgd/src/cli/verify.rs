@@ -388,9 +388,7 @@ mod tests {
         // Header only, no `EDITOR` line — the per-item check reports the
         // declared var as drifted.
         std::fs::write(
-            tmp_home
-                .path()
-                .join(crate::cli::helpers::tests::primary_env_file_name()),
+            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
             "# managed by cfgd \u{2014} do not edit\n",
         )
         .unwrap();
