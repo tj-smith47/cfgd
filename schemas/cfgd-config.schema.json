@@ -399,7 +399,7 @@
           "type": "string"
         },
         "url": {
-          "description": "Git URL of the source repository.",
+          "description": "Git URL of the registry repository, in any form git accepts — an HTTPS\nor SSH clone URL, or a GitHub `owner/repo` shorthand cfgd expands to the\nfull URL. Required. The repository is cloned into the local cache and\nscanned for `modules/<name>/module.yaml` entries, which is what\n`cfgd module search` and `cfgd module add` resolve against.",
           "type": "string"
         }
       },

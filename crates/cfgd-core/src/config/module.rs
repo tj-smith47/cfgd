@@ -430,7 +430,11 @@ pub struct ModuleLockEntry {
 pub struct ModuleRegistryEntry {
     /// Short name / alias for this source (defaults to GitHub org name).
     pub name: String,
-    /// Git URL of the source repository.
+    /// Git URL of the registry repository, in any form git accepts — an HTTPS
+    /// or SSH clone URL, or a GitHub `owner/repo` shorthand cfgd expands to the
+    /// full URL. Required. The repository is cloned into the local cache and
+    /// scanned for `modules/<name>/module.yaml` entries, which is what
+    /// `cfgd module search` and `cfgd module add` resolve against.
     pub url: String,
 }
 

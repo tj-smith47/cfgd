@@ -234,7 +234,12 @@ pub struct ConfigSourceDocument {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceMetadata {
-    /// The source's published name.
+    /// The source's published name, as its maintainer spells it. Shown wherever
+    /// the manifest is displayed (`cfgd source show`, the summary a subscriber
+    /// approves before trusting the source) and carried in `-o json` output.
+    /// Required. A subscriber registers the source under a local name of their
+    /// own choosing, so this value identifies the source to a reader rather
+    /// than keying anything cfgd stores.
     pub name: String,
     /// The source manifest's own version, shown to subscribers.
     #[serde(default)]
@@ -374,7 +379,11 @@ impl<'de> Deserialize<'de> for EnvVar {
 pub struct ShellAlias {
     /// Alias name, as typed at the shell prompt.
     pub name: String,
-    /// Command the alias expands to.
+    /// Command the alias expands to, written in the syntax of the shell it is
+    /// generated for. It may carry arguments, pipes and quotes: cfgd quotes the
+    /// whole value per dialect when it writes the alias definition, so the text
+    /// reaches the shell exactly as declared. Required — an alias with no
+    /// command has nothing to expand to.
     pub command: String,
 }
 

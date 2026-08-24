@@ -869,7 +869,7 @@
       "description": "A single shell alias entry.",
       "properties": {
         "command": {
-          "description": "Command the alias expands to.",
+          "description": "Command the alias expands to, written in the syntax of the shell it is generated for. It may carry arguments, pipes and quotes: cfgd quotes the whole value per dialect when it writes the alias definition, so the text reaches the shell exactly as declared. Required — an alias with no command has nothing to expand to.",
           "type": "string"
         },
         "name": {

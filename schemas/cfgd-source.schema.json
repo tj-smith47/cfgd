@@ -100,7 +100,7 @@
           ]
         },
         "name": {
-          "description": "The source's published name.",
+          "description": "The source's published name, as its maintainer spells it. Shown wherever\nthe manifest is displayed (`cfgd source show`, the summary a subscriber\napproves before trusting the source) and carried in `-o json` output.\nRequired. A subscriber registers the source under a local name of their\nown choosing, so this value identifies the source to a reader rather\nthan keying anything cfgd stores.",
           "type": "string"
         },
         "version": {
@@ -970,7 +970,7 @@
       "description": "A single shell alias entry.",
       "properties": {
         "command": {
-          "description": "Command the alias expands to.",
+          "description": "Command the alias expands to, written in the syntax of the shell it is\ngenerated for. It may carry arguments, pipes and quotes: cfgd quotes the\nwhole value per dialect when it writes the alias definition, so the text\nreaches the shell exactly as declared. Required — an alias with no\ncommand has nothing to expand to.",
           "type": "string"
         },
         "name": {

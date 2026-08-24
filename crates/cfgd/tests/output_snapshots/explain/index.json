@@ -7,7 +7,7 @@
       {
         "children": [
           {
-            "description": "Command the alias expands to.",
+            "description": "Command the alias expands to, written in the syntax of the shell it is generated for. It may carry arguments, pipes and quotes: cfgd quotes the whole value per dialect when it writes the alias definition, so the text reaches the shell exactly as declared. Required — an alias with no command has nothing to expand to.",
             "name": "command",
             "required": true,
             "type": "string"
@@ -814,7 +814,7 @@
       {
         "children": [
           {
-            "description": "Command the alias expands to.",
+            "description": "Command the alias expands to, written in the syntax of the shell it is generated for. It may carry arguments, pipes and quotes: cfgd quotes the whole value per dialect when it writes the alias definition, so the text reaches the shell exactly as declared. Required — an alias with no command has nothing to expand to.",
             "name": "command",
             "required": true,
             "type": "string"
@@ -2192,7 +2192,7 @@
               {
                 "children": [
                   {
-                    "description": "Command the alias expands to.",
+                    "description": "Command the alias expands to, written in the syntax of the shell it is generated for. It may carry arguments, pipes and quotes: cfgd quotes the whole value per dialect when it writes the alias definition, so the text reaches the shell exactly as declared. Required — an alias with no command has nothing to expand to.",
                     "name": "command",
                     "required": true,
                     "type": "string"
@@ -2677,7 +2677,7 @@
               {
                 "children": [
                   {
-                    "description": "Command the alias expands to.",
+                    "description": "Command the alias expands to, written in the syntax of the shell it is generated for. It may carry arguments, pipes and quotes: cfgd quotes the whole value per dialect when it writes the alias definition, so the text reaches the shell exactly as declared. Required — an alias with no command has nothing to expand to.",
                     "name": "command",
                     "required": true,
                     "type": "string"
@@ -3162,7 +3162,7 @@
               {
                 "children": [
                   {
-                    "description": "Command the alias expands to.",
+                    "description": "Command the alias expands to, written in the syntax of the shell it is generated for. It may carry arguments, pipes and quotes: cfgd quotes the whole value per dialect when it writes the alias definition, so the text reaches the shell exactly as declared. Required — an alias with no command has nothing to expand to.",
                     "name": "command",
                     "required": true,
                     "type": "string"
@@ -3647,7 +3647,7 @@
               {
                 "children": [
                   {
-                    "description": "Command the alias expands to.",
+                    "description": "Command the alias expands to, written in the syntax of the shell it is generated for. It may carry arguments, pipes and quotes: cfgd quotes the whole value per dialect when it writes the alias definition, so the text reaches the shell exactly as declared. Required — an alias with no command has nothing to expand to.",
                     "name": "command",
                     "required": true,
                     "type": "string"
@@ -4565,7 +4565,7 @@
                 "type": "string"
               },
               {
-                "description": "Git URL of the source repository.",
+                "description": "Git URL of the registry repository, in any form git accepts — an HTTPS or SSH clone URL, or a GitHub `owner/repo` shorthand cfgd expands to the full URL. Required. The repository is cloned into the local cache and scanned for `modules/<name>/module.yaml` entries, which is what `cfgd module search` and `cfgd module add` resolve against.",
                 "name": "url",
                 "required": true,
                 "type": "string"
