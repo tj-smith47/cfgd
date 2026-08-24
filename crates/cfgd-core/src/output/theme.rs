@@ -480,7 +480,11 @@ impl Theme {
             secondary: hex("#d33682"),
             // Solarized's own syntax mapping puts `Type` on yellow, unstyled
             // of attributes. It does not collide with the magenta field-name
-            // column or the unstyled description beside it.
+            // column or the unstyled description beside it. Sharing `warning`'s
+            // byte-identical yellow is deliberate and safe: the eight-colour
+            // palette already doubles several slots by design, and the two
+            // never meet — the surfaces that render a type slot emit no
+            // warning lines.
             type_hint: hex("#b58900"),
             ..Self::default()
         }
@@ -504,7 +508,10 @@ impl Theme {
             accent: hex("#cb4b16"),
             secondary: hex("#d33682"),
             // Same official `Type` yellow as the dark variant: the palette is
-            // one, and both backgrounds are designed against it.
+            // one, and both backgrounds are designed against it. It shares
+            // `warning`'s exact value for the same reason the dark variant
+            // does — an eight-colour palette doubles slots by design, and no
+            // surface renders a type beside a warning.
             type_hint: hex("#b58900"),
             ..Self::default()
         }

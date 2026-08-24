@@ -136,6 +136,49 @@ fn a_repeated_span_paints_the_key_tail_not_the_first_match() {
     );
 }
 
+/// A span at the very END of the key leaves no remainder to paint, and the
+/// widest row in a list is padded to nothing — so the tail slice really is
+/// empty on the production `cfgd explain` row. Painting it anyway emitted an
+/// open/reset pair around zero columns.
+#[test]
+#[serial_test::serial]
+fn a_tail_span_emits_no_styled_run_around_an_empty_remainder() {
+    let (p, buf) = Printer::for_test_with_theme_colored(dracula(), Verbosity::Normal);
+    p.emit(Doc::new().command_list([CommandPair::typed(
+        "files  <[]ModuleFileEntry>",
+        "<[]ModuleFileEntry>",
+        "Files this module deploys.",
+    )]));
+    p.flush();
+    let out = raw(&buf);
+    // Not vacuous: the row really is styled, so an all-plain render would fail
+    // here rather than pass the empty-run check by carrying no escapes at all.
+    assert!(out.contains('\x1b'), "the row emitted no styling: {out:?}");
+    assert_eq!(
+        first_empty_sgr_run(&out),
+        None,
+        "a styled run wraps nothing: {out:?}"
+    );
+}
+
+/// The first `ESC[…m` immediately followed by a reset — a styled run with no
+/// text between its open and its close.
+fn first_empty_sgr_run(s: &str) -> Option<String> {
+    let mut i = 0;
+    while let Some(rel) = s[i..].find("\x1b[") {
+        let open = i + rel;
+        let Some(end_rel) = s[open + 2..].find('m') else {
+            break;
+        };
+        let after_open = open + 2 + end_rel + 1;
+        if s[after_open..].starts_with("\x1b[0m") {
+            return Some(s[open..after_open + 4].to_string());
+        }
+        i = after_open;
+    }
+    None
+}
+
 fn typed_doc() -> Doc {
     Doc::new().command_list([CommandPair::typed(
         "files  <[]ModuleFileEntry>",

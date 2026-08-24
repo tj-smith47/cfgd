@@ -242,11 +242,21 @@ impl Emitting<'_> {
         let Some(at) = key.rfind(span) else {
             return self.theme.secondary.apply_to(key).to_string();
         };
+        // An empty segment takes no coat at all: a span sitting at either end
+        // of the key (the widest row in a list is padded to nothing) would
+        // otherwise emit an open/reset pair around zero rendered columns.
+        let coat = |s: &str| {
+            if s.is_empty() {
+                String::new()
+            } else {
+                self.theme.secondary.apply_to(s).to_string()
+            }
+        };
         format!(
             "{}{}{}",
-            self.theme.secondary.apply_to(&key[..at]),
+            coat(&key[..at]),
             self.theme.type_hint.apply_to(span),
-            self.theme.secondary.apply_to(&key[at + span.len()..]),
+            coat(&key[at + span.len()..]),
         )
     }
 

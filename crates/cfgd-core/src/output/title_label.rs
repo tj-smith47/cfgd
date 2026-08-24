@@ -92,11 +92,22 @@ impl TitleLabel {
         let Some(at) = value.rfind(span) else {
             return accent.apply_to(value).to_string();
         };
+        // An empty segment takes no coat at all: a span sitting at either end
+        // of the value would otherwise emit an open/reset pair around nothing,
+        // which is a styled run a reader's terminal has to parse and a golden
+        // has to carry for zero rendered columns.
+        let coat = |s: &str| {
+            if s.is_empty() {
+                String::new()
+            } else {
+                accent.apply_to(s).to_string()
+            }
+        };
         format!(
             "{}{}{}",
-            accent.apply_to(&value[..at]),
+            coat(&value[..at]),
             theme.type_hint.apply_to(span),
-            accent.apply_to(&value[at + span.len()..]),
+            coat(&value[at + span.len()..]),
         )
     }
 }
@@ -205,6 +216,19 @@ mod tests {
         // The halves around the span keep the value's own accent coat.
         assert!(styled.contains(&theme.accent.apply_to(" module.spec.files ").to_string()));
         assert!(styled.contains(&theme.accent.apply_to(" (required)").to_string()));
+
+        // A span at the END of the value leaves no remainder, and an empty
+        // segment takes no coat rather than an open/reset pair around nothing.
+        let tail = TitleLabel::typed(
+            "Explain",
+            "module.spec.files <[]ModuleFileEntry>",
+            "<[]ModuleFileEntry>",
+        )
+        .styled(&theme);
+        assert!(
+            tail.ends_with(&theme.type_hint.apply_to("<[]ModuleFileEntry>").to_string()),
+            "the tail span must close the heading with nothing painted after it: {tail:?}"
+        );
     }
 
     /// An untyped heading — every other consumer in the product — renders
