@@ -767,3 +767,67 @@ fn every_explain_docs_pointer_names_a_real_heading() {
         );
     }
 }
+
+/// TeamConfig's explain tree is hand-authored (a Crossplane XR has no Rust
+/// spec type to reflect), so nothing but this test keeps it honest against the
+/// XRD that actually admits documents. Every property the XRD declares, at
+/// every depth, is in the tree with the XRD's own required-ness, and the tree
+/// invents no property the XRD lacks. Descriptions are deliberately NOT
+/// compared: the tree's are written for a reader and are richer than the
+/// XRD's one-liners.
+#[test]
+fn hand_authored_teamconfig_tree_matches_the_crossplane_xrd() {
+    let xrd: serde_yaml::Value = serde_yaml::from_str(include_str!(
+        "../../../../../manifests/crossplane/xrd-teamconfig.yaml"
+    ))
+    .expect("xrd-teamconfig.yaml parses");
+    let spec = &xrd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"];
+    assert!(
+        spec.is_mapping(),
+        "XRD layout moved; update the path in this test"
+    );
+
+    fn compare(path: &str, schema: &serde_yaml::Value, fields: &[FieldNode]) {
+        let props = schema["properties"].as_mapping();
+        let required: Vec<&str> = schema["required"]
+            .as_sequence()
+            .map(|r| r.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        let Some(props) = props else {
+            assert!(
+                fields.is_empty(),
+                "{path}: the tree lists children the XRD does not declare"
+            );
+            return;
+        };
+        for (name, prop) in props {
+            let name = name.as_str().unwrap();
+            let field = fields.iter().find(|f| f.name == name).unwrap_or_else(|| {
+                panic!("{path}.{name}: declared by the XRD, missing from the tree")
+            });
+            assert_eq!(
+                field.required,
+                required.contains(&name),
+                "{path}.{name}: required-ness disagrees with the XRD"
+            );
+            // Descend through an object, or through an array of objects.
+            let inner = if prop["type"].as_str() == Some("array") {
+                &prop["items"]
+            } else {
+                prop
+            };
+            if inner["type"].as_str() == Some("object") && inner["properties"].is_mapping() {
+                compare(&format!("{path}.{name}"), inner, &field.children);
+            }
+        }
+        for field in fields {
+            assert!(
+                props.contains_key(serde_yaml::Value::String(field.name.clone())),
+                "{path}.{}: in the tree, but the XRD declares no such property",
+                field.name
+            );
+        }
+    }
+    let schema = find_schema("teamconfig").expect("TeamConfig is explainable");
+    compare("spec", spec, &schema.fields);
+}

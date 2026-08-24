@@ -101,7 +101,7 @@ fn teamconfig_schema() -> ResourceSchema {
                 leaf("requiredModules", "[]string", false, "Modules that must be installed on every member machine. A missing one is a compliance failure."),
                 leaf("recommendedModules", "[]string", false, "Modules members are advised to install. Surfaced in compliance reports without failing them."),
             ]),
-            obj("members", "[]object", false, "The people on the team. One MachineConfig is generated per entry.", vec![
+            obj("members", "[]object", true, "The people on the team. One MachineConfig is generated per entry.", vec![
                 leaf("username", "string", true, "Login the member's machine enrolls as. Becomes the name of the generated MachineConfig."),
                 leaf("sshPublicKey", "string", false, "Public key the member's enrollment request is verified against. Omitted, the member enrolls through the device-flow instead."),
                 leaf("profile", "string", false, "Profile for this member, overriding the team-wide `spec.profile`."),

@@ -2068,7 +2068,7 @@
             "type": "string"
           },
           {
-            "description": "Environment variable names to export the decrypted value under. Mutually exclusive with `target`.",
+            "description": "Environment variable names to export the decrypted value under. May be combined with `target`.",
             "name": "envs",
             "required": false,
             "type": "[]string"
@@ -2080,13 +2080,13 @@
             "type": "string"
           },
           {
-            "description": "File path to write the decrypted secret to. Mutually exclusive with `envs`.",
+            "description": "File path to write the decrypted secret to. May be combined with `envs`.",
             "name": "target",
             "required": false,
             "type": "string"
           },
           {
-            "description": "Template rendered around the decrypted value before writing to `target` (e.g. wrapping it in a config file's expected shape).",
+            "description": "Template rendered around the resolved value before it is written to `target` or exported under `envs`: every `${secret:value}` in it is replaced by the value (`template: \"token: ${secret:value}\"`). Only a provider reference (`op://`, `vault://`, …) resolves to a single value, so `template` is rejected on a sops-encrypted file source.",
             "name": "template",
             "required": false,
             "type": "string"
@@ -2629,7 +2629,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Environment variable names to export the decrypted value under. Mutually exclusive with `target`.",
+                    "description": "Environment variable names to export the decrypted value under. May be combined with `target`.",
                     "name": "envs",
                     "required": false,
                     "type": "[]string"
@@ -2641,13 +2641,13 @@
                     "type": "string"
                   },
                   {
-                    "description": "File path to write the decrypted secret to. Mutually exclusive with `envs`.",
+                    "description": "File path to write the decrypted secret to. May be combined with `envs`.",
                     "name": "target",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "Template rendered around the decrypted value before writing to `target` (e.g. wrapping it in a config file's expected shape).",
+                    "description": "Template rendered around the resolved value before it is written to `target` or exported under `envs`: every `${secret:value}` in it is replaced by the value (`template: \"token: ${secret:value}\"`). Only a provider reference (`op://`, `vault://`, …) resolves to a single value, so `template` is rejected on a sops-encrypted file source.",
                     "name": "template",
                     "required": false,
                     "type": "string"
@@ -3114,7 +3114,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Environment variable names to export the decrypted value under. Mutually exclusive with `target`.",
+                    "description": "Environment variable names to export the decrypted value under. May be combined with `target`.",
                     "name": "envs",
                     "required": false,
                     "type": "[]string"
@@ -3126,13 +3126,13 @@
                     "type": "string"
                   },
                   {
-                    "description": "File path to write the decrypted secret to. Mutually exclusive with `envs`.",
+                    "description": "File path to write the decrypted secret to. May be combined with `envs`.",
                     "name": "target",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "Template rendered around the decrypted value before writing to `target` (e.g. wrapping it in a config file's expected shape).",
+                    "description": "Template rendered around the resolved value before it is written to `target` or exported under `envs`: every `${secret:value}` in it is replaced by the value (`template: \"token: ${secret:value}\"`). Only a provider reference (`op://`, `vault://`, …) resolves to a single value, so `template` is rejected on a sops-encrypted file source.",
                     "name": "template",
                     "required": false,
                     "type": "string"
@@ -3599,7 +3599,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Environment variable names to export the decrypted value under. Mutually exclusive with `target`.",
+                    "description": "Environment variable names to export the decrypted value under. May be combined with `target`.",
                     "name": "envs",
                     "required": false,
                     "type": "[]string"
@@ -3611,13 +3611,13 @@
                     "type": "string"
                   },
                   {
-                    "description": "File path to write the decrypted secret to. Mutually exclusive with `envs`.",
+                    "description": "File path to write the decrypted secret to. May be combined with `envs`.",
                     "name": "target",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "Template rendered around the decrypted value before writing to `target` (e.g. wrapping it in a config file's expected shape).",
+                    "description": "Template rendered around the resolved value before it is written to `target` or exported under `envs`: every `${secret:value}` in it is replaced by the value (`template: \"token: ${secret:value}\"`). Only a provider reference (`op://`, `vault://`, …) resolves to a single value, so `template` is rejected on a sops-encrypted file source.",
                     "name": "template",
                     "required": false,
                     "type": "string"
@@ -4084,7 +4084,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Environment variable names to export the decrypted value under. Mutually exclusive with `target`.",
+                    "description": "Environment variable names to export the decrypted value under. May be combined with `target`.",
                     "name": "envs",
                     "required": false,
                     "type": "[]string"
@@ -4096,13 +4096,13 @@
                     "type": "string"
                   },
                   {
-                    "description": "File path to write the decrypted secret to. Mutually exclusive with `envs`.",
+                    "description": "File path to write the decrypted secret to. May be combined with `envs`.",
                     "name": "target",
                     "required": false,
                     "type": "string"
                   },
                   {
-                    "description": "Template rendered around the decrypted value before writing to `target` (e.g. wrapping it in a config file's expected shape).",
+                    "description": "Template rendered around the resolved value before it is written to `target` or exported under `envs`: every `${secret:value}` in it is replaced by the value (`template: \"token: ${secret:value}\"`). Only a provider reference (`op://`, `vault://`, …) resolves to a single value, so `template` is rejected on a sops-encrypted file source.",
                     "name": "template",
                     "required": false,
                     "type": "string"
@@ -4213,7 +4213,7 @@
             "type": "string"
           },
           {
-            "description": "The model identifier to request. Default: `claude-sonnet-4-6`.",
+            "description": "The model identifier to request. Default: `claude-sonnet-5`.",
             "name": "model",
             "required": false,
             "type": "string"
@@ -4433,6 +4433,17 @@
                     "name": "interval",
                     "required": false,
                     "type": "string"
+                  },
+                  {
+                    "description": "Whether this patch targets a `Module` or a `Profile`.",
+                    "enum": [
+                      "Module",
+                      "Profile"
+                    ],
+                    "name": "kind",
+                    "required": true,
+                    "type": "string",
+                    "typeName": "ReconcilePatchKind"
                   },
                   {
                     "description": "Name of the module/profile this patch targets. Omitted to target every entity of `kind`.",
@@ -5842,7 +5853,7 @@
         ],
         "description": "The people on the team. One MachineConfig is generated per entry.",
         "name": "members",
-        "required": false,
+        "required": true,
         "type": "[]object"
       }
     ],

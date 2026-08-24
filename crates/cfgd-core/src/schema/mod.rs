@@ -379,7 +379,21 @@ pub fn field_tree_from_schema(root: &Schema) -> Vec<FieldNode> {
         descent.leave(&mut visited);
         return fields;
     }
-    fields_from_properties(&top, &required_set(root), ctx, &mut visited)
+    // The KRM envelope keys are a property of the DOCUMENT root and nothing
+    // else: a nested field is never `apiVersion`, and a nested `kind`
+    // (`daemon.reconcile.patches[].kind`) is an authoring field the tree must
+    // carry. So the envelope is stripped here, once, and not in the recursion.
+    let authoring: Vec<(String, Value)> = top
+        .into_iter()
+        .filter(|(name, _)| !is_krm_envelope_key(name))
+        .collect();
+    fields_from_properties(&authoring, &required_set(root), ctx, &mut visited)
+}
+
+/// The keys every KRM document carries beside `spec`, which a field tree of
+/// AUTHORING fields leaves out at the document root.
+fn is_krm_envelope_key(name: &str) -> bool {
+    matches!(name, "apiVersion" | "kind" | "metadata" | "status")
 }
 
 /// The schema's definitions object — schemars 1.x emits `$defs`; older drafts
@@ -522,7 +536,6 @@ fn fields_from_properties(
 ) -> Vec<FieldNode> {
     let mut fields: Vec<FieldNode> = props
         .iter()
-        .filter(|(name, _)| !matches!(name.as_str(), "apiVersion" | "kind" | "metadata" | "status"))
         .map(|(name, schema)| field_node(name, schema, required.contains(name), ctx, visited))
         .collect();
     fields.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1080,6 +1093,39 @@ mod tests {
         ] {
             assert!(kinds.contains(&k), "missing {k}");
         }
+    }
+
+    /// The KRM envelope (`apiVersion`/`kind`/`metadata`/`status`) is stripped
+    /// at the document root ONLY. A nested field spelled `kind` is an
+    /// authoring field, and filtering it by name at every depth is how
+    /// `daemon.reconcile.patches[].kind` — the one required field of a patch —
+    /// vanished from `cfgd explain` and the published schema tree.
+    #[test]
+    fn a_nested_field_named_kind_survives_the_envelope_filter() {
+        let entry = KIND_REGISTRY.iter().find(|e| e.kind == "Config").unwrap();
+        let tree = entry.field_tree();
+        let mut node = tree.iter().find(|f| f.name == "daemon").expect("daemon");
+        for seg in ["reconcile", "patches"] {
+            node = node
+                .children
+                .iter()
+                .find(|f| f.name == seg)
+                .unwrap_or_else(|| panic!("{seg}"));
+        }
+        let kind = node
+            .children
+            .iter()
+            .find(|f| f.name == "kind")
+            .expect("patches[].kind is an authoring field, not the KRM envelope");
+        assert!(
+            kind.required,
+            "ReconcilePatch.kind carries no default, so it is required"
+        );
+        assert_eq!(kind.enum_values, ["Module", "Profile"]);
+        assert!(
+            !tree.iter().any(|f| is_krm_envelope_key(&f.name)),
+            "the document root still hides its envelope"
+        );
     }
 
     #[test]
