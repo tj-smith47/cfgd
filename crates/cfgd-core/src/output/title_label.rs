@@ -17,6 +17,12 @@ use super::{Role, Theme};
 pub struct TitleLabel {
     label: String,
     value: String,
+    /// A span INSIDE `value` painted `theme.type_hint` rather than with the
+    /// value's own accent coat — the `<[]ModuleFileEntry>` half of `cfgd
+    /// explain`'s drill-down heading, so a rendered schema type takes the ONE
+    /// type slot wherever it appears. Display-only: [`Self::plain`] is what a
+    /// `-o json` reader's `heading` field carries and is unaffected.
+    type_span: Option<String>,
 }
 
 impl TitleLabel {
@@ -24,6 +30,25 @@ impl TitleLabel {
         Self {
             label: label.into(),
             value: value.into(),
+            type_span: None,
+        }
+    }
+
+    /// A heading whose `type_span` substring of `value` is a schema type, so
+    /// the renderer paints it with the type slot instead of the accent one.
+    /// The same caller-names-it / composer-paints-it split
+    /// [`super::CommandPair::typed`] takes, for the same reason: the composer
+    /// folds both text slots itself, and a fold strips a coat applied ahead of
+    /// it.
+    pub fn typed(
+        label: impl Into<String>,
+        value: impl Into<String>,
+        type_span: impl Into<String>,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            value: value.into(),
+            type_span: Some(type_span.into()),
         }
     }
 
@@ -45,11 +70,33 @@ impl TitleLabel {
         // a payload stays byte-exact.
         let label = theme.header.apply_to(super::cursor_safe(&self.label));
         let (_, separator) = super::renderer::role_glyph(theme, Role::Warn);
-        let (_, accent) = super::renderer::role_glyph(theme, Role::Accent);
         format!(
             "{label}{}{}",
             separator.apply_to(":"),
-            accent.apply_to(format!(" {}", super::cursor_safe(&self.value)))
+            self.styled_value(theme)
+        )
+    }
+
+    /// ` <value>` in the accent slot, with a named type span lifted out into
+    /// `theme.type_hint`. Both halves are painted AFTER the fold, and the span
+    /// is matched from the END of the value — the position a producer composes
+    /// a type at, so a path that repeats the type's own text cannot tint the
+    /// earlier run and leave the real type bare. A span the folded value does
+    /// not contain paints nothing extra.
+    fn styled_value(&self, theme: &Theme) -> String {
+        let (_, accent) = super::renderer::role_glyph(theme, Role::Accent);
+        let value = format!(" {}", super::cursor_safe(&self.value));
+        let Some(span) = self.type_span.as_deref().filter(|s| !s.is_empty()) else {
+            return accent.apply_to(value).to_string();
+        };
+        let Some(at) = value.rfind(span) else {
+            return accent.apply_to(value).to_string();
+        };
+        format!(
+            "{}{}{}",
+            accent.apply_to(&value[..at]),
+            theme.type_hint.apply_to(span),
+            accent.apply_to(&value[at + span.len()..]),
         )
     }
 }
@@ -131,6 +178,50 @@ mod tests {
         assert_ne!(
             expected_tail, ": nightly",
             "the separator and accent roles must actually carry styles under this preset"
+        );
+    }
+
+    /// `cfgd explain`'s drill-down heading names a schema type, and a rendered
+    /// type takes the type slot wherever it appears — the same slot the field
+    /// rows below the heading paint theirs in, never the value's accent coat.
+    #[test]
+    #[serial_test::serial]
+    fn a_typed_heading_lifts_its_type_span_out_of_the_accent_coat() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let value = "module.spec.files <[]ModuleFileEntry> (required)";
+        let styled = TitleLabel::typed("Explain", value, "<[]ModuleFileEntry>").styled(&theme);
+
+        assert_eq!(strip_ansi(&styled), format!("Explain: {value}"));
+        assert!(
+            styled.contains(&theme.type_hint.apply_to("<[]ModuleFileEntry>").to_string()),
+            "the type span must take the type slot: {styled:?}"
+        );
+        // Not vacuous: dracula paints its type slot and its accent slot
+        // differently, so a span left in the accent coat fails here.
+        assert!(
+            !styled.contains(&theme.accent.apply_to("<[]ModuleFileEntry>").to_string()),
+            "the type span must not stay in the accent coat: {styled:?}"
+        );
+        // The halves around the span keep the value's own accent coat.
+        assert!(styled.contains(&theme.accent.apply_to(" module.spec.files ").to_string()));
+        assert!(styled.contains(&theme.accent.apply_to(" (required)").to_string()));
+    }
+
+    /// An untyped heading — every other consumer in the product — renders
+    /// exactly the bytes it did before the type slot existed, and a span the
+    /// value does not carry paints nothing rather than guessing.
+    #[test]
+    #[serial_test::serial]
+    fn an_untyped_or_unmatched_span_renders_the_plain_three_slot_heading() {
+        let theme = Theme::from_preset("dracula").with_colors(true);
+        let plain = TitleLabel::new("Status", "dev-tools").styled(&theme);
+        assert_eq!(
+            TitleLabel::typed("Status", "dev-tools", "<Missing>").styled(&theme),
+            plain
+        );
+        assert_eq!(
+            TitleLabel::typed("Status", "dev-tools", "").styled(&theme),
+            plain
         );
     }
 }

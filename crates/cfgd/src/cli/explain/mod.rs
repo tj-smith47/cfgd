@@ -562,14 +562,17 @@ pub fn build_explain_drilldown_doc(
     // The queried field's own type belongs to the heading — the same
     // `<type> (required)` vocabulary the field rows render, on the line that
     // names the field, so no lone kv row repeats it below.
-    let title = match node {
+    // The type reaches the heading through the same named-span slot the field
+    // rows use, so a rendered schema type takes the one type colour wherever
+    // it appears.
+    let mut doc = match node {
         Some(f) => {
             let req = if f.required { " (required)" } else { "" };
-            format!("{path_str} <{}>{req}", f.displayed_type())
+            let span = type_span(f);
+            Doc::new().heading_title_typed("Explain", format!("{path_str} {span}{req}"), span)
         }
-        None => path_str.clone(),
+        None => Doc::new().heading_title("Explain", path_str.clone()),
     };
-    let mut doc = Doc::new().heading_title("Explain", title);
     if let Some(f) = node {
         doc = doc.paragraph(described_with_enum(f));
         let variants: Vec<&FieldNode> = f.variants.iter().collect();

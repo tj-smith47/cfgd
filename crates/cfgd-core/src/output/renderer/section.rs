@@ -701,7 +701,11 @@ mod tests {
     /// calls) paints `theme.secondary`, not `theme.header` — the two must read
     /// apart from each other, or a reader cannot tell a subsection's heading
     /// from the section that owns it.
+    // Serial: `supports_truecolor()` reads COLORTERM / NO_COLOR, and the
+    // rendered line is compared against a slot render taken separately —
+    // a concurrent env mutation between the two splits the comparison.
     #[test]
+    #[serial_test::serial]
     fn nested_section_header_uses_secondary_not_header() {
         use crate::output::Theme;
 
@@ -740,7 +744,11 @@ mod tests {
     /// regardless of how many subsections it later opens — the depth check
     /// reads the SECTION's own `header_depth`, not some global "have we
     /// opened a subsection yet" flag.
+    // Serial: `supports_truecolor()` reads COLORTERM / NO_COLOR, and the
+    // rendered line is compared against a slot render taken separately —
+    // a concurrent env mutation between the two splits the comparison.
     #[test]
+    #[serial_test::serial]
     fn top_level_section_header_stays_theme_header_even_after_a_subsection_closes() {
         use crate::output::Theme;
 

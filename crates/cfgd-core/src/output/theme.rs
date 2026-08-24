@@ -311,7 +311,7 @@ pub struct Theme {
     /// stamped by the `Printer` that will render through it.
     colors: bool,
 
-    // Style slots (13)
+    // Style slots (14)
     /// Style for an action subject at the deepest level of the run tree.
     /// `None` means the subject keeps the role's own style — the correct
     /// answer for a preset with no palette foreground of its own.
@@ -333,6 +333,15 @@ pub struct Theme {
     /// Dracula/Solarized, underlined non-color signal in `minimal`. Drives
     /// `Role::Secondary`.
     pub secondary: ThemedStyle,
+    /// "This is a schema TYPE" — the `<[]ModuleFileEntry>` span inside a
+    /// `cfgd explain` field row and inside its drill-down heading. Its own
+    /// slot rather than `accent`'s, which already means the Caveats heading
+    /// and a title heading's value: each preset maps it to whatever its own
+    /// syntax spec calls a type (Dracula's cyan-italic Types, Solarized's
+    /// yellow `Type`), which is a different question from "attention without
+    /// alarm". Drives no `Role` — a type is not an outcome, so the renderer
+    /// names the slot directly.
+    pub type_hint: ThemedStyle,
 
     // Icon slots (8)
     pub icon_ok: String,
@@ -368,6 +377,9 @@ impl Default for Theme {
             // collide with the yellow `warning` slot.
             accent: hex("#d78700").italic(),
             secondary: hex("#af5fd7"),
+            // The value `accent` carried when types shared its slot, so the
+            // approved default look does not change with the split.
+            type_hint: hex("#d78700").italic(),
             icon_ok: ICON_OK.into(),
             icon_warn: ICON_WARN.into(),
             icon_fail: ICON_FAIL.into(),
@@ -401,6 +413,7 @@ impl Theme {
         self.diff_context = self.diff_context.with_colors(enabled);
         self.accent = self.accent.with_colors(enabled);
         self.secondary = self.secondary.with_colors(enabled);
+        self.type_hint = self.type_hint.with_colors(enabled);
         self
     }
 
@@ -442,6 +455,10 @@ impl Theme {
             diff_context: hex("#6272a4"),
             accent: hex("#ffb86c"),
             secondary: hex("#ff79c6"),
+            // spec.draculatheme.com maps Types to Cyan italic. Sharing the hex
+            // with `info`/`running` is the preset's own pattern (green does
+            // success and diff_add) and neither slot appears beside a type.
+            type_hint: hex("#8be9fd").italic(),
             ..Self::default()
         }
     }
@@ -461,6 +478,10 @@ impl Theme {
             diff_context: hex("#586e75"),
             accent: hex("#cb4b16"),
             secondary: hex("#d33682"),
+            // Solarized's own syntax mapping puts `Type` on yellow, unstyled
+            // of attributes. It does not collide with the magenta field-name
+            // column or the unstyled description beside it.
+            type_hint: hex("#b58900"),
             ..Self::default()
         }
     }
@@ -482,6 +503,9 @@ impl Theme {
             diff_context: hex("#93a1a1"),
             accent: hex("#cb4b16"),
             secondary: hex("#d33682"),
+            // Same official `Type` yellow as the dark variant: the palette is
+            // one, and both backgrounds are designed against it.
+            type_hint: hex("#b58900"),
             ..Self::default()
         }
     }
@@ -536,6 +560,9 @@ impl Theme {
         if let Some(c) = &ov.secondary {
             apply_color(&mut t.secondary, c);
         }
+        if let Some(c) = &ov.type_hint {
+            apply_color(&mut t.type_hint, c);
+        }
         // Icon overrides
         if let Some(v) = &ov.icon_ok {
             t.icon_ok = v.clone();
@@ -584,6 +611,9 @@ impl Theme {
             // header/error/muted.
             accent: ThemedStyle::plain().italic(),
             secondary: ThemedStyle::plain().underlined(),
+            // No colour to spend on a type either, and italic beside the
+            // underlined field-name column is the distinction that survives.
+            type_hint: ThemedStyle::plain().italic(),
             icon_ok: "+".into(),
             icon_warn: "!".into(),
             icon_fail: "x".into(),
@@ -1198,7 +1228,7 @@ mod tests {
     }
 
     #[test]
-    fn from_config_style_overrides_apply_all_twelve_slots() {
+    fn from_config_style_overrides_apply_all_thirteen_slots() {
         // Each slot gets a distinct hex; verify the resolved Theme carries
         // back the exact rgb triple for each.
         let cfg = crate::config::ThemeConfig {
@@ -1216,6 +1246,7 @@ mod tests {
                 diff_context: Some("#1c1d1e".into()),
                 accent: Some("#1f2021".into()),
                 secondary: Some("#222324".into()),
+                type_hint: Some("#252627".into()),
                 ..Default::default()
             },
         };
@@ -1232,6 +1263,7 @@ mod tests {
         assert_eq!(t.diff_context.rgb, Some((0x1c, 0x1d, 0x1e)));
         assert_eq!(t.accent.rgb, Some((0x1f, 0x20, 0x21)));
         assert_eq!(t.secondary.rgb, Some((0x22, 0x23, 0x24)));
+        assert_eq!(t.type_hint.rgb, Some((0x25, 0x26, 0x27)));
     }
 
     #[test]
@@ -1406,6 +1438,7 @@ mod tests {
                 ("diff_context", &t.diff_context),
                 ("accent", &t.accent),
                 ("secondary", &t.secondary),
+                ("type_hint", &t.type_hint),
             ];
             if let Some(p) = &t.primary {
                 slots.push(("primary", p));
@@ -1432,5 +1465,35 @@ mod tests {
             "minimal must not spend colour anywhere"
         );
         assert!(!t.error.has_color, "minimal must not spend colour anywhere");
+    }
+
+    /// Each preset's type slot is a deliberate pick, pinned so a palette edit
+    /// has to move it on purpose: `default` keeps the exact value `accent`
+    /// carried while types shared its slot, `dracula` takes the cyan-italic
+    /// its own spec maps Types to, and both Solarized variants take the
+    /// official `Type` yellow.
+    #[test]
+    fn every_preset_type_hint_is_pinned() {
+        let default = Theme::from_preset("default");
+        assert_eq!(default.type_hint.rgb, Some((0xd7, 0x87, 0x00)));
+        assert!(default.type_hint.attrs.italic);
+        assert_eq!(
+            default.type_hint.rgb, default.accent.rgb,
+            "the default preset's look must not change with the split"
+        );
+
+        let dracula = Theme::from_preset("dracula");
+        assert_eq!(dracula.type_hint.rgb, Some((0x8b, 0xe9, 0xfd)));
+        assert!(dracula.type_hint.attrs.italic);
+
+        for name in ["solarized-dark", "solarized-light"] {
+            let t = Theme::from_preset(name);
+            assert_eq!(t.type_hint.rgb, Some((0xb5, 0x89, 0x00)), "{name}");
+            assert!(!t.type_hint.attrs.italic, "{name}");
+        }
+
+        let minimal = Theme::from_preset("minimal");
+        assert!(!minimal.type_hint.has_color);
+        assert!(minimal.type_hint.attrs.italic);
     }
 }

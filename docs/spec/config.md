@@ -113,6 +113,7 @@ spec:
       diffContext: string
       accent: string
       secondary: string
+      typeHint: string
       iconOk: string
       iconWarn: string
       iconFail: string
@@ -540,6 +541,7 @@ strings. An omitted field inherits the value from the active theme.
 | `diffContext` | string | Colour for context lines in diffs. |
 | `accent` | string | Colour for "attention without alarm" highlights (notable but non-severity changes, e.g. new versions). |
 | `secondary` | string | Colour for structural pivots / identifiers (source names, scope labels). |
+| `typeHint` | string | Colour for schema type annotations in `cfgd explain` output (`<[]ModuleFileEntry>`), in field rows and drill-down headings alike. |
 | `iconOk` | string | Icon character for success state. |
 | `iconWarn` | string | Icon character for warning state. |
 | `iconFail` | string | Icon character for error state. |

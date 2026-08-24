@@ -2,7 +2,7 @@
 //! is the RENDERER's coat, not the caller's: the key is folded through
 //! `cursor_safe` first and painted after, so a schema type reads as its own
 //! column while the row's TEXT stays byte-identical to a plain one. With
-//! colour off the accent slot still emits its own attributes, which is the
+//! colour off the type slot still emits its own attributes, which is the
 //! product-wide NO_COLOR policy rather than a leak.
 use crate::output::{CommandPair, Doc, Printer, Theme, Verbosity};
 
@@ -11,13 +11,13 @@ fn dracula() -> Theme {
 }
 
 fn raw(buf: &std::sync::Arc<std::sync::Mutex<String>>) -> String {
-    // raw-capture-ok: the subject IS the accent SGR, which captured_text strips.
+    // raw-capture-ok: the subject IS the type slot's SGR, which captured_text strips.
     buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 #[test]
 #[serial_test::serial]
-fn a_typed_command_row_paints_its_type_span_in_the_accent_slot() {
+fn a_typed_command_row_paints_its_type_span_in_the_type_hint_slot() {
     let theme = dracula();
     let (p, buf) = Printer::for_test_with_theme_colored(theme.clone(), Verbosity::Normal);
     p.emit(Doc::new().command_list([CommandPair::typed(
@@ -30,11 +30,18 @@ fn a_typed_command_row_paints_its_type_span_in_the_accent_slot() {
     let expected = format!(
         "{}{}",
         theme.secondary.apply_to("files  "),
-        theme.accent.apply_to("<[]ModuleFileEntry>")
+        theme.type_hint.apply_to("<[]ModuleFileEntry>")
     );
     assert!(
         out.contains(&expected),
-        "the type span did not take the accent slot: {out:?}"
+        "the type span did not take the type_hint slot: {out:?}"
+    );
+    // Not vacuous: dracula's type slot and its accent really are different
+    // colours, so a span still painted accent would fail here rather than
+    // pass by the two slots rendering alike.
+    assert!(
+        !out.contains(&theme.accent.apply_to("<[]ModuleFileEntry>").to_string()),
+        "a schema type must no longer take the accent slot: {out:?}"
     );
 }
 
@@ -47,7 +54,7 @@ fn a_type_span_the_key_does_not_carry_paints_nothing_extra() {
     p.flush();
     let out = raw(&buf);
     assert!(
-        !out.contains(&theme.accent.apply_to("<Missing>").to_string()),
+        !out.contains(&theme.type_hint.apply_to("<Missing>").to_string()),
         "a span absent from the key must paint nothing: {out:?}"
     );
 }
@@ -68,7 +75,7 @@ fn stripped_a_typed_row_is_byte_identical_to_a_plain_one() {
     assert_eq!(render(typed_doc()), render(plain_doc()));
 }
 
-/// Colour OFF is not the same claim as stripped. `theme.accent` carries
+/// Colour OFF is not the same claim as stripped. `theme.type_hint` carries
 /// `.italic()` under the default theme, and an attribute-carrying slot still
 /// emits its attrs-only SGR with colour off — NO_COLOR governs colour alone.
 /// So the raw colours-off row differs from the plain one by exactly that:
@@ -87,7 +94,7 @@ fn without_colour_a_typed_row_adds_only_an_attrs_only_run_around_the_span() {
     let plain = render(plain_doc());
     assert!(
         typed.contains("\x1b[3m<[]ModuleFileEntry>\x1b[0m"),
-        "the accent slot's italic run is missing: {typed:?}"
+        "the type slot's italic run is missing: {typed:?}"
     );
     // Every escape in the row is one of the two an attrs-only run is made of;
     // a colour would arrive as a `38;5`/`38;2` parameter run inside one of them.
@@ -121,7 +128,7 @@ fn a_repeated_span_paints_the_key_tail_not_the_first_match() {
     let expected = format!(
         "{}{}",
         theme.secondary.apply_to("<string>  "),
-        theme.accent.apply_to("<string>")
+        theme.type_hint.apply_to("<string>")
     );
     assert!(
         out.contains(&expected),

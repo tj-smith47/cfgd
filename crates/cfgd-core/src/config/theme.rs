@@ -89,7 +89,7 @@ impl<'de> serde::Deserialize<'de> for ThemeConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThemeOverrides {
-    // Style overrides (13) — hex colors applied on top of the active preset.
+    // Style overrides (14) — hex colors applied on top of the active preset.
     /// Color for action lines at the deepest nesting level of a run. Hex color
     /// (`"#ff0000"`). Presets that carry no palette foreground of their own
     /// leave it unset.
@@ -119,6 +119,9 @@ pub struct ThemeOverrides {
     /// Color for secondary status lines: structural pivots, labels, and
     /// identifiers. Hex color.
     pub secondary: Option<String>,
+    /// Color for schema type annotations in explain output. Hex color
+    /// (`"#8be9fd"`).
+    pub type_hint: Option<String>,
 
     // Icon overrides (8) — single glyphs (or short strings) for status roles.
     /// Glyph for success status lines. Default varies by preset (e.g. `✓`).
@@ -154,6 +157,7 @@ impl ThemeOverrides {
             && self.diff_context.is_none()
             && self.accent.is_none()
             && self.secondary.is_none()
+            && self.type_hint.is_none()
             && self.icon_ok.is_none()
             && self.icon_warn.is_none()
             && self.icon_fail.is_none()

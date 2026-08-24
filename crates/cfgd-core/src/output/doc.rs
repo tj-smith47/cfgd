@@ -132,6 +132,22 @@ impl Doc {
         self
     }
 
+    /// A `Label: value` heading whose value carries a schema TYPE span
+    /// (`Explain: module.spec.files <[]ModuleFileEntry>`), painted with the
+    /// type slot instead of the value's accent coat — the same slot the field
+    /// rows below it render their own types in.
+    pub fn heading_title_typed(
+        mut self,
+        label: impl Into<String>,
+        value: impl Into<String>,
+        type_span: impl Into<String>,
+    ) -> Self {
+        self.heading = Some(HeadingKind::Title(TitleLabel::typed(
+            label, value, type_span,
+        )));
+        self
+    }
+
     pub fn kv(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         // Consecutive standalone kv() calls must render as one aligned block
         // (the buffered surface mirrors the streaming auto-batching rule).

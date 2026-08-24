@@ -1080,6 +1080,13 @@
             "null"
           ]
         },
+        "typeHint": {
+          "description": "Color for schema type annotations in explain output. Hex color (`\"#8be9fd\"`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "warning": {
           "description": "Color for warning status lines. Hex color.",
           "type": [

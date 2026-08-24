@@ -220,14 +220,14 @@ impl Emitting<'_> {
 
     /// The rendered left column of one `command_list` row: the folded key in
     /// the renderer's own key coat, with the row's `type_span` (when it names
-    /// one) painted `theme.accent` instead.
+    /// one) painted `theme.type_hint` instead.
     ///
     /// The coat goes on AFTER the fold, exactly as `compose_kv_value`'s role
     /// tint does and for the same reason: `cursor_safe` strips ANSI, so a
     /// caller that painted the span itself would have it eaten by the very
     /// fold that makes the untrusted half safe. Stripped, the three joined
     /// spans are byte-identical to the single-coat row this replaced; with
-    /// colour off but styling live the accent slot still emits its own
+    /// colour off but styling live the type slot still emits its own
     /// attributes, as every attribute-carrying slot in the product does.
     ///
     /// A span the key does not contain paints nothing — a row cannot half-tint
@@ -245,7 +245,7 @@ impl Emitting<'_> {
         format!(
             "{}{}{}",
             self.theme.secondary.apply_to(&key[..at]),
-            self.theme.accent.apply_to(span),
+            self.theme.type_hint.apply_to(span),
             self.theme.secondary.apply_to(&key[at + span.len()..]),
         )
     }

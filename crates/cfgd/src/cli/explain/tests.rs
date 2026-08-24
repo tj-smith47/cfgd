@@ -341,14 +341,14 @@ fn explain_cmd_unknown_field_path() {
 
 #[test]
 fn explain_theme_overrides_complete() {
-    // ThemeOverrides has 21 fields (13 styles + 8 icons) — verify schema matches
+    // ThemeOverrides has 22 fields (14 styles + 8 icons) — verify schema matches
     let config = find_schema("Config").unwrap();
     let fields = resolve_field_path(&config.fields, &["theme", "overrides"]);
     let children = fields.unwrap();
     assert_eq!(
         children.len(),
-        21,
-        "ThemeOverrides schema should have 21 fields, got {}",
+        22,
+        "ThemeOverrides schema should have 22 fields, got {}",
         children.len()
     );
 }
