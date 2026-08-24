@@ -48,10 +48,12 @@ pub fn render_skill_body(model: &SkillModel) -> String {
 
     // The field-walk command line, pulled from the model so the explain token
     // is single-sourced. The drill-down clause is gated on `drill_hint` per the
-    // FieldWalkSpec contract.
+    // FieldWalkSpec contract. `-o json` already returns the whole nested tree
+    // (every field's `children`), so the drill-down is the HUMAN form for
+    // reading one field's docs, never a second JSON walk.
     let explain_kind = format!("cfgd explain {token}");
     let drill_clause = if model.field_walk.drill_hint {
-        format!(", and `{explain_kind}.<field> -o json` to drill into nested objects")
+        format!(" `{explain_kind}.<field>` (no `-o`) prints one field's docs readably.")
     } else {
         String::new()
     };
@@ -60,42 +62,50 @@ pub fn render_skill_body(model: &SkillModel) -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "0. **Precondition — confirm the toolchain is usable.** Run `command -v cfgd`; \
-if it is absent, STOP and tell the user to install cfgd >= {min}. Run `cfgd --version`; \
-if it is older than {min}, warn and prefer the embedded fallback schema below."
+        "0. **Precondition.** Run `cfgd --version`. If cfgd is absent, STOP and tell the \
+user to install cfgd >= {min}; if it is older than {min}, warn and take the fallback branch \
+in steps 1 and 5."
     );
     let _ = writeln!(
         out,
-        "1. **Enumerate every field for this kind (live-first, snapshot-fallback).** \
-Run `{explain_kind} -o json` for the authoritative live schema{drill_clause}. If cfgd is \
-absent or older than the stamp, use the embedded fallback schema below (stamped {cfgd_version})."
+        "1. **Enumerate every field.** Run `{explain_kind} -o json` once. The payload is the \
+complete field list step 3 walks: every field, nested ones under `children`, each with \
+`type`, `description` and `required`; its `location` is the path the finished file goes \
+to.{drill_clause} Fallback: the embedded schema below (stamped {cfgd_version})."
     );
     let _ = writeln!(
         out,
-        "2. **Research best practices externally for THIS subject.** {}",
+        "2. **Research THIS subject before choosing values.** {}",
         model.research_protocol
     );
     let _ = writeln!(
         out,
-        "3. **For EVERY field, decide include OR omit, and justify with a WHY comment.** \
-Box-checking is a failure; meeting the rubric above is the target."
+        "3. **Decide include or omit for EVERY field from step 1, and write the WHY as a \
+comment beside each included one.** Omit a field the subject does not use or whose value \
+would equal the default; note a non-obvious omission in a comment too."
     );
     let _ = writeln!(
         out,
-        "4. **Draft thoroughly:** transitive deps explicit, version constraints set, \
-platforms scoped, multi-step scripts idempotent (timeout + continueOnError), \
-comments-as-specification."
+        "4. **Draft.** Declare every dependency the subject needs at run time, transitive \
+ones included. Set a version floor only where a feature needs it, and say which. Gate \
+platform-specific entries with `platforms`. Make each script step safe to re-run (`onlyIf` \
+/ `unless` / `creates` where the kind offers them, or a command that is itself idempotent), \
+give it a `timeout`, and set `continueOnError: true` only where a failure must not abort \
+the apply. Never write a credential into a value; a secret belongs in the profile's \
+`spec.secrets`. No placeholders, no stub comments."
     );
     let _ = writeln!(
         out,
-        "5. **Validate against the schema:** `{}` — fix until clean \
-(validate against the embedded snapshot if cfgd is unavailable).",
+        "5. **Validate:** `{}` (`-` reads stdin; add `-o json` for a parseable report). A \
+non-zero exit lists every error with its line; fix and re-run until it prints `✓ … is \
+valid`. Fallback: check the draft by hand against the embedded schema (required keys, \
+types, enums) and tell the user it was not machine-validated.",
         model.validate_cmd
     );
     let _ = writeln!(
         out,
-        "6. **Self-critique against the rubric:** \"Box-checking or thorough? Which field \
-did I skip, and was that deliberate?\" Iterate until the answer holds."
+        "6. **Self-critique.** For each field in the step-1 list, name the evidence behind \
+its value or its omission; a field you cannot account for goes back to step 2."
     );
     let _ = writeln!(out);
 
@@ -138,6 +148,12 @@ fn render_examples(out: &mut String, model: &SkillModel) {
         return;
     }
     let _ = writeln!(out, "## Ground-truth examples");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "Validated resources of this kind, shown for shape and depth. A value like \
+`you@example.com` is the example's placeholder; your draft carries the real one."
+    );
     let _ = writeln!(out);
     for example in &model.examples {
         write_fence(out, "yaml", &example.contents);
@@ -220,7 +236,7 @@ mod tests {
             "0. **Precondition",
             "1. **Enumerate",
             "2. **Research",
-            "3. **For EVERY field",
+            "3. **Decide",
             "4. **Draft",
             "5. **Validate",
             "6. **Self-critique",

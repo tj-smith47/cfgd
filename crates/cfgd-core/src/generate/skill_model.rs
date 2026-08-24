@@ -178,10 +178,11 @@ ordering, and strategy choice in evidence, never a guess.";
 
 /// The external best-practice research loop, shared across all kinds.
 const RESEARCH_PROTOCOL: &str = "\
-For each field, consult external best practice before settling a value: the tool's own \
-docs, the package managers that ship it, and community conventions. Record what you \
-verified and your confidence level when a source was unavailable. Prefer live evidence \
-over training-knowledge recall, and state explicitly when you could not confirm a claim.";
+Check the subject's own docs, the package managers that ship it (for a tool), and \
+community conventions. On the target machine, `<tool> --version` and the manager's own \
+query (`brew info`, `apt-cache policy`, …) are live evidence and outrank recall. Put what \
+you verified, and where, in the field's WHY comment; where you could not confirm a claim, \
+say so there and in your reply.";
 
 /// The legacy `generate` orchestration prompt, embedded at compile time. The
 /// single source of truth for the prompt text consumed by the CLI `generate`
@@ -203,7 +204,7 @@ pub fn skill_model_for(kind: SkillKind, cfgd_version: &str) -> SkillModel {
         kind,
         title: format!("Author a high-quality cfgd {kind_word}"),
         description: format!(
-            "Investigate thoroughly and author a complete, validated cfgd {kind_word} resource."
+            "Author a complete, validated cfgd {kind_word}; use whenever creating or reworking a {kind_word} YAML."
         ),
         thoroughness_rubric: THOROUGHNESS_RUBRIC,
         research_protocol: RESEARCH_PROTOCOL,
@@ -237,16 +238,15 @@ macro_rules! resource_example {
 }
 
 /// Ground-truth examples per kind: the most complete real resource first, then a
-/// minimal one. `examples.first()` is always the complete example, which the
-/// drift test pins to its on-disk source.
+/// minimal one. Every entry is pinned to its on-disk source by the drift test.
 fn examples_for(kind: SkillKind) -> Vec<ResourceExample> {
     match kind {
-        // Complete: the thorough nvim Module (the exemplar `after`). Minimal: the
-        // small-but-complete `clift` Module.
-        SkillKind::Module => vec![
-            resource_example!("tests/fixtures/exemplar_nvim_after.yaml"),
-            resource_example!("tests/fixtures/examples/modules/clift.yaml"),
-        ],
+        // The thorough nvim Module already renders in full as the exemplar
+        // `after`, so listing it here again would ship the same 200 lines twice
+        // in every Module skill. Only the small-but-complete `clift` Module.
+        SkillKind::Module => vec![resource_example!(
+            "tests/fixtures/examples/modules/clift.yaml"
+        )],
         SkillKind::Profile => vec![
             resource_example!("tests/fixtures/examples/profiles/base.yaml"),
             resource_example!("tests/fixtures/examples/profiles/work.yaml"),
@@ -280,10 +280,13 @@ fn exemplar_for(kind: SkillKind) -> Exemplar {
         SkillKind::Module => Exemplar {
             before: include_str!("../../tests/fixtures/exemplar_nvim_before.yaml").to_string(),
             after: include_str!("../../tests/fixtures/exemplar_nvim_after.yaml").to_string(),
-            note: "The before is a box-checking module: one prefer-list, no version \
-investigation, no documented rationale. The after is the thorough version — every \
-field evaluated, external best-practice research, and a documented reason for each \
-choice — demonstrating the quality bar a skill must reach for."
+            note: "The before fails `cfgd module validate` (kebab-case `min-version` and \
+`post-apply` where the schema spells `minVersion` and `postApply`), hardcodes `/root` \
+where `~` belongs, declares none of the editor's runtime dependencies (C toolchain, node, \
+python, go), runs its bootstrap as one unguarded, untimed command, and explains nothing. \
+The after declares every transitive dependency beside the plugin that needs it, floors \
+versions only where a feature requires one, gates Linux-only packages, splits the \
+bootstrap into timed steps that tolerate a re-run, and comments each non-obvious choice."
                 .to_string(),
         },
         _ => Exemplar::default(),

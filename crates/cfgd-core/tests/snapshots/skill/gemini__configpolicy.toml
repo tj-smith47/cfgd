@@ -1,6 +1,6 @@
 cfgd-min-version = "<CFGD_MIN_VERSION>"
 cfgd-version = "<CFGD_VERSION>"
-description = "Investigate thoroughly and author a complete, validated cfgd ConfigPolicy resource."
+description = "Author a complete, validated cfgd ConfigPolicy; use whenever creating or reworking a ConfigPolicy YAML."
 prompt = """
 <!-- cfgd-version: <CFGD_VERSION> · cfgd-min-version: <CFGD_MIN_VERSION> -->
 
@@ -10,15 +10,17 @@ Follow this protocol on every invocation. The quality bar is NOT "valid YAML". I
 
 ## Protocol
 
-0. **Precondition — confirm the toolchain is usable.** Run `command -v cfgd`; if it is absent, STOP and tell the user to install cfgd >= <CFGD_MIN_VERSION>. Run `cfgd --version`; if it is older than <CFGD_MIN_VERSION>, warn and prefer the embedded fallback schema below.
-1. **Enumerate every field for this kind (live-first, snapshot-fallback).** Run `cfgd explain configpolicy -o json` for the authoritative live schema, and `cfgd explain configpolicy.<field> -o json` to drill into nested objects. If cfgd is absent or older than the stamp, use the embedded fallback schema below (stamped <CFGD_VERSION>).
-2. **Research best practices externally for THIS subject.** For each field, consult external best practice before settling a value: the tool's own docs, the package managers that ship it, and community conventions. Record what you verified and your confidence level when a source was unavailable. Prefer live evidence over training-knowledge recall, and state explicitly when you could not confirm a claim.
-3. **For EVERY field, decide include OR omit, and justify with a WHY comment.** Box-checking is a failure; meeting the rubric above is the target.
-4. **Draft thoroughly:** transitive deps explicit, version constraints set, platforms scoped, multi-step scripts idempotent (timeout + continueOnError), comments-as-specification.
-5. **Validate against the schema:** `cfgd configpolicy validate <file>` — fix until clean (validate against the embedded snapshot if cfgd is unavailable).
-6. **Self-critique against the rubric:** "Box-checking or thorough? Which field did I skip, and was that deliberate?" Iterate until the answer holds.
+0. **Precondition.** Run `cfgd --version`. If cfgd is absent, STOP and tell the user to install cfgd >= <CFGD_MIN_VERSION>; if it is older than <CFGD_MIN_VERSION>, warn and take the fallback branch in steps 1 and 5.
+1. **Enumerate every field.** Run `cfgd explain configpolicy -o json` once. The payload is the complete field list step 3 walks: every field, nested ones under `children`, each with `type`, `description` and `required`; its `location` is the path the finished file goes to. `cfgd explain configpolicy.<field>` (no `-o`) prints one field's docs readably. Fallback: the embedded schema below (stamped <CFGD_VERSION>).
+2. **Research THIS subject before choosing values.** Check the subject's own docs, the package managers that ship it (for a tool), and community conventions. On the target machine, `<tool> --version` and the manager's own query (`brew info`, `apt-cache policy`, …) are live evidence and outrank recall. Put what you verified, and where, in the field's WHY comment; where you could not confirm a claim, say so there and in your reply.
+3. **Decide include or omit for EVERY field from step 1, and write the WHY as a comment beside each included one.** Omit a field the subject does not use or whose value would equal the default; note a non-obvious omission in a comment too.
+4. **Draft.** Declare every dependency the subject needs at run time, transitive ones included. Set a version floor only where a feature needs it, and say which. Gate platform-specific entries with `platforms`. Make each script step safe to re-run (`onlyIf` / `unless` / `creates` where the kind offers them, or a command that is itself idempotent), give it a `timeout`, and set `continueOnError: true` only where a failure must not abort the apply. Never write a credential into a value; a secret belongs in the profile's `spec.secrets`. No placeholders, no stub comments.
+5. **Validate:** `cfgd configpolicy validate <file>` (`-` reads stdin; add `-o json` for a parseable report). A non-zero exit lists every error with its line; fix and re-run until it prints `✓ … is valid`. Fallback: check the draft by hand against the embedded schema (required keys, types, enums) and tell the user it was not machine-validated.
+6. **Self-critique.** For each field in the step-1 list, name the evidence behind its value or its omission; a field you cannot account for goes back to step 2.
 
 ## Ground-truth examples
+
+Validated resources of this kind, shown for shape and depth. A value like `you@example.com` is the example's placeholder; your draft carries the real one.
 
 ```yaml
 apiVersion: cfgd.io/v1alpha1

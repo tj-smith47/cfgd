@@ -16,13 +16,20 @@ use serde::Serialize;
 
 /// The author-facing resource kinds a skill can teach, as a clap positional
 /// value. Maps 1:1 to [`cfgd_core::generate::SkillKind`] via [`SkillKind::to_core`].
+///
+/// The CRD kinds accept the one-word spelling the validate subcommands use
+/// (`cfgd machineconfig validate`) beside clap's hyphenated default, so the
+/// kind is typed the same way on every surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum SkillKind {
     Module,
     Profile,
     Source,
+    #[value(alias = "machineconfig")]
     MachineConfig,
+    #[value(alias = "configpolicy")]
     ConfigPolicy,
+    #[value(alias = "clusterconfigpolicy")]
     ClusterConfigPolicy,
 }
 
@@ -651,6 +658,33 @@ pub fn cmd_skill_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every CRD kind is typed the way its validator subcommand spells it
+    /// (`cfgd machineconfig validate` → `cfgd skill install machineconfig`),
+    /// beside clap's hyphenated default, so a kind is one word on every surface.
+    #[test]
+    fn crd_skill_kinds_accept_the_validator_spelling() {
+        use clap::ValueEnum;
+        for (kind, spellings) in [
+            (
+                SkillKind::MachineConfig,
+                ["machineconfig", "machine-config"],
+            ),
+            (SkillKind::ConfigPolicy, ["configpolicy", "config-policy"]),
+            (
+                SkillKind::ClusterConfigPolicy,
+                ["clusterconfigpolicy", "cluster-config-policy"],
+            ),
+        ] {
+            for spelling in spellings {
+                assert_eq!(
+                    SkillKind::from_str(spelling, false).ok(),
+                    Some(kind),
+                    "{spelling}"
+                );
+            }
+        }
+    }
 
     /// `--provider <unknown>` (shared by `skill install`/`remove`/`update`
     /// through `validate_provider_ids`) must carry the typed

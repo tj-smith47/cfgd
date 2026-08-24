@@ -1,6 +1,6 @@
 ---
 name: cfgd-module
-description: Investigate thoroughly and author a complete, validated cfgd Module resource.
+description: Author a complete, validated cfgd Module; use whenever creating or reworking a Module YAML.
 user-invocable: true
 cfgd-version: <CFGD_VERSION>
 cfgd-min-version: <CFGD_MIN_VERSION>
@@ -14,17 +14,17 @@ Follow this protocol on every invocation. The quality bar is NOT "valid YAML". I
 
 ## Protocol
 
-0. **Precondition — confirm the toolchain is usable.** Run `command -v cfgd`; if it is absent, STOP and tell the user to install cfgd >= <CFGD_MIN_VERSION>. Run `cfgd --version`; if it is older than <CFGD_MIN_VERSION>, warn and prefer the embedded fallback schema below.
-1. **Enumerate every field for this kind (live-first, snapshot-fallback).** Run `cfgd explain module -o json` for the authoritative live schema, and `cfgd explain module.<field> -o json` to drill into nested objects. If cfgd is absent or older than the stamp, use the embedded fallback schema below (stamped <CFGD_VERSION>).
-2. **Research best practices externally for THIS subject.** For each field, consult external best practice before settling a value: the tool's own docs, the package managers that ship it, and community conventions. Record what you verified and your confidence level when a source was unavailable. Prefer live evidence over training-knowledge recall, and state explicitly when you could not confirm a claim.
-3. **For EVERY field, decide include OR omit, and justify with a WHY comment.** Box-checking is a failure; meeting the rubric above is the target.
-4. **Draft thoroughly:** transitive deps explicit, version constraints set, platforms scoped, multi-step scripts idempotent (timeout + continueOnError), comments-as-specification.
-5. **Validate against the schema:** `cfgd module validate <file>` — fix until clean (validate against the embedded snapshot if cfgd is unavailable).
-6. **Self-critique against the rubric:** "Box-checking or thorough? Which field did I skip, and was that deliberate?" Iterate until the answer holds.
+0. **Precondition.** Run `cfgd --version`. If cfgd is absent, STOP and tell the user to install cfgd >= <CFGD_MIN_VERSION>; if it is older than <CFGD_MIN_VERSION>, warn and take the fallback branch in steps 1 and 5.
+1. **Enumerate every field.** Run `cfgd explain module -o json` once. The payload is the complete field list step 3 walks: every field, nested ones under `children`, each with `type`, `description` and `required`; its `location` is the path the finished file goes to. `cfgd explain module.<field>` (no `-o`) prints one field's docs readably. Fallback: the embedded schema below (stamped <CFGD_VERSION>).
+2. **Research THIS subject before choosing values.** Check the subject's own docs, the package managers that ship it (for a tool), and community conventions. On the target machine, `<tool> --version` and the manager's own query (`brew info`, `apt-cache policy`, …) are live evidence and outrank recall. Put what you verified, and where, in the field's WHY comment; where you could not confirm a claim, say so there and in your reply.
+3. **Decide include or omit for EVERY field from step 1, and write the WHY as a comment beside each included one.** Omit a field the subject does not use or whose value would equal the default; note a non-obvious omission in a comment too.
+4. **Draft.** Declare every dependency the subject needs at run time, transitive ones included. Set a version floor only where a feature needs it, and say which. Gate platform-specific entries with `platforms`. Make each script step safe to re-run (`onlyIf` / `unless` / `creates` where the kind offers them, or a command that is itself idempotent), give it a `timeout`, and set `continueOnError: true` only where a failure must not abort the apply. Never write a credential into a value; a secret belongs in the profile's `spec.secrets`. No placeholders, no stub comments.
+5. **Validate:** `cfgd module validate <file>` (`-` reads stdin; add `-o json` for a parseable report). A non-zero exit lists every error with its line; fix and re-run until it prints `✓ … is valid`. Fallback: check the draft by hand against the embedded schema (required keys, types, enums) and tell the user it was not machine-validated.
+6. **Self-critique.** For each field in the step-1 list, name the evidence behind its value or its omission; a field you cannot account for goes back to step 2.
 
 ## Worked exemplar (the quality bar)
 
-The before is a box-checking module: one prefer-list, no version investigation, no documented rationale. The after is the thorough version — every field evaluated, external best-practice research, and a documented reason for each choice — demonstrating the quality bar a skill must reach for.
+The before fails `cfgd module validate` (kebab-case `min-version` and `post-apply` where the schema spells `minVersion` and `postApply`), hardcodes `/root` where `~` belongs, declares none of the editor's runtime dependencies (C toolchain, node, python, go), runs its bootstrap as one unguarded, untimed command, and explains nothing. The after declares every transitive dependency beside the plugin that needs it, floors versions only where a feature requires one, gates Linux-only packages, splits the bootstrap into timed steps that tolerate a re-run, and comments each non-obvious choice.
 
 Before (box-checking):
 
@@ -268,8 +268,8 @@ spec:
     command: nvim
 
   scripts:
-    # First-run bootstrap. Each step is idempotent; cfgd will skip on second apply
-    # only via timestamp tracking, but the underlying commands handle re-runs.
+    # First-run bootstrap. An unguarded script runs on every apply, so each
+    # step's command is written to tolerate a re-run.
     # spec.env above (PATH, EDITOR, VISUAL) is injected into each step's process
     # environment, so the nvim binary and ~/.local/bin, go/bin, cargo/bin
     # toolchains are already on PATH — no per-step export needed.
@@ -311,220 +311,7 @@ spec:
 
 ## Ground-truth examples
 
-```yaml
-apiVersion: cfgd.io/v1alpha1
-kind: Module
-metadata:
-  name: nvim
-  description: Neovim editor — LazyVim-style plugin set with Mason-managed LSP, treesitter, copilot, sops.
-
-spec:
-  packages:
-  # --- Editor ---------------------------------------------------------------
-  - name: neovim
-    minVersion: '0.11'
-    prefer:
-    - brew
-    - snap
-    deny:
-    - apt                         # Ubuntu LTS apt nvim is too old for our plugin set
-
-  # --- Native build toolchain ---------------------------------------------
-  # LuaSnip (jsregexp), telescope-fzf-native, CopilotChat (tiktoken),
-  # nvim-treesitter parser compilation all shell out to `make` + a C compiler.
-  - name: gcc
-    aliases:
-      apt: build-essential
-      dnf: '@development-tools'
-    platforms:
-    - linux
-  - name: make
-    platforms:
-    - linux
-  - name: unzip                   # Mason unpacks language-server archives with unzip
-  - name: git                     # lazy.nvim cloning, fugitive, gitsigns, diffview
-  - name: curl
-
-  # --- CLI helpers used directly by plugins -------------------------------
-  - name: ripgrep                 # telescope live_grep, todo-comments
-  - name: fd                      # telescope find_files
-    # apt ships fd as `fdfind` (no symlink); brew + cargo install the binary
-    # as `fd` directly. Prefer those so telescope can find it without a manual
-    # alias on the user's PATH.
-    prefer:
-    - brew
-    - cargo
-    - apt
-    aliases:
-      apt: fd-find
-      cargo: fd-find
-  - name: zoxide                  # telescope-zoxide
-    prefer:
-    - brew
-    - cargo
-    - apt
-
-  # --- Linux desktop providers --------------------------------------------
-  # X11 / Wayland clipboard providers. Harmless on headless boxes; nvim's
-  # OSC52 fallback (configured in lua/config/options.lua under $SSH_TTY)
-  # covers SSH-only setups like Termius.
-  - name: xclip
-    platforms:
-    - linux
-  - name: wl-clipboard
-    platforms:
-    - linux
-  - name: xdg-utils               # url-open's `gx` → xdg-open
-    platforms:
-    - linux
-
-  # --- Node toolchain -----------------------------------------------------
-  # copilot.vim needs node ≥18. markdown-preview prefers yarn but falls back
-  # to npm. Mason pulls dozens of JS-based language servers via npm.
-  - name: node
-    minVersion: '18'
-    prefer:
-    - brew
-    - apt
-    aliases:
-      apt: nodejs
-  - name: npm                     # apt's nodejs package doesn't always include npm
-    platforms:
-    - linux
-  - name: yarn
-    prefer:
-    - npm
-    - brew
-  # Node provider for nvim — needed by remote/JS plugins. Without it,
-  # :checkhealth reports "Missing 'neovim' npm package". Same canonical
-  # `neovim` name as the editor entry above; cfgd's resolver treats per-manager
-  # entries independently.
-  - name: neovim
-    prefer:
-    - npm
-
-  # --- Python toolchain ---------------------------------------------------
-  # Mason installs many python-based linters/formatters via pip. dap-python
-  # needs a real venv. pynvim is the python provider (vim.python3_host_prog).
-  - name: python3
-  - name: pip
-    aliases:
-      apt: python3-pip
-    platforms:
-    - linux
-  - name: python3-venv            # pipx + debugpy + dap-python require venv
-    aliases:
-      dnf: python3-virtualenv
-    platforms:
-    - linux
-  - name: pipx
-    prefer:
-    - brew
-    - apt
-  - name: pynvim                  # vim.python3 provider for nvim
-    prefer:
-    - pipx
-
-  # --- Go toolchain -------------------------------------------------------
-  # go.nvim's :GoInstallBinaries calls `go install` for dlv, gotests, iferr,
-  # fillstruct, gomodifytags. Mason also installs gopls/gofumpt/golines via go.
-  - name: go
-    minVersion: '1.25'
-    prefer:
-    - brew
-    - apt
-
-  # --- Rust toolchain -----------------------------------------------------
-  # stylua is a Rust binary; cargo provides a reliable fallback when brew isn't
-  # available on the host.
-  - name: cargo
-    aliases:
-      brew: rust
-      apt: rustc
-  - name: stylua                  # Lua formatter used by conform.nvim
-    prefer:
-    - cargo
-    - brew
-
-  # --- Secrets ------------------------------------------------------------
-  - name: sops                    # sops.nvim + nvim-sops
-    prefer:
-    - brew
-    - apt
-  - name: age                     # sops age backend
-    prefer:
-    - brew
-    - apt
-
-  files:
-  - source: files/init.lua
-    target: ~/.config/nvim/init.lua
-  - source: files/lazy-lock.json
-    target: ~/.config/nvim/lazy-lock.json
-  - source: files/stylua.toml
-    target: ~/.config/nvim/stylua.toml
-  - source: files/lua
-    target: ~/.config/nvim/lua
-  - source: files/after
-    target: ~/.config/nvim/after
-
-  env:
-  - name: EDITOR
-    value: nvim
-  - name: VISUAL
-    value: nvim
-  - name: PATH
-    value: $HOME/.local/bin:$HOME/go/bin:$HOME/.cargo/bin:$PATH
-
-  aliases:
-  - name: v
-    command: nvim
-  - name: vim
-    command: nvim
-  - name: vi
-    command: nvim
-
-  scripts:
-    # First-run bootstrap. Each step is idempotent; cfgd will skip on second apply
-    # only via timestamp tracking, but the underlying commands handle re-runs.
-    # spec.env above (PATH, EDITOR, VISUAL) is injected into each step's process
-    # environment, so the nvim binary and ~/.local/bin, go/bin, cargo/bin
-    # toolchains are already on PATH — no per-step export needed.
-    postApply:
-    - run: |
-        if command -v pipx >/dev/null 2>&1; then
-          pipx install --force pynvim 2>&1 | tail -5 || true
-        fi
-      timeout: 120s
-      continueOnError: true
-    - run: |
-        nvim --headless "+Lazy! restore" +qa
-      timeout: 900s
-    - run: |
-        nvim --headless "+TSUpdateSync" +qa
-      timeout: 600s
-    - run: |
-        nvim --headless "+MasonToolsInstallSync" +qa
-      timeout: 900s
-    - run: |
-        nvim --headless "+GoInstallBinaries" +qa
-      timeout: 300s
-      continueOnError: true
-    # markdown-preview.nvim's `build` function is gated on `#ui > 0`, so headless
-    # installs skip the node-app install. Do it directly from the lazy plugin dir.
-    - run: |
-        mp="$HOME/.local/share/nvim/lazy/markdown-preview.nvim/app"
-        if [ -d "$mp" ]; then
-          cd "$mp"
-          if command -v yarn >/dev/null 2>&1; then
-            yarn install --frozen-lockfile
-          else
-            npm install --no-audit --no-fund
-          fi
-        fi
-      timeout: 180s
-      continueOnError: true
-```
+Validated resources of this kind, shown for shape and depth. A value like `you@example.com` is the example's placeholder; your draft carries the real one.
 
 ```yaml
 apiVersion: cfgd.io/v1alpha1
