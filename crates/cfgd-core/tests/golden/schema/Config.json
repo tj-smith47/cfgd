@@ -4,7 +4,7 @@
   "definitions": {
     "AiConfig": {
       "additionalProperties": false,
-      "description": "`spec.ai`: settings for `cfgd generate`'s AI-guided session. ```yaml ai: provider: claude model: claude-sonnet-4-6 apiKeyEnv: ANTHROPIC_API_KEY ```",
+      "description": "`spec.ai`: settings for `cfgd generate`'s AI-guided session. ```yaml ai: provider: claude model: claude-sonnet-5 apiKeyEnv: ANTHROPIC_API_KEY ```",
       "properties": {
         "apiKeyEnv": {
           "default": "ANTHROPIC_API_KEY",
@@ -12,8 +12,8 @@
           "type": "string"
         },
         "model": {
-          "default": "claude-sonnet-4-6",
-          "description": "The model identifier to request. Default: `claude-sonnet-4-6`.",
+          "default": "claude-sonnet-5",
+          "description": "The model identifier to request. Default: `claude-sonnet-5`.",
           "type": "string"
         },
         "provider": {

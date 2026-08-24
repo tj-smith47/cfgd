@@ -242,7 +242,7 @@ mod tests {
     #[test]
     fn test_api_request_omits_empty_tools() {
         let request = ApiRequest {
-            model: "claude-sonnet-4-6",
+            model: "claude-sonnet-5",
             max_tokens: 4096,
             system: "You are helpful.",
             messages: &[],
@@ -260,7 +260,7 @@ mod tests {
             input_schema: serde_json::json!({"type": "object"}),
         }];
         let request = ApiRequest {
-            model: "claude-sonnet-4-6",
+            model: "claude-sonnet-5",
             max_tokens: 4096,
             system: "You are helpful.",
             messages: &[],
@@ -301,7 +301,7 @@ mod tests {
             )
             .create();
 
-        let client = AnthropicClient::new("test-key-abc".to_string(), "claude-sonnet-4-6".into());
+        let client = AnthropicClient::new("test-key-abc".to_string(), "claude-sonnet-5".into());
         let response = client
             .send_message(&[], "You are a test.", &[], 1024)
             .expect("send_message should succeed against the mock");
@@ -332,7 +332,7 @@ mod tests {
             )
             .create();
 
-        let client = AnthropicClient::new("test-key".into(), "claude-sonnet-4-6".into());
+        let client = AnthropicClient::new("test-key".into(), "claude-sonnet-5".into());
         let err = client
             .send_message(&[], "system", &[], 1024)
             .expect_err("non-2xx should surface as ProviderError");

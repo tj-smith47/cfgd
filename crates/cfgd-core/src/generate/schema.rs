@@ -705,8 +705,8 @@ spec:
     # optional, string, default: "claude"
     provider: claude
     # Model name/ID.
-    # optional, string, default: "claude-sonnet-4-6"
-    model: claude-sonnet-4-6
+    # optional, string, default: "claude-sonnet-5"
+    model: claude-sonnet-5
     # Environment variable name containing the API key.
     # optional, string, default: "ANTHROPIC_API_KEY"
     apiKeyEnv: ANTHROPIC_API_KEY
