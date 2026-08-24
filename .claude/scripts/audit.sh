@@ -1595,6 +1595,86 @@ fi
 # `task --list`. `init.tape` is the bare `record.sh` call (the script's
 # default name), so it is matched by its own spelling.
 
+# Every install channel anodizer publishes to has a row in README's
+# Distribution table (and, for the per-user channels, a section in
+# docs/installation.md); a channel anodizer has switched off (`skip: true`)
+# has no row. The Nix publisher shipped for months with no row anywhere,
+# and the Snap row would have outlived its publisher the same way.
+log_section "Install channels (README/installation.md ↔ .anodizer.yaml publishers)"
+
+channel_gap="$(python3 - <<'PY'
+import re, sys, yaml
+
+doc = yaml.safe_load(open(".anodizer.yaml"))
+
+# publisher key in .anodizer.yaml -> (README marker, installation.md marker or None)
+CHANNELS = {
+    "homebrew_casks": ("Homebrew", "### Homebrew"),
+    "aur_source": ("AUR", "### AUR"),
+    "winget": ("winget", "### winget"),
+    "scoop": ("Scoop", "### Scoop"),
+    "chocolatey": ("Chocolatey", "### Chocolatey"),
+    "nix": ("Nix", "### Nix"),
+    "nfpm": ("deb / rpm / apk", "deb / rpm / apk"),
+    "cloudsmiths": ("CloudSmith", None),
+    "krew": ("Krew", None),
+    "docker_digest": ("GHCR", None),
+    "binstall": ("binstall", None),
+    "mcp": ("MCP", None),
+    "snapcrafts": ("Snap", "### Snap"),
+}
+
+def enabled(block):
+    if isinstance(block, list):
+        return any(enabled(b) for b in block)
+    if not isinstance(block, dict):
+        return False
+    if block.get("skip") is True or block.get("disable") is True:
+        return False
+    return block.get("enabled", True) is not False
+
+found = {}
+def walk(node):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k in CHANNELS:
+                found[k] = found.get(k, False) or enabled(v)
+            walk(v)
+    elif isinstance(node, list):
+        for v in node:
+            walk(v)
+walk(doc)
+
+readme = open("README.md").read()
+m = re.search(r"^## Distribution\n(.*?)(?=^## )", readme, re.S | re.M)
+table = m.group(1) if m else ""
+install = open("docs/installation.md").read()
+
+gaps = []
+for key, (readme_marker, install_marker) in CHANNELS.items():
+    if key not in found:
+        continue
+    has_row = readme_marker in table
+    if found[key] and not has_row:
+        gaps.append(f"{key}: enabled in .anodizer.yaml but README Distribution table has no '{readme_marker}' row")
+    if not found[key] and has_row:
+        gaps.append(f"{key}: disabled in .anodizer.yaml but README Distribution table still has a '{readme_marker}' row")
+    if install_marker:
+        has_section = install_marker in install
+        if found[key] and not has_section:
+            gaps.append(f"{key}: enabled in .anodizer.yaml but docs/installation.md has no '{install_marker}'")
+        if not found[key] and has_section:
+            gaps.append(f"{key}: disabled in .anodizer.yaml but docs/installation.md still has '{install_marker}'")
+print("\n".join(gaps))
+PY
+)"
+if [ -n "$channel_gap" ]; then
+    log_error "Install channels out of sync with .anodizer.yaml publishers:"
+    printf '%s\n' "$channel_gap"
+else
+    log_ok "README Distribution table and docs/installation.md match the enabled publishers"
+fi
+
 log_section "Demo tapes (one Taskfile target each)"
 
 tape_gap=""
@@ -1613,6 +1693,27 @@ if [ -n "$tape_gap" ]; then
     printf '%s' "$tape_gap"
 else
     log_ok "Every demo/*.tape is recorded by a Taskfile target"
+fi
+
+# --- Host-recorded tapes pin the theme ---
+# A tape that runs cfgd on the HOST (the kind-cluster demos reach the
+# demo-k8s kubeconfig instead of a container) reads the recording operator's
+# own ~/.config/cfgd, so an operator whose config names a preset publishes a
+# GIF in that preset. Two GIFs shipped in dracula that way. The export line
+# that points at demo-k8s must also carry CFGD_THEME=default.
+log_section "Demo tapes (host-recorded tapes pin CFGD_THEME)"
+
+theme_gap=""
+for tape in demo/*.tape; do
+    [ -e "$tape" ] || continue
+    grep -q 'cfgd-debug/demo-k8s' "$tape" || continue
+    grep -Eq '^Type "export .*CFGD_THEME=default' "$tape" || theme_gap="${theme_gap}${tape}"$'\n'
+done
+if [ -n "$theme_gap" ]; then
+    log_error "Host-recorded demo tapes whose export line does not pin CFGD_THEME=default:"
+    printf '%s' "$theme_gap"
+else
+    log_ok "Every host-recorded demo tape pins CFGD_THEME=default"
 fi
 
 # --- Summary ---
