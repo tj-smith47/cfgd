@@ -27,7 +27,7 @@ pub(in crate::cli) fn write_scaffold(
 /// Counterpart to `write_scaffold`: scaffolds inject a modeline; rewrites only
 /// preserve what the file already had — never inject. Mid-document comments
 /// cannot survive the serde round-trip and remain lost.
-pub(in crate::cli) fn rewrite_user_yaml<T: serde::Serialize>(
+pub(in crate::cli) fn rewrite_user_yaml<T: serde::Serialize + serde::de::DeserializeOwned>(
     path: &Path,
     value: &T,
 ) -> anyhow::Result<()> {
@@ -46,13 +46,19 @@ pub(in crate::cli) fn rewrite_user_yaml<T: serde::Serialize>(
 
 /// [`rewrite_user_yaml`] for callers that already hold the file's pre-read
 /// content, avoiding a second read of the same file.
-pub(in crate::cli) fn rewrite_user_yaml_with_original<T: serde::Serialize>(
+pub(in crate::cli) fn rewrite_user_yaml_with_original<
+    T: serde::Serialize + serde::de::DeserializeOwned,
+>(
     path: &Path,
     original: &str,
     value: &T,
 ) -> anyhow::Result<()> {
     let mut tree = serde_yaml::to_value(value)?;
     prune_absent_sections(&mut tree, 0);
+    // An original that does not parse declared nothing; every default is then
+    // undeclared, and dropping one changes nothing a reader gets back.
+    let declared = serde_yaml::from_str(original).unwrap_or(serde_yaml::Value::Null);
+    prune_undeclared_defaults::<T>(&mut tree, &declared);
     let yaml = serde_yaml::to_string(&tree)?;
     cfgd_core::atomic_write_str(
         path,
@@ -98,6 +104,104 @@ fn is_absent_section(value: &serde_yaml::Value) -> bool {
         serde_yaml::Value::Sequence(seq) => seq.is_empty(),
         serde_yaml::Value::Mapping(map) => map.is_empty(),
         _ => false,
+    }
+}
+
+/// One step of a path into a YAML tree: a mapping key or a sequence index.
+#[derive(Clone)]
+enum YamlStep {
+    Key(serde_yaml::Value),
+    Index(usize),
+}
+
+/// Drop every scalar the author never declared whose value is the field's own
+/// default (`fileStrategy: Symlink` on a config that never named a strategy).
+/// The null/empty prune above cannot see one, and a per-field
+/// `skip_serializing_if` would drop it from every `-o json` payload the same
+/// struct serializes into, not just from the user's file. The default is
+/// detected without naming any type's fields: the tree is re-parsed as `T`
+/// with the key removed, and when it re-serializes to the same tree the key
+/// carried nothing but what an absent key reads back as. A key the original
+/// file declares is kept whatever its value, so a user who wrote the default
+/// out on purpose keeps it. Only scalars are candidates: a mapping or sequence
+/// is either data or already pruned as an absent section.
+fn prune_undeclared_defaults<T: serde::Serialize + serde::de::DeserializeOwned>(
+    tree: &mut serde_yaml::Value,
+    declared: &serde_yaml::Value,
+) {
+    let mut candidates = Vec::new();
+    collect_undeclared_scalars(tree, declared, &mut Vec::new(), &mut candidates);
+    for path in candidates {
+        let mut probe = tree.clone();
+        remove_at(&mut probe, &path);
+        let Ok(parsed) = serde_yaml::from_value::<T>(probe) else {
+            continue;
+        };
+        let Ok(mut round_trip) = serde_yaml::to_value(&parsed) else {
+            continue;
+        };
+        prune_absent_sections(&mut round_trip, 0);
+        if round_trip == *tree {
+            remove_at(tree, &path);
+        }
+    }
+}
+
+fn collect_undeclared_scalars(
+    tree: &serde_yaml::Value,
+    declared: &serde_yaml::Value,
+    path: &mut Vec<YamlStep>,
+    out: &mut Vec<Vec<YamlStep>>,
+) {
+    match tree {
+        serde_yaml::Value::Mapping(map) => {
+            for (key, value) in map {
+                path.push(YamlStep::Key(key.clone()));
+                // The document's own top-level keys are never candidates.
+                let is_scalar = matches!(
+                    value,
+                    serde_yaml::Value::Bool(_)
+                        | serde_yaml::Value::Number(_)
+                        | serde_yaml::Value::String(_)
+                );
+                if is_scalar {
+                    if path.len() > 1 && lookup(declared, path).is_none() {
+                        out.push(path.clone());
+                    }
+                } else {
+                    collect_undeclared_scalars(value, declared, path, out);
+                }
+                path.pop();
+            }
+        }
+        serde_yaml::Value::Sequence(seq) => {
+            for (index, value) in seq.iter().enumerate() {
+                path.push(YamlStep::Index(index));
+                collect_undeclared_scalars(value, declared, path, out);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lookup<'a>(tree: &'a serde_yaml::Value, path: &[YamlStep]) -> Option<&'a serde_yaml::Value> {
+    path.iter().try_fold(tree, |node, step| match step {
+        YamlStep::Key(key) => node.as_mapping()?.get(key),
+        YamlStep::Index(index) => node.as_sequence()?.get(*index),
+    })
+}
+
+fn remove_at(tree: &mut serde_yaml::Value, path: &[YamlStep]) {
+    let Some((last, parents)) = path.split_last() else {
+        return;
+    };
+    let parent = parents.iter().try_fold(tree, |node, step| match step {
+        YamlStep::Key(key) => node.as_mapping_mut()?.get_mut(key),
+        YamlStep::Index(index) => node.as_sequence_mut()?.get_mut(*index),
+    });
+    if let (Some(map), YamlStep::Key(key)) = (parent.and_then(|p| p.as_mapping_mut()), last) {
+        map.remove(key);
     }
 }
 
