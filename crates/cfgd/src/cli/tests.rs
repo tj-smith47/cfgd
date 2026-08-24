@@ -197,7 +197,9 @@ impl CliTestHarness {
             quiet: true,
             output: OutputFormatArg(self.output_format.clone()),
             list_envelope: false,
+            theme: None,
             jsonpath: None,
+            yes: false,
             state_dir: Some(self.state_dir.path().to_path_buf()),
             config_dir: None,
             cache_dir: Some(self.cache_dir.path().to_path_buf()),
@@ -365,6 +367,125 @@ fn cli_has_jsonpath_flag() {
 }
 
 #[test]
+fn every_value_taking_global_flag_is_skipped_by_the_subcommand_locator() {
+    // `is_value_taking_flag` / `_inline` mirror the `global = true` flags on
+    // `Cli` by hand, and a flag missing from them makes `find_subcommand_index`
+    // read the flag's VALUE as the subcommand (`cfgd --scope system status`
+    // once expanded aliases against `system`). Walk the real clap definition
+    // so the next global flag trips here instead of in a user's alias.
+    use clap::CommandFactory;
+    let cmd = Cli::command();
+    let mut walked = 0;
+    for arg in cmd
+        .get_arguments()
+        .filter(|a| a.is_global_set() && a.get_action().takes_values())
+    {
+        walked += 1;
+        let long = format!(
+            "--{}",
+            arg.get_long().expect("global flags carry a long form")
+        );
+        assert!(
+            super::is_value_taking_flag(&long),
+            "{long} takes a value but is_value_taking_flag does not know it"
+        );
+        assert!(
+            super::is_value_taking_flag_inline(&format!("{long}=x")),
+            "{long}=VALUE is not recognised by is_value_taking_flag_inline"
+        );
+        if let Some(short) = arg.get_short() {
+            let short = format!("-{short}");
+            assert!(super::is_value_taking_flag(&short), "{short} is unknown");
+            assert!(
+                super::is_value_taking_flag_inline(&format!("{short}=x")),
+                "{short}=VALUE is unknown"
+            );
+        }
+    }
+    assert!(walked >= 10, "the walk found only {walked} global flags");
+}
+
+/// `--yes` / `-y` / `CFGD_YES` is ONE global flag on `Cli`. A subcommand that
+/// wants it mirrors the global with `#[arg(from_global)]`; one that declares
+/// its own `--yes` (or claims `-y` for anything else) shadows the global and
+/// collides with it at parse time. Walk every subcommand recursively so the
+/// next local copy trips here.
+#[test]
+fn no_subcommand_declares_its_own_yes_flag() {
+    use clap::CommandFactory;
+
+    fn walk(cmd: &clap::Command, path: &str, seen: &mut usize) {
+        for arg in cmd.get_arguments().filter(|a| !a.is_global_set()) {
+            let long = arg.get_long();
+            let aliases = arg.get_all_aliases().unwrap_or_default();
+            assert!(
+                long != Some("yes") && !aliases.contains(&"yes"),
+                "`{path}` declares a local --yes; the global on `Cli` already covers it"
+            );
+            assert!(
+                arg.get_short() != Some('y'),
+                "`{path}` claims -y, which is the global --yes short"
+            );
+        }
+        for sub in cmd.get_subcommands() {
+            *seen += 1;
+            walk(sub, &format!("{path} {}", sub.get_name()), seen);
+        }
+    }
+
+    let root = Cli::command();
+    let global = root
+        .get_arguments()
+        .find(|a| a.get_long() == Some("yes"))
+        .expect("Cli carries a --yes");
+    assert!(global.is_global_set(), "--yes on Cli must be global");
+    assert_eq!(global.get_short(), Some('y'));
+    assert_eq!(global.get_env().and_then(|e| e.to_str()), Some("CFGD_YES"));
+
+    let mut seen = 0;
+    walk(&root, "cfgd", &mut seen);
+    assert!(seen >= 50, "the walk found only {seen} subcommands");
+
+    // Both placements and the env spelling reach the same field.
+    for argv in [
+        ["cfgd", "--yes", "rollback", "42"],
+        ["cfgd", "rollback", "42", "--yes"],
+        ["cfgd", "rollback", "42", "-y"],
+    ] {
+        let cli = Cli::try_parse_from(argv).expect("--yes parses in every position");
+        assert!(cli.yes, "{argv:?} did not set cli.yes");
+        let Some(Command::Rollback { yes, .. }) = cli.command else {
+            panic!("{argv:?} did not parse as rollback");
+        };
+        assert!(yes, "{argv:?} did not reach the from_global mirror");
+    }
+}
+
+#[test]
+fn theme_flag_is_global_and_refuses_an_unknown_preset() {
+    let cli = Cli::try_parse_from(["cfgd", "status", "--theme", "dracula"])
+        .expect("--theme parses after the subcommand");
+    assert_eq!(cli.theme.as_deref(), Some("dracula"));
+    let err = match Cli::try_parse_from(["cfgd", "--theme", "bogus", "status"]) {
+        Ok(_) => panic!("an unknown preset must be refused at the flag"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err.contains("possible values"),
+        "the refusal lists the presets: {err}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn theme_flag_reads_cfgd_theme_from_the_environment() {
+    use cfgd_core::test_helpers::EnvVarGuard;
+    let _g = EnvVarGuard::set("CFGD_THEME", "nord");
+    let cli = Cli::try_parse_from(["cfgd", "status"]).expect("parse");
+    assert_eq!(cli.theme.as_deref(), Some("nord"));
+}
+
+#[test]
 fn cli_output_flag_has_short_alias() {
     use clap::CommandFactory;
     let cmd = Cli::command();
@@ -391,13 +512,28 @@ fn resolve_theme_config_carries_the_whole_block_not_just_the_preset_name() {
     )
     .expect("write config");
 
-    let theme = super::resolve_theme_config(&path).expect("spec.theme must resolve");
+    let theme = super::resolve_theme_config(&path, None).expect("spec.theme must resolve");
     assert_eq!(theme.name, "dracula");
     assert_eq!(
         theme.overrides.header.as_deref(),
         Some("#ff0000"),
         "the overrides block must travel with the preset name"
     );
+
+    // `--theme` replaces the name and nothing else, exactly what
+    // `cfgd config set theme.name nord` would have persisted.
+    let overridden = super::resolve_theme_config(&path, Some("nord")).expect("override resolves");
+    assert_eq!(overridden.name, "nord");
+    assert_eq!(overridden.overrides.header.as_deref(), Some("#ff0000"));
+}
+
+#[test]
+fn resolve_theme_config_override_stands_alone_without_a_config() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let theme = super::resolve_theme_config(&dir.path().join("absent.yaml"), Some("minimal"))
+        .expect("the flag needs no config file behind it");
+    assert_eq!(theme.name, "minimal");
+    assert!(theme.overrides.is_empty());
 }
 
 #[test]
@@ -406,14 +542,14 @@ fn resolve_theme_config_falls_back_to_the_default_theme_when_it_cannot_read_one(
     // failure ON, so neither absence nor malformed YAML may be an error here.
     let dir = tempfile::tempdir().expect("tempdir");
     assert!(
-        super::resolve_theme_config(&dir.path().join("absent.yaml")).is_none(),
+        super::resolve_theme_config(&dir.path().join("absent.yaml"), None).is_none(),
         "a missing config resolves no theme rather than failing"
     );
 
     let broken = dir.path().join("broken.yaml");
     std::fs::write(&broken, "spec: [this is not a mapping\n").expect("write broken config");
     assert!(
-        super::resolve_theme_config(&broken).is_none(),
+        super::resolve_theme_config(&broken, None).is_none(),
         "an unparseable config resolves no theme rather than failing"
     );
 }
@@ -1344,7 +1480,9 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        theme: None,
         jsonpath: None,
+        yes: false,
         state_dir,
         config_dir: None,
         cache_dir,
@@ -3032,6 +3170,26 @@ fn find_subcommand_index_skips_value_taking_global_flags() {
             &["cfgd", "--profile=dev", "apply"],
             Some(2),
             "--profile inline",
+        ),
+        (
+            &["cfgd", "--theme", "nord", "status"],
+            Some(3),
+            "--theme space",
+        ),
+        (
+            &["cfgd", "--theme=nord", "status"],
+            Some(2),
+            "--theme inline",
+        ),
+        (
+            &["cfgd", "--scope", "system", "status"],
+            Some(3),
+            "--scope space",
+        ),
+        (
+            &["cfgd", "--color", "never", "status"],
+            Some(3),
+            "--color space",
         ),
         (
             &["cfgd", "--verbose", "apply"],
@@ -4832,7 +4990,9 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        theme: None,
         jsonpath: None,
+        yes: false,
         state_dir: None,
         config_dir: None,
         cache_dir: None,
@@ -5384,7 +5544,9 @@ fn execute_with_no_subcommand_prints_help_and_returns_ok() {
         quiet: false,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        theme: None,
         jsonpath: None,
+        yes: false,
         state_dir: Some(h.state_path().to_path_buf()),
         config_dir: None,
         cache_dir: None,
@@ -9962,6 +10124,7 @@ fn action_type_str_secret_variants() {
             provider: "onepassword".into(),
             reference: "op://vault/item".into(),
             target: "/b".into(),
+            template: None,
             origin: "local".into(),
         })),
         "resolve"
@@ -9972,6 +10135,7 @@ fn action_type_str_secret_variants() {
             provider: "vault".into(),
             reference: "secret/data/app".into(),
             envs: vec!["TOKEN".into(), "API_KEY".into()],
+            template: None,
             origin: "local".into(),
         })),
         "resolve-env"
@@ -16735,6 +16899,7 @@ fn action_path_secret_resolve() {
         provider: "1password".into(),
         reference: "op://vault/item/field".into(),
         target: PathBuf::from("/home/user/.token"),
+        template: None,
         origin: "profile".into(),
     });
     let path = super::action_path(&PhaseName::Secrets, &action);
@@ -16747,6 +16912,7 @@ fn action_path_secret_resolve_env() {
         provider: "vault".into(),
         reference: "secret/data/app".into(),
         envs: vec!["API_KEY".into(), "DB_PASS".into()],
+        template: None,
         origin: "profile".into(),
     });
     let path = super::action_path(&PhaseName::Secrets, &action);

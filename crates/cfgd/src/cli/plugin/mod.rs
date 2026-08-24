@@ -38,6 +38,16 @@ struct PluginCli {
     )]
     color: ColorWhen,
 
+    /// Theme preset for this invocation (overrides spec.theme.name; spec.theme.overrides still apply)
+    #[arg(
+        long,
+        global = true,
+        value_name = "NAME",
+        env = "CFGD_THEME",
+        value_parser = clap::builder::PossibleValuesParser::new(cfgd_core::output::Theme::PRESET_NAMES)
+    )]
+    theme: Option<String>,
+
     #[command(subcommand)]
     command: PluginCommand,
 }
@@ -257,7 +267,7 @@ pub fn plugin_main() -> anyhow::Result<()> {
     let config_path = std::env::var_os("CFGD_CONFIG")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(crate::cli::default_config_file);
-    let theme_config = crate::cli::resolve_theme_config(&config_path);
+    let theme_config = crate::cli::resolve_theme_config(&config_path, cli.theme.as_deref());
     let printer = Printer::with_theme_config(
         Verbosity::Normal,
         theme_config.as_ref(),

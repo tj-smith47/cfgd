@@ -430,8 +430,30 @@ impl Theme {
         &self.icon_arrow
     }
 
-    pub fn from_preset(name: &str) -> Self {
-        match name {
+    /// Every preset name [`Theme::preset`] answers, in the order `--help`
+    /// lists them. The ONE list: `--theme` / `cfgd init --theme` take their
+    /// clap value parser from it, so an unknown name is refused at the flag
+    /// rather than silently rendering the default palette.
+    pub const PRESET_NAMES: &'static [&'static str] = &[
+        "default",
+        "dracula",
+        "solarized-dark",
+        "solarized-light",
+        "nord",
+        "monokai",
+        "adventure-time",
+        "catppuccin-mocha",
+        "gruvbox-dark",
+        "tokyo-night",
+        "one-dark",
+        "minimal",
+    ];
+
+    /// The preset called `name`, or `None` for a name not in
+    /// [`Theme::PRESET_NAMES`].
+    pub fn preset(name: &str) -> Option<Self> {
+        Some(match name {
+            "default" => Self::default(),
             "dracula" => Self::dracula(),
             "solarized-dark" => Self::solarized_dark(),
             "solarized-light" => Self::solarized_light(),
@@ -443,8 +465,15 @@ impl Theme {
             "tokyo-night" => Self::tokyo_night(),
             "one-dark" => Self::one_dark(),
             "minimal" => Self::minimal(),
-            _ => Self::default(),
-        }
+            _ => return None,
+        })
+    }
+
+    /// [`Theme::preset`] for a name read out of a config file, where an
+    /// unknown name falls back to the default palette: a printer has to
+    /// exist before there is anything to report the bad name ON.
+    pub fn from_preset(name: &str) -> Self {
+        Self::preset(name).unwrap_or_default()
     }
 
     fn dracula() -> Self {
@@ -1044,8 +1073,19 @@ mod tests {
 
     #[test]
     fn unknown_preset_falls_back_to_default() {
+        assert!(Theme::preset("not-a-real-preset").is_none());
         let t = Theme::from_preset("not-a-real-preset");
         assert_eq!(t.icon_ok, "✓"); // matches default
+    }
+
+    #[test]
+    fn every_listed_preset_name_resolves() {
+        // PRESET_NAMES feeds the `--theme` value parser, so a name listed
+        // here that `preset` does not answer is a flag value clap accepts
+        // and the renderer silently ignores.
+        for name in Theme::PRESET_NAMES {
+            assert!(Theme::preset(name).is_some(), "{name} has no preset arm");
+        }
     }
 
     #[test]

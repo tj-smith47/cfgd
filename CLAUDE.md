@@ -38,8 +38,9 @@ Primary YAML (KRM-inspired: `apiVersion`, `kind`, `metadata`, `spec`). TOML also
 
 - **Verb-noun subcommand pattern** is canonical. `cfgd module registry add <url>`, `cfgd source add <url>`, `cfgd module registry remove <name>`. New subcommand trees follow this shape — never invert (e.g. do NOT `cfgd module registry list-all` or `cfgd source new`).
 - **Destructive verbs take `rm` as an alias** (`Remove` accepts `rm`). `List` accepts `ls`.
-- **`--yes` skips confirmations** and always binds to `env = "CFGD_YES"` (not a per-command env var).
+- **`--yes` / `-y` is ONE global flag on `Cli`** (`global = true`, `env = "CFGD_YES"`), accepted before or after the subcommand. A subcommand never declares its own; one that needs the value mirrors it with `#[arg(from_global)] yes: bool`. `no_subcommand_declares_its_own_yes_flag` fails until a local `--yes`/`-y` is removed.
 - **Global `-o` / `--output`** owns the output-format concept. Subcommand-local format flags must be named something else (e.g. `module export --as devcontainer`) to avoid shadowing.
+- **Every per-invocation presentation knob is a global flag with a `CFGD_*` env**: `--color`/`CFGD_COLOR`, `--theme`/`CFGD_THEME`, `-v`/`-q`, `-o`. A knob that only lives in `spec.*` is a knob nobody can set for a config they do not own. A value-taking global flag is also added to `is_value_taking_flag` + `_inline` in `cli/mod.rs`; `every_value_taking_global_flag_is_skipped_by_the_subcommand_locator` fails until it is.
 - **Every top-level `Command` variant carries `long_about` with an `Examples:` block.** Regression-guard via ux-consistency audit.
 
 ## Quality scripts

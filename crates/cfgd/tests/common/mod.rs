@@ -135,7 +135,9 @@ pub fn cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        theme: None,
         jsonpath: None,
+        yes: false,
         state_dir: Some(state_dir.to_path_buf()),
         config_dir: None,
         // Keep source/module caches inside the state tempdir (which snapshots

@@ -23,14 +23,14 @@ fn generate_args_default() {
 fn generate_args_with_model_override() {
     let args = GenerateArgs {
         target: None,
-        model: Some("claude-opus-4-20250514".into()),
+        model: Some("claude-opus-5".into()),
         provider: Some("claude".into()),
         yes: true,
         scan_only: false,
         shell: None,
         home: None,
     };
-    assert_eq!(args.model.as_deref(), Some("claude-opus-4-20250514"));
+    assert_eq!(args.model.as_deref(), Some("claude-opus-5"));
     assert_eq!(args.provider.as_deref(), Some("claude"));
     assert!(args.yes);
 }
@@ -1068,7 +1068,9 @@ mod cmd_generate_mockito {
             color: crate::cli::ColorWhen::Auto,
             output: super::super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            theme: None,
             jsonpath: None,
+            yes: false,
             state_dir: None,
             config_dir: None,
             cache_dir: None,
@@ -1576,7 +1578,9 @@ mod cmd_generate_mockito {
             color: crate::cli::ColorWhen::Auto,
             output: super::super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            theme: None,
             jsonpath: None,
+            yes: false,
             state_dir: None,
             config_dir: None,
             cache_dir: None,
@@ -1867,7 +1871,9 @@ mod cmd_generate_mockito {
             color: crate::cli::ColorWhen::Auto,
             output: super::super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            theme: None,
             jsonpath: None,
+            yes: false,
             state_dir: None,
             config_dir: None,
             cache_dir: None,

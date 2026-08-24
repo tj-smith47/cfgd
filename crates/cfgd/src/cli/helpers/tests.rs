@@ -22,7 +22,9 @@ pub(crate) fn make_cli(config: PathBuf) -> Cli {
         color: crate::cli::ColorWhen::Auto,
         output: OutputFormatArg(OutputFormat::Table),
         list_envelope: false,
+        theme: None,
         jsonpath: None,
+        yes: false,
         state_dir: None,
         config_dir: None,
         cache_dir: None,
@@ -2007,6 +2009,50 @@ fn rewriting_a_user_document_writes_no_absent_sections() {
             "{file}: rewrite changed the document's content"
         );
     }
+}
+
+// A default scalar is dropped only when the author never declared it: a config
+// that wrote `fileStrategy: Symlink` out on purpose keeps it, and the same
+// struct still carries the key in a `-o json` payload, which is what a
+// per-field `skip_serializing_if` got wrong.
+#[test]
+fn a_declared_default_scalar_is_kept_and_the_payload_always_carries_it() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cfgd.yaml");
+    let source = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: probe\nspec:\n  profile: base\n  fileStrategy: Symlink\n";
+    std::fs::write(&path, source).unwrap();
+    let doc: CfgdConfig = serde_yaml::from_str(source).unwrap();
+    rewrite_user_yaml(&path, &doc).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        written.contains("fileStrategy: Symlink"),
+        "a declared default was dropped from the user's file:\n{written}"
+    );
+
+    let payload = serde_json::to_value(&doc).unwrap();
+    assert_eq!(
+        payload["spec"]["fileStrategy"],
+        serde_json::json!("Symlink"),
+        "the serialized payload must name the effective strategy even when it is the default"
+    );
+}
+
+// A non-default scalar the author never declared is real content (a
+// `profile switch` writing the new profile name) and is never pruned.
+#[test]
+fn an_undeclared_non_default_scalar_is_written() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cfgd.yaml");
+    let source = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: probe\nspec:\n  profile: base\n";
+    std::fs::write(&path, source).unwrap();
+    let mut doc: CfgdConfig = serde_yaml::from_str(source).unwrap();
+    doc.spec.file_strategy = cfgd_core::config::FileStrategy::Copy;
+    rewrite_user_yaml(&path, &doc).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        written.contains("fileStrategy: Copy"),
+        "an undeclared non-default value was pruned:\n{written}"
+    );
 }
 
 // The one shape the prune must never touch: a sequence ELEMENT is data even

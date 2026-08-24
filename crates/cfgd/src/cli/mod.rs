@@ -105,7 +105,10 @@ fn builtin_aliases() -> HashMap<String, String> {
 /// argv slot as its value (space form: `--flag value` or `-x value`).
 ///
 /// Mirrors the `#[arg(global = true)]` flags on the `Cli` struct that are NOT
-/// `ArgAction::Count` / `bool`. The short-flag-glued form (`-oVALUE`) is not
+/// `ArgAction::Count` / `bool`. `every_value_taking_global_flag_is_skipped_by_the_subcommand_locator`
+/// walks the clap definition against this list and its inline sibling, so a
+/// new global flag that forgets them fails there rather than by reading its
+/// value as the subcommand. The short-flag-glued form (`-oVALUE`) is not
 /// covered: cfgd's docs and tests only show the space form (`-o VALUE`) and
 /// the inline-`=` form (`-o=VALUE`), both of which this scanner handles
 /// via the same helpers used for long flags — no dedicated short-flag branch.
@@ -121,6 +124,9 @@ fn is_value_taking_flag(flag: &str) -> bool {
             | "--config-dir"
             | "--cache-dir"
             | "--runtime-dir"
+            | "--scope"
+            | "--theme"
+            | "--color"
     )
 }
 
@@ -138,6 +144,9 @@ fn is_value_taking_flag_inline(arg: &str) -> bool {
         "--config-dir=",
         "--cache-dir=",
         "--runtime-dir=",
+        "--scope=",
+        "--theme=",
+        "--color=",
     ];
     PREFIXES.iter().any(|p| arg.starts_with(p))
 }
@@ -289,12 +298,28 @@ pub fn resolve_color_choice(no_color: bool, color: ColorWhen) -> cfgd_core::outp
 /// [`resolve_color_choice`] is: the plugin rendered the default palette on a
 /// themed machine for as long as it resolved this itself, by not resolving it
 /// at all.
-pub fn resolve_theme_config(config_path: &Path) -> Option<cfgd_core::config::ThemeConfig> {
-    config_path
+///
+/// `preset` is the `--theme` / `CFGD_THEME` override. It replaces the block's
+/// `name` and nothing else, so the flag means exactly what `cfgd config set
+/// theme.name <preset>` would have persisted: the config's `overrides` still
+/// layer on top. With no config to read it stands alone as the whole block.
+pub fn resolve_theme_config(
+    config_path: &Path,
+    preset: Option<&str>,
+) -> Option<cfgd_core::config::ThemeConfig> {
+    let stored = config_path
         .exists()
         .then(|| cfgd_core::config::load_config(config_path).ok())
         .flatten()
-        .and_then(|c| c.spec.theme)
+        .and_then(|c| c.spec.theme);
+    match preset {
+        None => stored,
+        Some(name) => {
+            let mut theme = stored.unwrap_or_default();
+            theme.name = name.to_string();
+            Some(theme)
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -398,6 +423,10 @@ pub struct Cli {
     )]
     pub quiet: bool,
 
+    /// Skip confirmation prompts (answer yes to every question)
+    #[arg(long, short, global = true, env = "CFGD_YES")]
+    pub yes: bool,
+
     /// Disable colored output (alias for --color never)
     #[arg(long, global = true)]
     pub no_color: bool,
@@ -411,6 +440,16 @@ pub struct Cli {
         default_value = "auto"
     )]
     pub color: ColorWhen,
+
+    /// Theme preset for this invocation (overrides spec.theme.name; spec.theme.overrides still apply)
+    #[arg(
+        long,
+        global = true,
+        value_name = "NAME",
+        env = "CFGD_THEME",
+        value_parser = clap::builder::PossibleValuesParser::new(cfgd_core::output::Theme::PRESET_NAMES)
+    )]
+    pub theme: Option<String>,
 
     /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL, template-file=PATH
     #[arg(long, short = 'o', global = true, default_value = "table")]
@@ -498,7 +537,7 @@ pub struct ApplyArgs {
     #[arg(long, value_parser = PhaseArgValueParser)]
     pub phase: Option<PhaseArg>,
     /// Skip confirmation prompt
-    #[arg(long, short, env = "CFGD_YES")]
+    #[arg(from_global)]
     pub yes: bool,
     /// Skip specific items by dot-notation path (e.g., packages.brew.ripgrep, system.sysctl)
     #[arg(long)]
@@ -628,15 +667,19 @@ pub enum Command {
         dry_run: bool,
 
         /// Skip all confirmation prompts (used with --apply)
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
 
         /// Install daemon service after init
         #[arg(long)]
         install_daemon: bool,
 
-        /// Theme name (default, dracula, solarized-dark, solarized-light, nord, monokai, adventure-time, catppuccin-mocha, gruvbox-dark, tokyo-night, one-dark, minimal)
-        #[arg(long)]
+        /// Theme preset to write into the new config's spec.theme
+        #[arg(
+            long,
+            value_name = "NAME",
+            value_parser = clap::builder::PossibleValuesParser::new(cfgd_core::output::Theme::PRESET_NAMES)
+        )]
         theme: Option<String>,
 
         /// Activate and apply a specific profile (errors if not found)
@@ -982,7 +1025,7 @@ pub enum Command {
 
     /// AI-guided configuration generation
     #[command(
-        long_about = "Generate config fragments (profiles, modules) with an LLM backend.\n\nExamples:\n  cfgd generate                    # scan system and propose full structure\n  cfgd generate module kubectl\n  cfgd generate profile laptop --model claude-opus-4-6\n  cfgd generate --scan-only --shell zsh --home ~/\n  cfgd generate --yes              # skip confirmation prompts"
+        long_about = "Generate config fragments (profiles, modules) with an LLM backend.\n\nExamples:\n  cfgd generate                    # scan system and propose full structure\n  cfgd generate module kubectl\n  cfgd generate profile laptop --model claude-opus-5\n  cfgd generate --scan-only --shell zsh --home ~/\n  cfgd generate --yes              # skip confirmation prompts"
     )]
     Generate(generate::GenerateArgs),
 
@@ -995,7 +1038,7 @@ pub enum Command {
         apply_id: i64,
 
         /// Skip confirmation prompt
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
     },
 
@@ -1138,7 +1181,7 @@ pub struct SourceAddArgs {
     #[arg(long = "pin-version")]
     pub pin_version: Option<String>,
     /// Skip confirmation prompt
-    #[arg(long, short, env = "CFGD_YES")]
+    #[arg(from_global)]
     pub yes: bool,
 }
 
@@ -1172,7 +1215,7 @@ pub enum SourceCommand {
         remove_all: bool,
 
         /// Skip confirmation prompt (defaults to --keep-all behavior)
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
 
         /// Exit 0 instead of erroring when the source does not exist
@@ -1284,7 +1327,7 @@ pub enum BackupCommand {
         to: Option<PathBuf>,
 
         /// Skip the confirmation prompt
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
     },
 }
@@ -1364,8 +1407,8 @@ pub enum ConfigCommand {
 pub enum WorkflowCommand {
     /// Generate or regenerate GitHub Actions workflows for releases
     Generate {
-        /// Overwrite existing workflow files
-        #[arg(long, short = 'y', alias = "yes", env = "CFGD_YES")]
+        /// Overwrite existing workflow files (the global --yes / CFGD_YES also overwrites)
+        #[arg(long)]
         force: bool,
     },
 }
@@ -1497,7 +1540,7 @@ pub struct ProfileUpdateArgs {
     #[arg(long = "private-files")]
     pub private: bool,
     /// Skip confirmation prompt (for non-interactive use)
-    #[arg(long, short, env = "CFGD_YES")]
+    #[arg(from_global)]
     pub yes: bool,
     /// Allow unsigned modules even when require-signatures is enabled
     #[arg(long)]
@@ -1535,7 +1578,7 @@ pub enum ProfileCommand {
         /// Profile name
         name: String,
         /// Skip confirmation prompt
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
         /// Exit 0 instead of erroring when the profile does not exist
         #[arg(long)]
@@ -1562,7 +1605,7 @@ pub enum ProfileCommand {
         #[arg(long)]
         dry_run: bool,
         /// Skip confirmation prompt
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
     },
 }
@@ -1602,7 +1645,7 @@ pub struct ModuleCreateArgs {
     #[arg(long)]
     pub apply: bool,
     /// Skip confirmation prompts (used with --apply)
-    #[arg(long, short, env = "CFGD_YES")]
+    #[arg(from_global)]
     pub yes: bool,
 }
 
@@ -1667,7 +1710,7 @@ pub enum ModuleCommand {
         /// Module name
         name: String,
         /// Skip confirmation prompt
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
         /// Also remove files deployed by this module to target locations
         #[arg(long)]
@@ -1684,7 +1727,7 @@ pub enum ModuleCommand {
         #[arg(long)]
         ref_: Option<String>,
         /// Skip confirmation prompt (for non-interactive use)
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
         /// Allow unsigned modules even when require-signatures is enabled
         #[arg(long)]
@@ -1870,7 +1913,7 @@ pub enum SkillCommand {
         force: bool,
 
         /// Skip confirmation prompts
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
     },
 
@@ -1898,7 +1941,7 @@ pub enum SkillCommand {
         provider: Vec<String>,
 
         /// Skip confirmation prompts
-        #[arg(long, short, env = "CFGD_YES")]
+        #[arg(from_global)]
         yes: bool,
     },
 
@@ -2640,7 +2683,7 @@ pub fn execute(
         }
         Command::Workflow { command } => match command {
             WorkflowCommand::Generate { force } => {
-                workflow::cmd_workflow_generate(cli, printer, *force)
+                workflow::cmd_workflow_generate(cli, printer, *force || cli.yes)
             }
         },
         Command::Checkin {

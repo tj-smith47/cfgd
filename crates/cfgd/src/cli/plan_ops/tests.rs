@@ -26,7 +26,9 @@ fn test_cli_in(dir: &std::path::Path) -> Cli {
         color: crate::cli::ColorWhen::Auto,
         output: crate::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        theme: None,
         jsonpath: None,
+        yes: false,
         state_dir: None,
         config_dir: None,
         cache_dir: None,
@@ -126,6 +128,7 @@ fn secret_resolve() -> Action {
         provider: "1password".to_string(),
         reference: "op://vault/item".to_string(),
         target: PathBuf::from("/etc/foo"),
+        template: None,
         origin: "test".to_string(),
     })
 }
@@ -135,6 +138,7 @@ fn secret_resolve_env() -> Action {
         provider: "vault".to_string(),
         reference: "secret/data/app".to_string(),
         envs: vec!["TOKEN".to_string(), "KEY".to_string()],
+        template: None,
         origin: "test".to_string(),
     })
 }

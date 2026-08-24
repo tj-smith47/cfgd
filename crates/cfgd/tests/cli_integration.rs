@@ -2351,6 +2351,57 @@ fn status_help_documents_exit_code_flag() {
         .stdout(predicate::str::contains("drift"));
 }
 
+/// `--yes` is ONE global flag: `cfgd --yes profile delete x`, `cfgd profile
+/// delete x --yes` and `CFGD_YES=1 cfgd profile delete x` all reach the same
+/// confirmation gate, and the env spelling still passes through `main.rs`'s
+/// boolish normalization. Engagement is proven by contrast: piped stdin cannot
+/// answer the prompt, so the same delete WITHOUT any of them is refused.
+#[test]
+fn yes_flag_is_global_in_every_spelling() {
+    let write_scratch = |dir: &std::path::Path| {
+        std::fs::write(
+            dir.join("profiles/scratch.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: scratch\nspec: {}\n",
+        )
+        .unwrap();
+    };
+    let run = |dir: &std::path::Path, before: &[&str], after: &[&str], env: Option<&str>| {
+        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        cmd.env_remove("CFGD_YES");
+        cmd.args(before)
+            .args(["profile", "delete", "scratch"])
+            .args(after)
+            .arg("--config")
+            .arg(dir.join("cfgd.yaml"))
+            .write_stdin("");
+        if let Some(v) = env {
+            cmd.env("CFGD_YES", v);
+        }
+        cmd.assert()
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+
+    write_scratch(dir.path());
+    run(dir.path(), &[], &[], None).failure();
+    assert!(dir.path().join("profiles/scratch.yaml").exists());
+
+    for (before, after, env) in [
+        (&["--yes"][..], &[][..], None),
+        (&[], &["--yes"], None),
+        (&[], &["-y"], None),
+        (&[], &[], Some("1")),
+    ] {
+        write_scratch(dir.path());
+        run(dir.path(), before, after, env).success();
+        assert!(
+            !dir.path().join("profiles/scratch.yaml").exists(),
+            "{before:?} {after:?} CFGD_YES={env:?} did not skip the prompt"
+        );
+    }
+}
+
 /// `CFGD_QUIET` accepts shell-truthy spellings (like `CFGD_YES`/`CFGD_VERBOSE`),
 /// not just the bare `true`/`false` clap's bool parser would otherwise demand.
 /// Before the normalization fix this exited 2 with "[possible values: true,

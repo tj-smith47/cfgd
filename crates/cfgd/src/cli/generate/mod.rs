@@ -31,7 +31,7 @@ pub struct GenerateArgs {
     pub provider: Option<String>,
 
     /// Skip confirmation prompts
-    #[arg(long, short, global = true, env = "CFGD_YES")]
+    #[arg(from_global)]
     pub yes: bool,
 
     /// Only scan dotfiles and shell config; print findings without AI generation

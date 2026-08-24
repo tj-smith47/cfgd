@@ -149,7 +149,7 @@ fn main() -> anyhow::Result<()> {
     let assume_yes = std::env::var("CFGD_YES")
         .map(|v| v == "true")
         .unwrap_or(false)
-        || expanded.iter().any(|a| a == "--yes");
+        || expanded.iter().any(|a| a == "--yes" || a == "-y");
 
     let brontes_cfg = cfgd::mcp::brontes::config();
     let mcp_command = brontes::command(Some(&brontes_cfg)).after_help(MCP_HELP_EXAMPLES);
@@ -301,7 +301,8 @@ fn main() -> anyhow::Result<()> {
     // `--color always` deliberately outranks them.
     let color_choice = cli::resolve_color_choice(cli.no_color, cli.color);
 
-    let theme_config = cli::resolve_theme_config(std::path::Path::new(&cli.config));
+    let theme_config =
+        cli::resolve_theme_config(std::path::Path::new(&cli.config), cli.theme.as_deref());
     let printer = cfgd_core::output::Printer::with_theme_config(
         verbosity,
         theme_config.as_ref(),
