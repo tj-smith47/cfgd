@@ -1816,20 +1816,6 @@ cfgd alias delete pu                        # alias: rm
 No command-specific flags. `set` takes `<NAME> <COMMAND>`, where `COMMAND` is the argument string
 the alias expands to. Aliases live in the config file, so they travel with the config repository.
 
-### `cfgd state forget-prefix <manager>`
-
-Forget the global-install prefix cfgd persisted for a package manager, so the next
-install/uninstall/list derives it fresh.
-
-```sh
-cfgd state forget-prefix npm
-cfgd state forget-prefix pipx
-```
-
-No command-specific flags. cfgd already revalidates a persisted prefix that became unwritable —
-this is for the opposite case, where a *better* prefix became available (permissions fixed after
-cfgd fell back to a user-local directory).
-
 ### `cfgd man`
 
 Emit a `roff(7)` man page for cfgd on stdout.

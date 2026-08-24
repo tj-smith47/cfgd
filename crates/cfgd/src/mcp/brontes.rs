@@ -120,9 +120,6 @@ const DESTRUCTIVE: &[&str] = &[
     "secret decrypt",
     "skill remove",
     "source remove",
-    // Drops managed-resource rows, so a later apply no longer knows it owns
-    // what those rows tracked — irreversible without a re-apply.
-    "state forget-prefix",
 ];
 
 /// Commands that routinely run for minutes, or wait on a remote. Handed back

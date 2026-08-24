@@ -125,7 +125,31 @@ pub(super) fn resolve_npm_prefix(state: &dyn PackageStateStore) -> Result<NpmPre
 /// Absent or unreadable state is treated the same way — "nothing usable is
 /// persisted" rather than an error — persistence is a stability optimization,
 /// not something a caller should fail over.
+///
+/// A FALLBACK decision is additionally probed the other way: revalidation of
+/// the fallback path alone can only ever notice the fallback getting worse,
+/// so a machine whose configured prefix was later fixed (permissions granted
+/// on `/usr/local`) would stay on `~/.npm-global` forever. When the row says
+/// `is_fallback`, npm is re-asked for its configured prefix and that prefix
+/// is write-probed; a writable answer discards the row so the caller
+/// re-derives — promoting to the configured prefix and re-persisting with
+/// `is_fallback: false`. Asking npm is a spawn, but it is paid only while the
+/// machine is in the degraded state, on operations that are about to spawn
+/// npm anyway. A probe that errors or answers unwritable keeps the fallback:
+/// "could not check" must not discard a decision that still works.
 fn persisted_npm_prefix_decision(state: &dyn PackageStateStore) -> Option<NpmPrefixDecision> {
+    persisted_npm_prefix_decision_with(state, npm_prefix_is_writable, npm_configured_prefix)
+}
+
+/// [`persisted_npm_prefix_decision`] with the write-probe and the
+/// configured-prefix query injected, so tests can drive the promotion and
+/// keep-fallback branches deterministically — the same seam shape
+/// [`resolve_npm_prefix_with`] carries for the same reason.
+fn persisted_npm_prefix_decision_with(
+    state: &dyn PackageStateStore,
+    is_writable: impl Fn(&Path) -> bool,
+    configured_prefix: impl Fn() -> Result<Option<PathBuf>>,
+) -> Option<NpmPrefixDecision> {
     let (prefix, is_fallback) = match state.resolved_prefix(NPM_PREFIX_STATE_MANAGER) {
         Ok(Some(record)) => record,
         Ok(None) => return None,
@@ -135,10 +159,20 @@ fn persisted_npm_prefix_decision(state: &dyn PackageStateStore) -> Option<NpmPre
         }
     };
     let prefix = PathBuf::from(prefix);
-    if !npm_prefix_is_writable(&prefix) {
+    if !is_writable(&prefix) {
         tracing::debug!(
             prefix = %prefix.display(), // native-ok: log line, not a persisted key
             "persisted npm prefix is no longer writable; discarding cached decision"
+        );
+        return None;
+    }
+    if is_fallback
+        && let Ok(Some(configured)) = configured_prefix()
+        && is_writable(&configured)
+    {
+        tracing::debug!(
+            prefix = %configured.display(), // native-ok: log line, not a persisted key
+            "npm's configured prefix is writable again; discarding fallback decision"
         );
         return None;
     }
@@ -1078,6 +1112,132 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
+    // Fallback-promotion revalidation, driven through the injectable seam so
+    // every branch is deterministic on any platform: no real npm spawn, no
+    // real permission bits.
+    // ---------------------------------------------------------------------
+
+    /// A persisted FALLBACK row whose configured prefix has become writable
+    /// again is discarded, so the caller re-derives and promotes off the
+    /// degraded `~/.npm-global` path automatically.
+    #[test]
+    fn a_fallback_row_is_discarded_when_the_configured_prefix_is_writable_again() {
+        let state = cfgd_core::test_helpers::test_state();
+        state
+            .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
+            .expect("seed a fallback decision");
+
+        let configured = PathBuf::from("/usr/local");
+        let decision =
+            persisted_npm_prefix_decision_with(&state, |_| true, || Ok(Some(configured.clone())));
+
+        assert_eq!(
+            decision, None,
+            "a writable configured prefix must discard the fallback row so \
+             re-derivation promotes onto it"
+        );
+    }
+
+    /// The configured prefix still failing its write-probe keeps the fallback:
+    /// the machine is still in the degraded state the row records.
+    #[test]
+    fn a_fallback_row_survives_while_the_configured_prefix_stays_unwritable() {
+        let state = cfgd_core::test_helpers::test_state();
+        state
+            .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
+            .expect("seed a fallback decision");
+
+        let fallback = PathBuf::from("/home/u/.npm-global");
+        let decision = persisted_npm_prefix_decision_with(
+            &state,
+            |p| p == fallback, // the fallback probes writable; everything else does not
+            || Ok(Some(PathBuf::from("/usr/local"))),
+        );
+
+        assert_eq!(
+            decision,
+            Some(NpmPrefixDecision {
+                prefix: Some(fallback),
+                is_fallback: true,
+            }),
+            "an unwritable configured prefix must keep the persisted fallback"
+        );
+    }
+
+    /// "Could not check" is not "check failed": a configured-prefix query that
+    /// errors, or that answers nothing at all, keeps the fallback rather than
+    /// discarding a decision that still works.
+    #[test]
+    fn a_fallback_row_survives_when_the_configured_prefix_cannot_be_asked() {
+        let state = cfgd_core::test_helpers::test_state();
+        state
+            .record_package_manager_prefix("npm", "/home/u/.npm-global", true)
+            .expect("seed a fallback decision");
+
+        let expected = Some(NpmPrefixDecision {
+            prefix: Some(PathBuf::from("/home/u/.npm-global")),
+            is_fallback: true,
+        });
+
+        let on_error = persisted_npm_prefix_decision_with(
+            &state,
+            |_| true,
+            || {
+                Err(PackageError::CommandFailed {
+                    manager: "npm".into(),
+                    source: std::io::Error::from(std::io::ErrorKind::NotFound),
+                }
+                .into())
+            },
+        );
+        assert_eq!(
+            on_error, expected,
+            "a probe error must keep the fallback, never discard it"
+        );
+
+        let on_empty = persisted_npm_prefix_decision_with(&state, |_| true, || Ok(None));
+        assert_eq!(
+            on_empty, expected,
+            "npm answering no prefix at all must keep the fallback"
+        );
+    }
+
+    /// The promotion probe is the spawn the doc comment prices: it is paid
+    /// only while the machine is in the degraded state. A non-fallback row
+    /// never asks npm anything.
+    #[test]
+    fn a_non_fallback_row_never_pays_the_configured_prefix_spawn() {
+        let state = cfgd_core::test_helpers::test_state();
+        state
+            .record_package_manager_prefix("npm", "/usr/local", false)
+            .expect("seed a non-fallback decision");
+
+        let asked = std::cell::Cell::new(0u32);
+        let decision = persisted_npm_prefix_decision_with(
+            &state,
+            |_| true,
+            || {
+                asked.set(asked.get() + 1);
+                Ok(Some(PathBuf::from("/usr/local")))
+            },
+        );
+
+        assert_eq!(
+            decision,
+            Some(NpmPrefixDecision {
+                prefix: Some(PathBuf::from("/usr/local")),
+                is_fallback: false,
+            }),
+        );
+        assert_eq!(
+            asked.get(),
+            0,
+            "a healthy (non-fallback) row must not spawn npm to re-ask its \
+             configured prefix"
+        );
+    }
+
+    // ---------------------------------------------------------------------
     // PackageManager-impl tests via CFGD_NPM_BIN ToolShim.
     // ---------------------------------------------------------------------
 
@@ -1855,17 +2015,16 @@ mod tests {
             );
         }
 
-        /// The stability guarantee persistence exists for: once
-        /// `resolve_npm_prefix` records a decision against `state`, a LATER
-        /// call with the SAME `state` must return that decision unchanged
-        /// even when the live inputs that produced it have since changed for
-        /// the better. Without this, a package `install()`-ed under the
-        /// first decision could become invisible to a later
-        /// `installed_packages()` that re-derived a different (now-writable)
-        /// prefix from the shim's updated answer.
+        /// The two halves of the persistence contract, through the real shim:
+        /// while the configured prefix stays unwritable a fallback decision is
+        /// REUSED unchanged across calls (stability — packages installed under
+        /// it must stay visible), and the moment the configured prefix probes
+        /// writable the fallback is DISCARDED and the resolve promotes onto
+        /// it, re-persisting `is_fallback: false`. The promoted decision then
+        /// enjoys the same stability, without re-asking npm.
         #[test]
         #[serial]
-        fn resolve_npm_prefix_reuses_the_persisted_decision_across_calls() {
+        fn resolve_npm_prefix_reuses_a_fallback_until_the_configured_prefix_heals() {
             let _clear = clear_npm_env_prefix();
             let _elevated = with_test_elevated_guard(false);
             let home = tempfile::tempdir().expect("tempdir");
@@ -1881,24 +2040,48 @@ mod tests {
                 "the unwritable configured prefix must resolve to the fallback branch first"
             );
 
-            // Flip the shim to answer a genuinely writable prefix. If
-            // persistence-reuse were broken, the second call would pick this
-            // up and diverge from `first`.
+            let second = cfgd_core::with_test_home(home.path(), || resolve_npm_prefix(&state))
+                .expect("second resolve must succeed");
+            assert_eq!(
+                second, first,
+                "while the configured prefix stays unwritable, the fallback \
+                 decision must be reused unchanged"
+            );
+
+            // The machine heals: the shim now answers a genuinely writable
+            // configured prefix. The revalidation probe must notice and
+            // promote off the fallback.
             let writable_dir = tempfile::tempdir().expect("tempdir");
             let _second_shim = NpmShim::install(writable_dir.path(), 0, "", "");
 
-            let second = cfgd_core::with_test_home(home.path(), || resolve_npm_prefix(&state))
-                .expect("second resolve must succeed");
-
+            let promoted = cfgd_core::with_test_home(home.path(), || resolve_npm_prefix(&state))
+                .expect("promoting resolve must succeed");
             assert_eq!(
-                second, first,
-                "a second resolve_npm_prefix() call must return the cached decision \
-                 unchanged, even though the live inputs now point to a writable prefix"
+                promoted,
+                NpmPrefixDecision {
+                    prefix: Some(writable_dir.path().to_path_buf()),
+                    is_fallback: false,
+                },
+                "a configured prefix that probes writable again must be \
+                 promoted onto automatically"
             );
-            assert!(
-                second.is_fallback,
-                "the cached decision must remain the original fallback, not the \
-                 newly writable configured prefix"
+
+            let (persisted_prefix, persisted_is_fallback) = state
+                .package_manager_prefix("npm")
+                .expect("read back")
+                .expect("the promotion must overwrite the fallback row");
+            assert_eq!(
+                persisted_prefix,
+                cfgd_core::to_posix_fs_key(writable_dir.path()),
+                "the promoted decision must be persisted, not merely returned"
+            );
+            assert!(!persisted_is_fallback);
+
+            let steady = cfgd_core::with_test_home(home.path(), || resolve_npm_prefix(&state))
+                .expect("steady-state resolve must succeed");
+            assert_eq!(
+                steady, promoted,
+                "the promoted decision must be reused unchanged on later calls"
             );
         }
 

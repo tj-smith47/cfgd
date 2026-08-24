@@ -22,7 +22,6 @@ mod sources;
 mod types;
 
 pub use decisions::RESOLUTION_AUTO_ACCEPTED;
-pub use package_prefix::PackageManagerPrefixRecord;
 pub use pending_config::{
     PENDING_CONFIG_FILENAME, clear_pending_server_config, load_pending_server_config,
     save_pending_server_config,

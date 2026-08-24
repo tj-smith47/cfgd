@@ -56,19 +56,13 @@ Once resolved, the decision (prefix + whether it was the fallback) is
 persisted in cfgd's state store and reused by every later `install` /
 `uninstall` / `update` / listing call, so a package installed under one
 resolved prefix stays visible even if a later run's live inputs (elevation,
-write-probe result, project-local npm config) would resolve differently. A
-persisted prefix that itself becomes unwritable is revalidated and re-resolved
-automatically. If you fix the permissions that pushed npm onto the fallback
-and want cfgd to notice a *better* prefix is now available, clear the cached
-decision:
-
-```console
-$ cfgd state forget-prefix npm
-Forgot persisted global-install prefix for 'npm'
-```
-
-The next `install`/`uninstall`/`update`/list call re-derives the prefix from
-scratch using the four-step resolution above.
+write-probe result, project-local npm config) would resolve differently.
+Revalidation covers both directions automatically: a persisted prefix that
+becomes unwritable is discarded and re-resolved, and while cfgd is on the
+fallback it re-checks npm's configured prefix on each resolve — fix the
+permissions that pushed npm onto `$HOME/.npm-global` (say, on `/usr/local`)
+and the next `install`/`uninstall`/`update`/list call promotes back onto the
+configured prefix on its own. Nothing needs to be cleared by hand.
 
 ## Reaching a manager cfgd bootstrapped mid-apply
 
