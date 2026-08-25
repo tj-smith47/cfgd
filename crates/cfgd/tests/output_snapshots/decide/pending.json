@@ -3,6 +3,7 @@
   "decisions": [
     {
       "action": "install",
+      "contentHash": null,
       "createdAt": "2026-05-11T00:00:00Z",
       "id": 1,
       "resolution": null,
@@ -14,6 +15,7 @@
     },
     {
       "action": "set",
+      "contentHash": null,
       "createdAt": "2026-05-11T00:00:00Z",
       "id": 1,
       "resolution": null,

@@ -95,6 +95,14 @@ pub fn strip_sha256_prefix(s: &str) -> &str {
     s.strip_prefix("sha256:").unwrap_or(s)
 }
 
+/// The display form of a commit id: enough to identify it, short enough for
+/// two of them to sit on one line. Every human surface that names a commit
+/// (`source show`, `sync`, the daemon's sync log) renders through it; a
+/// persisted or `-o json` id stays full-length.
+pub fn short_commit(commit: &str) -> &str {
+    commit.get(..12).unwrap_or(commit)
+}
+
 /// Parse a potentially loose version string into a semver Version.
 /// Handles "1.28" → "1.28.0", "1" → "1.0.0", and a leading `v`/`V` prefix
 /// (`v1.10.0` → `1.10.0`) so callers can feed git/OCI tag names directly.

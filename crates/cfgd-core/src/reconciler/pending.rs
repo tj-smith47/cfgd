@@ -30,8 +30,23 @@ use super::{Action, Plan, SystemAction, action_resource_info};
 /// source's paths to notice what it newly delivers, and [`DecisionScope`] reads
 /// the LOCAL layer's paths so a decision about a source's item can never
 /// withhold the operator's own declaration of the same resource.
+///
+/// The key view over [`declared_decision_fingerprints`], never a second walk.
 pub fn declared_decision_paths(merged: &MergedProfile) -> HashSet<String> {
-    let mut resources = HashSet::new();
+    declared_decision_fingerprints(merged).into_keys().collect()
+}
+
+/// Every declared resource in decision vocabulary, each with a fingerprint of
+/// the entry the path names.
+///
+/// The path alone says WHICH item a source delivers; the fingerprint says WHAT
+/// it currently declares for it, which is the difference between `env.EDITOR`
+/// meaning `nvim` and meaning `vim`. `review_source_policy` re-asks on the
+/// fingerprint moving, so the two must be derived in ONE walk: a second
+/// enumeration would eventually mint a path whose content nothing fingerprints
+/// (never re-asked) or fingerprint a path nothing mints (asked about forever).
+pub fn declared_decision_fingerprints(merged: &MergedProfile) -> BTreeMap<String, String> {
+    let mut resources = BTreeMap::new();
 
     // The package half walks the SAME enumeration the reconciler plans from
     // (`manager_names` → `desired_packages_for_spec`), so a manager added to
@@ -44,23 +59,42 @@ pub fn declared_decision_paths(merged: &MergedProfile) -> HashSet<String> {
             continue;
         };
         for pkg in config::desired_packages_for_spec(&manager, pkgs) {
-            resources.insert(format!("packages.{}.{}", decision_manager, pkg));
+            resources.insert(
+                format!("packages.{}.{}", decision_manager, pkg),
+                entry_fingerprint(&pkg),
+            );
         }
     }
 
     for file in &merged.files.managed {
-        resources.insert(format!("files.{}", to_posix_string(&file.target)));
+        resources.insert(
+            format!("files.{}", to_posix_string(&file.target)),
+            entry_fingerprint(file),
+        );
     }
 
     for ev in &merged.env {
-        resources.insert(format!("env.{}", ev.name));
+        resources.insert(format!("env.{}", ev.name), entry_fingerprint(ev));
     }
 
-    for k in merged.system.keys() {
-        resources.insert(format!("system.{}", k));
+    for (key, value) in &merged.system {
+        resources.insert(format!("system.{}", key), entry_fingerprint(value));
     }
 
     resources
+}
+
+/// The fingerprint of one declared entry: a digest of its JSON serialization.
+///
+/// JSON rather than the source YAML because the entry is compared against what
+/// a PAST run recorded for the same path, and only the typed form is stable
+/// across the formatting, key order and comments an upstream commit may move
+/// without changing what it declares. An entry that will not serialize
+/// fingerprints as empty, which reads as "unchanged" — the safe direction: it
+/// costs a re-ask nobody needed rather than silently applying a changed item.
+fn entry_fingerprint<T: serde::Serialize>(entry: &T) -> String {
+    let canonical = serde_json::to_string(entry).unwrap_or_default();
+    crate::sha256_hex(canonical.as_bytes())
 }
 
 /// What one decision path actually asks the operator to accept.
@@ -642,6 +676,11 @@ pub struct DecisionMint {
     /// summary, so `status` / `decide` list it and the `-o json` payloads
     /// carry it, recorded or not.
     pub annotation: Option<String>,
+    /// The fingerprint of what the source declares for this item, recorded on
+    /// the row so the next classification can tell "already answered" from
+    /// "answered when it said something else". `None` only where the mint is
+    /// built without the delivered item in hand.
+    pub content_hash: Option<String>,
 }
 
 /// The glue between a decision summary's coordinates and its annotation.
@@ -802,6 +841,7 @@ impl DecisionMint {
             created_at: crate::utc_now_iso8601(),
             resolved_at: None,
             resolution: None,
+            content_hash: self.content_hash.clone(),
         }
     }
 }
@@ -1082,6 +1122,12 @@ pub struct SourcePolicyReview {
     pub annotation_refresh: Vec<DecisionMint>,
     /// `(source, hash)` for every source whose delivered set changed.
     pub changed_hashes: Vec<(String, String)>,
+    /// `(source, resource, fingerprint)` for every row that predates
+    /// fingerprinting, or that was recorded by a path with no fingerprint to
+    /// hand. The first observation of an item's content is not a change to it,
+    /// so the fingerprint is written onto the existing row and no question is
+    /// asked.
+    pub fingerprint_backfill: Vec<(String, String, String)>,
     /// Batches no decision can name (dotted custom manager) — withheld
     /// fail-closed, warned about, never minted and never hashed.
     pub undecidable: Vec<UndecidableBatch>,
@@ -1095,8 +1141,8 @@ impl SourcePolicyReview {
     /// daemon's next tick would find the source "unchanged" and never send the
     /// notification still owed for the items this run did not touch. Leaving
     /// the hash unstamped is safe on the other side too:
-    /// [`review_source_policy`] re-asks an answered item only on a real hash
-    /// change, never on the first stamped observation.
+    /// [`review_source_policy`] judges each item on its own fingerprint, so a
+    /// source hash it never wrote costs it nothing.
     pub fn narrowed_to(&self, targets: &DecisionTargets<'_>) -> SourcePolicyReview {
         SourcePolicyReview {
             declined: HashSet::new(),
@@ -1112,6 +1158,7 @@ impl SourcePolicyReview {
             auto_accepted: Vec::new(),
             annotation_refresh: Vec::new(),
             changed_hashes: Vec::new(),
+            fingerprint_backfill: Vec::new(),
             // Nothing recordable: no row can name these batches, so an
             // answering run has nothing to narrow to.
             undecidable: Vec::new(),
@@ -1182,6 +1229,7 @@ pub fn review_source_policies(
         review.auto_accepted.extend(one.auto_accepted);
         review.annotation_refresh.extend(one.annotation_refresh);
         review.changed_hashes.extend(one.changed_hashes);
+        review.fingerprint_backfill.extend(one.fingerprint_backfill);
     }
     // Computed with the review rather than beside it so every surface that
     // classifies (plan, apply, the daemon's tick) inherits the batches — and
@@ -1210,27 +1258,14 @@ pub fn review_source_policy(
         .source_config_hash(source_name)?
         .map(|h| h.config_hash);
     let config_changed = previous_hash.as_deref() != Some(&current_hash);
-    // A change is a PREVIOUS observation disagreeing; the first observation is
-    // not one. Rows can exist before any hash does — `cfgd decide` records the
-    // item it answers and stamps nothing — and treating None → Some as "the
-    // source moved" would re-mint, and so re-ask, the very item just answered.
-    let source_changed = previous_hash.is_some() && config_changed;
 
-    // The old resource set is not stored, only its hash — the items still
-    // being asked about stand in for it. Those rows were minted in this very
-    // vocabulary, so the comparison below needs no translation. The
+    // The unresolved rows, for the manual-install walk below. The
     // managed-resource table is deliberately NOT consulted: its rows live in
     // the state vocabulary (`package` + `<mgr>/<pkg>`), which never matches a
     // decision path — and an installed item that has no row is an item nobody
     // was ever asked about, exactly the one the `Notify` arm below still owes
     // a question.
     let rows = store.pending_decisions_for_source(source_name)?;
-    let mut known: HashSet<String> = HashSet::new();
-    if previous_hash.is_some() {
-        for d in &rows {
-            known.insert(d.resource.clone());
-        }
-    }
 
     // The rows already asked about answer to installed state too — this is
     // the manual-install path `docs/sources.md` promises: the operator
@@ -1262,6 +1297,9 @@ pub fn review_source_policy(
                     resource: row.resource.clone(),
                     tier: row.tier.clone(),
                     annotation: Some(annotation),
+                    content_hash: delivered
+                        .content_hash_for(&row.resource)
+                        .map(str::to_string),
                 };
                 // Re-recorded only when the summary actually moved, so a
                 // steady conflict does not rewrite the row every tick.
@@ -1273,7 +1311,7 @@ pub fn review_source_policy(
         }
     }
 
-    for (resource, tier) in delivered.iter().filter(|(r, _)| !known.contains(*r)) {
+    for (resource, tier) in delivered.iter() {
         let action = policy_action_for(policy, tier);
         match action {
             // Included in the plan normally.
@@ -1287,15 +1325,39 @@ pub fn review_source_policy(
                 // carry the disposition to the next one.
                 review.declined.insert(resource.clone());
             }
-            // Minted when the source's delivered set changed OR when this item
-            // has never been asked about. The second half is what makes a
-            // policy flip work: an item a `Reject` policy declined has no row,
-            // so flipping to `Notify` must ask about it even though the source
-            // itself has not moved. Any row — including a rejection — still
-            // suppresses re-minting until the source changes, so an answer is
-            // not re-asked every tick.
+            // Asked about per ITEM, judged on the item's own fingerprint —
+            // never on the source's delivered SET. A whole-source gate got
+            // both halves wrong: an unrelated upstream commit adding one item
+            // re-asked every answer the operator had already given, while an
+            // item whose declared value changed under an unchanged set (EDITOR
+            // moving from nvim to vim) was applied without ever asking. So:
+            // no row means never asked; a row whose fingerprint differs means
+            // the operator answered a different item than the one now
+            // delivered; a row whose fingerprint agrees is answered, whatever
+            // else the source moved. An item a `Reject` policy declined has no
+            // row, which is what makes a policy flip to `Notify` ask about it.
+            //
+            // A row with no fingerprint recorded is the item's FIRST
+            // observation under this rule, not a change to it — the
+            // fingerprint is written onto the row and nothing is asked, which
+            // is what keeps an answer given before the column existed (or
+            // through `cfgd decide`, which records the item it answers) from
+            // being re-asked once.
             PolicyAction::Notify => {
-                if source_changed || !store.has_decision(source_name, resource)? {
+                let current = delivered.content_hash_for(resource).unwrap_or_default();
+                let must_ask = match store.latest_decision_content_hash(source_name, resource)? {
+                    None => true,
+                    Some(None) => {
+                        review.fingerprint_backfill.push((
+                            source_name.to_string(),
+                            resource.clone(),
+                            current.to_string(),
+                        ));
+                        false
+                    }
+                    Some(Some(recorded)) => recorded != current,
+                };
+                if must_ask {
                     match manual_install_verdict(resource, actual) {
                         // Already on the machine as delivered: no question is
                         // owed, and the writing path records the resolved row
@@ -1315,6 +1377,7 @@ pub fn review_source_policy(
                                 resource: resource.clone(),
                                 tier: tier.to_string(),
                                 annotation: Some(annotation),
+                                content_hash: Some(current.to_string()),
                             })
                         }
                         InstallVerdict::Undetermined => review.to_mint.push(DecisionMint {
@@ -1322,6 +1385,7 @@ pub fn review_source_policy(
                             resource: resource.clone(),
                             tier: tier.to_string(),
                             annotation: None,
+                            content_hash: Some(current.to_string()),
                         }),
                     }
                 }
@@ -1358,7 +1422,8 @@ fn policy_action_for<'a>(policy: &'a AutoApplyPolicyConfig, tier: &str) -> &'a P
 /// recording only what it answers — so a row exists by whichever of them runs
 /// first instead of the item waiting on the
 /// next daemon tick. Idempotent by construction — `review_source_policy` only mints
-/// what has never been asked about (or what a changed source re-asks), and the
+/// what has never been asked about (or what the source now declares
+/// differently from the row's fingerprint), and the
 /// upsert refreshes an unresolved row rather than duplicating it.
 ///
 /// A row that will not record is logged and skipped rather than failing the
@@ -1378,6 +1443,7 @@ pub fn mint_decisions(store: &StateStore, review: &SourcePolicyReview) -> Vec<(S
             &mint.tier,
             DECISION_ACTION_INSTALL,
             &mint.summary(),
+            mint.content_hash.as_deref(),
         ) {
             tracing::warn!(error = %e, "failed to record pending decision");
             continue;
@@ -1401,8 +1467,17 @@ pub fn mint_decisions(store: &StateStore, review: &SourcePolicyReview) -> Vec<(S
             &mint.tier,
             DECISION_ACTION_INSTALL,
             &mint.summary(),
+            mint.content_hash.as_deref(),
         ) {
             tracing::warn!(error = %e, "failed to refresh pending decision annotation");
+        }
+    }
+
+    // Stamping an existing row with the fingerprint of what it was already
+    // asked about — no question, no notification, and no new row.
+    for (source_name, resource, hash) in &review.fingerprint_backfill {
+        if let Err(e) = store.set_decision_content_hash(source_name, resource, hash) {
+            tracing::warn!(error = %e, "failed to record decision content hash");
         }
     }
 
@@ -1537,7 +1612,15 @@ fn tier_rank(tier: &str) -> u8 {
 /// subscriber opted into and nothing else.
 #[derive(Debug, Default)]
 pub struct DeliveredItems {
-    tiers: BTreeMap<String, &'static str>,
+    items: BTreeMap<String, DeliveredItem>,
+}
+
+/// One delivered resource: the tier its layer carried it at, and the
+/// fingerprint of what that layer declares for it.
+#[derive(Debug)]
+struct DeliveredItem {
+    tier: &'static str,
+    content_hash: String,
 }
 
 impl DeliveredItems {
@@ -1547,41 +1630,51 @@ impl DeliveredItems {
     }
 
     /// Tag every resource on `layers` with the tier of the layer carrying it.
+    ///
+    /// One source can deliver a path on more than one layer; the strongest
+    /// tier decides, and the fingerprint travels with it — the item the
+    /// operator is asked about is the one that tier's layer declares.
     pub fn from_layers(layers: &[config::ProfileLayer]) -> Self {
-        let mut tiers: BTreeMap<String, &'static str> = BTreeMap::new();
+        let mut items: BTreeMap<String, DeliveredItem> = BTreeMap::new();
         for layer in layers {
             let tier = tier_of(&layer.policy);
-            for resource in
-                declared_decision_paths(&config::merge_layers(std::slice::from_ref(layer)))
+            for (resource, content_hash) in
+                declared_decision_fingerprints(&config::merge_layers(std::slice::from_ref(layer)))
             {
-                match tiers.get(&resource) {
-                    Some(existing) if tier_rank(existing) >= tier_rank(tier) => {}
+                match items.get(&resource) {
+                    Some(existing) if tier_rank(existing.tier) >= tier_rank(tier) => {}
                     _ => {
-                        tiers.insert(resource, tier);
+                        items.insert(resource, DeliveredItem { tier, content_hash });
                     }
                 }
             }
         }
-        Self { tiers }
+        Self { items }
     }
 
     /// `(resource, tier)` for everything the source delivers, in path order.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &'static str)> + '_ {
-        self.tiers.iter().map(|(r, t)| (r, *t))
+        self.items.iter().map(|(r, i)| (r, i.tier))
     }
 
     /// The tier `resource` is delivered at, if this source still delivers it.
     pub fn tier_for(&self, resource: &str) -> Option<&'static str> {
-        self.tiers.get(resource).copied()
+        self.items.get(resource).map(|i| i.tier)
+    }
+
+    /// What the source currently declares for `resource`, as the fingerprint a
+    /// decision row records so a later run can tell the item apart from itself.
+    pub fn content_hash_for(&self, resource: &str) -> Option<&str> {
+        self.items.get(resource).map(|i| i.content_hash.as_str())
     }
 
     /// The hash the change detector compares against the last run's.
     pub fn resource_hash(&self) -> String {
-        hash_resources(&self.tiers.keys().cloned().collect())
+        hash_resources(&self.items.keys().cloned().collect())
     }
 
     pub fn is_empty(&self) -> bool {
-        self.tiers.is_empty()
+        self.items.is_empty()
     }
 }
 
@@ -1980,6 +2073,7 @@ mod verdict_tests {
             resource: "packages.brew.curl".to_string(),
             tier: TIER_RECOMMENDED.to_string(),
             annotation: Some("installed 7.1, source wants ^8".to_string()),
+            content_hash: None,
         };
         assert_eq!(
             decision_row_annotation(&mint.summary()),
@@ -1996,5 +2090,194 @@ mod verdict_tests {
             None,
             "a summary carrying no annotation must not invent one"
         );
+    }
+}
+
+#[cfg(test)]
+mod fingerprint_gate_tests {
+    use super::*;
+    use crate::config::{AutoApplyPolicyConfig, LayerPolicy};
+    use crate::test_helpers::test_state;
+
+    /// One source offering the named environment variables at the recommended
+    /// tier — the surface the whole-source gate got wrong, because an env
+    /// entry's value changes without its path changing.
+    fn env_delivery(vars: &[(&str, &str)]) -> DeliveredItems {
+        let layer = config::ProfileLayer {
+            source: "acme".to_string(),
+            profile_name: "offered".to_string(),
+            priority: 500,
+            policy: LayerPolicy::Recommended,
+            spec: config::ProfileSpec {
+                env: vars
+                    .iter()
+                    .map(|(name, value)| config::EnvVar {
+                        name: name.to_string(),
+                        value: value.to_string(),
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+        };
+        DeliveredItems::from_layers(&[layer])
+    }
+
+    fn classify(store: &StateStore, delivered: &DeliveredItems) -> SourcePolicyReview {
+        review_source_policy(
+            store,
+            "acme",
+            delivered,
+            &AutoApplyPolicyConfig::default(),
+            &ActualPackages::default(),
+        )
+        .expect("classification reads the test store")
+    }
+
+    fn minted(review: &SourcePolicyReview) -> Vec<&str> {
+        review.to_mint.iter().map(|m| m.resource.as_str()).collect()
+    }
+
+    /// The two variables asked about once, then answered — an accepted one and
+    /// a rejected one, both carrying the fingerprint of what they answered.
+    fn store_with_two_answers() -> (StateStore, DeliveredItems) {
+        let store = test_state();
+        let delivered = env_delivery(&[("EDITOR", "nvim"), ("SHELL", "zsh")]);
+        let review = classify(&store, &delivered);
+        assert_eq!(minted(&review), vec!["env.EDITOR", "env.SHELL"]);
+        mint_decisions(&store, &review);
+        store.resolve_decision("env.EDITOR", "accepted").unwrap();
+        store.resolve_decision("env.SHELL", "rejected").unwrap();
+        (store, delivered)
+    }
+
+    /// Every resource a decision still withholds — an acceptance releases its
+    /// resource, a rejection and an unanswered question both keep it.
+    fn withheld(store: &StateStore) -> Vec<String> {
+        let mut resources: Vec<String> = store
+            .withheld_decisions()
+            .unwrap()
+            .into_iter()
+            .map(|d| d.resource)
+            .collect();
+        resources.sort();
+        resources
+    }
+
+    #[test]
+    fn a_new_item_leaves_the_already_answered_ones_alone() {
+        // The reported bug: an upstream commit adds an unrelated variable, and
+        // the whole-source hash re-asked every answer the operator had given.
+        let (store, _) = store_with_two_answers();
+        let grown = env_delivery(&[("EDITOR", "nvim"), ("SHELL", "zsh"), ("PAGER", "less")]);
+
+        let review = classify(&store, &grown);
+        assert_eq!(
+            minted(&review),
+            vec!["env.PAGER"],
+            "only the newcomer owes a question"
+        );
+        assert!(
+            review.fingerprint_backfill.is_empty(),
+            "the answered rows are already fingerprinted"
+        );
+
+        mint_decisions(&store, &review);
+        assert_eq!(
+            withheld(&store),
+            vec!["env.PAGER".to_string(), "env.SHELL".to_string()],
+            "the acceptance still releases its resource and the rejection \
+             still withholds its own; only the newcomer joins them"
+        );
+    }
+
+    #[test]
+    fn a_changed_value_reasks_exactly_that_item() {
+        // The other half the whole-source hash missed: the delivered SET is
+        // identical, so nothing about the source moved except what one of its
+        // items says.
+        let (store, _) = store_with_two_answers();
+        let changed = env_delivery(&[("EDITOR", "vim"), ("SHELL", "zsh")]);
+
+        let review = classify(&store, &changed);
+        assert_eq!(
+            minted(&review),
+            vec!["env.EDITOR"],
+            "the item the operator accepted now says something else"
+        );
+    }
+
+    #[test]
+    fn a_row_with_no_fingerprint_is_stamped_rather_than_reasked() {
+        // A row answered before the column existed, or recorded by a path with
+        // no delivered item in hand. The first observation of its content is
+        // not a change to it.
+        let store = test_state();
+        store
+            .upsert_pending_decision(
+                "acme",
+                "env.EDITOR",
+                TIER_RECOMMENDED,
+                DECISION_ACTION_INSTALL,
+                "recommended env.EDITOR (from acme)",
+                None,
+            )
+            .unwrap();
+        store.resolve_decision("env.EDITOR", "accepted").unwrap();
+
+        let delivered = env_delivery(&[("EDITOR", "nvim")]);
+        let review = classify(&store, &delivered);
+        assert!(
+            review.to_mint.is_empty(),
+            "an answered item is not re-asked on its first fingerprinting"
+        );
+        assert_eq!(
+            review
+                .fingerprint_backfill
+                .iter()
+                .map(|(s, r, _)| (s.as_str(), r.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("acme", "env.EDITOR")],
+            "the row learns which version of the item it answered"
+        );
+
+        mint_decisions(&store, &review);
+        let again = classify(&store, &delivered);
+        assert!(
+            again.to_mint.is_empty() && again.fingerprint_backfill.is_empty(),
+            "the stamped row is settled: nothing to ask, nothing to write"
+        );
+        assert!(
+            withheld(&store).is_empty(),
+            "and the backfill never touched the answer: the item stays accepted"
+        );
+    }
+
+    #[test]
+    fn an_unresolved_row_is_reminted_only_when_its_item_changed() {
+        // A pending question is not re-asked (and so not re-notified) tick
+        // after tick; a pending question about an item that has since changed
+        // is, because the row on screen describes something the source no
+        // longer delivers.
+        let store = test_state();
+        let delivered = env_delivery(&[("EDITOR", "nvim")]);
+        let first = classify(&store, &delivered);
+        assert_eq!(minted(&first), vec!["env.EDITOR"]);
+        mint_decisions(&store, &first);
+
+        let unchanged = classify(&store, &delivered);
+        assert!(
+            unchanged.to_mint.is_empty() && unchanged.fingerprint_backfill.is_empty(),
+            "an unanswered question is asked once, not every tick"
+        );
+
+        let changed = classify(&store, &env_delivery(&[("EDITOR", "vim")]));
+        assert_eq!(
+            minted(&changed),
+            vec!["env.EDITOR"],
+            "the pending row must describe what the source delivers now"
+        );
+        mint_decisions(&store, &changed);
+        let rows = store.pending_decisions_for_source("acme").unwrap();
+        assert_eq!(rows.len(), 1, "refreshed in place, never duplicated");
     }
 }

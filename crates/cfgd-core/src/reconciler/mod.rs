@@ -59,9 +59,10 @@ pub use pending::{
     DecisionMint, DecisionScope, DecisionTargets, DeliveredItems, SourcePolicyReview,
     Subscriptions, TIER_LOCKED, TIER_OPTIONAL, TIER_RECOMMENDED, UndecidableBatch,
     WithheldDecisions, configured_auto_apply, decision_resource_content, decision_row_annotation,
-    decisions_by_source, declared_decision_paths, hash_resources, local_profile, mint_decisions,
-    owns_decision_store, review_source_policies, review_source_policy, source_delivered_layers,
-    source_delivered_profile, title_cased_tier, undecidable_source_batches, withhold_from_plan,
+    decisions_by_source, declared_decision_fingerprints, declared_decision_paths, hash_resources,
+    local_profile, mint_decisions, owns_decision_store, review_source_policies,
+    review_source_policy, source_delivered_layers, source_delivered_profile, title_cased_tier,
+    undecidable_source_batches, withhold_from_plan,
 };
 pub use restore::{RestoreOutcome, restore_file_from_backup};
 pub use run::{
@@ -209,7 +210,7 @@ impl<'a> Reconciler<'a> {
     /// reporting where the copy landed on that action's own row.
     ///
     /// Set from the unmanaged-file conflict pass, which decides the policy but
-    /// no longer carries it out: see [`Self::sidecar_backups`].
+    /// no longer carries it out: see `Self::sidecar_backups`.
     #[must_use]
     pub fn backing_up(mut self, targets: std::collections::HashSet<PathBuf>) -> Self {
         self.sidecar_backups = targets;
@@ -232,7 +233,7 @@ impl<'a> Reconciler<'a> {
     }
 
     /// Record `scope` as what this run was scoped to, in place of the resolved
-    /// profile's name: see [`Self::recorded_scope`].
+    /// profile's name: see `Self::recorded_scope`.
     #[must_use]
     pub fn recording_scope(mut self, scope: impl Into<String>) -> Self {
         self.recorded_scope = Some(scope.into());

@@ -585,6 +585,7 @@ fn first_observation_of_a_source_reasks_nothing_already_answered() {
             "recommended",
             "install",
             "recommended packages.cargo.bat (from acme)",
+            None,
         )
         .unwrap();
     store
@@ -626,31 +627,14 @@ fn first_observation_of_a_source_reasks_nothing_already_answered() {
 }
 
 #[test]
-fn a_changed_source_reasks_an_item_already_answered() {
+fn a_source_that_moved_does_not_reask_an_item_whose_own_declaration_stands() {
     use crate::config::{CargoSpec, PackagesSpec};
-    // The other half of the first-observation split: once a PREVIOUS
-    // observation disagrees with the delivered set, every answered item is
-    // asked again — `docs/sources.md`: a rejection does not persist across
-    // source versions, so an update mints a fresh decision beside the
-    // resolved one and the fresh answer is the operator's current intent.
+    // A source's delivered SET is not the unit an answer covers. An unrelated
+    // upstream commit moves the source's hash, and the item the operator
+    // already answered still says exactly what it said when they answered it —
+    // so the answer stands and no question is re-asked.
     let store = test_state();
     let policy = AutoApplyPolicyConfig::default(); // new_recommended: Notify
-    store
-        .upsert_pending_decision(
-            "acme",
-            "packages.cargo.bat",
-            "recommended",
-            "install",
-            "recommended packages.cargo.bat (from acme)",
-        )
-        .unwrap();
-    store
-        .resolve_decision("packages.cargo.bat", "rejected")
-        .unwrap();
-    store
-        .set_source_config_hash("acme", "hash-of-an-older-delivered-set")
-        .unwrap();
-
     let merged = MergedProfile {
         packages: PackagesSpec {
             cargo: Some(CargoSpec {
@@ -661,22 +645,44 @@ fn a_changed_source_reasks_an_item_already_answered() {
         },
         ..Default::default()
     };
+    let delivered = tiered_items(&merged, crate::config::LayerPolicy::Recommended);
+    let fingerprint = delivered
+        .content_hash_for("packages.cargo.bat")
+        .expect("the source delivers the item")
+        .to_string();
+    store
+        .upsert_pending_decision(
+            "acme",
+            "packages.cargo.bat",
+            "recommended",
+            "install",
+            "recommended packages.cargo.bat (from acme)",
+            Some(&fingerprint),
+        )
+        .unwrap();
+    store
+        .resolve_decision("packages.cargo.bat", "rejected")
+        .unwrap();
+    store
+        .set_source_config_hash("acme", "hash-of-an-older-delivered-set")
+        .unwrap();
+
     let review = review_source_policy(
         &store,
         "acme",
-        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &delivered,
         &policy,
         &crate::reconciler::ActualPackages::default(),
     )
     .unwrap();
-    assert_eq!(
+    assert!(
+        review.to_mint.is_empty(),
+        "the item the operator answered has not changed, whatever else the source did: {:?}",
         review
             .to_mint
             .iter()
             .map(|m| m.resource.as_str())
-            .collect::<Vec<_>>(),
-        vec!["packages.cargo.bat"],
-        "a source that moved re-asks the item its operator already answered"
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1033,6 +1039,7 @@ fn a_pending_row_auto_accepts_once_its_package_is_installed() {
             "recommended",
             "install",
             "recommended packages.cargo.bat (from acme)",
+            None,
         )
         .unwrap();
     store
@@ -1089,6 +1096,7 @@ fn an_explicit_rejection_is_never_auto_accepted() {
             "recommended",
             "install",
             "recommended packages.cargo.bat (from acme)",
+            None,
         )
         .unwrap();
     store
@@ -1112,19 +1120,22 @@ fn an_explicit_rejection_is_never_auto_accepted() {
 }
 
 #[test]
-fn a_voided_rejection_with_the_package_installed_auto_accepts_the_fresh_question() {
-    // `docs/sources.md`: a rejection answers ONE delivered set — when the
-    // source's set changes, the item is a fresh question. Installed state
-    // answers that fresh question exactly as it answers a first-time one (an
-    // installed-despite-rejection package is one the operator put there), so
-    // the composed path is a decision, not an accident: no re-ask, one
-    // auto-accepted resolution.
+fn a_rejection_survives_the_source_delivering_something_else() {
+    // A rejection answers ONE ITEM, not the set the item arrived in. The
+    // source gains an unrelated package, and the rejected one — which the
+    // operator has since installed by hand, for their own reasons — is
+    // neither re-asked nor laundered onto the machine by the newcomer. The
+    // newcomer owes its own question.
     let store = test_state();
     let policy = AutoApplyPolicyConfig::default();
     let old_delivered = tiered_items(
         &cargo_profile(&["bat"]),
         crate::config::LayerPolicy::Recommended,
     );
+    let fingerprint = old_delivered
+        .content_hash_for("packages.cargo.bat")
+        .expect("the source delivers the item")
+        .to_string();
     store
         .upsert_pending_decision(
             "acme",
@@ -1132,6 +1143,7 @@ fn a_voided_rejection_with_the_package_installed_auto_accepts_the_fresh_question
             "recommended",
             "install",
             "recommended packages.cargo.bat (from acme)",
+            Some(&fingerprint),
         )
         .unwrap();
     store
@@ -1141,8 +1153,8 @@ fn a_voided_rejection_with_the_package_installed_auto_accepts_the_fresh_question
         .set_source_config_hash("acme", &old_delivered.resource_hash())
         .unwrap();
 
-    // The source moves: its delivered set gains an item, voiding the standing
-    // answer for everything it delivers.
+    // The source moves: its delivered set gains an item. The rejected item's
+    // own declaration is untouched.
     let new_delivered = tiered_items(
         &cargo_profile(&["bat", "eza"]),
         crate::config::LayerPolicy::Recommended,
@@ -1150,14 +1162,9 @@ fn a_voided_rejection_with_the_package_installed_auto_accepts_the_fresh_question
     let actual = cargo_observation(&[("bat", None)], &[("bat", "bat"), ("eza", "eza")]);
     let review = review_source_policy(&store, "acme", &new_delivered, &policy, &actual).unwrap();
 
-    assert_eq!(
-        review
-            .auto_accepted
-            .iter()
-            .map(|a| a.resource.as_str())
-            .collect::<Vec<_>>(),
-        vec!["packages.cargo.bat"],
-        "the fresh question is answered by installed state, not re-asked"
+    assert!(
+        review.auto_accepted.is_empty(),
+        "an installed-despite-rejection package does not overturn the answer"
     );
     assert_eq!(
         review
@@ -1166,14 +1173,17 @@ fn a_voided_rejection_with_the_package_installed_auto_accepts_the_fresh_question
             .map(|m| m.resource.as_str())
             .collect::<Vec<_>>(),
         vec!["packages.cargo.eza"],
-        "the not-installed newcomer still owes its question"
+        "the newcomer owes its question; the rejected item does not"
     );
 
     crate::reconciler::mint_decisions(&store, &review);
     assert_eq!(
         withheld_paths(&store),
-        HashSet::from(["packages.cargo.eza".to_string()]),
-        "the auto-accepted item is released; only the fresh ask withholds"
+        HashSet::from([
+            "packages.cargo.bat".to_string(),
+            "packages.cargo.eza".to_string(),
+        ]),
+        "the rejection still withholds, beside the fresh ask"
     );
 }
 
@@ -1194,6 +1204,7 @@ fn a_pending_rows_conflict_annotation_is_refreshed_in_place() {
             "recommended",
             "install",
             "recommended packages.cargo.tool@^14 (from acme)",
+            None,
         )
         .unwrap();
     store
@@ -1404,6 +1415,7 @@ fn a_decision_never_withholds_a_resource_the_operator_declares_themselves() {
             "recommended",
             "install",
             "bat",
+            None,
         )
         .unwrap();
     store
@@ -1474,7 +1486,7 @@ fn a_decision_never_withholds_a_local_declaration_spelled_differently() {
         let local = local_profile_declaring_file(declared);
         let store = test_state();
         store
-            .upsert_pending_decision("acme", &decided, "recommended", "install", "zshrc")
+            .upsert_pending_decision("acme", &decided, "recommended", "install", "zshrc", None)
             .unwrap();
 
         let scope = DecisionScope::new(["acme"], &local_profile(&local));
@@ -1508,7 +1520,14 @@ fn a_decision_stops_withholding_once_its_source_is_gone() {
 
     let store = test_state();
     store
-        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "k9s")
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.k9s",
+            "recommended",
+            "install",
+            "k9s",
+            None,
+        )
         .unwrap();
     store
         .upsert_pending_decision(
@@ -1517,6 +1536,7 @@ fn a_decision_stops_withholding_once_its_source_is_gone() {
             "recommended",
             "install",
             "stern",
+            None,
         )
         .unwrap();
     store
@@ -1622,7 +1642,14 @@ async fn a_daemon_on_a_foreign_config_leaves_the_default_stores_rows_alone() {
     let _home = crate::with_test_home_guard(staging.path());
     let store = StateStore::open_default().expect("the default store lands under the test home");
     store
-        .upsert_pending_decision("gone", "packages.brew.stern", "recommended", "install", "s")
+        .upsert_pending_decision(
+            "gone",
+            "packages.brew.stern",
+            "recommended",
+            "install",
+            "s",
+            None,
+        )
         .unwrap();
 
     tick_against_default_store(inert_config_under(staging.path())).await;
@@ -1691,7 +1718,14 @@ async fn a_service_daemon_naming_the_default_config_still_sweeps_dead_decision_r
     let _home = crate::with_test_home_guard(staging.path());
     let store = StateStore::open_default().expect("the default store lands under the test home");
     store
-        .upsert_pending_decision("gone", "packages.brew.stern", "recommended", "install", "s")
+        .upsert_pending_decision(
+            "gone",
+            "packages.brew.stern",
+            "recommended",
+            "install",
+            "s",
+            None,
+        )
         .unwrap();
 
     // The same file the bare default would resolve, passed the way a generated
@@ -4349,6 +4383,7 @@ fn withheld_decisions_with_decisions() {
             "recommended",
             "install",
             "recommended packages.cargo.bat (from acme)",
+            None,
         )
         .unwrap();
     store
@@ -4358,6 +4393,7 @@ fn withheld_decisions_with_decisions() {
             "recommended",
             "install",
             "recommended env.EDITOR (from acme)",
+            None,
         )
         .unwrap();
 
@@ -9332,6 +9368,7 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
             "recommended",
             "install",
             "recommended packages.cargo.bat (from acme)",
+            None,
         )
         .unwrap();
         // The decision keeps the DECLARED spelling of the target; the planner
@@ -9342,6 +9379,7 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
             "recommended",
             "install",
             "recommended files.~/withheld.txt (from acme)",
+            None,
         )
         .unwrap();
     }
@@ -9751,6 +9789,7 @@ async fn secret_env_tick_leaks(seed_pending_decision: bool) -> Vec<PathBuf> {
             "recommended",
             "install",
             "recommended env.TEAM_TOKEN (from acme)",
+            None,
         )
         .unwrap();
     }
@@ -12969,6 +13008,7 @@ spec:
                 "recommended",
                 "install",
                 "recommended files.~/withheld.txt (from acme)",
+                None,
             )
             .unwrap();
         }
@@ -15383,6 +15423,7 @@ fn withheld_decisions_returns_decision_resources_as_set() {
             "recommended",
             "install",
             "recommended packages.cargo.bat",
+            None,
         )
         .unwrap();
     store
@@ -15392,6 +15433,7 @@ fn withheld_decisions_returns_decision_resources_as_set() {
             "locked",
             "install",
             "locked files.security/rules.yaml",
+            None,
         )
         .unwrap();
 
@@ -15670,6 +15712,7 @@ async fn handle_reconcile_auto_apply_with_sources_processes_decisions_and_resolv
                 "recommended",
                 "install",
                 "install bat",
+                None,
             )
             .unwrap();
     }

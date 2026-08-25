@@ -664,8 +664,11 @@ impl SourceManager {
             &spec.origin.branch,
         ]);
 
+        // Silent on success: every caller already says the outcome (`Updated 1
+        // source`, the plan header), and a failure falls through to the
+        // libgit2 arm below, which settles its own line.
         let label = format!("Fetching source:{}", spec.name);
-        let cli_result = printer.run(&mut cmd, &label);
+        let cli_result = printer.run_silent(&mut cmd, &label);
         let cli_ok = matches!(&cli_result, Ok(output) if output.status.success());
 
         if !cli_ok {

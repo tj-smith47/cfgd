@@ -13,6 +13,7 @@ const ADDED_COLUMNS: &[(usize, &str, &str)] = &[
     (3, "apply_journal", "script_output"),
     (14, "apply_journal", "completion_index"),
     (16, "backup_runs", "kind"),
+    (17, "pending_decisions", "content_hash"),
 ];
 
 /// Present `store` as the database it was at `version`, so reopening replays
@@ -853,7 +854,14 @@ fn withheld_resources(store: &StateStore) -> Vec<String> {
 fn withheld_paths_cover_both_states_that_keep_a_resource_off_the_machine() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "k9s")
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.k9s",
+            "recommended",
+            "install",
+            "k9s",
+            None,
+        )
         .unwrap();
     store
         .upsert_pending_decision(
@@ -862,10 +870,18 @@ fn withheld_paths_cover_both_states_that_keep_a_resource_off_the_machine() {
             "recommended",
             "install",
             "st",
+            None,
         )
         .unwrap();
     store
-        .upsert_pending_decision("acme", "files.~/.zshrc", "recommended", "install", "rc")
+        .upsert_pending_decision(
+            "acme",
+            "files.~/.zshrc",
+            "recommended",
+            "install",
+            "rc",
+            None,
+        )
         .unwrap();
     store
         .resolve_decision("packages.brew.stern", "rejected")
@@ -895,13 +911,27 @@ fn accepting_a_resource_that_was_once_rejected_releases_it() {
     // decision would be silently overruled by the stale rejection.
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "v1")
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.k9s",
+            "recommended",
+            "install",
+            "v1",
+            None,
+        )
         .unwrap();
     store
         .resolve_decision("packages.brew.k9s", "rejected")
         .unwrap();
     store
-        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "v2")
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.k9s",
+            "recommended",
+            "install",
+            "v2",
+            None,
+        )
         .unwrap();
     assert_eq!(
         withheld_resources(&store),
@@ -928,6 +958,7 @@ fn record_auto_accepted_resolves_the_open_row_with_auto_provenance() {
             "recommended",
             "install",
             "recommended packages.cargo.bat (from acme)",
+            None,
         )
         .unwrap();
     store
@@ -1000,10 +1031,94 @@ fn record_auto_accepted_with_no_open_row_inserts_once() {
 }
 
 #[test]
+fn a_decisions_content_hash_round_trips_through_the_upsert() {
+    // The migrated column, end to end: a row records the fingerprint of what
+    // it asked about, an update carries the new one, and a row written without
+    // a fingerprint answers "not fingerprinted" rather than "unchanged".
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_pending_decision(
+            "acme",
+            "env.EDITOR",
+            "recommended",
+            "install",
+            "v1",
+            Some("h1"),
+        )
+        .unwrap();
+    assert_eq!(
+        store.pending_decisions().unwrap()[0]
+            .content_hash
+            .as_deref(),
+        Some("h1"),
+        "the row every listing surface reads carries it"
+    );
+    assert_eq!(
+        store
+            .latest_decision_content_hash("acme", "env.EDITOR")
+            .unwrap(),
+        Some(Some("h1".to_string()))
+    );
+
+    store
+        .upsert_pending_decision(
+            "acme",
+            "env.EDITOR",
+            "recommended",
+            "install",
+            "v2",
+            Some("h2"),
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .latest_decision_content_hash("acme", "env.EDITOR")
+            .unwrap(),
+        Some(Some("h2".to_string())),
+        "an updated row asks about the item's current version"
+    );
+
+    store
+        .upsert_pending_decision("acme", "env.PAGER", "recommended", "install", "v1", None)
+        .unwrap();
+    assert_eq!(
+        store
+            .latest_decision_content_hash("acme", "env.PAGER")
+            .unwrap(),
+        Some(None),
+        "a row with no fingerprint is not a row that agrees"
+    );
+    store
+        .set_decision_content_hash("acme", "env.PAGER", "h3")
+        .unwrap();
+    assert_eq!(
+        store
+            .latest_decision_content_hash("acme", "env.PAGER")
+            .unwrap(),
+        Some(Some("h3".to_string())),
+        "the backfill stamps the row in place"
+    );
+    assert_eq!(
+        store
+            .latest_decision_content_hash("acme", "env.NEVER_ASKED")
+            .unwrap(),
+        None,
+        "no row at all is a different answer from a row with no hash"
+    );
+}
+
+#[test]
 fn discarding_a_removed_source_leaves_no_lasting_exclusion() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "k9s")
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.k9s",
+            "recommended",
+            "install",
+            "k9s",
+            None,
+        )
         .unwrap();
     store
         .upsert_pending_decision(
@@ -1012,6 +1127,7 @@ fn discarding_a_removed_source_leaves_no_lasting_exclusion() {
             "recommended",
             "install",
             "bat",
+            None,
         )
         .unwrap();
 
@@ -1038,6 +1154,7 @@ fn upsert_and_list_pending_decisions() {
             "recommended",
             "install",
             "install k9s (recommended by acme)",
+            None,
         )
         .unwrap();
     assert!(id > 0);
@@ -1061,6 +1178,7 @@ fn upsert_pending_decision_updates_existing() {
             "recommended",
             "install",
             "original summary",
+            None,
         )
         .unwrap();
     store
@@ -1070,6 +1188,7 @@ fn upsert_pending_decision_updates_existing() {
             "recommended",
             "update",
             "updated summary",
+            None,
         )
         .unwrap();
 
@@ -1083,7 +1202,14 @@ fn upsert_pending_decision_updates_existing() {
 fn resolve_decision_by_resource() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "k9s")
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.k9s",
+            "recommended",
+            "install",
+            "k9s",
+            None,
+        )
         .unwrap();
 
     let resolved = store
@@ -1108,7 +1234,14 @@ fn resolve_decision_nonexistent_returns_false() {
 fn resolve_decisions_for_source() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "k9s")
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.k9s",
+            "recommended",
+            "install",
+            "k9s",
+            None,
+        )
         .unwrap();
     store
         .upsert_pending_decision(
@@ -1117,10 +1250,18 @@ fn resolve_decisions_for_source() {
             "recommended",
             "install",
             "stern",
+            None,
         )
         .unwrap();
     store
-        .upsert_pending_decision("other", "packages.brew.bat", "optional", "install", "bat")
+        .upsert_pending_decision(
+            "other",
+            "packages.brew.bat",
+            "optional",
+            "install",
+            "bat",
+            None,
+        )
         .unwrap();
 
     let count = store
@@ -1137,10 +1278,10 @@ fn resolve_decisions_for_source() {
 fn resolve_all_decisions() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_pending_decision("a", "r1", "recommended", "install", "s1")
+        .upsert_pending_decision("a", "r1", "recommended", "install", "s1", None)
         .unwrap();
     store
-        .upsert_pending_decision("b", "r2", "optional", "install", "s2")
+        .upsert_pending_decision("b", "r2", "optional", "install", "s2", None)
         .unwrap();
 
     let count = store.resolve_all_decisions("accepted").unwrap();
@@ -1154,10 +1295,10 @@ fn resolve_all_decisions() {
 fn pending_decisions_for_source() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_pending_decision("acme", "r1", "recommended", "install", "s1")
+        .upsert_pending_decision("acme", "r1", "recommended", "install", "s1", None)
         .unwrap();
     store
-        .upsert_pending_decision("other", "r2", "optional", "install", "s2")
+        .upsert_pending_decision("other", "r2", "optional", "install", "s2", None)
         .unwrap();
 
     let acme = store.pending_decisions_for_source("acme").unwrap();

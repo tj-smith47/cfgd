@@ -2612,6 +2612,7 @@ fn env_apply_result(descriptions: &[&str]) -> ApplyResult {
                 success: true,
                 error: None,
                 changed: !d.ends_with(":skipped"),
+                skipped: d.ends_with(":skipped"),
             })
             .collect(),
         status: ApplyStatus::Success,
@@ -3083,7 +3084,7 @@ fn shell_env_reminder_names_the_written_env_file() {
         "expected the cfgd:env owner group, got: {out}"
     );
     assert!(
-        out.contains("run `source ~/.cfgd.env`"),
+        out.contains("Run `source ~/.cfgd.env`"),
         "expected a retypeable source command, got: {out}"
     );
     assert!(
@@ -3113,7 +3114,7 @@ fn shell_env_reminder_picks_the_env_file_by_shell_not_by_emission_order() {
     });
 
     assert!(
-        out.contains("run `source /home/u/.cfgd.env`"),
+        out.contains("Run `source /home/u/.cfgd.env`"),
         "expected the shell-matching file, got: {out}"
     );
     assert!(
@@ -3738,6 +3739,7 @@ fn a_decision_never_withholds_a_package_the_operator_declares_in_a_manifest_file
             "recommended",
             "install",
             "recommended ripgrep (from acme)",
+            None,
         )
         .unwrap();
 
@@ -3775,6 +3777,7 @@ fn a_run_that_could_not_read_its_config_still_withholds_every_row() {
             "recommended",
             "install",
             "recommended ripgrep (from acme)",
+            None,
         )
         .unwrap();
 

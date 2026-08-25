@@ -229,6 +229,7 @@ pub fn state_with_pending_decision_setup() -> (tempfile::TempDir, tempfile::Temp
             "permission",
             "add",
             "team-config wants to install ripgrep",
+            None,
         )
         .unwrap();
 

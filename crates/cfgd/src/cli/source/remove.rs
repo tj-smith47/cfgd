@@ -378,10 +378,24 @@ mod tests {
         let cli = cli_with_seeded_config(dir.path());
         let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
-            .upsert_pending_decision("acme", "packages.brew.k9s", "recommended", "install", "v1")
+            .upsert_pending_decision(
+                "acme",
+                "packages.brew.k9s",
+                "recommended",
+                "install",
+                "v1",
+                None,
+            )
             .expect("seed pending decision");
         state
-            .upsert_pending_decision("acme", "files.~/.gitconfig", "recommended", "install", "v1")
+            .upsert_pending_decision(
+                "acme",
+                "files.~/.gitconfig",
+                "recommended",
+                "install",
+                "v1",
+                None,
+            )
             .expect("seed second decision");
         state
             .resolve_decision("files.~/.gitconfig", "rejected")

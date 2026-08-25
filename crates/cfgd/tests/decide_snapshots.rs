@@ -32,6 +32,7 @@ fn pending(
         created_at: "2026-05-11T00:00:00Z".into(),
         resolved_at: None,
         resolution: None,
+        content_hash: None,
     }
 }
 

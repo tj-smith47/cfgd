@@ -9,15 +9,15 @@
 //! it into the relevant `*_output_types.rs` wrapper.
 
 use crate::output::Role;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Apply status for a reconciliation run.
 ///
 /// `rename_all = "camelCase"` makes the derived `Serialize` token match
 /// [`Self::display_str`] for every variant (e.g. `inProgress`), so the CLI JSON
 /// surface, the human display, and the `cfgd log` column never drift. The
-/// snake_case state-store persistence form is the separate [`Self::as_str`] /
-/// [`Self::from_str`] pair and is unaffected by this attribute.
+/// snake_case state-store persistence form is the separate `as_str` /
+/// `from_str` pair and is unaffected by this attribute.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ApplyStatus {
@@ -46,8 +46,8 @@ impl ApplyStatus {
     }
 
     /// camelCase token for the CLI JSON surface (`cfgd apply`/`status -o json`).
-    /// Distinct from [`Self::as_str`], which is the snake_case state-store
-    /// persistence form that round-trips through [`Self::from_str`], and from
+    /// Distinct from `as_str`, which is the snake_case state-store
+    /// persistence form that round-trips through `from_str`, and from
     /// [`Self::human_str`], which is what a person reads.
     pub fn display_str(&self) -> &'static str {
         match self {
@@ -223,6 +223,105 @@ pub struct ApplyRecord {
     pub summary: Option<String>,
 }
 
+/// What the `applies.summary` column holds, and the ONE prose rendering every
+/// human surface reads it back through.
+///
+/// The column used to be a `serde_json::json!` literal built at each of its
+/// three write sites and printed VERBATIM by the two surfaces that show it —
+/// `cfgd status`'s `Summary  {"failed":0,"succeeded":22,"total":22}` row and
+/// `cfgd log`'s Summary column. A stored wire shape is not a sentence, and
+/// `-o json` is where a machine consumer reads the shape; the human column
+/// reads [`Self::prose`].
+///
+/// Untagged, and `Rollback` first: only a rollback row carries `rollback_of`,
+/// so the two shapes cannot be confused for one another. Every `Actions` field
+/// a run may not write is `#[serde(default)]`, so a row written by an older
+/// cfgd — before `skipped` was split out of `succeeded` — still parses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ApplySummary {
+    /// `cfgd rollback`'s own row: the files it put back and the files it took
+    /// away.
+    Rollback {
+        rollback_of: i64,
+        restored: usize,
+        removed: usize,
+    },
+    /// An apply's action tally.
+    #[serde(rename_all = "camelCase")]
+    Actions {
+        total: usize,
+        succeeded: usize,
+        #[serde(default)]
+        skipped: usize,
+        failed: usize,
+        /// Actions the run planned and never reached, recorded only by the
+        /// cooperative-abort close.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        not_run: Option<usize>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        aborted: bool,
+    },
+}
+
+impl ApplySummary {
+    /// The stored column value.
+    pub fn to_column(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// The sentence a human column renders for a stored value.
+    ///
+    /// A value nothing in this workspace writes is handed back as it stands:
+    /// hiding an unreadable row's content leaves a reader with a dash and no
+    /// way to find out what is in the database.
+    pub fn prose(stored: &str) -> String {
+        match serde_json::from_str::<Self>(stored) {
+            Ok(summary) => summary.to_string(),
+            Err(_) => stored.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for ApplySummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rollback {
+                rollback_of,
+                restored,
+                removed,
+            } => write!(
+                f,
+                "{} restored, {removed} removed (rollback of apply {rollback_of})",
+                restored
+            ),
+            Self::Actions {
+                succeeded,
+                skipped,
+                failed,
+                not_run,
+                aborted,
+                ..
+            } => {
+                write!(f, "{succeeded} succeeded")?;
+                // Only when there is one to report: a clean run's row would
+                // otherwise carry two zeroes for outcomes that did not occur.
+                if *skipped > 0 {
+                    write!(f, ", {skipped} skipped")?;
+                }
+                write!(f, ", {failed} failed")?;
+                if let Some(not_run) = not_run.filter(|n| *n > 0) {
+                    write!(f, ", {not_run} not run")?;
+                }
+                if *aborted {
+                    f.write_str(" (aborted)")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// A recorded drift event.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -304,6 +403,11 @@ pub struct PendingDecision {
     pub created_at: String,
     pub resolved_at: Option<String>,
     pub resolution: Option<String>,
+    /// A digest of what the source declared for this item when the row was
+    /// written. The classifier re-asks when what it now declares no longer
+    /// matches; `None` is a row written before the item was fingerprinted, and
+    /// reads as "no disagreement recorded", never as "it changed".
+    pub content_hash: Option<String>,
 }
 
 /// A stored config hash for detecting source changes. Internal-only DAO.
@@ -380,6 +484,91 @@ pub fn module_status_display(stored: &str, drifted: bool) -> (&'static str, Role
         MODULE_STATUS_INSTALLED if drifted => ("Drifted", Role::Warn),
         MODULE_STATUS_INSTALLED => ("Synced", Role::Ok),
         _ => ("NotApplied", Role::Pending),
+    }
+}
+
+#[cfg(test)]
+mod apply_summary_tests {
+    use super::*;
+
+    /// The stored column is a wire shape and the human column is a sentence.
+    /// `Summary  {"failed":0,"succeeded":22,"total":22}` was the stored value
+    /// printed verbatim.
+    #[test]
+    fn a_stored_summary_reads_back_as_prose_on_a_human_surface() {
+        let clean = ApplySummary::Actions {
+            total: 22,
+            succeeded: 22,
+            skipped: 0,
+            failed: 0,
+            not_run: None,
+            aborted: false,
+        };
+        assert_eq!(
+            ApplySummary::prose(&clean.to_column()),
+            "22 succeeded, 0 failed"
+        );
+
+        let split = ApplySummary::Actions {
+            total: 13,
+            succeeded: 12,
+            skipped: 1,
+            failed: 0,
+            not_run: None,
+            aborted: false,
+        };
+        assert_eq!(
+            ApplySummary::prose(&split.to_column()),
+            "12 succeeded, 1 skipped, 0 failed"
+        );
+
+        let aborted = ApplySummary::Actions {
+            total: 9,
+            succeeded: 4,
+            skipped: 0,
+            failed: 1,
+            not_run: Some(4),
+            aborted: true,
+        };
+        assert_eq!(
+            ApplySummary::prose(&aborted.to_column()),
+            "4 succeeded, 1 failed, 4 not run (aborted)"
+        );
+
+        let rollback = ApplySummary::Rollback {
+            rollback_of: 7,
+            restored: 3,
+            removed: 1,
+        };
+        assert_eq!(
+            ApplySummary::prose(&rollback.to_column()),
+            "3 restored, 1 removed (rollback of apply 7)"
+        );
+
+        for stored in [
+            clean.to_column(),
+            split.to_column(),
+            aborted.to_column(),
+            rollback.to_column(),
+        ] {
+            let prose = ApplySummary::prose(&stored);
+            assert!(
+                !prose.contains('{') && !prose.contains('"'),
+                "a human surface must not read a wire shape: {prose}"
+            );
+        }
+    }
+
+    /// A row an older cfgd wrote — before `skipped` was split out of
+    /// `succeeded` — still parses, and a value nothing can parse falls back to
+    /// itself rather than vanishing.
+    #[test]
+    fn an_unparseable_or_older_summary_still_renders() {
+        assert_eq!(
+            ApplySummary::prose(r#"{"total":3,"succeeded":3,"failed":0}"#),
+            "3 succeeded, 0 failed"
+        );
+        assert_eq!(ApplySummary::prose("running"), "running");
     }
 }
 
@@ -559,7 +748,7 @@ impl BackupRunStatus {
 /// of their own, so the stored spelling and the shown one cannot drift apart.
 ///
 /// A token neither arm recognises is shown VERBATIM rather than renamed:
-/// [`BackupRunStatus::from_str`] reads one as `Failed` for safety, and a screen
+/// `BackupRunStatus::from_str` reads one as `Failed` for safety, and a screen
 /// asserting "Failed" about a row cfgd could not interpret would be a claim it
 /// has no basis for.
 pub fn backup_run_status_display(stored: &str) -> &str {

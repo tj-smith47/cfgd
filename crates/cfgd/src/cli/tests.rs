@@ -11194,6 +11194,7 @@ fn cmd_decide_with_pending_decision() {
             "recommended",
             "install",
             "Install curl via brew",
+            None,
         )
         .unwrap();
 
@@ -11239,10 +11240,18 @@ fn cmd_decide_accept_all_with_pending() {
             "recommended",
             "install",
             "Install curl via brew",
+            None,
         )
         .unwrap();
     state
-        .upsert_pending_decision("team", "env.EDITOR", "recommended", "set", "Set EDITOR")
+        .upsert_pending_decision(
+            "team",
+            "env.EDITOR",
+            "recommended",
+            "set",
+            "Set EDITOR",
+            None,
+        )
         .unwrap();
 
     let result = super::decide::cmd_decide(
@@ -11284,10 +11293,18 @@ fn cmd_decide_reject_by_source_with_pending() {
             "recommended",
             "install",
             "Install curl via brew",
+            None,
         )
         .unwrap();
     state
-        .upsert_pending_decision("other", "env.EDITOR", "recommended", "set", "Set EDITOR")
+        .upsert_pending_decision(
+            "other",
+            "env.EDITOR",
+            "recommended",
+            "set",
+            "Set EDITOR",
+            None,
+        )
         .unwrap();
 
     let result = super::decide::cmd_decide(
@@ -18897,10 +18914,24 @@ fn cmd_decide_no_args_with_pending_shows_list() {
     let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
-        .upsert_pending_decision("alpha", "pkg/git", "required", "install", "Install git")
+        .upsert_pending_decision(
+            "alpha",
+            "pkg/git",
+            "required",
+            "install",
+            "Install git",
+            None,
+        )
         .unwrap();
     state
-        .upsert_pending_decision("beta", "env/EDITOR", "recommended", "set", "Set EDITOR")
+        .upsert_pending_decision(
+            "beta",
+            "env/EDITOR",
+            "recommended",
+            "set",
+            "Set EDITOR",
+            None,
+        )
         .unwrap();
 
     // No resource/source/all — should display pending decisions
@@ -18961,6 +18992,7 @@ fn cmd_decide_reject_specific_resource_verifies_resolution() {
             "recommended",
             "install",
             "Install jq",
+            None,
         )
         .unwrap();
 
@@ -19001,7 +19033,14 @@ fn cmd_decide_accept_specific_resource_verifies_messaging() {
     let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
-        .upsert_pending_decision("team", "file/bashrc", "required", "create", "Create bashrc")
+        .upsert_pending_decision(
+            "team",
+            "file/bashrc",
+            "required",
+            "create",
+            "Create bashrc",
+            None,
+        )
         .unwrap();
 
     super::decide::cmd_decide(
@@ -19073,6 +19112,7 @@ fn cmd_decide_accept_all_reports_count() {
                 "recommended",
                 "install",
                 &format!("Install pkg {i}"),
+                None,
             )
             .unwrap();
     }
@@ -19114,13 +19154,13 @@ fn cmd_decide_reject_by_source_preserves_other_sources() {
     let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
-        .upsert_pending_decision("alpha", "pkg/a", "recommended", "install", "A")
+        .upsert_pending_decision("alpha", "pkg/a", "recommended", "install", "A", None)
         .unwrap();
     state
-        .upsert_pending_decision("alpha", "pkg/b", "recommended", "install", "B")
+        .upsert_pending_decision("alpha", "pkg/b", "recommended", "install", "B", None)
         .unwrap();
     state
-        .upsert_pending_decision("beta", "env/X", "required", "set", "X")
+        .upsert_pending_decision("beta", "env/X", "required", "set", "X", None)
         .unwrap();
 
     super::decide::cmd_decide(
@@ -19163,7 +19203,7 @@ fn cmd_decide_reject_by_source_with_no_matching_decisions() {
     let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
-        .upsert_pending_decision("alpha", "pkg/a", "recommended", "install", "A")
+        .upsert_pending_decision("alpha", "pkg/a", "recommended", "install", "A", None)
         .unwrap();
 
     super::decide::cmd_decide(
@@ -19196,7 +19236,14 @@ fn cmd_decide_accept_single_item_singular_message() {
     let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
 
     state
-        .upsert_pending_decision("src", "pkg/only", "recommended", "install", "Only pkg")
+        .upsert_pending_decision(
+            "src",
+            "pkg/only",
+            "recommended",
+            "install",
+            "Only pkg",
+            None,
+        )
         .unwrap();
 
     super::decide::cmd_decide(
@@ -21888,6 +21935,7 @@ impl DecisionFixture {
                 "recommended",
                 "install",
                 "recommended withheld.txt (from acme)",
+                None,
             )
             .unwrap();
         state
@@ -22412,6 +22460,7 @@ fn a_decision_never_withholds_what_the_operator_declares_themselves() {
             "recommended",
             "install",
             "recommended kept.txt (from acme)",
+            None,
         )
         .unwrap();
     state.resolve_decision(&local_resource, "rejected").unwrap();
@@ -22439,6 +22488,7 @@ fn a_decision_whose_source_is_not_subscribed_withholds_nothing() {
             "recommended",
             "install",
             "recommended withheld.txt (from gone)",
+            None,
         )
         .unwrap();
     state.resolve_decision(&f.resource(), "rejected").unwrap();
@@ -22554,6 +22604,7 @@ fn a_foreign_config_with_its_own_state_dir_still_sweeps_dead_decision_rows() {
             "recommended",
             "install",
             "recommended stern (from gone)",
+            None,
         )
         .unwrap();
 
@@ -22724,6 +22775,7 @@ fn a_foreign_config_on_the_default_store_sweeps_none_of_its_decision_rows() {
             "recommended",
             "install",
             "recommended stern (from gone)",
+            None,
         )
         .unwrap();
 
@@ -22776,6 +22828,7 @@ fn an_apply_naming_the_default_config_still_sweeps_dead_decision_rows() {
             "recommended",
             "install",
             "recommended stern (from gone)",
+            None,
         )
         .unwrap();
 
@@ -22807,6 +22860,7 @@ fn status_lists_only_the_decisions_their_source_can_still_answer() {
             "recommended",
             "install",
             "recommended stern (from gone)",
+            None,
         )
         .unwrap();
 
@@ -22836,6 +22890,7 @@ fn decide_lists_only_the_decisions_their_source_can_still_answer() {
             "recommended",
             "install",
             "recommended stern (from gone)",
+            None,
         )
         .unwrap();
 
@@ -23100,6 +23155,7 @@ fn a_recorded_row_keeps_its_decide_instruction_on_every_config() {
             "recommended",
             "install",
             "recommended withheld.txt (from acme)",
+            None,
         )
         .unwrap();
 

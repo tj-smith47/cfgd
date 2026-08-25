@@ -59,8 +59,8 @@ pub(crate) async fn handle_sync(
                     }
                 }
                 tracing::info!(
-                    from = %movement.from,
-                    to = %movement.to,
+                    from = %crate::short_commit(&movement.from),
+                    to = %crate::short_commit(&movement.to),
                     "sync: pulled new changes from remote"
                 );
                 changes = true;

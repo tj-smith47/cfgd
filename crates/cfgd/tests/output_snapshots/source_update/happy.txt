@@ -4,7 +4,6 @@ source:upd-src
   ◐ Fetching source:upd-src
     From file://<BARE_ROOT>/upd-src-source
      * branch            master     -> FETCH_HEAD
-  ✓ Fetching source:upd-src
   ✓ updated
 
 ✓ Updated 1 source

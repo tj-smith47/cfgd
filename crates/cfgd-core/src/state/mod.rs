@@ -27,9 +27,9 @@ pub use pending_config::{
     save_pending_server_config,
 };
 pub use types::{
-    ApplyRecord, ApplyStatus, BackupRunDraft, BackupRunKind, BackupRunRecord, BackupRunStatus,
-    ComplianceHistoryRow, ConfigSourceRecord, DriftEvent, FileBackupRecord, JournalEntry,
-    MODULE_STATUS_ERROR, MODULE_STATUS_INSTALLED, ManagedResource, ModuleFileRecord,
+    ApplyRecord, ApplyStatus, ApplySummary, BackupRunDraft, BackupRunKind, BackupRunRecord,
+    BackupRunStatus, ComplianceHistoryRow, ConfigSourceRecord, DriftEvent, FileBackupRecord,
+    JournalEntry, MODULE_STATUS_ERROR, MODULE_STATUS_INSTALLED, ManagedResource, ModuleFileRecord,
     ModuleStateRecord, PendingDecision, SOURCE_STATUS_ACTIVE, SOURCE_STATUS_ERROR,
     SourceConfigHash, SourceConflictRecord, backup_run_status_display, module_status_display,
     source_status_display,
@@ -465,6 +465,15 @@ const MIGRATIONS: &[&str] = &[
     // The ledger still holds both kinds: retention prunes and `list_snapshots`
     // restores from every payload on disk, whichever wrote it.
     "ALTER TABLE backup_runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'run';",
+    // Migration 17: what the source declared for the item this row asks
+    // about. Without it the only change signal was a hash over the source's
+    // whole delivered set, which re-asked every answered item whenever an
+    // unrelated item joined the set, and never re-asked an item whose own
+    // declared value changed while the set stood still. NULL is "not
+    // fingerprinted yet" and is deliberately not backfilled: the classifier
+    // stamps the current fingerprint onto such a row without asking, so an
+    // answer given before this column existed survives the upgrade.
+    "ALTER TABLE pending_decisions ADD COLUMN content_hash TEXT;",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable
