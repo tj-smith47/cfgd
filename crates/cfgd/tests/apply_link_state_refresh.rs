@@ -51,6 +51,7 @@ fn setup(strategy: &str) -> (tempfile::TempDir, tempfile::TempDir, PathBuf, Path
 /// Returns `(config_dir, state_dir, source, target)`. A module's file work is
 /// recorded as ONE aggregate `managed_resources` row rather than a row per file,
 /// which is the half a per-file refresh cannot reach.
+#[cfg(unix)]
 fn setup_module(strategy: &str) -> (tempfile::TempDir, tempfile::TempDir, PathBuf, PathBuf) {
     let config_dir = tempfile::tempdir().unwrap();
     let state_dir = tempfile::tempdir().unwrap();
@@ -79,6 +80,7 @@ fn setup_module(strategy: &str) -> (tempfile::TempDir, tempfile::TempDir, PathBu
 }
 
 /// The recorded hash of the module's one aggregate file row, if cfgd tracks one.
+#[cfg(unix)]
 fn recorded_module_hash(state_dir: &Path, module: &str, declared_total: usize) -> Option<String> {
     let state = StateStore::open(&state_dir.join("state.db")).unwrap();
     let id = format!("{module}:files:{declared_total}");
@@ -112,6 +114,7 @@ fn recorded_hash(state_dir: &Path, target: &Path) -> Option<String> {
 
 /// What the "did the user hand-modify the deployed file?" check compares
 /// against: the hash of the bytes the target currently holds.
+#[cfg(unix)]
 fn deployed_hash(target: &Path) -> String {
     cfgd_core::sha256_hex(&std::fs::read(target).unwrap())
 }
