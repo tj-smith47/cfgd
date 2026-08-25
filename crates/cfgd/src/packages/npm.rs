@@ -129,14 +129,25 @@ pub(super) fn resolve_npm_prefix(state: &dyn PackageStateStore) -> Result<NpmPre
 /// A FALLBACK decision is additionally probed the other way: revalidation of
 /// the fallback path alone can only ever notice the fallback getting worse,
 /// so a machine whose configured prefix was later fixed (permissions granted
-/// on `/usr/local`) would stay on `~/.npm-global` forever. When the row says
-/// `is_fallback`, npm is re-asked for its configured prefix and that prefix
-/// is write-probed; a writable answer discards the row so the caller
-/// re-derives — promoting to the configured prefix and re-persisting with
-/// `is_fallback: false`. Asking npm is a spawn, but it is paid only while the
-/// machine is in the degraded state, on operations that are about to spawn
-/// npm anyway. A probe that errors or answers unwritable keeps the fallback:
-/// "could not check" must not discard a decision that still works.
+/// on `/usr/local`, or a second node arriving on `PATH` under a prefix its
+/// owner can write) would stay on `~/.npm-global` forever. When the row says
+/// `is_fallback` AND the fallback holds no packages, npm is re-asked for its
+/// configured prefix and that prefix is write-probed; a writable answer
+/// discards the row so the caller re-derives — promoting to the configured
+/// prefix and re-persisting with `is_fallback: false`. Asking npm is a spawn,
+/// but it is paid only while the machine is in the degraded state, on
+/// operations that are about to spawn npm anyway. A probe that errors or
+/// answers unwritable keeps the fallback: "could not check" must not discard
+/// a decision that still works.
+///
+/// The emptiness condition is what keeps promotion from undoing convergence.
+/// Moving the prefix does not move the packages under it, so promoting away
+/// from a fallback that already holds installs makes every one of them
+/// invisible to `installed_packages()`: the next plan re-queues packages that
+/// are installed, the apply re-runs the install and every post-script the
+/// module owns, and the machine reports drift it can never settle. An EMPTY
+/// fallback orphans nothing, so healing stays available exactly where it is
+/// free.
 fn persisted_npm_prefix_decision(state: &dyn PackageStateStore) -> Option<NpmPrefixDecision> {
     persisted_npm_prefix_decision_with(state, npm_prefix_is_writable, npm_configured_prefix)
 }
@@ -167,6 +178,7 @@ fn persisted_npm_prefix_decision_with(
         return None;
     }
     if is_fallback
+        && !npm_prefix_holds_packages(&prefix)
         && let Ok(Some(configured)) = configured_prefix()
         && is_writable(&configured)
     {
@@ -413,6 +425,20 @@ fn probe_npm_dir_writable(target: &Path) -> bool {
 pub(super) fn npm_prefix_is_writable(prefix: &Path) -> bool {
     probe_npm_dir_writable(&npm_global_modules_dir(prefix))
         && probe_npm_dir_writable(&npm_bin_dir(prefix))
+}
+
+/// Whether any globally installed package lives under `prefix` — the question
+/// that decides whether abandoning it is free. Dot-prefixed entries
+/// (`.package-lock.json`, `.bin`) are npm's own bookkeeping, not packages, and
+/// a modules directory that cannot be read at all answers `false`: nothing is
+/// known to be there.
+pub(super) fn npm_prefix_holds_packages(prefix: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(npm_global_modules_dir(prefix)) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
 }
 
 /// The fallback prefix used when npm's own configured prefix isn't
@@ -2019,9 +2045,12 @@ mod tests {
         /// while the configured prefix stays unwritable a fallback decision is
         /// REUSED unchanged across calls (stability — packages installed under
         /// it must stay visible), and the moment the configured prefix probes
-        /// writable the fallback is DISCARDED and the resolve promotes onto
-        /// it, re-persisting `is_fallback: false`. The promoted decision then
-        /// enjoys the same stability, without re-asking npm.
+        /// writable an EMPTY fallback is DISCARDED and the resolve promotes
+        /// onto it, re-persisting `is_fallback: false`. The promoted decision
+        /// then enjoys the same stability, without re-asking npm. The home
+        /// here is a fresh tempdir, so the fallback holds nothing and
+        /// promotion costs nothing — the sibling below covers the fallback
+        /// that does hold packages.
         #[test]
         #[serial]
         fn resolve_npm_prefix_reuses_a_fallback_until_the_configured_prefix_heals() {
@@ -2082,6 +2111,61 @@ mod tests {
             assert_eq!(
                 steady, promoted,
                 "the promoted decision must be reused unchanged on later calls"
+            );
+        }
+
+        /// The convergence guarantee across a healing machine, end to end
+        /// through the production methods: `install()` puts packages under the
+        /// fallback, npm's configured prefix then becomes writable, and
+        /// `installed_packages()` must STILL ask the fallback. Promoting there
+        /// would report every package installed under it as missing, so the
+        /// next plan re-queues work that is already done and the module's
+        /// post-scripts re-run on a converged machine — which is exactly what
+        /// a `--prefix`-less second invocation in the argv log would mean.
+        #[test]
+        #[serial]
+        fn installed_packages_keeps_asking_a_fallback_prefix_that_holds_packages() {
+            let _clear = clear_npm_env_prefix();
+            let _elevated = with_test_elevated_guard(false);
+            let home = tempfile::tempdir().expect("tempdir");
+            let state = cfgd_core::test_helpers::test_state();
+            let (printer, _buf) =
+                cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+            let cx = PackageContext::new(&printer, &state);
+
+            let (_blocker_dir, unwritable) = unwritable_prefix();
+            let first_shim = NpmShim::install(&unwritable, 0, "{}", "");
+            cfgd_core::with_test_home(home.path(), || {
+                NpmManager.install(&["yarn".to_string()], &cx)
+            })
+            .expect("install must resolve through the fallback composition");
+            let fallback = cfgd_core::with_test_home(home.path(), npm_fallback_prefix);
+            assert!(
+                first_shim
+                    .argv_log()
+                    .contains(&format!("--prefix {}", fallback.display())),
+                "install must have targeted the fallback: {}",
+                first_shim.argv_log()
+            );
+            // The shim spawns no real npm, so stand in for what the install
+            // just claimed to do: a package now lives under the fallback.
+            std::fs::create_dir_all(npm_global_modules_dir(&fallback).join("yarn"))
+                .expect("seed the installed package");
+
+            // The machine heals — a writable configured prefix appears.
+            let (second_shim, writable_dir) = NpmShim::with_writable_prefix(0, "{}", "");
+            cfgd_core::with_test_home(home.path(), || NpmManager.installed_packages(&cx))
+                .expect("installed_packages must succeed");
+
+            let log = second_shim.argv_log();
+            assert!(
+                log.contains(&format!("--prefix {}", fallback.display())),
+                "the query must still ask the prefix the install wrote to: {log}"
+            );
+            assert!(
+                !log.contains(&writable_dir.path().display().to_string()),
+                "promoting onto the healed prefix would orphan every package \
+                 already installed under the fallback: {log}"
             );
         }
 

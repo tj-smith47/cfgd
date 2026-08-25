@@ -11,7 +11,8 @@ use cfgd_core::providers::{BootstrapPlan, PackageManager};
 
 use super::shared::{
     MediatedArms, bootstrap_brew_arm, bootstrap_via_system_manager, detect_go_bootstrap_method,
-    resolve_tool_with_fallbacks, run_pkg_cmd_live, system_manager_arms, tool_cmd_with_resolver,
+    resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query, system_manager_arms,
+    tool_cmd_with_resolver,
 };
 
 pub struct GoInstallManager;
@@ -41,6 +42,55 @@ pub(super) fn go_available() -> bool {
 
 pub(super) fn go_cmd() -> Command {
     tool_cmd_with_resolver("go", find_go)
+}
+
+/// Where `go install` puts a binary — the ONE answer `installed_packages` and
+/// `uninstall` both read, because the location the query scans and the
+/// location the install writes to have to be the same directory or every
+/// installed package is reported missing on every plan and reinstalled
+/// forever.
+///
+/// The question is put to `go` itself rather than to the environment. `GOBIN`
+/// outranks `$GOPATH/bin`, and both can be set three ways — the process
+/// environment, `go env -w`'s config file, and the toolchain's own default —
+/// of which only the first is visible to `env::var`. `go env` reports the
+/// EFFECTIVE values, which is exactly what `go install` will act on.
+///
+/// A toolchain that cannot be spawned or answers nothing falls back to
+/// `$GOPATH/bin`, then `~/go/bin`: the query then scans a directory that may
+/// be the wrong one, but reporting nothing installed is the same answer a
+/// missing directory already gives.
+pub(super) fn go_bin_dir() -> PathBuf {
+    let reported = run_pkg_query("go", go_cmd().args(["env", "GOBIN", "GOPATH"]))
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut lines = stdout.lines().map(str::trim);
+            (
+                lines.next().unwrap_or_default().to_string(),
+                lines.next().unwrap_or_default().to_string(),
+            )
+        });
+    let (gobin, gopath) = reported.unwrap_or_default();
+    if !gobin.is_empty() {
+        return PathBuf::from(gobin);
+    }
+    if !gopath.is_empty() {
+        return PathBuf::from(gopath).join("bin");
+    }
+    fallback_go_bin_dir()
+}
+
+/// `$GOPATH/bin`, or `~/go/bin` — the location Go documents as the default,
+/// used only when the toolchain itself could not be asked.
+fn fallback_go_bin_dir() -> PathBuf {
+    let gopath = std::env::var("GOPATH").ok().unwrap_or_else(|| {
+        cfgd_core::expand_tilde(std::path::Path::new("~/go"))
+            .to_string_lossy()
+            .to_string()
+    });
+    PathBuf::from(gopath).join("bin")
 }
 
 impl PackageManager for GoInstallManager {
@@ -84,15 +134,7 @@ impl PackageManager for GoInstallManager {
         &self,
         _cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<HashSet<String>> {
-        // Scan $GOPATH/bin (or ~/go/bin) for installed binaries
-        let gopath = std::env::var("GOPATH").ok().unwrap_or_else(|| {
-            cfgd_core::expand_tilde(std::path::Path::new("~/go"))
-                .to_string_lossy()
-                .to_string()
-        });
-        Ok(scan_go_bin_dir(
-            &std::path::PathBuf::from(&gopath).join("bin"),
-        ))
+        Ok(scan_go_bin_dir(&go_bin_dir()))
     }
 
     fn install(
@@ -120,14 +162,9 @@ impl PackageManager for GoInstallManager {
         packages: &[String],
         cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<()> {
-        // Go has no uninstall command; remove binaries from $GOPATH/bin
-        let gopath = std::env::var("GOPATH").ok().unwrap_or_else(|| {
-            cfgd_core::expand_tilde(std::path::Path::new("~/go"))
-                .to_string_lossy()
-                .to_string()
-        });
-
-        let bin_dir = std::path::PathBuf::from(&gopath).join("bin");
+        // Go has no uninstall command; remove the binaries from wherever
+        // `go install` put them.
+        let bin_dir = go_bin_dir();
         for pkg in packages {
             // Derive the binary name from the module path (idempotent if `pkg`
             // is already a bare binary name from the prune path), then re-validate
@@ -519,6 +556,51 @@ mod tests {
 
         const SHIM_ENV: &str = "CFGD_GO_BIN";
 
+        /// A `go` whose `env GOBIN GOPATH` answers exactly these two values.
+        /// Where `go install` puts a binary is the toolchain's answer, not the
+        /// environment's, so a test about that directory states it here rather
+        /// than inheriting whatever the host toolchain reports.
+        fn go_env_shim(gobin: &str, gopath: &str) -> ToolShim {
+            ToolShim::install(SHIM_ENV, 0, &format!("{gobin}\n{gopath}\n"), "")
+        }
+
+        /// `go install` writes to `$GOBIN` when the toolchain reports one, and
+        /// `$GOPATH/bin` only when it does not — so the query has to ask `go`,
+        /// not the environment. Reading `GOPATH` directly scanned a directory
+        /// the install never wrote to, reporting every installed package
+        /// missing on every plan and reinstalling it forever.
+        #[test]
+        #[serial]
+        fn installed_packages_scans_the_bin_dir_go_itself_reports() {
+            let gobin = tempfile::tempdir().expect("tempdir");
+            std::fs::write(gobin.path().join("tool"), "").expect("seed installed binary");
+            // A GOPATH whose `bin` holds nothing: if the scan reads the
+            // environment instead of the toolchain, it finds an empty set.
+            let gopath = tempfile::tempdir().expect("tempdir");
+            let _gopath = cfgd_core::test_helpers::EnvVarGuard::set(
+                "GOPATH",
+                &gopath.path().to_string_lossy(),
+            );
+            let _s = ToolShim::install(
+                SHIM_ENV,
+                0,
+                &format!("{}\n{}\n", gobin.path().display(), gopath.path().display()),
+                "",
+            );
+            let p = test_printer();
+            let st = test_state();
+            let cx = test_package_context(&p, &st);
+
+            let installed = GoInstallManager
+                .installed_packages(&cx)
+                .expect("installed_packages must succeed");
+
+            assert!(
+                installed.contains("tool"),
+                "the query must scan the GOBIN `go install` writes to, got: {installed:?}"
+            );
+        }
+
         #[test]
         #[serial]
         fn go_install_appends_at_latest_to_unversioned_package() {
@@ -638,8 +720,7 @@ mod tests {
             std::fs::write(bin_dir.join("gopls"), b"fake-binary").unwrap();
             assert!(bin_dir.join("gopls").exists());
 
-            let _guard =
-                cfgd_core::test_helpers::EnvVarGuard::set("GOPATH", dir.path().to_str().unwrap());
+            let _s = go_env_shim("", dir.path().to_str().unwrap());
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -659,8 +740,7 @@ mod tests {
             let bin_dir = dir.path().join("bin");
             std::fs::create_dir(&bin_dir).unwrap();
 
-            let _guard =
-                cfgd_core::test_helpers::EnvVarGuard::set("GOPATH", dir.path().to_str().unwrap());
+            let _s = go_env_shim("", dir.path().to_str().unwrap());
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -678,8 +758,7 @@ mod tests {
             std::fs::write(bin_dir.join("gopls"), b"").unwrap();
             std::fs::write(bin_dir.join("staticcheck"), b"").unwrap();
 
-            let _guard =
-                cfgd_core::test_helpers::EnvVarGuard::set("GOPATH", dir.path().to_str().unwrap());
+            let _s = go_env_shim("", dir.path().to_str().unwrap());
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -705,8 +784,7 @@ mod tests {
             std::fs::write(bin_dir.join("gopls"), b"").unwrap();
             std::fs::write(bin_dir.join("dlv"), b"").unwrap();
 
-            let _guard =
-                cfgd_core::test_helpers::EnvVarGuard::set("GOPATH", dir.path().to_str().unwrap());
+            let _s = go_env_shim("", dir.path().to_str().unwrap());
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -720,8 +798,7 @@ mod tests {
         #[serial]
         fn go_installed_packages_empty_when_no_bin_dir() {
             let dir = tempfile::tempdir().unwrap();
-            let _guard =
-                cfgd_core::test_helpers::EnvVarGuard::set("GOPATH", dir.path().to_str().unwrap());
+            let _s = go_env_shim("", dir.path().to_str().unwrap());
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
