@@ -1,5 +1,4 @@
-Config Sources
-
-Name         Source                          Priority  Status 
-──────────────────────────────────────────────────────────────
-team-config  https://github.com/team/config  100       Unknown
+Sources
+Name         Source                          Priority  Status   Last Sync  Signed
+─────────────────────────────────────────────────────────────────────────────────
+team-config  https://github.com/team/config  100       Unknown  never      -     

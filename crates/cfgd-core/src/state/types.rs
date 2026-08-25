@@ -376,6 +376,11 @@ pub struct ConfigSourceRecord {
     pub source_version: Option<String>,
     pub pinned_version: Option<String>,
     pub status: String,
+    /// Whether the commit at `last_commit` carried a signature cfgd accepts.
+    /// `None` is "not known" — never fetched since the column existed, or a
+    /// checkout git could not answer for — and is not the same fact as
+    /// `Some(false)`.
+    pub last_commit_signed: Option<bool>,
 }
 
 /// A conflict record from composition. Internal-only DAO.

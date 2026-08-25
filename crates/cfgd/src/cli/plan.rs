@@ -108,6 +108,11 @@ pub fn cmd_plan(
     // ONE bar for the whole planning wait. Two adjacent `narrate("Planning")`
     // calls read as one label but are not one bar: the first retires and the
     // second redraws, so a phase name can appear twice across the seam.
+    // Taken BEFORE the plan consumes the module list: the decision rows below
+    // are annotated with who actually wins each merged entry, and a module's
+    // claim is part of that answer.
+    let entry_owners = reconciler::merged_entry_owners(&effective_resolved, &resolved_modules);
+
     let (dry_run_fm, actual_packages, mut plan) =
         printer.narrate("Planning", |sp| -> anyhow::Result<_> {
             // Plan-only mode: no secret providers needed
@@ -188,7 +193,10 @@ pub fn cmd_plan(
         &ctx,
         state,
         &cfg,
-        &effective_resolved,
+        plan_ops::DesiredOwnership {
+            resolved: &effective_resolved,
+            entry_owners: &entry_owners,
+        },
         config_parsed,
         plan_ops::DecisionWrites::ReadOnly,
         &actual_packages,

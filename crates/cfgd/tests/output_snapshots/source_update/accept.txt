@@ -7,6 +7,6 @@ source:accept-src
        <SHA>..<SHA>  master     -> origin/master
   Permission Changes
     ⚠ Required items increased from 0 to 2
-  ✓ updated
+  ✓ Updated
 
 ✓ Updated 1 source

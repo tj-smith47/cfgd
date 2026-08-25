@@ -34,14 +34,19 @@ pub fn build_source_show_doc(
     output: &SourceShowOutput,
     manifest: Option<&ConfigSourceDocument>,
     profiles_dir: Option<&Path>,
+    now: &str,
 ) -> Doc {
-    // A `Label: value` title, never a `kind:name` owner token: an owner names
-    // whose the rows below it are, which is a section's job, and hanging the
-    // whole report off one nests every block a level deeper than `module show`
-    // renders the same shape at — where the renderer's blank separation between
-    // top-level sections is what makes ~60 rows of eight blocks readable.
+    // `Show source:acme`, not `Source: acme`: the subject IS an owner, and a
+    // `Label: value` title spelled its kind a second way — every other surface
+    // in the product (the apply header, `source add`, the conflict rows) names
+    // this exact thing `source:acme`. The heading stays a HEADING, so the
+    // blocks below it keep the top-level separation that makes ~60 rows of
+    // eight blocks readable; only the words change.
     let mut doc = Doc::new()
-        .heading_title("Source", &output.name)
+        .heading_owner_prefixed(
+            "Show",
+            cfgd_core::output::OwnerLabel::new("source", &output.name),
+        )
         .kv("URL", &output.url)
         .kv("Branch", &output.branch)
         .kv("Priority", output.priority.to_string())
@@ -65,11 +70,18 @@ pub fn build_source_show_doc(
             // search instead of a glance.
             let (status, role) = source_status_display(&state_info.status);
             let mut rows = vec![KvPair::role_valued("Status", status, role)];
-            if let Some(ref fetched) = state_info.last_fetched {
-                rows.push(KvPair::new("Last Fetched", fetched));
+            if state_info.last_fetched.is_some() {
+                rows.push(KvPair::new(
+                    "Last Sync",
+                    crate::cli::source::list::last_sync_display(
+                        state_info.last_fetched.as_deref(),
+                        now,
+                    ),
+                ));
             }
             if let Some(ref commit) = state_info.last_commit {
                 rows.push(KvPair::new("Last Commit", short_commit(commit)));
+                rows.push(KvPair::new("Signed", cfgd_core::yes_no(state_info.signed)));
             }
             if let Some(ref locked_commit) = state_info.locked_commit {
                 rows.push(KvPair::new("Locked Commit", short_commit(locked_commit)));
@@ -77,7 +89,16 @@ pub fn build_source_show_doc(
             if let Some(ref locked_ref) = state_info.locked_ref {
                 rows.push(KvPair::new("Locked Ref", locked_ref));
             }
-            if let Some(ref version) = state_info.version {
+            // Version lives in the Manifest block, which states what the source
+            // DECLARES; repeating the same string here made one fact look like
+            // two. A source whose manifest could not be loaded has no Manifest
+            // block at all, and then the recorded version is the only answer
+            // there is — that is the one case this row still renders.
+            if let Some(ref version) = state_info.version
+                && manifest
+                    .and_then(|m| m.metadata.version.as_deref())
+                    .is_none()
+            {
                 rows.push(KvPair::new("Version", version));
             }
             s.kv_rows(rows)
@@ -444,6 +465,7 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
         status: s.status,
         last_fetched: s.last_fetched,
         last_commit: s.last_commit,
+        signed: s.last_commit_signed,
         version: s.source_version,
         locked_ref: lock_entry.as_ref().and_then(|e| e.resolved_ref.clone()),
         locked_commit: lock_entry.as_ref().map(|e| e.resolved_commit.clone()),
@@ -455,6 +477,7 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
             status: "pending".to_string(),
             last_fetched: None,
             last_commit: None,
+            signed: None,
             version: None,
             locked_ref: lock.resolved_ref.clone(),
             locked_commit: Some(lock.resolved_commit.clone()),
@@ -532,6 +555,7 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
         &output,
         manifest,
         profiles_dir.as_deref(),
+        &cfgd_core::utc_now_iso8601(),
     ));
     Ok(())
 }

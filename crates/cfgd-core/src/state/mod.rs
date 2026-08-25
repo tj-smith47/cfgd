@@ -26,6 +26,7 @@ pub use pending_config::{
     PENDING_CONFIG_FILENAME, clear_pending_server_config, load_pending_server_config,
     save_pending_server_config,
 };
+pub use sources::ConfigSourceUpsert;
 pub use types::{
     ApplyRecord, ApplyStatus, ApplySummary, BackupRunDraft, BackupRunKind, BackupRunRecord,
     BackupRunStatus, ComplianceHistoryRow, ConfigSourceRecord, DriftEvent, ENV_SESSION_RESOURCE_ID,
@@ -474,6 +475,15 @@ const MIGRATIONS: &[&str] = &[
     // stamps the current fingerprint onto such a row without asking, so an
     // answer given before this column existed survives the upgrade.
     "ALTER TABLE pending_decisions ADD COLUMN content_hash TEXT;",
+    // Migration 18: whether the commit a source was last fetched at carried a
+    // signature cfgd would accept. Verification already asked the question on
+    // every load, but only ever as a gate — nothing recorded the answer, so
+    // `source list` could not tell an operator which of their sources are
+    // signed without re-running git against every checkout. NULL is "not
+    // known" (never fetched since this column existed, or a checkout cfgd
+    // could not read) and is deliberately not backfilled to 0: an unsigned
+    // source and an unreadable one are different facts.
+    "ALTER TABLE config_sources ADD COLUMN last_commit_signed INTEGER;",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable

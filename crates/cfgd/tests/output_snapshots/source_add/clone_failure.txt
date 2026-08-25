@@ -5,7 +5,6 @@ Add source:doomed-src
   fatal: Could not read from remote repository.
   Please make sure you have the correct access rights
   and the repository exists.
-✗ Cloning source:doomed-src — exit 128
 ✗ Failed to clone source 'doomed-src' (libgit2) — failed to fetch source 'doomed-src': failed to resolve path '<BARE>': <os error>; class=Os (2)
 
 ✗ Failed to load source 'doomed-src': fetch failed: failed to resolve path '<BARE>': <os error>; class=Os (2)

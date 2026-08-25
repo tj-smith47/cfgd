@@ -1,2 +1,2 @@
-Config Sources
+Sources
 ◉ No config file found

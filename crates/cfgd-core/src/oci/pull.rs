@@ -12,7 +12,7 @@ use crate::sha256_digest;
 use super::archive::extract_tar_gz;
 use super::auth::RegistryAuth;
 use super::sign::{VerifyOptions, verify_signature};
-use super::transport::authenticated_request;
+use super::transport::{authenticated_request, response_digest};
 use super::{MEDIA_TYPE_OCI_MANIFEST, OciManifest, OciReference};
 
 /// Policy for verifying a module artifact's cosign signature during pull.
@@ -99,45 +99,71 @@ pub fn pull_module(
     }
 }
 
-/// The platforms an already-pushed artifact declares, newest read straight off
-/// its manifest document — no blob is downloaded, the answer being a label
-/// rather than content.
+/// What an already-pushed artifact says about itself, read straight off the
+/// manifest documents beside it — no blob is downloaded, every answer here
+/// being a label rather than content.
 ///
-/// The two shapes [`super::push_module`] and [`super::push_module_multiplatform`]
-/// write are both read here: an index names an `os`/`architecture` pair per
-/// entry, and a single-platform manifest carries the whole `os/arch` string in
-/// its [`crate::OCI_ANNOTATION_PLATFORM`] annotation. An artifact declaring
-/// neither answers an empty list rather than an error — a manifest a third
-/// party pushed is a legitimate artifact that simply says nothing about its
-/// platform.
-pub fn artifact_platforms(artifact_ref: &str) -> Result<Vec<String>, OciError> {
+/// The two halves travel together because they come from one read: the
+/// subject's manifest carries the platforms AND resolves the digest the
+/// attestation tag is named after, so asking for both costs one request more
+/// than asking for either.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArtifactFacts {
+    /// The `os/arch` pairs the artifact declares, in the order it declares them.
+    pub platforms: Vec<String>,
+    /// The attestation types cosign has attached to it, named in the
+    /// vocabulary `cosign verify-attestation --type` takes.
+    pub attestations: Vec<String>,
+}
+
+/// Read an artifact's declared facts from its registry.
+///
+/// A registry that answers the subject manifest is reachable, so only that
+/// read is fallible here: everything after it is a label the artifact either
+/// carries or does not.
+pub fn artifact_facts(artifact_ref: &str) -> Result<ArtifactFacts, OciError> {
     let oci_ref = OciReference::parse(artifact_ref)?;
     let auth = RegistryAuth::resolve(&oci_ref.registry);
     let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
 
+    let (digest, doc) =
+        fetch_manifest_document(&agent, &oci_ref, auth.as_ref(), oci_ref.reference_str()).map_err(
+            |e| OciError::ManifestNotFound {
+                reference: format!("{oci_ref}: {e}"),
+            },
+        )?;
+
+    Ok(ArtifactFacts {
+        platforms: declared_platforms(&doc),
+        attestations: attached_attestations(&agent, &oci_ref, auth.as_ref(), &digest),
+    })
+}
+
+/// GET one manifest, answering both the digest the registry addresses it by
+/// and its parsed document.
+///
+/// The digest comes from the registry's own `Docker-Content-Digest` header
+/// whenever it sends one, because a registry that re-canonicalizes a manifest
+/// stores it under a digest the received bytes do not hash to — and the
+/// cosign tag derived from it has to be the one cosign pushed.
+fn fetch_manifest_document(
+    agent: &ureq::Agent,
+    oci_ref: &OciReference,
+    auth: Option<&RegistryAuth>,
+    reference: &str,
+) -> Result<(String, serde_json::Value), OciError> {
     let url = format!(
-        "{}/{}/manifests/{}",
+        "{}/{}/manifests/{reference}",
         oci_ref.api_base(),
         oci_ref.repository,
-        oci_ref.reference_str(),
     );
     let accept = format!(
         "{MEDIA_TYPE_OCI_MANIFEST}, {}, {}",
         super::MEDIA_TYPE_OCI_INDEX,
         super::MEDIA_TYPE_DOCKER_MANIFEST_LIST
     );
-    let resp = authenticated_request(
-        &agent,
-        "GET",
-        &url,
-        auth.as_ref(),
-        Some(&accept),
-        None,
-        None,
-    )
-    .map_err(|e| OciError::ManifestNotFound {
-        reference: format!("{oci_ref}: {e}"),
-    })?;
+    let resp = authenticated_request(agent, "GET", &url, auth, Some(&accept), None, None)?;
+    let header_digest = response_digest(&resp);
     let body = resp
         .into_body()
         .read_to_string()
@@ -148,7 +174,22 @@ pub fn artifact_platforms(artifact_ref: &str) -> Result<Vec<String>, OciError> {
         serde_json::from_str(&body).map_err(|e| OciError::RequestFailed {
             message: format!("invalid manifest JSON: {e}"),
         })?;
+    Ok((
+        header_digest.unwrap_or_else(|| sha256_digest(body.as_bytes())),
+        doc,
+    ))
+}
 
+/// The platforms a manifest document declares.
+///
+/// The two shapes [`super::push_module`] and [`super::push_module_multiplatform`]
+/// write are both read here: an index names an `os`/`architecture` pair per
+/// entry, and a single-platform manifest carries the whole `os/arch` string in
+/// its [`crate::OCI_ANNOTATION_PLATFORM`] annotation. An artifact declaring
+/// neither answers an empty list rather than an error — a manifest a third
+/// party pushed is a legitimate artifact that simply says nothing about its
+/// platform.
+fn declared_platforms(doc: &serde_json::Value) -> Vec<String> {
     // Branch on the presence of `manifests` rather than on `mediaType`, so a
     // registry that omits or abbreviates the type is still read correctly —
     // the same test `oci::pack` applies to a base image.
@@ -157,7 +198,7 @@ pub fn artifact_platforms(artifact_ref: &str) -> Result<Vec<String>, OciError> {
         // is the order the column reads best in, so duplicates are dropped by
         // first sighting rather than by sorting.
         let mut seen = std::collections::HashSet::new();
-        let platforms: Vec<String> = entries
+        return entries
             .iter()
             .filter_map(|entry| {
                 let platform = entry.get("platform")?;
@@ -167,15 +208,67 @@ pub fn artifact_platforms(artifact_ref: &str) -> Result<Vec<String>, OciError> {
             })
             .filter(|p| seen.insert(p.clone()))
             .collect();
-        return Ok(platforms);
     }
 
-    Ok(doc
-        .get("annotations")
+    doc.get("annotations")
         .and_then(|a| a.get(crate::OCI_ANNOTATION_PLATFORM))
         .and_then(|p| p.as_str())
         .map(|p| vec![p.to_string()])
-        .unwrap_or_default())
+        .unwrap_or_default()
+}
+
+/// The attestation types cosign has attached to the artifact at `digest`.
+///
+/// `cosign attest` pushes its DSSE envelopes as an ordinary manifest tagged
+/// `sha256-<hex>.att` beside the subject, one layer per attestation, each
+/// annotated with the predicate type it carries. An artifact nobody attested
+/// has no such tag and the registry says so — which is an answer, not a
+/// failure, and the reason this half is infallible: the subject manifest was
+/// already fetched, so the registry has proven itself reachable and readable.
+fn attached_attestations(
+    agent: &ureq::Agent,
+    oci_ref: &OciReference,
+    auth: Option<&RegistryAuth>,
+    digest: &str,
+) -> Vec<String> {
+    let url = format!(
+        "{}/{}/manifests/{}.att",
+        oci_ref.api_base(),
+        oci_ref.repository,
+        digest.replace(':', "-"),
+    );
+    let Ok(resp) = authenticated_request(
+        agent,
+        "GET",
+        &url,
+        auth,
+        Some(MEDIA_TYPE_OCI_MANIFEST),
+        None,
+        None,
+    ) else {
+        return Vec::new();
+    };
+    let Ok(body) = resp.into_body().read_to_string() else {
+        return Vec::new();
+    };
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return Vec::new();
+    };
+    let Some(layers) = doc.get("layers").and_then(|l| l.as_array()) else {
+        return Vec::new();
+    };
+
+    // Two attestations of one type are one type; first sighting keeps the
+    // order cosign attached them in, oldest first.
+    let mut seen = std::collections::HashSet::new();
+    layers
+        .iter()
+        .filter_map(|layer| {
+            let predicate = layer.get("annotations")?.get("predicateType")?.as_str()?;
+            Some(super::sign::attestation_type_name(predicate))
+        })
+        .filter(|t| seen.insert(t.clone()))
+        .collect()
 }
 
 /// The fallible half of [`pull_module`]: every step from signature
@@ -308,7 +401,7 @@ mod tests {
     use crate::oci::{MEDIA_TYPE_MODULE_CONFIG, MEDIA_TYPE_MODULE_LAYER};
 
     #[test]
-    fn artifact_platforms_reads_the_annotation_of_a_single_platform_artifact() {
+    fn artifact_facts_read_the_annotation_of_a_single_platform_artifact() {
         let mut server = mockito::Server::new();
         let registry = registry_from_url(&server.url());
 
@@ -326,12 +419,12 @@ mod tests {
             )
             .create();
 
-        let platforms = artifact_platforms(&format!("{registry}/test/onemod:v1")).unwrap();
-        assert_eq!(platforms, vec!["linux/amd64".to_string()]);
+        let facts = artifact_facts(&format!("{registry}/test/onemod:v1")).unwrap();
+        assert_eq!(facts.platforms, vec!["linux/amd64".to_string()]);
     }
 
     #[test]
-    fn artifact_platforms_reads_every_entry_of_an_index_in_order() {
+    fn artifact_facts_read_every_index_entry_in_order() {
         let mut server = mockito::Server::new();
         let registry = registry_from_url(&server.url());
 
@@ -357,15 +450,15 @@ mod tests {
             )
             .create();
 
-        let platforms = artifact_platforms(&format!("{registry}/test/multimod:v1")).unwrap();
+        let facts = artifact_facts(&format!("{registry}/test/multimod:v1")).unwrap();
         assert_eq!(
-            platforms,
+            facts.platforms,
             vec!["linux/arm64".to_string(), "linux/amd64".to_string()]
         );
     }
 
     #[test]
-    fn artifact_platforms_of_an_artifact_declaring_none_is_empty() {
+    fn artifact_facts_of_an_artifact_declaring_no_platform_are_empty() {
         let mut server = mockito::Server::new();
         let registry = registry_from_url(&server.url());
 
@@ -376,8 +469,75 @@ mod tests {
             .with_body(serde_json::json!({ "schemaVersion": 2, "layers": [] }).to_string())
             .create();
 
-        let platforms = artifact_platforms(&format!("{registry}/test/plainmod:v1")).unwrap();
-        assert!(platforms.is_empty());
+        let facts = artifact_facts(&format!("{registry}/test/plainmod:v1")).unwrap();
+        assert!(facts.platforms.is_empty());
+    }
+
+    #[test]
+    fn artifact_facts_name_each_attestation_in_the_vocabulary_cosign_verifies_by() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        // The registry addresses the manifest by a digest of its own, which is
+        // the one the attestation tag is named after — hashing the body we
+        // received would look for a tag cosign never pushed.
+        server
+            .mock("GET", "/v2/test/attmod/manifests/v1")
+            .with_status(200)
+            .with_header("Content-Type", MEDIA_TYPE_OCI_MANIFEST)
+            .with_header("Docker-Content-Digest", "sha256:feedface")
+            .with_body(serde_json::json!({ "schemaVersion": 2, "layers": [] }).to_string())
+            .create();
+
+        let att = server
+            .mock("GET", "/v2/test/attmod/manifests/sha256-feedface.att")
+            .with_status(200)
+            .with_header("Content-Type", MEDIA_TYPE_OCI_MANIFEST)
+            .with_body(
+                serde_json::json!({
+                    "schemaVersion": 2,
+                    "layers": [
+                        { "annotations": { "predicateType": "https://slsa.dev/provenance/v1" } },
+                        // A second envelope of the same type names no second type.
+                        { "annotations": { "predicateType": "https://slsa.dev/provenance/v1" } },
+                        // A predicate cosign has no short name for is reported verbatim.
+                        { "annotations": { "predicateType": "https://example.test/audit/v1" } },
+                        // A layer annotating nothing contributes nothing.
+                        { "digest": "sha256:deadbeef" },
+                    ],
+                })
+                .to_string(),
+            )
+            .create();
+
+        let facts = artifact_facts(&format!("{registry}/test/attmod:v1")).unwrap();
+        att.assert();
+        assert_eq!(
+            facts.attestations,
+            vec![
+                "slsaprovenance1".to_string(),
+                "https://example.test/audit/v1".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn artifact_facts_of_an_unattested_artifact_name_no_attestation() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        // No `.att` tag is mocked: an artifact nobody attested has none, and
+        // the registry's refusal to serve it is the answer "none".
+        server
+            .mock("GET", "/v2/test/baremod/manifests/v1")
+            .with_status(200)
+            .with_header("Content-Type", MEDIA_TYPE_OCI_MANIFEST)
+            .with_header("Docker-Content-Digest", "sha256:c0ffee")
+            .with_body(serde_json::json!({ "schemaVersion": 2, "layers": [] }).to_string())
+            .create();
+
+        let facts = artifact_facts(&format!("{registry}/test/baremod:v1")).unwrap();
+        assert!(facts.attestations.is_empty());
     }
 
     #[test]

@@ -13,12 +13,13 @@ use super::module::{evaluate_module_verification, reconcile_module};
 use super::test_kube_harness::{
     ExpectedCall, MockKubeHarness, empty_stores, expect_event_post, seeded_store,
 };
-use super::{ArtifactPlatformReader, ControllerStores};
+use super::{ArtifactFactsReader, ControllerStores};
 use crate::crds::{
     ClusterConfigPolicy, ClusterConfigPolicySpec, CosignSignature, Module, ModuleSignature,
     ModuleSpec, ModuleStatus, SecurityPolicy,
 };
 use crate::metrics::ReconcileLabels;
+use cfgd_core::oci::ArtifactFacts;
 
 const VALID_PEM: &str = concat!(
     "-----BEGIN PUBLIC KEY-----\n",
@@ -175,7 +176,7 @@ async fn reconcile_module_records_the_platforms_its_artifact_declares() {
     };
     let module = make_module("platform-mod", spec);
 
-    let (ctx, _registry, harness) = MockKubeHarness::with_platforms(
+    let (ctx, _registry, harness) = MockKubeHarness::with_facts(
         vec![
             ExpectedCall::patch_status(format!("{}/status", module_path("platform-mod")))
                 .returning_json(&module),
@@ -183,7 +184,10 @@ async fn reconcile_module_records_the_platforms_its_artifact_declares() {
             expect_event_post("default"),
         ],
         stores_with_ccps(vec![]),
-        ArtifactPlatformReader::fixed(vec!["linux/amd64".to_string()]),
+        ArtifactFactsReader::fixed(ArtifactFacts {
+            platforms: vec!["linux/amd64".to_string()],
+            ..Default::default()
+        }),
     );
 
     reconcile_module(Arc::new(module), ctx).await.unwrap();
@@ -195,6 +199,116 @@ async fn reconcile_module_records_the_platforms_its_artifact_declares() {
         serde_json::json!(["linux/amd64"]),
     );
     assert_eq!(status_body["status"]["platformsSummary"], "linux/amd64");
+}
+
+#[tokio::test]
+async fn reconcile_module_records_the_attestations_its_artifact_carries() {
+    let spec = ModuleSpec {
+        oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+        ..Default::default()
+    };
+    let module = make_module("attested-mod", spec);
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_facts(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path("attested-mod")))
+                .returning_json(&module),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![]),
+        ArtifactFactsReader::fixed(ArtifactFacts {
+            platforms: vec!["linux/amd64".to_string()],
+            attestations: vec!["slsaprovenance1".to_string()],
+        }),
+    );
+
+    reconcile_module(Arc::new(module), ctx).await.unwrap();
+
+    let report = harness.finish().await;
+    let status_body = report.captured[0].body_json();
+    assert_eq!(
+        status_body["status"]["attestations"],
+        serde_json::json!(["slsaprovenance1"]),
+    );
+}
+
+#[tokio::test]
+async fn reconcile_module_records_no_attestation_for_an_unattested_artifact() {
+    let spec = ModuleSpec {
+        oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+        ..Default::default()
+    };
+    let module = make_module("unattested-mod", spec);
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_facts(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path("unattested-mod")))
+                .returning_json(&module),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![]),
+        ArtifactFactsReader::fixed(ArtifactFacts {
+            platforms: vec!["linux/amd64".to_string()],
+            ..Default::default()
+        }),
+    );
+
+    reconcile_module(Arc::new(module), ctx).await.unwrap();
+
+    let report = harness.finish().await;
+    let status_body = report.captured[0].body_json();
+    assert!(
+        status_body["status"]["attestations"].is_null(),
+        "an empty attestation list is omitted, not written as []: {}",
+        status_body["status"]
+    );
+}
+
+#[tokio::test]
+async fn reconcile_module_keeps_recorded_attestations_when_the_artifact_is_unchanged() {
+    let spec = ModuleSpec {
+        oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+        ..Default::default()
+    };
+    let mut module = make_module("cached-attestation-mod", spec);
+    module.status = Some(ModuleStatus {
+        resolved_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+        attestations: vec!["spdx".to_string()],
+        ..Default::default()
+    });
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_facts(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path("cached-attestation-mod")))
+                .returning_json(&module),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![]),
+        // A reader that would answer differently, so a re-read is visible.
+        ArtifactFactsReader::fixed(ArtifactFacts {
+            platforms: vec!["linux/amd64".to_string()],
+            attestations: vec!["slsaprovenance1".to_string()],
+        }),
+    );
+
+    reconcile_module(Arc::new(module), ctx).await.unwrap();
+
+    let report = harness.finish().await;
+    let status_body = report.captured[0].body_json();
+    assert_eq!(
+        status_body["status"]["attestations"],
+        serde_json::json!(["spdx"]),
+        "an unchanged artifact reference must cost no registry round-trip"
+    );
+    let platforms = &status_body["status"]["availablePlatforms"];
+    assert!(
+        platforms.is_null() || platforms.as_array().is_some_and(Vec::is_empty),
+        "the recorded read answered both facts: neither half may come from a second \
+         visit, so a status recording attestations and no platform keeps both: {platforms}"
+    );
 }
 
 #[tokio::test]
@@ -210,7 +324,7 @@ async fn reconcile_module_keeps_recorded_platforms_when_the_artifact_is_unchange
         ..Default::default()
     });
 
-    let (ctx, _registry, harness) = MockKubeHarness::with_platforms(
+    let (ctx, _registry, harness) = MockKubeHarness::with_facts(
         vec![
             ExpectedCall::patch_status(format!("{}/status", module_path("cached-platform-mod")))
                 .returning_json(&module),
@@ -219,7 +333,10 @@ async fn reconcile_module_keeps_recorded_platforms_when_the_artifact_is_unchange
         ],
         stores_with_ccps(vec![]),
         // A reader that would answer differently, so a re-read is visible.
-        ArtifactPlatformReader::fixed(vec!["linux/amd64".to_string()]),
+        ArtifactFactsReader::fixed(ArtifactFacts {
+            platforms: vec!["linux/amd64".to_string()],
+            ..Default::default()
+        }),
     );
 
     reconcile_module(Arc::new(module), ctx).await.unwrap();

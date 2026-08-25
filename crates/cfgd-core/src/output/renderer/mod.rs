@@ -1305,6 +1305,78 @@ mod tests {
         assert!(crate::test_helpers::captured_text(&buf).is_empty());
     }
 
+    /// A heading introduces what follows it, for EVERY group kind — the rule
+    /// `open_top_group` enforces. Each arm renders the emission a `TopGroup`
+    /// variant stands for directly under a heading; a kind whose renderer
+    /// forgets to open its group renders one line low and fails here.
+    #[test]
+    fn every_group_kind_renders_directly_under_the_heading_that_introduces_it() {
+        type Emit = fn(&Renderer, &dyn Writer);
+        // Exhaustive: a new `TopGroup` variant fails to compile until it names
+        // the emission it stands for (or says why a heading cannot precede it).
+        fn emitter(kind: TopGroup) -> Option<Emit> {
+            match kind {
+                // Two consecutive headings are two groups, by construction.
+                TopGroup::Heading => None,
+                TopGroup::Status => Some(|r, w| {
+                    r.render_status(
+                        w,
+                        0,
+                        &StatusFields {
+                            role: crate::output::Role::Ok,
+                            subject: "Synced",
+                            detail: None,
+                            duration: None,
+                            target: None,
+                            subject_style: None,
+                            detail_style: None,
+                        },
+                    )
+                }),
+                TopGroup::Hint => Some(|r, w| r.render_hint(w, 0, "run cfgd apply")),
+                TopGroup::Bullet => Some(|r, w| r.render_bullet(w, 0, "item", None)),
+                TopGroup::CodeBlock => {
+                    Some(|r, w| r.render_code_block(w, 0, &["let x = 1;".to_string()]))
+                }
+                TopGroup::Note => Some(|r, w| r.render_note(w, 0, "a note")),
+                TopGroup::KvBlock => Some(|r, w| {
+                    r.render_kv_block(w, 0, &[crate::output::KvPair::new("Config", "cfgd.yaml")])
+                }),
+                TopGroup::Paragraph => Some(|r, w| r.render_paragraph(w, 0, "Homebrew packages.")),
+                TopGroup::Table => Some(|r, w| {
+                    r.render_table(
+                        w,
+                        0,
+                        &Table::new(vec!["Name".to_string()]).row(vec!["team".to_string()]),
+                    )
+                }),
+            }
+        }
+        for kind in [
+            TopGroup::Heading,
+            TopGroup::Status,
+            TopGroup::Hint,
+            TopGroup::Bullet,
+            TopGroup::CodeBlock,
+            TopGroup::Note,
+            TopGroup::KvBlock,
+            TopGroup::Paragraph,
+            TopGroup::Table,
+        ] {
+            let Some(emit) = emitter(kind) else {
+                continue;
+            };
+            let (r, sink, buf) = capture();
+            r.render_heading(&sink, "Sources");
+            emit(&r, &sink);
+            let out = crate::test_helpers::captured_text(&buf);
+            assert!(
+                !out.contains("\n\n"),
+                "{kind:?} left a blank line under its heading: {out:?}"
+            );
+        }
+    }
+
     #[test]
     fn bullet_uses_dash_glyph() {
         let (r, sink, buf) = capture();

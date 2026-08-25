@@ -715,33 +715,53 @@ pub fn decision_row_annotation(summary: &str) -> Option<&str> {
 /// unreadable file — keeps the persisted summary rather than rendering an
 /// empty detail.
 #[derive(Debug, Default)]
-pub struct DecisionContents(HashMap<(String, String), String>);
+pub struct DecisionContents {
+    contents: HashMap<(String, String), String>,
+    /// The owner token that would WIN each item whose accepting source is not
+    /// the one the merge ends up honouring. See [`outranking_owner`].
+    outranked: HashMap<(String, String), String>,
+}
 
 impl DecisionContents {
     /// One [`source_delivered_profile`] per SOURCE, not per row: the merge
     /// clones every layer that source contributed, and a per-row derivation
     /// pays it once per item the source delivered.
+    ///
+    /// `owners` is the ownership record the machine will honour, built by the
+    /// caller through [`merged_entry_owners`] from the same resolution and the
+    /// same modules the run planned with. A caller passing
+    /// `ResolvedProfile::merged.entry_owners` alone simply annotates no
+    /// module-owned entry, rather than claiming a profile layer wins one.
     pub fn for_decisions(
         resolved: &ResolvedProfile,
         decisions: &[PendingDecision],
         config_dir: &Path,
+        owners: &config::EntryOwners,
     ) -> Self {
         let mut by_source: BTreeMap<&str, Vec<&PendingDecision>> = BTreeMap::new();
         for d in decisions {
             by_source.entry(&d.source).or_default().push(d);
         }
-        let mut map = HashMap::new();
+        let mut contents = HashMap::new();
+        let mut outranked = HashMap::new();
         for (source, items) in by_source {
             let delivered = source_delivered_profile(resolved, source);
             for item in items {
+                let key = (source.to_string(), item.resource.clone());
                 if let Some(content) =
                     decision_resource_content(&delivered, &item.resource, config_dir)
                 {
-                    map.insert((source.to_string(), item.resource.clone()), content);
+                    contents.insert(key.clone(), content);
+                }
+                if let Some(winner) = outranking_owner(owners, source, &item.resource) {
+                    outranked.insert(key, winner);
                 }
             }
         }
-        Self(map)
+        Self {
+            contents,
+            outranked,
+        }
     }
 
     /// The ONE composition of a decision row, for every surface that lists one:
@@ -760,7 +780,8 @@ impl DecisionContents {
     /// which is the duplication this composer exists to remove.
     pub fn decision_row(&self, item: &PendingDecision) -> (String, Option<String>) {
         let subject = format!("{} {}", title_cased_tier(&item.tier), item.resource);
-        let content = self.0.get(&(item.source.clone(), item.resource.clone()));
+        let key = (item.source.clone(), item.resource.clone());
+        let content = self.contents.get(&key);
         let annotation = decision_row_annotation(&item.summary);
         let detail = match (content, annotation) {
             (Some(content), Some(annotation)) => {
@@ -773,8 +794,93 @@ impl DecisionContents {
             (None, Some(annotation)) => Some(annotation.to_string()),
             (None, None) => None,
         };
-        (subject, detail)
+        let Some(winner) = self.outranked.get(&key) else {
+            return (subject, detail);
+        };
+        // Parenthesised and last, because it is a fact ABOUT the value to its
+        // left rather than a second value: accepting the item still records the
+        // answer, and this is why the apply that follows writes nothing.
+        let outranked = format!("outranked by {winner}");
+        (
+            subject,
+            Some(match detail {
+                Some(detail) => format!("{detail} ({outranked})"),
+                None => outranked,
+            }),
+        )
     }
+}
+
+/// The ownership record the machine will actually honour: the layer merge's own
+/// claims, with every resolved module folded in on top.
+///
+/// The order is the env engine's, not a second opinion about precedence — a
+/// module's entries overwrite a profile-layer claim there, so they overwrite
+/// one here.
+pub fn merged_entry_owners(
+    resolved: &ResolvedProfile,
+    modules: &[crate::modules::ResolvedModule],
+) -> config::EntryOwners {
+    let mut owners = resolved.merged.entry_owners.clone();
+    for module in modules {
+        owners.claim(
+            &super::Owner::module(&module.name).token(),
+            &module.env,
+            &module.aliases,
+        );
+    }
+    owners
+}
+
+/// Which per-entry ownership record, if any, can answer "who wins this
+/// resource" for a decision path's KIND.
+///
+/// Only one kind has an answer, and the reason is structural rather than
+/// missing work: `spec.env` merges last-writer-wins and the merge RECORDS the
+/// writer ([`config::EntryOwners`]), so a losing entry is knowable. The other
+/// three keep no per-entry owner and could not without changing what the merge
+/// means — a manager's package list merges as a UNION (no entry displaces
+/// another), and `files`/`system` entries are keyed by target with the winning
+/// value written straight into the merged spec, nothing recording which layer
+/// put it there.
+enum OwnershipRecord {
+    /// The merge records a per-entry owner, so an outranked item can be named.
+    PerEntry,
+    /// No per-entry owner exists for this kind, and the merge's shape is why.
+    NoneByDesign,
+    /// A kind nobody has classified: neither named nor knowably unnameable.
+    Unclassified,
+}
+
+fn ownership_record(kind: &str) -> OwnershipRecord {
+    match kind {
+        "env" => OwnershipRecord::PerEntry,
+        // A manager's package list merges as a union: no entry displaces another.
+        "packages" => OwnershipRecord::NoneByDesign,
+        // A managed file's winning value is written straight into the merged
+        // spec, with nothing recording which layer put it there.
+        "files" => OwnershipRecord::NoneByDesign,
+        // Same for a system setting, keyed by its `<configurator>.<key>`.
+        "system" => OwnershipRecord::NoneByDesign,
+        _ => OwnershipRecord::Unclassified,
+    }
+}
+
+/// The owner token that will win `resource` when it is NOT the source being
+/// asked about — the fact that turns an accepted decision into an apply with
+/// nothing to write.
+///
+/// `docs/sources.md` ranks the layers by priority and puts a module's env above
+/// a profile's, so a source can be outranked by a higher-priority source, by
+/// the operator's own local layer, or by a module. Answering `None` is the
+/// honest default: it says nothing rather than claiming this source wins.
+fn outranking_owner(owners: &config::EntryOwners, source: &str, resource: &str) -> Option<String> {
+    let (kind, rest) = resource.split_once('.')?;
+    let OwnershipRecord::PerEntry = ownership_record(kind) else {
+        return None;
+    };
+    let winner = owners.env.get(rest)?;
+    (winner != &super::Owner::source(source).token()).then(|| winner.clone())
 }
 
 /// The tier word as it opens a decision row's subject, TitleCased to match
@@ -789,11 +895,31 @@ impl DecisionContents {
 /// Generic rather than a three-arm match over the known tiers, so a policy key
 /// cfgd does not recognise still renders as itself instead of vanishing.
 pub fn title_cased_tier(tier: &str) -> String {
-    let mut chars = tier.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
+    crate::sentence_case(tier)
+}
+
+/// The ONE instruction for closing an unanswered decision, spelled the same by
+/// the run header, `cfgd decide` and `cfgd status`.
+///
+/// Three surfaces a single take shows back to back said `Run \`cfgd decide
+/// accept/reject\` to answer` and `Use \`cfgd decide accept <resource>\` … to
+/// resolve` — two verbs and two nouns for one operation on one object.
+pub const MSG_ANSWER_DECISIONS: &str =
+    "Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer";
+
+/// The same, for a decision already declined: the answer exists and reversing
+/// it is a different instruction, so it is a different constant rather than a
+/// second wording of [`MSG_ANSWER_DECISIONS`].
+pub const MSG_INCLUDE_DECLINED_DECISIONS: &str =
+    "Run `cfgd decide accept <resource>` to include it";
+
+/// The Pending Decisions section title, carrying its own count.
+///
+/// The count is the section's annotation, never a row: rendered as a status it
+/// wore the decision glyph and the decision indent, so a single withheld item
+/// listed as two `⊙` lines — a tally of the row directly beneath it.
+pub fn pending_decisions_title(count: usize) -> String {
+    format!("Pending Decisions ({})", crate::pluralize(count, "item"))
 }
 
 /// A decision list grouped by the source that raised each row, alphabetically.
@@ -1919,6 +2045,138 @@ pub fn withhold_from_plan(plan: &mut Plan, exclusions: &DecisionExclusions) -> u
         );
     }
     withheld
+}
+
+#[cfg(test)]
+mod outranked_tests {
+    use super::*;
+
+    fn row(source: &str, resource: &str) -> PendingDecision {
+        PendingDecision {
+            id: 1,
+            source: source.to_string(),
+            resource: resource.to_string(),
+            tier: TIER_RECOMMENDED.to_string(),
+            action: DECISION_ACTION_INSTALL.to_string(),
+            summary: format!("recommended {resource} (from {source})"),
+            created_at: "2026-05-14T10:00:00Z".to_string(),
+            resolved_at: None,
+            resolution: None,
+            content_hash: None,
+        }
+    }
+
+    fn owners(entries: &[(&str, &str)]) -> config::EntryOwners {
+        let mut owners = config::EntryOwners::default();
+        for (name, owner) in entries {
+            owners.claim_env_names(owner, [*name]);
+        }
+        owners
+    }
+
+    /// A composition in which `source` delivered one env var: the layer is what
+    /// `source_delivered_profile` reads the row's CONTENT out of, so a fixture
+    /// without one exercises the content-less arm instead of this one.
+    fn resolved_with_source_env(source: &str, name: &str, value: &str) -> ResolvedProfile {
+        let env = vec![config::EnvVar {
+            name: name.to_string(),
+            value: value.to_string(),
+        }];
+        let spec = config::ProfileSpec {
+            env: env.clone(),
+            ..Default::default()
+        };
+        let merged = MergedProfile {
+            env,
+            ..Default::default()
+        };
+        ResolvedProfile {
+            layers: vec![config::ProfileLayer {
+                source: source.to_string(),
+                profile_name: "team".to_string(),
+                priority: 500,
+                policy: config::LayerPolicy::Recommended,
+                spec,
+            }],
+            merged,
+        }
+    }
+
+    /// Accepting an item whose value the merge will discard still records the
+    /// answer — and the row has to say why the apply that follows writes
+    /// nothing, or the operator reads a decision that did nothing as a bug.
+    #[test]
+    fn an_env_item_a_higher_layer_wins_says_who_wins_it() {
+        let resolved = resolved_with_source_env("team", "PAGER", "less");
+        let decisions = [row("team", "env.PAGER")];
+        let contents = DecisionContents::for_decisions(
+            &resolved,
+            &decisions,
+            Path::new("/nonexistent"),
+            &owners(&[("PAGER", "module:nvim")]),
+        );
+        let (subject, detail) = contents.decision_row(&decisions[0]);
+        assert_eq!(subject, "Recommended env.PAGER");
+        assert_eq!(
+            detail.as_deref(),
+            Some("PAGER=less (outranked by module:nvim)"),
+            "the row states the value AND who displaces it"
+        );
+    }
+
+    /// The negative half: the source that wins its own entry is annotated with
+    /// nothing. Without this the annotation would read as decoration on every
+    /// env row instead of as a warning about this one.
+    #[test]
+    fn an_env_item_its_own_source_wins_carries_no_annotation() {
+        let resolved = resolved_with_source_env("team", "PAGER", "less");
+        let decisions = [row("team", "env.PAGER")];
+        let contents = DecisionContents::for_decisions(
+            &resolved,
+            &decisions,
+            Path::new("/nonexistent"),
+            &owners(&[("PAGER", "source:team")]),
+        );
+        assert_eq!(
+            contents.decision_row(&decisions[0]).1.as_deref(),
+            Some("PAGER=less")
+        );
+    }
+
+    /// Every kind `decision_resource_content` recognizes is classified by
+    /// [`ownership_record`], so the next decision path added trips here rather
+    /// than silently never being annotated. The kinds are read out of the
+    /// producer's own match arms — a new arm there is a new row here.
+    #[test]
+    fn every_decision_kind_states_whether_it_has_an_ownership_record() {
+        let source = include_str!("pending.rs");
+        let body = source
+            .split_once("pub fn decision_resource_content(")
+            .and_then(|(_, rest)| rest.split_once("\n}\n"))
+            .map(|(body, _)| body)
+            .expect("decision_resource_content must be findable in its own file");
+        let kinds: Vec<&str> = body
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix('"'))
+            .filter_map(|rest| rest.split_once("\" =>"))
+            .map(|(kind, _)| kind)
+            .collect();
+        assert!(
+            kinds.len() >= 4,
+            "the scan found no decision kinds, so it proves nothing: {kinds:?}"
+        );
+        let unclassified: Vec<&str> = kinds
+            .iter()
+            .copied()
+            .filter(|kind| matches!(ownership_record(kind), OwnershipRecord::Unclassified))
+            .collect();
+        assert!(
+            unclassified.is_empty(),
+            "a decision kind must say whether a per-entry owner exists for it, \
+             so an outranked item of that kind is either named or knowably \
+             unnameable:\n{unclassified:?}"
+        );
+    }
 }
 
 #[cfg(test)]

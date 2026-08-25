@@ -249,6 +249,11 @@ impl Renderer {
             }
         }
         self.emit_with(w, |e| {
+            // A table is a top-level GROUP like every other emission kind, and
+            // the one that most often follows a heading: without this the
+            // heading's pending blank survives and the grid renders one line
+            // below its own title, unlike every kv block and status run.
+            e.open_top_group(super::TopGroup::Table);
             e.flush_section_headers();
             for line in &body {
                 e.push_line(depth, line);

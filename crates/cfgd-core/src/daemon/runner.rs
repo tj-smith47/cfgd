@@ -434,7 +434,7 @@ pub(super) async fn handle_sync_tick(
             } else {
                 tracing::info!(
                     source = %task.source_name,
-                    "changes detected but auto-apply is disabled — run 'cfgd sync' interactively"
+                    "changes detected but auto-apply is disabled — run `cfgd sync` interactively"
                 );
             }
         }

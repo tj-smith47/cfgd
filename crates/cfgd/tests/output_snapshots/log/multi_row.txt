@@ -1,5 +1,4 @@
 Apply History
-
 ID  Time                  Scope  Status   Summary       
 ────────────────────────────────────────────────────────
 3   <TIMESTAMP>  gamma  Failed   -             

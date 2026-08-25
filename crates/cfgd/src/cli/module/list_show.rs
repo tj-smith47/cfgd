@@ -57,7 +57,7 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
         for e in entries {
             t = t.row_styled([
                 (e.name.clone(), None),
-                (if e.active { "yes" } else { "-" }.to_string(), None),
+                (cfgd_core::yes_no(Some(e.active)).to_string(), None),
                 (e.source.clone(), source_role(&e.source)),
                 status_cell(&e.status),
                 (e.packages.to_string(), None),
@@ -71,7 +71,7 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
         for e in entries {
             t = t.row_styled([
                 (e.name.clone(), None),
-                (if e.active { "yes" } else { "-" }.to_string(), None),
+                (cfgd_core::yes_no(Some(e.active)).to_string(), None),
                 (e.source.clone(), source_role(&e.source)),
                 status_cell(&e.status),
                 (

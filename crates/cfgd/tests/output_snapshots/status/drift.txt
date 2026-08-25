@@ -12,15 +12,16 @@ Drift
   ⚠ file ~/.zshrc                      — want: hash-desired, have: hash-actual
   ⚠ package ripgrep source:team-config — want: 14.1.0, have: 13.0.0
 
-Config Sources
-  Source       Status  Version  Last Fetched        
-  ──────────────────────────────────────────────────
-  team-config  Active  3.1.0    2026-05-14T09:00:00Z
+Sources
+  Source       Status  Version  Last Sync  Signed
+  ───────────────────────────────────────────────
+  team-config  Active  3.1.0    1h ago     yes   
 
-Pending Decisions
+Pending Decisions (1 item)
   source:team-config
-    ◉ 1 pending item
     ◉ Recommended package/curl
+
+→ Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer
 
 Modules
   ✓ module:shell-config — 0 packages, 4 files, Synced

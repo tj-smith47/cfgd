@@ -210,7 +210,7 @@ async fn notify_update_available(
         notifier.notify(
             "cfgd: update available",
             &format!(
-                "Version {} is available (current: {}). Run 'cfgd upgrade' to update.",
+                "Version {} is available (current: {}). Run `cfgd upgrade` to update.",
                 version_str, check.current
             ),
         );

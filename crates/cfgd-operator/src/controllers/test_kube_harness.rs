@@ -27,7 +27,7 @@ use serde::Serialize;
 use tokio::task::JoinHandle;
 use tower_test::mock;
 
-use crate::controllers::{ArtifactPlatformReader, ControllerContext, ControllerStores};
+use crate::controllers::{ArtifactFactsReader, ControllerContext, ControllerStores};
 use crate::metrics::Metrics;
 
 /// Build a populated, ready [`Store`] from a fixed set of objects.
@@ -285,16 +285,20 @@ impl MockKubeHarness {
         expected: Vec<ExpectedCall>,
         stores: ControllerStores,
     ) -> (Arc<ControllerContext>, Registry, Self) {
-        Self::with_platforms(expected, stores, ArtifactPlatformReader::fixed(Vec::new()))
+        Self::with_facts(
+            expected,
+            stores,
+            ArtifactFactsReader::fixed(Default::default()),
+        )
     }
 
-    /// Same as [`MockKubeHarness::with_stores`], but with the artifact-platform
-    /// reader the Module controller consults. The default answers an empty
-    /// list, so no test reaches a registry by omission.
-    pub fn with_platforms(
+    /// Same as [`MockKubeHarness::with_stores`], but with the artifact-facts
+    /// reader the Module controller consults. The default answers nothing, so
+    /// no test reaches a registry by omission.
+    pub fn with_facts(
         expected: Vec<ExpectedCall>,
         stores: ControllerStores,
-        artifact_platforms: ArtifactPlatformReader,
+        artifact_facts: ArtifactFactsReader,
     ) -> (Arc<ControllerContext>, Registry, Self) {
         let (mock_service, mut handle) = mock::pair::<Request<Body>, Response<Body>>();
         let (stop, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
@@ -415,7 +419,7 @@ impl MockKubeHarness {
             recorder,
             metrics,
             stores,
-            artifact_platforms,
+            artifact_facts,
         });
 
         (ctx, registry, Self { driver, stop })

@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::reconciler::is_unmanaged_file;
+use cfgd_core::reconciler::{MSG_NOTHING_TO_DO, is_unmanaged_file};
 use std::sync::{Arc, Mutex};
 
 use cfgd_core::PathDisplayExt;
@@ -4863,7 +4863,7 @@ fn cmd_doctor_without_config() {
         "should report config not found, got: {output}"
     );
     assert!(
-        output.contains("run 'cfgd init' to create one"),
+        output.contains("run `cfgd init` to create one"),
         "fresh-machine Warn should carry the init hint, got: {output}"
     );
 }
@@ -13307,7 +13307,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             phases_with_work: vec![],
             filter_miss: false,
         };
-        report_no_in_scope_actions(&printer, &scope);
+        report_no_in_scope_actions(&printer, &scope, 0);
         printer.flush();
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -13326,7 +13326,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             phases_with_work: vec!["Files".to_string()],
             filter_miss: false,
         };
-        report_no_in_scope_actions(&printer, &scope);
+        report_no_in_scope_actions(&printer, &scope, 0);
         printer.flush();
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -13352,7 +13352,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             phases_with_work: vec![],
             filter_miss: false,
         };
-        report_no_in_scope_actions(&printer, &scope);
+        report_no_in_scope_actions(&printer, &scope, 0);
         printer.flush();
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -13372,7 +13372,7 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             phases_with_work: vec![],
             filter_miss: true,
         };
-        report_no_in_scope_actions(&printer, &scope);
+        report_no_in_scope_actions(&printer, &scope, 0);
         printer.flush();
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -13384,6 +13384,338 @@ fn report_no_in_scope_actions_classifies_outcomes() {
             "expected the scope-excluded warning, got:\n{out}"
         );
     }
+}
+
+/// A withheld decision is unanswered work the machine knows about, so a run
+/// that planned nothing is not up to date — it has nothing it is ALLOWED to
+/// do. `plan` printed the green up-to-date verdict three lines under its own
+/// `Pending Decisions` block, which reads as the subscription having changed
+/// nothing.
+#[test]
+fn a_pending_decision_denies_the_up_to_date_verdict_on_every_verdict_surface() {
+    let empty_scope = || ScopeReport {
+        filter_active: false,
+        unfiltered_total: 0,
+        phases_with_work: vec![],
+        filter_miss: false,
+    };
+    type VerdictSurface<'a> = (
+        &'static str,
+        Box<dyn Fn(&cfgd_core::output::Printer, usize) + 'a>,
+    );
+    // Both verdict entry points, and both scope shapes of the one that takes it.
+    let surfaces: Vec<VerdictSurface<'_>> = vec![
+        (
+            "report_no_in_scope_actions",
+            Box::new(|p: &cfgd_core::output::Printer, pending: usize| {
+                report_no_in_scope_actions(p, &empty_scope(), pending)
+            }),
+        ),
+        (
+            "report_plan_verdict/scoped",
+            Box::new(|p: &cfgd_core::output::Printer, pending: usize| {
+                report_plan_verdict(p, 0, Some(&empty_scope()), pending)
+            }),
+        ),
+        (
+            "report_plan_verdict/unscoped",
+            Box::new(|p: &cfgd_core::output::Printer, pending: usize| {
+                report_plan_verdict(p, 0, None, pending)
+            }),
+        ),
+    ];
+    for (name, emit) in surfaces {
+        let (printer, buf) = test_printer_capture();
+        emit(&printer, 0);
+        printer.flush();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains(MSG_NOTHING_TO_DO),
+            "{name} with nothing pending must say up to date, got:\n{out}"
+        );
+
+        let (printer, buf) = test_printer_capture();
+        emit(&printer, 1);
+        printer.flush();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            !out.contains(MSG_NOTHING_TO_DO),
+            "{name} must not claim up to date with a decision pending, got:\n{out}"
+        );
+        assert!(
+            out.contains("Nothing to apply — 1 decision pending"),
+            "{name} must count the withholding, got:\n{out}"
+        );
+
+        let (printer, buf) = test_printer_capture();
+        emit(&printer, 2);
+        printer.flush();
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("Nothing to apply — 2 decisions pending"),
+            "{name} must agree its count with its noun, got:\n{out}"
+        );
+    }
+}
+
+/// One shape for the line a command closes on: sentence case, so a reader
+/// comparing two transcripts is not asked to decide whether `✓ subscribed`,
+/// `✓ ACCEPTED 1 item` and `✓ Synced` are three different kinds of outcome.
+///
+/// A row that NAMES a thing rather than reporting an outcome (`doctor`'s tool
+/// inventory, a `.sops.yaml` row) keeps the name's own spelling and says so
+/// with a `// name-row-ok:` marker on the line or the line above — the same
+/// hatch shape `// native-ok:` and `// spawn-blocking-ok:` use.
+#[test]
+fn every_result_line_is_sentence_case() {
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut offenders = Vec::new();
+    let mut files = walk_rust_files(&cli_dir);
+    files.sort();
+    for path in files {
+        if path.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = body
+            .split_once("\n#[cfg(test)]")
+            .map(|(head, _)| head)
+            .unwrap_or(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        // Matched across the whole body, not per line: `Role::Ok,` and its
+        // subject sit on separate lines in every wrapped call, and a
+        // line-at-a-time scan sees none of them.
+        for (at, _) in production.match_indices("Role::Ok,") {
+            let rest = production[at + "Role::Ok,".len()..].trim_start();
+            let Some(literal) = rest.strip_prefix('"').and_then(|r| r.split('"').next()) else {
+                continue;
+            };
+            if !literal.chars().next().is_some_and(char::is_lowercase) {
+                continue;
+            }
+            let n = production[..at].matches('\n').count();
+            if lines[n].trim_start().starts_with("//") {
+                continue;
+            }
+            let hatched = lines[n].contains("// name-row-ok:")
+                || n.checked_sub(1)
+                    .is_some_and(|p| lines[p].contains("// name-row-ok:"));
+            if hatched {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {literal:?}", path.display(), n + 1));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a result line opens in sentence case (a row that names a thing takes a \
+         `// name-row-ok:` marker):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The verdict's wording and its role are `nothing_to_do_verdict`'s to choose.
+/// A surface naming `MSG_NOTHING_TO_DO` itself re-decides both, and that is
+/// exactly how `plan` came to print a green up-to-date line under a block of
+/// unanswered decisions.
+#[test]
+fn no_command_words_the_up_to_date_verdict_for_itself() {
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut offenders = Vec::new();
+    let mut files = walk_rust_files(&cli_dir);
+    files.sort();
+    for path in files {
+        if path.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = body
+            .split_once("\n#[cfg(test)]")
+            .map(|(head, _)| head)
+            .unwrap_or(&body);
+        for (n, line) in production.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") || code.starts_with("///") {
+                continue;
+            }
+            if code.contains("MSG_NOTHING_TO_DO") || code.contains("everything is up to date") {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the up-to-date verdict is `nothing_to_do_verdict`'s to word, so a \
+         pending decision can deny it on every surface at once:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every production `.rs` under `src/cli/`, with its `#[cfg(test)]` tail and
+/// `tests.rs` itself removed — the population every literal sweep below walks.
+fn cli_production_sources() -> Vec<(std::path::PathBuf, String)> {
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut files = walk_rust_files(&cli_dir);
+    files.sort();
+    files
+        .into_iter()
+        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+        .filter_map(|path| {
+            let body = std::fs::read_to_string(&path).ok()?;
+            let production = body
+                .split_once("\n#[cfg(test)]")
+                .map(|(head, _)| head.to_string())
+                .unwrap_or(body);
+            Some((path, production))
+        })
+        .collect()
+}
+
+/// One collection, one noun. `source list` headed its table `Config Sources`
+/// while `status` opened a `Config Sources` section and every owner token,
+/// error and hint in the product called the same thing a `source` — so the
+/// screen taught two words for one concept and the plural one was the name of
+/// a cfgd.yaml key rather than of the rows underneath it. The noun is
+/// `source::list::SOURCES_SECTION`.
+#[test]
+fn no_surface_spells_the_sources_section_a_second_way() {
+    let offenders: Vec<String> = cli_production_sources()
+        .into_iter()
+        .flat_map(|(path, production)| {
+            production
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| {
+                    let code = line.trim_start();
+                    !code.starts_with("//") && code.contains("Config Sources")
+                })
+                .map(|(n, line)| format!("{}:{}: {}", path.display(), n + 1, line.trim()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "the sources collection is headed with `source::list::SOURCES_SECTION`, \
+         so no two surfaces can name it differently:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A command a message tells the reader to run is quoted in backticks, the one
+/// quoting that survives every surface: a hint, an error, a clap help line and
+/// the docs all render the same token, and the terminal theme paints it. Single
+/// quotes made `run 'cfgd source update'` read as prose in one hint and as a
+/// literal in the next, and a reader copying the quotes gets a shell error.
+#[test]
+fn every_command_a_message_names_is_quoted_in_backticks() {
+    let walked: Vec<(std::path::PathBuf, String)> = cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+        .collect();
+    // A walk that found nothing would pass whatever the sources say.
+    assert!(
+        walked.iter().any(|(p, _)| p.ends_with("cli/mod.rs"))
+            && walked.iter().any(|(p, _)| p.ends_with("util/strings.rs")),
+        "both crates' production trees must be walked, got {} files",
+        walked.len()
+    );
+    let offenders: Vec<String> = walked
+        .into_iter()
+        .flat_map(|(path, production)| {
+            production
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| line.contains("'cfgd "))
+                .map(|(n, line)| format!("{}:{}: {}", path.display(), n + 1, line.trim()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "a command a message names is quoted in backticks, never in single \
+         quotes a reader would copy into their shell:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The same walk over `cfgd-core`'s production sources: the messages a library
+/// surface composes reach the same terminal as the binary crate's.
+fn core_production_sources() -> Vec<(std::path::PathBuf, String)> {
+    let core_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../cfgd-core/src")
+        .canonicalize()
+        .expect("the workspace sibling crate is checked out beside this one");
+    let mut files = walk_rust_files(&core_src);
+    files.sort();
+    files
+        .into_iter()
+        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+        .filter_map(|path| {
+            let body = std::fs::read_to_string(&path).ok()?;
+            let production = body
+                .split_once("\n#[cfg(test)]")
+                .map(|(head, _)| head.to_string())
+                .unwrap_or(body);
+            Some((path, production))
+        })
+        .collect()
+}
+
+/// A yes/no fact renders through `cfgd_core::yes_no`, which is what keeps `-`
+/// meaning exactly one thing: NOT KNOWN. The inline ternary this forbids is how
+/// `Active` came to spell a false as `-`, making an answered question look the
+/// same as an unanswerable one on the very tables `Signed` had to join.
+#[test]
+fn no_column_hand_rolls_its_own_yes_no_rendering() {
+    let offenders: Vec<String> = cli_production_sources()
+        .into_iter()
+        .flat_map(|(path, production)| {
+            production
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| {
+                    let code = line.trim_start();
+                    !code.starts_with("//")
+                        && code.contains(r#""yes""#)
+                        && code.contains("else")
+                        && !code.contains("yes_no")
+                })
+                .map(|(n, line)| format!("{}:{}: {}", path.display(), n + 1, line.trim()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "a yes/no cell renders through `cfgd_core::yes_no`, so `-` never means \
+         `no`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A `Last Sync` column carries an AGE, not the stored instant: the ISO 8601
+/// stamp is what the `-o json` payload keeps, and a human scanning a listing is
+/// asking how stale the row is. Every file that names the column reaches the
+/// one renderer that answers that question.
+#[test]
+fn every_last_sync_column_renders_through_the_shared_age_helper() {
+    let offenders: Vec<String> = cli_production_sources()
+        .into_iter()
+        .filter(|(_, production)| {
+            production.contains(r#""Last Sync""#) && !production.contains("last_sync_display")
+        })
+        .map(|(path, _)| path.display().to_string())
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "a `Last Sync` column renders through `source::list::last_sync_display`, \
+         so no surface prints a raw timestamp where every other one prints an \
+         age:\n{}",
+        offenders.join("\n")
+    );
 }
 
 #[test]
@@ -14922,6 +15254,11 @@ fn sample_source(
     }
 }
 
+/// The instant every daemon-status render below ages its stamps against, so a
+/// captured age is a fact about the fixture rather than about the day the
+/// suite ran.
+const DAEMON_STATUS_NOW: &str = "2026-05-14T12:00:00Z";
+
 #[test]
 fn render_daemon_status_human_running_with_sources_and_update() {
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
@@ -14935,7 +15272,10 @@ fn render_daemon_status_human_running_with_sources_and_update() {
         ],
         Some("9.9.9".to_string()),
     );
-    printer.emit(super::daemon::build_daemon_status_doc(Some(&status)));
+    printer.emit(super::daemon::build_daemon_status_doc(
+        Some(&status),
+        DAEMON_STATUS_NOW,
+    ));
     drop(printer);
     let output = cap.human();
     assert!(output.contains("Daemon is running"), "got: {output}");
@@ -14976,7 +15316,10 @@ fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
         reconcile_interval_secs: None,
         sync_interval_secs: None,
     };
-    printer.emit(super::daemon::build_daemon_status_doc(Some(&status)));
+    printer.emit(super::daemon::build_daemon_status_doc(
+        Some(&status),
+        DAEMON_STATUS_NOW,
+    ));
     drop(printer);
     let output = cap.human();
     assert!(output.contains("Daemon is running"));
@@ -14999,7 +15342,10 @@ fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
 fn render_daemon_status_json_emits_some_status_shape() {
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
     let status = sample_daemon_status(99, 60, 1, vec![sample_source("s1", "ok", 0, None)], None);
-    printer.emit(super::daemon::build_daemon_status_doc(Some(&status)));
+    printer.emit(super::daemon::build_daemon_status_doc(
+        Some(&status),
+        DAEMON_STATUS_NOW,
+    ));
     drop(printer);
     let parsed = cap.json().expect("doc captured json");
     assert_eq!(parsed.get("pid").unwrap().as_u64().unwrap(), 99);
@@ -15011,7 +15357,10 @@ fn render_daemon_status_json_emits_some_status_shape() {
 #[test]
 fn render_daemon_status_json_emits_placeholder_when_none() {
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
-    printer.emit(super::daemon::build_daemon_status_doc(None));
+    printer.emit(super::daemon::build_daemon_status_doc(
+        None,
+        DAEMON_STATUS_NOW,
+    ));
     drop(printer);
     let parsed = cap.json().expect("doc captured json");
     assert_eq!(parsed.get("pid").unwrap().as_u64().unwrap(), 0);
@@ -15058,7 +15407,7 @@ fn daemon_uninstall_prints_platform_info_and_succeeds() {
     assert!(result.is_ok(), "expected success, got: {:?}", result.err());
 
     assert!(
-        output.contains("Daemon service removed"),
+        output.contains("Removed daemon service"),
         "expected completion message, got: {output}"
     );
 }
@@ -16869,7 +17218,7 @@ fn cmd_status_with_sources_shows_source_section() {
         "should show Status header, got: {output}"
     );
     assert!(
-        output.contains("Config Sources"),
+        output.contains(crate::cli::source::list::SOURCES_SECTION),
         "should show Config Sources section, got: {output}"
     );
     assert!(
@@ -17350,14 +17699,15 @@ fn cmd_source_list_table_shows_status_and_priority() {
     // Populate state with source info so the table columns have values
     let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
-        .upsert_config_source(
-            "team-config",
-            "https://github.com/team/config",
-            "main",
-            Some("abc123"),
-            Some("1.2.0"),
-            None,
-        )
+        .upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+            name: "team-config",
+            origin_url: "https://github.com/team/config",
+            origin_branch: "main",
+            last_commit: Some("abc123"),
+            source_version: Some("1.2.0"),
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
 
     super::source::cmd_source_list(&h.cli(), h.printer()).unwrap();
@@ -17379,14 +17729,15 @@ fn cmd_source_list_structured_json_includes_state_info() {
     let h = CliTestHarness::builder().rich_config().json().build();
     let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
-        .upsert_config_source(
-            "team-config",
-            "https://github.com/team/config",
-            "main",
-            Some("abc123def"),
-            Some("2.0.0"),
-            None,
-        )
+        .upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+            name: "team-config",
+            origin_url: "https://github.com/team/config",
+            origin_branch: "main",
+            last_commit: Some("abc123def"),
+            source_version: Some("2.0.0"),
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
 
     super::source::cmd_source_list(&h.cli(), h.printer()).unwrap();
@@ -17454,14 +17805,15 @@ fn cmd_source_show_with_state_shows_status_section() {
     let h = CliTestHarness::builder().rich_config().build();
     let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
     state
-        .upsert_config_source(
-            "team-config",
-            "https://github.com/team/config",
-            "main",
-            Some("deadbeef1234"),
-            Some("3.1.0"),
-            None,
-        )
+        .upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+            name: "team-config",
+            origin_url: "https://github.com/team/config",
+            origin_branch: "main",
+            last_commit: Some("deadbeef1234"),
+            source_version: Some("3.1.0"),
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
 
     super::source::cmd_source_show(&h.cli(), h.printer(), "team-config").unwrap();
@@ -17476,7 +17828,7 @@ fn cmd_source_show_with_state_shows_status_section() {
         "should display Status within State section, got: {output}"
     );
     assert!(
-        output.contains("Last Fetched"),
+        output.contains("Last Sync"),
         "should display Last Fetched, got: {output}"
     );
     // Last Commit should be truncated to 12 chars
@@ -17619,7 +17971,7 @@ fn cmd_source_remove_remove_all_does_not_reassign() {
         "remove_all should not reassign resources to local"
     );
 
-    h.assert_output_contains("removed");
+    h.assert_output_contains("Removed");
 }
 
 #[test]
@@ -17639,7 +17991,7 @@ fn cmd_source_remove_prints_success_message() {
 
     // The heading names the source; the line below it names the outcome.
     h.assert_output_contains("Remove source:team-config");
-    h.assert_output_contains("removed");
+    h.assert_output_contains("Removed");
 }
 
 // -----------------------------------------------------------------------
@@ -18182,7 +18534,7 @@ fn cmd_doctor_shows_config_sources_section_when_sources_declared() {
 
     let output = h.output();
     assert!(
-        output.contains("Config Sources"),
+        output.contains(crate::cli::source::list::SOURCES_SECTION),
         "should render Config Sources subheader: {output}"
     );
     assert!(
@@ -18342,7 +18694,7 @@ fn build_doctor_doc_age_key_missing_with_path_emits_warn() {
     let text = emit_doc(&output, &extras);
     assert!(
         text.contains(
-            "age key: /home/user/.config/cfgd/keys/age.key — not found; run 'cfgd init' to generate"
+            "age key: /home/user/.config/cfgd/keys/age.key — not found; run `cfgd init` to generate"
         ),
         "should warn about missing age key and suggest cfgd init, got: {text}"
     );
@@ -18369,7 +18721,7 @@ fn build_doctor_doc_sops_config_missing_emits_warn() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains(".sops.yaml: not found — will be generated on 'cfgd init'"),
+        text.contains(".sops.yaml: not found — will be generated on `cfgd init`"),
         "should warn about missing .sops.yaml, got: {text}"
     );
 }
@@ -19009,7 +19361,7 @@ fn cmd_decide_reject_specific_resource_verifies_resolution() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("REJECTED"),
+        output.contains("Rejected"),
         "should confirm rejection, got: {output}"
     );
     assert!(
@@ -19056,7 +19408,7 @@ fn cmd_decide_accept_specific_resource_verifies_messaging() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("ACCEPTED"),
+        output.contains("Accepted"),
         "should confirm acceptance, got: {output}"
     );
     assert!(
@@ -19130,7 +19482,7 @@ fn cmd_decide_accept_all_reports_count() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("ACCEPTED"),
+        output.contains("Accepted"),
         "should confirm acceptance, got: {output}"
     );
     assert!(
@@ -19176,7 +19528,7 @@ fn cmd_decide_reject_by_source_preserves_other_sources() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("REJECTED"),
+        output.contains("Rejected"),
         "should confirm rejection, got: {output}"
     );
     assert!(
@@ -20548,7 +20900,7 @@ mod cmd_source_add_local {
             let show_out = &full[baseline_len..];
 
             assert!(
-                show_out.contains("Source: shown-src"),
+                show_out.contains("Show source:shown-src"),
                 "expected header, got: {show_out}"
             );
             assert!(
@@ -21794,7 +22146,7 @@ fn build_doctor_doc_legacy_profile_warns_with_migrate_hint() {
     let text = emit_doc(&output, &extras);
     assert!(
         text.contains(
-            "profile 'work': uses the legacy flat layout — run 'cfgd profile migrate work'"
+            "profile 'work': uses the legacy flat layout — run `cfgd profile migrate work`"
         ),
         "should warn with the migrate remediation, got: {text}"
     );
@@ -22184,7 +22536,8 @@ fn plan_preview_says_what_a_withheld_decision_would_put_on_the_machine() {
         "the withheld row says what the file would deliver, not only who sent it:\n{output}"
     );
     assert!(
-        output.contains("source:acme") && output.contains("cfgd decide accept/reject"),
+        output.contains("source:acme")
+            && output.contains(cfgd_core::reconciler::MSG_ANSWER_DECISIONS),
         "the owner section names the source and one hint says how to answer:\n{output}"
     );
     assert!(
@@ -22192,7 +22545,9 @@ fn plan_preview_says_what_a_withheld_decision_would_put_on_the_machine() {
         "whose the item is belongs to the owner heading, not to every row:\n{output}"
     );
     assert_eq!(
-        output.matches("cfgd decide accept/reject").count(),
+        output
+            .matches(cfgd_core::reconciler::MSG_ANSWER_DECISIONS)
+            .count(),
         1,
         "the instruction is ONE hint under the block, never a per-row suffix:\n{output}"
     );
@@ -22948,7 +23303,7 @@ fn decide_answers_an_item_no_run_has_recorded_yet() {
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("REJECTED"),
+        output.contains("Rejected"),
         "decide answers the unrecorded item instead of denying it exists:\n{output}"
     );
 
@@ -23131,7 +23486,7 @@ fn a_foreign_config_plan_names_the_truth_instead_of_a_decide_that_will_refuse() 
         "the item is still withheld and named:\n{output}"
     );
     assert!(
-        !output.contains("cfgd decide accept/reject"),
+        !output.contains(cfgd_core::reconciler::MSG_ANSWER_DECISIONS),
         "no instruction naming a command that will refuse:\n{output}"
     );
     assert!(
@@ -23167,7 +23522,7 @@ fn a_recorded_row_keeps_its_decide_instruction_on_every_config() {
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
     assert!(
-        output.contains("cfgd decide accept/reject"),
+        output.contains(cfgd_core::reconciler::MSG_ANSWER_DECISIONS),
         "a recorded row is answerable everywhere:\n{output}"
     );
 }
@@ -23985,7 +24340,7 @@ fn decide_still_answers_a_recorded_row_when_the_picture_is_unreadable() {
     let output = cfgd_core::test_helpers::captured_text(&buf);
 
     assert!(
-        output.contains("ACCEPTED"),
+        output.contains("Accepted"),
         "an existing row resolves regardless of the classification:\n{output}"
     );
 }
@@ -24392,4 +24747,47 @@ fn the_respelled_section_detector_flags_the_pair_that_shipped() {
     assert!(!section_respells_title("Upgrade", "Update Available"));
     assert!(!section_respells_title("Checkin", "Server Config"));
     assert!(!section_respells_title("Add Module Registry", "Fetch"));
+}
+
+/// Every attestation type this crate names must be one the reader can produce.
+///
+/// The Module status column reports an artifact's attestations by folding each
+/// manifest annotation through `cfgd_core::oci::attestation_type_name`, so a
+/// `--type` literal spelled here that the fold cannot produce is a name no
+/// real artifact would ever read back as — the verify command and the status
+/// column would be talking about the same attestation in two vocabularies.
+#[test]
+fn every_attestation_type_this_crate_names_is_one_the_reader_can_produce() {
+    let mut checked = 0;
+    for (path, body) in cli_production_sources() {
+        for chunk in body.split("verify_attestation(").skip(1) {
+            let Some((args, _)) = chunk.split_once(')') else {
+                continue;
+            };
+            // `verify_attestation(reference, "<type>", &opts)` — only a literal
+            // second argument names a type this crate chose.
+            let Some(quoted) = args.split(',').nth(1).map(str::trim) else {
+                continue;
+            };
+            let Some(name) = quoted
+                .strip_prefix('"')
+                .and_then(|rest| rest.strip_suffix('"'))
+            else {
+                continue;
+            };
+            assert!(
+                cfgd_core::oci::COSIGN_PREDICATE_TYPES
+                    .iter()
+                    .any(|(_, known)| *known == name),
+                "{}: cosign --type {name} is not a name any predicate URI folds to, so the \
+                 Module status column can never report an artifact carrying it",
+                path.display()
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 0,
+        "no literal attestation type found: the walk stopped seeing its population"
+    );
 }

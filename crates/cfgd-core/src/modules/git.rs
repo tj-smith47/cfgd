@@ -491,8 +491,11 @@ pub(super) fn clone_repo(
     let mut cmd = crate::git_cmd_safe(Some(&git_src.repo_url), None);
     cmd.args(["clone", &git_src.repo_url, &dest.display().to_string()]);
 
+    // Silent on success, like every other transfer cfgd narrates: the caller
+    // already names the module, so a settled row prints the owner twice on two
+    // consecutive lines. The libgit2 arm below settles a failure.
     let label = format!("Cloning module:{}", module_name);
-    let cli_result = printer.run(&mut cmd, &label);
+    let cli_result = printer.run_silent(&mut cmd, &label);
     if matches!(&cli_result, Ok(output) if output.status.success()) {
         // A fresh clone transferred every ref the remote offers, so the next
         // source out of this repository has nothing to fetch.
@@ -564,8 +567,9 @@ pub(super) fn fetch_existing_repo(
     let mut cmd = crate::git_cmd_safe(Some(&git_src.repo_url), None);
     cmd.args(["-C", &repo_path.display().to_string(), "fetch", "origin"]);
 
+    // Silent on success, for the reason the clone above is.
     let label = format!("Fetching module:{}", module_name);
-    let cli_result = printer.run(&mut cmd, &label);
+    let cli_result = printer.run_silent(&mut cmd, &label);
     if matches!(&cli_result, Ok(output) if output.status.success()) {
         record_repo_refresh(&git_src.repo_url);
         return Ok(());
@@ -632,7 +636,7 @@ pub(super) fn fetch_existing_repo(
 fn unresolvable_ref_message(ref_name: &str, module_name: &str, e: &git2::Error) -> String {
     if is_full_object_id(ref_name) {
         return format!(
-            "pinned commit {ref_name} is no longer in the repository or on its remote (history rewritten or garbage-collected) — re-pin with 'cfgd module upgrade {module_name}': {e}"
+            "pinned commit {ref_name} is no longer in the repository or on its remote (history rewritten or garbage-collected) — re-pin with `cfgd module upgrade {module_name}`: {e}"
         );
     }
     format!("cannot find ref '{ref_name}': {e}")

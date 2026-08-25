@@ -539,7 +539,7 @@ pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
     doc = doc.section_if_nonempty("Profiles", &output.profiles, build_profiles_section);
     doc = doc.section("System", |s| build_system_section(s, extras));
     doc = doc.section_if_nonempty(
-        "Config Sources",
+        super::source::list::SOURCES_SECTION,
         &extras.config_sources,
         build_sources_section,
     );
@@ -572,7 +572,7 @@ fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBu
         }
         DoctorConfigState::MissingAtDefault => s.status_with(Role::Warn, "Config file", |sf| {
             sf.qualifier(cfg.path.clone()).detail(format!(
-                "{}; run 'cfgd init' to create one",
+                "{}; run `cfgd init` to create one",
                 cfgd_core::Absence::NotFound
             ))
         }),
@@ -591,6 +591,7 @@ fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBu
 
 fn build_tools_section(s: SectionBuilder, git_available: bool) -> SectionBuilder {
     if git_available {
+        // name-row-ok: the row names the executable, not an outcome
         s.status_with(Role::Ok, "git", |f| f.qualifier("found"))
     } else {
         s.status_with(Role::Fail, "git", |f| {
@@ -603,6 +604,7 @@ fn build_tools_section(s: SectionBuilder, git_available: bool) -> SectionBuilder
 fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) -> SectionBuilder {
     s = if secrets.sops_available {
         let version_str = secrets.sops_version.as_deref().unwrap_or("unknown version");
+        // name-row-ok: the row names the executable, not an outcome
         s.status_with(Role::Ok, "sops", |f| {
             f.qualifier(format!("found ({})", version_str))
         })
@@ -614,10 +616,11 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
     };
 
     s = match (secrets.age_key_exists, secrets.age_key_path.as_deref()) {
+        // name-row-ok: the row names the key file, not an outcome
         (true, Some(path)) => s.status_with(Role::Ok, "age key", |f| f.qualifier(path.to_string())),
         (false, Some(path)) => s.status_with(Role::Warn, "age key", |f| {
             f.qualifier(path.to_string()).detail(format!(
-                "{}; run 'cfgd init' to generate",
+                "{}; run `cfgd init` to generate",
                 cfgd_core::Absence::NotFound
             ))
         }),
@@ -634,7 +637,7 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
         (true, None) => s.status_with(Role::Ok, ".sops.yaml", |f| f.qualifier("present")),
         (false, _) => s.status_with(Role::Warn, ".sops.yaml", |f| {
             f.qualifier(cfgd_core::Absence::NotFound.as_str())
-                .detail("will be generated on 'cfgd init'")
+                .detail("will be generated on `cfgd init`")
         }),
     };
 
@@ -714,7 +717,7 @@ fn build_profiles_section(
         } else if p.legacy {
             s.status_with(Role::Warn, format!("profile '{}'", p.name), |sf| {
                 sf.qualifier("uses the legacy flat layout")
-                    .detail(format!("run 'cfgd profile migrate {}'", p.name))
+                    .detail(format!("run `cfgd profile migrate {}`", p.name))
             })
         } else {
             s.status(Role::Ok, p.name.clone())
@@ -802,7 +805,7 @@ fn build_sources_section(s: SectionBuilder, sources: &[DoctorConfigSource]) -> S
                 f.qualifier(format!("cached at {}", path))
             }),
             None => s.status_with(Role::Warn, source.name.clone(), |f| {
-                f.qualifier("not cached (run 'cfgd source update')")
+                f.qualifier("not cached (run `cfgd source update`)")
             }),
         })
 }

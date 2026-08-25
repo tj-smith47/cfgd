@@ -1,3 +1,4 @@
+use super::source::list::last_sync_display;
 use super::*;
 use cfgd_core::output::renderer::Table;
 use cfgd_core::output::{Doc, Printer, Role};
@@ -101,7 +102,10 @@ pub fn cmd_daemon_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 ));
             }
         };
-    printer.emit(build_daemon_status_doc(status.as_ref()));
+    printer.emit(build_daemon_status_doc(
+        status.as_ref(),
+        &cfgd_core::utc_now_iso8601(),
+    ));
     Ok(())
 }
 
@@ -123,7 +127,13 @@ fn placeholder_status() -> cfgd_core::daemon::DaemonStatusResponse {
 
 /// Build the Doc emitted for `cfgd daemon status`. Pulled out so integration
 /// tests can construct the Doc deterministically without standing up IPC.
-pub fn build_daemon_status_doc(status: Option<&cfgd_core::daemon::DaemonStatusResponse>) -> Doc {
+///
+/// `now` is a parameter rather than a clock read, so every stamp this render
+/// ages against is the caller's one instant and a captured render pins.
+pub fn build_daemon_status_doc(
+    status: Option<&cfgd_core::daemon::DaemonStatusResponse>,
+    now: &str,
+) -> Doc {
     let mut doc = Doc::new().heading("Daemon Status");
 
     match status {
@@ -144,18 +154,20 @@ pub fn build_daemon_status_doc(status: Option<&cfgd_core::daemon::DaemonStatusRe
             }
             rows.push(("Drift count".to_string(), s.drift_count.to_string()));
             doc = doc.kv_block(rows);
+            // The stored instant stays in the `-o json` payload below; a
+            // person reading the dashboard is asking how stale the loop is.
             if let Some(ref last) = s.last_reconcile {
-                doc = doc.kv("Last reconcile", last);
+                doc = doc.kv("Last reconcile", last_sync_display(Some(last), now));
             }
             if let Some(ref last) = s.last_sync {
-                doc = doc.kv("Last sync", last);
+                doc = doc.kv("Last sync", last_sync_display(Some(last), now));
             }
 
             if let Some(ref version) = s.update_available {
                 doc = doc.status(
                     Role::Warn,
                     format!(
-                        "Update available: {} — run 'cfgd upgrade' to install",
+                        "Update available: {} — run `cfgd upgrade` to install",
                         version
                     ),
                 );
@@ -168,13 +180,10 @@ pub fn build_daemon_status_doc(status: Option<&cfgd_core::daemon::DaemonStatusRe
                     (src.name.clone(), None),
                     (status.to_string(), Some(role)),
                     (src.drift_count.to_string(), None),
-                    (
-                        src.last_sync.clone().unwrap_or_else(|| "-".to_string()),
-                        None,
-                    ),
+                    (last_sync_display(src.last_sync.as_deref(), now), None),
                 ]);
             }
-            doc = doc.section("Sources", |sec| sec.table(table));
+            doc = doc.section(super::source::list::SOURCES_SECTION, |sec| sec.table(table));
             doc.with_data(s)
         }
         None => {
@@ -295,10 +304,13 @@ pub fn build_daemon_install_doc(payload: &DaemonInstallOutput) -> Doc {
     match payload.platform.as_str() {
         "windows" => {
             if payload.started {
-                doc = doc.status(Role::Ok, "cfgd service installed and started");
+                doc = doc.status(Role::Ok, "Installed and started the cfgd service");
             } else {
                 doc = doc
-                    .status(Role::Warn, "cfgd service installed but not yet running")
+                    .status(
+                        Role::Warn,
+                        "Installed the cfgd service but it is not yet running",
+                    )
                     .status(
                         Role::Info,
                         "Start it with: sc start cfgd  (it is also set to auto-start on boot)",
@@ -423,7 +435,7 @@ pub fn build_daemon_uninstall_doc(payload: &DaemonUninstallOutput, scope: cfgd_c
         }
     };
     doc = doc.status(Role::Info, detail);
-    doc = doc.status(Role::Ok, "Daemon service removed");
+    doc = doc.status(Role::Ok, "Removed daemon service");
     doc.with_data(payload)
 }
 
@@ -436,6 +448,11 @@ pub(super) fn cmd_daemon_service() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The instant every daemon-status render in this suite ages its stamps
+    /// against, so a captured age is a fact about the fixture rather than about
+    /// the day the suite ran.
+    const DAEMON_STATUS_NOW: &str = "2026-05-14T12:00:00Z";
     use super::*;
     use cfgd_core::test_helpers::test_printer as make_printer;
 
@@ -582,7 +599,7 @@ mod tests {
     #[test]
     fn build_daemon_status_doc_none_contains_not_running() {
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(None);
+        let doc = build_daemon_status_doc(None, DAEMON_STATUS_NOW);
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -594,7 +611,7 @@ mod tests {
     #[test]
     fn build_daemon_status_doc_none_json_payload() {
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(None);
+        let doc = build_daemon_status_doc(None, DAEMON_STATUS_NOW);
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["running"], false);
@@ -605,7 +622,7 @@ mod tests {
     fn build_daemon_status_doc_some_contains_pid() {
         let status = make_status(true);
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status));
+        let doc = build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW);
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -618,7 +635,7 @@ mod tests {
     fn build_daemon_status_doc_some_json_payload() {
         let status = make_status(true);
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status));
+        let doc = build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW);
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["running"], true);
@@ -632,7 +649,7 @@ mod tests {
         status.reconcile_interval_secs = Some(300);
         status.sync_interval_secs = Some(900);
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_daemon_status_doc(Some(&status)));
+        printer.emit(build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW));
         let human = cap.human();
         assert!(
             human.contains("Reconcile interval") && human.contains("300s"),
@@ -648,7 +665,7 @@ mod tests {
     fn build_daemon_status_doc_omits_intervals_the_daemon_did_not_report() {
         let status = make_status(true);
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_daemon_status_doc(Some(&status)));
+        printer.emit(build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW));
         let human = cap.human();
         assert!(
             !human.contains("Reconcile interval") && !human.contains("Sync interval"),
@@ -661,7 +678,7 @@ mod tests {
         let mut status = make_status(true);
         status.update_available = Some("v1.2.3".to_string());
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status));
+        let doc = build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW);
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -835,11 +852,12 @@ mod tests {
         printer.emit(build_daemon_install_doc(&payload));
         let human = cap.human();
         assert!(
-            human.contains("installed but not yet running") && human.contains("sc start cfgd"),
+            human.contains("Installed the cfgd service but it is not yet running")
+                && human.contains("sc start cfgd"),
             "not-started install must report the real state + start hint, got: {human}"
         );
         assert!(
-            !human.contains("installed and started"),
+            !human.contains("Installed and started"),
             "must NOT over-claim 'started' when the service is not running, got: {human}"
         );
         let json = cap.json().expect("doc must carry JSON payload");
@@ -859,7 +877,7 @@ mod tests {
         printer.emit(build_daemon_install_doc(&payload));
         let human = cap.human();
         assert!(
-            human.contains("installed and started"),
+            human.contains("Installed and started the cfgd service"),
             "a running service must report 'started', got: {human}"
         );
         assert_eq!(cap.json().expect("payload")["started"], true);
@@ -1014,7 +1032,7 @@ mod tests {
             },
         ];
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status));
+        let doc = build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW);
         printer.emit(doc);
         let human = cap.human();
         assert!(human.contains("infra"), "infra source must appear: {human}");
@@ -1032,7 +1050,7 @@ mod tests {
         let mut status = make_status(true);
         status.last_reconcile = Some("2026-05-22T10:00:00Z".into());
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status));
+        let doc = build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW);
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -1046,7 +1064,7 @@ mod tests {
         let mut status = make_status(true);
         status.last_sync = Some("2026-05-22T11:00:00Z".into());
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status));
+        let doc = build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW);
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -1137,7 +1155,7 @@ mod tests {
         printer.emit(doc);
         let human = cap.human();
         assert!(
-            human.contains("Daemon service removed"),
+            human.contains("Removed daemon service"),
             "uninstall must emit the Ok-status confirmation line: {human}"
         );
     }

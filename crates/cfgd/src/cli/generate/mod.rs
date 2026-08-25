@@ -318,7 +318,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
                     .output()?;
                 if commit_out.status.success() {
                     committed = true;
-                    printer.status_simple(Role::Ok, "Changes committed.");
+                    printer.status_simple(Role::Ok, "Committed changes");
                 } else {
                     printer.status_simple(
                         Role::Warn,

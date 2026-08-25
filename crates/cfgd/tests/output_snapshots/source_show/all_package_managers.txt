@@ -1,4 +1,4 @@
-Source: full-pkg-source
+Show source:full-pkg-source
   URL                 https://github.com/team/full-pkg
   Branch              main
   Priority            300

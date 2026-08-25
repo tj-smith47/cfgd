@@ -237,7 +237,7 @@ pub fn cmd_source_remove(
 
     printer.emit(
         Doc::new()
-            .status(Role::Ok, "removed")
+            .status(Role::Ok, "Removed")
             .with_data(serde_json::json!({
                 "name": name,
                 "managedResources": managed_count,
@@ -425,14 +425,15 @@ mod tests {
         // Seed state: one managed resource owned by source "acme".
         let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
-            .upsert_config_source(
-                "acme",
-                "https://example.com/acme/dev.git",
-                "main",
-                None,
-                None,
-                None,
-            )
+            .upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+                name: "acme",
+                origin_url: "https://example.com/acme/dev.git",
+                origin_branch: "main",
+                last_commit: None,
+                source_version: None,
+                pinned_version: None,
+                last_commit_signed: None,
+            })
             .expect("seed config_source");
         state
             .upsert_managed_resource("file", "/etc/foo", "acme", None, None)
@@ -487,14 +488,15 @@ mod tests {
         let id = cfgd_core::to_posix_string(&path);
         let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
-            .upsert_config_source(
-                "acme",
-                "https://example.com/acme/dev.git",
-                "main",
-                None,
-                None,
-                None,
-            )
+            .upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+                name: "acme",
+                origin_url: "https://example.com/acme/dev.git",
+                origin_branch: "main",
+                last_commit: None,
+                source_version: None,
+                pinned_version: None,
+                last_commit_signed: None,
+            })
             .expect("seed config_source");
         state
             .upsert_managed_resource("file", &id, "acme", recorded_hash, None)
@@ -624,14 +626,15 @@ mod tests {
 
         let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
-            .upsert_config_source(
-                "acme",
-                "https://example.com/acme/dev.git",
-                "main",
-                None,
-                None,
-                None,
-            )
+            .upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+                name: "acme",
+                origin_url: "https://example.com/acme/dev.git",
+                origin_branch: "main",
+                last_commit: None,
+                source_version: None,
+                pinned_version: None,
+                last_commit_signed: None,
+            })
             .expect("seed config_source");
         state
             .upsert_managed_resource("file", "/etc/bar", "acme", None, None)
@@ -688,14 +691,15 @@ mod tests {
 
         let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
-            .upsert_config_source(
-                "acme",
-                "https://example.com/acme/dev.git",
-                "main",
-                None,
-                None,
-                None,
-            )
+            .upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+                name: "acme",
+                origin_url: "https://example.com/acme/dev.git",
+                origin_branch: "main",
+                last_commit: None,
+                source_version: None,
+                pinned_version: None,
+                last_commit_signed: None,
+            })
             .expect("seed config_source");
         state
             .upsert_managed_resource("file", "/etc/baz", "acme", None, None)
@@ -728,14 +732,15 @@ mod tests {
 
         let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("open state");
         state
-            .upsert_config_source(
-                "acme",
-                "https://example.com/acme/dev.git",
-                "main",
-                None,
-                None,
-                None,
-            )
+            .upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+                name: "acme",
+                origin_url: "https://example.com/acme/dev.git",
+                origin_branch: "main",
+                last_commit: None,
+                source_version: None,
+                pinned_version: None,
+                last_commit_signed: None,
+            })
             .expect("seed config_source");
         state
             .upsert_managed_resource("file", "/etc/keepme", "acme", None, None)

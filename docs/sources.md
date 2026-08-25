@@ -259,6 +259,21 @@ cfgd source remove acme-corp                            # unsubscribe
 cfgd source update                                      # fetch latest from all sources
 ```
 
+`cfgd source list` shows the two facts that change between one listing and the next
+alongside the subscription's own columns:
+
+```
+Sources
+Name       Source                                   Priority  Status  Last Sync  Signed
+───────────────────────────────────────────────────────────────────────────────────────
+acme-corp  https://github.com/acme-corp/dev-config  500       Active  2h ago     yes
+```
+
+`Last Sync` is the age of the last successful fetch (`never` before the first one) and
+`Signed` whether that commit carried a verified signature (`-` when nothing is recorded
+yet). `-o json` keeps the exact ISO 8601 instant; `--wide` adds the source's
+self-reported `Version`.
+
 ### What a source provides
 
 `cfgd source add` renders the source's manifest before it asks you to confirm, and
@@ -398,7 +413,8 @@ Plan
   Phases   Prerequisites, Packages
 
 Pending Decisions (not included in this plan)
-  ◉ recommended packages.brew.k9s — install by acme-corp (run `cfgd decide accept/reject`)
+  source:acme-corp
+    ◉ Recommended packages.brew.k9s — brew install k9s
 
 Phase: Prerequisites
   cfgd:managers
@@ -409,6 +425,7 @@ Phase: Packages
     - brew install ripgrep
 
 ◉ 2 actions planned
+→ Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer
 
 $ cfgd decide accept packages.brew.k9s
 $ cfgd plan            # k9s now plans alongside ripgrep
@@ -416,6 +433,27 @@ $ cfgd plan            # k9s now plans alongside ripgrep
 ```
 
 `cfgd decide` is the only way to move an item out of Pending; neither `plan` nor `apply` resolves a decision for you.
+
+A plan whose only remaining work is withheld says so instead of reporting success, so "up to date" never covers an item you have not answered:
+
+```
+⊙ Nothing to apply — 1 decision pending
+→ Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer
+```
+
+`cfgd apply` closes with the same line.
+
+### Items a Higher Layer Already Wins
+
+An item can be pending and, once accepted, still change nothing: a higher-priority layer already owns that entry. Every surface that lists a decision (`cfgd decide`, `cfgd status`, and the plan/apply header) annotates the row with the owner that wins it:
+
+```
+Pending Decisions (1 item)
+  source:acme-corp
+    ◉ Recommended env.PAGER — PAGER=less (outranked by module:nvim)
+```
+
+Read it as "accepting this records your answer, and the apply that follows writes nothing" — the winner may be a higher-priority source, your local config, or a module (module env sits above a profile layer's). Only `env` items carry the annotation: the merge records a per-entry owner for env and nothing else. Packages merge as a union (no entry displaces another), and `files` / `system` entries are keyed by target with the winning value written straight into the merged spec, so there is no losing layer to name.
 
 Notifications fire once per new pending decision, not on every reconcile cycle (an item first recorded by `cfgd apply` is shown to you on screen and does not notify again). If you don't act on a decision, you won't be reminded again until the source publishes an update that changes that item itself (a change to a different item the same source delivers is not a reminder about yours).
 
@@ -658,23 +696,24 @@ sources:
 `cfgd source show acme-corp` surfaces the lockfile data in the State section:
 
 ```
-Source: acme-corp
+Show source:acme-corp
   URL            git@github.com:acme-corp/dev-config.git
   Branch         master
   Priority       500
   Pin Version    ~2
 
 State
-  Status        synced
-  Last Fetched  2026-06-09T14:32:01Z
-  Last Commit   9f3c1ab2c4d  (truncated)
-  Locked Ref    v2.1.0
-  Locked Commit 9f3c1ab2c4d  (same: the tag's commit)
+  Status         Active
+  Last Sync      2h ago
+  Last Commit    9f3c1ab2c4d  (truncated)
+  Signed         yes
+  Locked Commit  9f3c1ab2c4d  (same: the tag's commit)
+  Locked Ref     v2.1.0
 ```
 
 When a source has been added but never synced, `source show` still surfaces the lockfile entry (with `Status: pending`) so you can confirm the intended SHA before the first apply.
 
-`cfgd sync`, `cfgd source add`, and `cfgd source update` all record the fetch, so the `Last Fetched` / `Last Commit` values above and the `Config Sources` table in `cfgd status` reflect whichever of the three last touched the source.
+`cfgd sync`, `cfgd source add`, and `cfgd source update` all record the fetch, so the `Last Sync` / `Last Commit` / `Signed` values above and the `Sources` table in `cfgd status` reflect whichever of the three last touched the source. `Last Sync` is rendered as an age (`2h ago`, `18d ago`, `never`); the ISO 8601 instant stays in `-o json` as `lastFetched`. `Signed` is `yes` / `no` for the commit that fetch landed on, and `-` when cfgd could not read the checkout to say.
 
 **Committing the lockfile** to your config repo (alongside `cfgd.yaml`) is recommended: it guarantees that every machine applying the config checks out the identical commits, and `git diff sources.lock` shows exactly what a source update advanced to.
 

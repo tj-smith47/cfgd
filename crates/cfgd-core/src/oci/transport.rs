@@ -200,12 +200,20 @@ pub(super) fn authenticated_request(
 /// addresses) a different digest, so the value a caller pins (e.g. a Kubernetes
 /// `volume.image` reference) must come from the registry whenever it provides one.
 pub(super) fn resolve_pushed_digest(resp: &Response<Body>, sent_bytes: &[u8]) -> String {
+    response_digest(resp).unwrap_or_else(|| sha256_digest(sent_bytes))
+}
+
+/// The digest the registry itself names for a response, when it names one.
+///
+/// The header half of [`resolve_pushed_digest`], for a reader holding a
+/// response whose body it has not read yet: the fallback needs those bytes,
+/// and consuming the body to hash it is the caller's step, not this one's.
+pub(super) fn response_digest(resp: &Response<Body>) -> Option<String> {
     header(resp, "Docker-Content-Digest")
         .or_else(|| header(resp, "docker-content-digest"))
         .map(str::trim)
         .filter(|d| !d.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| sha256_digest(sent_bytes))
 }
 
 /// Upload a blob to the registry via the monolithic upload flow.

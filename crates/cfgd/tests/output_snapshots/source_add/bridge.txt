@@ -1,8 +1,6 @@
 Add source:bridge-src
 ◐ Cloning source:bridge-src
   Cloning into '<STATE_DIR>/sources/bridge-src'...
-✓ Cloning source:bridge-src
-
 Manifest
   Name     bridge-src
   Version  1.0.0
@@ -22,8 +20,6 @@ Policy
 
 ✓ No conflicts with current config
 
-✓ subscribed
+✓ Subscribed
 
-Profile  default
-
-→ Run 'cfgd plan' to preview changes, then 'cfgd apply'
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

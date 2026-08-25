@@ -11,4 +11,4 @@ New integrity  sha256:<INTEGRITY>
 
 ✓ Updated in modules.lock
 
-→ Run 'cfgd plan' to preview changes, then 'cfgd apply'
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

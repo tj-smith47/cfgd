@@ -29,7 +29,7 @@ System
   ✓ State store: accessible
   ✓ Profiles directory: /home/test/.config/cfgd/profiles (2 profiles)
 
-Config Sources
-  ⚠ team-base: not cached (run 'cfgd source update')
+Sources
+  ⚠ team-base: not cached (run `cfgd source update`)
 
 ✓ All checks passed

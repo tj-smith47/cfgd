@@ -161,32 +161,56 @@ pub(crate) fn compose_status_split(
     (line, trailer, tail)
 }
 
-/// The column `f` can be padded to at `depth` without pushing its trailing
-/// content over the sink's edge.
+/// The glyph and the space after it, which open every row a group renders.
+/// Counted rather than measured off a composed line: the decision below is the
+/// GROUP's, taken once, and a per-row measurement is what made it a per-row
+/// decision.
+const GLYPH_PREFIX_WIDTH: usize = 2;
+
+/// The column every row of one group pads to at `depth` — the requested
+/// column, or none at all.
 ///
-/// Alignment is a courtesy; a duration wrapped onto a row of its own, under a
-/// run of padding spaces, is not one — it reads as a bare right-aligned
-/// `(12.1s)` separated from its action by blank space. So the requested
-/// column is capped per line by what the line can hold, and a line with no
-/// room left renders unpadded and wraps under its own marker instead.
-pub(crate) fn affordable_column(
-    theme: &Theme,
+/// Alignment is a property of the SET, not of a line: a row that could not
+/// afford the shared column used to render unpadded beside siblings that
+/// could, so three rows under one owner settled at three different detail
+/// columns and the block read as a broken column rather than as no column.
+/// Judged on the padded subject alone, which is the one quantity every row in
+/// a group shares — a per-row cap read off each line's own detail length is
+/// exactly the measurement that split the group.
+pub(crate) fn group_column(
     wrap_cols: Option<usize>,
     depth: usize,
-    f: &StatusFields<'_>,
     column: usize,
+    trailing: usize,
 ) -> usize {
     let Some(budget) = wrap_budget(wrap_cols, depth) else {
         return column;
     };
-    // Everything on the line that is not the subject — the glyph, the first
-    // line of the detail, the target, the duration — measured off the composed
-    // line rather than re-derived, so no format string here can disagree with
-    // the one that builds it.
-    let (line, _) = compose_status(theme, f);
-    let fixed =
-        console::measure_text_width(&line).saturating_sub(console::measure_text_width(f.subject));
-    column.min(budget.saturating_sub(fixed))
+    if column + trailing <= budget {
+        column
+    } else {
+        0
+    }
+}
+
+/// What a group has to leave beside the padded subject, measured over the
+/// whole set: the widest of its rows' non-subject content — the glyph, the
+/// first line of the detail, the target, the duration.
+///
+/// Measured off each composed line rather than re-derived, so no format string
+/// here can disagree with the one that builds it, and taken as a MAXIMUM
+/// because the answer is the group's: a set whose widest row cannot fit beside
+/// the column is a set with no column.
+pub(crate) fn group_trailing_allowance<'f>(
+    theme: &Theme,
+    rows: impl Iterator<Item = StatusFields<'f>>,
+) -> usize {
+    rows.map(|f| {
+        let (line, _) = compose_status(theme, &f);
+        console::measure_text_width(&line).saturating_sub(console::measure_text_width(f.subject))
+    })
+    .max()
+    .unwrap_or(GLYPH_PREFIX_WIDTH)
 }
 
 /// `f`'s subject padded to the column it renders against, or `None` when this
@@ -198,13 +222,16 @@ pub(crate) fn affordable_column(
 /// padded differently from the line that replaces it shifts sideways at the
 /// moment it settles.
 pub(crate) fn padded_for_column(
-    theme: &Theme,
     wrap_cols: Option<usize>,
     depth: usize,
     f: &StatusFields<'_>,
     column: usize,
 ) -> Option<String> {
-    let width = affordable_column(theme, wrap_cols, depth, f, column);
+    // A live group's rows arrive one at a time, so the only allowance knowable
+    // when its column is set is the glyph every row opens with. Reading this
+    // row's own trailing content instead would hand each row a different
+    // answer, which is the split this function exists to prevent.
+    let width = group_column(wrap_cols, depth, column, GLYPH_PREFIX_WIDTH);
     pad_subject(f.subject, width, f.has_trailing())
 }
 
@@ -259,7 +286,7 @@ impl Emitting<'_> {
                 }
             }
             StatusRoute::Live(width) => {
-                let padded = padded_for_column(self.theme, self.wrap_cols, depth, f, width);
+                let padded = padded_for_column(self.wrap_cols, depth, f, width);
                 self.flush_section_headers();
                 self.drain_buffers();
                 match padded {
@@ -329,18 +356,7 @@ impl Renderer {
         f: &StatusFields<'_>,
         column: usize,
     ) -> Option<String> {
-        padded_for_column(&self.theme, w.wrap_columns(), depth, f, column)
-    }
-
-    /// [`affordable_column`] against this renderer's theme and `w`'s wrap width.
-    pub(crate) fn affordable_column(
-        &self,
-        w: &dyn Writer,
-        depth: usize,
-        f: &StatusFields<'_>,
-        column: usize,
-    ) -> usize {
-        affordable_column(&self.theme, w.wrap_columns(), depth, f, column)
+        padded_for_column(w.wrap_columns(), depth, f, column)
     }
 
     /// Emit a Status line with no group bookkeeping: the live-column route
@@ -424,37 +440,31 @@ mod tests {
     }
 
     #[test]
-    fn the_alignment_column_is_capped_by_what_the_line_can_hold() {
+    fn a_column_the_window_cannot_hold_is_dropped_for_the_whole_group() {
         // The plan-wide column is computed from the widest subject in the
-        // phase, which says nothing about the window. Padded to it, this
-        // line's duration lands past the edge and wraps under a row of
-        // nothing but padding.
-        let (r, sink, _buf) = narrow(40);
-        let f = timed("install ripgrep");
-        let capped = r.affordable_column(&sink, 1, &f, 120);
-
-        assert!(capped < 120, "the request is capped: {capped}");
-        let padded = pad_subject(f.subject, capped, true).unwrap_or_default();
-        let width = console::measure_text_width(&format!("  ✓ {padded} (12.1s)"));
-        assert!(width <= 40, "the padded line still fits: {width}");
+        // phase, which says nothing about the window. Padded to it, every row
+        // in the group would run past the edge — so the group renders with no
+        // column at all rather than with the column some of its rows can
+        // afford and others cannot.
+        let (_r, sink, _buf) = narrow(40);
+        assert_eq!(group_column(sink.wrap_columns(), 1, 120, 2), 0);
+        assert_eq!(
+            pad_subject("install ripgrep", 0, true),
+            None,
+            "so no row in the group is padded"
+        );
     }
 
     #[test]
-    fn a_line_with_no_room_left_is_not_padded_at_all() {
-        // Its own content already fills the window, so every column of
-        // padding is one the duration is pushed out by.
-        let (r, sink, _buf) = narrow(40);
-        let f = timed("install ripgrep and a great many other packages");
-
-        let capped = r.affordable_column(&sink, 1, &f, 120);
-        assert!(
-            capped < console::measure_text_width(f.subject),
-            "the cap lands inside the subject: {capped}"
-        );
+    fn a_column_the_window_holds_is_the_column_every_row_pads_to() {
+        // One decision for the set: the widest row sits at the column and the
+        // narrow one is padded out to it, whatever each row trails.
+        let (_r, sink, _buf) = narrow(40);
+        let column = group_column(sink.wrap_columns(), 1, 20, 2);
+        assert_eq!(column, 20);
         assert_eq!(
-            pad_subject(f.subject, capped, true),
-            None,
-            "so the line renders unpadded and wraps under its own marker"
+            console::measure_text_width(&pad_subject("short", column, true).unwrap_or_default()),
+            20
         );
     }
 
@@ -463,9 +473,8 @@ mod tests {
         // A capture buffer or a redirected stream keeps the physical lines the
         // renderer emitted, so padding can strand nothing there — and a golden
         // recorded on one window replays identically on another.
-        let (r, sink, _buf) = capture();
-        let f = timed("install ripgrep");
-        assert_eq!(r.affordable_column(&sink, 1, &f, 120), 120);
+        let (_r, sink, _buf) = capture();
+        assert_eq!(group_column(sink.wrap_columns(), 1, 120, 2), 120);
     }
 
     #[test]

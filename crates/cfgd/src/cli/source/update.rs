@@ -258,14 +258,15 @@ pub fn run_source_update(
                     };
 
                     if proceed {
-                        state.upsert_config_source(
-                            &source.name,
-                            &source.origin.url,
-                            &source.origin.branch,
-                            cached.last_commit.as_deref(),
-                            cached.manifest.metadata.version.as_deref(),
-                            source.sync.pin_version.as_deref(),
-                        )?;
+                        state.upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+                            name: &source.name,
+                            origin_url: &source.origin.url,
+                            origin_branch: &source.origin.branch,
+                            last_commit: cached.last_commit.as_deref(),
+                            source_version: cached.manifest.metadata.version.as_deref(),
+                            pinned_version: source.sync.pin_version.as_deref(),
+                            last_commit_signed: cached.head_signed,
+                        })?;
 
                         // Keep the sources lockfile in sync with the updated commit SHA.
                         if let Some(ref commit) = cached.last_commit {
@@ -288,7 +289,7 @@ pub fn run_source_update(
                             }
                         }
 
-                        source_sec.status_simple(Role::Ok, "updated");
+                        source_sec.status_simple(Role::Ok, "Updated");
                         entries.push(UpdateEntry {
                             name: source.name.clone(),
                             status: "updated".into(),

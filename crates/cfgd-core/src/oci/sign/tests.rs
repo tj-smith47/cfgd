@@ -918,3 +918,60 @@ mod fake_cosign {
         }
     }
 }
+
+// --- Predicate-type vocabulary ---
+
+#[test]
+fn every_predicate_uri_in_the_table_folds_to_a_short_flag_name() {
+    for (uri, name) in COSIGN_PREDICATE_TYPES {
+        assert_eq!(
+            attestation_type_name(uri),
+            *name,
+            "predicate URI {uri} must fold to the flag name cosign takes"
+        );
+        assert!(
+            !name.contains("://"),
+            "{name} is a URI, not a --type name: the table's right column is the flag vocabulary"
+        );
+    }
+}
+
+#[test]
+fn a_predicate_cosign_has_no_name_for_is_reported_verbatim() {
+    assert_eq!(
+        attestation_type_name("https://example.test/audit/v1"),
+        "https://example.test/audit/v1"
+    );
+}
+
+/// The reader names an attestation by folding its manifest annotation through
+/// [`attestation_type_name`]; a `--type` literal cfgd itself spells that the
+/// fold cannot produce would be a name nothing on a real artifact ever reads
+/// back as. Walks this module's own source, so a new literal is checked
+/// mechanically rather than by whoever remembers this test exists.
+#[test]
+fn every_type_flag_this_module_spells_is_a_name_the_fold_can_produce() {
+    let produced: std::collections::HashSet<String> = COSIGN_PREDICATE_TYPES
+        .iter()
+        .map(|(uri, _)| attestation_type_name(uri))
+        .collect();
+
+    let source = include_str!("mod.rs");
+    let mut checked = 0;
+    for chunk in source.split(".arg(\"--type\")").skip(1) {
+        // A `--type` whose argument is a variable is the caller's to answer for.
+        let Some(rest) = chunk.trim_start().strip_prefix(".arg(\"") else {
+            continue;
+        };
+        let name = rest.split('"').next().unwrap_or_default();
+        assert!(
+            produced.contains(name),
+            "cosign --type {name} is spelled here but no predicate URI folds to it"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 0,
+        "no literal --type argument found: the walk stopped seeing its population"
+    );
+}

@@ -95,7 +95,7 @@ missing from the table.
 | source_add                   | yes               | add-result records                                 |
 | source_create                | yes               | new source metadata                                |
 | source_edit                  | yes               | post-edit validation verdict (path + valid flag)   |
-| source_list                  | yes               | source inventory                                   |
+| source_list                  | yes               | source inventory, with `lastFetched` (ISO 8601, the human table's `Last Sync` age) + `signed` |
 | source_override              | yes               | override records                                   |
 | source_priority              | yes               | priority change records                            |
 | source_remove                | yes               | removal records                                    |

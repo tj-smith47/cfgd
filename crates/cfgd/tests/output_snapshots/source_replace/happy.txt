@@ -1,13 +1,11 @@
 Replace source:replace-old
 
 Remove source:replace-old
-✓ removed
+✓ Removed
 
 Add source:replace-old
 ◐ Cloning source:replace-old
   Cloning into '<STATE_DIR>/sources/replace-old'...
-✓ Cloning source:replace-old
-
 Manifest
   Name     replace-new
   Version  1.0.0
@@ -27,10 +25,8 @@ Policy
 
 ✓ No conflicts with current config
 
-✓ subscribed
+✓ Subscribed
 
-Profile  default
-
-→ Run 'cfgd plan' to preview changes, then 'cfgd apply'
+→ Run `cfgd plan` to preview changes, then `cfgd apply`
 
 ✓ replaced with file://<BARE_NEW>

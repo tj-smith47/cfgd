@@ -21,6 +21,7 @@ use crate::crds::{
 };
 use crate::errors::OperatorError;
 use crate::metrics::{Metrics, ReconcileLabels};
+use cfgd_core::oci::ArtifactFacts;
 
 #[cfg(test)]
 use crate::crds::{
@@ -134,55 +135,59 @@ pub struct ControllerContext {
     pub recorder: Recorder,
     pub metrics: Metrics,
     pub stores: ControllerStores,
-    pub artifact_platforms: ArtifactPlatformReader,
+    pub artifact_facts: ArtifactFactsReader,
 }
 
-/// How a Module's artifact platforms are read.
+/// How a Module's artifact facts — its platforms and its attestations — are read.
 ///
-/// Reading them means fetching the artifact's manifest from its registry, so
-/// this is a value the context carries rather than a call the reconcile makes
+/// Reading them means fetching manifests from the artifact's registry, so this
+/// is a value the context carries rather than a call the reconcile makes
 /// directly: a controller test drives `reconcile_module` end to end, and must
 /// reach no registry to do it. Production installs
-/// [`ArtifactPlatformReader::from_registry`]; a test installs
-/// [`ArtifactPlatformReader::fixed`] and gets the same reconcile with a known
+/// [`ArtifactFactsReader::from_registry`]; a test installs
+/// [`ArtifactFactsReader::fixed`] and gets the same reconcile with a known
 /// answer.
-type PlatformLookup = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
+///
+/// One reader, not two: both facts come off the same artifact in one visit,
+/// and a second seam would let a test pin a module whose platforms and
+/// attestations were read from different artifacts.
+type FactsLookup = Arc<dyn Fn(&str) -> ArtifactFacts + Send + Sync>;
 
 #[derive(Clone)]
-pub struct ArtifactPlatformReader(PlatformLookup);
+pub struct ArtifactFactsReader(FactsLookup);
 
-impl ArtifactPlatformReader {
-    /// The production reader: the platforms the artifact's own manifest names.
+impl ArtifactFactsReader {
+    /// The production reader: what the artifact's own manifests name.
     ///
-    /// A registry that cannot be reached, or an artifact that declares no
-    /// platform, answers an empty list — the `Platforms` column then stays
-    /// blank, which is what an unknown platform set looks like. It is not a
+    /// A registry that cannot be reached, or an artifact that declares
+    /// nothing, answers empty — the `Platforms` column then stays blank,
+    /// which is what an unknown platform set looks like. It is not a
     /// reconcile failure: the module is still admissible, and the next
     /// reconcile re-reads.
     #[must_use]
     pub fn from_registry() -> Self {
-        Self(Arc::new(
-            |reference| match cfgd_core::oci::artifact_platforms(reference) {
-                Ok(platforms) => platforms,
+        Self(Arc::new(|reference| {
+            match cfgd_core::oci::artifact_facts(reference) {
+                Ok(facts) => facts,
                 Err(e) => {
-                    warn!(reference = %reference, error = %e, "cannot read artifact platforms");
-                    Vec::new()
+                    warn!(reference = %reference, error = %e, "cannot read artifact facts");
+                    ArtifactFacts::default()
                 }
-            },
-        ))
+            }
+        }))
     }
 
-    /// A reader that answers `platforms` for every reference.
+    /// A reader that answers `facts` for every reference.
     #[cfg(test)]
     #[must_use]
-    pub fn fixed(platforms: Vec<String>) -> Self {
-        Self(Arc::new(move |_| platforms.clone()))
+    pub fn fixed(facts: ArtifactFacts) -> Self {
+        Self(Arc::new(move |_| facts.clone()))
     }
 
-    /// Read the platforms `reference` declares. Blocking: callers dispatch it
-    /// off the reactor.
+    /// Read what `reference` declares. Blocking: callers dispatch it off the
+    /// reactor.
     #[must_use]
-    pub fn read_platforms(&self, reference: &str) -> Vec<String> {
+    pub fn read_facts(&self, reference: &str) -> ArtifactFacts {
         (self.0)(reference)
     }
 }
@@ -455,7 +460,7 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         recorder,
         metrics,
         stores,
-        artifact_platforms: ArtifactPlatformReader::from_registry(),
+        artifact_facts: ArtifactFactsReader::from_registry(),
     });
 
     let mc_ctx = Arc::clone(&ctx);

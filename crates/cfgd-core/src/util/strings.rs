@@ -489,8 +489,37 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// A count and its noun, agreeing: `1 action`, `22 actions`, `0 actions`.
+/// A stored lowercase word raised to the sentence case a human surface renders
+/// it in (`recommended` → `Recommended`, `accepted` → `Accepted`).
 ///
+/// The ONE such lift, because the alternative is `to_uppercase()`: `cfgd decide
+/// accept --all` shouted `✓ ACCEPTED 1 item` at a reader nothing else in the
+/// product shouts at. The stored literal never changes — this is display only.
+pub fn sentence_case(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// The ONE rendering of a yes/no fact in a human column, and the reason `-`
+/// means exactly one thing everywhere: NOT KNOWN.
+///
+/// `Some(true)` → `yes`, `Some(false)` → `no`, `None` → `-`. Columns that
+/// spelled a false as `-` (a profile's `Active`, a module's) made an answered
+/// question indistinguishable from an unanswerable one, which is precisely the
+/// distinction `source list`'s `Signed` column exists to draw: a source whose
+/// HEAD commit is unsigned and a source whose checkout cfgd could not read are
+/// different facts with different fixes.
+pub fn yes_no(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "-",
+    }
+}
+
 /// The ONE plural rendering in the workspace, because the alternative shipped
 /// for a year: `22 actions succeeded` is a program telling the reader it did
 /// not bother to look at a number it is printing IN THE SAME SENTENCE. Every
@@ -575,7 +604,7 @@ pub fn xml_escape(s: &str) -> String {
 ///   resolving a name/id that matches nothing)
 ///
 /// `Display` renders the bare word so a caller composes it into a longer
-/// sentence (`format!("{} — run 'cfgd source update'", Absence::NotFound)`);
+/// sentence (``format!("{} — run `cfgd source update`", Absence::NotFound)``);
 /// reach for [`Absence::as_str`] where a `&'static str` is required directly
 /// (a `.qualifier(...)` or `.detail(...)` call that takes `impl Into<String>`
 /// accepts either).

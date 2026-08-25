@@ -14,6 +14,7 @@ use super::renderer::Table;
 pub(crate) enum HeadingKind {
     Plain(String),
     Title(TitleLabel),
+    OwnerPrefixed { prefix: String, owner: OwnerLabel },
 }
 
 impl HeadingKind {
@@ -24,6 +25,7 @@ impl HeadingKind {
         match self {
             HeadingKind::Plain(text) => text.clone(),
             HeadingKind::Title(label) => label.plain(),
+            HeadingKind::OwnerPrefixed { prefix, owner } => format!("{prefix} {}", owner.plain()),
         }
     }
 }
@@ -145,6 +147,19 @@ impl Doc {
         self.heading = Some(HeadingKind::Title(TitleLabel::typed(
             label, value, type_span,
         )));
+        self
+    }
+
+    /// A `<Verb> <kind>:<name>` heading (`Show source:team`) — the buffered
+    /// counterpart of [`super::Printer::heading_owner_prefixed`], and the only
+    /// heading slot an owner token may occupy. A command whose whole report is
+    /// about one owned thing names it this way rather than inventing a second
+    /// noun for the owner's kind in a `Label: value` title.
+    pub fn heading_owner_prefixed(mut self, prefix: impl Into<String>, owner: OwnerLabel) -> Self {
+        self.heading = Some(HeadingKind::OwnerPrefixed {
+            prefix: prefix.into(),
+            owner,
+        });
         self
     }
 
@@ -633,6 +648,18 @@ mod tests {
         let d = Doc::new().heading_title("Status", "dev-tools");
         let v = d.to_json_value();
         assert_eq!(v["heading"], "Status: dev-tools");
+    }
+
+    /// The owner-prefixed heading serializes as the same `prefix owner` plain
+    /// string `Printer::heading_owner_prefixed` writes uncoloured — a `-o json`
+    /// reader sees one `heading` field whichever of the three builders a
+    /// command reached for, and the owner token keeps the `kind:name` spelling
+    /// every other surface matches on.
+    #[test]
+    fn heading_owner_prefixed_serializes_as_the_plain_prefixed_owner_token() {
+        let d = Doc::new().heading_owner_prefixed("Show", OwnerLabel::new("source", "team"));
+        let v = d.to_json_value();
+        assert_eq!(v["heading"], "Show source:team");
     }
 
     #[test]

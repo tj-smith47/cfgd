@@ -19,6 +19,10 @@ pub(crate) fn render_doc(renderer: &Renderer, sink: &dyn Writer, doc: &Doc) {
             let styled = label.styled(&renderer.theme);
             renderer.render_heading_styled(sink, &styled);
         }
+        Some(HeadingKind::OwnerPrefixed { prefix, owner }) => {
+            let styled = owner.styled_with_prefix(&renderer.theme, prefix);
+            renderer.render_heading_styled(sink, &styled);
+        }
         None => {}
     }
     for child in &doc.children {

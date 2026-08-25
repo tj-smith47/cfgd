@@ -3,18 +3,49 @@ use rusqlite::params;
 use super::*;
 
 /// Every column an `ALTER TABLE … ADD COLUMN` migration introduces, keyed by
-/// the index of the migration that adds it.
+/// that migration's index in [`MIGRATIONS`].
 ///
 /// SQLite has no idempotent `ADD COLUMN`: replaying one raises
 /// `duplicate column name`, which aborts and rolls back the whole migration
 /// batch. So a fixture reproducing an older database has to reproduce its
 /// SCHEMA too, not just its `schema_version` row.
+///
+/// The index is the runner's own key — it replays every migration whose index
+/// is at or above the recorded version — so a column is dropped under exactly
+/// the condition its migration will run again.
 const ADDED_COLUMNS: &[(usize, &str, &str)] = &[
-    (3, "apply_journal", "script_output"),
+    (2, "apply_journal", "script_output"),
+    (4, "managed_resources", "uninstall_cmd"),
+    (6, "drift_events", "resolved_at"),
+    (7, "file_backups", "existed"),
     (14, "apply_journal", "completion_index"),
     (16, "backup_runs", "kind"),
     (17, "pending_decisions", "content_hash"),
+    (18, "config_sources", "last_commit_signed"),
 ];
+
+/// Every `ADD COLUMN` migration must be listed in [`ADDED_COLUMNS`].
+///
+/// The list is what lets a fixture present an older database, and a migration
+/// missing from it does not fail its own test — it fails every OTHER rewind
+/// test, replaying its `ADD COLUMN` onto a column that is already there. The
+/// walk reads the real migration array, so the next one added is checked
+/// without anyone remembering this list exists.
+#[test]
+fn every_add_column_migration_is_registered_for_rewinding() {
+    let unregistered: Vec<usize> = MIGRATIONS
+        .iter()
+        .enumerate()
+        .filter(|(_, sql)| sql.to_uppercase().contains("ADD COLUMN"))
+        .filter(|(i, _)| !ADDED_COLUMNS.iter().any(|(at, _, _)| at == i))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(
+        unregistered.is_empty(),
+        "migrations {unregistered:?} add a column that no ADDED_COLUMNS row un-adds, \
+         so every rewind fixture will replay it onto a column that already exists"
+    );
+}
 
 /// Present `store` as the database it was at `version`, so reopening replays
 /// every migration from `version` on exactly as a real upgrade would.
@@ -675,14 +706,15 @@ fn open_in_dir_readonly_dir_yields_directory_not_writable_naming_path() {
 fn upsert_and_list_config_sources() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_config_source(
-            "acme",
-            "git@github.com:acme/config.git",
-            "master",
-            Some("abc123"),
-            Some("2.1.0"),
-            Some("~2"),
-        )
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "git@github.com:acme/config.git",
+            origin_branch: "master",
+            last_commit: Some("abc123"),
+            source_version: Some("2.1.0"),
+            pinned_version: Some("~2"),
+            last_commit_signed: None,
+        })
         .unwrap();
 
     let sources = store.config_sources().unwrap();
@@ -698,7 +730,15 @@ fn upsert_and_list_config_sources() {
 fn config_source_by_name() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_config_source("acme", "url", "main", None, None, None)
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "url",
+            origin_branch: "main",
+            last_commit: None,
+            source_version: None,
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
 
     let found = store.config_source_by_name("acme").unwrap();
@@ -713,7 +753,15 @@ fn config_source_by_name() {
 fn remove_config_source() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_config_source("acme", "url", "main", None, None, None)
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "url",
+            origin_branch: "main",
+            last_commit: None,
+            source_version: None,
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
 
     store.remove_config_source("acme").unwrap();
@@ -725,7 +773,15 @@ fn remove_config_source() {
 fn update_config_source_status() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_config_source("acme", "url", "main", None, None, None)
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "url",
+            origin_branch: "main",
+            last_commit: None,
+            source_version: None,
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
 
     store
@@ -739,7 +795,15 @@ fn update_config_source_status() {
 fn a_later_successful_upsert_clears_a_recorded_fetch_failure() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_config_source("acme", "url", "main", None, None, None)
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "url",
+            origin_branch: "main",
+            last_commit: None,
+            source_version: None,
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
     store
         .update_config_source_status("acme", crate::state::SOURCE_STATUS_ERROR)
@@ -748,7 +812,15 @@ fn a_later_successful_upsert_clears_a_recorded_fetch_failure() {
     // Only a successful fetch reaches the upsert, so the row must stop
     // claiming the source is broken.
     store
-        .upsert_config_source("acme", "url", "main", Some("abc123"), None, None)
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "url",
+            origin_branch: "main",
+            last_commit: Some("abc123"),
+            source_version: None,
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
 
     let source = store.config_source_by_name("acme").unwrap().unwrap();
@@ -817,17 +889,26 @@ fn managed_resources_by_source() {
 fn upsert_config_source_updates_on_conflict() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_config_source("acme", "url1", "main", Some("commit1"), Some("1.0.0"), None)
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "url1",
+            origin_branch: "main",
+            last_commit: Some("commit1"),
+            source_version: Some("1.0.0"),
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
     store
-        .upsert_config_source(
-            "acme",
-            "url2",
-            "dev",
-            Some("commit2"),
-            Some("2.0.0"),
-            Some("~2"),
-        )
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "url2",
+            origin_branch: "dev",
+            last_commit: Some("commit2"),
+            source_version: Some("2.0.0"),
+            pinned_version: Some("~2"),
+            last_commit_signed: None,
+        })
         .unwrap();
 
     let sources = store.config_sources().unwrap();
@@ -1966,14 +2047,15 @@ fn record_source_apply_links_to_source() {
 
     // Create a source first
     store
-        .upsert_config_source(
-            "acme",
-            "https://github.com/acme/config.git",
-            "main",
-            None,
-            None,
-            None,
-        )
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "https://github.com/acme/config.git",
+            origin_branch: "main",
+            last_commit: None,
+            source_version: None,
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
 
     // Record an apply
@@ -2027,14 +2109,15 @@ fn remove_config_source_after_apply_cascades_source_applies() {
     // state inconsistent.
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_config_source(
-            "acme",
-            "https://example.invalid/acme",
-            "master",
-            Some("abc123"),
-            Some("1.0.0"),
-            None,
-        )
+        .upsert_config_source(&ConfigSourceUpsert {
+            name: "acme",
+            origin_url: "https://example.invalid/acme",
+            origin_branch: "master",
+            last_commit: Some("abc123"),
+            source_version: Some("1.0.0"),
+            pinned_version: None,
+            last_commit_signed: None,
+        })
         .unwrap();
     let apply_id = store
         .record_apply("default", "plan-hash-1", ApplyStatus::Success, None)

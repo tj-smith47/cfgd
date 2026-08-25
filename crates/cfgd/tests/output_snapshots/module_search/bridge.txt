@@ -2,7 +2,6 @@ registry:myreg
   ✓ Searched myreg
 
 Search Modules: alpha
-
 Module       Description   Latest
 ─────────────────────────────────
 myreg/alpha  Alpha module  v1.0.0

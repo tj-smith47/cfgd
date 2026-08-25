@@ -4,6 +4,24 @@ use super::StateStore;
 use super::types::{ConfigSourceRecord, SourceConfigHash};
 use crate::errors::{Result, StateError};
 
+/// What one successful fetch writes to a source's `config_sources` row.
+///
+/// A struct rather than a parameter list because the row is all-optional past
+/// its identity: a caller that learned nothing new about the checkout says so
+/// by leaving the field at its default, and cannot silently transpose two
+/// same-typed `Option<&str>` columns on the way in.
+#[derive(Debug, Default, Clone)]
+pub struct ConfigSourceUpsert<'a> {
+    pub name: &'a str,
+    pub origin_url: &'a str,
+    pub origin_branch: &'a str,
+    pub last_commit: Option<&'a str>,
+    pub source_version: Option<&'a str>,
+    pub pinned_version: Option<&'a str>,
+    /// Whether HEAD carried a signature cfgd accepts. `None` is "cannot say".
+    pub last_commit_signed: Option<bool>,
+}
+
 impl StateStore {
     /// Upsert a config source record.
     ///
@@ -14,20 +32,21 @@ impl StateStore {
     /// column back, and the schema default only applies on INSERT.
     ///
     /// [`SOURCE_STATUS_ACTIVE`]: super::types::SOURCE_STATUS_ACTIVE
-    pub fn upsert_config_source(
-        &self,
-        name: &str,
-        origin_url: &str,
-        origin_branch: &str,
-        last_commit: Option<&str>,
-        source_version: Option<&str>,
-        pinned_version: Option<&str>,
-    ) -> Result<i64> {
+    pub fn upsert_config_source(&self, source: &ConfigSourceUpsert<'_>) -> Result<i64> {
+        let ConfigSourceUpsert {
+            name,
+            origin_url,
+            origin_branch,
+            last_commit,
+            source_version,
+            pinned_version,
+            last_commit_signed,
+        } = *source;
         let timestamp = crate::utc_now_iso8601();
         self.conn
             .execute(
-                "INSERT INTO config_sources (name, origin_url, origin_branch, last_fetched, last_commit, source_version, pinned_version)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                "INSERT INTO config_sources (name, origin_url, origin_branch, last_fetched, last_commit, source_version, pinned_version, last_commit_signed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT(name) DO UPDATE SET
                     origin_url = excluded.origin_url,
                     origin_branch = excluded.origin_branch,
@@ -35,8 +54,9 @@ impl StateStore {
                     last_commit = excluded.last_commit,
                     source_version = excluded.source_version,
                     pinned_version = excluded.pinned_version,
+                    last_commit_signed = excluded.last_commit_signed,
                     status = 'active'",
-                params![name, origin_url, origin_branch, timestamp, last_commit, source_version, pinned_version],
+                params![name, origin_url, origin_branch, timestamp, last_commit, source_version, pinned_version, last_commit_signed],
             )
             ?;
         Ok(self.conn.last_insert_rowid())
@@ -47,7 +67,7 @@ impl StateStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, name, origin_url, origin_branch, last_fetched, last_commit, source_version, pinned_version, status
+                "SELECT id, name, origin_url, origin_branch, last_fetched, last_commit, source_version, pinned_version, status, last_commit_signed
                  FROM config_sources ORDER BY name",
             )
             ?;
@@ -64,6 +84,7 @@ impl StateStore {
                     source_version: row.get(6)?,
                     pinned_version: row.get(7)?,
                     status: row.get(8)?,
+                    last_commit_signed: row.get(9)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -74,7 +95,7 @@ impl StateStore {
     /// Get a config source by name.
     pub fn config_source_by_name(&self, name: &str) -> Result<Option<ConfigSourceRecord>> {
         let result = self.conn.query_row(
-            "SELECT id, name, origin_url, origin_branch, last_fetched, last_commit, source_version, pinned_version, status
+            "SELECT id, name, origin_url, origin_branch, last_fetched, last_commit, source_version, pinned_version, status, last_commit_signed
              FROM config_sources WHERE name = ?1",
             params![name],
             |row| {
@@ -88,6 +109,7 @@ impl StateStore {
                     source_version: row.get(6)?,
                     pinned_version: row.get(7)?,
                     status: row.get(8)?,
+                    last_commit_signed: row.get(9)?,
                 })
             },
         );

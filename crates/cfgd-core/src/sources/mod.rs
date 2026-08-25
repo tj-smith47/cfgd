@@ -75,6 +75,11 @@ pub struct CachedSource {
     /// Resolved tag name when the source was loaded with a `pinVersion` semver
     /// range or exact tag. `None` for HEAD-tracking sources and commit-SHA pins.
     pub resolved_ref: Option<String>,
+    /// Whether the checked-out HEAD carries a signature cfgd would accept, as
+    /// answered by [`head_signature_accepted`] at load time. Recorded whether
+    /// or not the source DEMANDS signed commits: a subscriber deciding whether
+    /// to start demanding them needs to know what the source already does.
+    pub head_signed: Option<bool>,
 }
 
 /// Manager for multiple config sources — handles fetching, caching, version checking.
@@ -333,7 +338,7 @@ impl SourceManager {
             self.skip_advisory(
                 printer,
                 format!(
-                    "Source '{}' has no local cache yet — run 'cfgd sync' to fetch it; using local state only",
+                    "Source '{}' has no local cache yet — run `cfgd sync` to fetch it; using local state only",
                     spec.name
                 ),
             );
@@ -353,7 +358,7 @@ impl SourceManager {
             self.skip_advisory(
                 printer,
                 format!(
-                    "Source '{}': cached checkout was cloned from a different origin, run 'cfgd sync' to re-fetch it; skipped without verifying its signature, using local state only",
+                    "Source '{}': cached checkout was cloned from a different origin, run `cfgd sync` to re-fetch it; skipped without verifying its signature, using local state only",
                     spec.name
                 ),
             );
@@ -372,6 +377,7 @@ impl SourceManager {
         )?;
 
         let last_commit = Self::head_commit(&source_dir);
+        let head_signed = head_signature_accepted(&spec.name, &source_dir);
 
         let cached = CachedSource {
             name: spec.name.clone(),
@@ -382,6 +388,7 @@ impl SourceManager {
             last_commit,
             last_fetched: None,
             resolved_ref: None,
+            head_signed,
         };
 
         self.sources.insert(spec.name.clone(), cached);
@@ -574,6 +581,7 @@ impl SourceManager {
         )?;
 
         let last_commit = Self::head_commit(&source_dir);
+        let head_signed = head_signature_accepted(&spec.name, &source_dir);
 
         let resolved_ref = pinned_ref.as_ref().and_then(|r| match r {
             ResolvedRef::Tag { tag, .. } => Some(tag.clone()),
@@ -589,6 +597,7 @@ impl SourceManager {
             last_commit,
             last_fetched: Some(crate::utc_now_iso8601()),
             resolved_ref,
+            head_signed,
         };
 
         self.sources.insert(spec.name.clone(), cached);
@@ -611,6 +620,7 @@ impl SourceManager {
         self.verify_commit_signature(spec, source_dir, &manifest.spec.policy.constraints, printer)?;
 
         let last_commit = Self::head_commit(source_dir);
+        let head_signed = head_signature_accepted(&spec.name, source_dir);
 
         let cached = CachedSource {
             name: spec.name.clone(),
@@ -621,6 +631,7 @@ impl SourceManager {
             last_commit,
             last_fetched: None,
             resolved_ref: None,
+            head_signed,
         };
 
         self.sources.insert(spec.name.clone(), cached);
@@ -761,8 +772,12 @@ impl SourceManager {
             &source_dir.display().to_string(),
         ]);
 
+        // Silent on success, like the fetch above and for the same reason: the
+        // caller's own line already names the source, so a settled clone row
+        // prints the owner twice on two consecutive lines. A failure falls
+        // through to the libgit2 arm below, which settles its own.
         let label = format!("Cloning source:{}", spec.name);
-        let cli_result = printer.run(&mut cmd, &label);
+        let cli_result = printer.run_silent(&mut cmd, &label);
         if matches!(&cli_result, Ok(output) if output.status.success()) {
             // Restrict cloned directory to owner-only access
             let _ = crate::set_file_permissions(source_dir, 0o700);
@@ -889,8 +904,9 @@ impl SourceManager {
         ]);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        // Silent on success: the failure arm below carries its own error.
         let label = format!("Cloning source:{}", spec.name);
-        let cli_result = printer.run(&mut cmd, &label);
+        let cli_result = printer.run_silent(&mut cmd, &label);
         if !matches!(&cli_result, Ok(output) if output.status.success()) {
             return Err(SourceError::FetchFailed {
                 name: spec.name.clone(),
@@ -1490,13 +1506,36 @@ pub fn detect_source_manifest(dir: &Path) -> Result<Option<ConfigSourceDocument>
 /// signature is valid (G) or valid with unknown trust (U). Returns an error for
 /// unsigned, bad, expired, revoked, or unverifiable signatures.
 pub fn verify_head_signature(name: &str, repo_dir: &Path) -> Result<()> {
-    if !crate::command_available("git") {
-        return Err(SourceError::SignatureVerificationFailed {
+    let status = head_signature_code(repo_dir).map_err(|message| {
+        SourceError::SignatureVerificationFailed {
             name: name.to_string(),
-            message: "git CLI is required for signature verification but is not available on PATH"
-                .into(),
+            message,
         }
-        .into());
+    })?;
+    classify_signature_status(name, &status)
+}
+
+/// Whether HEAD at `repo_dir` carries a signature cfgd would ACCEPT — the
+/// display half of [`verify_head_signature`], reading the same `%G?` code
+/// through the same classifier, so `source list`'s `Signed` column can never
+/// disagree with what verification would decide about the same checkout.
+///
+/// `None` is "cannot say" (no git on PATH, not a repository, git refused) and
+/// renders `-`, never `no`: a checkout cfgd could not read is a different fact
+/// from a commit that carries no signature.
+pub fn head_signature_accepted(name: &str, repo_dir: &Path) -> Option<bool> {
+    let code = head_signature_code(repo_dir).ok()?;
+    Some(classify_signature_status(name, &code).is_ok())
+}
+
+/// The raw `git log -1 --format=%G?` code for HEAD at `repo_dir`, or the reason
+/// it could not be read. The ONE place that shells out for it, so the enforcing
+/// and the reporting reader run the same command with the same timeout.
+fn head_signature_code(repo_dir: &Path) -> std::result::Result<String, String> {
+    if !crate::command_available("git") {
+        return Err(
+            "git CLI is required for signature verification but is not available on PATH".into(),
+        );
     }
 
     let output = crate::command_output_with_timeout(
@@ -1509,25 +1548,17 @@ pub fn verify_head_signature(name: &str, repo_dir: &Path) -> Result<()> {
         ]),
         crate::COMMAND_TIMEOUT,
     )
-    .map_err(|e| SourceError::SignatureVerificationFailed {
-        name: name.to_string(),
-        message: format!("failed to run git: {}", e),
-    })?;
+    .map_err(|e| format!("failed to run git: {}", e))?;
 
     if !output.status.success() {
-        return Err(SourceError::SignatureVerificationFailed {
-            name: name.to_string(),
-            message: format!(
-                "git log failed ({}): {}",
-                crate::exit_status_reason(&output.status),
-                crate::stderr_lossy_trimmed(&output)
-            ),
-        }
-        .into());
+        return Err(format!(
+            "git log failed ({}): {}",
+            crate::exit_status_reason(&output.status),
+            crate::stderr_lossy_trimmed(&output)
+        ));
     }
 
-    let status = crate::stdout_lossy_trimmed(&output);
-    classify_signature_status(name, &status)
+    Ok(crate::stdout_lossy_trimmed(&output))
 }
 
 /// Map a `git log --format=%G?` status code to a `Result`.
@@ -1873,8 +1904,10 @@ pub fn git_clone_with_fallback(
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
+    // Silent on success: the libgit2 arm below settles a failure, and the
+    // caller names the repository it asked for.
     let label = format!("Cloning {}", url);
-    let cli_result = printer.run(&mut cmd, &label);
+    let cli_result = printer.run_silent(&mut cmd, &label);
     if matches!(&cli_result, Ok(output) if output.status.success()) {
         return Ok(());
     }

@@ -56,20 +56,21 @@ pub use packages::stale_tracked_packages;
 pub use patch::{PatchBinding, PatchContext, PatchOutcome, evaluate_patch, patch_failure_detail};
 pub use pending::{
     ActualPackages, AutoAccepted, DECISION_ACTION_INSTALL, DecisionContents, DecisionExclusions,
-    DecisionMint, DecisionScope, DecisionTargets, DeliveredItems, SourcePolicyReview,
-    Subscriptions, TIER_LOCKED, TIER_OPTIONAL, TIER_RECOMMENDED, UndecidableBatch,
-    WithheldDecisions, configured_auto_apply, decision_resource_content, decision_row_annotation,
-    decisions_by_source, declared_decision_fingerprints, declared_decision_paths, hash_resources,
-    local_profile, mint_decisions, owns_decision_store, review_source_policies,
-    review_source_policy, source_delivered_layers, source_delivered_profile, title_cased_tier,
-    undecidable_source_batches, withhold_from_plan,
+    DecisionMint, DecisionScope, DecisionTargets, DeliveredItems, MSG_ANSWER_DECISIONS,
+    MSG_INCLUDE_DECLINED_DECISIONS, SourcePolicyReview, Subscriptions, TIER_LOCKED, TIER_OPTIONAL,
+    TIER_RECOMMENDED, UndecidableBatch, WithheldDecisions, configured_auto_apply,
+    decision_resource_content, decision_row_annotation, decisions_by_source,
+    declared_decision_fingerprints, declared_decision_paths, hash_resources, local_profile,
+    merged_entry_owners, mint_decisions, owns_decision_store, pending_decisions_title,
+    review_source_policies, review_source_policy, source_delivered_layers,
+    source_delivered_profile, title_cased_tier, undecidable_source_batches, withhold_from_plan,
 };
 pub use restore::{RestoreOutcome, restore_file_from_backup};
 pub use run::{
     ApplyRun, BACKUPS_PHASE_LABEL, ComposedSource, Confirm, HOOKS_PHASE_LABEL, MSG_NOTHING_TO_DO,
     PhaseCoverage, PseudoPhase, RunContext, RunDisposition, RunExecutor, RunTally, RunTitle,
-    ScopedGroup, ScopedPhase, align_width, align_width_of, in_scope_tree, pseudo_phase,
-    render_apply_result, render_plan_tree, render_run_rollup,
+    ScopedGroup, ScopedPhase, align_width, align_width_of, in_scope_tree, nothing_to_do_verdict,
+    pseudo_phase, render_apply_result, render_plan_tree, render_run_rollup,
 };
 pub use sidecar::{CFGD_BACKUP_SUFFIX, SidecarOutcome, backup_file, cfgd_backup_path};
 pub use types::{

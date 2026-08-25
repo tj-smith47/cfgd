@@ -1,2 +1,2 @@
 Remove source:team-config
-✓ removed
+✓ Removed

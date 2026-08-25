@@ -500,12 +500,12 @@ conflict instead stays pending with the conflict annotated in the row's
 and the `id: 0` shape alike; a manager whose listing reports no version reads
 `installed (version unknown), source wants ^14`.
 
-In the human render, an unrecorded item keeps the usual ``run `cfgd decide
-accept/reject` `` instruction only where that command could actually record it.
-On a config that cannot mint the row (a foreign `--config` without
-`--state-dir`) the suffix says so instead (*not yet recorded; decide from the
-machine's own config, or with `--state-dir`*); a recorded row resolves without
-a mint, so its instruction holds on every config.
+In the human render, an unrecorded item keeps the usual ``Run `cfgd decide accept
+<resource>` or `cfgd decide reject <resource>` to answer`` instruction only where
+that command could actually record it. On a config that cannot mint the row (a
+foreign `--config` without `--state-dir`) the hint says so instead (*Not yet
+recorded — answer from the machine's own config, or pass --state-dir*); a
+recorded row resolves without a mint, so its instruction holds on every config.
 
 Only a source you are still subscribed to can withhold anything: a decision
 whose source has been removed from `spec.sources` is inert, and a real `cfgd
@@ -1568,6 +1568,22 @@ reported as the local path it is. To try a source out before publishing it, see
 
 List subscribed sources.
 
+```
+Sources
+Name       Source                                   Priority  Status  Last Sync  Signed
+───────────────────────────────────────────────────────────────────────────────────────
+acme-corp  https://github.com/acme-corp/dev-config  500       Active  2h ago     yes
+```
+
+`Last Sync` is the age of the last successful fetch (`never` when the source has
+not been fetched yet); `Signed` says whether that fetched commit carried a
+verified signature (`-` when nothing has been recorded for the source yet). Both
+read from recorded state rather than from `cfgd.yaml`, which is why they are on
+the default table: they are the two columns that change between one listing and
+the next. `-o json` / `-o yaml` keep the exact ISO 8601 instant in `lastFetched`.
+`--wide` adds a `Version` column carrying the source's self-reported
+`metadata.version`.
+
 ### `cfgd source show <name>`
 
 Show source details, provided profiles, policy breakdown, conflicts, and the
@@ -1729,6 +1745,11 @@ Bare `cfgd decide` lists the decisions still awaiting you. Only rows whose sourc
 still in `spec.sources` are listed: a decision outliving its subscription can no longer
 withhold anything, so there is nothing left to accept or reject. `cfgd status` reports
 the same filtered set.
+
+A listed row whose entry a higher-priority layer already owns is annotated
+`(outranked by <owner>)` — accepting it records your answer, and the apply that
+follows writes nothing. See
+[Items a Higher Layer Already Wins](sources.md#items-a-higher-layer-already-wins).
 
 Answering an item **records only that item**: an item `cfgd plan` classified but nothing
 has recorded yet is minted and resolved in the same step, and no source hash is stamped,

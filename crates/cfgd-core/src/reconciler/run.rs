@@ -31,6 +31,26 @@ pub const HOOKS_PHASE_LABEL: &str = "Drift Hooks";
 /// different outcomes to anyone comparing two commands' transcripts.
 pub const MSG_NOTHING_TO_DO: &str = "Nothing to do — everything is up to date";
 
+/// The verdict for a run that planned no actions, and the role it carries.
+///
+/// A withheld decision is work the machine knows about, has not done, and is
+/// waiting on an answer for — so "everything is up to date" is a false report
+/// while one is outstanding, printed directly under the block that just listed
+/// it. Every surface that closes on "nothing to do" answers from here, so no
+/// two of them can disagree about what a pending decision means.
+pub fn nothing_to_do_verdict(pending_decisions: usize) -> (Role, String) {
+    if pending_decisions == 0 {
+        return (Role::Ok, MSG_NOTHING_TO_DO.to_string());
+    }
+    (
+        Role::Pending,
+        format!(
+            "Nothing to apply — {} pending",
+            pluralize(pending_decisions, "decision")
+        ),
+    )
+}
+
 /// Heading for `spec.backups[]` work. Also not a [`PhaseName`]: backups are
 /// declared work with their own hooks and record, but nothing plans them into
 /// a [`Plan`] and nothing journals them into `apply_journal`.
@@ -524,7 +544,7 @@ impl<'a> ApplyRun<'a> {
             let hint = if unrecorded && !self.decide_answerable {
                 "Not yet recorded — answer from the machine's own config, or pass --state-dir"
             } else {
-                "Run `cfgd decide accept/reject` to answer"
+                super::MSG_ANSWER_DECISIONS
             };
             block(
                 "Pending Decisions (not included in this plan)",
@@ -538,7 +558,7 @@ impl<'a> ApplyRun<'a> {
                 "Declined Decisions (not included in this plan)",
                 &withheld.rejected,
                 Role::Skipped,
-                "Run `cfgd decide accept` to include",
+                super::MSG_INCLUDE_DECLINED_DECISIONS,
             );
         }
     }

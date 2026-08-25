@@ -653,7 +653,7 @@ Phase: Packages
 `cfgd source show <name>` lists the modules a source offers:
 
 ```
-Source: team-config
+Show source:team-config
   URL                 https://github.com/team/config
   ...
 

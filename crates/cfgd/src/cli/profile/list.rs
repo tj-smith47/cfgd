@@ -17,7 +17,7 @@ pub fn build_profile_list_doc(entries: &[super::ProfileListEntry], wide: bool) -
         for e in entries {
             t = t.row([
                 e.name.clone(),
-                if e.active { "yes" } else { "-" }.to_string(),
+                cfgd_core::yes_no(Some(e.active)).to_string(),
                 e.inherits.clone().unwrap_or_else(|| "-".into()),
                 e.module_count.to_string(),
             ]);

@@ -11,7 +11,7 @@ Reach for the composer matching the call site's shape; never hand-build a `forma
 
 - `heading(text)` — top-level title.
 - `heading_title(&TitleLabel)` — a `Label: value` title, styled through `TitleLabel`'s three slots. `Doc::heading_title(label, value)` is the buffered entry point; `Doc::heading_title_typed(label, value, type_span)` lifts a span inside the value into `theme.type_hint`. A heading with no value part stays a plain `heading`.
-- `heading_owner_prefixed(prefix, &OwnerLabel)` — a `<Verb> <owner>` heading (`Add source:acme`), and the ONLY heading slot an owner token may occupy. No unprefixed counterpart exists: an owner names WHOSE the rows below it are, which is a section's job.
+- `heading_owner_prefixed(prefix, &OwnerLabel)` — a `<Verb> <owner>` heading (`Add source:acme`), and the ONLY heading slot an owner token may occupy. `Doc::heading_owner_prefixed(prefix, owner)` is the buffered entry point, for a command whose whole render is a `Doc`. No unprefixed counterpart exists: an owner names WHOSE the rows below it are, which is a section's job.
 - `kv(key, value)` / `kv_block(pairs)` — a key/value fact and a block of them.
 - `SectionGuard::kv_rows(rows)` / `Doc::kv_rows(rows)` / `SectionBuilder::kv_rows(rows)` — `kv_block` over hand-built `KvPair`s, and how a row reaches the three renderer-owned slots: `annotated(key, value, note)` (a muted parenthesised note about the value), `role_valued(key, value, role)` (the VALUE tinted by what it says, through the same `role_glyph` mapping every role-styled surface reads) and `nested(key, value)` (indented to say it belongs to the row above). **A caller never paints or indents one itself** — the fold would eat the coat, and a hand-padded key misaligns the block. All three are `#[serde(skip)]`, display-only, and why `Printer::muted` no longer exists.
 - `command_list(pairs)` — a "command — description" list, `kv_block`'s counterpart for a left column that NAMES a thing rather than carrying data. No `KEY_WIDTH_CAP`, the canonical `" — "` glue, and a long description hangs to the DESCRIPTION column. `CommandPair::typed(key, type_span, value)` paints a type span `theme.type_hint`. `Doc` / `SectionBuilder` / `SectionGuard` counterparts exist.
@@ -53,6 +53,17 @@ Push Module                           Push Module
 The rule: **the command's title IS its section**, opened with `printer.section("<Verb> <Noun>")` plus `let _inherit = printer.depth_inheritance();`, and the header facts, the result rows and every owner sub-section go inside it. A second section under that title may not respell any word the title spent — `Push Module` → `Push` is banned, `Sync` → `Sources` is fine, because a sub-section names a DIFFERENT subject, never the same one again.
 
 `no_result_section_respells_a_word_its_command_title_already_spent` (`crates/cfgd/src/cli/tests.rs`) walks every production `.rs` under `crates/cfgd/src/cli/`, pairs each file's `printer.heading` / `printer.section` literals, and fails on the overlap.
+
+## Wording rules every closing line and hint obeys
+
+Four conventions, each with a walk-the-population pin that fails on the next member that breaks it. All four live in `crates/cfgd/src/cli/tests.rs` unless noted.
+
+| Rule | Shape | Pin |
+|---|---|---|
+| A result line is **sentence case, past-tense verb first, count after** | `✓ Accepted 1 item`, `✓ Subscribed`, `✓ Installed daemon service` — never `Daemon service installed`, never Title Case | `every_result_line_is_sentence_case` |
+| A message naming a command **quotes it in backticks** | ``Run `cfgd decide accept <resource>` to answer`` — never `'cfgd …'`; covers hints, errors and clap `///` help, in both crates | `every_command_a_message_names_is_quoted_in_backticks` |
+| The **up-to-date verdict is not a command's to word** | every no-actions verdict settles through `reconciler::nothing_to_do_verdict(pending)`, which answers `Role::Pending` + `Nothing to apply — N decisions pending` whenever something is withheld | `no_command_words_the_up_to_date_verdict_for_itself`, `a_pending_decision_denies_the_up_to_date_verdict_on_every_verdict_surface` |
+| A **count belongs to its section's annotation**, not to a row | `Pending Decisions (1 item)` via `reconciler::pending_decisions_title`, never a `⊙ 1 pending item` line that wears the row glyph and the row indent | `pending_decisions_title`'s own unit tests + the `decide` / `status` goldens |
 
 ## Sanitizing text cfgd did not author
 

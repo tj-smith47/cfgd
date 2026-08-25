@@ -184,7 +184,7 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                             // line so human consumers see "'X' synced —
                             // commit: <hash>".
                             if had_perm_changes {
-                                owner.status(Role::Ok, "synced").detail(commit_detail);
+                                owner.status(Role::Ok, "Synced").detail(commit_detail);
                             }
 
                             // Record the fetch in the state store, the same way
@@ -196,12 +196,15 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                             // whose whole job is refreshing sources.
                             if let Some(ref state) = state
                                 && let Err(e) = state.upsert_config_source(
-                                    &source_spec.name,
-                                    &source_spec.origin.url,
-                                    &source_spec.origin.branch,
-                                    cached.last_commit.as_deref(),
-                                    cached.manifest.metadata.version.as_deref(),
-                                    source_spec.sync.pin_version.as_deref(),
+                                    &cfgd_core::state::ConfigSourceUpsert {
+                                        name: &source_spec.name,
+                                        origin_url: &source_spec.origin.url,
+                                        origin_branch: &source_spec.origin.branch,
+                                        last_commit: cached.last_commit.as_deref(),
+                                        source_version: cached.manifest.metadata.version.as_deref(),
+                                        pinned_version: source_spec.sync.pin_version.as_deref(),
+                                        last_commit_signed: cached.head_signed,
+                                    },
                                 )
                             {
                                 owner

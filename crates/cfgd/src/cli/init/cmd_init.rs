@@ -401,7 +401,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             };
             match cfgd_core::daemon::install_service(&config_path, profile, args.scope, &dirs) {
                 Ok(()) => {
-                    printer.status_simple(Role::Ok, "Daemon service installed");
+                    printer.status_simple(Role::Ok, "Installed daemon service");
                     #[cfg(windows)]
                     printer
                         .status_simple(Role::Info, "The service will start automatically on boot");
@@ -626,7 +626,7 @@ pub(super) fn apply_plan(
         run.header(printer);
         // `init` scaffolds no scoping flag, so the verdict takes the
         // filter-less arm of the one helper that owns both spellings.
-        crate::cli::plan_ops::report_plan_verdict(printer, total, None);
+        crate::cli::plan_ops::report_plan_verdict(printer, total, None, 0);
         return Ok(cfgd_core::state::ApplyStatus::Success);
     }
 
@@ -634,7 +634,7 @@ pub(super) fn apply_plan(
         let run = run.preview_only();
         run.header(printer);
         run.preview(printer);
-        crate::cli::plan_ops::report_plan_verdict(printer, total, None);
+        crate::cli::plan_ops::report_plan_verdict(printer, total, None, 0);
         return Ok(cfgd_core::state::ApplyStatus::Success);
     }
 
@@ -671,7 +671,7 @@ pub(super) fn apply_plan(
         cfgd_core::reconciler::RunDisposition::Declined => {
             printer
                 .status(Role::Info, "Skipped")
-                .detail("run 'cfgd apply' to apply later");
+                .detail("run `cfgd apply` to apply later");
             Ok(cfgd_core::state::ApplyStatus::Success)
         }
         // Unreachable for a run carrying a plan with work and no

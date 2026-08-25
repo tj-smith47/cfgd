@@ -654,13 +654,13 @@ pub fn build_fleet_status_doc(
     );
 
     if !configured_sources.is_empty() {
-        doc = doc.section("Config Sources", |s| {
+        doc = doc.section(super::source::list::SOURCES_SECTION, |s| {
             if output.sources.is_empty() {
                 configured_sources
                     .iter()
                     .fold(s, |s, name| s.kv(name, "not yet fetched"))
             } else {
-                let mut t = Table::new(["Source", "Status", "Version", "Last Fetched"]);
+                let mut t = Table::new(["Source", "Status", "Version", "Last Sync", "Signed"]);
                 for rec in &output.sources {
                     let (status, role) = cfgd_core::state::source_status_display(&rec.status);
                     t = t.row_styled([
@@ -671,9 +671,13 @@ pub fn build_fleet_status_doc(
                             None,
                         ),
                         (
-                            rec.last_fetched.clone().unwrap_or_else(|| "never".into()),
+                            super::source::list::last_sync_display(
+                                rec.last_fetched.as_deref(),
+                                now,
+                            ),
                             None,
                         ),
+                        (cfgd_core::yes_no(rec.last_commit_signed).to_string(), None),
                     ]);
                 }
                 s.table(t)
@@ -681,9 +685,14 @@ pub fn build_fleet_status_doc(
         });
     }
 
-    doc = doc.section_if_nonempty("Pending Decisions", &output.pending_decisions, |s, rows| {
-        super::build_pending_decisions_table_section(s, rows, decision_contents)
-    });
+    doc = doc.section_if_nonempty(
+        cfgd_core::reconciler::pending_decisions_title(output.pending_decisions.len()),
+        &output.pending_decisions,
+        |s, rows| super::build_pending_decisions_table_section(s, rows, decision_contents),
+    );
+    if !output.pending_decisions.is_empty() {
+        doc = doc.hint(cfgd_core::reconciler::MSG_ANSWER_DECISIONS);
+    }
 
     // Rendered beside the pending rows those batches would otherwise be:
     // "why isn't requests installed?" must be answerable from the dashboard,
@@ -1319,6 +1328,9 @@ pub(super) fn cmd_status(
     let registry = do_scan.then(|| desired.take_registry(cfg));
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
+    // The ownership record the machine will honour, read by the decision rows
+    // below so an item a module or a higher layer outranks says so.
+    let entry_owners = reconciler::merged_entry_owners(&resolved, &resolved_modules);
     // ONE merge for the whole command: every recompute below asks the same
     // declaration, and building it per drift row clones the profile's env, its
     // aliases and both origin maps once per finding.
@@ -1352,7 +1364,10 @@ pub(super) fn cmd_status(
             &ctx,
             state,
             cfg,
-            &resolved,
+            plan_ops::DesiredOwnership {
+                resolved: &resolved,
+                entry_owners: &entry_owners,
+            },
             true,
             plan_ops::DecisionWrites::ReadOnly,
             &reconciler::ActualPackages::default(),
@@ -1512,8 +1527,12 @@ pub(super) fn cmd_status(
     // Built from the composition this command already resolved: the rows say
     // what each withheld item would put on the machine, and re-deriving that
     // at the render would be a second parse of the same config.
-    let decision_contents =
-        super::DecisionContents::for_decisions(&resolved, &output.pending_decisions, &config_dir);
+    let decision_contents = super::DecisionContents::for_decisions(
+        &resolved,
+        &output.pending_decisions,
+        &config_dir,
+        &entry_owners,
+    );
     printer.emit(build_fleet_status_doc(
         &output,
         &configured_source_names,

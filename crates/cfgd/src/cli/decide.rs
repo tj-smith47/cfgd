@@ -162,7 +162,10 @@ pub(super) fn cmd_decide(
         String,
     )> = None;
     let mut warnings: Vec<String> = Vec::new();
-    let mut composed: Option<cfgd_core::config::ResolvedProfile> = None;
+    let mut composed: Option<(
+        cfgd_core::config::ResolvedProfile,
+        cfgd_core::config::EntryOwners,
+    )> = None;
     match classification {
         Ok((withheld, _, resolved)) => {
             warnings = withheld.undecidable.iter().map(|b| b.warning()).collect();
@@ -180,9 +183,12 @@ pub(super) fn cmd_decide(
         }
     }
     let contents = match &composed {
-        Some(resolved) => {
-            super::DecisionContents::for_decisions(resolved, &decisions, &super::config_dir(cli))
-        }
+        Some((resolved, entry_owners)) => super::DecisionContents::for_decisions(
+            resolved,
+            &decisions,
+            &super::config_dir(cli),
+            entry_owners,
+        ),
         None => Default::default(),
     };
     printer.emit(build_decide_list_doc(
@@ -220,7 +226,10 @@ pub(super) fn cmd_decide(
 type Classification = (
     reconciler::WithheldDecisions,
     reconciler::SourcePolicyReview,
-    Option<cfgd_core::config::ResolvedProfile>,
+    Option<(
+        cfgd_core::config::ResolvedProfile,
+        cfgd_core::config::EntryOwners,
+    )>,
 );
 
 fn source_classification(
@@ -249,6 +258,9 @@ fn source_classification(
         composition::ConstraintMode::Report,
     )
     .context("source composition failed")?;
+    // Built before the classification so both halves — the withheld rows and
+    // the contents rendered beside them — read one ownership record.
+    let entry_owners = reconciler::merged_entry_owners(&desired.resolved, &desired.modules);
     // Decide enumerates no package state (it stays offline), so the
     // classification auto-accepts nothing here — installed-but-undecided items
     // keep listing until a run that enumerates (plan/apply/tick) releases them.
@@ -256,13 +268,16 @@ fn source_classification(
         ctx,
         state,
         cfg,
-        &desired.resolved,
+        plan_ops::DesiredOwnership {
+            resolved: &desired.resolved,
+            entry_owners: &entry_owners,
+        },
         true,
         writes,
         &reconciler::ActualPackages::default(),
     )
     .context("source classification failed")?;
-    Ok((withheld, review, Some(desired.resolved)))
+    Ok((withheld, review, Some((desired.resolved, entry_owners))))
 }
 
 /// Pure builder: bulk-resolution Doc (`accept --all` / `accept --source`).
@@ -275,11 +290,11 @@ pub fn build_decide_bulk_doc(resolution: &str, count: usize, source: Option<&str
         };
         doc = doc.status(Role::Info, msg);
     } else {
-        let plural = if count == 1 { "" } else { "s" };
-        let verb = resolution.to_uppercase();
+        let verb = cfgd_core::sentence_case(resolution);
+        let items = cfgd_core::pluralize(count, "item");
         let msg = match source {
-            None => format!("{verb} {count} item{plural}"),
-            Some(name) => format!("{verb} {count} item{plural} from {name}"),
+            None => format!("{verb} {items}"),
+            Some(name) => format!("{verb} {items} from {name}"),
         };
         doc = doc
             .status(Role::Ok, msg)
@@ -301,14 +316,10 @@ pub fn build_decide_single_doc(resolution: &str, resource_path: &str, resolved: 
         } else {
             "not be applied"
         };
-        doc = doc.status(
+        doc = doc.status_with(
             Role::Ok,
-            format!(
-                "{}: {} will {} on next reconcile",
-                resolution.to_uppercase(),
-                resource_path,
-                verb
-            ),
+            format!("{} {resource_path}", cfgd_core::sentence_case(resolution)),
+            |f| f.detail(format!("will {verb} on next reconcile")),
         );
     } else {
         doc = doc.status(
@@ -349,12 +360,15 @@ pub fn build_decide_list_doc(
             .with_data(payload);
     }
 
-    warn_lines(Doc::new().section("Pending Decisions", |s| {
-        build_pending_decisions_table_section(s, decisions, contents)
-    }))
-    .hint("Use `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to resolve")
+    warn_lines(
+        Doc::new().section(
+            reconciler::pending_decisions_title(decisions.len()),
+            |s| build_pending_decisions_table_section(s, decisions, contents),
+        ),
+    )
+    .hint(reconciler::MSG_ANSWER_DECISIONS)
     .hint(
-        "Use `cfgd decide accept --all` or `cfgd decide accept --source <name>` for bulk operations",
+        "Run `cfgd decide accept --all` or `cfgd decide accept --source <name>` for bulk operations",
     )
     .with_data(payload)
 }

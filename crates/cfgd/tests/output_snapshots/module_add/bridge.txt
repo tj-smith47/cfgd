@@ -12,4 +12,4 @@ module:bridgemod
 
 ✓ Locked remote module 'bridgemod' in modules.lock
 
-→ Run 'cfgd plan' to preview changes, then 'cfgd apply'
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

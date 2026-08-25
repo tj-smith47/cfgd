@@ -84,7 +84,7 @@ pub fn cmd_upgrade(
                             check.latest
                         ),
                     )
-                    .hint("Run 'cfgd upgrade' to install")
+                    .hint("Run `cfgd upgrade` to install")
                     .with_data(serde_json::json!({
                         "currentVersion": check.current.to_string(),
                         "latestVersion": check.latest.to_string(),
@@ -318,7 +318,7 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
                             c.latest
                         ),
                     )
-                    .hint("Run 'cfgd upgrade' to install"),
+                    .hint("Run `cfgd upgrade` to install"),
             );
         }),
         apply: Box::new(|c| apply_startup_update(printer, &update_cfg, c)),

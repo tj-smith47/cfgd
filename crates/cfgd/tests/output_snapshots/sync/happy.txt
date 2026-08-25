@@ -11,4 +11,4 @@ Sources
   source:team-b
     ✓ synced — commit: <COMMIT>
 
-→ Run 'cfgd plan' to preview changes, then 'cfgd apply'
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

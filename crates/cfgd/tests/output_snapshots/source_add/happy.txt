@@ -1,8 +1,6 @@
 Add source:team-config
 ◐ Cloning source:team-config
   Cloning into '<STATE_DIR>/sources/team-config'...
-✓ Cloning source:team-config
-
 Manifest
   Name     team-config
   Version  1.0.0
@@ -22,8 +20,6 @@ Policy
 
 ✓ No conflicts with current config
 
-✓ subscribed
+✓ Subscribed
 
-Profile  default
-
-→ Run 'cfgd plan' to preview changes, then 'cfgd apply'
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

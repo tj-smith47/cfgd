@@ -1,11 +1,18 @@
 use super::*;
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 use cfgd_core::state::source_status_display;
+use cfgd_core::{humanize_age_since, yes_no};
+
+/// The section every surface calls a config source's collection — one noun,
+/// singular in `source:<name>` and plural here. `Config Sources` spelled the
+/// `cfgd.yaml` key at the reader instead of the thing the rows are.
+pub const SOURCES_SECTION: &str = "Sources";
 
 /// Build the `cfgd source list` Doc from a populated entries vector + `--wide`
-/// flag. Pure; the caller assembles the entries from disk.
-pub fn build_source_list_doc(entries: &[SourceListEntry], wide: bool) -> Doc {
-    let mut doc = Doc::new().heading("Config Sources");
+/// flag. Pure; the caller assembles the entries from disk and passes `now`, so
+/// a render pins in a test rather than reading a clock inside the builder.
+pub fn build_source_list_doc(entries: &[SourceListEntry], wide: bool, now: &str) -> Doc {
+    let mut doc = Doc::new().heading(SOURCES_SECTION);
 
     if entries.is_empty() {
         doc = doc.status(Role::Info, "No sources configured");
@@ -15,52 +22,61 @@ pub fn build_source_list_doc(entries: &[SourceListEntry], wide: bool) -> Doc {
     // `Source`, not `URL`: the column names where the source comes FROM, which
     // is what a reader scans for, and the value is not always a URL a browser
     // would take. The `-o json` field stays `url`.
+    //
+    // `Last Sync` and `Signed` are on the DEFAULT table, not `--wide`: they are
+    // the two facts that change between one `cfgd source list` and the next,
+    // and a listing whose every column is a restatement of cfgd.yaml tells a
+    // reader nothing they could not read there.
+    let mut columns = vec!["Name", "Source", "Priority"];
     if wide {
-        let mut t = Table::new([
-            "Name",
-            "Source",
-            "Priority",
-            "Version",
-            "Status",
-            "Last Fetched",
-        ]);
-        for e in entries {
-            let (status, role) = source_status_display(&e.status);
-            t = t.row_styled([
-                (e.name.clone(), None),
-                (e.url.clone(), None),
-                (e.priority.to_string(), None),
-                (e.version.clone().unwrap_or_else(|| "-".into()), None),
-                (status.to_string(), Some(role)),
-                (
-                    e.last_fetched.clone().unwrap_or_else(|| "never".into()),
-                    None,
-                ),
-            ]);
-        }
-        doc = doc.table(t);
-    } else {
-        let mut t = Table::new(["Name", "Source", "Priority", "Status"]);
-        for e in entries {
-            let (status, role) = source_status_display(&e.status);
-            t = t.row_styled([
-                (e.name.clone(), None),
-                (e.url.clone(), None),
-                (e.priority.to_string(), None),
-                (status.to_string(), Some(role)),
-            ]);
-        }
-        doc = doc.table(t);
+        columns.push("Version");
     }
+    columns.extend(["Status", "Last Sync", "Signed"]);
+
+    let mut t = Table::new(columns);
+    for e in entries {
+        let (status, role) = source_status_display(&e.status);
+        let mut row = vec![
+            (e.name.clone(), None),
+            (e.url.clone(), None),
+            (e.priority.to_string(), None),
+        ];
+        if wide {
+            row.push((e.version.clone().unwrap_or_else(|| "-".into()), None));
+        }
+        row.extend([
+            (status.to_string(), Some(role)),
+            (last_sync_display(e.last_fetched.as_deref(), now), None),
+            (yes_no(e.signed).to_string(), None),
+        ]);
+        t = t.row_styled(row);
+    }
+    doc = doc.table(t);
 
     doc.with_data(entries)
+}
+
+/// The ONE human rendering of a config source's last fetch, shared by every
+/// surface that shows one (`source list`, `source show`, `status`).
+///
+/// An ISO 8601 instant answers "when exactly", which is a question a machine
+/// consumer asks — it stays in the `-o json` payload. A person scanning a
+/// listing is asking "how stale is this", so the column carries the age.
+/// A stamp too malformed or too far in the future to subtract falls back to
+/// itself rather than to `never`: it IS a fetch record, just not one whose age
+/// can be stated.
+pub fn last_sync_display(last_fetched: Option<&str>, now: &str) -> String {
+    match last_fetched {
+        Some(ts) => humanize_age_since(ts, now).unwrap_or_else(|| ts.to_string()),
+        None => "never".to_string(),
+    }
 }
 
 /// Doc emitted when no config file is present yet.
 pub fn build_source_list_no_config_doc() -> Doc {
     let empty: Vec<SourceListEntry> = Vec::new();
     Doc::new()
-        .heading("Config Sources")
+        .heading(SOURCES_SECTION)
         .status(Role::Info, "No config file found")
         .with_data(&empty)
 }
@@ -79,9 +95,11 @@ pub fn cmd_source_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let mut cfg = config::load_config(&config_path)?;
     drain_config_deprecations(printer, &mut cfg);
 
+    let now = cfgd_core::utc_now_iso8601();
+
     if cfg.spec.sources.is_empty() {
         let entries: Vec<SourceListEntry> = Vec::new();
-        printer.emit(build_source_list_doc(&entries, printer.is_wide()));
+        printer.emit(build_source_list_doc(&entries, printer.is_wide(), &now));
         return Ok(());
     }
 
@@ -103,10 +121,11 @@ pub fn cmd_source_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                     .map(|s| s.status.clone())
                     .unwrap_or_else(|| "unknown".into()),
                 last_fetched: state_info.as_ref().and_then(|s| s.last_fetched.clone()),
+                signed: state_info.as_ref().and_then(|s| s.last_commit_signed),
             }
         })
         .collect();
 
-    printer.emit(build_source_list_doc(&entries, printer.is_wide()));
+    printer.emit(build_source_list_doc(&entries, printer.is_wide(), &now));
     Ok(())
 }

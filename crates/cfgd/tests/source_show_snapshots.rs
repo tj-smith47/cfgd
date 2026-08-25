@@ -40,6 +40,9 @@ use pretty_assertions::assert_eq;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
+/// Pinned so the humanized `Last Sync` row is a fixed string in every golden.
+const NOW: &str = "2026-06-01T14:00:00Z";
+
 fn happy_output() -> SourceShowOutput {
     SourceShowOutput {
         name: "team-config".into(),
@@ -55,6 +58,7 @@ fn happy_output() -> SourceShowOutput {
             status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
             last_fetched: Some("2026-05-14T10:00:00Z".into()),
             last_commit: Some("deadbeef1234567890abcdef".into()),
+            signed: Some(true),
             version: Some("3.1.0".into()),
             locked_ref: None,
             locked_commit: None,
@@ -195,7 +199,7 @@ fn source_show_happy_human() {
     let output = happy_output();
     let manifest = happy_manifest();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest), None));
+    printer.emit(build_source_show_doc(&output, Some(&manifest), None, NOW));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/happy.txt");
 }
@@ -220,6 +224,7 @@ fn source_show_provided_profile_human() {
         &output,
         Some(&manifest),
         Some(dir.path()),
+        NOW,
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/provided_profile.txt");
@@ -238,6 +243,7 @@ fn source_show_missing_profile_human() {
         &output,
         Some(&manifest),
         Some(dir.path()),
+        NOW,
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/missing_profile.txt");
@@ -261,6 +267,7 @@ fn source_show_unloadable_profile_human() {
         &output,
         Some(&manifest),
         Some(dir.path()),
+        NOW,
     ));
     drop(printer);
     let human = cap.human();
@@ -279,7 +286,7 @@ fn source_show_happy_json() {
     let output = happy_output();
     let manifest = happy_manifest();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest), None));
+    printer.emit(build_source_show_doc(&output, Some(&manifest), None, NOW));
     drop(printer);
     let expected = serde_json::to_value(&output).unwrap();
     let actual = cap.json().expect("doc captured json");
@@ -297,7 +304,7 @@ fn source_show_lists_delivered_modules_human_and_json() {
     let output = happy_output();
     let manifest = happy_manifest();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest), None));
+    printer.emit(build_source_show_doc(&output, Some(&manifest), None, NOW));
     drop(printer);
 
     let human = cap.human();
@@ -319,7 +326,7 @@ fn source_show_no_modules_omits_field() {
     // (serde skip_serializing_if) and renders no Modules section.
     let output = empty_output();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, None, None));
+    printer.emit(build_source_show_doc(&output, None, None, NOW));
     drop(printer);
 
     let human = cap.human();
@@ -338,7 +345,7 @@ fn source_show_no_modules_omits_field() {
 fn source_show_empty_human() {
     let output = empty_output();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, None, None));
+    printer.emit(build_source_show_doc(&output, None, None, NOW));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/empty.txt");
 }
@@ -379,6 +386,7 @@ fn source_show_state_with_locked_ref_and_commit() {
             status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
             last_fetched: Some("2026-06-01T12:00:00Z".into()),
             last_commit: Some("aabbccddeeff00112233445566778899aabbccdd".into()),
+            signed: Some(false),
             version: Some("2.0.0".into()),
             locked_ref: Some("v2.0.0".into()),
             locked_commit: Some("aabbccddeeff00112233445566778899aabbccdd".into()),
@@ -390,7 +398,7 @@ fn source_show_state_with_locked_ref_and_commit() {
     };
 
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, None, None));
+    printer.emit(build_source_show_doc(&output, None, None, NOW));
     drop(printer);
 
     let human = cap.human();
@@ -480,7 +488,7 @@ fn source_show_locked_policy_section_renders() {
     let manifest = manifest_with_locked_policy();
 
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest), None));
+    printer.emit(build_source_show_doc(&output, Some(&manifest), None, NOW));
     drop(printer);
 
     // "env:" and its qualifier now render in separate theme slots; strip SGR
@@ -585,7 +593,7 @@ fn source_show_all_package_manager_types_render() {
     let manifest = manifest_with_all_package_managers();
 
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest), None));
+    printer.emit(build_source_show_doc(&output, Some(&manifest), None, NOW));
     drop(printer);
 
     // Each manager label and its qualifier now render in separate theme

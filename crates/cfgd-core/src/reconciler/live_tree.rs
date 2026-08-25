@@ -1464,22 +1464,22 @@ mod tests {
 
     #[test]
     fn a_settled_row_padded_to_the_alignment_ceiling_keeps_its_duration_live() {
-        // The alignment ceiling (`affordable_column`) caps the phase's column
-        // by the terminal's complete-line budget, so a padded settled line
-        // lands on exactly that budget. The live repaint clamps the same
-        // composed line; read from a second, tighter formula (the wrapped-BODY
-        // width, two columns narrower), the clamp amputated the last two
-        // columns of the duration the padding had just right-aligned — live
-        // paints only, healed at commit, so no scrollback golden could see it.
+        // The group column (`group_column`) is capped by the terminal's
+        // complete-line budget, so a padded settled line lands inside it. The
+        // live repaint clamps the same composed line; read from a second,
+        // tighter formula (the wrapped-BODY width, two columns narrower), the
+        // clamp amputated the last two columns of the duration the padding had
+        // just right-aligned — live paints only, healed at commit, so no
+        // scrollback golden could see it.
         let (printer, screen) = Printer::for_test_live_terminal(24, 50);
         let section = printer.section_phase(&PhaseName::Packages.section_label());
         let managers = Owner::cfgd("managers");
         let head = install("apt", "ripgrep");
         let padded = install("pipx", "pynvim");
 
-        // A column wider than 50 columns afford, so the ceiling binds and the
-        // settled line is padded out to the full line budget.
-        let mut tree = PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 60);
+        // A column the 50-column window still affords at this depth, so the
+        // group pads and the settled line carries its padding into the clamp.
+        let mut tree = PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 37);
         let running_head = tree.dispatched(&managers, &head);
         let running_padded = tree.dispatched(&managers, &padded);
         running_padded.finish();

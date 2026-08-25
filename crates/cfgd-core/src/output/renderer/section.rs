@@ -262,8 +262,13 @@ impl super::Emitting<'_> {
             .map(|s| console::measure_text_width(&s.subject))
             .max()
             .unwrap_or(0);
-        for s in &pending {
-            let fields = super::StatusFields {
+        // One decision for the set, taken at the deepest row's budget and
+        // against the widest row's trailing content: either every row pads to
+        // this column or no row is padded at all. Judged per row — off each
+        // line's own detail length — the same three rows landed at three
+        // different detail columns.
+        fn fields_of<'s>(s: &'s BufferedStatus) -> super::StatusFields<'s> {
+            super::StatusFields {
                 role: s.role,
                 subject: &s.subject,
                 detail: s.detail.as_deref(),
@@ -271,17 +276,19 @@ impl super::Emitting<'_> {
                 target: s.target.as_deref(),
                 subject_style: s.subject_style.clone(),
                 detail_style: s.detail_style.clone(),
-            };
-            // Per line, not once for the set: capping the shared column by the
-            // tightest line in it would drop every line's alignment because
-            // one of them carries a long detail.
-            let column = super::status::affordable_column(
+            }
+        }
+        let column = super::status::group_column(
+            self.wrap_cols,
+            pending.iter().map(|s| s.depth).max().unwrap_or(0),
+            max_subject_width,
+            super::status::group_trailing_allowance(
                 self.theme,
-                self.wrap_cols,
-                s.depth,
-                &fields,
-                max_subject_width,
-            );
+                pending.iter().filter(|s| s.has_trailing()).map(fields_of),
+            ),
+        );
+        for s in &pending {
+            let fields = fields_of(s);
             let padded = super::status::pad_subject(&s.subject, column, s.has_trailing());
             self.emit_status_line(
                 s.depth,
@@ -781,5 +788,91 @@ mod tests {
             raw.contains(&expected_header),
             "the top-level section's header must stay theme.header: {raw:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod alignment_group_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::super::{NarrowSink, Renderer, StatusFields, StringSink};
+    use crate::output::{Role, Theme, Verbosity};
+
+    /// The three `cfgd:env` rows an apply settles under `Phase: Prerequisites`
+    /// — the set the broken column was measured on, one long subject with a
+    /// short detail between two short subjects with long details.
+    const ROWS: &[(Role, &str, &str)] = &[
+        (Role::Ok, "write /home/tj/.cfgd.env", "4 vars, 3 aliases"),
+        (
+            Role::Ok,
+            "write /home/tj/.config/environment.d/cfgd.conf",
+            "4 vars",
+        ),
+        (
+            Role::Skipped,
+            "publish 4 vars to the session manager",
+            "no session manager",
+        ),
+    ];
+
+    fn render_group(cols: usize) -> String {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = NarrowSink(StringSink(buf.clone()), cols);
+        let r = Renderer::new(Theme::default(), Verbosity::Normal);
+        r.render_section_open("Phase: Prerequisites", true);
+        r.render_section_open("cfgd:env", true);
+        for (role, subject, detail) in ROWS {
+            r.render_status(
+                &sink,
+                2,
+                &StatusFields {
+                    role: *role,
+                    subject,
+                    detail: Some(detail),
+                    duration: None,
+                    target: None,
+                    subject_style: None,
+                    detail_style: None,
+                },
+            );
+        }
+        r.render_section_close(&sink);
+        r.render_section_close(&sink);
+        crate::test_helpers::captured_text(&buf)
+    }
+
+    /// Alignment is a property of the SET: every row of one group pads to one
+    /// detail column, or no row is padded. Capped per row — off each line's
+    /// own detail length — these three rows settled at three different
+    /// columns, and the widest of them was the one left out.
+    #[test]
+    fn every_row_of_one_group_shares_a_detail_column_or_none_is_padded() {
+        for cols in [40usize, 50, 55, 60, 65, 70, 80, 100, 200] {
+            let out = render_group(cols);
+            // A row's FIRST physical line: a wrapped continuation carries no
+            // glyph, and the glue it holds is its own subject's, not a column.
+            let heads: Vec<&str> = out
+                .lines()
+                .map(str::trim_start)
+                .filter(|l| l.starts_with('✓') || l.starts_with('∅'))
+                .filter(|l| l.contains(" — "))
+                .collect();
+            let glue_at: Vec<usize> = heads
+                .iter()
+                .filter_map(|l| l.find(" — ").map(|byte| &l[..byte]))
+                .map(console::measure_text_width)
+                .collect();
+            // A padded subject is the only way a glue lands behind whitespace.
+            let padded = heads
+                .iter()
+                .filter_map(|l| l.find(" — ").map(|byte| &l[..byte]))
+                .any(|before| before.ends_with(' '));
+            let shared = glue_at.windows(2).all(|w| w[0] == w[1]);
+            assert!(
+                shared || !padded,
+                "at {cols} columns the group settled at {glue_at:?} — one column \
+                 for every row, or padding for none:\n{out}"
+            );
+        }
     }
 }

@@ -1,5 +1,4 @@
-Config Sources
-
-Name         Source                          Priority  Version  Status  Last Fetched        
-────────────────────────────────────────────────────────────────────────────────────────────
-team-config  https://github.com/team/config  100       1.0.0    Active  2026-05-14T10:00:00Z
+Sources
+Name         Source                          Priority  Version  Status  Last Sync  Signed
+─────────────────────────────────────────────────────────────────────────────────────────
+team-config  https://github.com/team/config  100       1.0.0    Active  2h ago     yes   

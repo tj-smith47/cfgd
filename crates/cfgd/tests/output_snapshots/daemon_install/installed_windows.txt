@@ -1,5 +1,5 @@
 Install Daemon Service
-✓ cfgd service installed and started
+✓ Installed and started the cfgd service
 ◉ The service will start automatically on boot
 ◉ Logs: %LOCALAPPDATA%\cfgd\daemon.log
 ◉ Set spec.daemon.windowsEventLog: true in cfgd.yaml + reinstall to mirror logs into the Windows Event Log

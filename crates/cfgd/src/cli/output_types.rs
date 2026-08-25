@@ -572,7 +572,13 @@ pub struct SourceListEntry {
     pub priority: u32,
     pub version: Option<String>,
     pub status: String,
+    /// The ISO 8601 stamp of the last fetch. The human table humanizes it
+    /// (`2h ago`); the payload keeps the instant, which is the only form a
+    /// machine consumer can compare or re-render.
     pub last_fetched: Option<String>,
+    /// Whether the fetched commit carried a signature cfgd accepts. `None` is
+    /// "not known", never "unsigned".
+    pub signed: Option<bool>,
 }
 
 /// One `spec.backups[]` entry plus its last recorded run, for
@@ -880,8 +886,13 @@ pub struct SourceEncryptionOutput {
 #[serde(rename_all = "camelCase")]
 pub struct SourceStateInfo {
     pub status: String,
+    /// The ISO 8601 stamp of the last fetch; the human render humanizes it.
     pub last_fetched: Option<String>,
     pub last_commit: Option<String>,
+    /// Whether the fetched commit carried a signature cfgd accepts. `None` is
+    /// "not known", never "unsigned".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed: Option<bool>,
     pub version: Option<String>,
     /// Resolved tag name from sources.lock (None for HEAD-tracking sources).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1848,6 +1859,7 @@ mod tests {
             version: None,
             status: "synced".to_string(),
             last_fetched: Some("2026-01-01T00:00:00Z".to_string()),
+            signed: Some(true),
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["name"], json!("main"));
@@ -1874,6 +1886,7 @@ mod tests {
                 status: "fresh".to_string(),
                 last_fetched: Some("2026-01-01T00:00:00Z".to_string()),
                 last_commit: Some("abc".to_string()),
+                signed: Some(true),
                 version: Some("v1.2.3".to_string()),
                 locked_ref: None,
                 locked_commit: None,
@@ -1990,6 +2003,7 @@ mod tests {
             status: "stale".to_string(),
             last_fetched: Some("2026-01-01T00:00:00Z".to_string()),
             last_commit: Some("c0ffee".to_string()),
+            signed: None,
             version: Some("v0.1".to_string()),
             locked_ref: Some("v2.1.0".to_string()),
             locked_commit: Some("a".repeat(40)),

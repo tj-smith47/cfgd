@@ -1,4 +1,4 @@
-Source: team-config
+Show source:team-config
   URL                 https://github.com/team/config
   Branch              main
   Priority            100
@@ -9,10 +9,10 @@ Source: team-config
   Pin Version         v1.2.3
 
 State
-  Status        Active
-  Last Fetched  2026-05-14T10:00:00Z
-  Last Commit   deadbeef1234
-  Version       3.1.0
+  Status       Active
+  Last Sync    18d ago
+  Last Commit  deadbeef1234
+  Signed       yes
 
 Managed Resources
   Type     Resource 

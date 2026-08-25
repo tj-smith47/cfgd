@@ -123,7 +123,7 @@ pub fn verify_lockfile_integrity(lock_entry: &ModuleLockEntry, cache_base: &Path
             module: lock_entry.name.clone(),
             url: lock_entry.url.clone(),
             message: format!(
-                "cached module directory does not exist — run 'cfgd module upgrade {}'",
+                "cached module directory does not exist — run `cfgd module upgrade {}`",
                 lock_entry.name
             ),
         }

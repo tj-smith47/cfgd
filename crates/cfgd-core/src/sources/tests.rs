@@ -491,6 +491,58 @@ fn set_allow_unsigned_works() {
     assert!(mgr.allow_unsigned);
 }
 
+/// The reporting reader and the enforcing one answer the same question about
+/// the same checkout. `head_signature_accepted` exists so `source list` can
+/// show a `Signed` column without re-deriving the verdict, and it earns that
+/// only by routing through the classifier verification uses: an unsigned HEAD
+/// is `Some(false)` (a real answer), a directory git cannot speak for is `None`
+/// (no answer), and neither may be confused for the other.
+#[test]
+fn head_signature_accepted_agrees_with_verification_on_the_same_checkout() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let _spawn = crate::test_helpers::path_env_read_guard();
+        let out = crate::git_cmd_local()
+            .current_dir(&repo)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@e")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@e")
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&["init", "-q"]);
+    std::fs::write(repo.join("a.txt"), b"one").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "one", "--no-gpg-sign"]);
+
+    assert_eq!(
+        head_signature_accepted("unsigned", &repo),
+        Some(false),
+        "an unsigned HEAD is an ANSWER, not an absence"
+    );
+    assert!(
+        verify_head_signature("unsigned", &repo).is_err(),
+        "the column and the gate must read the same commit the same way"
+    );
+
+    let not_a_repo = dir.path().join("plain");
+    std::fs::create_dir_all(&not_a_repo).unwrap();
+    assert_eq!(
+        head_signature_accepted("unreadable", &not_a_repo),
+        None,
+        "a checkout git cannot speak for is `-`, never `no`"
+    );
+}
+
 #[test]
 fn verify_head_signature_surfaces_git_log_failure_on_non_git_dir() {
     // verify_head_signature non-zero-exit arm (lines 571-579): pass a tempdir
@@ -963,6 +1015,7 @@ fn remove_source_success() {
         last_commit: None,
         last_fetched: None,
         resolved_ref: None,
+        head_signed: None,
     };
     mgr.sources.insert("test-source".to_string(), cached);
 
@@ -1012,6 +1065,7 @@ fn insert_fake_source(mgr: &mut SourceManager, name: &str, local_path: PathBuf) 
         last_commit: None,
         last_fetched: None,
         resolved_ref: None,
+        head_signed: None,
     };
     mgr.sources.insert(name.to_string(), cached);
 }
@@ -3654,6 +3708,7 @@ fn remove_source_surfaces_cache_error_when_remove_dir_all_fails() {
         last_commit: None,
         last_fetched: None,
         resolved_ref: None,
+        head_signed: None,
     };
     mgr.sources.insert("not-a-dir".to_string(), cached);
 

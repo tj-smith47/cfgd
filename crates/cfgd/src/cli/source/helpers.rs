@@ -131,12 +131,9 @@ pub(crate) fn build_pending_decisions_table_section(
     cfgd_core::reconciler::decisions_by_source(decisions)
         .into_iter()
         .fold(s, |s, (source_name, items)| {
-            let count = items.len();
-            let plural = if count == 1 { "" } else { "s" };
             // The same `source:<name>` token every other source-owned line
             // carries — one screen must not name one source two ways.
             s.subsection_owner(&OwnerLabel::new("source", source_name), |sub| {
-                let sub = sub.status(Role::Info, format!("{count} pending item{plural}"));
                 items.iter().fold(sub, |sub, item| {
                     let (subject, detail) = contents.decision_row(item);
                     sub.status_with(Role::Info, subject, |f| match detail {

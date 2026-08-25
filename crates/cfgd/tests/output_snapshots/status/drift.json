@@ -59,6 +59,7 @@
     {
       "id": 1,
       "lastCommit": "abc123",
+      "lastCommitSigned": true,
       "lastFetched": "2026-05-14T09:00:00Z",
       "name": "team-config",
       "originBranch": "main",

@@ -1,4 +1,4 @@
-Source: pinned-source
+Show source:pinned-source
   URL                 https://github.com/team/pinned
   Branch              main
   Priority            200
@@ -9,8 +9,9 @@ Source: pinned-source
 
 State
   Status         Active
-  Last Fetched   2026-06-01T12:00:00Z
+  Last Sync      2h ago
   Last Commit    aabbccddeeff
+  Signed         no
   Locked Commit  aabbccddeeff
   Locked Ref     v2.0.0
   Version        2.0.0

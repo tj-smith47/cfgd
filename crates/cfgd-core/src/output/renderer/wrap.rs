@@ -48,13 +48,13 @@ pub(crate) fn available_width(sink: &dyn Writer, depth: usize) -> usize {
 /// terminal minus the `depth * 2` indent, and nothing else — the glyph, the
 /// subject, its alignment padding and the duration all live inside it.
 ///
-/// The ONE formula shared by the alignment ceiling
-/// (`Renderer::affordable_column`, via `status.rs`'s `wrap_budget`) and the
-/// live repaint clamp (`line_width`, below). The ceiling pads a settled line
-/// out to exactly this budget, so a clamp read from any tighter formula —
-/// `available_width`'s, say, which is two columns narrower because it
-/// measures the room left AFTER the glyph — amputates the tail of the
-/// duration the padding just right-aligned.
+/// The ONE formula shared by the group alignment column
+/// (`status.rs`'s `group_column`, via its `wrap_budget`) and the live repaint
+/// clamp (`line_width`, below). A group's padded subject reaches at most this
+/// budget, so a clamp read from any tighter formula — `available_width`'s,
+/// say, which is two columns narrower because it measures the room left AFTER
+/// the glyph — amputates the tail of the duration the padding just
+/// right-aligned.
 pub(crate) fn line_budget(cols: usize, depth: usize) -> usize {
     cols.saturating_sub(depth * 2)
 }

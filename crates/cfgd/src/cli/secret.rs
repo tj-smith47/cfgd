@@ -250,7 +250,7 @@ pub fn cmd_secret_init(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         Doc::new()
             .status(
                 Role::Ok,
-                "Secrets setup complete — files can now be encrypted with 'cfgd secret encrypt'",
+                "Secrets setup complete — files can now be encrypted with `cfgd secret encrypt`",
             )
             .with_data(payload),
     );

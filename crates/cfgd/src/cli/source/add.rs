@@ -56,7 +56,7 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
                 &source_name,
                 "already_exists",
                 format!(
-                    "Source '{}' already exists. Use 'cfgd source update' to refresh.",
+                    "Source '{}' already exists. Use `cfgd source update` to refresh.",
                     source_name
                 ),
                 serde_json::json!({}),
@@ -291,14 +291,15 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
 
     // Update state store
     let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
-    state.upsert_config_source(
-        &source_name,
-        url,
-        &spec.origin.branch,
-        cached.last_commit.as_deref(),
-        manifest.metadata.version.as_deref(),
-        None,
-    )?;
+    state.upsert_config_source(&cfgd_core::state::ConfigSourceUpsert {
+        name: &source_name,
+        origin_url: url,
+        origin_branch: &spec.origin.branch,
+        last_commit: cached.last_commit.as_deref(),
+        source_version: manifest.metadata.version.as_deref(),
+        pinned_version: None,
+        last_commit_signed: cached.head_signed,
+    })?;
 
     // Record the resolved commit SHA in the sources lockfile so composition
     // is bit-reproducible across machines.
@@ -320,22 +321,25 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
         }
     }
 
-    let mut doc = Doc::new().status(Role::Ok, "subscribed");
-    if let Some(ref p) = selected_profile {
-        doc = doc.kv("Profile", p);
-    }
-    doc = doc.hint(MSG_RUN_APPLY).with_data(serde_json::json!({
-        "name": source_name,
-        "url": url,
-        "branch": source_spec.origin.branch,
-        "commit": cached.last_commit.clone().unwrap_or_default(),
-        "profile": selected_profile,
-        "priority": resolved_priority,
-        // Additive: the same manifest object `source show` carries, so a
-        // consumer scripting a subscription reads what it subscribed TO
-        // without a second `source show` call.
-        "manifest": super::show::source_manifest_output(manifest),
-    }));
+    // No `Profile` row: the manifest render above already showed the profile
+    // this subscription activates, under its own `profile:<name>` owner, and a
+    // headingless key/value pair restating it cannot be read on its own. The
+    // payload below still carries the field.
+    let doc = Doc::new()
+        .status(Role::Ok, "Subscribed")
+        .hint(MSG_RUN_APPLY)
+        .with_data(serde_json::json!({
+            "name": source_name,
+            "url": url,
+            "branch": source_spec.origin.branch,
+            "commit": cached.last_commit.clone().unwrap_or_default(),
+            "profile": selected_profile,
+            "priority": resolved_priority,
+            // Additive: the same manifest object `source show` carries, so a
+            // consumer scripting a subscription reads what it subscribed TO
+            // without a second `source show` call.
+            "manifest": super::show::source_manifest_output(manifest),
+        }));
     printer.emit(doc);
 
     Ok(())

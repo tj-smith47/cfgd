@@ -11,7 +11,7 @@ pub fn cmd_source_edit(printer: &Printer, dir: &Path) -> anyhow::Result<()> {
             "cfgd-source.yaml",
             "no_config",
             format!(
-                "No cfgd-source.yaml found in {} — run 'cfgd source create' to scaffold one",
+                "No cfgd-source.yaml found in {} — run `cfgd source create` to scaffold one",
                 dir.posix()
             ),
             serde_json::json!({ "dir": cfgd_core::to_posix_string(dir) }),

@@ -383,7 +383,7 @@ pub(in crate::cli) fn withheld_for_run(
     ctx: &RunContext<'_>,
     state: &cfgd_core::state::StateStore,
     cfg: &cfgd_core::config::CfgdConfig,
-    resolved: &cfgd_core::config::ResolvedProfile,
+    desired: DesiredOwnership<'_>,
     config_parsed: bool,
     writes: DecisionWrites<'_>,
     actual: &reconciler::ActualPackages,
@@ -391,6 +391,10 @@ pub(in crate::cli) fn withheld_for_run(
     reconciler::WithheldDecisions,
     reconciler::SourcePolicyReview,
 )> {
+    let DesiredOwnership {
+        resolved,
+        entry_owners,
+    } = desired;
     let mut local = reconciler::local_profile(resolved);
     ctx.resolve_manifest_packages(&mut local.packages)?;
 
@@ -440,8 +444,26 @@ pub(in crate::cli) fn withheld_for_run(
         .chain(withheld.rejected.iter())
         .cloned()
         .collect();
-    let contents = reconciler::DecisionContents::for_decisions(resolved, &rows, ctx.config_dir());
+    let contents = reconciler::DecisionContents::for_decisions(
+        resolved,
+        &rows,
+        ctx.config_dir(),
+        entry_owners,
+    );
     Ok((withheld.with_contents(contents), review))
+}
+
+/// The resolution a classification reads, paired with the per-entry ownership
+/// record derived from it.
+///
+/// One parameter rather than two because the two halves must come from the
+/// SAME resolution: owners built from a different resolve would name a winner
+/// for an entry this run never saw, and the annotation beside a withheld row
+/// would then describe another machine's merge.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::cli) struct DesiredOwnership<'a> {
+    pub resolved: &'a cfgd_core::config::ResolvedProfile,
+    pub entry_owners: &'a cfgd_core::config::EntryOwners,
 }
 
 /// Whether a run may record the decisions its policy review classified NOW.
@@ -622,9 +644,17 @@ impl ScopeReport {
 /// from one where a scoping flag excluded pending work (`Warn` — the system was
 /// *not* reconciled). Shared by both `apply` and `plan`/dry-run so the two
 /// surfaces never diverge.
-pub(in crate::cli) fn report_no_in_scope_actions(printer: &Printer, scope: &ScopeReport) {
+///
+/// `pending_decisions` counts what a withheld-decision block above this line
+/// just listed; the in-sync verdict is [`nothing_to_do_verdict`]'s to word.
+pub(in crate::cli) fn report_no_in_scope_actions(
+    printer: &Printer,
+    scope: &ScopeReport,
+    pending_decisions: usize,
+) {
     if !scope.filter_active || (scope.unfiltered_total == 0 && !scope.filter_miss) {
-        printer.status_simple(Role::Ok, MSG_NOTHING_TO_DO);
+        let (role, verdict) = nothing_to_do_verdict(pending_decisions);
+        printer.status_simple(role, verdict);
         return;
     }
     printer
@@ -646,13 +676,14 @@ pub(in crate::cli) fn report_no_in_scope_actions(printer: &Printer, scope: &Scop
 /// holds no in-scope work — the verdict [`report_no_in_scope_actions`] chooses.
 ///
 /// `scope` is `None` for the surfaces that expose no scoping flag at all
-/// (`cfgd init --apply`, `cfgd module create --apply`), where the only verdict
-/// reachable is `MSG_NOTHING_TO_DO`; taking it directly there says that, where
-/// a `ScopeReport` built solely to land on the same arm would not.
+/// (`cfgd init --apply`, `cfgd module create --apply`), where no filter can
+/// have excluded anything; taking that arm directly says so, where a
+/// `ScopeReport` built solely to land on it would not.
 pub(in crate::cli) fn report_plan_verdict(
     printer: &Printer,
     total_actions: usize,
     scope: Option<&ScopeReport>,
+    pending_decisions: usize,
 ) {
     if total_actions > 0 {
         printer.status_simple(
@@ -662,8 +693,11 @@ pub(in crate::cli) fn report_plan_verdict(
         return;
     }
     match scope {
-        Some(scope) => report_no_in_scope_actions(printer, scope),
-        None => printer.status_simple(Role::Ok, MSG_NOTHING_TO_DO),
+        Some(scope) => report_no_in_scope_actions(printer, scope, pending_decisions),
+        None => {
+            let (role, verdict) = nothing_to_do_verdict(pending_decisions);
+            printer.status_simple(role, verdict);
+        }
     }
 }
 
@@ -777,7 +811,12 @@ pub(in crate::cli) fn display_plan_preview(
         }
     }
 
-    report_plan_verdict(printer, plan_output.total_actions, Some(scope));
+    report_plan_verdict(
+        printer,
+        plan_output.total_actions,
+        Some(scope),
+        withheld.pending.len(),
+    );
 }
 
 // --- Plan filtering for --skip and --only ---

@@ -175,11 +175,11 @@ fn decide_pending_single_item_human() {
         "expected the source owner token as the heading, got:\n{human}"
     );
     assert!(
-        human.contains("1 pending item"),
-        "expected singular 'item', got:\n{human}"
+        human.contains(&cfgd_core::reconciler::pending_decisions_title(1)),
+        "the count is the section's own annotation, singular for one, got:\n{human}"
     );
     assert!(
-        !human.contains("1 pending items"),
+        !human.contains("1 items"),
         "must not pluralize for count=1, got:\n{human}"
     );
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "decide/pending_single_item.txt");
@@ -192,8 +192,8 @@ fn decide_after_accept_human() {
     drop(printer);
     let human = cap.human();
     assert!(
-        human.contains("ACCEPTED 2 items"),
-        "bulk accept summary must report uppercase verb + pluralized count, got:\n{human}"
+        human.contains("Accepted 2 items"),
+        "bulk accept summary reads as a sentence: past-tense verb, then the count, got:\n{human}"
     );
     assert!(
         human.contains("next reconcile"),
@@ -273,6 +273,7 @@ fn decide_pending_names_the_content_of_each_item() {
         &resolved,
         &decisions,
         config_dir.path(),
+        &resolved.merged.entry_owners,
     );
 
     let (printer, cap) = Printer::for_test_doc();

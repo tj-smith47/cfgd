@@ -44,7 +44,7 @@ pub fn cmd_module_add_from_registry(
                 &reg_ref.registry,
                 "registry_not_found",
                 format!(
-                    "Registry '{}' not configured — run 'cfgd module registry add <url>' first",
+                    "Registry '{}' not configured — run `cfgd module registry add <url>` first",
                     reg_ref.registry
                 ),
                 serde_json::json!({}),
@@ -160,7 +160,7 @@ pub fn cmd_module_add_remote(
                 .status(
                     Role::Info,
                     format!(
-                        "Module '{}' is already in the lockfile — use 'cfgd module upgrade {}' to change versions",
+                        "Module '{}' is already in the lockfile — use `cfgd module upgrade {}` to change versions",
                         module_name, module_name
                     ),
                 )

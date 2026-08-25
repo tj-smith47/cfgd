@@ -380,7 +380,10 @@ pub fn run_apply(
         &ctx,
         state,
         &cfg,
-        &effective_resolved,
+        plan_ops::DesiredOwnership {
+            resolved: &effective_resolved,
+            entry_owners: &reconciler::merged_entry_owners(&effective_resolved, &resolved_modules),
+        },
         config_parsed,
         plan_ops::DecisionWrites::ReadOnly,
         &actual_packages,
@@ -611,7 +614,7 @@ pub fn run_apply(
                 &resolved_modules,
             );
         }
-        report_plan_verdict(printer, 0, Some(&scope));
+        report_plan_verdict(printer, 0, Some(&scope), withheld.pending.len());
         printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
         return Ok(ApplyOutcome::success());
     }

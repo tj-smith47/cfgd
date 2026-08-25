@@ -5503,7 +5503,7 @@ mod cmd_init_apply_orchestration {
     // user systemd service install at install_systemd_service writes to
     // `$HOME/.config/systemd/user/cfgd.service`, so with HOME pointing at a
     // tempdir via with_test_home_guard, the install succeeds and the
-    // "Daemon service installed" success line fires. Pins the happy path.
+    // "Installed daemon service" success line fires. Pins the happy path.
     #[test]
     #[serial]
     #[cfg(target_os = "linux")]
@@ -5539,7 +5539,7 @@ mod cmd_init_apply_orchestration {
         let unit = tmp.path().join(".config/systemd/user/cfgd.service");
         if unit.exists() {
             assert!(
-                captured.contains("Daemon service installed"),
+                captured.contains("Installed daemon service"),
                 "success line should fire when systemd-user install succeeds: {captured}"
             );
             let content = std::fs::read_to_string(&unit).unwrap();
@@ -5598,7 +5598,7 @@ mod cmd_init_apply_orchestration {
             .join("Library/LaunchAgents/com.cfgd.daemon.plist");
         if plist.exists() {
             assert!(
-                captured.contains("Daemon service installed"),
+                captured.contains("Installed daemon service"),
                 "success line should fire when launchd install succeeds: {captured}"
             );
             let content = std::fs::read_to_string(&plist).unwrap();

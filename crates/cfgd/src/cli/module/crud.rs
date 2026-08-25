@@ -326,7 +326,7 @@ pub fn cmd_module_create(
             run.header(printer);
             // `module create` exposes no scoping flag, so the verdict takes the
             // filter-less arm of the one helper that owns both spellings.
-            crate::cli::plan_ops::report_plan_verdict(printer, 0, None);
+            crate::cli::plan_ops::report_plan_verdict(printer, 0, None, 0);
         } else {
             // Same requirement as `cfgd init --apply-module`: the apply records
             // module state from this slice, and regenerates the env files from
@@ -360,7 +360,7 @@ pub fn cmd_module_create(
                 cfgd_core::reconciler::RunDisposition::Declined => {
                     printer
                         .status(Role::Info, "Skipped")
-                        .detail("run 'cfgd apply' to apply later");
+                        .detail("run `cfgd apply` to apply later");
                     printer.emit(Doc::new().with_data(serde_json::json!({
                         "name": name,
                         "path": module_dir.display().to_string(),

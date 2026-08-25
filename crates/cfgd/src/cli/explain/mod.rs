@@ -515,9 +515,9 @@ pub fn build_explain_index_doc() -> Doc {
     Doc::new()
         .heading("Available resource types")
         .table(table)
-        .hint("Use 'cfgd explain <resource>' for details")
-        .hint("Use 'cfgd explain <resource>.<field>' to drill into a field")
-        .hint("Use 'cfgd explain <resource> --recursive' for all fields expanded")
+        .hint("Run `cfgd explain <resource>` for details")
+        .hint("Run `cfgd explain <resource>.<field>` to drill into a field")
+        .hint("Run `cfgd explain <resource> --recursive` for all fields expanded")
         .with_data(outputs)
 }
 
@@ -553,9 +553,9 @@ pub fn build_explain_not_found_error(name: &str, available: &[String]) -> anyhow
     crate::cli::cli_error_with_hints(
         name,
         "not_found",
-        format!("Unknown resource type '{name}'. Run 'cfgd explain' to see available types."),
+        format!("Unknown resource type '{name}'. Run `cfgd explain` to see available types."),
         serde_json::json!({ "available": available }),
-        vec!["Run 'cfgd explain' to see available resource types.".to_string()],
+        vec!["Run `cfgd explain` to see available resource types.".to_string()],
     )
 }
 
@@ -662,7 +662,7 @@ pub(super) fn cmd_explain(
     } else {
         let fields = resolve_field_path(&schema.fields, field_path).ok_or_else(|| {
             anyhow::anyhow!(
-                "Unknown field path '{}.{}'. Use 'cfgd explain {}' to see available fields.",
+                "Unknown field path '{}.{}'. Run `cfgd explain {}` to see available fields.",
                 resource_name,
                 field_path.join("."),
                 resource_name,

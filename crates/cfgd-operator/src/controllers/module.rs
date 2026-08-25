@@ -11,6 +11,7 @@ use crate::crds::{
     is_valid_pem_public_key,
 };
 use crate::errors::OperatorError;
+use cfgd_core::oci::ArtifactFacts;
 
 use super::{
     ControllerContext, ControllerStores, FIELD_MANAGER_STATUS, build_condition, emit_event,
@@ -72,8 +73,12 @@ pub(super) async fn reconcile_module(
     let resolved_artifact = obj.spec.oci_artifact.clone();
     let verified = ver.status == "True";
 
-    let available_platforms =
-        resolve_available_platforms(&ctx, &obj, avail_status, resolved_artifact.as_deref()).await;
+    let facts =
+        resolve_artifact_facts(&ctx, &obj, avail_status, resolved_artifact.as_deref()).await;
+    let ArtifactFacts {
+        platforms: available_platforms,
+        attestations,
+    } = facts;
     let desired = ModuleStatus {
         // Stamped on every reconcile, so a reader can tell whether the verdict
         // below describes the spec it just applied or the one it replaced.
@@ -89,7 +94,7 @@ pub(super) async fn reconcile_module(
             ModuleStatus::signature_verdict(verified, obj.spec.signature.is_some()).to_string(),
         ),
         signature_digest: ver.signature_digest,
-        attestations: vec![],
+        attestations,
         conditions,
     };
 
@@ -141,40 +146,47 @@ pub(super) async fn reconcile_module(
 
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
-/// The platforms the module's artifact declares, read off its OCI manifest.
+/// What the module's artifact declares — its platforms and its attestations —
+/// read off the OCI manifests beside it.
 ///
 /// Re-read only when nothing is recorded for the artifact the spec now names:
 /// the reconcile requeues every 60 seconds, and a registry round-trip per
 /// module per minute buys nothing while the reference is unchanged. A module
 /// with no artifact, or one whose artifact is not admissible, has no manifest
 /// to read and answers empty.
-async fn resolve_available_platforms(
+///
+/// Both facts are recovered from the previous status together, because they
+/// were read together: reusing one while re-reading the other would describe
+/// one artifact with two visits' answers.
+async fn resolve_artifact_facts(
     ctx: &ControllerContext,
     obj: &Module,
     avail_status: &str,
     artifact: Option<&str>,
-) -> Vec<String> {
+) -> ArtifactFacts {
     let Some(artifact) = artifact else {
-        return Vec::new();
+        return ArtifactFacts::default();
     };
     if avail_status != "True" {
-        return Vec::new();
+        return ArtifactFacts::default();
     }
     if let Some(prev) = obj.status.as_ref()
         && prev.resolved_artifact.as_deref() == Some(artifact)
-        && !prev.available_platforms.is_empty()
+        && !(prev.available_platforms.is_empty() && prev.attestations.is_empty())
     {
-        return prev.available_platforms.clone();
+        return ArtifactFacts {
+            platforms: prev.available_platforms.clone(),
+            attestations: prev.attestations.clone(),
+        };
     }
 
-    let reader = ctx.artifact_platforms.clone();
+    let reader = ctx.artifact_facts.clone();
     let reference = artifact.to_string();
-    match cfgd_core::spawn_blocking_with_test_home(move || reader.read_platforms(&reference)).await
-    {
-        Ok(platforms) => platforms,
+    match cfgd_core::spawn_blocking_with_test_home(move || reader.read_facts(&reference)).await {
+        Ok(facts) => facts,
         Err(e) => {
-            warn!(artifact = %artifact, error = %e, "artifact platform read did not complete");
-            Vec::new()
+            warn!(artifact = %artifact, error = %e, "artifact fact read did not complete");
+            ArtifactFacts::default()
         }
     }
 }

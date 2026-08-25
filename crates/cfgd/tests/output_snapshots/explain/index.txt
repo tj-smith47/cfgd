@@ -1,5 +1,4 @@
 Available resource types
-
 NAME                 API/KIND                              LOCATION                          
 ─────────────────────────────────────────────────────────────────────────────────────────────
 Module               cfgd.io/v1alpha1/Module               modules/<name>/module.yaml        
@@ -13,6 +12,6 @@ DriftAlert           cfgd.io/v1alpha1/DriftAlert           DriftAlert CRD
 Module (CRD)         cfgd.io/v1alpha1/Module               Module CRD                        
 TeamConfig           cfgd.io/v1alpha1/TeamConfig           Crossplane Composite Resource (XR)
 
-→ Use 'cfgd explain <resource>' for details
-→ Use 'cfgd explain <resource>.<field>' to drill into a field
-→ Use 'cfgd explain <resource> --recursive' for all fields expanded
+→ Run `cfgd explain <resource>` for details
+→ Run `cfgd explain <resource>.<field>` to drill into a field
+→ Run `cfgd explain <resource> --recursive` for all fields expanded

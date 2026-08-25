@@ -109,6 +109,11 @@ fn sample_status_no_timestamps() -> DaemonStatusResponse {
 
 // --- cfgd daemon status ----------------------------------------------------
 
+/// The instant every daemon-status render in this suite ages its stamps
+/// against, so a captured age is a fact about the fixture rather than about
+/// the day the suite ran.
+const DAEMON_STATUS_NOW: &str = "2026-05-14T12:00:00Z";
+
 #[test]
 fn daemon_status_not_running_human() {
     let cli = Cli::parse_from(["cfgd"]);
@@ -134,7 +139,7 @@ fn daemon_status_not_running_json() {
 fn daemon_status_running_human() {
     let (printer, cap) = Printer::for_test_doc();
     let status = sample_status_basic();
-    printer.emit(build_daemon_status_doc(Some(&status)));
+    printer.emit(build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "daemon_status/running.txt");
 }
@@ -143,7 +148,7 @@ fn daemon_status_running_human() {
 fn daemon_status_running_json() {
     let (printer, cap) = Printer::for_test_doc();
     let status = sample_status_basic();
-    printer.emit(build_daemon_status_doc(Some(&status)));
+    printer.emit(build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW));
     drop(printer);
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["pid"], 4242);
@@ -155,7 +160,7 @@ fn daemon_status_running_json() {
 fn daemon_status_running_no_timestamps_human() {
     let (printer, cap) = Printer::for_test_doc();
     let status = sample_status_no_timestamps();
-    printer.emit(build_daemon_status_doc(Some(&status)));
+    printer.emit(build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW));
     drop(printer);
     cap.assert_human_snapshot_in(
         Path::new(SNAPSHOT_ROOT),
@@ -167,7 +172,7 @@ fn daemon_status_running_no_timestamps_human() {
 fn daemon_status_running_with_update_human() {
     let (printer, cap) = Printer::for_test_doc();
     let status = sample_status_with_update();
-    printer.emit(build_daemon_status_doc(Some(&status)));
+    printer.emit(build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW));
     drop(printer);
     cap.assert_human_snapshot_in(
         Path::new(SNAPSHOT_ROOT),

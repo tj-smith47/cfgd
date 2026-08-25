@@ -10,6 +10,6 @@ Sources
     ⚠ permission changes need approval
     Permission Changes
       - Locked items increased from 0 to 2
-    ✓ synced — commit: <COMMIT> → <COMMIT>
+    ✓ Synced — commit: <COMMIT> → <COMMIT>
 
-→ Run 'cfgd plan' to preview changes, then 'cfgd apply'
+→ Run `cfgd plan` to preview changes, then `cfgd apply`

@@ -1,12 +1,9 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::yes_no;
 
 // --- Config CRUD ---
-
-fn yes_no(b: bool) -> &'static str {
-    if b { "yes" } else { "no" }
-}
 
 pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
     let mut doc = Doc::new()
@@ -41,19 +38,19 @@ pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
 
         if let Some(ref sec) = mods.security {
             doc = doc.section("Module Security", |s| {
-                s.kv("Require signatures", yes_no(sec.require_signatures))
+                s.kv("Require signatures", yes_no(Some(sec.require_signatures)))
             });
         }
     }
 
     if let Some(ref daemon) = cfg.spec.daemon {
         doc = doc.section("Daemon", |s| {
-            let mut s = s.kv("Enabled", yes_no(daemon.enabled));
+            let mut s = s.kv("Enabled", yes_no(Some(daemon.enabled)));
             if let Some(ref reconcile) = daemon.reconcile {
                 s = s.subsection("Reconcile", |sub| {
                     sub.kv("Interval", &reconcile.interval)
-                        .kv("On change", yes_no(reconcile.on_change))
-                        .kv("Auto apply", yes_no(reconcile.auto_apply))
+                        .kv("On change", yes_no(Some(reconcile.on_change)))
+                        .kv("Auto apply", yes_no(Some(reconcile.auto_apply)))
                 });
             }
             if let Some(ref sync) = daemon.sync {

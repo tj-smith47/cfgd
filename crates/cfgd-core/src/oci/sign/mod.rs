@@ -224,6 +224,45 @@ pub fn attach_attestation(
     Ok(())
 }
 
+/// The `--type` name cosign knows a predicate-type URI by.
+///
+/// The two spellings are not interchangeable: `cosign attest --type
+/// slsaprovenance1` records `https://slsa.dev/provenance/v1` in the manifest
+/// annotation, so a reader echoing the URI back would be naming a string
+/// [`verify_attestation`] does not accept. This is the ONE fold between the
+/// wire vocabulary and the flag vocabulary, and every type cosign has a short
+/// name for is listed. A predicate some other tool attached is reported
+/// verbatim — which is also what `--type` takes for a type it has no name for.
+#[must_use]
+pub fn attestation_type_name(predicate_type: &str) -> String {
+    COSIGN_PREDICATE_TYPES
+        .iter()
+        .find(|(uri, _)| *uri == predicate_type)
+        .map_or(predicate_type, |(_, name)| *name)
+        .to_string()
+}
+
+/// Every predicate-type URI cosign has a `--type` name for, and that name.
+///
+/// A URI appears once per name it folds to; two URIs sharing a name (the
+/// CycloneDX and in-toto Link revisions) are two rows, because the fold runs
+/// one way — from what a manifest recorded to what a flag accepts. Public
+/// because the right column IS the vocabulary a `--type` argument and a
+/// recorded attestation type are both drawn from, and a surface naming one
+/// checks itself against this list rather than against a copy of it.
+pub const COSIGN_PREDICATE_TYPES: &[(&str, &str)] = &[
+    ("https://slsa.dev/provenance/v0.2", "slsaprovenance"),
+    ("https://slsa.dev/provenance/v1", "slsaprovenance1"),
+    ("https://spdx.dev/Document", "spdx"),
+    ("https://cyclonedx.org/bom", "cyclonedx"),
+    ("https://cyclonedx.org/schema/bom", "cyclonedx"),
+    ("https://in-toto.io/Link/v1", "link"),
+    ("https://in-toto.io/Link/v0.3", "link"),
+    ("https://cosign.sigstore.dev/attestation/vuln/v1", "vuln"),
+    ("https://cosign.sigstore.dev/attestation/v1", "custom"),
+    ("https://openvex.dev/ns", "openvex"),
+];
+
 /// Verify an in-toto attestation on an OCI artifact.
 pub fn verify_attestation(
     artifact_ref: &str,

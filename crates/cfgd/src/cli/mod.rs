@@ -82,15 +82,17 @@ use cfgd_core::platform::Platform;
 use cfgd_core::providers::{
     FileAction, PackageAction, ProviderRegistry, SecretAction, SecretBackend,
 };
-// `MSG_NOTHING_TO_DO` is imported rather than restated: the run skeleton owns
-// the wording, so the CLI's verdict and the daemon's cannot drift apart.
+// The in-sync verdict is imported rather than restated: the run skeleton owns
+// both the wording and the role, so the CLI's verdict and the daemon's cannot
+// drift apart, and no surface can call a machine up to date while a decision
+// it just listed is still unanswered.
 use cfgd_core::reconciler::{
-    self, MSG_NOTHING_TO_DO, PhaseFilter, PhaseName, ReconcileContext, Reconciler,
+    self, PhaseFilter, PhaseName, ReconcileContext, Reconciler, nothing_to_do_verdict,
 };
 use cfgd_core::sources::SourceManager;
 use cfgd_core::state::StateStore;
 
-const MSG_RUN_APPLY: &str = "Run 'cfgd plan' to preview changes, then 'cfgd apply'";
+const MSG_RUN_APPLY: &str = "Run `cfgd plan` to preview changes, then `cfgd apply`";
 
 /// Collapse a `--flag` / `--no-flag` pair into the edit it asks for. `None` is
 /// "the caller said nothing", which must stay distinct from `Some(false)` — a
@@ -1048,7 +1050,7 @@ pub enum Command {
         long_about = "Restore files to their pre-apply state using captured backups.\n\nExamples:\n  cfgd log\n  cfgd rollback 42 --yes"
     )]
     Rollback {
-        /// Apply ID to roll back (from 'cfgd log')
+        /// Apply ID to roll back (from `cfgd log`)
         apply_id: i64,
 
         /// Skip confirmation prompt

@@ -1,4 +1,4 @@
-Source: locked-source
+Show source:locked-source
   URL                 https://github.com/corp/locked
   Branch              main
   Priority            50
