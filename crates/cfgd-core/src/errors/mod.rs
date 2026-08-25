@@ -234,6 +234,22 @@ pub enum FileError {
 
     #[error("failed to back up {path}: {message}")]
     BackupFailed { path: PathBuf, message: String },
+
+    #[error(
+        "{}target exists as unmanaged file: {} (--on-conflict fail)",
+        .module.as_ref().map(|m| format!("module '{m}': ")).unwrap_or_default(),
+        crate::PathDisplayExt::posix(.path)
+    )]
+    UnmanagedTarget {
+        path: PathBuf,
+        module: Option<String>,
+    },
+
+    #[error(
+        "interrupted at the unmanaged-file prompt for {}; nothing was applied",
+        crate::PathDisplayExt::posix(.path)
+    )]
+    AdoptionPromptInterrupted { path: PathBuf },
 }
 
 #[derive(Debug, thiserror::Error)]

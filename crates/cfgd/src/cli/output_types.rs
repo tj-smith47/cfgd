@@ -1244,6 +1244,7 @@ mod tests {
                 matches: false,
                 expected: "content satisfies patch spec".to_string(),
                 actual: "cannot evaluate patch spec: blocked".to_string(),
+                unmanaged: false,
             }],
             packages: vec![PackageDrift {
                 manager: "brew".to_string(),

@@ -30,6 +30,8 @@ Aliases
   gs  git status
   ll  ls -la
 
-Post-apply Scripts
-  ⊙ echo 'post-apply hook ran'
-  ⊙ systemctl --user daemon-reload
+Scripts
+  ⊙ preApply: mkdir -p ~/.config/dev-tools
+  ⊙ postApply: echo 'post-apply hook ran'
+  ⊙ postApply: systemctl --user daemon-reload
+  ⊙ onDrift: notify-send 'dev-tools drifted'

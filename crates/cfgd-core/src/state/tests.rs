@@ -1403,10 +1403,30 @@ fn module_file_manifest_crud() {
     assert_eq!(files[0].content_hash, "newhash");
     assert_eq!(files[0].strategy, "Symlink");
 
+    // The path lookup answers without naming the owning module: a
+    // classification asking "did cfgd put this here" has the path and nothing
+    // else.
+    assert!(
+        store
+            .is_module_deployed_file("/home/user/.config/nvim/lazy.lua")
+            .unwrap()
+    );
+    assert!(
+        !store
+            .is_module_deployed_file("/home/user/.config/nvim/never.lua")
+            .unwrap()
+    );
+
     // Delete all
     store.delete_module_files("nvim").unwrap();
     let files = store.module_deployed_files("nvim").unwrap();
     assert!(files.is_empty());
+    assert!(
+        !store
+            .is_module_deployed_file("/home/user/.config/nvim/init.lua")
+            .unwrap(),
+        "a removed module's files stop being cfgd's"
+    );
 }
 
 #[test]

@@ -1027,6 +1027,15 @@ pub enum FileAction {
 /// matches the rendered source content (presence AND bytes), plus the
 /// human-readable `expected`/`actual` descriptions used to build a drift report.
 ///
+/// The `expected` a file finding carries when the DESIRED content could not be
+/// determined at all (the managed source is not on disk).
+///
+/// A wire-ish literal shared with its one producer because a reader has to tell
+/// that finding apart from a content comparison and the type carries only
+/// strings: `mark_unmanaged_drift` re-words a content finding and must leave
+/// this one saying why it could not look.
+pub const SOURCE_MISSING_EXPECTED: &str = "managed source present";
+
 /// `target` is the display path of the managed target. `matches` is `true` only
 /// when the target exists and its bytes equal the rendered source; a missing
 /// source or missing target yields `matches: false` with `actual` describing the
@@ -1037,6 +1046,10 @@ pub struct FileDriftResult {
     pub matches: bool,
     pub expected: String,
     pub actual: String,
+    /// Whether the target holds a file cfgd never wrote. Additive: a converged
+    /// or cfgd-owned target reads `false`, exactly as every reader saw before
+    /// the field existed.
+    pub unmanaged: bool,
 }
 
 /// Serialized in the same shape as a `VerifyResult`: `resourceType` is the
@@ -1052,12 +1065,13 @@ impl serde::Serialize for FileDriftResult {
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("FileDriftResult", 5)?;
+        let mut state = serializer.serialize_struct("FileDriftResult", 6)?;
         state.serialize_field("resourceType", "file")?;
         state.serialize_field("resourceId", &self.target)?;
         state.serialize_field("matches", &self.matches)?;
         state.serialize_field("expected", &self.expected)?;
         state.serialize_field("actual", &self.actual)?;
+        state.serialize_field("unmanaged", &self.unmanaged)?;
         state.end()
     }
 }

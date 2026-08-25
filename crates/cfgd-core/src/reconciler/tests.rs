@@ -14392,6 +14392,7 @@ fn run_brew_module_action(path_dirs: &[&str]) -> crate::state::StateStore {
             None,
             &crate::AbortFlag::new(),
             &crate::providers::NoteSink::default(),
+            &mut Vec::new(),
         )
         .expect("module action must succeed");
     assert!(
@@ -24419,13 +24420,19 @@ fn a_reserved_target_is_copied_aside_by_the_file_action_that_replaces_it() {
         "the action that replaces the file copies it aside first"
     );
     let out = crate::test_helpers::captured_text(&buf);
-    let phase = out.find("Files").expect("the Files phase is announced");
-    let backed = out
-        .find("Backed up to")
-        .expect("the copy is reported as it happens");
+    // One row per action: the copy is the action row's own detail, never a
+    // status line of its own above it.
+    let row = out
+        .lines()
+        .find(|l| l.contains("live.conf") && l.contains("backed up to"))
+        .unwrap_or_else(|| panic!("the copy is reported on the row that made it, got: {out}"));
     assert!(
-        phase < backed,
-        "the backup must be reported inside the Files phase, got: {out}"
+        row.contains("live.conf.cfgd-backup"),
+        "the row names where the copy landed, got: {row}"
+    );
+    assert!(
+        !out.contains("Backed up to"),
+        "the standalone backup line is gone, got: {out}"
     );
 }
 
@@ -24651,4 +24658,197 @@ fn an_env_file_write_reports_what_it_wrote() {
         out.contains("3 vars, 2 aliases"),
         "the env write states its own contents: {out}"
     );
+}
+
+/// A `Patch` entry's target is nobody's conflict: the strategy merges into
+/// whatever the target holds. The marker must leave such a finding alone, or a
+/// patch failure's own reason (a barred filter, an unparseable target) is
+/// overwritten with a cause that names a different problem.
+#[test]
+fn a_patch_finding_keeps_its_own_reason() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("settings.json");
+    std::fs::write(&target, "the user's own file\n").unwrap();
+    let state = crate::state::StateStore::open_in_memory().unwrap();
+
+    let blocked = crate::providers::FileDriftResult {
+        target: target.to_string_lossy().into_owned(),
+        matches: false,
+        expected: "content satisfies patch spec".to_string(),
+        actual: "patch script is blocked: source 'acme' is not allowed to run scripts".to_string(),
+        unmanaged: false,
+    };
+
+    let mut patched = blocked.clone();
+    crate::reconciler::mark_unmanaged_drift(
+        &mut patched,
+        crate::config::FileStrategy::Patch,
+        tmp.path(),
+        &state,
+    );
+    assert_eq!(
+        patched.actual, blocked.actual,
+        "a patch finding keeps the reason it was given"
+    );
+    assert!(!patched.unmanaged, "a patch target is never a conflict");
+
+    // The same target under a replacing strategy IS a stranger's file: the
+    // exclusion is about the strategy, not about this fixture.
+    let mut copied = blocked.clone();
+    crate::reconciler::mark_unmanaged_drift(
+        &mut copied,
+        crate::config::FileStrategy::Copy,
+        tmp.path(),
+        &state,
+    );
+    assert_eq!(copied.actual, crate::reconciler::UNMANAGED_DRIFT_CAUSE);
+    assert!(copied.unmanaged);
+}
+
+/// A finding whose desired content could not be determined at all says why cfgd
+/// could not look. Re-wording it as `unmanaged file at target` would claim a
+/// fact about the target that nobody established — the source is what is
+/// missing, and the target was never compared against anything.
+#[test]
+fn a_source_not_found_finding_keeps_its_own_reason_over_an_untracked_target() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("app.conf");
+    std::fs::write(&target, "the user's own file\n").unwrap();
+    let state = crate::state::StateStore::open_in_memory().unwrap();
+
+    let missing_source = format!(
+        "source not found: {}",
+        tmp.path().join("app.conf.src").display()
+    );
+    let mut record = crate::providers::FileDriftResult {
+        target: target.to_string_lossy().into_owned(),
+        matches: false,
+        expected: crate::providers::SOURCE_MISSING_EXPECTED.to_string(),
+        actual: missing_source.clone(),
+        unmanaged: false,
+    };
+    crate::reconciler::mark_unmanaged_drift(
+        &mut record,
+        crate::config::FileStrategy::Copy,
+        tmp.path(),
+        &state,
+    );
+    assert_eq!(
+        record.actual, missing_source,
+        "a source-missing finding keeps the reason it was given"
+    );
+    assert!(
+        !record.unmanaged,
+        "cfgd never looked at the target, so it cannot report it as a stranger's file"
+    );
+}
+
+/// The two sentences an operator reads when a conflict is not settled by a
+/// copy. Both are byte-pinned because they are the whole of what `--on-conflict
+/// fail` and a Ctrl-C at the prompt say: a reword that drops the flag name, the
+/// module, or the "nothing was applied" guarantee changes what the operator
+/// believes happened to their file, and no golden covers either one.
+#[test]
+fn the_conflict_refusal_and_interrupt_messages_are_pinned() {
+    let path = std::path::Path::new("/home/u/.gitconfig");
+
+    assert_eq!(
+        crate::reconciler::unmanaged_conflict_error(path, None).to_string(),
+        "target exists as unmanaged file: /home/u/.gitconfig (--on-conflict fail)"
+    );
+    assert_eq!(
+        crate::reconciler::unmanaged_conflict_error(path, Some("nvim")).to_string(),
+        "module 'nvim': target exists as unmanaged file: /home/u/.gitconfig (--on-conflict fail)"
+    );
+    assert_eq!(
+        crate::errors::FileError::AdoptionPromptInterrupted {
+            path: path.to_path_buf(),
+        }
+        .to_string(),
+        "interrupted at the unmanaged-file prompt for /home/u/.gitconfig; nothing was applied"
+    );
+    assert_eq!(
+        crate::reconciler::UNMANAGED_SKIP_REASON,
+        "skipped: target exists as unmanaged file"
+    );
+}
+
+/// A sidecar is taken BEFORE the write it protects, so a write that then fails
+/// still left a copy of the user's file on disk. Reported on the failure row
+/// beside the error, or it is reported nowhere and the operator has a
+/// `.cfgd-backup` nobody told them about.
+#[test]
+fn a_failing_write_over_an_adopted_target_still_names_the_copy_it_took() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("src.conf");
+    std::fs::write(&source, "from the module\n").unwrap();
+    let target = tmp.path().join("live.conf");
+    std::fs::write(&target, "years of hand edits\n").unwrap();
+
+    // The copy aside is taken by the reconciler itself and succeeds; the write
+    // it protects is the file manager's, and this one refuses.
+    let fm = crate::test_helpers::MockFileManager::new();
+    fm.set_fail_apply(true);
+    let harness = crate::test_helpers::ReconcilerTestHarness::builder()
+        .file_manager(fm)
+        .build();
+    let plan = harness
+        .plan_with_actions(
+            vec![FileAction::Update {
+                source,
+                target: target.clone(),
+                diff: String::new(),
+                origin: "local".to_string(),
+                strategy: crate::config::FileStrategy::Copy,
+                source_hash: None,
+                patch: None,
+            }],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    let _ = Reconciler::new(&harness.registry, &harness.state)
+        .backing_up(std::collections::HashSet::from([target.clone()]))
+        .apply(
+            &plan,
+            &harness.resolved,
+            std::path::Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        );
+    drop(printer);
+
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("live.conf.cfgd-backup")).unwrap(),
+        "years of hand edits\n",
+        "the copy was taken before the write that failed"
+    );
+    let out = crate::test_helpers::captured_text(&buf);
+    let row = out
+        .lines()
+        .find(|l| l.contains("live.conf") && l.contains("backed up to"))
+        .unwrap_or_else(|| panic!("a failed write still names its copy, got: {out}"));
+    assert!(
+        row.contains("live.conf.cfgd-backup"),
+        "the failure row names where the copy landed, got: {row}"
+    );
+    assert!(
+        row.contains('✗'),
+        "the copy rides on the FAILURE row, not a success one, got: {row}"
+    );
+    // The error first, the copy after: both facts on one row, in the order
+    // they happened, rather than either replacing the other.
+    let (before, after) = row.split_once(", backed up to ").unwrap();
+    assert!(
+        before.contains('—') && before.len() > before.find('—').unwrap() + 3,
+        "the error keeps its own place ahead of the copy, got: {row}"
+    );
+    assert!(after.ends_with(".cfgd-backup"), "got: {row}");
 }

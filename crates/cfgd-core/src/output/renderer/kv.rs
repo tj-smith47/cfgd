@@ -44,6 +44,8 @@ fn pad_to_width(text: &str, width: usize) -> String {
 const KEY_WIDTH_CAP: usize = 24;
 /// Gap inserted between the (padded) key column and the value.
 const KEY_VALUE_GAP: &str = "  ";
+/// How far a [`KvPair::nested`] row's key sits inside the block's key column.
+const NESTED_KEY_INDENT: usize = 2;
 /// The glue between a `command_list` row's two columns, rendered with one
 /// space either side.
 const GLUE_DASH: &str = "—";
@@ -155,27 +157,37 @@ impl Emitting<'_> {
         // Sanitizing at the renderer is what makes it uniform: a row cannot be
         // added to this surface in an unfolded state, and the annotation slot
         // below is the only way styling reaches a value.
-        let rows: Vec<(String, String)> = pairs
+        let rows: Vec<(String, String, usize)> = pairs
             .iter()
-            .map(|p| (cursor_safe(&p.key), self.compose_kv_value(p)))
+            .map(|p| {
+                let indent = if p.nested { NESTED_KEY_INDENT } else { 0 };
+                (cursor_safe(&p.key), self.compose_kv_value(p), indent)
+            })
             .collect();
+        // Measured over the INDENTED width, so a nested breakdown's values line
+        // up with the values of the rows it sits under rather than starting two
+        // columns to their right.
         let key_col = rows
             .iter()
-            .map(|(k, _)| UnicodeWidthStr::width(k.as_str()))
+            .map(|(k, _, indent)| indent + UnicodeWidthStr::width(k.as_str()))
             .max()
             .unwrap_or(0)
             .min(KEY_WIDTH_CAP);
-        for (k, v) in &rows {
-            if UnicodeWidthStr::width(k.as_str()) <= KEY_WIDTH_CAP {
-                let key = self.theme.secondary.apply_to(pad_to_width(k, key_col));
+        for (k, v, indent) in &rows {
+            let pad = " ".repeat(*indent);
+            if indent + UnicodeWidthStr::width(k.as_str()) <= KEY_WIDTH_CAP {
+                let key = self
+                    .theme
+                    .secondary
+                    .apply_to(pad_to_width(k, key_col.saturating_sub(*indent)));
                 self.out
-                    .push(format!("{}{}{}{}", prefix, key, KEY_VALUE_GAP, v));
+                    .push(format!("{}{}{}{}{}", prefix, pad, key, KEY_VALUE_GAP, v));
             } else {
                 // Long key: render on its own line, value wrapped to the
                 // following line indented one extra level.
                 let key = self.theme.secondary.apply_to(k);
-                self.out.push(format!("{}{}", prefix, key));
-                self.out.push(format!("{}  {}", prefix, v));
+                self.out.push(format!("{}{}{}", prefix, pad, key));
+                self.out.push(format!("{}{}  {}", prefix, pad, v));
             }
         }
         match anchor {

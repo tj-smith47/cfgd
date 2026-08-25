@@ -979,6 +979,12 @@ log_section "Effective-state routing (module↔profile coherence)"
 #   desired_packages_for( / desired_packages_for_spec(  → effective_desired_packages
 #   .merged.system / profile.system  (direct field reads) → effective_system_map
 #   .files.managed                                        → effective_files
+#   file.strategy / .strategy.unwrap_or(  (raw, unresolved) → effective_file_strategies
+# The strategy ban is the same rule one field down: a read path that takes an
+# entry's `Option<FileStrategy>` raw, or applies the profile-wide default itself,
+# is deciding on its own what a strategy-less entry means — and three of them
+# decided differently, so `cfgd diff` and the apply-time conflict sweep
+# disagreed about whether a `Patch` target was even a conflict.
 # Passing &resolved.merged or profile as an ARGUMENT to effective_* is fine and
 # does not match (the bans target the .system FIELD read, not .merged itself).
 # crates/cfgd-core/src/effective.rs is intentionally exempt — it IS the source
@@ -1004,7 +1010,7 @@ effective_read_paths=(
     crates/cfgd-core/src/compliance/mod.rs
 )
 require_files "effective-state routing scan" "${effective_read_paths[@]}" || true
-effective_pattern='desired_packages_for\(|desired_packages_for_spec\(|\.merged\.system|profile\.system|\.files\.managed'
+effective_pattern='desired_packages_for\(|desired_packages_for_spec\(|\.merged\.system|profile\.system|\.files\.managed|\bfile\.strategy\b|\.strategy\.unwrap_or\('
 effective_violations=""
 for rsfile in "${effective_read_paths[@]}"; do
     [[ -f "$rsfile" ]] || continue
@@ -1797,25 +1803,43 @@ else
     log_ok "Every demo/*.tape is recorded by a Taskfile target"
 fi
 
-# --- Host-recorded tapes pin the theme ---
-# A tape that runs cfgd on the HOST (the kind-cluster demos reach the
-# demo-k8s kubeconfig instead of a container) reads the recording operator's
-# own ~/.config/cfgd, so an operator whose config names a preset publishes a
-# GIF in that preset. Two GIFs shipped in dracula that way. The export line
-# that points at demo-k8s must also carry CFGD_THEME=default.
-log_section "Demo tapes (host-recorded tapes pin CFGD_THEME)"
+# --- Every tape renders in the ONE demo theme ---
+# The GIF set is one product and reads as one only in one preset. A tape has
+# exactly one place it selects the theme: a container-recorded tape's hidden
+# `cfgd init … --theme <preset>` (the container has no config before it), and
+# a host-recorded tape's export line (the kind-cluster demos reach the demo-k8s
+# kubeconfig, and cfgd on the HOST otherwise reads the recording operator's own
+# ~/.config/cfgd, which is how two GIFs once shipped in a preset the rest of the
+# set did not use). Both populations are checked against the same name, so a
+# preset change is one edit here and one per tape, never a split set.
+DEMO_THEME=dracula
+log_section "Demo tapes (every tape pins the demo theme: ${DEMO_THEME})"
 
 theme_gap=""
 for tape in demo/*.tape; do
     [ -e "$tape" ] || continue
-    grep -q 'cfgd-debug/demo-k8s' "$tape" || continue
-    grep -Eq '^Type "export .*CFGD_THEME=default' "$tape" || theme_gap="${theme_gap}${tape}"$'\n'
+    if grep -q 'cfgd-debug/demo-k8s' "$tape"; then
+        grep -Eq "^Type \"export .*CFGD_THEME=${DEMO_THEME}( |\")" "$tape" \
+            || theme_gap="${theme_gap}${tape} (host tape: export line must carry CFGD_THEME=${DEMO_THEME})"$'\n'
+    elif grep -q 'cfgd init ' "$tape"; then
+        grep -Eq "^Type \"cfgd init .*--theme ${DEMO_THEME}( |\")" "$tape" \
+            || theme_gap="${theme_gap}${tape} (container tape: cfgd init must carry --theme ${DEMO_THEME})"$'\n'
+    else
+        # A container tape whose machine is pre-staged by a setup script
+        # (sync.tape) inherits that script's init; the script is the tape's
+        # theme selector — either a `--theme` on its init or a `theme:` in the
+        # config it seeds — and is checked in its place.
+        setup_script=$(grep -oE 'setup-[a-z0-9-]+\.sh' "$tape" | head -n1)
+        if [ -z "$setup_script" ] || ! grep -Eq -- "(--theme|^ *theme:) ${DEMO_THEME}( |\"|'|\$)" "demo/scripts/${setup_script}"; then
+            theme_gap="${theme_gap}${tape} (no cfgd init and no setup script selecting the ${DEMO_THEME} theme)"$'\n'
+        fi
+    fi
 done
 if [ -n "$theme_gap" ]; then
-    log_error "Host-recorded demo tapes whose export line does not pin CFGD_THEME=default:"
+    log_error "Demo tapes that do not pin the ${DEMO_THEME} theme:"
     printf '%s' "$theme_gap"
 else
-    log_ok "Every host-recorded demo tape pins CFGD_THEME=default"
+    log_ok "Every demo tape pins the ${DEMO_THEME} theme"
 fi
 
 # --- Summary ---

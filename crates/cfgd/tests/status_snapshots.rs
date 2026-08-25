@@ -573,17 +573,73 @@ fn status_per_module_scanned_json() {
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_module_status_doc(&output, ModuleStatusView::Compact));
     drop(printer);
-    // The payload is the struct's own serialization plus ONE derived field, so
-    // the expectation is built that way: `state` is pinned to the verdict this
-    // fixture's live scan reached, and nothing else may differ.
+    // The payload is the struct's own serialization plus the two derived
+    // fields, so the expectation is built that way: `state` is pinned to the
+    // verdict this fixture's live scan reached and `scriptCounts` to the
+    // per-hook tally, and nothing else may differ.
     let mut expected = serde_json::to_value(&output).unwrap();
     expected["state"] = serde_json::Value::String("Drifted".to_string());
+    expected["scriptCounts"] =
+        serde_json::json!([{"hook": "preApply", "count": 1}, {"hook": "postApply", "count": 2}]);
     let actual = cap.json().expect("doc captured json");
     assert_eq!(
         actual, expected,
         "emit -o json must match serde_json::to_value(output) plus the derived state"
     );
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "status/per_module_scanned.json");
+}
+
+/// The Scripts group is a TOTAL with one indented row per declaring hook, in
+/// execution order — a single `6 postApply` line hid every other hook behind
+/// the one that happened to declare most.
+#[test]
+fn status_per_module_scripts_row_breaks_down_per_hook() {
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_module_status_doc(
+        &per_module_output(),
+        ModuleStatusView::Compact,
+    ));
+    drop(printer);
+    let human = cap.human();
+    let rows: Vec<&str> = human
+        .lines()
+        .skip_while(|l| !l.trim_start().starts_with("Scripts"))
+        .take(3)
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            "  Scripts       3",
+            "    preApply    1",
+            "    postApply   2",
+        ],
+        "Scripts is a total with a per-hook breakdown under it: {human}"
+    );
+}
+
+/// `scripts` keeps the hook NAMES byte-exact; `scriptCounts` is the additive
+/// per-hook tally beside it, so a machine consumer reads the same breakdown
+/// the human rows show.
+///
+/// It is an ARRAY, and the assertion is order-sensitive on purpose: execution
+/// order is the whole point of the breakdown, and a JSON object cannot carry
+/// it — the payload round-trips through `serde_json::Value`, whose map sorts
+/// its keys, so an object would have handed a consumer `postApply` first.
+#[test]
+fn status_per_module_json_carries_script_counts() {
+    let output = per_module_output();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_module_status_doc(&output, ModuleStatusView::Compact));
+    drop(printer);
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(
+        json["scripts"],
+        serde_json::json!(["preApply", "postApply"])
+    );
+    assert_eq!(
+        json["scriptCounts"],
+        serde_json::json!([{"hook": "preApply", "count": 1}, {"hook": "postApply", "count": 2}])
+    );
 }
 
 #[test]

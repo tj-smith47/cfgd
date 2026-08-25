@@ -76,21 +76,20 @@ Two different failures, two different guarantees:
 Neither platform's guarantee depends on the *target* surviving: the original is
 still at the target throughout, because the sidecar is a copy.
 
-### The daemon does not run this pass
+### What the daemon does with a conflict
 
-`--on-conflict` is a `cfgd apply` / `cfgd init --apply` flag, and the adoption
-pass that reads it lives in the CLI. **The daemon's auto-apply reconcile loop
-does not run it**: a daemon tick that finds an unmanaged file at a managed
-target overwrites it, without a prompt, a sidecar copy, or a way to configure
-otherwise.
+`--on-conflict` is a `cfgd apply` / `cfgd init --apply` flag, but the pass that
+reads it is not the CLI's. The classification and the sweep live in the
+reconciler, and **the daemon's auto-apply reconcile loop runs the same pass** —
+under the `backup` policy, since a daemon has nobody to prompt. A tick that
+finds an unmanaged file at a managed target copies it to `<target>.cfgd-backup`
+before displacing it, with the same guarantees the table above describes.
 
-What still protects that write is the transaction journal below: the daemon's
+The transaction journal below still backs that write as well: the daemon's
 applies record `file_backups` rows exactly as a CLI apply does, so
-`cfgd rollback <apply-id>` restores the overwritten content. What is missing is
-the *pre-write sidecar* and the *policy*: a daemon cannot prompt, and no
-config-driven conflict policy exists. A machine whose targets may hold files
-cfgd never wrote should be adopted once with `cfgd apply` before the daemon's
-auto-apply is enabled.
+`cfgd rollback <apply-id>` restores the overwritten content. What the daemon
+does not have is the *policy choice* — `overwrite`, `skip` and `fail` are
+reachable only from a command line.
 
 ## Transaction Journal
 

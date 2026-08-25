@@ -589,7 +589,12 @@ pub(super) fn apply_plan(
             printer,
             opts.yes,
             opts.on_conflict,
-            opts.default_strategy,
+            &cfgd_core::effective::effective_file_strategies(
+                &resolved.merged,
+                modules,
+                config_dir,
+                opts.default_strategy,
+            ),
         )?)
     };
     let plan = &*plan;

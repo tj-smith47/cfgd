@@ -22,6 +22,7 @@ fn pkg_ok(name: &str) -> VerifyResult {
         expected: "installed".into(),
         actual: "installed".into(),
         matches: true,
+        unmanaged: false,
     }
 }
 
@@ -32,6 +33,7 @@ fn sysctl_drift(key: &str, want: &str, have: &str) -> VerifyResult {
         expected: want.into(),
         actual: have.into(),
         matches: false,
+        unmanaged: false,
     }
 }
 

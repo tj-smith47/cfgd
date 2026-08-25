@@ -133,9 +133,10 @@ impl<'a> super::Reconciler<'a> {
         profile_name: &str,
         config_dir: &std::path::Path,
         printer: &Printer,
+        sidecars: &mut Vec<super::sidecar::SidecarOutcome>,
     ) -> Result<String> {
         if let FileAction::Create { target, .. } | FileAction::Update { target, .. } = action {
-            self.back_up_adopted_target(target, printer)?;
+            sidecars.extend(self.back_up_adopted_target(target)?);
         }
         if let Some(ref fm) = self.registry.file_manager {
             fm.apply(&[action.clone_action()], printer)?;
@@ -150,22 +151,15 @@ impl<'a> super::Reconciler<'a> {
         // matched the detection-side key and drift never resolved. Fold to the
         // same posix form so the keys agree on every OS.
         use crate::to_posix_string;
-        match action {
-            FileAction::Create { target, .. } => {
-                Ok(format!("file:create:{}", to_posix_string(target)))
+        let description = match action {
+            FileAction::Create { target, .. } => format!("file:create:{}", to_posix_string(target)),
+            FileAction::Update { target, .. } => format!("file:update:{}", to_posix_string(target)),
+            FileAction::Delete { target, .. } => format!("file:delete:{}", to_posix_string(target)),
+            FileAction::SetPermissions { target, mode, .. } => {
+                format!("file:chmod:{:#o}:{}", mode, to_posix_string(target))
             }
-            FileAction::Update { target, .. } => {
-                Ok(format!("file:update:{}", to_posix_string(target)))
-            }
-            FileAction::Delete { target, .. } => {
-                Ok(format!("file:delete:{}", to_posix_string(target)))
-            }
-            FileAction::SetPermissions { target, mode, .. } => Ok(format!(
-                "file:chmod:{:#o}:{}",
-                mode,
-                to_posix_string(target)
-            )),
-            FileAction::Skip { target, .. } => Ok(format!("file:skip:{}", to_posix_string(target))),
-        }
+            FileAction::Skip { target, .. } => format!("file:skip:{}", to_posix_string(target)),
+        };
+        Ok(description)
     }
 }

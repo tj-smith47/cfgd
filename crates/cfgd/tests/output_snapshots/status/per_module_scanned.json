@@ -67,6 +67,16 @@
     }
   ],
   "packages": 2,
+  "scriptCounts": [
+    {
+      "count": 1,
+      "hook": "preApply"
+    },
+    {
+      "count": 2,
+      "hook": "postApply"
+    }
+  ],
   "scripts": [
     "preApply",
     "postApply"

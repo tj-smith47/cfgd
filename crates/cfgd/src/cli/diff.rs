@@ -16,6 +16,7 @@ fn diff_module_file(
     module: &cfgd_core::modules::ResolvedModule,
     file: &cfgd_core::modules::ResolvedFile,
     config_dir: &std::path::Path,
+    strategy: cfgd_core::config::FileStrategy,
     printer: &Printer,
 ) -> anyhow::Result<cfgd_core::providers::FileDriftResult> {
     match &file.patch {
@@ -30,7 +31,7 @@ fn diff_module_file(
             ))
         }
         // Module sources carry no tera origin, so pass None.
-        None => Ok(fm.diff_one(&file.source, &file.target, None, file.strategy, printer)?),
+        None => Ok(fm.diff_one(&file.source, &file.target, None, Some(strategy), printer)?),
     }
 }
 
@@ -39,10 +40,17 @@ fn diff_module_file(
 /// unevaluable entries a consumer actually acts on.
 fn record_file_drift(
     payload: &mut DiffOutput,
-    record: cfgd_core::providers::FileDriftResult,
+    mut record: cfgd_core::providers::FileDriftResult,
+    strategy: cfgd_core::config::FileStrategy,
+    config_dir: &std::path::Path,
+    state: &cfgd_core::state::StateStore,
 ) -> bool {
     let drifted = !record.matches;
     if drifted {
+        // A target cfgd never wrote is a different finding from one that
+        // drifted out of cfgd's own content, and the fix for it is a decision
+        // rather than a re-write.
+        cfgd_core::reconciler::mark_unmanaged_drift(&mut record, strategy, config_dir, state);
         payload.files.push(record);
     }
     drifted
@@ -125,6 +133,7 @@ pub fn cmd_diff(
     let mut diff_payload = DiffOutput::default();
     let mut has_system_drift = false;
 
+    let file_state = ctx.state()?;
     let has_file_drift = {
         let files_phase = printer.section_or_collapse("Files");
         // The file renderers take a bare `&Printer` and know nothing of the
@@ -133,10 +142,25 @@ pub fn cmd_diff(
         let _inherit = printer.depth_inheritance();
         let fm = CfgdFileManager::new(config_dir, &resolved)?;
         let mut drift = false;
+        // A finding names its target and nothing else, and whether an unmanaged
+        // target is a conflict at all turns on the entry's RESOLVED strategy —
+        // the profile-wide default applied once, here, so the profile fold, the
+        // module fold and the apply-time sweep cannot disagree about a
+        // strategy-less entry.
+        let strategies = cfgd_core::effective::effective_file_strategies(
+            &resolved.merged,
+            &resolved_modules,
+            config_dir,
+            registry.default_file_strategy,
+        );
         {
             let _group = files_phase.section_owner_or_collapse(&owner_label(&profile_owner));
             for record in fm.diff(&resolved.merged, printer)? {
-                drift |= record_file_drift(&mut diff_payload, record);
+                let strategy = strategies.for_target(&cfgd_core::expand_tilde(
+                    std::path::Path::new(&record.target),
+                ));
+                drift |=
+                    record_file_drift(&mut diff_payload, record, strategy, config_dir, file_state);
             }
         }
         // Module-deployed files render the same inline content diff as profile
@@ -145,8 +169,11 @@ pub fn cmd_diff(
             let _group =
                 files_phase.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
             for file in files_by_target(module) {
-                let record = diff_module_file(&fm, &resolved, module, file, config_dir, printer)?;
-                if record_file_drift(&mut diff_payload, record) {
+                let strategy = strategies
+                    .for_target(&cfgd_core::expand_tilde(std::path::Path::new(&file.target)));
+                let record =
+                    diff_module_file(&fm, &resolved, module, file, config_dir, strategy, printer)?;
+                if record_file_drift(&mut diff_payload, record, strategy, config_dir, file_state) {
                     drift = true;
                 }
             }
@@ -446,12 +473,24 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         let _inherit = printer.depth_inheritance();
         let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
         let fm = CfgdFileManager::new(config_dir, &resolved)?;
+        // The RESOLVED strategy, so a module entry declaring none is judged
+        // against the same profile-wide default the full `diff` path and the
+        // apply-time sweep read it against.
+        let strategies = cfgd_core::effective::effective_file_strategies(
+            &resolved.merged,
+            &resolved_modules,
+            config_dir,
+            ctx.base_registry().default_file_strategy,
+        );
         for module in modules_by_name(&resolved_modules) {
             let _group =
                 files_phase.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
             for file in files_by_target(module) {
-                let record = diff_module_file(&fm, &resolved, module, file, config_dir, printer)?;
-                if record_file_drift(&mut diff_payload, record) {
+                let strategy = strategies
+                    .for_target(&cfgd_core::expand_tilde(std::path::Path::new(&file.target)));
+                let record =
+                    diff_module_file(&fm, &resolved, module, file, config_dir, strategy, printer)?;
+                if record_file_drift(&mut diff_payload, record, strategy, config_dir, state) {
                     has_file_diff = true;
                 }
             }
@@ -1567,6 +1606,7 @@ mod tests {
                 matches: false,
                 expected: "content matches source".to_string(),
                 actual: "content differs from source".to_string(),
+                unmanaged: false,
             }],
             summary: DiffSummary {
                 has_file_drift: true,

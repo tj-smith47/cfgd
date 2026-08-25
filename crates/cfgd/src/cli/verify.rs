@@ -103,7 +103,14 @@ pub fn cmd_verify(
         // profile.
         sp.set_message("Verifying: profile files");
         let fm = CfgdFileManager::new(config_dir, &resolved)?;
-        results.extend(super::live_drift::file_verify_results(&fm, &resolved)?);
+        results.extend(super::live_drift::file_verify_results(
+            &fm,
+            config_dir,
+            &resolved,
+            &resolved_modules,
+            registry.default_file_strategy,
+            state,
+        )?);
         // Module files are content-aware here (not in the reconciler, which is
         // presence-blind across the crate boundary): a byte-tampered module file
         // fails verification for both the full and `--module` paths.
@@ -113,6 +120,8 @@ pub fn cmd_verify(
             config_dir,
             &resolved,
             &resolved_modules,
+            registry.default_file_strategy,
+            state,
         )?);
         // Managers: the reconciler's own `verify` only walks
         // `available_package_managers`, so a manager the plan would provision or
@@ -452,6 +461,7 @@ mod tests {
             expected: "installed".into(),
             actual: "installed".into(),
             matches: true,
+            unmanaged: false,
         }
     }
 
@@ -462,6 +472,7 @@ mod tests {
             expected: "1".into(),
             actual: "0".into(),
             matches: false,
+            unmanaged: false,
         }
     }
 

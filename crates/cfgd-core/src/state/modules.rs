@@ -140,6 +140,20 @@ impl StateStore {
         Ok(records)
     }
 
+    /// Whether any module has deployed the file at `file_path`.
+    ///
+    /// `file_path` is the [`crate::to_posix_fs_key`] form the manifest is
+    /// written with; a caller holding a `Path` folds it the same way or the
+    /// row a Windows apply wrote is never found.
+    pub fn is_module_deployed_file(&self, file_path: &str) -> Result<bool> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM module_file_manifest WHERE file_path = ?1",
+            params![file_path],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     /// Delete all manifest entries for a module.
     pub fn delete_module_files(&self, module_name: &str) -> Result<()> {
         self.conn.execute(

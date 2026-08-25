@@ -5,7 +5,9 @@ Status: dev-tools
   Files         12
   Env           2
   Aliases       1
-  Scripts       1 preApply, 2 postApply
+  Scripts       3
+    preApply    1
+    postApply   2
   System        shell
   Dependencies  base
 

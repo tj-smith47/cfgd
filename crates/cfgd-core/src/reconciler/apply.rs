@@ -17,6 +17,7 @@ use super::scripts::{
     MODULE_SCRIPT_TIMEOUT, ScriptEnvContext, ScriptReport, ScriptSubject, build_module_script_env,
     build_script_env, effective_continue_on_error, execute_script, script_default_workdir,
 };
+use super::sidecar::SidecarOutcome;
 use super::types::{
     Action, ActionResult, ApplyResult, MANAGER_RESOURCE_TYPE, ManagerAction, ModuleAction,
     ModuleActionKind, Owner, OwnerKind, PhaseFilter, PhaseName, Plan, ReconcileContext,
@@ -131,11 +132,63 @@ struct PhaseLedger<'p> {
     subjects: &'p std::collections::HashMap<usize, String>,
 }
 
+/// What applying one action produced.
+///
+/// A struct rather than a tuple because a script action's captured output is a
+/// third thing an action can produce, and a third anonymous slot names none of
+/// them.
+pub(super) struct ActionRun {
+    /// The description the journal, the result row and the line all carry.
+    pub description: String,
+    pub changed: bool,
+    /// A script action's captured output.
+    pub script_output: Option<String>,
+}
+
+impl ActionRun {
+    fn new(description: String, changed: bool) -> Self {
+        Self {
+            description,
+            changed,
+            script_output: None,
+        }
+    }
+}
+
+/// The detail an action row carries about the copies it took, joined when one
+/// action displaced several targets (a module's deploy loop).
+///
+/// Read from a buffer the DISPATCHER owns rather than off the action's `Ok`
+/// value, because a sidecar is taken BEFORE the write it protects: an action
+/// that copied a target aside and then failed still displaced nothing, and the
+/// copy it left on disk has to be named on its row or it is named nowhere.
+/// Two things one row has to say, joined in the order they happened; either
+/// half alone when it is the only one.
+fn join_detail(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(a), Some(b)) => Some(format!("{a}, {b}")),
+        (a, b) => a.or(b),
+    }
+}
+
+fn sidecar_detail(sidecars: &[SidecarOutcome]) -> Option<String> {
+    (!sidecars.is_empty()).then(|| {
+        sidecars
+            .iter()
+            .map(SidecarOutcome::detail)
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
+}
+
 /// One finished action, as its collection point hands it over.
 struct SettleInput<'p, 'r> {
     action: &'p Action,
     journal_id: Option<i64>,
-    result: Result<(String, bool, Option<String>)>,
+    result: Result<ActionRun>,
+    /// Every target this action copied aside before displacing it. Owned by the
+    /// dispatcher, so a FAILED action still reports the copy it took.
+    sidecars: Vec<SidecarOutcome>,
     elapsed: std::time::Duration,
     notes: Vec<ActionNote>,
     body: Vec<String>,
@@ -892,7 +945,10 @@ impl<'a> super::Reconciler<'a> {
                             journal_id: collected.journal_id,
                             result: collected
                                 .result
-                                .map(|(desc, changed)| (desc, changed, None)),
+                                .map(|(desc, changed)| ActionRun::new(desc, changed)),
+                            // A lane runs package and manager actions, neither
+                            // of which adopts a file.
+                            sidecars: Vec::new(),
                             elapsed: collected.elapsed,
                             notes: collected.notes,
                             body: collected.body,
@@ -1058,6 +1114,10 @@ impl<'a> super::Reconciler<'a> {
                         .ok();
 
                     let started = std::time::Instant::now();
+                    // Owned HERE rather than returned in the `Ok` value: a copy
+                    // is taken before the write it protects, so a failing write
+                    // must still report it.
+                    let mut action_sidecars = Vec::new();
                     let result = self.apply_action(
                         action,
                         resolved,
@@ -1070,6 +1130,7 @@ impl<'a> super::Reconciler<'a> {
                         shell_override,
                         abort,
                         &notes,
+                        &mut action_sidecars,
                     );
                     let elapsed = started.elapsed();
                     let finished = completions.next();
@@ -1081,6 +1142,7 @@ impl<'a> super::Reconciler<'a> {
                         action,
                         journal_id,
                         result,
+                        sidecars: action_sidecars,
                         elapsed,
                         notes: drained,
                         body: Vec::new(),
@@ -1634,6 +1696,7 @@ impl<'a> super::Reconciler<'a> {
             action,
             journal_id,
             result,
+            sidecars,
             elapsed,
             notes,
             body,
@@ -1645,16 +1708,23 @@ impl<'a> super::Reconciler<'a> {
         // the action's own line instead of a bespoke one above it.
         let mut failure_detail: Option<(String, bool)> = None;
 
+        // The copies an adopting action took, rendered as that action's own
+        // detail rather than as a status line above it — on the failure row as
+        // much as the success one, since the copy was taken either way.
+        let sidecar_detail = sidecar_detail(&sidecars);
         let (desc, success, action_changed, error, should_abort) = match result {
-            Ok((desc, action_changed, script_output)) => {
+            Ok(run) => {
                 if let Some(jid) = journal_id
-                    && let Err(e) =
-                        self.state
-                            .journal_complete(jid, finished, None, script_output.as_deref())
+                    && let Err(e) = self.state.journal_complete(
+                        jid,
+                        finished,
+                        None,
+                        run.script_output.as_deref(),
+                    )
                 {
                     tracing::warn!("failed to record journal completion: {e}");
                 }
-                (desc, true, action_changed, None, false)
+                (run.description, true, run.changed, None, false)
             }
             Err(e) => {
                 let desc = format_action_description(action);
@@ -1715,9 +1785,14 @@ impl<'a> super::Reconciler<'a> {
                 // A refusal's subject IS its reason by construction
                 // (`cannot provision <m> — <reason>`), and the error it
                 // settles through restates that reason for the journal. On
-                // the line the two are one sentence printed twice.
-                detail: (!matches!(action, Action::Manager(ManagerAction::Refuse { .. })))
-                    .then(|| message.clone()),
+                // the line the two are one sentence printed twice. A sidecar
+                // still rides along: the copy was taken before the write that
+                // failed, and it is on disk whatever the write did.
+                detail: join_detail(
+                    (!matches!(action, Action::Manager(ManagerAction::Refuse { .. })))
+                        .then(|| message.clone()),
+                    sidecar_detail,
+                ),
                 detail_muted: false,
                 duration: None,
                 notes,
@@ -1740,11 +1815,19 @@ impl<'a> super::Reconciler<'a> {
                     env_write_summary(action)
                 };
                 let duration = (elapsed >= MIN_REPORTED_DURATION).then_some(elapsed);
+                // A displaced original is a fact about the user's own file, not
+                // a note about the write, so it is not muted the way an
+                // `unchanged` aside is. It does not REPLACE what the row
+                // already had to say either: a module `DeployFiles` that
+                // adopted a target and then wrote nothing new is both
+                // `unchanged` AND holding a copy, and dropping either half
+                // describes a different run.
+                let adopted = sidecar_detail.is_some();
                 ActionOutcome {
                     subject,
                     role,
-                    detail,
-                    detail_muted: true,
+                    detail: join_detail(detail, sidecar_detail),
+                    detail_muted: !adopted,
                     duration,
                     notes,
                     body,
@@ -1773,29 +1856,35 @@ impl<'a> super::Reconciler<'a> {
         shell_override: Option<ScriptShell>,
         abort: &AbortFlag,
         notes: &NoteSink,
-    ) -> Result<(String, bool, Option<String>)> {
+        sidecars: &mut Vec<SidecarOutcome>,
+    ) -> Result<ActionRun> {
         match action {
             Action::System(sys) => self
                 .apply_system_action(sys, &resolved.merged, module_actions, printer, notes)
-                .map(|d| (d, true, None)),
+                .map(|d| ActionRun::new(d, true)),
             Action::Package(pkg) => self
                 .apply_package_action(pkg, printer, notes)
-                .map(|d| (d, true, None)),
+                .map(|d| ActionRun::new(d, true)),
             Action::File(file) => self
-                .apply_file_action(file, resolved.profile_name(), config_dir, printer)
-                .map(|d| (d, true, None)),
+                .apply_file_action(file, resolved.profile_name(), config_dir, printer, sidecars)
+                .map(|d| ActionRun::new(d, true)),
             Action::Secret(secret) => self
                 .apply_secret_action(secret, config_dir, secret_env_collector)
-                .map(|d| (d, true, None)),
-            Action::Script(script) => self.apply_script_action(
-                script,
-                resolved,
-                config_dir,
-                printer,
-                context,
-                shell_override,
-                abort,
-            ),
+                .map(|d| ActionRun::new(d, true)),
+            Action::Script(script) => self
+                .apply_script_action(
+                    script,
+                    resolved,
+                    config_dir,
+                    printer,
+                    context,
+                    shell_override,
+                    abort,
+                )
+                .map(|(d, c, output)| ActionRun {
+                    script_output: output,
+                    ..ActionRun::new(d, c)
+                }),
             Action::Module(module) => self
                 .apply_module_action(
                     module,
@@ -1808,15 +1897,45 @@ impl<'a> super::Reconciler<'a> {
                     shell_override,
                     abort,
                     notes,
+                    sidecars,
                 )
-                .map(|(d, c)| (d, c, None)),
+                .map(|(d, c)| ActionRun::new(d, c)),
             Action::Manager(manager) => self
                 .apply_manager_action(manager, printer, notes)
-                .map(|(desc, changed)| (desc, changed, None)),
+                .map(|(desc, changed)| ActionRun::new(desc, changed)),
             Action::Env(env) => Self::apply_env_action(env, printer, notes).map(|d| {
                 let changed = !env_result_unchanged(&d);
-                (d, changed, None)
+                ActionRun::new(d, changed)
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod detail_tests {
+    /// A row that both adopted a target and had something else to say carries
+    /// BOTH, in the order they happened. `or`-ing them drops one: a module
+    /// `DeployFiles` that adopted a target and then wrote nothing new is
+    /// `unchanged` AND holding a copy, and a failed write is an error AND
+    /// holding a copy — reporting either half alone describes a different run.
+    #[test]
+    fn a_row_with_two_things_to_say_says_both() {
+        let j = super::join_detail;
+        assert_eq!(
+            j(
+                Some("unchanged".into()),
+                Some("backed up to ~/x.cfgd-backup".into())
+            ),
+            Some("unchanged, backed up to ~/x.cfgd-backup".to_string())
+        );
+        assert_eq!(
+            j(Some("unchanged".into()), None),
+            Some("unchanged".to_string())
+        );
+        assert_eq!(
+            j(None, Some("backed up to ~/x.cfgd-backup".into())),
+            Some("backed up to ~/x.cfgd-backup".to_string())
+        );
+        assert_eq!(j(None, None), None);
     }
 }

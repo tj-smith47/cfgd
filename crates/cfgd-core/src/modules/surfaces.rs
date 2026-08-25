@@ -100,6 +100,23 @@ impl ModuleSurfaces {
         )
     }
 
+    /// The per-hook script counts, in execution order — the breakdown rows a
+    /// report renders beneath its total, and the `scriptCounts` payload field.
+    /// Empty when the module declares no scripts, the same condition
+    /// [`Self::script_summary`] answers `None` to.
+    pub fn script_counts(&self) -> Vec<(String, usize)> {
+        self.scripts
+            .iter()
+            .map(|h| (h.hook.to_string(), h.bodies.len()))
+            .collect()
+    }
+
+    /// How many script entries the module declares across every hook — the
+    /// total the per-hook breakdown sums to.
+    pub fn script_total(&self) -> usize {
+        self.scripts.iter().map(|h| h.bodies.len()).sum()
+    }
+
     /// The names of the hooks that declare something, in execution order.
     pub fn hook_names(&self) -> Vec<String> {
         self.scripts.iter().map(|h| h.hook.to_string()).collect()
@@ -179,6 +196,32 @@ mod tests {
             surfaces.script_summary(),
             ModuleSurfaces::of(&spec).script_summary(),
             "one module, one tally, whichever side it is read from"
+        );
+    }
+
+    /// The breakdown a report renders under its total row, and the total that
+    /// row carries, are the same tally the one-line summary is built from.
+    #[test]
+    fn script_counts_break_the_total_down_per_hook_in_execution_order() {
+        let surfaces = ModuleSurfaces::of(&spec_with_scripts(ScriptSpec {
+            post_apply: vec![
+                ScriptEntry::Simple("a".into()),
+                ScriptEntry::Simple("b".into()),
+            ],
+            pre_apply: vec![ScriptEntry::Simple("c".into())],
+            ..Default::default()
+        }));
+        assert_eq!(
+            surfaces.script_counts(),
+            vec![("preApply".to_string(), 1), ("postApply".to_string(), 2)]
+        );
+        // The literals the fixture declares, not a sum re-derived from the very
+        // list above: summing `script_counts` restates the implementation and
+        // would pass whatever both sides drifted to together.
+        assert_eq!(surfaces.script_total(), 3);
+        assert_eq!(
+            surfaces.script_summary().as_deref(),
+            Some("1 preApply, 2 postApply")
         );
     }
 

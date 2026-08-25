@@ -507,8 +507,8 @@ pub fn run_apply(
     // Handle unmanaged file targets: a target that already holds a file cfgd
     // never wrote is settled by `--on-conflict` before anything is applied.
     // The copies themselves are deferred to the actions that displace their
-    // targets, so a `Backed up to …` line lands under `Phase: Files` beside
-    // the write it protects rather than above the run's own header.
+    // targets, so `backed up to …` rides as a DETAIL on the row of the write it
+    // protects rather than standing as a line of its own above the run's header.
     let reconciler = reconciler.backing_up(handle_unmanaged_file_targets(
         &mut plan,
         &config_dir,
@@ -516,7 +516,12 @@ pub fn run_apply(
         printer,
         yes,
         args.on_conflict,
-        registry.default_file_strategy,
+        &cfgd_core::effective::effective_file_strategies(
+            &effective_resolved.merged,
+            &resolved_modules,
+            &config_dir,
+            registry.default_file_strategy,
+        ),
     )?);
 
     // Self-heal the package-tracking table on a full unscoped apply, BEFORE the

@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::ModuleLockEntry;
-use cfgd_core::output::{Doc, KvPair, Printer, Role, condense_script_label, renderer::Table};
+use cfgd_core::output::{Doc, KvPair, Printer, Role, renderer::Table};
 
 /// Per-package display row for `cfgd module show`. Computed from package
 /// resolution so the renderer is pure and snapshot-testable without needing a
@@ -116,7 +116,6 @@ pub fn build_module_show_doc(
     output: &ModuleShowOutput,
     lock_entry: Option<&ModuleLockEntry>,
     packages: &[PackageDisplay],
-    post_apply: &[String],
     show_values: bool,
     arrow: &str,
 ) -> Doc {
@@ -223,10 +222,26 @@ pub fn build_module_show_doc(
             .fold(s, |s, alias| s.kv(&alias.name, &alias.command))
     });
 
-    doc = doc.section_if_nonempty("Post-apply Scripts", post_apply, |s, scripts| {
-        scripts
-            .iter()
-            .fold(s, |s, script| s.status(Role::Info, script))
+    // Every hook the module declares, in execution order — read through the
+    // one tally so this section and `cfgd status <module>`'s cannot disagree
+    // about what the module declares.
+    let declared = cfgd_core::modules::ModuleSurfaces::of(&output.spec);
+    doc = doc.section_if_nonempty("Scripts", &declared.scripts, |s, hooks| {
+        hooks.iter().fold(s, |s, hook| {
+            hook.bodies.iter().fold(s, |s, body| {
+                // `--show-values` is the only way to read a whole body; the
+                // default row condenses it, exactly as the status inventory does.
+                let subject = if show_values {
+                    cfgd_core::reconciler::DisplaySubject {
+                        marker: Some(hook.hook.to_string()),
+                        body: body.clone(),
+                    }
+                } else {
+                    cfgd_core::reconciler::hook_script_subject(hook.hook, body)
+                };
+                s.status(Role::Info, subject.to_string())
+            })
+        })
     });
 
     doc.with_data(output)
@@ -416,25 +431,10 @@ pub(crate) fn cmd_module_show(
             .collect()
     };
 
-    let post_apply: Vec<String> = module
-        .spec
-        .scripts
-        .as_ref()
-        .map(|s| {
-            s.post_apply
-                .iter()
-                // Each entry renders as its own `.status()` subject below,
-                // which must never carry a multi-line inline script body raw.
-                .map(|e| condense_script_label(e.run_str()))
-                .collect()
-        })
-        .unwrap_or_default();
-
     printer.emit(build_module_show_doc(
         &output,
         lock_entry,
         &packages,
-        &post_apply,
         show_values,
         printer.arrow(),
     ));

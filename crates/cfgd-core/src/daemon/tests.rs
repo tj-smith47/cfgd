@@ -16840,6 +16840,82 @@ mod handle_reconcile_extra_branches {
 
     use crate::test_helpers::NoopDaemonHooks as NoopHooks;
 
+    /// An auto-applying tick displaces the user's own file exactly as
+    /// `cfgd apply` does — by copying it aside first. The conflict pass used to
+    /// live in the CLI alone, so the same machine got two different answers
+    /// depending on which process reached the file.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn an_auto_applying_tick_copies_an_unmanaged_target_aside() {
+        let (tmp, config_path, state_dir) = write_min_fixture(
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        );
+        let _home = crate::with_test_home_guard(tmp.path());
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - mymod\n",
+        )
+        .unwrap();
+        let module_dir = tmp.path().join("modules").join("mymod");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(module_dir.join("app.conf"), "from the module\n").unwrap();
+        let target = tmp.path().join("app.conf");
+        std::fs::write(&target, "years of hand edits\n").unwrap();
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mymod\nspec:\n  files:\n    - source: app.conf\n      target: {}\n      strategy: Copy\n",
+                crate::to_posix_string(&target)
+            ),
+        )
+        .unwrap();
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+        let sd = state_dir.clone();
+        let cp = config_path.clone();
+        crate::spawn_blocking_with_test_home(move || {
+            let printer = test_printer();
+            handle_reconcile(
+                &cp,
+                None,
+                ReconcileCtx {
+                    state: &state,
+                    notifier: &notifier,
+                    notify_on_drift: false,
+                    hooks: &NoopHooks,
+                    state_dir_override: Some(&sd),
+                    explicit_state_dir: true,
+                    printer: &printer,
+                    module_filter: None,
+                    auto_apply_override: Some(true),
+                    drift_policy_override: Some(config::DriftPolicy::Auto),
+                    scope: crate::Scope::User,
+                    abort: never_abort(),
+                    cache: fresh_tick_cache(),
+                },
+            );
+        })
+        .await
+        .unwrap();
+
+        let sidecar = crate::reconciler::cfgd_backup_path(&target, "");
+        assert!(
+            sidecar.exists(),
+            "the tick must copy the user's file aside before displacing it"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&sidecar).unwrap(),
+            "years of hand edits\n",
+            "and the copy holds what the user had"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "from the module\n",
+            "while the target now holds the module's content"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn handle_reconcile_per_module_filter_updates_module_last_reconcile() {
         // module_filter=Some(_) path: the per-module branch records only into

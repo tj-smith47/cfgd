@@ -125,6 +125,7 @@ impl crate::providers::FileManager for MockFileManager {
                 matches: false,
                 expected: "managed source present".to_string(),
                 actual: "source not found".to_string(),
+                unmanaged: false,
             });
         }
         if !target_path.exists() {
@@ -133,6 +134,7 @@ impl crate::providers::FileManager for MockFileManager {
                 matches: false,
                 expected: "present".to_string(),
                 actual: "missing".to_string(),
+                unmanaged: false,
             });
         }
         // Only a successful read on BOTH sides counts as a comparison; if either
@@ -150,6 +152,7 @@ impl crate::providers::FileManager for MockFileManager {
             } else {
                 "content differs from source".to_string()
             },
+            unmanaged: false,
         })
     }
 
@@ -3685,6 +3688,7 @@ mod tests {
             matches: false,
             expected: "content matches source".to_string(),
             actual: "content differs from source".to_string(),
+            unmanaged: false,
         });
 
         let result = fm

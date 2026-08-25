@@ -157,6 +157,20 @@ pub struct KvPair {
     /// with or without it.
     #[serde(skip)]
     pub value_role: Option<Role>,
+    /// Whether this row is a BREAKDOWN of the row above it, indented two
+    /// columns in from the block's key column (`Scripts 7` / `  preApply 1`).
+    ///
+    /// A renderer-owned slot rather than leading spaces in `key`, for the same
+    /// reason `annotation` and `value_role` are: the renderer folds every key
+    /// through [`crate::output::cursor_safe`] and pads it to a column measured
+    /// over the rendered text, so an indent baked into the string is untrusted
+    /// text that happens to look like layout — and the alignment is computed
+    /// over the INDENTED width, which only the renderer can know.
+    ///
+    /// Never serialized: a `-o json` reader sees the same plain `key` either
+    /// way, and the breakdown a nested row renders is its own payload field.
+    #[serde(skip)]
+    pub nested: bool,
 }
 
 impl KvPair {
@@ -166,6 +180,16 @@ impl KvPair {
             value: v.into(),
             annotation: None,
             value_role: None,
+            nested: false,
+        }
+    }
+
+    /// A row that breaks down the row above it, indented two columns in from
+    /// the block's key column and aligned with it.
+    pub fn nested(k: impl Into<String>, v: impl Into<String>) -> Self {
+        Self {
+            nested: true,
+            ..Self::new(k, v)
         }
     }
 
@@ -176,10 +200,8 @@ impl KvPair {
         annotation: impl Into<String>,
     ) -> Self {
         Self {
-            key: k.into(),
-            value: v.into(),
             annotation: Some(annotation.into()),
-            value_role: None,
+            ..Self::new(k, v)
         }
     }
 
@@ -191,10 +213,8 @@ impl KvPair {
     /// `Warn` → warning, `Fail` → error, `Skipped`/`Pending` → muted.
     pub fn role_valued(k: impl Into<String>, v: impl Into<String>, role: Role) -> Self {
         Self {
-            key: k.into(),
-            value: v.into(),
-            annotation: None,
             value_role: Some(role),
+            ..Self::new(k, v)
         }
     }
 }

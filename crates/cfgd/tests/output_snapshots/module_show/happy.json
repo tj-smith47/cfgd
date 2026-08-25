@@ -41,7 +41,22 @@
         "source": "git@example.com:org/dotfiles.git//tmux.conf",
         "target": "~/.tmux.conf"
       }
-    ]
+    ],
+    "scripts": {
+      "onChange": [],
+      "onDrift": [
+        "notify-send 'dev-tools drifted'"
+      ],
+      "postApply": [
+        "echo 'post-apply hook ran'",
+        "systemctl --user daemon-reload"
+      ],
+      "postReconcile": [],
+      "preApply": [
+        "mkdir -p ~/.config/dev-tools"
+      ],
+      "preReconcile": []
+    }
   },
   "state": {
     "filesHash": "789ghi012jkl",

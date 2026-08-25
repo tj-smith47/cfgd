@@ -184,15 +184,15 @@ $ cfgd apply
 Interrupting that prompt (Ctrl-C, or Esc) aborts the run; it is never read as
 "nobody to ask" and resolved to `backup`.
 
+The copy is reported on the action row that displaces the file, not as a line of
+its own ahead of the run: one row per action, naming where the copy landed.
+
 ```console
 $ cfgd apply --yes
-⚠ Target exists as unmanaged file: /home/u/.config/app/app.conf
-✓ Backed up to /home/u/.config/app/app.conf.cfgd-backup
 ...
-    ✓ update /home/u/.config/app/app.conf
+    ✓ update /home/u/.config/app/app.conf — backed up to /home/u/.config/app/app.conf.cfgd-backup
 
 $ cfgd apply --yes --on-conflict fail
-⚠ Target exists as unmanaged file: /home/u/.config/app/app.conf
 ✗ target exists as unmanaged file: /home/u/.config/app/app.conf (--on-conflict fail)
 ```
 
@@ -203,8 +203,9 @@ what the backup copy guarantees.
 
 `cfgd init --apply` takes the same flag and runs the same pass: the first apply
 on a machine is the one that meets the most files cfgd never wrote. The daemon's
-auto-apply does **not** run this pass; see
-[File Safety](safety.md#the-daemon-does-not-run-this-pass).
+auto-apply runs the same pass under the `backup` policy — it cannot prompt, so
+every unmanaged target it meets is copied aside before it is displaced; see
+[File Safety](safety.md#what-the-daemon-does-with-a-conflict).
 
 `apply` reconciles exactly what `plan` previews, so a [source item awaiting a
 decision](sources.md#automatic-apply-decisions) is not installed by `apply --yes` either.
@@ -578,9 +579,9 @@ packages only: it does not evaluate the module's system-config contribution
 drift, matching the scope of `cfgd diff --module`.
 
 The default module report is a summary: one count per declared surface, then
-what the scan found. The `Scripts` count is per hook, in the order the hooks
-run, so a module's `preApply` work is distinguishable from its `postApply`
-work without opening the module:
+what the scan found. `Scripts` is the total, broken down one indented row per
+hook in the order the hooks run, so a module's `preApply` work is
+distinguishable from its `postApply` work without opening the module:
 
 ```
 Status: nvim
@@ -590,16 +591,35 @@ Status: nvim
   Files         6
   Env           3
   Aliases       3
-  Scripts       3 preApply, 6 postApply
+  Scripts       9
+    preApply    3
+    postApply   6
 
 Drift
   ⚠ module:nvim:files /home/tj/.config/nvim/stylua.toml — content differs
   ⚠ module:nvim:packages ripgrep                        — version mismatch
 ```
 
+`-o json` carries the same breakdown as `scriptCounts`, an ARRAY in execution
+order rather than an object (a JSON object is a sorted map on the way out, and
+alphabetical is not the order the hooks run in). The `scripts` field beside it
+keeps the hook names it always carried:
+
+```jsonc
+{
+  "scripts": ["preApply", "postApply"],
+  "scriptCounts": [
+    { "hook": "preApply", "count": 3 },
+    { "hook": "postApply", "count": 6 }
+  ]
+}
+```
+
 Each drift row names the module, the `spec` block the finding is on, the item
 itself, and the KIND of divergence (`content differs`, `version mismatch`,
-`missing` for a declared file, `not installed` for a declared package). The
+`missing` for a declared file, `not installed` for a declared package,
+`unmanaged file at target` for a target holding a file cfgd never wrote — see
+[`--on-conflict`](#unmanaged-files-at-a-managed-target)). The
 bytes themselves are `cfgd diff`'s job. Rows are grouped by surface
 (files, then packages, then any other surface alphabetically) and sorted by
 item within each group, so two runs that found the same drift render the same
@@ -828,6 +848,8 @@ The payload carries `files[]`, `packages[]`, `system[]`, `env[]`, and a `summary
 
 A file cfgd could not evaluate (an unparseable target, a filter that exited non-zero, a patch script a source is [barred from running](sources.md#noscripts)) appears with the reason as its `actual`, so the cause is visible without reading the terminal rendering.
 
+Every file entry also carries `unmanaged` (a bool): `true` when the target holds a file cfgd has never written, in which case `actual` reads `unmanaged file at target` rather than `content differs`. The two are different problems with different fixes — one is resolved by [`--on-conflict`](#unmanaged-files-at-a-managed-target), the other by re-applying — so a consumer can tell them apart without matching on prose.
+
 A managed file whose `source` cannot be found is reported as drift here and by `cfgd verify` / `cfgd status`: the desired content could not be determined, which is never the same as convergence.
 
 `packages[]` entries carry `manager`, `shape` (`missing` | `extra` | `provision` | `refused`), and `packages` (empty for the two manager-drift shapes). `shape: "provision"` matches the machine vocabulary `plan -o json`'s `Prerequisites` phase already uses for the same fact (`type: "provision"`); the mechanism itself still keeps the "bootstrap" word, in `bootstrapMethod` and in the human render above. A `provision` entry adds `bootstrapMethod`; a `refused` entry adds `reason` instead: the same fields [`cfgd doctor`](#cfgd-doctor)'s manager checks use, so a script reading either surface for "can this manager self-heal" reads one field name:
@@ -872,7 +894,7 @@ cfgd verify -o json          # structured pass/fail results
 cfgd verify --module nvim    # verify only a single module's resources (no profile required)
 ```
 
-Each entry in `results[]` carries `resourceType`, `resourceId`, `matches`, `expected`, and `actual`, alongside the top-level `passCount` / `failCount`.
+Each entry in `results[]` carries `resourceType`, `resourceId`, `matches`, `expected`, `actual`, and `unmanaged`, alongside the top-level `passCount` / `failCount`. `unmanaged` is `true` only for a `file` result whose target holds a file cfgd never wrote; see [`cfgd diff`](#cfgd-diff)'s `files[]`.
 
 ### `cfgd doctor`
 
@@ -1258,6 +1280,19 @@ Show module details: packages, files, dependencies, resolved managers. Env varia
 cfgd module show my-tool                # env values masked
 cfgd module show my-tool --show-values  # reveal full env values
 ```
+
+The `Scripts` section lists every lifecycle hook the module declares, one row
+per entry labelled with its hook, in the order the hooks run:
+
+```
+Scripts
+  ⊙ preApply: mkdir -p ~/.config/dev-tools
+  ⊙ postApply: echo 'post-apply hook ran'
+  ⊙ onDrift: notify-send 'dev-tools drifted'
+```
+
+`--show-values` renders each script's whole body instead of its condensed
+first line.
 
 ### `cfgd module export <name>`
 

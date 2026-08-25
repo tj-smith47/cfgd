@@ -81,17 +81,37 @@ pub(super) fn drift_event_from(
 /// the template context and the whole secret-provider set.
 pub(super) fn file_verify_results(
     fm: &CfgdFileManager,
+    config_dir: &std::path::Path,
     resolved: &ResolvedProfile,
+    modules: &[ResolvedModule],
+    default_strategy: cfgd_core::config::FileStrategy,
+    state: &cfgd_core::state::StateStore,
 ) -> anyhow::Result<Vec<VerifyResult>> {
     let drift = fm.file_drift_results(&resolved.merged)?;
+    // A finding names its target and nothing else, and whether an unmanaged
+    // target is a conflict at all turns on the entry's strategy.
+    let strategies = cfgd_core::effective::effective_file_strategies(
+        &resolved.merged,
+        modules,
+        config_dir,
+        default_strategy,
+    );
     Ok(drift
         .into_iter()
-        .map(|d| VerifyResult {
-            resource_type: "file".to_string(),
-            resource_id: d.target,
-            matches: d.matches,
-            expected: d.expected,
-            actual: d.actual,
+        .map(|mut d| {
+            // "content differs" describes a file cfgd owns; a target cfgd never
+            // wrote is a decision to make, not a write to repeat.
+            let strategy =
+                strategies.for_target(&cfgd_core::expand_tilde(std::path::Path::new(&d.target)));
+            cfgd_core::reconciler::mark_unmanaged_drift(&mut d, strategy, config_dir, state);
+            VerifyResult {
+                resource_type: "file".to_string(),
+                resource_id: d.target,
+                matches: d.matches,
+                expected: d.expected,
+                actual: d.actual,
+                unmanaged: d.unmanaged,
+            }
         })
         .collect())
 }
@@ -146,11 +166,25 @@ pub(super) fn module_file_verify_results(
     config_dir: &std::path::Path,
     resolved: &ResolvedProfile,
     modules: &[ResolvedModule],
+    default_strategy: cfgd_core::config::FileStrategy,
+    state: &cfgd_core::state::StateStore,
 ) -> anyhow::Result<Vec<VerifyResult>> {
+    let strategies = cfgd_core::effective::effective_file_strategies(
+        &resolved.merged,
+        modules,
+        config_dir,
+        default_strategy,
+    );
     let mut results = Vec::new();
     for module in modules {
         for file in &module.files {
-            let drift = match &file.patch {
+            // The RESOLVED strategy, so the classification below and the file
+            // manager's own comparison read one answer. A globally declared
+            // `Patch` reaches `effective_strategy`'s short-circuit here where
+            // an unresolved `None` used to fall through to the tera rule.
+            let strategy =
+                strategies.for_target(&cfgd_core::expand_tilde(std::path::Path::new(&file.target)));
+            let mut drift = match &file.patch {
                 // A `Patch` file has no source to compare against: it has
                 // converged when re-running its merge over the target's current
                 // content would change nothing.
@@ -163,14 +197,16 @@ pub(super) fn module_file_verify_results(
                     );
                     crate::files::patch_drift_result(&file.target, evaluated)
                 }
-                None => fm.file_drift_one(&file.source, &file.target, None, file.strategy)?,
+                None => fm.file_drift_one(&file.source, &file.target, None, Some(strategy))?,
             };
+            cfgd_core::reconciler::mark_unmanaged_drift(&mut drift, strategy, config_dir, state);
             results.push(VerifyResult {
                 resource_type: "module".to_string(),
                 resource_id: module_file_resource_id(&module.name, &drift.target),
                 matches: drift.matches,
                 expected: drift.expected,
                 actual: drift.actual,
+                unmanaged: drift.unmanaged,
             });
         }
     }
@@ -229,17 +265,31 @@ fn live_drift_results_inner(
 
     // Files: content-aware comparison via the file manager.
     drift.extend(
-        file_verify_results(&fm, resolved)?
-            .into_iter()
-            .filter(|r| !r.matches),
+        file_verify_results(
+            &fm,
+            config_dir,
+            resolved,
+            modules,
+            registry.default_file_strategy,
+            state,
+        )?
+        .into_iter()
+        .filter(|r| !r.matches),
     );
 
     // Module files: content-aware comparison for each resolved module.
     sp.set_message("Scanning: module files");
     drift.extend(
-        module_file_verify_results(&fm, config_dir, resolved, modules)?
-            .into_iter()
-            .filter(|r| !r.matches),
+        module_file_verify_results(
+            &fm,
+            config_dir,
+            resolved,
+            modules,
+            registry.default_file_strategy,
+            state,
+        )?
+        .into_iter()
+        .filter(|r| !r.matches),
     );
 
     // Packages: any non-Skip action means the installed set diverges from desired.
@@ -292,6 +342,7 @@ fn live_drift_results_inner(
                         matches: false,
                         expected: d.expected.clone(),
                         actual: d.actual.clone(),
+                        unmanaged: false,
                     });
                 }
             }
@@ -340,6 +391,7 @@ fn package_action_drift(action: &PackageAction) -> Option<VerifyResult> {
             matches: false,
             expected: "installed".to_string(),
             actual: cfgd_core::Absence::NotInstalled.to_string(),
+            unmanaged: false,
         }),
         PackageAction::Uninstall {
             manager, packages, ..
@@ -349,6 +401,7 @@ fn package_action_drift(action: &PackageAction) -> Option<VerifyResult> {
             matches: false,
             expected: "absent".to_string(),
             actual: "to remove".to_string(),
+            unmanaged: false,
         }),
     }
 }
@@ -429,6 +482,7 @@ fn manager_action_drift(action: &ManagerAction) -> Vec<VerifyResult> {
         matches: false,
         expected: "installed".to_string(),
         actual: format!("{} ({})", phrase.state, phrase.detail),
+        unmanaged: false,
     };
     let provisioned = action.provisioned_managers();
     if provisioned.is_empty() {
@@ -520,7 +574,11 @@ mod tests {
         let resolved = resolved_with_file(target);
         let results = file_verify_results(
             &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
+            dir.path(),
             &resolved,
+            &[],
+            cfgd_core::config::FileStrategy::default(),
+            &cfgd_core::state::StateStore::open_in_memory().unwrap(),
         )
         .unwrap();
         assert_eq!(results.len(), 1);
@@ -540,10 +598,27 @@ mod tests {
         let target = dir.path().join("deployed.txt");
         std::fs::write(&target, "tampered\n").unwrap();
 
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        // cfgd's own file: the finding is about the bytes, so the cause names
+        // them.
+        state
+            .upsert_managed_resource(
+                "file",
+                &cfgd_core::to_posix_string(&target),
+                "test",
+                None,
+                None,
+            )
+            .unwrap();
+
         let resolved = resolved_with_file(target);
         let results = file_verify_results(
             &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
+            dir.path(),
             &resolved,
+            &[],
+            cfgd_core::config::FileStrategy::default(),
+            &state,
         )
         .unwrap();
         assert_eq!(results.len(), 1);
@@ -552,6 +627,35 @@ mod tests {
             "out-of-band content drift must fail: {results:?}"
         );
         assert!(results[0].actual.contains("differs"));
+    }
+
+    /// A drifted target cfgd never wrote is a different finding from a file
+    /// cfgd owns and lost track of: reported as `content differs`, the row
+    /// invites a re-write of somebody else's file.
+    #[test]
+    fn file_verify_results_name_an_untracked_target_as_unmanaged() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("managed.txt"), "desired\n").unwrap();
+        let target = dir.path().join("deployed.txt");
+        std::fs::write(&target, "years of hand edits\n").unwrap();
+
+        let resolved = resolved_with_file(target);
+        let results = file_verify_results(
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
+            dir.path(),
+            &resolved,
+            &[],
+            cfgd_core::config::FileStrategy::default(),
+            &cfgd_core::state::StateStore::open_in_memory().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].matches);
+        assert_eq!(
+            results[0].actual,
+            cfgd_core::reconciler::UNMANAGED_DRIFT_CAUSE,
+            "an untracked target reports what it is, got: {results:?}"
+        );
     }
 
     #[test]
@@ -563,7 +667,11 @@ mod tests {
         let resolved = resolved_with_file(target);
         let results = file_verify_results(
             &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
+            dir.path(),
             &resolved,
+            &[],
+            cfgd_core::config::FileStrategy::default(),
+            &cfgd_core::state::StateStore::open_in_memory().unwrap(),
         )
         .unwrap();
         assert_eq!(results.len(), 1);
@@ -747,6 +855,8 @@ mod tests {
             dir.path(),
             &resolved,
             &modules,
+            cfgd_core::config::FileStrategy::default(),
+            &cfgd_core::state::StateStore::open_in_memory().unwrap(),
         )
         .unwrap();
         assert_eq!(results.len(), 1);
@@ -767,12 +877,28 @@ mod tests {
         std::fs::write(&target, "tampered\n").unwrap();
 
         let resolved = resolved_with_file(dir.path().join("unused.txt"));
-        let modules = vec![module_with_file("accmod", source, target)];
+        let modules = vec![module_with_file("accmod", source, target.clone())];
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        // The module deployed this file, so the finding is about its bytes.
+        let apply_id = state
+            .record_apply("test", "h", cfgd_core::state::ApplyStatus::Success, None)
+            .unwrap();
+        state
+            .upsert_module_file(
+                "accmod",
+                &cfgd_core::to_posix_fs_key(&target),
+                "deadbeef",
+                "Copy",
+                apply_id,
+            )
+            .unwrap();
         let results = module_file_verify_results(
             &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
             dir.path(),
             &resolved,
             &modules,
+            cfgd_core::config::FileStrategy::default(),
+            &state,
         )
         .unwrap();
         assert_eq!(results.len(), 1);
@@ -781,6 +907,45 @@ mod tests {
             "tampered module file must fail: {results:?}"
         );
         assert!(results[0].actual.contains("differs"));
+    }
+
+    /// The module arm takes the same re-wording: a target the module has not
+    /// deployed yet, already occupied by the user's own file, is named for what
+    /// it is rather than as content that drifted.
+    #[test]
+    fn module_file_verify_results_name_an_untracked_target_as_unmanaged() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("mod-src.txt");
+        std::fs::write(
+            &source, "desired
+",
+        )
+        .unwrap();
+        let target = dir.path().join("mod-deployed.txt");
+        std::fs::write(
+            &target,
+            "years of hand edits
+",
+        )
+        .unwrap();
+
+        let resolved = resolved_with_file(dir.path().join("unused.txt"));
+        let modules = vec![module_with_file("accmod", source, target)];
+        let results = module_file_verify_results(
+            &CfgdFileManager::new(dir.path(), &resolved).unwrap(),
+            dir.path(),
+            &resolved,
+            &modules,
+            cfgd_core::config::FileStrategy::default(),
+            &cfgd_core::state::StateStore::open_in_memory().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].actual,
+            cfgd_core::reconciler::UNMANAGED_DRIFT_CAUSE,
+            "an untracked module target reports what it is, got: {results:?}"
+        );
     }
 
     #[test]
@@ -824,6 +989,8 @@ mod tests {
             dir.path(),
             &resolved,
             &modules,
+            cfgd_core::config::FileStrategy::default(),
+            &cfgd_core::state::StateStore::open_in_memory().unwrap(),
         )
         .unwrap();
         assert_eq!(results.len(), 2);
@@ -860,6 +1027,8 @@ mod tests {
             dir.path(),
             &resolved,
             &modules,
+            cfgd_core::config::FileStrategy::default(),
+            &cfgd_core::state::StateStore::open_in_memory().unwrap(),
         )
         .expect("one unevaluable file must not fail the scan");
         assert_eq!(results.len(), 1);

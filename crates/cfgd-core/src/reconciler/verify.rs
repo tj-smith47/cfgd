@@ -98,6 +98,7 @@ pub fn verify(
             } else {
                 "missing".to_string()
             },
+            unmanaged: false,
         });
 
         if !ok {
@@ -125,6 +126,7 @@ pub fn verify(
                     matches: true,
                     expected: "configured".to_string(),
                     actual: "configured".to_string(),
+                    unmanaged: false,
                 });
             } else {
                 for drift in &drifts {
@@ -134,6 +136,7 @@ pub fn verify(
                         matches: false,
                         expected: drift.expected.clone(),
                         actual: drift.actual.clone(),
+                        unmanaged: false,
                     });
 
                     record_drift_or_warn(
@@ -179,6 +182,10 @@ pub struct VerifyResult {
     pub matches: bool,
     pub expected: String,
     pub actual: String,
+    /// Whether a `file` result's target holds a file cfgd never wrote. Appended
+    /// last and `false` for every other resource type, so an existing reader
+    /// sees the payload it always saw with one field added at the end.
+    pub unmanaged: bool,
 }
 
 /// Merge every module's `env`/`aliases` over the profile's, and record which
@@ -309,6 +316,7 @@ pub fn env_verify_results(
                     } else {
                         "source line missing".to_string()
                     },
+                    unmanaged: false,
                 });
             }
             // The live-session refresh is best-effort and ephemeral (a re-login
@@ -366,6 +374,7 @@ fn verify_env_items(
             } else {
                 "missing or changed".to_string()
             },
+            unmanaged: false,
         });
     }
 
@@ -384,6 +393,7 @@ fn verify_env_items(
             } else {
                 "missing or changed".to_string()
             },
+            unmanaged: false,
         });
     }
 }
@@ -511,6 +521,7 @@ pub(super) fn verify_env_file(
                 matches: true,
                 expected: "current".to_string(),
                 actual: "current".to_string(),
+                unmanaged: false,
             });
         }
         Ok(_) => {
@@ -520,6 +531,7 @@ pub(super) fn verify_env_file(
                 matches: false,
                 expected: "current".to_string(),
                 actual: "stale".to_string(),
+                unmanaged: false,
             });
         }
         Err(_) => {
@@ -529,6 +541,7 @@ pub(super) fn verify_env_file(
                 matches: false,
                 expected: "present".to_string(),
                 actual: "missing".to_string(),
+                unmanaged: false,
             });
         }
     }

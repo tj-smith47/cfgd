@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::reconciler::is_unmanaged_file;
 use std::sync::{Arc, Mutex};
 
 use cfgd_core::PathDisplayExt;

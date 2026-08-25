@@ -548,10 +548,11 @@ fn verify_full_path_resolves_modules_and_catches_module_file_drift() {
     std::fs::write(module_dir.join("conf"), "desired\n").unwrap();
     let module_target = dir.path().join("mod-out").join("conf");
     std::fs::create_dir_all(module_target.parent().unwrap()).unwrap();
-    std::fs::write(&module_target, "tampered\n").unwrap();
 
+    // `Copy`, not the default symlink: the tamper below has to change the
+    // deployed file without changing the module's own source through the link.
     let module_yaml = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: accmod\nspec:\n  packages: []\n  files:\n    - source: conf\n      target: {}\n",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: accmod\nspec:\n  packages: []\n  files:\n    - source: conf\n      strategy: Copy\n      target: {}\n",
         module_target.display()
     );
     std::fs::write(module_dir.join("module.yaml"), module_yaml).unwrap();
@@ -567,6 +568,24 @@ fn verify_full_path_resolves_modules_and_catches_module_file_drift() {
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  modules:\n    - accmod\n",
     )
     .unwrap();
+
+    // Deploy it, THEN tamper: a target cfgd has never written is an unmanaged
+    // file, which is a different finding with a different fix. This test is
+    // about content drift in a file cfgd really owns.
+    Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("apply")
+        .arg("--module")
+        .arg("accmod")
+        .arg("--yes")
+        .arg("--no-color")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .success();
+    std::fs::write(&module_target, "tampered\n").unwrap();
 
     let assert = Command::cargo_bin("cfgd")
         .unwrap()
@@ -607,10 +626,11 @@ fn status_module_exit_code_catches_module_file_drift() {
     std::fs::write(module_dir.join("conf"), "desired\n").unwrap();
     let module_target = dir.path().join("mod-out").join("conf");
     std::fs::create_dir_all(module_target.parent().unwrap()).unwrap();
-    std::fs::write(&module_target, "tampered\n").unwrap();
 
+    // `Copy`, not the default symlink: the tamper below has to change the
+    // deployed file without changing the module's own source through the link.
     let module_yaml = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: accmod\nspec:\n  packages: []\n  files:\n    - source: conf\n      target: {}\n",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: accmod\nspec:\n  packages: []\n  files:\n    - source: conf\n      strategy: Copy\n      target: {}\n",
         module_target.display()
     );
     std::fs::write(module_dir.join("module.yaml"), module_yaml).unwrap();
@@ -626,6 +646,24 @@ fn status_module_exit_code_catches_module_file_drift() {
         "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  modules:\n    - accmod\n",
     )
     .unwrap();
+
+    // Deploy it, THEN tamper: a target cfgd has never written is an unmanaged
+    // file, which is a different finding with a different fix. This test is
+    // about content drift in a file cfgd really owns.
+    Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("apply")
+        .arg("--module")
+        .arg("accmod")
+        .arg("--yes")
+        .arg("--no-color")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .success();
+    std::fs::write(&module_target, "tampered\n").unwrap();
 
     // Without --exit-code: fast dashboard, exit 0, no drift claimed even
     // though the target's content is wrong. Read `-o json` rather than

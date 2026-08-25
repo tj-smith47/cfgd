@@ -315,6 +315,15 @@ pub fn collect_file_checks(
     registry: &ProviderRegistry,
 ) -> Vec<ComplianceCheck> {
     let mut checks = Vec::new();
+    // The RESOLVED strategy for every declared target, so an entry that names
+    // none is judged against the profile-wide default here exactly as it is on
+    // the apply path.
+    let strategies = crate::effective::effective_file_strategies(
+        profile,
+        modules,
+        config_dir,
+        registry.default_file_strategy,
+    );
 
     for file in effective_files(profile, modules, config_dir) {
         let target = crate::expand_tilde(&file.target);
@@ -390,7 +399,7 @@ pub fn collect_file_checks(
                 Path::new(&file.source),
                 &file.target,
                 file.tera_origin.as_deref(),
-                file.strategy,
+                Some(strategies.for_target(&target)),
             ) {
                 Ok(drift) => {
                     if drift.matches {

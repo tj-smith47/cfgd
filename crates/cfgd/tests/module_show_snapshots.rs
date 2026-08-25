@@ -5,7 +5,7 @@
 //!   - `module_list/empty.txt`        — empty list (status + hint shape)
 //!   - `module_show/happy.{txt,json}` — populated module with remote lock,
 //!     state, packages (mix of Resolved/Skipped/Unresolved), files, env,
-//!     aliases, post-apply scripts
+//!     aliases, lifecycle scripts
 //!   - `module_show/not_found.txt`    — error path (status + hint)
 //!
 //! Goldens live under `tests/output_snapshots/`. Regenerate with:
@@ -18,7 +18,9 @@ use cfgd::cli::module::list_show::{
     PackageDisplay, build_module_list_doc, build_module_not_found_error, build_module_show_doc,
 };
 use cfgd::cli::module::{ModuleListEntry, ModuleShowMetadata, ModuleShowOutput};
-use cfgd_core::config::{EnvVar, ModuleFileEntry, ModuleLockEntry, ModuleSpec, ShellAlias};
+use cfgd_core::config::{
+    EnvVar, ModuleFileEntry, ModuleLockEntry, ModuleSpec, ScriptEntry, ScriptSpec, ShellAlias,
+};
 use cfgd_core::output::Printer;
 use cfgd_core::state::ModuleStateRecord;
 use pretty_assertions::assert_eq;
@@ -119,7 +121,20 @@ fn happy_show_output() -> ModuleShowOutput {
                     command: "ls -la".into(),
                 },
             ],
-            scripts: None,
+            // Declared out of run order on purpose: the Scripts section
+            // reports the order the hooks RUN in, and every declaring hook —
+            // not just `postApply` — has to appear.
+            scripts: Some(ScriptSpec {
+                post_apply: vec![
+                    ScriptEntry::Simple("echo 'post-apply hook ran'".into()),
+                    ScriptEntry::Simple("systemctl --user daemon-reload".into()),
+                ],
+                pre_apply: vec![ScriptEntry::Simple("mkdir -p ~/.config/dev-tools".into())],
+                on_drift: vec![ScriptEntry::Simple(
+                    "notify-send 'dev-tools drifted'".into(),
+                )],
+                ..Default::default()
+            }),
             system: Default::default(),
         },
     }
@@ -155,11 +170,39 @@ fn happy_packages() -> Vec<PackageDisplay> {
     ]
 }
 
-fn happy_post_apply() -> Vec<String> {
-    vec![
-        "echo 'post-apply hook ran'".into(),
-        "systemctl --user daemon-reload".into(),
-    ]
+/// Every hook that declares something gets a row, labelled with the hook it
+/// runs in and ordered by when it runs — the section used to render `postApply`
+/// bodies alone, so a module's `preApply` and `onDrift` scripts were invisible.
+#[test]
+fn module_show_renders_every_declaring_hook_in_execution_order() {
+    let output = happy_show_output();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_module_show_doc(
+        &output,
+        None,
+        &[],
+        false,
+        printer.arrow(),
+    ));
+    drop(printer);
+    let human = cap.human();
+    let rows: Vec<String> = human
+        .lines()
+        .skip_while(|l| l.trim() != "Scripts")
+        .skip(1)
+        .take_while(|l| !l.trim().is_empty())
+        .map(|l| l.trim().to_string())
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            "⊙ preApply: mkdir -p ~/.config/dev-tools",
+            "⊙ postApply: echo 'post-apply hook ran'",
+            "⊙ postApply: systemctl --user daemon-reload",
+            "⊙ onDrift: notify-send 'dev-tools drifted'",
+        ],
+        "every declaring hook, in execution order: {human}"
+    );
 }
 
 #[test]
@@ -202,13 +245,11 @@ fn module_show_happy_human() {
     let output = happy_show_output();
     let lock = happy_lock_entry();
     let pkgs = happy_packages();
-    let post = happy_post_apply();
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_module_show_doc(
         &output,
         Some(&lock),
         &pkgs,
-        &post,
         false,
         printer.arrow(),
     ));
@@ -221,13 +262,11 @@ fn module_show_happy_json() {
     let output = happy_show_output();
     let lock = happy_lock_entry();
     let pkgs = happy_packages();
-    let post = happy_post_apply();
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_module_show_doc(
         &output,
         Some(&lock),
         &pkgs,
-        &post,
         false,
         printer.arrow(),
     ));

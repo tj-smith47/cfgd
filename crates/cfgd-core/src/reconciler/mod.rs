@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::providers::ProviderRegistry;
 use crate::state::StateStore;
 
+mod adopt;
 mod apply;
 mod env;
 mod env_engine;
@@ -32,6 +33,11 @@ mod verify;
 #[cfg(test)]
 mod tests;
 
+pub use adopt::{
+    ConflictResolver, ResolvedConflict, UNMANAGED_DRIFT_CAUSE, UNMANAGED_SKIP_REASON,
+    apply_conflict_policy, is_unmanaged_file, mark_unmanaged_drift, module_file_desired_hash,
+    sweep_label, sweep_unmanaged_file_targets, unmanaged_conflict_error,
+};
 pub use apply::{action_matches_phase_filter, render_caveats};
 pub use env::recorded_manager_path_dirs;
 pub use env_engine::launchd_env_plist;
@@ -63,7 +69,7 @@ pub use run::{
     ScopedPhase, align_width, align_width_of, in_scope_tree, pseudo_phase, render_apply_result,
     render_plan_tree, render_run_rollup,
 };
-pub use sidecar::{CFGD_BACKUP_SUFFIX, backup_file, cfgd_backup_path};
+pub use sidecar::{CFGD_BACKUP_SUFFIX, SidecarOutcome, backup_file, cfgd_backup_path};
 pub use types::{
     Action, ActionResult, ApplyResult, CFGD_GROUP_ORDER, EnvAction, MANAGERS_GROUP, ManagerAction,
     ModuleAction, ModuleActionKind, Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName,
@@ -172,8 +178,9 @@ pub struct Reconciler<'a> {
     /// the prompt and the plan mutation live — but the COPY is a disk mutation,
     /// and a plan is a preview until the operator confirms it. Carrying the
     /// decision here defers the write to the phase whose work it is part of, so
-    /// the `Backed up to …` line streams under `Phase: Files` beside the write
-    /// it protects instead of standing above the run's own header.
+    /// `backed up to …` rides as a DETAIL on the row of the write it protects —
+    /// under `Phase: Files`, on the success row and the failure row alike —
+    /// instead of standing as its own line above the run's header.
     sidecar_backups: std::collections::HashSet<PathBuf>,
     /// What this run is scoped to, for the `applies` row it records.
     ///
@@ -199,8 +206,8 @@ impl<'a> Reconciler<'a> {
         }
     }
 
-    /// Copy each of `targets` aside (and report where it landed) as the action
-    /// that displaces it executes.
+    /// Copy each of `targets` aside as the action that displaces it executes,
+    /// reporting where the copy landed on that action's own row.
     ///
     /// Set from the unmanaged-file conflict pass, which decides the policy but
     /// no longer carries it out: see [`Self::sidecar_backups`].
@@ -218,12 +225,11 @@ impl<'a> Reconciler<'a> {
     fn back_up_adopted_target(
         &self,
         target: &Path,
-        printer: &crate::output::Printer,
-    ) -> crate::errors::Result<()> {
+    ) -> crate::errors::Result<Option<sidecar::SidecarOutcome>> {
         if self.sidecar_backups.contains(target) {
-            sidecar::backup_file(target, printer)?;
+            return sidecar::backup_file(target).map(Some);
         }
-        Ok(())
+        Ok(None)
     }
 
     /// Record `scope` as what this run was scoped to, in place of the resolved

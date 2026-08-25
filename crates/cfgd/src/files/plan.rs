@@ -508,8 +508,9 @@ impl super::CfgdFileManager {
             return Ok(FileDriftResult {
                 target: target_id,
                 matches: false,
-                expected: "managed source present".to_string(),
+                expected: cfgd_core::providers::SOURCE_MISSING_EXPECTED.to_string(),
                 actual: format!("source not found: {}", source_path.posix()),
+                unmanaged: false,
             });
         }
 
@@ -553,6 +554,7 @@ impl super::CfgdFileManager {
                 matches,
                 expected: expected.to_string(),
                 actual,
+                unmanaged: false,
             });
         }
 
@@ -585,6 +587,7 @@ impl super::CfgdFileManager {
                 } else {
                     "content differs from source".to_string()
                 },
+                unmanaged: false,
             })
         } else {
             printer.status_simple(Role::Info, format!("{} (new file)", target_path.posix()));
@@ -595,6 +598,7 @@ impl super::CfgdFileManager {
                 matches: false,
                 expected: "present".to_string(),
                 actual: "missing".to_string(),
+                unmanaged: false,
             })
         }
     }
@@ -661,8 +665,9 @@ impl super::CfgdFileManager {
             return Ok(FileDriftResult {
                 target: target_id,
                 matches: false,
-                expected: "managed source present".to_string(),
+                expected: cfgd_core::providers::SOURCE_MISSING_EXPECTED.to_string(),
                 actual: format!("source not found: {}", source_path.posix()),
+                unmanaged: false,
             });
         }
 
@@ -697,6 +702,7 @@ impl super::CfgdFileManager {
                 matches,
                 expected: expected.to_string(),
                 actual,
+                unmanaged: false,
             });
         }
 
@@ -724,6 +730,7 @@ impl super::CfgdFileManager {
                 } else {
                     "content differs from source".to_string()
                 },
+                unmanaged: false,
             })
         } else {
             Ok(FileDriftResult {
@@ -731,6 +738,7 @@ impl super::CfgdFileManager {
                 matches: false,
                 expected: "present".to_string(),
                 actual: "missing".to_string(),
+                unmanaged: false,
             })
         }
     }
@@ -899,6 +907,7 @@ pub(crate) fn patch_drift_result(
                 matches: false,
                 expected: "content satisfies patch spec".to_string(),
                 actual: patch_failure_detail(&e),
+                unmanaged: false,
             };
         }
     };
@@ -914,6 +923,7 @@ pub(crate) fn patch_drift_result(
         } else {
             "missing".to_string()
         },
+        unmanaged: false,
     }
 }
 

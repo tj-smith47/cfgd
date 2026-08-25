@@ -18,6 +18,8 @@ mod fences;
 #[cfg(feature = "test-helpers")]
 mod indent;
 #[cfg(feature = "test-helpers")]
+mod kv_nested;
+#[cfg(feature = "test-helpers")]
 mod kv_role;
 #[cfg(feature = "test-helpers")]
 mod regression;

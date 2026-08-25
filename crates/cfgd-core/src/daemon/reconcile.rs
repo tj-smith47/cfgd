@@ -587,6 +587,53 @@ pub(crate) fn handle_reconcile(
     // the actions an auto-apply executes then describe one set, and the header
     // cannot name a number the run disagrees with.
     withhold_from_plan(&mut plan, &pending_exclusions);
+
+    // Check drift policy to decide whether to auto-apply or just notify.
+    // Per-module ticks may override the global value via their patch entry.
+    // Resolved HERE rather than at the policy branch below, because the
+    // unmanaged-file pass has to know the answer: it hashes every declared
+    // target and source, and a tick that will only notify has nothing to
+    // protect and no reason to pay for the walk.
+    let drift_policy = drift_policy_override.clone().unwrap_or_else(|| {
+        cfg.spec
+            .daemon
+            .as_ref()
+            .and_then(|d| d.reconcile.as_ref())
+            .map(|r| r.drift_policy.clone())
+            .unwrap_or_default()
+    });
+
+    // A tick has nobody to ask, so it settles every unmanaged target the way
+    // `--yes` does: keep a copy. Without this pass the daemon displaced a
+    // user's own file with no copy kept, while `cfgd apply` over the identical
+    // plan copied it aside — the same machine, two answers, decided by which
+    // process got there first. Only an APPLYING tick sweeps: a report-only tick
+    // displaces nothing, so a sidecar it took would be a copy of a file nobody
+    // was about to overwrite.
+    let reconciler = if matches!(drift_policy, config::DriftPolicy::Auto) {
+        match crate::reconciler::sweep_unmanaged_file_targets(
+            &mut plan,
+            &config_dir,
+            store,
+            printer,
+            &crate::effective::effective_file_strategies(
+                &resolved.merged,
+                resolved_modules_ref.as_slice(),
+                &config_dir,
+                registry.default_file_strategy,
+            ),
+            None,
+            &mut |_, _| Ok(crate::reconciler::ResolvedConflict::Backup),
+        ) {
+            Ok(backups) => reconciler.backing_up(backups),
+            Err(e) => {
+                tracing::error!(error = %e, "reconcile: unmanaged-file pass failed");
+                return;
+            }
+        }
+    } else {
+        reconciler
+    };
     let effective_total = plan.total_actions();
 
     let timestamp = crate::utc_now_iso8601();
@@ -824,17 +871,6 @@ pub(crate) fn handle_reconcile(
                 }
             });
         }
-
-        // Check drift policy to decide whether to auto-apply or just notify.
-        // Per-module ticks may override the global value via their patch entry.
-        let drift_policy = drift_policy_override.clone().unwrap_or_else(|| {
-            cfg.spec
-                .daemon
-                .as_ref()
-                .and_then(|d| d.reconcile.as_ref())
-                .map(|r| r.drift_policy.clone())
-                .unwrap_or_default()
-        });
 
         // The rows every arm below prints above its own body: a tick reports
         // the same run skeleton `cfgd apply` does, so the two surfaces cannot

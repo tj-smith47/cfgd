@@ -11,6 +11,8 @@ use cfgd_core::reconciler::{
 };
 use cfgd_core::state::{ApplyStatus, StateStore};
 
+use cfgd_core::reconciler::{apply_conflict_policy, is_unmanaged_file, sweep_label};
+
 use super::*;
 
 /// A `Cli` whose config lives in `dir`, so a [`RunContext`] built from it
@@ -2226,7 +2228,7 @@ fn an_unanswerable_prompt_reserves_the_file_instead_of_overwriting_it() {
         &printer,
         false,
         OnConflict::Ask,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
@@ -2296,7 +2298,7 @@ fn unmanaged_prompt_never_backs_up_a_patch_target() {
         &printer,
         false,
         OnConflict::Ask,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
@@ -2367,20 +2369,24 @@ fn a_module_file_inheriting_the_global_copy_strategy_is_not_re_adopted() {
     file.strategy = None;
 
     let state = StateStore::open_in_memory().unwrap();
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    let (printer, _buf) = Printer::for_test_at(Verbosity::Normal);
     let mut plan = module_deploy_plan(vec![file]);
 
-    handle_unmanaged_file_targets(
+    let backups = handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
         &state,
         &printer,
         true,
         OnConflict::Ask,
-        FileStrategy::Copy,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Copy),
     )
     .unwrap();
 
+    assert!(
+        backups.is_empty(),
+        "a converged target is not a conflict, got: {backups:?}"
+    );
     assert!(
         !tmp.path().join("live.conf.cfgd-backup").exists(),
         "a converged target must not be copied aside"
@@ -2389,11 +2395,6 @@ fn a_module_file_inheriting_the_global_copy_strategy_is_not_re_adopted() {
         deployed_files(&plan),
         vec![target],
         "the file stays in the deployment"
-    );
-    let out = cfgd_core::test_helpers::captured_text(&buf);
-    assert!(
-        !out.contains("unmanaged file"),
-        "a converged target is not a conflict, got: {out}"
     );
 }
 
@@ -2426,7 +2427,7 @@ fn skip_drops_the_chmod_planned_beside_the_write_it_skipped() {
         &printer,
         true,
         OnConflict::Skip,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
@@ -2471,7 +2472,7 @@ fn a_skipped_module_file_reports_the_same_reason_the_profile_arm_does() {
         &printer,
         true,
         OnConflict::Skip,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
@@ -2518,7 +2519,7 @@ fn a_skipped_module_file_leaves_the_declared_set_with_it() {
         &printer,
         true,
         OnConflict::Skip,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
@@ -2584,7 +2585,7 @@ fn the_prompts_abort_answer_stops_the_run_without_touching_the_file() {
         &printer,
         false,
         OnConflict::Ask,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap_err()
     .to_string();
@@ -2676,7 +2677,7 @@ fn unmanaged_prompt_skips_patch_module_files() {
         &printer,
         false,
         OnConflict::Ask,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
@@ -2731,6 +2732,63 @@ fn deployed_files(plan: &Plan) -> Vec<PathBuf> {
         .collect()
 }
 
+/// A module records ONE aggregate `module` resource row plus a per-file
+/// `module_file_manifest` row, so a module-deployed target is invisible to a
+/// classification that only asks about `file` rows: a user replacing the
+/// deployed symlink with a regular file had their own file read as a
+/// stranger's and copied aside on the next apply.
+#[test]
+fn a_module_deployed_target_is_never_a_strangers_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("src.conf");
+    let target = tmp.path().join("live.conf");
+    std::fs::write(&source, "from the module\n").unwrap();
+    std::fs::write(&target, "edited in place\n").unwrap();
+
+    let state = StateStore::open_in_memory().unwrap();
+    let apply_id = state
+        .record_apply("test", "h", ApplyStatus::Success, None)
+        .unwrap();
+    state
+        .upsert_module_file(
+            "mymod",
+            &cfgd_core::to_posix_fs_key(&target),
+            "deadbeef",
+            "Symlink",
+            apply_id,
+        )
+        .unwrap();
+
+    let (printer, _buf) = Printer::for_test_at(Verbosity::Normal);
+    let mut plan = module_deploy_plan(vec![module_copy_file(&source, &target)]);
+
+    let backups = handle_unmanaged_file_targets(
+        &mut plan,
+        tmp.path(),
+        &state,
+        &printer,
+        true,
+        OnConflict::Backup,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
+    )
+    .unwrap();
+
+    assert!(
+        backups.is_empty(),
+        "cfgd's own module file must not be reserved as an adoption, got: {backups:?}"
+    );
+    assert_eq!(
+        deployed_files(&plan),
+        vec![target.clone()],
+        "the file stays in the deployment"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "edited in place\n",
+        "and nothing on disk moved"
+    );
+}
+
 #[test]
 fn a_module_target_already_holding_the_desired_bytes_is_never_backed_up() {
     // Re-adopting content that is already there must not mint a sidecar copy
@@ -2742,28 +2800,32 @@ fn a_module_target_already_holding_the_desired_bytes_is_never_backed_up() {
     std::fs::write(&target, "identical\n").unwrap();
 
     let state = StateStore::open_in_memory().unwrap();
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    let (printer, _buf) = Printer::for_test_at(Verbosity::Normal);
     let mut plan = module_deploy_plan(vec![module_copy_file(&source, &target)]);
 
-    handle_unmanaged_file_targets(
+    let backups = handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
         &state,
         &printer,
         true,
         OnConflict::Ask,
-        FileStrategy::Symlink,
+        // The strategy the sweep acts on is the RESOLVED one, which production
+        // reads out of `effective_file_strategies` — the same `Copy` this
+        // fixture's entry declares. Only a whole-content strategy has a desired
+        // hash to compare, so a link default here would answer "not converged"
+        // about a file that is.
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Copy),
     )
     .unwrap();
 
     assert!(
+        backups.is_empty(),
+        "a converged target must not be reserved for adoption, got: {backups:?}"
+    );
+    assert!(
         !tmp.path().join("live.conf.cfgd-backup").exists(),
         "a converged target is not a conflict and needs no sidecar"
-    );
-    let out = cfgd_core::test_helpers::captured_text(&buf);
-    assert!(
-        !out.contains("unmanaged file"),
-        "a converged target must not be announced as a conflict, got: {out}"
     );
 }
 
@@ -2788,7 +2850,7 @@ fn a_module_target_holding_different_bytes_is_reserved_under_yes() {
         &printer,
         true,
         OnConflict::Ask,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
@@ -2831,7 +2893,7 @@ fn on_conflict_overwrite_keeps_no_copy() {
         &printer,
         true,
         OnConflict::Overwrite,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
@@ -2865,7 +2927,7 @@ fn on_conflict_skip_drops_the_file_from_the_deployment() {
         &printer,
         true,
         OnConflict::Skip,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
@@ -2896,7 +2958,7 @@ fn on_conflict_fail_aborts_naming_the_module_and_the_file() {
         &printer,
         true,
         OnConflict::Fail,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap_err()
     .to_string();
@@ -2914,7 +2976,7 @@ fn a_profile_target_already_holding_the_planned_content_is_left_alone() {
     std::fs::write(&target, "export EDITOR=vim\n").unwrap();
 
     let state = StateStore::open_in_memory().unwrap();
-    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    let (printer, _buf) = Printer::for_test_at(Verbosity::Normal);
     let mut action = copy_update(&target);
     if let Action::File(FileAction::Update {
         ref mut source_hash,
@@ -2925,25 +2987,31 @@ fn a_profile_target_already_holding_the_planned_content_is_left_alone() {
     }
     let mut plan = one_phase_plan(vec![action]);
 
-    handle_unmanaged_file_targets(
+    let backups = handle_unmanaged_file_targets(
         &mut plan,
         tmp.path(),
         &state,
         &printer,
         true,
         OnConflict::Backup,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
     assert!(
+        backups.is_empty(),
+        "a converged profile target is not a conflict, got: {backups:?}"
+    );
+    assert!(
         !tmp.path().join("zshrc.cfgd-backup").exists(),
         "a converged profile target must not be copied aside"
     );
-    let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        !out.contains("unmanaged file"),
-        "a converged profile target is not announced as a conflict, got: {out}"
+        matches!(
+            plan.phases[0].owned_actions().next().map(|(_, a)| a),
+            Some(Action::File(FileAction::Update { .. })),
+        ),
+        "and its write is left exactly as planned"
     );
 }
 
@@ -2969,7 +3037,7 @@ fn a_reserved_target_is_still_the_users_file_until_the_write_runs() {
         &printer,
         true,
         OnConflict::Backup,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
 
@@ -3979,13 +4047,13 @@ fn a_settled_conflict_sweep_narrates_the_owner_it_is_reading() {
         &printer,
         true,
         OnConflict::Backup,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
     drop(printer);
 
     let out = cfgd_core::test_helpers::captured_text(&drawn);
-    let label = super::sweep_label(&cfgd_core::reconciler::Owner::module("mymod"));
+    let label = sweep_label(&cfgd_core::reconciler::Owner::module("mymod"));
     assert!(
         out.contains(&label),
         "the planning bar must name the owner it is reading ({label}), got: {out}"
@@ -4014,13 +4082,13 @@ fn an_unsettled_conflict_sweep_opens_no_bar() {
         &printer,
         false,
         OnConflict::Ask,
-        FileStrategy::Symlink,
+        &cfgd_core::effective::FileStrategies::with_default(FileStrategy::Symlink),
     )
     .unwrap();
     drop(printer);
 
     let out = cfgd_core::test_helpers::captured_text(&drawn);
-    let label = super::sweep_label(&cfgd_core::reconciler::Owner::module("mymod"));
+    let label = sweep_label(&cfgd_core::reconciler::Owner::module("mymod"));
     assert!(
         !out.contains(&label),
         "a prompting sweep must not animate a bar under the prompt ({label}), got: {out}"

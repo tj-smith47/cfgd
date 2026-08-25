@@ -199,6 +199,62 @@ pub fn effective_files(
     files
 }
 
+/// Every effective file's RESOLVED deployment strategy, keyed by its expanded
+/// target, with the profile-wide default carried alongside for a target the map
+/// does not name.
+///
+/// The lookup a drift READER and the unmanaged-file SWEEP both need: a finding
+/// (or a plan action) carries the path it was taken at and nothing else, while
+/// whether an unmanaged target is a conflict at all turns on the strategy the
+/// entry declares — a `Patch` entry merges into the target's own bytes, so its
+/// target is nobody's stranger. The default is applied HERE rather than at each
+/// consumer, because three consumers resolving it separately is how one of them
+/// read a strategy-less entry as `Symlink` under a global `fileStrategy: Patch`
+/// and prompted about a file the other two adopted in place.
+pub struct FileStrategies {
+    by_target: std::collections::HashMap<std::path::PathBuf, crate::config::FileStrategy>,
+    default: crate::config::FileStrategy,
+}
+
+impl FileStrategies {
+    /// The resolved strategy for `target`; the profile-wide default when the
+    /// map does not name it.
+    #[must_use]
+    pub fn for_target(&self, target: &Path) -> crate::config::FileStrategy {
+        self.by_target.get(target).copied().unwrap_or(self.default)
+    }
+
+    /// An empty map over `default`, for a caller with no composed profile to
+    /// derive one from.
+    #[must_use]
+    pub fn with_default(default: crate::config::FileStrategy) -> Self {
+        Self {
+            by_target: std::collections::HashMap::new(),
+            default,
+        }
+    }
+}
+
+/// Build the [`FileStrategies`] lookup from effective state, so a
+/// module-contributed file is as visible in it as a profile one. The FIRST
+/// declaration of a target wins, matching [`effective_files`]'s order: profile
+/// entries precede module ones.
+#[must_use]
+pub fn effective_file_strategies(
+    profile: &MergedProfile,
+    modules: &[ResolvedModule],
+    config_dir: &Path,
+    default: crate::config::FileStrategy,
+) -> FileStrategies {
+    let mut by_target = std::collections::HashMap::new();
+    for file in effective_files(profile, modules, config_dir) {
+        by_target
+            .entry(crate::expand_tilde(&file.target))
+            .or_insert(file.strategy.unwrap_or(default));
+    }
+    FileStrategies { by_target, default }
+}
+
 fn profile_file(spec: &ManagedFileSpec, config_dir: &Path) -> EffectiveFile {
     let resolved_source = crate::resolve_relative_path(Path::new(&spec.source), config_dir)
         .map_or_else(|_| spec.source.clone(), |p| to_posix_string(&p));
@@ -532,5 +588,46 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].origin, Origin::Profile);
         assert_eq!(files[1].origin, Origin::Module("dev".into()));
+    }
+
+    /// The default is applied ONCE, inside the lookup. Three consumers each
+    /// running `strategy.unwrap_or(default)` themselves is how `cfgd diff` and
+    /// the apply-time conflict sweep came to disagree about whether a
+    /// strategy-less entry under a global `fileStrategy: patch` was a conflict
+    /// at all — a `Patch` target is adopted in place and is never one.
+    #[test]
+    fn a_strategy_less_entry_resolves_to_the_profile_wide_default() {
+        let mut profile = empty_profile();
+        let mut bare = managed("dot/gitconfig", "/home/u/.gitconfig");
+        bare.strategy = None;
+        profile.files.managed = vec![bare, managed("dot/npmrc", "/home/u/.npmrc")];
+        let mut m = module("dev");
+        let mut bare_module = resolved_file("/cache/vimrc", "/home/u/.vimrc");
+        bare_module.strategy = None;
+        m.files = vec![bare_module];
+
+        let strategies =
+            effective_file_strategies(&profile, &[m], Path::new("/cfg"), FileStrategy::Patch);
+
+        assert_eq!(
+            strategies.for_target(Path::new("/home/u/.gitconfig")),
+            FileStrategy::Patch,
+            "a profile entry declaring no strategy takes the global default"
+        );
+        assert_eq!(
+            strategies.for_target(Path::new("/home/u/.vimrc")),
+            FileStrategy::Patch,
+            "a module entry declaring no strategy takes the same default"
+        );
+        assert_eq!(
+            strategies.for_target(Path::new("/home/u/.npmrc")),
+            FileStrategy::Copy,
+            "a declared strategy still wins over the default"
+        );
+        assert_eq!(
+            strategies.for_target(Path::new("/home/u/.never-declared")),
+            FileStrategy::Patch,
+            "a target nothing declares reads the default rather than a wrong answer"
+        );
     }
 }

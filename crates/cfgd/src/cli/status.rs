@@ -212,11 +212,27 @@ impl ModuleStatus {
 /// stored copy is a second thing to keep in step with the row it must agree
 /// with — both halves read one [`ModuleStatus::state_display`] call instead.
 /// `status` beside it stays the untouched stored token.
+/// `scriptCounts` is derived the same way: `scripts` beside it keeps the hook
+/// NAMES it always carried, and the per-hook tally is additive rather than a
+/// reshaping of that field.
 #[derive(Serialize)]
 struct ModuleStatusPayload<'a> {
     #[serde(flatten)]
     module: &'a ModuleStatus,
     state: &'static str,
+    /// One entry per declaring hook, in EXECUTION order — an array of
+    /// `{hook, count}` rather than an object, because the payload is rebuilt
+    /// through `serde_json::Value` on its way out and a JSON object there is a
+    /// sorted map: as an object the pairs came back alphabetically, which is
+    /// not the order the hooks run in.
+    #[serde(rename = "scriptCounts")]
+    script_counts: Vec<HookCount>,
+}
+
+#[derive(Serialize)]
+struct HookCount {
+    hook: String,
+    count: usize,
 }
 
 /// One live-scan finding, carrying both the recorded-shape event a consumer
@@ -863,8 +879,19 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView) ->
         if output.aliases > 0 {
             rows.push(KvPair::new("Aliases", output.aliases.to_string()));
         }
-        if let Some(scripts) = output.declared.script_summary() {
-            rows.push(KvPair::new("Scripts", scripts));
+        // A total with one row per declaring hook beneath it: a single-line
+        // summary reads as the one hook that declares most and hides the rest.
+        let hooks = output.declared.script_counts();
+        if !hooks.is_empty() {
+            rows.push(KvPair::new(
+                "Scripts",
+                output.declared.script_total().to_string(),
+            ));
+            rows.extend(
+                hooks
+                    .into_iter()
+                    .map(|(hook, count)| KvPair::nested(hook, count.to_string())),
+            );
         }
         if !output.system.is_empty() {
             rows.push(KvPair::new("System", output.system.join(", ")));
@@ -893,6 +920,12 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView) ->
     doc.with_data(ModuleStatusPayload {
         module: output,
         state: state_word,
+        script_counts: output
+            .declared
+            .script_counts()
+            .into_iter()
+            .map(|(hook, count)| HookCount { hook, count })
+            .collect(),
     })
 }
 
@@ -1049,6 +1082,7 @@ pub fn build_module_status_not_found_doc(name: &str) -> Doc {
         .with_data(ModuleStatusPayload {
             module: &payload,
             state: state_word,
+            script_counts: Vec::new(),
         })
 }
 
@@ -1469,6 +1503,8 @@ pub(super) fn cmd_status_module(
                     config_dir,
                     &resolved,
                     &resolved_modules,
+                    registry.default_file_strategy,
+                    state,
                 )?;
                 for r in file_results.into_iter().filter(|r| !r.matches) {
                     drifted_ids.insert(r.resource_id.clone());
@@ -1523,6 +1559,7 @@ pub(super) fn cmd_status_module(
                                         matches: false,
                                         expected: "installed".to_string(),
                                         actual: cfgd_core::Absence::Missing.to_string(),
+                                        unmanaged: false,
                                     },
                                     &resolved.merged.env,
                                     &resolved.merged.aliases,

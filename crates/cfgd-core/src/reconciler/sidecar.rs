@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 
 use crate::PathDisplayExt;
 use crate::errors::{FileError, Result};
-use crate::output::{Printer, Role};
 
 /// Suffix of the sidecar copy cfgd leaves beside a target it adopted.
 pub const CFGD_BACKUP_SUFFIX: &str = ".cfgd-backup";
@@ -43,6 +42,34 @@ fn failed(target: &Path, message: impl std::fmt::Display) -> crate::errors::Cfgd
     .into()
 }
 
+/// What one sidecar copy did: where it landed, and whether a copy already
+/// holding the same bytes was reused rather than written again.
+///
+/// Returned rather than printed, because the copy is part of the action that
+/// displaces the target: the run reports it as that action's detail, on the
+/// action's own row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidecarOutcome {
+    pub path: PathBuf,
+    pub reused: bool,
+}
+
+impl SidecarOutcome {
+    fn new(path: PathBuf, reused: bool) -> Self {
+        Self { path, reused }
+    }
+
+    /// The words an action row carries about this copy.
+    pub fn detail(&self) -> String {
+        let verb = if self.reused {
+            "already backed up at"
+        } else {
+            "backed up to"
+        };
+        format!("{verb} {}", self.path.posix())
+    }
+}
+
 /// Copy an unmanaged target aside before cfgd overwrites it, and return where
 /// the copy landed.
 ///
@@ -55,7 +82,7 @@ fn failed(target: &Path, message: impl std::fmt::Display) -> crate::errors::Cfgd
 /// The copied bytes are re-read and hashed before the copy is reported, so a
 /// short write or a full disk is an error rather than a sidecar that silently
 /// holds less than the file it claims to preserve.
-pub fn backup_file(target: &Path, printer: &Printer) -> Result<PathBuf> {
+pub fn backup_file(target: &Path) -> Result<SidecarOutcome> {
     let meta = target
         .symlink_metadata()
         .map_err(|e| failed(target, format!("{e}")))?;
@@ -69,8 +96,7 @@ pub fn backup_file(target: &Path, printer: &Printer) -> Result<PathBuf> {
         // `symlink_metadata` still counts as an entry someone made.
         let backup_path = reserve_backup_path(target, None)?;
         crate::create_symlink(&dest, &backup_path).map_err(|e| failed(target, format!("{e}")))?;
-        report(printer, &backup_path, false);
-        return Ok(backup_path);
+        return Ok(SidecarOutcome::new(backup_path, false));
     }
 
     if meta.is_dir() {
@@ -80,8 +106,7 @@ pub fn backup_file(target: &Path, printer: &Printer) -> Result<PathBuf> {
         let backup_path = reserve_backup_path(target, None)?;
         crate::copy_dir_recursive(target, &backup_path)
             .map_err(|e| failed(target, format!("{e}")))?;
-        report(printer, &backup_path, false);
-        return Ok(backup_path);
+        return Ok(SidecarOutcome::new(backup_path, false));
     }
 
     let content = std::fs::read(target).map_err(|e| failed(target, format!("{e}")))?;
@@ -90,8 +115,7 @@ pub fn backup_file(target: &Path, printer: &Printer) -> Result<PathBuf> {
     // An earlier adoption already preserved these exact bytes; rewriting the
     // sidecar would only widen the window in which it is half-written.
     if sidecar_holds(&backup_path, &hash) {
-        report(printer, &backup_path, true);
-        return Ok(backup_path);
+        return Ok(SidecarOutcome::new(backup_path, true));
     }
     crate::atomic_write(&backup_path, &content).map_err(|e| failed(target, format!("{e}")))?;
     if !sidecar_holds(&backup_path, &hash) {
@@ -109,17 +133,7 @@ pub fn backup_file(target: &Path, printer: &Printer) -> Result<PathBuf> {
         crate::set_file_permissions(&backup_path, mode)
             .map_err(|e| failed(target, format!("mode of {}: {e}", backup_path.posix())))?;
     }
-    report(printer, &backup_path, false);
-    Ok(backup_path)
-}
-
-fn report(printer: &Printer, backup_path: &Path, reused: bool) {
-    let verb = if reused {
-        "Already backed up at"
-    } else {
-        "Backed up to"
-    };
-    printer.status_simple(Role::Ok, format!("{verb} {}", backup_path.posix()));
+    Ok(SidecarOutcome::new(backup_path, false))
 }
 
 /// Where this backup may be written without destroying an older one.
@@ -186,7 +200,7 @@ fn sidecar_holds(path: &Path, hash: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::output::{Printer, Verbosity};
+    use crate::PathDisplayExt;
 
     #[test]
     fn backup_file_copies_to_cfgd_backup_suffix_and_leaves_the_original() {
@@ -194,11 +208,13 @@ mod tests {
         let original = tmp.path().join("myfile.txt");
         std::fs::write(&original, "original content").unwrap();
 
-        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        let written = super::backup_file(&original, &printer).unwrap();
+        let written = super::backup_file(&original).unwrap();
 
         let backup = tmp.path().join("myfile.txt.cfgd-backup");
-        assert_eq!(written, backup, "backup should land at the sidecar path");
+        assert_eq!(
+            written.path, backup,
+            "backup should land at the sidecar path"
+        );
         assert!(backup.exists(), "backup file should exist at expected path");
         assert_eq!(
             std::fs::read_to_string(&backup).unwrap(),
@@ -217,24 +233,18 @@ mod tests {
             "the original content must be untouched by the backup"
         );
 
-        let out = crate::test_helpers::captured_text(&buf);
-        assert!(
-            out.contains("Backed up to"),
-            "expected backup confirmation in output, got: {out}"
-        );
-        assert!(
-            out.contains("cfgd-backup"),
-            "output should mention backup path, got: {out}"
-        );
+        // What the copy did travels back to the caller, which renders it on
+        // the action row that displaced the file.
+        assert!(!written.reused, "a fresh copy is not a reused one");
+        assert_eq!(written.detail(), format!("backed up to {}", backup.posix()),);
     }
 
     #[test]
     fn backup_file_nonexistent_target_returns_error() {
         let tmp = tempfile::tempdir().unwrap();
         let missing = tmp.path().join("does_not_exist.txt");
-        let (printer, _) = Printer::for_test_at(Verbosity::Normal);
 
-        let result = super::backup_file(&missing, &printer);
+        let result = super::backup_file(&missing);
         assert!(result.is_err(), "backup of nonexistent file should fail");
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -250,8 +260,7 @@ mod tests {
         std::fs::write(&original, "TOKEN=keep-me\n").unwrap();
         crate::set_file_permissions(&original, 0o600).unwrap();
 
-        let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-        let backup = super::backup_file(&original, &printer).unwrap();
+        let backup = super::backup_file(&original).unwrap().path;
 
         let meta = std::fs::metadata(&backup).unwrap();
         assert_eq!(
@@ -276,8 +285,7 @@ mod tests {
         std::fs::write(&primary, "the original").unwrap();
         std::fs::write(&target, "something else entirely").unwrap();
 
-        let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-        let written = super::backup_file(&target, &printer).unwrap();
+        let written = super::backup_file(&target).unwrap().path;
 
         assert_ne!(written, primary, "an occupied sidecar must not be reused");
         assert_eq!(
@@ -299,11 +307,10 @@ mod tests {
         std::fs::write(&target, "same bytes").unwrap();
         std::fs::write(&primary, "same bytes").unwrap();
 
-        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-        let written = super::backup_file(&target, &printer).unwrap();
+        let written = super::backup_file(&target).unwrap();
 
         assert_eq!(
-            written, primary,
+            written.path, primary,
             "an identical sidecar is reused, not stamped"
         );
         let entries: Vec<_> = std::fs::read_dir(tmp.path())
@@ -311,11 +318,8 @@ mod tests {
             .filter_map(|e| e.ok())
             .collect();
         assert_eq!(entries.len(), 2, "no second sidecar should be created");
-        let out = crate::test_helpers::captured_text(&buf);
-        assert!(
-            out.contains("Already backed up at"),
-            "a reused sidecar says so, got: {out}"
-        );
+        assert!(written.reused, "a reused sidecar says so");
+        assert!(written.detail().starts_with("already backed up at "));
     }
 
     #[test]
@@ -328,12 +332,10 @@ mod tests {
         let primary = tmp.path().join("live.conf.cfgd-backup");
         std::fs::write(&primary, "first original").unwrap();
 
-        let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-
         std::fs::write(&target, "second original").unwrap();
-        let second = super::backup_file(&target, &printer).unwrap();
+        let second = super::backup_file(&target).unwrap().path;
         std::fs::write(&target, "third original").unwrap();
-        let third = super::backup_file(&target, &printer).unwrap();
+        let third = super::backup_file(&target).unwrap().path;
 
         assert_ne!(second, third, "back-to-back adoptions need distinct names");
         assert_eq!(std::fs::read_to_string(&primary).unwrap(), "first original");
@@ -354,14 +356,13 @@ mod tests {
         std::fs::create_dir_all(&primary).unwrap();
         std::fs::write(primary.join("old.conf"), "old").unwrap();
 
-        let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-        let first = super::backup_file(&target, &printer).unwrap();
+        let first = super::backup_file(&target).unwrap().path;
 
         // A second, different original in the same second: the stamp alone would
         // name the directory the first one just filled.
         std::fs::remove_file(target.join("new.conf")).unwrap();
         std::fs::write(target.join("newer.conf"), "newer").unwrap();
-        let second = super::backup_file(&target, &printer).unwrap();
+        let second = super::backup_file(&target).unwrap().path;
 
         assert_ne!(
             first, primary,
@@ -388,8 +389,7 @@ mod tests {
         std::fs::write(&target, "#!/bin/sh\n").unwrap();
         crate::set_file_permissions(&target, 0o4755).unwrap();
 
-        let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-        let backup = super::backup_file(&target, &printer).unwrap();
+        let backup = super::backup_file(&target).unwrap().path;
 
         let mode = crate::file_permissions_mode_full(&std::fs::metadata(&backup).unwrap());
         assert_eq!(
@@ -407,8 +407,7 @@ mod tests {
         std::fs::write(&dest, "the destination\n").unwrap();
         crate::create_symlink(&dest, &target).unwrap();
 
-        let (printer, _) = Printer::for_test_at(Verbosity::Normal);
-        let backup = super::backup_file(&target, &printer).unwrap();
+        let backup = super::backup_file(&target).unwrap().path;
 
         assert_eq!(
             backup.read_link().unwrap(),

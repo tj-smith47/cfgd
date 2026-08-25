@@ -1971,12 +1971,12 @@ fn cmd_module_show_scripts() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Post-apply Scripts"),
-        "should have post-apply scripts section, got: {output}"
+        output.contains("Scripts"),
+        "should have a scripts section, got: {output}"
     );
     assert!(
-        output.contains("echo setup"),
-        "should show script, got: {output}"
+        output.contains("postApply: echo setup"),
+        "each row names the hook it runs under, got: {output}"
     );
     assert!(
         output.contains("make install"),
