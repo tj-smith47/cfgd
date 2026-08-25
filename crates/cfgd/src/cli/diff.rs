@@ -241,6 +241,7 @@ pub fn cmd_diff(
             let results = env_drift_ordered(cfgd_core::reconciler::env_verify_results(
                 &resolved.merged.env,
                 &resolved.merged.aliases,
+                &resolved.merged.entry_owners,
                 resolved.merged.env_scope,
                 &resolved_modules,
                 &path_dirs,
@@ -248,20 +249,21 @@ pub fn cmd_diff(
             let drop_env_file_row = cfgd_core::output::env_file_row_is_redundant(
                 results.iter().map(|r| r.resource_type.as_str()),
             );
+            let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(
+                &resolved.merged.env,
+                &resolved.merged.aliases,
+                &resolved.merged.entry_owners,
+                &resolved_modules,
+            );
             for r in results {
                 drift = true;
                 // An env-var/alias row's `expected`/`actual` are opaque markers —
                 // neither real value ever flows into a persisted or gateway-shipped
                 // drift record — so recompute both here, for this terminal/`-o json`
                 // display only.
-                let (expected, actual) = cfgd_core::reconciler::env_item_display_values(
-                    &r.resource_type,
-                    &r.resource_id,
-                    &resolved.merged.env,
-                    &resolved.merged.aliases,
-                    &resolved_modules,
-                )
-                .unwrap_or_else(|| (r.expected.clone(), r.actual.clone()));
+                let (expected, actual) = merged_env_items
+                    .display_values(&r.resource_type, &r.resource_id)
+                    .unwrap_or_else(|| (r.expected.clone(), r.actual.clone()));
                 let (expected, actual) =
                     cfgd_core::output::drift_operands(&r.resource_type, &expected, &actual);
                 // The payload keeps every finding; only the human report drops
@@ -572,6 +574,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                 let all_results = env_drift_ordered(cfgd_core::reconciler::env_verify_results(
                     &full_resolved.merged.env,
                     &full_resolved.merged.aliases,
+                    &full_resolved.merged.entry_owners,
                     full_resolved.merged.env_scope,
                     &full_desired.modules,
                     &path_dirs,
@@ -636,6 +639,12 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
 
                 // Per-item rows are attributed to whichever of this run's own resolved
                 // modules (the target plus its dependencies) declares them.
+                let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(
+                    &full_resolved.merged.env,
+                    &full_resolved.merged.aliases,
+                    &full_resolved.merged.entry_owners,
+                    &resolved_modules,
+                );
                 for module in modules_by_name(&resolved_modules) {
                     let owns: std::collections::HashSet<&str> = module
                         .env
@@ -652,14 +661,9 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                         drift = true;
                         // Opaque markers carry neither real value — recompute both
                         // here, for this terminal/`-o json` display only.
-                        let (expected, actual) = cfgd_core::reconciler::env_item_display_values(
-                            &r.resource_type,
-                            &r.resource_id,
-                            &full_resolved.merged.env,
-                            &full_resolved.merged.aliases,
-                            &resolved_modules,
-                        )
-                        .unwrap_or_else(|| (r.expected.clone(), r.actual.clone()));
+                        let (expected, actual) = merged_env_items
+                            .display_values(&r.resource_type, &r.resource_id)
+                            .unwrap_or_else(|| (r.expected.clone(), r.actual.clone()));
                         let (expected, actual) =
                             cfgd_core::output::drift_operands(&r.resource_type, &expected, &actual);
                         group
@@ -1108,13 +1112,13 @@ mod tests {
             name: "ll".to_string(),
             command: "ls -lah".to_string(),
         };
-        let hand_edited_line = cfgd_core::reconciler::env_item_declared_line(
-            "alias",
-            "ll",
+        let hand_edited_line = cfgd_core::reconciler::MergedEnvItems::new(
             &[],
             std::slice::from_ref(&hand_edited),
+            &Default::default(),
             &[],
         )
+        .declared_line("alias", "ll")
         .expect("alias renders a declared line");
         std::fs::write(
             cfgd_core::reconciler::primary_env_file(tmp_home.path()),
@@ -1146,13 +1150,21 @@ mod tests {
             name: "ll".to_string(),
             command: "ls -la".to_string(),
         };
-        let declared_line = cfgd_core::reconciler::env_item_declared_line(
-            "alias",
-            "ll",
+        // The owners the profile-layer merge records: the declared line names
+        // the layer that declared it, so a needle rendered with no owner is a
+        // line production never renders.
+        let declared_owners = {
+            let mut o = cfgd_core::config::EntryOwners::default();
+            o.claim("profile:default", &[], std::slice::from_ref(&declared));
+            o
+        };
+        let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
             &[],
             std::slice::from_ref(&declared),
+            &declared_owners,
             &[],
         )
+        .declared_line("alias", "ll")
         .expect("alias renders a declared line");
         assert!(
             human.contains(&cfgd_core::output::drift_detail(
@@ -1195,7 +1207,7 @@ mod tests {
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         std::fs::write(
             tmp_home.path().join(".cfgd.env"),
-            "# managed by cfgd \u{2014} do not edit\nalias ll=\"ls -la\"\n",
+            "# managed by cfgd \u{2014} do not edit\nalias ll=\"ls -la\" # profile:default\n",
         )
         .unwrap();
 
@@ -1256,12 +1268,12 @@ mod tests {
 
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
-        // Byte-for-byte what `generate_env_file_content(&[], &[], &["/opt/choco/bin"])`
-        // produces: header, then the bootstrapped PATH export line, no
-        // declared env vars or aliases.
+        // Byte-for-byte what the generator produces from the recorded
+        // bootstrap dir: header, then the PATH export line naming the manager
+        // that bootstrapped it, no declared env vars or aliases.
         std::fs::write(
             tmp_home.path().join(".cfgd.env"),
-            "# managed by cfgd \u{2014} do not edit\nexport PATH=\"/opt/choco/bin:$PATH\"\n",
+            "# managed by cfgd \u{2014} do not edit\nexport PATH=\"/opt/choco/bin:$PATH\" # manager:chocolatey\n",
         )
         .unwrap();
 
@@ -1337,7 +1349,7 @@ mod tests {
         // have written.
         std::fs::write(
             tmp_home.path().join(".cfgd.env"),
-            "# managed by cfgd \u{2014} do not edit\nexport PAGER=\"less\"\nexport EDITOR=\"vim\" # module:env-mod\n",
+            "# managed by cfgd \u{2014} do not edit\nexport PAGER=\"less\" # profile:default\nexport EDITOR=\"vim\" # module:env-mod\n",
         )
         .unwrap();
 

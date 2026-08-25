@@ -1,48 +1,5 @@
 use super::*;
 
-// --- parse_manager_package ---
-
-#[test]
-fn parse_manager_package_valid_brew() {
-    let (mgr, pkg) = parse_manager_package("brew:curl").unwrap();
-    assert_eq!(mgr, "brew");
-    assert_eq!(pkg, "curl");
-}
-
-#[test]
-fn parse_manager_package_valid_cargo() {
-    let (mgr, pkg) = parse_manager_package("cargo:bat").unwrap();
-    assert_eq!(mgr, "cargo");
-    assert_eq!(pkg, "bat");
-}
-
-#[test]
-fn parse_manager_package_missing_colon() {
-    let err = parse_manager_package("brewcurl").unwrap_err();
-    assert!(
-        err.to_string().contains("expected manager:package"),
-        "should mention expected format, got: {err}"
-    );
-}
-
-#[test]
-fn parse_manager_package_empty_manager() {
-    let err = parse_manager_package(":curl").unwrap_err();
-    assert!(
-        err.to_string().contains("cannot be empty"),
-        "should mention empty manager, got: {err}"
-    );
-}
-
-#[test]
-fn parse_manager_package_empty_package() {
-    let err = parse_manager_package("brew:").unwrap_err();
-    assert!(
-        err.to_string().contains("cannot be empty"),
-        "should mention empty package, got: {err}"
-    );
-}
-
 // --- parse_secret_spec ---
 
 #[test]
@@ -2614,6 +2571,189 @@ fn profile_update_remove_package() {
             "bat should be removed from cargo packages"
         );
     }
+}
+
+#[test]
+fn profile_update_adds_and_removes_a_sub_list_package_by_its_schema_path() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let mut args = make_profile_update_args();
+    args.packages = vec!["brew.taps:charmbracelet/tap".to_string()];
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+    let path = dir.path().join("profiles").join("default.yaml");
+    let doc = config::load_profile(&path).unwrap();
+    let brew = doc.spec.packages.unwrap().brew.unwrap();
+    assert!(
+        brew.taps.contains(&"charmbracelet/tap".to_string()),
+        "the tap must land in spec.packages.brew.taps, got: {:?}",
+        brew
+    );
+
+    let mut args = make_profile_update_args();
+    args.packages = vec!["-brew.taps:charmbracelet/tap".to_string()];
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    let doc = config::load_profile(&path).unwrap();
+    let taps = doc
+        .spec
+        .packages
+        .and_then(|p| p.brew)
+        .map(|b| b.taps)
+        .unwrap_or_default();
+    assert!(taps.is_empty(), "the tap must be removed, got: {taps:?}");
+
+    drop(printer);
+    let output = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        output.contains("charmbracelet/tap (brew.taps)"),
+        "the confirmation must name the schema path, got: {output}"
+    );
+}
+
+#[test]
+fn profile_update_refuses_an_unknown_package_prefix_in_either_direction() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    for token in ["brew.tap:charmbracelet/tap", "-brew.tap:charmbracelet/tap"] {
+        let mut args = make_profile_update_args();
+        args.packages = vec![token.to_string()];
+        let err = cmd_profile_update(&cli, &printer, "default", &args)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("unknown package manager 'brew.tap'"),
+            "'{token}' must be refused, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn profile_create_writes_a_sub_list_package_to_its_schema_path() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let mut args = make_profile_create_args("subs");
+    args.packages = vec!["brew.casks:firefox".to_string()];
+    cmd_profile_create(&cli, &printer, &args).unwrap();
+
+    let doc = config::load_profile(
+        &dir.path()
+            .join("profiles")
+            .join("subs")
+            .join("profile.yaml"),
+    )
+    .unwrap();
+    let brew = doc.spec.packages.unwrap().brew.unwrap();
+    assert!(
+        brew.casks.contains(&"firefox".to_string()),
+        "the cask must land in spec.packages.brew.casks, got: {brew:?}"
+    );
+}
+
+/// A child's `--package mycustom:x` names a manager the child does not declare
+/// itself — it inherits it — so the parse has to see the resolved chain, not the
+/// empty custom list of a file that does not exist yet. The token is legal, and
+/// the answer names the profile that owns the manager: the child cannot hold the
+/// package without copying the definition, which would then win the merge.
+#[test]
+fn profile_create_resolves_custom_managers_from_the_inherited_chain() {
+    let dir = setup_config_dir();
+    std::fs::write(
+        dir.path().join("profiles").join("withcustom.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withcustom\nspec:\n  \
+         packages:\n    custom:\n      - name: mycustom\n        check: 'true'\n        \
+         listInstalled: 'true'\n        install: 'true'\n        uninstall: 'true'\n",
+    )
+    .unwrap();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let mut args = make_profile_create_args("child");
+    args.inherits = vec!["withcustom".to_string()];
+    args.packages = vec!["mycustom:widget".to_string()];
+    let err = cmd_profile_create(&cli, &printer, &args)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        !err.contains("unknown package manager"),
+        "the inherited manager must parse, got: {err}"
+    );
+    assert!(
+        err.contains("'mycustom' is declared by profile 'withcustom'")
+            && err.contains("cfgd profile update withcustom --package mycustom:widget"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn profile_create_refuses_an_unknown_package_prefix() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let mut args = make_profile_create_args("bad");
+    args.packages = vec!["brew.tap:charmbracelet/tap".to_string()];
+    let err = cmd_profile_create(&cli, &printer, &args)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("unknown package manager 'brew.tap'"),
+        "got: {err}"
+    );
+}
+
+/// A bare `-name` resolves to the native manager, so on a host whose native
+/// manager is not the one holding the package the removal silently found
+/// nothing. Naming the token that works is the only useful answer.
+#[test]
+fn profile_update_bare_removal_names_the_token_that_would_work() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    // The default profile declares `cargo: [bat]`, which no host's NATIVE
+    // manager holds.
+    let mut args = make_profile_update_args();
+    args.packages = vec!["-bat".to_string()];
+    let err = cmd_profile_update(&cli, &printer, "default", &args)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("--package -cargo:bat"),
+        "should name the exact token to use, got: {err}"
+    );
+}
+
+/// A name nothing in the document holds keeps the WARN-and-continue shape
+/// `--module -missing` has: a removal that removes nothing is not an error.
+#[test]
+fn profile_update_bare_removal_of_an_unknown_name_warns_like_a_module_miss() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let mut args = make_profile_update_args();
+    args.packages = vec!["-ghostpkg".to_string()];
+    args.modules = vec!["-ghostmod".to_string()];
+    cmd_profile_update(&cli, &printer, "default", &args).expect("a miss is not an error");
+
+    drop(printer);
+    let output = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        output.contains("Package 'ghostpkg' not found in"),
+        "got: {output}"
+    );
+    assert!(
+        output.contains("Module 'ghostmod' not found in profile"),
+        "the two misses share one shape, got: {output}"
+    );
 }
 
 #[test]

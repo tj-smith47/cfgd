@@ -6,7 +6,9 @@ use crate::modules::ResolvedModule;
 use crate::output::Printer;
 use crate::state::StateStore;
 
-use super::env_engine::{EnvContent, EnvHostProbe, EnvPlatform, EnvTarget, env_targets};
+use super::env_engine::{
+    EnvContent, EnvHostProbe, EnvPlatform, EnvTarget, ManagerPathDir, env_targets,
+};
 use super::env_files::detect_rc_env_conflicts;
 use super::format::LIVE_SESSION_RESOURCE_ID;
 use super::types::{Action, EnvAction};
@@ -40,7 +42,7 @@ pub fn recorded_manager_path_dirs(
     state: &StateStore,
     profile: &MergedProfile,
     modules: &[ResolvedModule],
-) -> Vec<String> {
+) -> Vec<ManagerPathDir> {
     let named: HashSet<String> = crate::effective::effective_desired_packages(profile, modules)
         .into_iter()
         .map(|ep| ep.manager)
@@ -89,9 +91,15 @@ pub(super) fn recorded_managed_env_files(state: &StateStore) -> Vec<String> {
 /// into the drift and on-change paths, which hold neither.
 pub(crate) fn all_recorded_path_dirs(state: &StateStore) -> Vec<String> {
     collect_recorded_path_dirs(state, None)
+        .into_iter()
+        .map(|d| d.dir)
+        .collect()
 }
 
-fn collect_recorded_path_dirs(state: &StateStore, keep: Option<&HashSet<String>>) -> Vec<String> {
+fn collect_recorded_path_dirs(
+    state: &StateStore,
+    keep: Option<&HashSet<String>>,
+) -> Vec<ManagerPathDir> {
     let recorded = match state.bootstrapped_managers() {
         Ok(recorded) => recorded,
         // Losing the records degrades to the pre-bootstrap state (no PATH entry)
@@ -102,14 +110,20 @@ fn collect_recorded_path_dirs(state: &StateStore, keep: Option<&HashSet<String>>
         }
     };
 
-    let mut dirs: Vec<String> = Vec::new();
+    let mut dirs: Vec<ManagerPathDir> = Vec::new();
     for (manager, manager_dirs) in recorded {
         if keep.is_some_and(|keep| !keep.contains(&manager)) {
             continue;
         }
         for dir in manager_dirs {
-            if !dirs.contains(&dir) {
-                dirs.push(dir);
+            // First claimant of a directory keeps it: two managers sharing a
+            // prefix publish one PATH entry, and the comment beside it names
+            // whichever of them the record listed first.
+            if !dirs.iter().any(|d| d.dir == dir) {
+                dirs.push(ManagerPathDir {
+                    manager: manager.clone(),
+                    dir,
+                });
             }
         }
     }
@@ -183,8 +197,14 @@ impl PrimaryEnvWrite {
         let Some(baseline) = &self.baseline else {
             return true;
         };
-        let deployed: HashSet<&str> = baseline.lines().collect();
-        let desired: HashSet<&str> = self.desired.lines().collect();
+        // Compared WITHOUT the trailing owner comment on any of the three
+        // sides: a baseline written before owner comments existed carries
+        // none, and comparing raw would read every entry in such a file as
+        // having moved — running every module's `onChange` once for a
+        // rewrite that changed no value.
+        use super::env_engine::without_owner_comment;
+        let deployed: HashSet<&str> = baseline.lines().map(without_owner_comment).collect();
+        let desired: HashSet<&str> = self.desired.lines().map(without_owner_comment).collect();
         env.iter()
             .filter_map(|ev| {
                 super::env_files::primary_env_var_line(ev, self.platform, &self.origins)
@@ -192,7 +212,10 @@ impl PrimaryEnvWrite {
             .chain(aliases.iter().filter_map(|a| {
                 super::env_files::primary_alias_line(a, self.platform, &self.origins)
             }))
-            .any(|line| deployed.contains(line.as_str()) != desired.contains(line.as_str()))
+            .any(|line| {
+                let line = without_owner_comment(&line);
+                deployed.contains(line) != desired.contains(line)
+            })
     }
 }
 
@@ -252,15 +275,17 @@ impl<'a> super::Reconciler<'a> {
         &self,
         profile_env: &[crate::config::EnvVar],
         profile_aliases: &[crate::config::ShellAlias],
+        layer_owners: &crate::config::EntryOwners,
         scope: EnvScope,
         modules: &[ResolvedModule],
         secret_envs: &[(String, String)],
-        path_dirs: &[String],
+        path_dirs: &[ManagerPathDir],
         managed_env_ids: &[String],
     ) -> EnvPlanOutcome {
         Self::plan_env_with_home(
             profile_env,
             profile_aliases,
+            layer_owners,
             scope,
             modules,
             secret_envs,
@@ -274,15 +299,16 @@ impl<'a> super::Reconciler<'a> {
     pub(super) fn plan_env_with_home(
         profile_env: &[crate::config::EnvVar],
         profile_aliases: &[crate::config::ShellAlias],
+        layer_owners: &crate::config::EntryOwners,
         scope: EnvScope,
         modules: &[ResolvedModule],
         secret_envs: &[(String, String)],
-        path_dirs: &[String],
+        path_dirs: &[ManagerPathDir],
         managed_env_ids: &[String],
         home: &std::path::Path,
     ) -> EnvPlanOutcome {
         let (mut merged, merged_aliases, origins) =
-            merge_module_env_aliases(profile_env, profile_aliases, modules);
+            merge_module_env_aliases(profile_env, profile_aliases, layer_owners, modules);
 
         // Append secret-backed env vars after regular envs.
         // These are resolved secret values injected into the env file.
@@ -574,6 +600,7 @@ impl<'a> super::Reconciler<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::env_engine::EnvOrigins;
     use super::*;
     use crate::config::{EnvVar, ShellAlias};
 
@@ -584,7 +611,116 @@ mod tests {
         }
     }
 
-    fn ps(env: &[EnvVar], aliases: &[ShellAlias], path_dirs: &[String]) -> String {
+    /// Upgrading a machine written before provenance comments existed: every
+    /// line grows a ` # owner` tail at once. Each old line is still claimed by
+    /// its own declaration's prefix, so the rewrite is an ordinary content
+    /// update rather than a file full of deletions cfgd refuses to own.
+    #[test]
+    fn a_comment_free_baseline_upgrades_without_an_unclaimed_deletion() {
+        let foo = ev("FOO", "bar");
+        let catn = ShellAlias {
+            name: "catn".to_string(),
+            command: "cat -n".to_string(),
+        };
+        let dirs = [ManagerPathDir::new("brew", "/opt/homebrew/bin")];
+        let owners = {
+            let mut o = crate::config::EntryOwners::default();
+            o.claim(
+                "profile:base",
+                std::slice::from_ref(&foo),
+                std::slice::from_ref(&catn),
+            );
+            EnvOrigins::from_owners(&o)
+        };
+
+        for platform in [EnvPlatform::Linux, EnvPlatform::Windows] {
+            let render = |origins: &EnvOrigins| {
+                if platform == EnvPlatform::Windows {
+                    super::super::env_files::generate_powershell_env_content(
+                        std::slice::from_ref(&foo),
+                        std::slice::from_ref(&catn),
+                        &dirs,
+                        origins,
+                    )
+                } else {
+                    super::super::env_files::generate_env_file_content(
+                        std::slice::from_ref(&foo),
+                        std::slice::from_ref(&catn),
+                        &dirs,
+                        origins,
+                    )
+                }
+            };
+            let baseline = render(&Default::default());
+            let desired = render(&owners);
+            assert_ne!(baseline, desired, "the upgrade must change the file");
+            assert!(
+                !has_unclaimed_disappearing_line(
+                    &baseline,
+                    &desired,
+                    std::slice::from_ref(&foo),
+                    std::slice::from_ref(&catn),
+                    platform,
+                ),
+                "an owner-less line is claimed by its own declaration: {baseline}"
+            );
+        }
+    }
+
+    /// The one-time upgrade to owner comments must not read as every module's
+    /// contribution moving, or a converged machine runs every `onChange` hook
+    /// it has once for a file whose values did not change.
+    #[test]
+    fn adding_owner_comments_to_a_converged_file_moves_no_modules_entries() {
+        let foo = ev("FOO", "bar");
+        let catn = ShellAlias {
+            name: "catn".to_string(),
+            command: "cat -n".to_string(),
+        };
+        let dirs = [ManagerPathDir::new("brew", "/opt/homebrew/bin")];
+        let owners = {
+            let mut o = crate::config::EntryOwners::default();
+            o.claim(
+                "module:nvim",
+                std::slice::from_ref(&foo),
+                std::slice::from_ref(&catn),
+            );
+            EnvOrigins::from_owners(&o)
+        };
+
+        for platform in [EnvPlatform::Linux, EnvPlatform::Windows] {
+            let render = |origins: &EnvOrigins| {
+                if platform == EnvPlatform::Windows {
+                    super::super::env_files::generate_powershell_env_content(
+                        std::slice::from_ref(&foo),
+                        std::slice::from_ref(&catn),
+                        &dirs,
+                        origins,
+                    )
+                } else {
+                    super::super::env_files::generate_env_file_content(
+                        std::slice::from_ref(&foo),
+                        std::slice::from_ref(&catn),
+                        &dirs,
+                        origins,
+                    )
+                }
+            };
+            let write = PrimaryEnvWrite {
+                baseline: Some(render(&Default::default())),
+                desired: render(&owners),
+                platform,
+                unclaimed_deletion: false,
+                origins: owners.clone(),
+            };
+            assert!(
+                !write.module_env_moved(std::slice::from_ref(&foo), std::slice::from_ref(&catn)),
+                "a comment-only rewrite moves nothing on {platform:?}"
+            );
+        }
+    }
+
+    fn ps(env: &[EnvVar], aliases: &[ShellAlias], path_dirs: &[ManagerPathDir]) -> String {
         super::super::env_files::generate_powershell_env_content(
             env,
             aliases,
@@ -662,8 +798,16 @@ mod tests {
     #[test]
     fn a_powershell_path_dirs_change_is_claimed_as_scaffolding() {
         let foo = ev("FOO", "bar");
-        let baseline = ps(std::slice::from_ref(&foo), &[], &["C:/old/bin".to_string()]);
-        let desired = ps(std::slice::from_ref(&foo), &[], &["C:/new/bin".to_string()]);
+        let baseline = ps(
+            std::slice::from_ref(&foo),
+            &[],
+            &[ManagerPathDir::new("scoop", "C:/old/bin")],
+        );
+        let desired = ps(
+            std::slice::from_ref(&foo),
+            &[],
+            &[ManagerPathDir::new("scoop", "C:/new/bin")],
+        );
         assert!(
             !has_unclaimed_disappearing_line(
                 &baseline,

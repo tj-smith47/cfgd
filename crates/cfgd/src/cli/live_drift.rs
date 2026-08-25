@@ -24,32 +24,27 @@ use crate::packages;
 /// is dropped: every caller has already filtered to `!matches` before
 /// reaching here, and `DriftEvent` carries no field for it.
 ///
-/// `env`/`aliases`/`modules` recompute an env-var/alias row's opaque
+/// `merged_env_items` recomputes an env-var/alias row's opaque
 /// `current`/`missing or changed` markers into the real declared line and the
 /// real line the managed file holds, via
-/// [`cfgd_core::reconciler::env_item_display_values`] — safe here precisely
-/// because `id: 0` means this `DriftEvent` is never persisted or shipped to
-/// the gateway, only rendered into this command's own human/`-o json`
-/// output. A caller with no env/alias rows in its input (both
-/// `cmd_status_module` loops: file and package kinds only) may pass empty
-/// slices; the recompute is a no-op for any other `resource_type`. `modules`
-/// is what makes a module-declared entry renderable at all — its entries live
-/// in the module rather than in the profile's own `env`/`aliases`, and its
-/// line carries the provenance comment the file on disk holds.
+/// [`cfgd_core::reconciler::MergedEnvItems::display_values`] — safe here
+/// precisely because `id: 0` means this `DriftEvent` is never persisted or
+/// shipped to the gateway, only rendered into this command's own human/`-o
+/// json` output. It is built ONCE by the caller and asked per row, since the
+/// merge behind it clones the profile's env, its aliases and both origin maps;
+/// a caller with no env/alias rows in its input (both `cmd_status_module`
+/// loops: file and package kinds only) still passes one, and the recompute is
+/// a no-op for any other `resource_type`. The modules folded into it are what
+/// make a module-declared entry renderable at all — its entries live in the
+/// module rather than in the profile's own `env`/`aliases`, and its line
+/// carries the provenance comment the file on disk holds.
 pub(super) fn drift_event_from(
     r: &VerifyResult,
-    env: &[cfgd_core::config::EnvVar],
-    aliases: &[cfgd_core::config::ShellAlias],
-    modules: &[cfgd_core::modules::ResolvedModule],
+    merged_env_items: &cfgd_core::reconciler::MergedEnvItems,
 ) -> cfgd_core::state::DriftEvent {
-    let (expected, actual) = cfgd_core::reconciler::env_item_display_values(
-        &r.resource_type,
-        &r.resource_id,
-        env,
-        aliases,
-        modules,
-    )
-    .unwrap_or_else(|| (r.expected.clone(), r.actual.clone()));
+    let (expected, actual) = merged_env_items
+        .display_values(&r.resource_type, &r.resource_id)
+        .unwrap_or_else(|| (r.expected.clone(), r.actual.clone()));
     cfgd_core::state::DriftEvent {
         id: 0,
         timestamp: cfgd_core::utc_now_iso8601(),
@@ -366,6 +361,7 @@ fn live_drift_results_inner(
         cfgd_core::reconciler::env_verify_results(
             &resolved.merged.env,
             &resolved.merged.aliases,
+            &resolved.merged.entry_owners,
             resolved.merged.env_scope,
             modules,
             &path_dirs,
@@ -753,13 +749,13 @@ mod tests {
             name: "ll".to_string(),
             command: "ls -lah".to_string(),
         };
-        let hand_edited_line = cfgd_core::reconciler::env_item_declared_line(
-            "alias",
-            "ll",
+        let hand_edited_line = cfgd_core::reconciler::MergedEnvItems::new(
             &[],
             std::slice::from_ref(&hand_edited),
+            &Default::default(),
             &[],
         )
+        .declared_line("alias", "ll")
         .expect("alias renders a declared line");
         std::fs::write(
             cfgd_core::reconciler::primary_env_file(tmp_home.path()),

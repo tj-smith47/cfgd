@@ -425,4 +425,19 @@ rather than a silent omission.
 A package already at its desired version produces no action, so it gets no line:
 the plan lists what would change, not the full inventory.
 
-See the [CLI reference](cli-reference.md) for `cfgd profile update --package` and `cfgd module update --package` commands.
+## Adding packages from the CLI
+
+`--package` mirrors the schema path it writes to, so a sub-list is reachable without opening
+the file:
+
+```sh
+cfgd profile update work --package brew:ripgrep              # spec.packages.brew.formulae
+cfgd profile update work --package brew.taps:charmbracelet/tap  # spec.packages.brew.taps
+cfgd profile update work --package brew.casks:firefox        # spec.packages.brew.casks
+cfgd profile update work --package snap.classic:code         # spec.packages.snap.classic
+cfgd profile update work --package ripgrep                   # the platform's native manager
+```
+
+A prefix that names no manager is refused rather than taken as a package name. See the
+[CLI reference](cli-reference.md#package-tokens) for the full grammar, and for
+`cfgd profile update --package` / `cfgd module update --package`.

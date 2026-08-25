@@ -52,48 +52,112 @@ pub(crate) fn quiet_printer() -> Printer {
 // parse_package_flag
 // ---------------------------------------------------------------------------
 
-#[test]
-fn parse_package_flag_bare_package_has_no_manager() {
-    let (mgr, pkg) = parse_package_flag("ripgrep", &["brew", "apt"]);
-    assert_eq!(mgr, None);
-    assert_eq!(pkg, "ripgrep");
+fn parse(token: &str) -> anyhow::Result<PackageRef> {
+    parse_package_flag(token, &[], "apt")
 }
 
 #[test]
-fn parse_package_flag_known_manager_prefix_splits() {
-    let (mgr, pkg) = parse_package_flag("brew:ripgrep", &["brew", "apt"]);
-    assert_eq!(mgr.as_deref(), Some("brew"));
-    assert_eq!(pkg, "ripgrep");
+fn parse_package_flag_bare_name_takes_the_native_manager() {
+    let pkg = parse("ripgrep").unwrap();
+    assert_eq!(pkg.schema_path, None);
+    assert_eq!(pkg.name, "ripgrep");
+    assert_eq!(pkg.slot_or("apt"), "apt");
+    assert_eq!(pkg.display("apt"), "ripgrep (apt)");
 }
 
 #[test]
-fn parse_package_flag_unknown_manager_prefix_is_bare() {
-    let (mgr, pkg) = parse_package_flag("cargo:ripgrep", &["brew", "apt"]);
-    assert_eq!(mgr, None);
-    assert_eq!(pkg, "cargo:ripgrep");
+fn parse_package_flag_manager_prefix_names_its_own_schema_path() {
+    let pkg = parse("brew:ripgrep").unwrap();
+    assert_eq!(pkg.schema_path.as_deref(), Some("brew"));
+    assert_eq!(pkg.slot.as_deref(), Some("brew"));
+    assert_eq!(pkg.manager.as_deref(), Some("brew"));
+    assert_eq!(pkg.name, "ripgrep");
 }
 
 #[test]
-fn parse_package_flag_empty_prefix_is_bare() {
-    // ":ripgrep" has an empty prefix — treat as bare package name.
-    let (mgr, pkg) = parse_package_flag(":ripgrep", &["brew"]);
-    assert_eq!(mgr, None);
-    assert_eq!(pkg, ":ripgrep");
+fn parse_package_flag_sub_list_prefix_resolves_to_its_write_slot() {
+    let taps = parse("brew.taps:charmbracelet/tap").unwrap();
+    assert_eq!(taps.schema_path.as_deref(), Some("brew.taps"));
+    assert_eq!(taps.slot.as_deref(), Some("brew-tap"));
+    assert_eq!(taps.name, "charmbracelet/tap");
+    assert_eq!(taps.display("apt"), "charmbracelet/tap (brew.taps)");
+
+    let casks = parse("brew.casks:firefox").unwrap();
+    assert_eq!(casks.slot.as_deref(), Some("brew-cask"));
+    assert_eq!(casks.manager.as_deref(), Some("brew-cask"));
 }
 
 #[test]
-fn parse_package_flag_empty_suffix_is_bare() {
-    // "brew:" has an empty suffix — treat as bare package name.
-    let (mgr, pkg) = parse_package_flag("brew:", &["brew"]);
-    assert_eq!(mgr, None);
-    assert_eq!(pkg, "brew:");
+fn parse_package_flag_snap_classic_writes_a_slot_no_manager_is_named_for() {
+    // `snap.classic` has no registered manager of its own — the `snap` manager
+    // installs both lists — so the write slot and the manager differ.
+    let pkg = parse("snap.classic:code").unwrap();
+    assert_eq!(pkg.schema_path.as_deref(), Some("snap.classic"));
+    assert_eq!(pkg.slot.as_deref(), Some("snap-classic"));
+    assert_eq!(pkg.manager.as_deref(), Some("snap"));
 }
 
 #[test]
-fn parse_package_flag_no_known_managers_always_bare() {
-    let (mgr, pkg) = parse_package_flag("brew:ripgrep", &[]);
-    assert_eq!(mgr, None);
-    assert_eq!(pkg, "brew:ripgrep");
+fn parse_package_flag_keeps_every_colon_after_the_first() {
+    let pkg = parse("apt:libc6:amd64").unwrap();
+    assert_eq!(pkg.schema_path.as_deref(), Some("apt"));
+    assert_eq!(pkg.name, "libc6:amd64");
+}
+
+#[test]
+fn parse_package_flag_rejects_an_unknown_prefix_instead_of_taking_it_as_a_name() {
+    let err = parse("brew.tap:charmbracelet/tap").unwrap_err().to_string();
+    assert!(
+        err.contains("unknown package manager 'brew.tap'"),
+        "should name the prefix, got: {err}"
+    );
+    assert!(
+        err.contains("brew.taps"),
+        "should list the known schema paths, got: {err}"
+    );
+}
+
+#[test]
+fn parse_package_flag_rejects_the_wire_spelling_of_a_virtual_brew_manager() {
+    for (token, hint) in [
+        ("brew-tap:charmbracelet/tap", "brew.taps:charmbracelet/tap"),
+        ("brew-cask:firefox", "brew.casks:firefox"),
+    ] {
+        let err = parse(token).unwrap_err().to_string();
+        assert!(
+            err.contains(&format!("use {hint}")),
+            "should name the schema spelling, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn parse_package_flag_hints_the_native_manager_for_a_colon_carrying_name() {
+    let err = parse("libc6:amd64").unwrap_err().to_string();
+    assert!(
+        err.contains("did you mean apt:libc6:amd64?"),
+        "a non-manager-shaped prefix is part of the name, got: {err}"
+    );
+}
+
+#[test]
+fn parse_package_flag_accepts_a_declared_custom_manager() {
+    let pkg = parse_package_flag("mytool:widget", &["mytool".to_string()], "apt").unwrap();
+    assert_eq!(pkg.schema_path.as_deref(), Some("mytool"));
+    assert_eq!(pkg.slot.as_deref(), Some("mytool"));
+    assert_eq!(pkg.manager.as_deref(), Some("mytool"));
+    assert_eq!(pkg.name, "widget");
+}
+
+#[test]
+fn parse_package_flag_rejects_an_empty_half() {
+    for token in [":ripgrep", "brew:"] {
+        let err = parse(token).unwrap_err().to_string();
+        assert!(
+            err.contains("expected <manager>[.<list>]:<name>"),
+            "should state the grammar, got: {err}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -158,21 +222,7 @@ fn active_profile_name_reports_unknown_without_a_config() {
 }
 
 // ---------------------------------------------------------------------------
-// known_manager_names
 // ---------------------------------------------------------------------------
-
-#[test]
-fn known_manager_names_returns_non_empty_list() {
-    let names = known_manager_names();
-    assert!(
-        !names.is_empty(),
-        "expected at least one package manager registered"
-    );
-    // Every name must be a non-empty string.
-    for name in &names {
-        assert!(!name.is_empty(), "manager name must not be empty");
-    }
-}
 
 // ---------------------------------------------------------------------------
 // parse_file_spec
@@ -1325,6 +1375,7 @@ fn resolve_desired_state_module_only_isolates_every_profile_owned_field() {
                 pre_backup: vec![],
                 post_backup: vec![],
             }],
+            entry_owners: Default::default(),
         },
     };
 

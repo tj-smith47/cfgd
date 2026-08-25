@@ -191,6 +191,7 @@ impl<'a> super::Reconciler<'a> {
         let env_plan = self.plan_env(
             &resolved.merged.env,
             &resolved.merged.aliases,
+            &resolved.merged.entry_owners,
             resolved.merged.env_scope,
             &module_actions,
             &[], // Secret envs are not yet resolved at plan time; they are

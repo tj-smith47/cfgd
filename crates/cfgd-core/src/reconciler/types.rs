@@ -1185,6 +1185,11 @@ mod tests {
         }
         assert_eq!(OwnerKind::from_token("packages"), None);
         assert_eq!(OwnerKind::from_token("files"), None);
+        // The generated env file's PATH line carries `# manager:brew,cargo`,
+        // which is a COMMENT vocabulary rather than an owner: the name half
+        // is a comma list no `Owner` name may hold, and reading it back as an
+        // owner would mint one that names two things at once.
+        assert_eq!(OwnerKind::from_token("manager"), None);
     }
 
     #[test]

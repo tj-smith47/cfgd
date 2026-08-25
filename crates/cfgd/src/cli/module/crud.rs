@@ -4,6 +4,27 @@ use cfgd_core::output::{
     Doc, OwnerLabel, Printer, Role, TitleLabel, collapse_to_subject_line, condense_script_label,
 };
 
+/// Parse a `--package` token for a MODULE document.
+///
+/// A module entry names a package and its preferred managers; it has no
+/// per-sub-list slot, so a token whose schema path resolves to a slot that is
+/// not itself a registered manager (`snap.classic`) is refused rather than
+/// silently confirmed as a path the document cannot hold. `snap` installs both
+/// of its lists and retries with `--classic`, so nothing is lost by saying so.
+fn module_package_ref(token: &str, native: &str) -> anyhow::Result<PackageRef> {
+    let pkg = super::parse_package_flag(token, &[], native)?;
+    if let (Some(path), Some(slot), Some(manager)) = (&pkg.schema_path, &pkg.slot, &pkg.manager)
+        && slot != manager
+    {
+        anyhow::bail!(
+            "'{path}' is a profile-only package list; a module entry names a manager \
+             — use {manager}:{}",
+            pkg.name
+        );
+    }
+    Ok(pkg)
+}
+
 pub fn cmd_module_create(
     cli: &Cli,
     printer: &Printer,
@@ -140,24 +161,25 @@ pub fn cmd_module_create(
     }
 
     // Build package entries
-    let known = super::known_manager_names();
-    let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
+    let native = Platform::current().native_manager().to_string();
     let package_entries: Vec<config::ModulePackageEntry> = pkg_list
         .iter()
         .map(|s| {
-            let (mgr, pkg) = super::parse_package_flag(s, &known_refs);
-            config::ModulePackageEntry {
-                name: pkg,
+            let pkg = module_package_ref(s, &native)?;
+            Ok(config::ModulePackageEntry {
+                name: pkg.name,
                 min_version: None,
-                prefer: mgr.into_iter().collect(),
+                // The REGISTERED manager, never the schema path: `prefer` is a
+                // persisted manager name and `brew.casks` is not one.
+                prefer: pkg.manager.into_iter().collect(),
                 deny: Vec::new(),
                 aliases: std::collections::HashMap::new(),
                 script: None,
                 platforms: Vec::new(),
                 ..Default::default()
-            }
+            })
         })
-        .collect();
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
     // Build env
     let mut env_entries = Vec::new();
@@ -449,19 +471,26 @@ pub fn cmd_module_update_local(
         }
     }
 
-    // Add packages
-    let known = super::known_manager_names();
-    let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
+    // Add and remove packages, both through the SAME parser: a prefix legal to
+    // add is legal to remove, and the removal strips it rather than searching
+    // for a name that carries it.
+    let native = Platform::current().native_manager().to_string();
     for pkg_str in &add_packages {
-        let (mgr, pkg) = super::parse_package_flag(pkg_str, &known_refs);
-        if doc.spec.packages.iter().any(|p| p.name == pkg) {
-            printer.status_simple(Role::Info, format!("Package '{}' already in module", pkg));
+        let pkg = module_package_ref(pkg_str, &native)?;
+        if doc.spec.packages.iter().any(|p| p.name == pkg.name) {
+            printer.status_simple(
+                Role::Info,
+                format!("Package '{}' already in module", pkg.name),
+            );
             continue;
         }
+        let qualifier = pkg.display(&native);
         doc.spec.packages.push(config::ModulePackageEntry {
-            name: pkg.clone(),
+            name: pkg.name,
             min_version: None,
-            prefer: mgr.into_iter().collect(),
+            // The REGISTERED manager, never the schema path: `prefer` is a
+            // persisted manager name and `brew.casks` is not one.
+            prefer: pkg.manager.into_iter().collect(),
             deny: Vec::new(),
             aliases: std::collections::HashMap::new(),
             script: None,
@@ -470,26 +499,23 @@ pub fn cmd_module_update_local(
         });
         printer
             .status(Role::Ok, "Added package")
-            .qualifier(pkg.clone());
+            .qualifier(qualifier);
         changes += 1;
     }
 
-    // Remove packages (strip manager prefix if present, e.g. "brew:ripgrep" → "ripgrep")
-    let known = super::known_manager_names();
-    let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
-    for pkg in &remove_packages {
-        let (_, canonical) = super::parse_package_flag(pkg, &known_refs);
+    for pkg_str in &remove_packages {
+        let pkg = module_package_ref(pkg_str, &native)?;
         let before = doc.spec.packages.len();
-        doc.spec.packages.retain(|p| p.name != canonical);
+        doc.spec.packages.retain(|p| p.name != pkg.name);
         if doc.spec.packages.len() < before {
             printer
                 .status(Role::Ok, "Removed package")
-                .qualifier(canonical.clone());
+                .qualifier(pkg.display(&native));
             changes += 1;
         } else {
             printer.status_simple(
                 Role::Warn,
-                format!("Package '{}' not found in module", canonical),
+                format!("Package '{}' not found in module", pkg.name),
             );
         }
     }

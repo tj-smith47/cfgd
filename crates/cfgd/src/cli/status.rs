@@ -1158,6 +1158,15 @@ pub(super) fn cmd_status(
     let registry = do_scan.then(|| desired.take_registry(cfg));
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
+    // ONE merge for the whole command: every recompute below asks the same
+    // declaration, and building it per drift row clones the profile's env, its
+    // aliases and both origin maps once per finding.
+    let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(
+        &resolved.merged.env,
+        &resolved.merged.aliases,
+        &resolved.merged.entry_owners,
+        &resolved_modules,
+    );
 
     // The plan withholds items no run has recorded a row for yet; a dashboard
     // that hides them contradicts the plan it summarizes. Same classification
@@ -1253,13 +1262,9 @@ pub(super) fn cmd_status(
         if !cfgd_core::output::is_shell_drift_kind(&event.resource_type) {
             return true;
         }
-        let Some((want, have)) = cfgd_core::reconciler::env_item_display_values(
-            &event.resource_type,
-            &event.resource_id,
-            &resolved.merged.env,
-            &resolved.merged.aliases,
-            &resolved_modules,
-        ) else {
+        let Some((want, have)) =
+            merged_env_items.display_values(&event.resource_type, &event.resource_id)
+        else {
             return true;
         };
         // The recompute just read the machine: a row whose declared line is
@@ -1332,12 +1337,9 @@ pub(super) fn cmd_status(
             .drift
             .retain(|e| !scanned.contains(&(e.resource_type.as_str(), e.resource_id.as_str())));
         for r in &drift {
-            output.drift.push(super::live_drift::drift_event_from(
-                r,
-                &resolved.merged.env,
-                &resolved.merged.aliases,
-                &resolved_modules,
-            ));
+            output
+                .drift
+                .push(super::live_drift::drift_event_from(r, &merged_env_items));
         }
         drift
     } else {
@@ -1493,6 +1495,14 @@ pub(super) fn cmd_status_module(
             printer,
         )?;
         let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
+        // File and package rows only — the recompute is a no-op for both, but
+        // `drift_event_from` takes the merge rather than deciding per row.
+        let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(
+            &resolved.merged.env,
+            &resolved.merged.aliases,
+            &resolved.merged.entry_owners,
+            &resolved_modules,
+        );
         let fm = CfgdFileManager::new(config_dir, &resolved)?;
         // One spinner across this module's live scan, narrated per pass.
         printer.narrate(
@@ -1517,12 +1527,7 @@ pub(super) fn cmd_status_module(
                             .map(|(m, target)| (m.to_string(), target))
                             .unwrap_or_else(|| (mod_name.to_string(), r.resource_id.clone()));
                     drift.push(ModuleDrift {
-                        event: super::live_drift::drift_event_from(
-                            &r,
-                            &resolved.merged.env,
-                            &resolved.merged.aliases,
-                            &resolved_modules,
-                        ),
+                        event: super::live_drift::drift_event_from(&r, &merged_env_items),
                         owner,
                         surface: SURFACE_FILES,
                         item,
@@ -1561,9 +1566,7 @@ pub(super) fn cmd_status_module(
                                         actual: cfgd_core::Absence::Missing.to_string(),
                                         unmanaged: false,
                                     },
-                                    &resolved.merged.env,
-                                    &resolved.merged.aliases,
-                                    &resolved_modules,
+                                    &merged_env_items,
                                 ),
                                 // The module whose resolution declared this
                                 // package, which is not always the one under
@@ -2555,14 +2558,18 @@ mod tests {
             name: "EDITOR".to_string(),
             value: "vim".to_string(),
         }];
-        let declared_line = cfgd_core::reconciler::env_item_declared_line(
-            "env-var",
-            "EDITOR",
-            &declared_env,
-            &[],
-            &[],
-        )
-        .expect("EDITOR renders a declared line");
+        // The owners the profile-layer merge records for this profile: the
+        // generated line names its layer, so a needle rendered with no owner
+        // is a line the file never holds.
+        let declared_owners = {
+            let mut o = cfgd_core::config::EntryOwners::default();
+            o.claim("profile:default", &declared_env, &[]);
+            o
+        };
+        let declared_line =
+            cfgd_core::reconciler::MergedEnvItems::new(&declared_env, &[], &declared_owners, &[])
+                .declared_line("env-var", "EDITOR")
+                .expect("EDITOR renders a declared line");
 
         let state_dir = tmp.path().join("state");
         std::fs::create_dir_all(&state_dir).unwrap();
@@ -2669,14 +2676,18 @@ mod tests {
             name: "EDITOR".to_string(),
             value: "vim".to_string(),
         }];
-        let declared_line = cfgd_core::reconciler::env_item_declared_line(
-            "env-var",
-            "EDITOR",
-            &declared_env,
-            &[],
-            &[],
-        )
-        .expect("EDITOR renders a declared line");
+        // The owners the profile-layer merge records for this profile: the
+        // generated line names its layer, so a needle rendered with no owner
+        // is a line the file never holds.
+        let declared_owners = {
+            let mut o = cfgd_core::config::EntryOwners::default();
+            o.claim("profile:default", &declared_env, &[]);
+            o
+        };
+        let declared_line =
+            cfgd_core::reconciler::MergedEnvItems::new(&declared_env, &[], &declared_owners, &[])
+                .declared_line("env-var", "EDITOR")
+                .expect("EDITOR renders a declared line");
         let expected_detail =
             cfgd_core::output::drift_detail(&declared_line, cfgd_core::Absence::Missing.as_str());
 
@@ -2757,16 +2768,20 @@ mod tests {
             name: "EDITOR".to_string(),
             value: "vim".to_string(),
         }];
+        // The owners the profile-layer merge records for this profile: the
+        // generated line names its layer, so a needle rendered with no owner
+        // is a line the file never holds.
+        let declared_owners = {
+            let mut o = cfgd_core::config::EntryOwners::default();
+            o.claim("profile:default", &declared_env, &[]);
+            o
+        };
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
-        let declared_line = cfgd_core::reconciler::env_item_declared_line(
-            "env-var",
-            "EDITOR",
-            &declared_env,
-            &[],
-            &[],
-        )
-        .expect("EDITOR renders a declared line");
+        let declared_line =
+            cfgd_core::reconciler::MergedEnvItems::new(&declared_env, &[], &declared_owners, &[])
+                .declared_line("env-var", "EDITOR")
+                .expect("EDITOR renders a declared line");
         // The machine HOLDS the declared line: whatever the recorded row says,
         // this entry is converged right now.
         std::fs::write(

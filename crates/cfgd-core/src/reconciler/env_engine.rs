@@ -234,7 +234,7 @@ pub(super) fn env_targets(
 pub(super) struct EnvContent<'a> {
     env: &'a [EnvVar],
     aliases: &'a [ShellAlias],
-    path_dirs: &'a [String],
+    path_dirs: &'a [ManagerPathDir],
     origins: &'a EnvOrigins,
 }
 
@@ -242,7 +242,7 @@ impl<'a> EnvContent<'a> {
     pub(super) fn new(
         env: &'a [EnvVar],
         aliases: &'a [ShellAlias],
-        path_dirs: &'a [String],
+        path_dirs: &'a [ManagerPathDir],
         origins: &'a EnvOrigins,
     ) -> Self {
         Self {
@@ -254,42 +254,61 @@ impl<'a> EnvContent<'a> {
     }
 }
 
-/// Which module each merged env var and alias came from, for the provenance
+/// Which layer each merged env var and alias came from, for the provenance
 /// comment the generated shell files carry beside the line it explains.
 ///
 /// Names only — a value is whatever survived the merge, and the comment says
-/// who put it there. An entry the profile itself declares has no origin and
-/// gets no comment: the file is the profile's own by default, and annotating
-/// every line with that would say nothing.
+/// who put it there. EVERY entry names its layer: the file is the merge of N
+/// layers (profile chain, subscribed sources, modules) and so has no default
+/// owner a reader could assume, which is what an unannotated line would ask
+/// them to do.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(super) struct EnvOrigins {
-    env: std::collections::HashMap<String, String>,
-    aliases: std::collections::HashMap<String, String>,
-}
+pub(super) struct EnvOrigins(crate::config::EntryOwners);
 
 impl EnvOrigins {
-    /// Record `module` as the owner of every entry it declares, overwriting an
-    /// earlier module's claim exactly as the merge overwrites its value.
-    pub(super) fn claim(&mut self, module: &crate::modules::ResolvedModule) {
-        let owner = crate::reconciler::Owner::module(&module.name).token();
-        for ev in &module.env {
-            self.env.insert(ev.name.clone(), owner.clone());
-        }
-        for alias in &module.aliases {
-            self.aliases.insert(alias.name.clone(), owner.clone());
-        }
+    /// Seed from the profile-layer merge's own record, so the layer that
+    /// declared a surviving value owns it here too.
+    pub(super) fn from_owners(owners: &crate::config::EntryOwners) -> Self {
+        Self(owners.clone())
     }
 
-    /// The trailing ` # module:<name>` an env-var line carries, or an empty
+    /// Record `module` as the owner of every entry it declares, overwriting an
+    /// earlier claim exactly as the merge overwrites its value.
+    pub(super) fn claim_module_entries(&mut self, module: &crate::modules::ResolvedModule) {
+        self.0.claim(
+            &crate::reconciler::Owner::module(&module.name).token(),
+            &module.env,
+            &module.aliases,
+        );
+    }
+
+    /// The trailing ` # <kind>:<name>` an env-var line carries, or an empty
     /// string when nothing owns it.
     pub(super) fn env_comment(&self, name: &str) -> String {
-        comment(self.env.get(name))
+        comment(self.0.env.get(name).map(String::as_str))
     }
 
     /// The same for an alias line.
     pub(super) fn alias_comment(&self, name: &str) -> String {
-        comment(self.aliases.get(name))
+        comment(self.0.aliases.get(name).map(String::as_str))
     }
+}
+
+/// The trailing comment cfgd's own bootstrapped-PATH line carries: the managers
+/// whose directories it publishes, in dir order and deduped
+/// (` # manager:brew,cargo`). One comment for the whole line, because the line
+/// is one `export`; empty when nothing named a manager.
+pub(super) fn path_dirs_comment(dirs: &[ManagerPathDir]) -> String {
+    let mut managers: Vec<&str> = Vec::new();
+    for dir in dirs {
+        if !dir.manager.is_empty() && !managers.contains(&dir.manager.as_str()) {
+            managers.push(&dir.manager);
+        }
+    }
+    if managers.is_empty() {
+        return String::new();
+    }
+    comment(Some(&format!("manager:{}", managers.join(","))))
 }
 
 /// Render an owner token as a trailing shell comment.
@@ -299,17 +318,69 @@ impl EnvOrigins {
 /// value. An owner carrying anything but the token's own alphabet is dropped
 /// rather than escaped: a `\n` would end the assignment and stand the
 /// remainder up as further shell, and there is nothing a comment is worth
-/// risking that for.
-fn comment(owner: Option<&String>) -> String {
+/// risking that for. `,` is in the alphabet because the PATH line's comment
+/// names every manager that contributed to it, and a `,` cannot end a shell
+/// line.
+fn comment(owner: Option<&str>) -> String {
     match owner {
         Some(owner)
             if owner
                 .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '_' | '.')) =>
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '_' | '.' | ',')) =>
         {
             format!(" # {owner}")
         }
         _ => String::new(),
+    }
+}
+
+/// A generated line with its trailing owner comment removed, if it has one.
+///
+/// The exact inverse of [`comment`] and kept beside it so the two cannot
+/// drift. Any comparison of a DEPLOYED line against a freshly rendered one
+/// folds both sides through this: a file written before owner comments
+/// existed carries none, and comparing raw would read every line in such a
+/// file as having moved. Applied symmetrically, so a value that itself ends
+/// in something comment-shaped folds the same way on both sides and still
+/// compares equal to itself.
+pub(super) fn without_owner_comment(line: &str) -> &str {
+    match line.rsplit_once(" # ") {
+        Some((head, tail)) if !tail.is_empty() && comment(Some(tail)) == format!(" # {tail}") => {
+            head
+        }
+        _ => line,
+    }
+}
+
+/// One PATH directory cfgd published, remembering the manager that created it.
+///
+/// The manager travels WITH the directory because the generated line names it:
+/// a bare `Vec<String>` had already lost which manager each entry belonged to
+/// by the time the env file was rendered, so the one line in the file that is
+/// cfgd's own bookkeeping was the only line that could not say so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagerPathDir {
+    pub manager: String,
+    pub dir: String,
+}
+
+impl ManagerPathDir {
+    pub fn new(manager: impl Into<String>, dir: impl Into<String>) -> Self {
+        Self {
+            manager: manager.into(),
+            dir: dir.into(),
+        }
+    }
+
+    /// A directory no manager claims. The sentinel render behind
+    /// [`super::env_files::path_dirs_line_prefix`] takes this: the prefix is
+    /// the text BEFORE the trailing comment, so naming a manager there would
+    /// put a comment in the very string that has to match a real line's head.
+    pub fn unowned(dir: impl Into<String>) -> Self {
+        Self {
+            manager: String::new(),
+            dir: dir.into(),
+        }
     }
 }
 

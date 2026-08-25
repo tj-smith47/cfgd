@@ -124,6 +124,7 @@ fn happy_resolved() -> ResolvedProfile {
             ],
             scripts: Default::default(),
             backups: Vec::new(),
+            entry_owners: Default::default(),
         },
     }
 }

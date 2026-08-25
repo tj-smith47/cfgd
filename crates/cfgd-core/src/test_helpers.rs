@@ -3427,29 +3427,20 @@ fn parse_profile_yaml_to_resolved(yaml: &str) -> crate::config::ResolvedProfile 
             .expect("failed to parse profile YAML in test harness")
     };
 
-    let merged = crate::config::MergedProfile {
-        modules: spec.modules.clone(),
-        env: spec.env.clone(),
-        env_scope: spec.env_scope.unwrap_or_default(),
-        aliases: spec.aliases.clone(),
-        packages: spec.packages.clone().unwrap_or_default(),
-        files: spec.files.clone().unwrap_or_default(),
-        system: spec.system.clone(),
-        secrets: spec.secrets.clone(),
-        scripts: spec.scripts.clone().unwrap_or_default(),
-        backups: spec.backups.clone(),
-    };
+    // Built through the production merge rather than field-by-field: the merge
+    // is what records which layer declared each env var and alias, and a
+    // harness that assembles the struct by hand hands the reconciler a profile
+    // whose entries name no owner.
+    let layers = vec![crate::config::ProfileLayer {
+        source: crate::config::LOCAL_LAYER.to_string(),
+        profile_name: "harness-test".to_string(),
+        priority: 1000,
+        policy: crate::config::LayerPolicy::Local,
+        spec,
+    }];
+    let merged = crate::config::merge_layers(&layers);
 
-    crate::config::ResolvedProfile {
-        layers: vec![crate::config::ProfileLayer {
-            source: "local".to_string(),
-            profile_name: "harness-test".to_string(),
-            priority: 1000,
-            policy: crate::config::LayerPolicy::Local,
-            spec,
-        }],
-        merged,
-    }
+    crate::config::ResolvedProfile { layers, merged }
 }
 
 /// Install a claude-code skill for `kind` at `scope`, then rewrite its stamped

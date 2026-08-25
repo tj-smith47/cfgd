@@ -38,6 +38,57 @@ pub struct ProfileLayer {
     pub spec: ProfileSpec,
 }
 
+impl ProfileLayer {
+    /// The `kind:name` owner token this layer's entries carry. A layer the
+    /// operator wrote is their profile; every other layer arrived from the
+    /// subscription named on it. Built through [`crate::reconciler::Owner`] so
+    /// the token is spelled exactly as an apply header spells it.
+    pub fn owner_token(&self) -> String {
+        if self.source == LOCAL_LAYER {
+            crate::reconciler::Owner::profile(&self.profile_name).token()
+        } else {
+            crate::reconciler::Owner::source(&self.source).token()
+        }
+    }
+}
+
+/// Which layer declared each env var and alias that SURVIVED the layer merge.
+///
+/// Recorded by the merge rather than re-derived from the layer list, because
+/// last-writer-wins is the merge's own rule: a second walk applying it again is
+/// a second implementation, and the moment the two disagree the comment beside
+/// a generated line names a layer whose value is not there.
+///
+/// Names only — the value is whatever survived, and the token says who put it
+/// there. Display-only: `#[serde(skip)]` where it hangs off [`MergedProfile`],
+/// and never persisted or matched.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EntryOwners {
+    pub env: std::collections::HashMap<String, String>,
+    pub aliases: std::collections::HashMap<String, String>,
+}
+
+impl EntryOwners {
+    /// Record `owner` against every entry it declares, overwriting an earlier
+    /// claim exactly as the merge overwrites its value.
+    pub fn claim(&mut self, owner: &str, env: &[EnvVar], aliases: &[ShellAlias]) {
+        self.claim_env_names(owner, env.iter().map(|ev| ev.name.as_str()));
+        for alias in aliases {
+            self.aliases.insert(alias.name.clone(), owner.to_string());
+        }
+    }
+
+    /// The same claim for entries a layer declares by NAME alone — a
+    /// `spec.secrets[].envs` export, whose value only exists once a backend has
+    /// resolved it but whose line in the generated file is the declaring
+    /// layer's exactly as a plain `spec.env` entry is.
+    pub fn claim_env_names<'a>(&mut self, owner: &str, names: impl IntoIterator<Item = &'a str>) {
+        for name in names {
+            self.env.insert(name.to_string(), owner.to_string());
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ResolvedProfile {
     pub layers: Vec<ProfileLayer>,
@@ -69,6 +120,10 @@ pub struct MergedProfile {
     pub secrets: Vec<SecretSpec>,
     pub scripts: ScriptSpec,
     pub backups: Vec<BackupSpec>,
+    /// Which layer declared each surviving `env`/`aliases` entry. Display-only,
+    /// so a `-o json` reader sees the payload it always saw.
+    #[serde(skip)]
+    pub entry_owners: EntryOwners,
 }
 
 /// Resolve a profile by loading it and its full inheritance chain, then merging.
@@ -177,8 +232,16 @@ pub fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
         // Modules: union
         union_extend(&mut merged.modules, modules);
 
+        let layer_owner = layer.owner_token();
         // Env: later layer overrides earlier by name
         crate::merge_env(&mut merged.env, env);
+        merged.entry_owners.claim(&layer_owner, env, aliases);
+        for secret in secrets {
+            merged.entry_owners.claim_env_names(
+                &layer_owner,
+                secret.envs.iter().flatten().map(String::as_str),
+            );
+        }
 
         // EnvScope: last layer that *specifies* it wins; an omitting layer
         // inherits the value resolved so far (defaults to All if none set it).
@@ -302,6 +365,180 @@ pub const ALL_MANAGER_NAMES: &[&str] = &[
     "chocolatey",
     "scoop",
 ];
+
+/// One `--package` prefix a user may write, and what it resolves to.
+///
+/// `path` is the schema spelling (`brew.taps`), which is what a confirmation
+/// line echoes back and what a "known:" list spells out. `slot` is the key
+/// [`crate`]'s CLI writes the entry through, which is the REGISTERED manager
+/// name wherever one exists and a sub-list key where the schema splits one
+/// manager's list in two (`snap.classic`). `manager` is the registered manager
+/// that actually installs it — the name a module entry's `prefer` may carry,
+/// and the only one of the three that is ever persisted as a manager.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackageSchemaPath {
+    pub path: &'static str,
+    pub slot: &'static str,
+    pub manager: &'static str,
+}
+
+/// Every `<manager>[.<list>]` path under `spec.packages` that holds package
+/// NAMES, in the order a "known:" list spells them.
+///
+/// The user writes the SCHEMA path (`--package brew.taps:charmbracelet/tap`)
+/// because that is the path the value is written to and read back from; the
+/// registered manager name beside it (`brew-tap`) stays the wire spelling on
+/// every persisted surface. A `file:` field is not here — it names a manifest,
+/// not a package — and neither is `flatpak.remote`, which names a remote.
+/// `custom[]` entries are discovered by name at parse time, exactly as
+/// [`desired_packages_for_spec`] discovers them.
+///
+/// `package_schema_paths_cover_every_package_list_in_the_spec` walks a
+/// fully-populated [`PackagesSpec`] against this table, so a sub-list added to
+/// the schema fails until it is listed here.
+pub const PACKAGE_SCHEMA_PATHS: &[PackageSchemaPath] = &[
+    PackageSchemaPath {
+        path: "apt",
+        slot: "apt",
+        manager: "apt",
+    },
+    PackageSchemaPath {
+        path: "apt.packages",
+        slot: "apt",
+        manager: "apt",
+    },
+    PackageSchemaPath {
+        path: "brew",
+        slot: "brew",
+        manager: "brew",
+    },
+    PackageSchemaPath {
+        path: "brew.casks",
+        slot: "brew-cask",
+        manager: "brew-cask",
+    },
+    PackageSchemaPath {
+        path: "brew.formulae",
+        slot: "brew",
+        manager: "brew",
+    },
+    PackageSchemaPath {
+        path: "brew.taps",
+        slot: "brew-tap",
+        manager: "brew-tap",
+    },
+    PackageSchemaPath {
+        path: "cargo",
+        slot: "cargo",
+        manager: "cargo",
+    },
+    PackageSchemaPath {
+        path: "cargo.packages",
+        slot: "cargo",
+        manager: "cargo",
+    },
+    PackageSchemaPath {
+        path: "npm",
+        slot: "npm",
+        manager: "npm",
+    },
+    PackageSchemaPath {
+        path: "npm.global",
+        slot: "npm",
+        manager: "npm",
+    },
+    PackageSchemaPath {
+        path: "snap",
+        slot: "snap",
+        manager: "snap",
+    },
+    PackageSchemaPath {
+        path: "snap.classic",
+        slot: "snap-classic",
+        manager: "snap",
+    },
+    PackageSchemaPath {
+        path: "snap.packages",
+        slot: "snap",
+        manager: "snap",
+    },
+    PackageSchemaPath {
+        path: "flatpak",
+        slot: "flatpak",
+        manager: "flatpak",
+    },
+    PackageSchemaPath {
+        path: "flatpak.packages",
+        slot: "flatpak",
+        manager: "flatpak",
+    },
+    PackageSchemaPath {
+        path: "pipx",
+        slot: "pipx",
+        manager: "pipx",
+    },
+    PackageSchemaPath {
+        path: "dnf",
+        slot: "dnf",
+        manager: "dnf",
+    },
+    PackageSchemaPath {
+        path: "apk",
+        slot: "apk",
+        manager: "apk",
+    },
+    PackageSchemaPath {
+        path: "pacman",
+        slot: "pacman",
+        manager: "pacman",
+    },
+    PackageSchemaPath {
+        path: "zypper",
+        slot: "zypper",
+        manager: "zypper",
+    },
+    PackageSchemaPath {
+        path: "yum",
+        slot: "yum",
+        manager: "yum",
+    },
+    PackageSchemaPath {
+        path: "pkg",
+        slot: "pkg",
+        manager: "pkg",
+    },
+    PackageSchemaPath {
+        path: "nix",
+        slot: "nix",
+        manager: "nix",
+    },
+    PackageSchemaPath {
+        path: "go",
+        slot: "go",
+        manager: "go",
+    },
+    PackageSchemaPath {
+        path: "winget",
+        slot: "winget",
+        manager: "winget",
+    },
+    PackageSchemaPath {
+        path: "chocolatey",
+        slot: "chocolatey",
+        manager: "chocolatey",
+    },
+    PackageSchemaPath {
+        path: "scoop",
+        slot: "scoop",
+        manager: "scoop",
+    },
+];
+
+/// The schema path a user wrote, or `None` when nothing in the schema is
+/// spelled that way.
+pub fn package_schema_path(path: &str) -> Option<&'static PackageSchemaPath> {
+    PACKAGE_SCHEMA_PATHS.iter().find(|p| p.path == path)
+}
 
 /// Get the list of desired packages for a specific package manager from a merged profile.
 pub fn desired_packages_for(manager_name: &str, profile: &MergedProfile) -> Vec<String> {
@@ -429,6 +666,88 @@ impl PackageClaim {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Walk a fully-populated `PackagesSpec` and require every list of package
+    /// NAMES in it to be reachable by a `--package` prefix. Derived from the
+    /// serialized schema rather than from a second hand-written list, so a
+    /// sub-list added to `BrewSpec`/`SnapSpec`/… fails here until
+    /// `PACKAGE_SCHEMA_PATHS` names it — which is the only thing standing
+    /// between a new sub-list and a `--package` token silently landing in the
+    /// platform's native manager.
+    #[test]
+    fn package_schema_paths_cover_every_package_list_in_the_spec() {
+        use super::super::profile_spec::{
+            AptSpec, BrewSpec, CargoSpec, FlatpakSpec, NpmSpec, SnapSpec,
+        };
+        // Every struct-form manager has to be PRESENT for its sub-lists to
+        // serialize at all; an absent `Option` would hide them from the walk.
+        let spec = PackagesSpec {
+            brew: Some(BrewSpec::default()),
+            apt: Some(AptSpec::default()),
+            cargo: Some(CargoSpec::default()),
+            npm: Some(NpmSpec::default()),
+            snap: Some(SnapSpec::default()),
+            flatpak: Some(FlatpakSpec::default()),
+            ..Default::default()
+        };
+        let value = serde_json::to_value(&spec).expect("PackagesSpec serializes");
+        let map = value.as_object().expect("a mapping");
+
+        let mut expected: Vec<String> = Vec::new();
+        for (key, field) in map {
+            // Discovered by NAME at parse time, exactly as
+            // `desired_packages_for_spec` discovers them.
+            if key == "custom" {
+                continue;
+            }
+            match field {
+                serde_json::Value::Array(_) => expected.push(key.clone()),
+                serde_json::Value::Object(inner) => {
+                    // The bare form (`--package brew:x`) reaches the sub-list
+                    // `FromPackageList` maps a bare YAML list onto.
+                    expected.push(key.clone());
+                    for (sub, sub_field) in inner {
+                        // A `file:` names a manifest and `flatpak.remote` names
+                        // a remote — neither holds package names.
+                        if sub_field.is_array() {
+                            expected.push(format!("{key}.{sub}"));
+                        }
+                    }
+                }
+                // An absent `Option<…Spec>` serializes as null and hides its
+                // whole sub-list population from this walk, so the fixture
+                // has to name it rather than the walk skipping it.
+                serde_json::Value::Null => panic!(
+                    "`spec.packages.{key}` is absent from this test's fixture; \
+                     populate it so its sub-lists serialize and can be checked"
+                ),
+                // A scalar field of `PackagesSpec` itself is not a manager.
+                _ => {}
+            }
+        }
+
+        for path in &expected {
+            assert!(
+                package_schema_path(path).is_some(),
+                "`spec.packages.{path}` holds package names but no `--package` \
+                 prefix reaches it; add it to PACKAGE_SCHEMA_PATHS"
+            );
+        }
+        for entry in PACKAGE_SCHEMA_PATHS {
+            assert!(
+                expected.iter().any(|p| p == entry.path),
+                "`{}` is offered as a --package prefix but names no list in \
+                 the schema",
+                entry.path
+            );
+            assert!(
+                ALL_MANAGER_NAMES.contains(&entry.manager),
+                "`{}` resolves to `{}`, which is not a registered manager",
+                entry.path,
+                entry.manager
+            );
+        }
+    }
 
     fn layer(name: &str, env_scope: Option<EnvScope>) -> ProfileLayer {
         ProfileLayer {

@@ -2165,60 +2165,6 @@ fn profile_delete_succeeds_despite_unrelated_ambiguous_profile() {
 }
 
 #[test]
-fn parse_manager_package_valid() {
-    let (mgr, pkg) = profile::parse_manager_package("brew:curl").unwrap();
-    assert_eq!(mgr, "brew");
-    assert_eq!(pkg, "curl");
-}
-
-#[test]
-fn parse_manager_package_invalid() {
-    assert!(profile::parse_manager_package("no-colon").is_err());
-    assert!(profile::parse_manager_package(":curl").is_err());
-    assert!(profile::parse_manager_package("brew:").is_err());
-    assert!(profile::parse_manager_package(":").is_err());
-}
-
-#[test]
-fn parse_package_flag_with_known_manager() {
-    let known = &["brew", "apt", "cargo"];
-    let (mgr, pkg) = parse_package_flag("brew:curl", known);
-    assert_eq!(mgr, Some("brew".to_string()));
-    assert_eq!(pkg, "curl");
-}
-
-#[test]
-fn parse_package_flag_bare_name() {
-    let known = &["brew", "apt", "cargo"];
-    let (mgr, pkg) = parse_package_flag("ripgrep", known);
-    assert_eq!(mgr, None);
-    assert_eq!(pkg, "ripgrep");
-}
-
-#[test]
-fn parse_package_flag_unknown_prefix_treated_as_bare() {
-    let known = &["brew", "apt", "cargo"];
-    // "python3:amd64" — "python3" is not a known manager
-    let (mgr, pkg) = parse_package_flag("python3:amd64", known);
-    assert_eq!(mgr, None);
-    assert_eq!(pkg, "python3:amd64");
-}
-
-#[test]
-fn parse_package_flag_empty_parts() {
-    let known = &["brew"];
-    // ":curl" — empty prefix, not a known manager
-    let (mgr, pkg) = parse_package_flag(":curl", known);
-    assert_eq!(mgr, None);
-    assert_eq!(pkg, ":curl");
-
-    // "brew:" — empty suffix
-    let (mgr, pkg) = parse_package_flag("brew:", known);
-    assert_eq!(mgr, None);
-    assert_eq!(pkg, "brew:");
-}
-
-#[test]
 fn parse_secret_spec_valid() {
     let spec = profile::parse_secret_spec("secrets/key.enc:~/.config/app/key").unwrap();
     assert_eq!(spec.source, "secrets/key.enc");
@@ -4613,32 +4559,6 @@ fn resolve_profile_name_explicit_from_name() {
     let cli = test_cli(dir.path());
     let result = super::resolve_profile_name(&cli, &test_printer(), Some("work")).unwrap();
     assert_eq!(result, "work");
-}
-
-// --- parse_package_flag ---
-
-#[test]
-fn parse_package_flag_known_manager_splits() {
-    let known = &["brew", "apt", "cargo"];
-    let (mgr, pkg) = super::parse_package_flag("brew:ripgrep", known);
-    assert_eq!(mgr, Some("brew".to_string()));
-    assert_eq!(pkg, "ripgrep");
-}
-
-#[test]
-fn parse_package_flag_unknown_manager_passthrough() {
-    let known = &["brew", "apt"];
-    let (mgr, pkg) = super::parse_package_flag("unknown:ripgrep", known);
-    assert!(mgr.is_none());
-    assert_eq!(pkg, "unknown:ripgrep");
-}
-
-#[test]
-fn parse_package_flag_bare_name_passthrough() {
-    let known = &["brew"];
-    let (mgr, pkg) = super::parse_package_flag("ripgrep", known);
-    assert!(mgr.is_none());
-    assert_eq!(pkg, "ripgrep");
 }
 
 // --- builtin_aliases ---
@@ -7559,16 +7479,6 @@ spec:
     let cfg = config::parse_config(yaml, std::path::Path::new("cfgd.yaml")).unwrap();
     let (backend, _) = super::secret_backend_from_config(Some(&cfg));
     assert_eq!(backend, "sops-age");
-}
-
-// --- known_manager_names ---
-
-#[test]
-fn known_manager_names_is_not_empty() {
-    let names = super::known_manager_names();
-    assert!(!names.is_empty());
-    // Should at least contain "cargo" which is always available in Rust projects
-    assert!(names.contains(&"cargo".to_string()));
 }
 
 // --- Structured output mode tests ---
@@ -11363,19 +11273,6 @@ fn empty_resolved_profile_has_module() {
     assert_eq!(resolved.merged.modules, vec!["my-mod".to_string()]);
     assert!(resolved.merged.env.is_empty());
     assert_eq!(resolved.profile_name(), "work");
-}
-
-// --- known_manager_names ---
-
-#[test]
-fn known_manager_names_not_empty() {
-    let names = super::known_manager_names();
-    assert!(!names.is_empty());
-    // Should contain at least "cargo" since it's always available
-    assert!(
-        names.contains(&"cargo".to_string()),
-        "should contain 'cargo' manager"
-    );
 }
 
 // --- secret_backend_from_config with config ---
@@ -23920,4 +23817,125 @@ fn an_adopted_file_is_copied_aside_by_a_real_apply() {
         "from the module\n",
         "and the module's own content lands at the target"
     );
+}
+
+/// A `MergedEnvItems` is one command's whole env/alias merge: it clones the
+/// profile's env, its aliases and both origin maps and folds every resolved
+/// module in. Built once per command it costs that once; built inside the loop
+/// that renders a drift report it costs that per FINDING, which is the shape
+/// this fence exists to keep out — and nothing but reading the code stopped a
+/// later edit from moving a construction one brace deeper.
+///
+/// The predicate is structural: while walking a file's PRODUCTION half (the
+/// body before its `#[cfg(test)]` module — a test builds its own view per
+/// assertion and that is fine), every open `{` pushes the line that opened it,
+/// and a construction is an offender when any block still open above it was
+/// opened by a loop or a closure. The per-file COUNT is pinned beside it, so a
+/// second construction added to a command — the other way one report pays the
+/// merge twice — fails here too rather than passing for sitting at fn depth.
+///
+/// Hatch: `// per-row-merge-ok: <why>` on the construction line or the line
+/// above it, for a site that genuinely must re-merge (a declaration that
+/// changed under it mid-loop).
+#[test]
+fn every_merged_env_view_is_built_once_per_command() {
+    const HATCH: &str = "per-row-merge-ok:";
+    // Each production construction, by file and count: `cmd_status` and
+    // `cmd_status_module`, `cmd_verify`, and `cmd_diff`'s two env paths.
+    const EXPECTED: [(&str, usize); 3] = [("status.rs", 2), ("verify.rs", 1), ("diff.rs", 2)];
+    const LOOPY: [&str; 8] = [
+        "for ", "while ", "loop {", ".map(", ".iter(", ".retain(", ".filter(", "|",
+    ];
+
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut offenders = Vec::new();
+    let mut files: Vec<std::path::PathBuf> = walk_rust_files(&cli_dir);
+    files.sort();
+    for path in files {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        // A `tests.rs` is a test module whole (declared `mod tests;` from its
+        // parent), so it carries no `#[cfg(test)]` line to cut at — including
+        // this fence's own file, whose literals would report themselves.
+        if name == "tests.rs" {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        // Only the production half: a `#[cfg(test)]` module below it builds a
+        // view per assertion, which is what a test SHOULD do.
+        let production = body
+            .split_once("\n#[cfg(test)]")
+            .map(|(head, _)| head)
+            .unwrap_or(&body);
+        let mut open: Vec<&str> = Vec::new();
+        let mut prev = "";
+        for line in production.lines() {
+            if line.contains("MergedEnvItems::new(")
+                && !line.contains(HATCH)
+                && !prev.contains(HATCH)
+            {
+                *counts.entry(name.clone()).or_default() += 1;
+                if let Some(opener) = open
+                    .iter()
+                    .find(|o| LOOPY.iter().any(|m| o.contains(m)) && !o.contains("fn "))
+                {
+                    offenders.push(format!(
+                        "{}: built inside `{}`",
+                        path.display(),
+                        opener.trim()
+                    ));
+                }
+            }
+            for ch in line.chars() {
+                match ch {
+                    '{' => open.push(line),
+                    '}' => {
+                        open.pop();
+                    }
+                    _ => {}
+                }
+            }
+            prev = line;
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a MergedEnvItems is built once per command, never per row \
+         (or carries `// {HATCH} <why>`):\n{}",
+        offenders.join("\n")
+    );
+    let found: Vec<(String, usize)> = counts.into_iter().collect();
+    let mut expected: Vec<(String, usize)> = EXPECTED
+        .iter()
+        .map(|(f, n)| ((*f).to_string(), *n))
+        .collect();
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "every production MergedEnvItems construction is pinned here; a new one \
+         means a command that merges twice until it is reviewed"
+    );
+}
+
+/// Every `.rs` file under `dir`, recursively.
+fn walk_rust_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(walk_rust_files(&path));
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+    out
 }

@@ -476,6 +476,45 @@ fn validate_constraints_blocks_a_patch_filter_script() {
 }
 
 /// One profile layer contributed by source `acme`, carrying `spec`.
+/// A composed entry names the SOURCE it arrived from, and a local one the
+/// subscriber's own profile. Composition is a SECOND merge: an owner it failed
+/// to record would leave a subscribed source's env line either uncommented or
+/// silently attributed to the local profile.
+#[test]
+fn composition_records_which_layer_declared_each_env_entry() {
+    let local = make_local_profile();
+    let mut src = make_source_input("acme", 500);
+    src.layers = vec![source_layer(ProfileSpec {
+        env: vec![EnvVar {
+            name: "TEAM".into(),
+            value: "platform".into(),
+        }],
+        aliases: vec![ShellAlias {
+            name: "k".into(),
+            command: "kubectl".into(),
+        }],
+        ..Default::default()
+    })];
+
+    let composed = compose(&local, &[src], ConstraintMode::Enforce).unwrap();
+    let owners = &composed.resolved.merged.entry_owners;
+    assert_eq!(
+        owners.env.get("TEAM").map(String::as_str),
+        Some("source:acme"),
+        "a subscribed source's env var names the source: {owners:?}"
+    );
+    assert_eq!(
+        owners.aliases.get("k").map(String::as_str),
+        Some("source:acme"),
+        "a subscribed source's alias names the source: {owners:?}"
+    );
+    assert_eq!(
+        owners.env.get("editor").map(String::as_str),
+        Some("profile:default"),
+        "the operator's own entry names their profile layer: {owners:?}"
+    );
+}
+
 fn source_layer(spec: ProfileSpec) -> ProfileLayer {
     ProfileLayer {
         source: "acme".to_string(),

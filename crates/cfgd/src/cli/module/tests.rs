@@ -749,6 +749,152 @@ fn make_module_create_args(name: &str) -> super::ModuleCreateArgs {
     }
 }
 
+// ─── --package grammar on the module surfaces ─────────────
+
+#[test]
+fn cmd_module_update_adds_and_removes_a_sub_list_package_by_its_schema_path() {
+    let dir = tempfile::tempdir().unwrap();
+    make_module(
+        dir.path(),
+        "mod1",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mod1\nspec:\n  packages: []\n",
+    );
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let args = super::ModuleUpdateArgs {
+        packages: vec!["brew.casks:firefox".to_string()],
+        ..make_module_update_args("mod1")
+    };
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+    let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
+    assert_eq!(doc.spec.packages[0].name, "firefox");
+    assert_eq!(
+        doc.spec.packages[0].prefer,
+        vec!["brew-cask".to_string()],
+        "prefer carries the REGISTERED manager, never the schema path"
+    );
+
+    let args = super::ModuleUpdateArgs {
+        packages: vec!["-brew.casks:firefox".to_string()],
+        ..make_module_update_args("mod1")
+    };
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
+    let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
+    assert!(doc.spec.packages.is_empty(), "firefox must be removed");
+
+    drop(printer);
+    let output = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        output.contains("firefox (brew.casks)"),
+        "the confirmation must name the schema path, got: {output}"
+    );
+}
+
+#[test]
+fn cmd_module_update_refuses_an_unknown_package_prefix_in_either_direction() {
+    let dir = tempfile::tempdir().unwrap();
+    make_module(
+        dir.path(),
+        "mod1",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mod1\nspec:\n  packages: []\n",
+    );
+
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    for token in ["brew.tap:charmbracelet/tap", "-brew.tap:charmbracelet/tap"] {
+        let args = super::ModuleUpdateArgs {
+            packages: vec![token.to_string()],
+            ..make_module_update_args("mod1")
+        };
+        let err = cmd_module_update_local(&cli, &printer, &args)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("unknown package manager 'brew.tap'"),
+            "'{token}' must be refused, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn cmd_module_create_records_a_sub_list_packages_registered_manager() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let args = super::ModuleCreateArgs {
+        packages: vec!["brew.taps:charmbracelet/tap".to_string()],
+        ..make_module_create_args("tapmod")
+    };
+    cmd_module_create(&cli, &printer, &args).unwrap();
+
+    let (doc, _) = load_module_document(dir.path(), "tapmod").unwrap();
+    assert_eq!(doc.spec.packages[0].name, "charmbracelet/tap");
+    assert_eq!(
+        doc.spec.packages[0].prefer,
+        vec!["brew-tap".to_string()],
+        "prefer carries the REGISTERED manager, never the schema path"
+    );
+}
+
+/// A module package entry has no classic slot to carry the distinction, so
+/// accepting the token would confirm a schema path the document cannot hold.
+#[test]
+fn module_surfaces_refuse_a_snap_classic_token() {
+    let dir = tempfile::tempdir().unwrap();
+    make_module(
+        dir.path(),
+        "mod1",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mod1\nspec:\n  packages: []\n",
+    );
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let create = super::ModuleCreateArgs {
+        packages: vec!["snap.classic:code".to_string()],
+        ..make_module_create_args("classicmod")
+    };
+    let err = cmd_module_create(&cli, &printer, &create)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("use snap:code"), "create: got: {err}");
+
+    for token in ["snap.classic:code", "-snap.classic:code"] {
+        let args = super::ModuleUpdateArgs {
+            packages: vec![token.to_string()],
+            ..make_module_update_args("mod1")
+        };
+        let err = cmd_module_update_local(&cli, &printer, &args)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("use snap:code"), "'{token}': got: {err}");
+    }
+}
+
+#[test]
+fn cmd_module_create_refuses_the_wire_spelling_of_a_virtual_brew_manager() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let args = super::ModuleCreateArgs {
+        packages: vec!["brew-tap:charmbracelet/tap".to_string()],
+        ..make_module_create_args("badmod")
+    };
+    let err = cmd_module_create(&cli, &printer, &args)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("use brew.taps:charmbracelet/tap"),
+        "should name the schema spelling, got: {err}"
+    );
+}
+
 // ─── cmd_module_update_local — env, aliases, deps, scripts ─
 
 #[test]

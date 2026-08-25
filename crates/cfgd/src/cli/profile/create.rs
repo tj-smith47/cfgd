@@ -86,16 +86,53 @@ pub fn cmd_profile_create(
 
         (inh, mods, Vec::new(), Vec::new(), Vec::new())
     } else {
-        let known = super::known_manager_names();
-        let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
         let default_mgr = Platform::current().native_manager().to_string();
+        // The new profile declares no `custom[]` of its own, but it INHERITS
+        // every one its parents' chains resolve to, so those names are legal
+        // prefixes here — resolved through the same chain resolver `profile
+        // show` reads, never a second parse. A name a schema path already
+        // claims is dropped: the parser resolves those first, so a custom
+        // manager spelled `brew` is unreachable through this branch anyway.
+        let inherited_custom: Vec<(String, String)> = inherits
+            .iter()
+            .filter_map(|p| {
+                cfgd_core::config::resolve_profile(p, &pdir)
+                    .ok()
+                    .map(|r| (p.clone(), r))
+            })
+            .flat_map(|(parent, r)| {
+                r.merged
+                    .packages
+                    .custom
+                    .into_iter()
+                    .map(move |c| (c.name, parent.clone()))
+            })
+            .filter(|(m, _)| cfgd_core::config::package_schema_path(m).is_none())
+            .collect();
+        let custom_managers: Vec<String> =
+            inherited_custom.iter().map(|(m, _)| m.clone()).collect();
         let pkgs = pkg_list
             .iter()
-            .map(|s| {
-                let (mgr, pkg) = super::parse_package_flag(s, &known_refs);
-                (mgr.unwrap_or_else(|| default_mgr.clone()), pkg)
-            })
-            .collect::<Vec<_>>();
+            .map(|s| super::parse_package_flag(s, &custom_managers, &default_mgr))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        // A custom manager IS the commands under its `custom[]` entry, and this
+        // profile declares none. Writing the package here would mean copying the
+        // parent's definition, and the child wins the scalar merge — so a later
+        // edit to the parent's install command would silently never reach this
+        // machine. Name the profile that owns the manager instead.
+        for pkg in &pkgs {
+            if let Some((mgr, parent)) = inherited_custom
+                .iter()
+                .find(|(m, _)| Some(m.as_str()) == pkg.manager.as_deref())
+            {
+                anyhow::bail!(
+                    "'{mgr}' is declared by profile '{parent}', not by '{name}'; add the package \
+                     there with `cfgd profile update {parent} --package {mgr}:{}`, or declare \
+                     {mgr} under spec.packages.custom in this profile",
+                    pkg.name
+                );
+            }
+        }
         let vars = var_list.to_vec();
         let sys = sys_list.to_vec();
         (inherits.to_vec(), module_list.to_vec(), pkgs, vars, sys)
@@ -113,8 +150,9 @@ pub fn cmd_profile_create(
 
     // Build packages spec
     let mut packages_spec = config::PackagesSpec::default();
-    for (mgr, pkg) in &pkgs_parsed {
-        packages::add_package(mgr, pkg, &mut packages_spec)?;
+    let native = Platform::current().native_manager();
+    for pkg in &pkgs_parsed {
+        packages::add_package(pkg.slot_or(native), &pkg.name, &mut packages_spec)?;
     }
     let has_packages = !pkgs_parsed.is_empty();
 

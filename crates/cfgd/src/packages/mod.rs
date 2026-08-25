@@ -428,6 +428,15 @@ pub fn add_package(
                 snap.packages.push(package_name.to_string());
             }
         }
+        // Not a registered manager: `snap` installs both lists and retries with
+        // `--classic`. The key exists so `--package snap.classic:code` reaches
+        // the sub-list the schema splits out, and it is never persisted.
+        "snap-classic" => {
+            let snap = packages.snap.get_or_insert_with(Default::default);
+            if !snap.classic.contains(&package_name.to_string()) {
+                snap.classic.push(package_name.to_string());
+            }
+        }
         "flatpak" => {
             let flatpak = packages.flatpak.get_or_insert_with(Default::default);
             if !flatpak.packages.contains(&package_name.to_string()) {
@@ -491,6 +500,15 @@ pub fn remove_package(
                 let before = brew.casks.len();
                 brew.casks.retain(|p| p != package_name);
                 brew.casks.len() < before
+            } else {
+                false
+            }
+        }
+        "snap-classic" => {
+            if let Some(ref mut snap) = packages.snap {
+                let before = snap.classic.len();
+                snap.classic.retain(|p| p != package_name);
+                snap.classic.len() < before
             } else {
                 false
             }

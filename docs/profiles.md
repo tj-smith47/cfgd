@@ -261,18 +261,25 @@ EDITOR=nvim                                # systemd --user units + Wayland GUI
 Each write states what went into that file, and only that file: `~/.cfgd.env` carries env
 vars and aliases, while `environment.d` and the macOS LaunchAgent carry env vars alone.
 
-Each generated line names the module that declared it, so a file holding entries from
-several modules says where each came from:
+Every generated line names its owner, so a file holding entries from a profile chain,
+several modules and a bootstrapped package manager says where each came from:
 
 ```bash
 # managed by cfgd — do not edit
-export PAGER="less"
+export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH" # manager:brew
+export PAGER="less" # profile:base
 export EDITOR="nvim" # module:nvim
 alias v="nvim" # module:nvim
+alias catn="cat -n" # profile:base
 ```
 
-A line the profile itself declares carries no comment: the file is the profile's own by
-default.
+The owner is the layer whose value survived the merge, so an entry a child profile
+overrides names the child, not the base it came from. A subscribed source's entries name
+the source (`# source:acme`), and the bootstrapped `PATH` line names every manager whose
+directories it carries (`# manager:brew,cargo`).
+
+`environment.d` and the macOS LaunchAgent have no trailing-comment grammar, so their lines
+carry no owner.
 
 The two owner groups separate what is durable from what is not: `cfgd:env` writes the files
 a future shell reads, `cfgd:session` pushes the same values into the session manager you are

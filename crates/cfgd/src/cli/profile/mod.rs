@@ -34,7 +34,7 @@ pub use update::cmd_profile_update;
 pub(super) use backups::{
     collect_module_file_targets, prompt_restore_backups, restore_or_remove_deployed_files,
 };
-pub(super) use parsers::{parse_manager_package, parse_secret_spec, update_script_list};
+pub(super) use parsers::{parse_secret_spec, update_script_list};
 
 /// Map a profile-lookup `ConfigError` into the CLI error chain.
 /// `ProfileNotFound` carries the typed error so the exit-code downcast at the

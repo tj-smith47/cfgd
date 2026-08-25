@@ -2453,6 +2453,7 @@ fn plan_env_empty_when_no_env() {
     let actions = Reconciler::plan_env_with_home(
         &[],
         &[],
+        &Default::default(),
         crate::config::EnvScope::Interactive,
         &[],
         &[],
@@ -2496,6 +2497,7 @@ fn plan_env_module_wins_on_conflict() {
     let actions = Reconciler::plan_env_with_home(
         &profile_env,
         &[],
+        &Default::default(),
         crate::config::EnvScope::Interactive,
         &modules,
         &[],
@@ -2592,6 +2594,7 @@ fn plan_env_aliases_only() {
     let actions = Reconciler::plan_env_with_home(
         &[],
         &aliases,
+        &Default::default(),
         crate::config::EnvScope::Interactive,
         &[],
         &[],
@@ -2638,6 +2641,7 @@ fn plan_env_module_alias_wins_on_conflict() {
     let actions = Reconciler::plan_env_with_home(
         &[],
         &profile_aliases,
+        &Default::default(),
         crate::config::EnvScope::Interactive,
         &modules,
         &[],
@@ -2748,6 +2752,7 @@ fn plan_env_with_secret_envs_includes_them() {
     let actions = Reconciler::plan_env_with_home(
         &[],
         &[],
+        &Default::default(),
         crate::config::EnvScope::Interactive,
         &[],
         &secret_envs,
@@ -2775,6 +2780,7 @@ fn plan_env_secret_envs_appear_in_generated_content() {
     let actions = Reconciler::plan_env_with_home(
         &regular_env,
         &[],
+        &Default::default(),
         crate::config::EnvScope::Interactive,
         &[],
         &secret_envs,
@@ -7332,8 +7338,12 @@ fn merge_module_env_aliases_merges_correctly() {
         platform_skip_reason: None,
     }];
 
-    let (env, aliases, _origins) =
-        super::merge_module_env_aliases(&profile_env, &profile_aliases, &modules);
+    let (env, aliases, _origins) = super::merge_module_env_aliases(
+        &profile_env,
+        &profile_aliases,
+        &Default::default(),
+        &modules,
+    );
     // Module overrides profile: A=2 (module wins), B=3 (new)
     assert_eq!(env.len(), 2);
     assert_eq!(env.iter().find(|e| e.name == "A").unwrap().value, "2");
@@ -11417,7 +11427,14 @@ fn env_verify_results_reports_matching_alias_and_env_var_as_current() {
     let (path, content) = primary_managed_env_target(tmp_home.path(), &env, &aliases);
     std::fs::write(path, content).unwrap();
 
-    let results = super::verify::env_verify_results(&env, &aliases, EnvScope::All, &[], &[]);
+    let results = super::verify::env_verify_results(
+        &env,
+        &aliases,
+        &Default::default(),
+        EnvScope::All,
+        &[],
+        &[],
+    );
 
     let alias_row = results
         .iter()
@@ -11474,7 +11491,14 @@ fn env_verify_results_detects_hand_edited_alias_as_drift_without_flagging_untouc
     );
     std::fs::write(path, mutated).unwrap();
 
-    let results = super::verify::env_verify_results(&env, &aliases, EnvScope::All, &[], &[]);
+    let results = super::verify::env_verify_results(
+        &env,
+        &aliases,
+        &Default::default(),
+        EnvScope::All,
+        &[],
+        &[],
+    );
 
     let alias_row = results
         .iter()
@@ -11523,7 +11547,16 @@ fn verify_env_persists_drift_for_a_hand_edited_alias() {
     std::fs::write(path, mutated).unwrap();
 
     let mut results = Vec::new();
-    super::verify::verify_env(&[], &aliases, EnvScope::All, &[], &[], &state, &mut results);
+    super::verify::verify_env(
+        &[],
+        &aliases,
+        &Default::default(),
+        EnvScope::All,
+        &[],
+        &[],
+        &state,
+        &mut results,
+    );
 
     assert!(
         results
@@ -11580,6 +11613,7 @@ fn verify_env_never_persists_the_declared_value_only_the_opaque_marker() {
     super::verify::verify_env(
         &env,
         &aliases,
+        &Default::default(),
         EnvScope::All,
         &[],
         &[],
@@ -11648,22 +11682,61 @@ fn a_drifted_env_row_shows_the_line_the_file_holds_against_the_declared_one() {
     }];
     // Both lines come from production's own renderer rather than a POSIX
     // literal, so the fixture holds whatever dialect this platform writes.
-    let edited_line = super::verify::env_item_declared_line("env-var", "EDITOR", &edited, &[], &[])
+    let edited_line = super::verify::MergedEnvItems::new(&edited, &[], &Default::default(), &[])
+        .declared_line("env-var", "EDITOR")
         .expect("the edited var renders a line");
     let (path, _) = primary_managed_env_target(tmp_home.path(), &declared, &[]);
     std::fs::write(path, format!("{ENV_FILE_HEADER}\n{edited_line}\n")).unwrap();
 
-    let (want, have) =
-        super::verify::env_item_display_values("env-var", "EDITOR", &declared, &[], &[])
-            .expect("a declared env var recomputes both operands");
+    let (want, have) = super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[])
+        .display_values("env-var", "EDITOR")
+        .expect("a declared env var recomputes both operands");
     assert_eq!(
         want,
-        super::verify::env_item_declared_line("env-var", "EDITOR", &declared, &[], &[]).unwrap(),
+        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[])
+            .declared_line("env-var", "EDITOR")
+            .unwrap(),
         "want is the line the declaration renders as"
     );
     assert_eq!(
         have, edited_line,
         "have is the line the file actually holds, not a marker"
+    );
+}
+
+/// The merge is built ONCE and asked per row: a command rendering a drift
+/// report holds one view and answers every finding from it, rather than
+/// cloning the profile's env, its aliases and both origin maps per row.
+#[test]
+#[serial_test::serial]
+fn one_merged_env_view_answers_every_row_of_a_report() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+
+    let env = vec![EnvVar {
+        name: "EDITOR".to_string(),
+        value: "nvim".to_string(),
+    }];
+    let aliases = vec![ShellAlias {
+        name: "ll".to_string(),
+        command: "ls -lah".to_string(),
+    }];
+    let view = super::verify::MergedEnvItems::new(&env, &aliases, &Default::default(), &[]);
+
+    let editor = view
+        .declared_line("env-var", "EDITOR")
+        .expect("the env var renders a line");
+    let ll = view
+        .declared_line("alias", "ll")
+        .expect("the alias renders a line from the same view");
+    assert!(
+        editor.contains("EDITOR") && ll.contains("ll"),
+        "{editor} / {ll}"
+    );
+    assert_eq!(
+        view.declared_line("file", "/etc/hosts"),
+        None,
+        "a kind with no managed line answers None from the same view"
     );
 }
 
@@ -11683,17 +11756,21 @@ fn an_env_item_the_file_does_not_hold_reads_as_the_shared_absence_word() {
     let (path, _) = primary_managed_env_target(tmp_home.path(), &declared, &[]);
     std::fs::write(path, format!("{ENV_FILE_HEADER}\n")).unwrap();
 
-    let (_, have) =
-        super::verify::env_item_display_values("env-var", "EDITOR", &declared, &[], &[])
-            .expect("a declared env var recomputes both operands");
+    let (_, have) = super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[])
+        .display_values("env-var", "EDITOR")
+        .expect("a declared env var recomputes both operands");
     assert_eq!(have, crate::Absence::Missing.as_str());
 
     assert!(
-        super::verify::env_item_display_values("file", "~/.zshrc", &declared, &[], &[]).is_none(),
+        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[])
+            .display_values("file", "~/.zshrc")
+            .is_none(),
         "a kind with no managed env line recomputes nothing"
     );
     assert!(
-        super::verify::env_item_display_values("env-var", "PAGER", &declared, &[], &[]).is_none(),
+        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[])
+            .display_values("env-var", "PAGER")
+            .is_none(),
         "an item no longer declared recomputes nothing"
     );
 }
@@ -11725,8 +11802,8 @@ fn an_unreadable_managed_env_file_recomputes_nothing_rather_than_claiming_absenc
     std::fs::write(&path, format!("{ENV_FILE_HEADER}\n")).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-    let recomputed =
-        super::verify::env_item_display_values("env-var", "EDITOR", &declared, &[], &[]);
+    let recomputed = super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[])
+        .display_values("env-var", "EDITOR");
 
     // Restore before asserting so a failure does not leave the tempdir
     // undeletable.
@@ -11834,7 +11911,8 @@ fn a_successful_env_apply_resolves_the_per_item_rows_it_converged() {
 
 #[test]
 fn merge_module_env_aliases_empty() {
-    let (env, aliases, _origins) = super::merge_module_env_aliases(&[], &[], &[]);
+    let (env, aliases, _origins) =
+        super::merge_module_env_aliases(&[], &[], &Default::default(), &[]);
     assert!(env.is_empty());
     assert!(aliases.is_empty());
 }
@@ -11874,8 +11952,12 @@ fn merge_module_env_aliases_combines_profile_and_modules() {
         platform_skip_reason: None,
     }];
 
-    let (env, aliases, _origins) =
-        super::merge_module_env_aliases(&profile_env, &profile_aliases, &modules);
+    let (env, aliases, _origins) = super::merge_module_env_aliases(
+        &profile_env,
+        &profile_aliases,
+        &Default::default(),
+        &modules,
+    );
     assert_eq!(env.len(), 2);
     assert_eq!(aliases.len(), 2);
 
@@ -11914,7 +11996,8 @@ fn merge_module_env_aliases_module_overrides_profile() {
         platform_skip_reason: None,
     }];
 
-    let (env, _, _) = super::merge_module_env_aliases(&profile_env, &[], &modules);
+    let (env, _, _) =
+        super::merge_module_env_aliases(&profile_env, &[], &Default::default(), &modules);
     // merge_env deduplicates by name, last wins
     let editor = env.iter().find(|e| e.name == "EDITOR").unwrap();
     assert_eq!(
@@ -14713,7 +14796,10 @@ fn env_targets_folded_path_dirs_render_into_the_fish_managed_file() {
     let home = Path::new("/h");
     let mut probe = env_probe("/bin/bash");
     probe.fish_present = true;
-    let dirs: Vec<String> = BREW_PATH_DIRS.iter().map(|d| d.to_string()).collect();
+    let dirs: Vec<ManagerPathDir> = BREW_PATH_DIRS
+        .iter()
+        .map(|d| ManagerPathDir::new("brew", *d))
+        .collect();
     let t = env_targets(
         EnvContent::new(&[], &[], &dirs, &Default::default()),
         EnvScope::Interactive,
@@ -14743,7 +14829,10 @@ fn env_targets_folded_path_dirs_render_into_the_powershell_managed_file() {
     // PowerShell counterpart of the fish assertion above: same folded PATH-dir
     // set, `;`-joined and double-quoted for `$env:PATH` interpolation.
     let home = Path::new("/h");
-    let dirs: Vec<String> = BREW_PATH_DIRS.iter().map(|d| d.to_string()).collect();
+    let dirs: Vec<ManagerPathDir> = BREW_PATH_DIRS
+        .iter()
+        .map(|d| ManagerPathDir::new("brew", *d))
+        .collect();
     let t = env_targets(
         EnvContent::new(&[], &[], &dirs, &Default::default()),
         EnvScope::Interactive,
@@ -14914,12 +15003,12 @@ fn apply_converges_env_file_in_the_same_run_that_bootstraps() {
 #[test]
 fn path_dirs_changed_is_false_when_only_order_differs() {
     let now = vec![
-        "/home/linuxbrew/.linuxbrew/bin".to_string(),
-        "/home/u/.npm-global/bin".to_string(),
+        ManagerPathDir::new("brew", "/home/linuxbrew/.linuxbrew/bin"),
+        ManagerPathDir::new("npm", "/home/u/.npm-global/bin"),
     ];
     let at_plan = vec![
-        "/home/u/.npm-global/bin".to_string(),
-        "/home/linuxbrew/.linuxbrew/bin".to_string(),
+        ManagerPathDir::new("npm", "/home/u/.npm-global/bin"),
+        ManagerPathDir::new("brew", "/home/linuxbrew/.linuxbrew/bin"),
     ];
     assert!(
         !super::apply::path_dirs_changed(&now, &at_plan),
@@ -14932,10 +15021,10 @@ fn path_dirs_changed_is_true_when_the_set_actually_differs() {
     // Models npm: its resolved global prefix is only knowable once the
     // install finishes, so the plan-time fold cannot have named it.
     let now = vec![
-        "/home/u/.npm-global/bin".to_string(),
-        "/usr/local/lib/node_modules/.bin".to_string(),
+        ManagerPathDir::new("npm", "/home/u/.npm-global/bin"),
+        ManagerPathDir::new("npm", "/usr/local/lib/node_modules/.bin"),
     ];
-    let at_plan = vec!["/home/u/.npm-global/bin".to_string()];
+    let at_plan = vec![ManagerPathDir::new("npm", "/home/u/.npm-global/bin")];
     assert!(
         super::apply::path_dirs_changed(&now, &at_plan),
         "a genuinely new directory must still trigger regeneration"
@@ -14944,7 +15033,7 @@ fn path_dirs_changed_is_true_when_the_set_actually_differs() {
 
 #[test]
 fn path_dirs_changed_is_false_for_identical_input() {
-    let dirs = vec!["/opt/homebrew/bin".to_string()];
+    let dirs = vec![ManagerPathDir::new("brew", "/opt/homebrew/bin")];
     assert!(!super::apply::path_dirs_changed(&dirs, &dirs));
 }
 
@@ -17695,6 +17784,7 @@ fn plan_env_all_scope_emits_live_session_action() {
     let actions = Reconciler::plan_env_with_home(
         &one_env(),
         &[],
+        &Default::default(),
         EnvScope::All,
         &[],
         &[],
@@ -17717,6 +17807,7 @@ fn plan_env_interactive_scope_has_no_live_session_action() {
     let actions = Reconciler::plan_env_with_home(
         &one_env(),
         &[],
+        &Default::default(),
         EnvScope::Interactive,
         &[],
         &[],
@@ -18505,6 +18596,7 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
     let actions = Reconciler::plan_env_with_home(
         &[],
         &[],
+        &Default::default(),
         EnvScope::Interactive,
         &[],
         &[],
@@ -18533,6 +18625,7 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
     let actions = Reconciler::plan_env_with_home(
         &[],
         &[],
+        &Default::default(),
         EnvScope::Interactive,
         &[],
         &[],
@@ -18548,6 +18641,7 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
     let actions = Reconciler::plan_env_with_home(
         &[],
         &[],
+        &Default::default(),
         EnvScope::Interactive,
         &[],
         &[],
@@ -18573,6 +18667,7 @@ fn plan_env_leaves_a_generated_file_this_state_store_never_recorded() {
     let actions = Reconciler::plan_env_with_home(
         &[],
         &[],
+        &Default::default(),
         EnvScope::Interactive,
         &[],
         &[],
@@ -18602,7 +18697,16 @@ fn reconciler_env_surfaces_resolve_against_the_home_it_was_built_with() {
     }];
 
     let actions = reconciler
-        .plan_env(&env, &[], EnvScope::Interactive, &[], &[], &[], &[])
+        .plan_env(
+            &env,
+            &[],
+            &Default::default(),
+            EnvScope::Interactive,
+            &[],
+            &[],
+            &[],
+            &[],
+        )
         .actions;
 
     assert!(!actions.is_empty(), "the env plan must not be empty");
@@ -23838,6 +23942,7 @@ fn a_converged_env_surface_plans_no_env_actions() {
         Reconciler::plan_env_with_home(
             &env,
             &aliases,
+            &Default::default(),
             crate::config::EnvScope::Interactive,
             &[],
             &[],
@@ -24484,15 +24589,46 @@ fn an_unreserved_target_is_not_copied_aside() {
     );
 }
 
-/// A module-declared entry carries the module that declared it as a line-end
-/// comment; a profile-declared one carries none, because the file is the
-/// profile's own by default and saying so on every line says nothing.
+/// EVERY line of a generated env file names its owner: a module-declared entry
+/// names its module, a profile-declared one names the LAYER that declared it,
+/// and the bootstrapped PATH line names the manager (or managers) whose
+/// directories it holds. A file that is the merge of N layers has no default
+/// owner, so an uncommented line would be the one line nobody can attribute.
 #[test]
-fn a_generated_env_line_names_the_module_that_declared_it() {
-    let profile_env = vec![crate::config::EnvVar {
-        name: "PAGER".into(),
-        value: "less".into(),
-    }];
+fn every_generated_env_line_names_the_owner_that_declared_it() {
+    let layer = |name: &str, env: Vec<(&str, &str)>, aliases: Vec<(&str, &str)>| {
+        crate::config::ProfileLayer {
+            source: crate::config::LOCAL_LAYER.to_string(),
+            profile_name: name.to_string(),
+            priority: 1000,
+            policy: crate::config::LayerPolicy::Local,
+            spec: crate::config::ProfileSpec {
+                env: env
+                    .into_iter()
+                    .map(|(n, v)| crate::config::EnvVar {
+                        name: n.into(),
+                        value: v.into(),
+                    })
+                    .collect(),
+                aliases: aliases
+                    .into_iter()
+                    .map(|(n, c)| crate::config::ShellAlias {
+                        name: n.into(),
+                        command: c.into(),
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+        }
+    };
+    // Two layers, and `work` overrides `base`'s PAGER: the comment has to name
+    // the layer whose VALUE survived, which is what recording owners inside the
+    // merge (rather than re-deriving them afterwards) buys.
+    let merged = crate::config::merge_layers(&[
+        layer("base", vec![("PAGER", "less")], vec![("catn", "cat -n")]),
+        layer("work", vec![("PAGER", "bat")], vec![]),
+    ]);
+
     let mut module = crate::test_helpers::make_resolved_module("nvim");
     module.env = vec![crate::config::EnvVar {
         name: "EDITOR".into(),
@@ -24503,9 +24639,18 @@ fn a_generated_env_line_names_the_module_that_declared_it() {
         command: "nvim".into(),
     }];
 
-    let (env, aliases, origins) =
-        super::merge_module_env_aliases(&profile_env, &[], std::slice::from_ref(&module));
-    let content = super::generate_env_file_content(&env, &aliases, &[], &origins);
+    let (env, aliases, origins) = super::merge_module_env_aliases(
+        &merged.env,
+        &merged.aliases,
+        &merged.entry_owners,
+        std::slice::from_ref(&module),
+    );
+    let path_dirs = vec![
+        ManagerPathDir::new("brew", "/home/linuxbrew/.linuxbrew/bin"),
+        ManagerPathDir::new("brew", "/home/linuxbrew/.linuxbrew/sbin"),
+        ManagerPathDir::new("cargo", "/home/u/.cargo/bin"),
+    ];
+    let content = super::generate_env_file_content(&env, &aliases, &path_dirs, &origins);
 
     assert!(
         content.contains("export EDITOR=\"nvim\" # module:nvim"),
@@ -24516,18 +24661,86 @@ fn a_generated_env_line_names_the_module_that_declared_it() {
         "a module-declared alias names its module: {content}"
     );
     assert!(
-        content.contains("export PAGER=\"less\"\n"),
-        "a profile-declared var carries no owner comment: {content}"
+        content.contains("export PAGER=\"bat\" # profile:work"),
+        "an overridden var names the layer whose value won: {content}"
     );
+    assert!(
+        content.contains("alias catn=\"cat -n\" # profile:base"),
+        "an alias names the layer that declared it: {content}"
+    );
+    // One comment for the whole line, managers in directory order, deduped —
+    // one per directory would repeat `brew` twice and say nothing extra.
+    assert!(
+        content.contains(
+            "export PATH=\"/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:\
+             /home/u/.cargo/bin:$PATH\" # manager:brew,cargo"
+        ),
+        "the bootstrapped PATH line names its managers once each: {content}"
+    );
+    // Every DIALECT, not just the one whose exact strings are pinned above:
+    // each generator appends its own comments and dropping any one of those
+    // calls has to fail here. The assertion is on the line's TAIL so it says
+    // nothing about a dialect's own assignment syntax.
+    for (dialect, content) in [
+        ("bash/zsh", content),
+        (
+            "fish",
+            super::generate_fish_env_content(&env, &aliases, &path_dirs, &origins),
+        ),
+        (
+            "powershell",
+            super::env_files::generate_powershell_env_content(&env, &aliases, &path_dirs, &origins),
+        ),
+    ] {
+        let body: Vec<&str> = content
+            .lines()
+            .skip(1)
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        assert!(
+            body.iter().all(|l| l.contains(" # ")),
+            "{dialect}: every generated line below the header names an owner: {content}"
+        );
+        for (needle, owner) in [
+            ("EDITOR", "# module:nvim"),
+            ("PAGER", "# profile:work"),
+            ("catn", "# profile:base"),
+            ("PATH", "# manager:brew,cargo"),
+        ] {
+            let line = body
+                .iter()
+                .find(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{dialect}: no line names {needle}: {content}"));
+            assert!(
+                line.ends_with(owner),
+                "{dialect}: `{line}` must end with `{owner}`"
+            );
+        }
+    }
 }
 
 /// The provenance comment is part of the line `verify` matches, so a file
 /// written with it must read back as current rather than as permanent drift.
+/// Every owner kind is on the file at once — profile layer, module and the
+/// bootstrapped PATH line's manager — because the planner and the verifier
+/// share ONE merge and a comment either side rendered differently would be
+/// drift nothing can fix.
 #[test]
 #[serial_test::serial]
-fn a_module_owned_env_line_written_with_its_comment_verifies_as_current() {
+fn an_owner_commented_env_line_written_by_the_planner_verifies_as_current() {
     let tmp_home = tempfile::tempdir().unwrap();
     let _home = crate::with_test_home_guard(tmp_home.path());
+
+    let profile_env = vec![crate::config::EnvVar {
+        name: "PAGER".into(),
+        value: "less".into(),
+    }];
+    let layer_owners = {
+        let mut o = crate::config::EntryOwners::default();
+        o.claim("profile:base", &profile_env, &[]);
+        o
+    };
+    let path_dirs = vec![ManagerPathDir::new("brew", "/opt/homebrew/bin")];
 
     let mut module = crate::test_helpers::make_resolved_module("nvim");
     module.env = vec![crate::config::EnvVar {
@@ -24544,12 +24757,13 @@ fn a_module_owned_env_line_written_with_its_comment_verifies_as_current() {
     // real apply writes rather than a literal that can drift from them.
     let mut primary: Option<std::path::PathBuf> = None;
     for action in Reconciler::plan_env_with_home(
+        &profile_env,
         &[],
-        &[],
+        &layer_owners,
         crate::config::EnvScope::Interactive,
         &modules,
         &[],
-        &[],
+        &path_dirs,
         &[],
         tmp_home.path(),
     )
@@ -24565,11 +24779,12 @@ fn a_module_owned_env_line_written_with_its_comment_verifies_as_current() {
     let primary = primary.expect("the planner writes a primary managed env file");
 
     let results = super::verify::env_verify_results(
+        &profile_env,
         &[],
-        &[],
+        &layer_owners,
         crate::config::EnvScope::Interactive,
         &modules,
-        &[],
+        &path_dirs,
     );
     // Only the seeded managed file is under test; the rc source line the test
     // deliberately never injected is a different surface.
@@ -24591,16 +24806,23 @@ fn a_module_owned_env_line_written_with_its_comment_verifies_as_current() {
     // The display recompute must show the same line: a drift row quoting an
     // expected line the file is not required to hold sends the reader to fix a
     // difference that is not the difference.
-    let shown = super::verify::env_item_declared_line("env-var", "EDITOR", &[], &[], &modules)
-        .expect("a module-owned var renders its declared line");
     let written = std::fs::read_to_string(&primary).unwrap();
+    for (id, owner) in [("EDITOR", "# module:nvim"), ("PAGER", "# profile:base")] {
+        let shown = super::verify::MergedEnvItems::new(&profile_env, &[], &layer_owners, &modules)
+            .declared_line("env-var", id)
+            .expect("a declared var renders its declared line");
+        assert!(
+            shown.contains(owner),
+            "the shown line carries the provenance comment verify matched on: {shown}"
+        );
+        assert!(
+            written.lines().any(|line| line == shown),
+            "the shown line is a line the file actually holds: {shown} in {written}"
+        );
+    }
     assert!(
-        shown.contains("# module:nvim"),
-        "the shown line carries the provenance comment verify matched on: {shown}"
-    );
-    assert!(
-        written.lines().any(|line| line == shown),
-        "the shown line is a line the file actually holds: {shown} in {written}"
+        written.contains("export PATH=\"/opt/homebrew/bin:$PATH\" # manager:brew"),
+        "the written file carries the manager-named PATH line: {written}"
     );
 }
 

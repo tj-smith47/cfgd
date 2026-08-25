@@ -184,34 +184,58 @@ pub fn cmd_profile_update(
         }
     }
 
-    // Add packages
-    let known = super::known_manager_names();
-    let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
+    // Add and remove packages. Both directions take the SAME parser, so a
+    // prefix that is legal to add is legal to remove and the two can never
+    // disagree about where a name lives.
     let default_mgr = Platform::current().native_manager().to_string();
+    let custom_managers: Vec<String> = doc
+        .spec
+        .packages
+        .as_ref()
+        .map(|p| p.custom.iter().map(|c| c.name.clone()).collect())
+        .unwrap_or_default();
     for pkg_str in &add_packages {
-        let (mgr_opt, pkg) = super::parse_package_flag(pkg_str, &known_refs);
-        let mgr = mgr_opt.unwrap_or_else(|| default_mgr.clone());
+        let pkg = super::parse_package_flag(pkg_str, &custom_managers, &default_mgr)?;
         let pkgs = doc.spec.packages.get_or_insert_with(Default::default);
-        packages::add_package(&mgr, &pkg, pkgs)?;
+        packages::add_package(pkg.slot_or(&default_mgr), &pkg.name, pkgs)?;
         printer
             .status(Role::Ok, "Added package")
-            .qualifier(format!("{} ({})", pkg, mgr));
+            .qualifier(pkg.display(&default_mgr));
         changes += 1;
     }
 
-    // Remove packages
     for pkg_str in &remove_packages {
-        let (mgr, pkg) = parse_manager_package(pkg_str)?;
+        let pkg = super::parse_package_flag(pkg_str, &custom_managers, &default_mgr)?;
         let pkgs = doc.spec.packages.get_or_insert_with(Default::default);
-        if packages::remove_package(&mgr, &pkg, pkgs)? {
+        if packages::remove_package(pkg.slot_or(&default_mgr), &pkg.name, pkgs)? {
             printer
                 .status(Role::Ok, "Removed package")
-                .qualifier(format!("{} ({})", pkg, mgr));
+                .qualifier(pkg.display(&default_mgr));
             changes += 1;
         } else {
+            // A BARE token searched the native manager alone. When the name
+            // sits under another one, silence would report "not there" about a
+            // package the file plainly holds — name the token that works.
+            let elsewhere = if pkg.schema_path.is_none() {
+                super::removal_tokens_for(&pkg.name, pkgs)
+            } else {
+                Vec::new()
+            };
+            if !elsewhere.is_empty() {
+                anyhow::bail!(
+                    "'{}' is not in {default_mgr}, but is declared elsewhere in this \
+                     profile; use {}",
+                    pkg.name,
+                    elsewhere.join(" or ")
+                );
+            }
             printer.status_simple(
                 Role::Warn,
-                format!("Package '{}' not found in {}", pkg, mgr),
+                format!(
+                    "Package '{}' not found in {}",
+                    pkg.name,
+                    pkg.schema_path.as_deref().unwrap_or(&default_mgr)
+                ),
             );
         }
     }

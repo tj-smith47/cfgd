@@ -1451,7 +1451,9 @@ pub struct ProfileCreateArgs {
     /// Modules to include (repeatable)
     #[arg(long = "module")]
     pub modules: Vec<String>,
-    /// Packages to include (repeatable, e.g. --package curl or --package brew:curl)
+    /// Packages to include: <manager>[.<list>]:<name>, or a bare name for the
+    /// platform's native manager (repeatable, e.g. --package curl, --package
+    /// brew:curl, --package brew.taps:charmbracelet/tap)
     #[arg(long = "package")]
     pub packages: Vec<String>,
     /// Environment variables as key=value (repeatable)
@@ -1502,7 +1504,9 @@ pub struct ProfileUpdateArgs {
     /// Modules (repeatable, prefix with - to remove)
     #[arg(long = "module", allow_hyphen_values = true)]
     pub modules: Vec<String>,
-    /// Packages (repeatable, prefix with - to remove, e.g. --package brew:jq --package -brew:old)
+    /// Packages: <manager>[.<list>]:<name>, or a bare name for the platform's
+    /// native manager (repeatable, prefix with - to remove, e.g. --package
+    /// brew:jq --package brew.casks:firefox --package -brew:old)
     #[arg(long = "package", allow_hyphen_values = true)]
     pub packages: Vec<String>,
     /// Files (repeatable, prefix with - to remove by target path)
@@ -1622,7 +1626,8 @@ pub struct ModuleCreateArgs {
     /// Dependencies on other modules (repeatable)
     #[arg(long = "depends")]
     pub depends: Vec<String>,
-    /// Packages to include (repeatable)
+    /// Packages to include: <manager>[.<list>]:<name>, or a bare name for the
+    /// platform's native manager (repeatable, e.g. --package brew.casks:firefox)
     #[arg(long = "package")]
     pub packages: Vec<String>,
     /// Files to import (repeatable). Use <path> to adopt in place, or <source>:<target> for explicit mapping.
@@ -1655,7 +1660,8 @@ pub struct ModuleCreateArgs {
 pub struct ModuleUpdateArgs {
     /// Module name
     pub name: String,
-    /// Packages (repeatable, prefix with - to remove)
+    /// Packages: <manager>[.<list>]:<name>, or a bare name for the platform's
+    /// native manager (repeatable, prefix with - to remove)
     #[arg(long = "package", allow_hyphen_values = true)]
     pub packages: Vec<String>,
     /// Files (repeatable, prefix with - to remove by target path)

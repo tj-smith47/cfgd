@@ -8,6 +8,7 @@ use crate::providers::{
     PackageAction, PackageManager, ProviderRegistry, SYSTEM_INSTALLABLE_TOOLS, is_system_manager,
 };
 
+use super::env_engine::ManagerPathDir;
 use super::types::{Action, ManagerAction, ModuleAction, ModuleActionKind, PhaseName, Plan};
 
 /// The manager name a module package carries when its "install" is an inline
@@ -755,8 +756,8 @@ fn find_manager<'r>(registry: &'r ProviderRegistry, name: &str) -> Option<&'r dy
 pub(super) fn fold_provision_path_dirs<'a>(
     registry: &ProviderRegistry,
     actions: impl IntoIterator<Item = &'a Action>,
-    recorded: Vec<String>,
-) -> Vec<String> {
+    recorded: Vec<ManagerPathDir>,
+) -> Vec<ManagerPathDir> {
     let mut dirs = recorded;
     for action in actions {
         let Action::Manager(node @ ManagerAction::Provision { .. }) = action else {
@@ -774,8 +775,11 @@ pub(super) fn fold_provision_path_dirs<'a>(
                 continue;
             };
             for dir in plan.creates_path_dirs {
-                if !dirs.contains(&dir) {
-                    dirs.push(dir);
+                if !dirs.iter().any(|d| d.dir == dir) {
+                    dirs.push(ManagerPathDir {
+                        manager: manager.to_string(),
+                        dir,
+                    });
                 }
             }
         }
@@ -1026,7 +1030,7 @@ mod tests {
         let actions = plan_managers(&harness.registry, &installs(&["apt", "npm", "pipx"]), &[]);
         let dirs = fold_provision_path_dirs(&harness.registry, &actions, Vec::new());
         assert!(
-            dirs.contains(&"/opt/pipx/bin".to_string()),
+            dirs.iter().any(|d| d.dir == "/opt/pipx/bin"),
             "a batched member's directory is on this host too: {dirs:?}"
         );
     }
@@ -1595,13 +1599,13 @@ mod tests {
                     .creating_dirs(&["/home/u/.cargo/bin"]),
             )
             .build();
-        let recorded = vec!["/opt/homebrew/bin".to_string()];
+        let recorded = vec![ManagerPathDir::new("brew", "/opt/homebrew/bin")];
         let dirs = fold_provision_path_dirs(&harness.registry, &actions, recorded.clone());
         assert_eq!(
             dirs,
             vec![
-                "/opt/homebrew/bin".to_string(),
-                "/home/u/.cargo/bin".to_string(),
+                ManagerPathDir::new("brew", "/opt/homebrew/bin"),
+                ManagerPathDir::new("cargo", "/home/u/.cargo/bin"),
             ],
             "the recorded dirs stay first; the provisioned manager's declared dir is appended"
         );
@@ -1626,7 +1630,7 @@ mod tests {
                     .creating_dirs(&["/home/u/.cargo/bin"]),
             )
             .build();
-        let recorded = vec!["/home/u/.cargo/bin".to_string()];
+        let recorded = vec![ManagerPathDir::new("cargo", "/home/u/.cargo/bin")];
         let dirs = fold_provision_path_dirs(&harness.registry, &actions, recorded.clone());
         assert_eq!(dirs, recorded, "a dir already recorded is not repeated");
     }
@@ -1636,7 +1640,7 @@ mod tests {
         let harness = ReconcilerTestHarness::builder()
             .with_package_manager(MockPackageManager::new("brew"))
             .build();
-        let recorded = vec!["/opt/homebrew/bin".to_string()];
+        let recorded = vec![ManagerPathDir::new("brew", "/opt/homebrew/bin")];
         let dirs =
             fold_provision_path_dirs(&harness.registry, &Vec::<Action>::new(), recorded.clone());
         assert_eq!(dirs, recorded);
@@ -2096,7 +2100,7 @@ mod tests {
             fold_provision_path_dirs(&plan_registry, &manager_actions, Vec::new());
         assert_eq!(
             path_dirs_at_plan,
-            vec!["/opt/cargo-bin".to_string()],
+            vec![ManagerPathDir::new("cargo", "/opt/cargo-bin")],
             "the not-yet-provisioned manager's declared dir is already folded into the \
              plan before it is bootstrapped"
         );

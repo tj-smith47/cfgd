@@ -146,14 +146,16 @@ pub fn cmd_verify(
     // and persistence already happened inside `reconciler::verify` before it
     // returned. Recomputing here is exactly `diff`'s "opaque markers carry
     // neither real value" rule applied to `verify`'s own render.
+    let merged_env_items = reconciler::MergedEnvItems::new(
+        &resolved.merged.env,
+        &resolved.merged.aliases,
+        &resolved.merged.entry_owners,
+        &resolved_modules,
+    );
     for r in &mut results {
-        if let Some((expected, actual)) = reconciler::env_item_display_values(
-            &r.resource_type,
-            &r.resource_id,
-            &resolved.merged.env,
-            &resolved.merged.aliases,
-            &resolved_modules,
-        ) {
+        if let Some((expected, actual)) =
+            merged_env_items.display_values(&r.resource_type, &r.resource_id)
+        {
             r.expected = expected;
             r.actual = actual;
         }
@@ -409,14 +411,18 @@ mod tests {
             name: "EDITOR".to_string(),
             value: "vim".to_string(),
         }];
-        let declared_line = cfgd_core::reconciler::env_item_declared_line(
-            "env-var",
-            "EDITOR",
-            &declared_env,
-            &[],
-            &[],
-        )
-        .expect("EDITOR renders a declared line");
+        // The owners the profile-layer merge records for this profile: the
+        // generated line names its layer, so a needle rendered with no owner
+        // is a line the file never holds.
+        let declared_owners = {
+            let mut o = cfgd_core::config::EntryOwners::default();
+            o.claim("profile:default", &declared_env, &[]);
+            o
+        };
+        let declared_line =
+            cfgd_core::reconciler::MergedEnvItems::new(&declared_env, &[], &declared_owners, &[])
+                .declared_line("env-var", "EDITOR")
+                .expect("EDITOR renders a declared line");
 
         let state_dir = tmp.path().join("state");
         let mut cli = make_cli(config_path);

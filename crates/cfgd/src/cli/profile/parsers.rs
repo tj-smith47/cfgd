@@ -1,21 +1,5 @@
 use super::*;
 
-pub(crate) fn parse_manager_package(s: &str) -> anyhow::Result<(String, String)> {
-    let (mgr, pkg) = s.split_once(':').ok_or_else(|| {
-        anyhow::anyhow!(
-            "Invalid package format '{}' — expected manager:package (e.g. brew:curl)",
-            s
-        )
-    })?;
-    if mgr.is_empty() || pkg.is_empty() {
-        anyhow::bail!(
-            "Invalid package format '{}' — manager and package name cannot be empty",
-            s
-        );
-    }
-    Ok((mgr.to_string(), pkg.to_string()))
-}
-
 pub(crate) fn parse_secret_spec(s: &str) -> anyhow::Result<config::SecretSpec> {
     // Split on last colon so provider URLs like op://vault/item:~/target work correctly
     let (source, target) = s.rsplit_once(':').ok_or_else(|| {

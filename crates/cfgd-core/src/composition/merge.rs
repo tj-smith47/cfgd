@@ -42,8 +42,16 @@ pub(super) fn merge_with_policy(
             backups,
         } = &layer.spec;
 
+        let layer_owner = layer.owner_token();
         // Env: later overrides earlier by name (respecting priority ordering)
         crate::merge_env(&mut merged.env, env);
+        merged.entry_owners.claim(&layer_owner, env, aliases);
+        for secret in secrets {
+            merged.entry_owners.claim_env_names(
+                &layer_owner,
+                secret.envs.iter().flatten().map(String::as_str),
+            );
+        }
 
         // EnvScope: last layer that *specifies* it wins, exactly as the
         // local-only merge resolves it. Composing sources must not change how

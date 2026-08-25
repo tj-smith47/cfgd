@@ -293,6 +293,7 @@ mod tests {
             secrets: Vec::new(),
             scripts: crate::config::ScriptSpec::default(),
             backups: Vec::new(),
+            entry_owners: crate::config::EntryOwners::default(),
         }
     }
 

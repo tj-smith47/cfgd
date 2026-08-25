@@ -32,7 +32,7 @@ pub(super) fn shell_var_indicates_fish(shell: Option<&str>) -> bool {
 pub(super) fn generate_env_file_content(
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
-    path_dirs: &[String],
+    path_dirs: &[super::env_engine::ManagerPathDir],
     origins: &super::env_engine::EnvOrigins,
 ) -> String {
     let mut lines = vec![ENV_FILE_HEADER.to_string()];
@@ -41,10 +41,13 @@ pub(super) fn generate_env_file_content(
         // binary that only exists on the bootstrapped manager's PATH.
         let joined = path_dirs
             .iter()
-            .map(|d| crate::escape_double_quoted(d))
+            .map(|d| crate::escape_double_quoted(&d.dir))
             .collect::<Vec<_>>()
             .join(":");
-        lines.push(format!("export PATH=\"{joined}:$PATH\""));
+        lines.push(format!(
+            "export PATH=\"{joined}:$PATH\"{}",
+            super::env_engine::path_dirs_comment(path_dirs)
+        ));
     }
     for ev in env {
         if crate::validate_env_var_name(&ev.name).is_err() {
@@ -82,7 +85,7 @@ pub(super) fn generate_env_file_content(
 pub(super) fn generate_fish_env_content(
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
-    path_dirs: &[String],
+    path_dirs: &[super::env_engine::ManagerPathDir],
     origins: &super::env_engine::EnvOrigins,
 ) -> String {
     let mut lines = vec![ENV_FILE_HEADER.to_string()];
@@ -91,10 +94,13 @@ pub(super) fn generate_fish_env_content(
         // new entries; single quotes suppress fish expansion of each entry.
         let parts = path_dirs
             .iter()
-            .map(|d| crate::fish_single_quoted(d))
+            .map(|d| crate::fish_single_quoted(&d.dir))
             .collect::<Vec<_>>()
             .join(" ");
-        lines.push(format!("set -gx PATH {parts} $PATH"));
+        lines.push(format!(
+            "set -gx PATH {parts} $PATH{}",
+            super::env_engine::path_dirs_comment(path_dirs)
+        ));
     }
     for ev in env {
         if crate::validate_env_var_name(&ev.name).is_err() {
@@ -155,7 +161,7 @@ pub(super) fn generate_fish_env_content(
 pub(super) fn generate_powershell_env_content(
     env: &[crate::config::EnvVar],
     aliases: &[crate::config::ShellAlias],
-    path_dirs: &[String],
+    path_dirs: &[super::env_engine::ManagerPathDir],
     origins: &super::env_engine::EnvOrigins,
 ) -> String {
     let mut lines = vec![ENV_FILE_HEADER.to_string()];
@@ -164,10 +170,13 @@ pub(super) fn generate_powershell_env_content(
         // separator. Backtick is PowerShell's escape character inside "".
         let joined = path_dirs
             .iter()
-            .map(|d| crate::escape_powershell_double_quoted(d))
+            .map(|d| crate::escape_powershell_double_quoted(&d.dir))
             .collect::<Vec<_>>()
             .join(";");
-        lines.push(format!("$env:PATH = \"{joined};$env:PATH\""));
+        lines.push(format!(
+            "$env:PATH = \"{joined};$env:PATH\"{}",
+            super::env_engine::path_dirs_comment(path_dirs)
+        ));
     }
     for ev in env {
         if crate::validate_env_var_name(&ev.name).is_err() {
@@ -352,7 +361,9 @@ pub(super) fn alias_line_prefixes(
 /// layer's deleted entry.
 pub(super) fn path_dirs_line_prefix(platform: super::env_engine::EnvPlatform) -> Option<String> {
     let line = |dir: &str| {
-        let dirs = [dir.to_string()];
+        // The manager is left unnamed: the prefix ends where the two sentinel
+        // DIRS first differ, which is before any trailing provenance comment.
+        let dirs = [super::env_engine::ManagerPathDir::unowned(dir.to_string())];
         let content = if platform == super::env_engine::EnvPlatform::Windows {
             generate_powershell_env_content(&[], &[], &dirs, &Default::default())
         } else {
@@ -698,6 +709,7 @@ pub(super) fn strip_shell_quotes(s: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use super::super::env_engine::ManagerPathDir;
     use crate::config::{EnvVar, ShellAlias};
 
     fn env_var(value: &str) -> Vec<EnvVar> {
@@ -969,7 +981,7 @@ mod tests {
         let content = super::generate_fish_env_content(
             &[],
             &[],
-            &["/opt/a\\".to_string()],
+            &[ManagerPathDir::unowned("/opt/a\\")],
             &Default::default(),
         );
         assert!(
@@ -998,7 +1010,7 @@ mod tests {
         let content = super::generate_powershell_env_content(
             &[],
             &[],
-            &["C:/a$(Write-Output x)".to_string()],
+            &[ManagerPathDir::unowned("C:/a$(Write-Output x)")],
             &Default::default(),
         );
         assert!(
@@ -1064,7 +1076,10 @@ mod tests {
         let content = super::generate_env_file_content(
             &[],
             &[],
-            &["/opt/$(id)/bin".to_string(), "/opt/a\"b/bin".to_string()],
+            &[
+                ManagerPathDir::unowned("/opt/$(id)/bin"),
+                ManagerPathDir::unowned("/opt/a\"b/bin"),
+            ],
             &Default::default(),
         );
         assert!(
@@ -1153,12 +1168,65 @@ mod tests {
         }
     }
 
+    /// Every dialect that has a trailing-comment grammar names the managers
+    /// whose bootstrapped directories the PATH line carries — once each, in
+    /// directory order. `environment.d` and the launchd plist have no such
+    /// grammar and are deliberately absent.
+    #[test]
+    fn every_dialect_names_the_managers_on_its_bootstrapped_path_line() {
+        let dirs = [
+            ManagerPathDir::new("brew", "/opt/homebrew/bin"),
+            ManagerPathDir::new("brew", "/opt/homebrew/sbin"),
+            ManagerPathDir::new("cargo", "/home/u/.cargo/bin"),
+        ];
+        for content in [
+            super::generate_env_file_content(&[], &[], &dirs, &Default::default()),
+            super::generate_fish_env_content(&[], &[], &dirs, &Default::default()),
+            super::generate_powershell_env_content(&[], &[], &dirs, &Default::default()),
+        ] {
+            let path_line = content.lines().nth(1).expect("a PATH line is rendered");
+            assert!(
+                path_line.ends_with(" # manager:brew,cargo"),
+                "the PATH line names each manager once, in dir order: {path_line}"
+            );
+        }
+    }
+
+    /// The prefix that claims a past run's PATH line is derived from a sentinel
+    /// render, and the comment is the line's TAIL — so a real line carrying one
+    /// must still start with it, or a converged machine reads its own PATH line
+    /// as a stranger's deleted entry.
+    #[test]
+    fn path_dirs_line_prefix_still_claims_a_line_that_names_its_manager() {
+        for (platform, dir) in [
+            (EnvPlatform::Linux, "/opt/homebrew/bin"),
+            (EnvPlatform::Windows, "C:/tools/bin"),
+        ] {
+            let dirs = [ManagerPathDir::new("brew", dir)];
+            let content = if platform == EnvPlatform::Windows {
+                super::generate_powershell_env_content(&[], &[], &dirs, &Default::default())
+            } else {
+                super::generate_env_file_content(&[], &[], &dirs, &Default::default())
+            };
+            let path_line = content.lines().nth(1).unwrap();
+            let prefix = super::path_dirs_line_prefix(platform).unwrap();
+            assert!(
+                path_line.contains(" # manager:brew"),
+                "the fixture must actually carry a comment: {path_line}"
+            );
+            assert!(
+                path_line.starts_with(&prefix),
+                "{prefix:?} must still claim {path_line:?}"
+            );
+        }
+    }
+
     #[test]
     fn path_dirs_line_prefix_prefixes_the_generated_path_line() {
         let unix = super::generate_env_file_content(
             &[],
             &[],
-            &["/opt/homebrew/bin".to_string()],
+            &[ManagerPathDir::unowned("/opt/homebrew/bin")],
             &Default::default(),
         );
         let prefix = super::path_dirs_line_prefix(EnvPlatform::Linux).unwrap();
@@ -1171,7 +1239,7 @@ mod tests {
         let ps = super::generate_powershell_env_content(
             &[],
             &[],
-            &["C:/tools/bin".to_string()],
+            &[ManagerPathDir::unowned("C:/tools/bin")],
             &Default::default(),
         );
         let prefix = super::path_dirs_line_prefix(EnvPlatform::Windows).unwrap();

@@ -9,7 +9,7 @@ use crate::state::StateStore;
 use crate::to_posix_string;
 
 use super::env_engine::{
-    EnvContent, EnvHostProbe, EnvOrigins, EnvPlatform, EnvTarget, env_targets,
+    EnvContent, EnvHostProbe, EnvOrigins, EnvPlatform, EnvTarget, ManagerPathDir, env_targets,
 };
 
 /// Record a drift event or log a warning if the write fails. Previous sites
@@ -163,6 +163,7 @@ pub fn verify(
     verify_env(
         &resolved.merged.env,
         &resolved.merged.aliases,
+        &resolved.merged.entry_owners,
         resolved.merged.env_scope,
         modules,
         &path_dirs,
@@ -189,7 +190,8 @@ pub struct VerifyResult {
 }
 
 /// Merge every module's `env`/`aliases` over the profile's, and record which
-/// module each merged entry came from.
+/// LAYER each merged entry came from — a profile in the inheritance chain, a
+/// subscribed source, or a module.
 ///
 /// The origins travel with the merge because they are decided BY it: a later
 /// module overriding an earlier one owns the value that survives, and the same
@@ -200,6 +202,7 @@ pub struct VerifyResult {
 pub(super) fn merge_module_env_aliases(
     profile_env: &[crate::config::EnvVar],
     profile_aliases: &[crate::config::ShellAlias],
+    layer_owners: &crate::config::EntryOwners,
     modules: &[ResolvedModule],
 ) -> (
     Vec<crate::config::EnvVar>,
@@ -208,11 +211,15 @@ pub(super) fn merge_module_env_aliases(
 ) {
     let mut merged = profile_env.to_vec();
     let mut merged_aliases = profile_aliases.to_vec();
-    let mut origins = EnvOrigins::default();
+    // Seeded from the layer merge that produced `profile_env`/`profile_aliases`,
+    // so a profile-chain or source-delivered entry keeps the layer that
+    // declared it; modules then claim over it, last writer winning exactly as
+    // the value merge below does.
+    let mut origins = EnvOrigins::from_owners(layer_owners);
     for module in modules {
         crate::merge_env(&mut merged, &module.env);
         crate::merge_aliases(&mut merged_aliases, &module.aliases);
-        origins.claim(module);
+        origins.claim_module_entries(module);
     }
     (merged, merged_aliases, origins)
 }
@@ -226,16 +233,25 @@ pub(super) fn merge_module_env_aliases(
 // verification because they require provider resolution. This means cfgd status
 // may report env file drift after secret envs are written. This will be addressed
 // when compliance snapshots track secret env metadata.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn verify_env(
     profile_env: &[crate::config::EnvVar],
     profile_aliases: &[crate::config::ShellAlias],
+    layer_owners: &crate::config::EntryOwners,
     scope: EnvScope,
     modules: &[ResolvedModule],
-    path_dirs: &[String],
+    path_dirs: &[ManagerPathDir],
     state: &StateStore,
     results: &mut Vec<VerifyResult>,
 ) {
-    for r in env_verify_results(profile_env, profile_aliases, scope, modules, path_dirs) {
+    for r in env_verify_results(
+        profile_env,
+        profile_aliases,
+        layer_owners,
+        scope,
+        modules,
+        path_dirs,
+    ) {
         if !r.matches {
             record_drift_or_warn(
                 state,
@@ -258,13 +274,14 @@ pub(super) fn verify_env(
 pub fn env_verify_results(
     profile_env: &[crate::config::EnvVar],
     profile_aliases: &[crate::config::ShellAlias],
+    layer_owners: &crate::config::EntryOwners,
     scope: EnvScope,
     modules: &[ResolvedModule],
-    path_dirs: &[String],
+    path_dirs: &[ManagerPathDir],
 ) -> Vec<VerifyResult> {
     let mut results = Vec::new();
     let (merged, merged_aliases, origins) =
-        merge_module_env_aliases(profile_env, profile_aliases, modules);
+        merge_module_env_aliases(profile_env, profile_aliases, layer_owners, modules);
 
     if merged.is_empty() && merged_aliases.is_empty() && path_dirs.is_empty() {
         return results;
@@ -398,44 +415,63 @@ fn verify_env_items(
     }
 }
 
-/// The line a declared env var or alias renders as, for a DISPLAY surface that
-/// wants to show a drifted item's real value rather than the opaque
-/// `current`/`missing or changed` markers [`verify_env_items`] returns. Never
-/// called from a path that persists or ships its result: that is exactly the
-/// content the opaque markers exist to keep out of `drift_events` and the
-/// device gateway. `resource_type` is `"env-var"` or `"alias"`; any other kind
-/// (or an item no longer declared) answers `None`.
-pub fn env_item_declared_line(
-    resource_type: &str,
-    resource_id: &str,
-    env: &[crate::config::EnvVar],
-    aliases: &[crate::config::ShellAlias],
-    modules: &[ResolvedModule],
-) -> Option<String> {
-    let platform = EnvPlatform::current();
-    // The same merge the write and the verify pass ran, so the line shown is
-    // the line the file must hold — including the ` # module:<name>` comment a
-    // module-declared entry carries, which is part of what verify matched on.
-    // A module's entries are not in `env`/`aliases` at all (those are the
-    // profile's own), so without the merge a module-owned row could only ever
-    // answer `None`.
-    // Answered before the merge, not inside it: the merge clones the profile's
-    // env and aliases and folds every resolved module in, and a caller looping
-    // over a whole drift report would pay that per file/package/system row only
-    // to be told the kind has no declared line at all.
-    if !matches!(resource_type, "env-var" | "alias") {
-        return None;
+/// The profile-plus-modules env/alias merge, resolved ONCE and then asked per
+/// drift row. The merge clones the profile's env and aliases, clones the two
+/// origin maps and folds every resolved module in, and a command rendering a
+/// drift report asks about one row at a time — built per row, one report paid
+/// for that merge once per finding. It is scoped to a command's own render and
+/// never held: it is a reading of the declaration as it stands right now.
+pub struct MergedEnvItems {
+    env: Vec<crate::config::EnvVar>,
+    aliases: Vec<crate::config::ShellAlias>,
+    origins: EnvOrigins,
+}
+
+impl MergedEnvItems {
+    /// Merge `env`/`aliases` (the profile's own) with every module's, exactly
+    /// as the write and the verify pass do.
+    pub fn new(
+        env: &[crate::config::EnvVar],
+        aliases: &[crate::config::ShellAlias],
+        layer_owners: &crate::config::EntryOwners,
+        modules: &[ResolvedModule],
+    ) -> Self {
+        let (env, aliases, origins) = merge_module_env_aliases(env, aliases, layer_owners, modules);
+        Self {
+            env,
+            aliases,
+            origins,
+        }
     }
-    let (merged, merged_aliases, origins) = merge_module_env_aliases(env, aliases, modules);
-    match resource_type {
-        "env-var" => merged
-            .iter()
-            .find(|e| e.name == resource_id)
-            .and_then(|e| super::env_files::primary_env_var_line(e, platform, &origins)),
-        _ => merged_aliases
-            .iter()
-            .find(|a| a.name == resource_id)
-            .and_then(|a| super::env_files::primary_alias_line(a, platform, &origins)),
+
+    /// The line a declared env var or alias renders as, for a DISPLAY surface
+    /// that wants to show a drifted item's real value rather than the opaque
+    /// `current`/`missing or changed` markers [`verify_env_items`] returns.
+    /// Never called from a path that persists or ships its result: that is
+    /// exactly the content the opaque markers exist to keep out of
+    /// `drift_events` and the device gateway. `resource_type` is `"env-var"` or
+    /// `"alias"`; any other kind (or an item no longer declared) answers `None`.
+    ///
+    /// The line shown is the line the file must hold — including the
+    /// ` # module:<name>` comment a module-declared entry carries, which is
+    /// part of what verify matched on. A module's entries are not in the
+    /// profile's own `env`/`aliases` at all, so without the merge a
+    /// module-owned row could only ever answer `None`.
+    pub fn declared_line(&self, resource_type: &str, resource_id: &str) -> Option<String> {
+        let platform = EnvPlatform::current();
+        match resource_type {
+            "env-var" => self
+                .env
+                .iter()
+                .find(|e| e.name == resource_id)
+                .and_then(|e| super::env_files::primary_env_var_line(e, platform, &self.origins)),
+            "alias" => self
+                .aliases
+                .iter()
+                .find(|a| a.name == resource_id)
+                .and_then(|a| super::env_files::primary_alias_line(a, platform, &self.origins)),
+            _ => None,
+        }
     }
 }
 
@@ -475,36 +511,36 @@ fn deployed_env_item_line(
         .map(|line| line.trim_end().to_string()))
 }
 
-/// The DISPLAY `(want, have)` pair for one env-var/alias row, recomputed from
-/// the machine: `want` is the line the current declaration renders as
-/// ([`env_item_declared_line`]), `have` is the line the managed file actually
-/// holds ([`deployed_env_item_line`]), or [`crate::Absence::Missing`] when no
-/// deployed line claims the name. `None` for any other resource kind, for an
-/// item no longer declared, and for a managed file that exists but could not be
-/// read — the caller keeps the operands it already has. Being unable to LOOK is
-/// not the same fact as the entry being gone, and only the second may be
-/// reported as an absence.
-///
-/// This is the one place that recompute happens, so `diff`, `verify`,
-/// `status` and `status --scan` cannot word the same env var four ways. Same
-/// "never call this on a value about to be persisted or shipped to the
-/// gateway" rule as `env_item_declared_line`: both halves are real values,
-/// which is exactly what the opaque `current` / `missing or changed` markers
-/// exist to keep out of `drift_events`.
-pub fn env_item_display_values(
-    resource_type: &str,
-    resource_id: &str,
-    env: &[crate::config::EnvVar],
-    aliases: &[crate::config::ShellAlias],
-    modules: &[ResolvedModule],
-) -> Option<(String, String)> {
-    let declared = env_item_declared_line(resource_type, resource_id, env, aliases, modules)?;
-    let deployed = match deployed_env_item_line(resource_type, resource_id) {
-        Ok(Some(line)) => line,
-        Ok(None) => crate::Absence::Missing.as_str().to_string(),
-        Err(_) => return None,
-    };
-    Some((declared, deployed))
+impl MergedEnvItems {
+    /// The DISPLAY `(want, have)` pair for one env-var/alias row, recomputed
+    /// from the machine: `want` is the line the current declaration renders as
+    /// ([`Self::declared_line`]), `have` is the line the managed file actually
+    /// holds ([`deployed_env_item_line`]), or [`crate::Absence::Missing`] when
+    /// no deployed line claims the name. `None` for any other resource kind,
+    /// for an item no longer declared, and for a managed file that exists but
+    /// could not be read — the caller keeps the operands it already has. Being
+    /// unable to LOOK is not the same fact as the entry being gone, and only
+    /// the second may be reported as an absence.
+    ///
+    /// This is the one place that recompute happens, so `diff`, `verify`,
+    /// `status` and `status --scan` cannot word the same env var four ways.
+    /// Same "never call this on a value about to be persisted or shipped to the
+    /// gateway" rule as [`Self::declared_line`]: both halves are real values,
+    /// which is exactly what the opaque `current` / `missing or changed`
+    /// markers exist to keep out of `drift_events`.
+    pub fn display_values(
+        &self,
+        resource_type: &str,
+        resource_id: &str,
+    ) -> Option<(String, String)> {
+        let declared = self.declared_line(resource_type, resource_id)?;
+        let deployed = match deployed_env_item_line(resource_type, resource_id) {
+            Ok(Some(line)) => line,
+            Ok(None) => crate::Absence::Missing.as_str().to_string(),
+            Err(_) => return None,
+        };
+        Some((declared, deployed))
+    }
 }
 
 /// Verify a single env file's content matches expected.

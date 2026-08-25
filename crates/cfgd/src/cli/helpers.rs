@@ -411,21 +411,176 @@ fn sources_providing_profile(cli: &Cli, cfg: &CfgdConfig, profile_name: &str) ->
         .collect()
 }
 
-/// Parse a `--package` flag value. If it contains `:` and the prefix is a known
-/// package manager name, split into (Some(manager), package). Otherwise treat
-/// the entire string as a bare package name.
+/// One resolved `--package` token.
+///
+/// Three names, because three different surfaces need three different ones and
+/// collapsing any two of them is how a token lands somewhere the user cannot
+/// find it: `schema_path` is what the user typed and what a confirmation line
+/// echoes back (`brew.taps`), `slot` is the key the package spec is written
+/// through, and `manager` is the REGISTERED manager name — the only one of the
+/// three that is ever persisted as a manager (a module entry's `prefer`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::cli) struct PackageRef {
+    /// `None` for a bare name, which takes the platform's native manager.
+    pub schema_path: Option<String>,
+    pub slot: Option<String>,
+    pub manager: Option<String>,
+    pub name: String,
+}
+
+impl PackageRef {
+    /// The key [`crate::packages::add_package`] / `remove_package` write through.
+    pub(in crate::cli) fn slot_or<'a>(&'a self, native: &'a str) -> &'a str {
+        self.slot.as_deref().unwrap_or(native)
+    }
+
+    /// `charmbracelet/tap (brew.taps)` — the schema path the value was written
+    /// to, so the confirmation names a path the user can go and look at.
+    pub(in crate::cli) fn display(&self, native: &str) -> String {
+        format!(
+            "{} ({})",
+            self.name,
+            self.schema_path.as_deref().unwrap_or(native)
+        )
+    }
+}
+
+/// Parse a `--package` flag value into the schema path it names.
+///
+/// ```text
+/// --package <manager>[.<list>]:<name>   brew:ripgrep  brew.taps:charmbracelet/tap  apt:libc6:amd64
+/// --package <name>                      the platform's native manager
+/// ```
+///
+/// A colon-carrying token whose prefix names nothing is an ERROR, never a bare
+/// name: `--package brew.tap:charmbracelet/tap` used to be accepted as an apt
+/// package literally called `brew.tap:charmbracelet/tap`, which installs
+/// nothing and is discovered only when the apply fails. The name keeps every
+/// colon after the first, so `apt:libc6:amd64` is the apt package `libc6:amd64`.
 pub(in crate::cli) fn parse_package_flag(
     s: &str,
-    known_managers: &[&str],
-) -> (Option<String>, String) {
-    if let Some((prefix, suffix)) = s.split_once(':')
-        && !prefix.is_empty()
-        && !suffix.is_empty()
-        && known_managers.contains(&prefix)
-    {
-        return (Some(prefix.to_string()), suffix.to_string());
+    custom_managers: &[String],
+    native: &str,
+) -> anyhow::Result<PackageRef> {
+    let Some((prefix, name)) = s.split_once(':') else {
+        return Ok(PackageRef {
+            schema_path: None,
+            slot: None,
+            manager: None,
+            name: s.to_string(),
+        });
+    };
+    if prefix.is_empty() || name.is_empty() {
+        anyhow::bail!(
+            "invalid package '--package {s}' — expected <manager>[.<list>]:<name> or a bare name"
+        );
     }
-    (None, s.to_string())
+    if let Some(path) = cfgd_core::config::package_schema_path(prefix) {
+        return Ok(PackageRef {
+            schema_path: Some(path.path.to_string()),
+            slot: Some(path.slot.to_string()),
+            manager: Some(path.manager.to_string()),
+            name: name.to_string(),
+        });
+    }
+    if custom_managers.iter().any(|c| c == prefix) {
+        return Ok(PackageRef {
+            schema_path: Some(prefix.to_string()),
+            slot: Some(prefix.to_string()),
+            manager: Some(prefix.to_string()),
+            name: name.to_string(),
+        });
+    }
+    Err(unknown_package_prefix(
+        s,
+        prefix,
+        name,
+        custom_managers,
+        native,
+    ))
+}
+
+/// The `--package` tokens that WOULD remove `name` from `packages`, for a bare
+/// removal that resolved to the native manager and found nothing there.
+///
+/// A bare token means "the platform's native manager", so `--package -ripgrep`
+/// on a Debian host looks in `apt` alone and reports a miss for a package
+/// sitting in `brew.formulae`. Naming the token that works is the only useful
+/// answer; one path per write SLOT, since two paths reaching the same list
+/// (`apt` and `apt.packages`) would offer the same removal twice.
+pub(in crate::cli) fn removal_tokens_for(
+    name: &str,
+    packages: &cfgd_core::config::PackagesSpec,
+) -> Vec<String> {
+    let mut seen: Vec<&str> = Vec::new();
+    let mut tokens = Vec::new();
+    for entry in cfgd_core::config::PACKAGE_SCHEMA_PATHS {
+        if seen.contains(&entry.slot) {
+            continue;
+        }
+        seen.push(entry.slot);
+        if cfgd_core::config::desired_packages_for_spec(entry.slot, packages)
+            .iter()
+            .any(|p| p == name)
+        {
+            tokens.push(format!("--package -{}:{name}", entry.path));
+        }
+    }
+    for custom in &packages.custom {
+        if custom.packages.iter().any(|p| p == name) {
+            tokens.push(format!("--package -{}:{name}", custom.name));
+        }
+    }
+    tokens
+}
+
+/// The error a `--package` prefix that names nothing gets, with whichever hint
+/// its shape earns.
+fn unknown_package_prefix(
+    token: &str,
+    prefix: &str,
+    name: &str,
+    custom_managers: &[String],
+    native: &str,
+) -> anyhow::Error {
+    // A REGISTERED manager name that is not a schema path is one of the two
+    // virtual brew managers: the user reached for the wire spelling, and the
+    // schema spells the same thing differently.
+    if let Some(path) = cfgd_core::config::PACKAGE_SCHEMA_PATHS
+        .iter()
+        .find(|p| p.slot == prefix && p.path != prefix)
+    {
+        return anyhow::anyhow!(
+            "unknown package manager '{prefix}' in '--package {token}'; \
+             use {}:{name}",
+            path.path
+        );
+    }
+    let mut known: Vec<String> = cfgd_core::config::PACKAGE_SCHEMA_PATHS
+        .iter()
+        .map(|p| p.path.to_string())
+        .collect();
+    known.extend(custom_managers.iter().cloned());
+    known.sort();
+    let known = known.join(", ");
+    // A prefix whose first dot-segment names no manager either is not a
+    // mis-spelled schema path at all — it is part of the package's own name
+    // (`libc6:amd64`), and what the user wants is the native manager in front.
+    let manager_shaped = cfgd_core::config::package_schema_path(
+        prefix
+            .split_once('.')
+            .map(|(head, _)| head)
+            .unwrap_or(prefix),
+    )
+    .is_some();
+    if manager_shaped {
+        anyhow::anyhow!("unknown package manager '{prefix}' in '--package {token}'; known: {known}")
+    } else {
+        anyhow::anyhow!(
+            "unknown package manager '{prefix}' in '--package {token}'; \
+             did you mean {native}:{token}? (known: {known})"
+        )
+    }
 }
 
 /// Best-effort name of the profile a module-only command runs under: the
@@ -491,14 +646,6 @@ pub(in crate::cli) fn empty_resolved_profile(
 }
 
 pub(in crate::cli) use cfgd_core::reconciler::{CFGD_BACKUP_SUFFIX, cfgd_backup_path};
-
-/// Collect known package manager names from the registry.
-pub(in crate::cli) fn known_manager_names() -> Vec<String> {
-    packages::all_package_managers()
-        .iter()
-        .map(|m| m.name().to_string())
-        .collect()
-}
 
 /// Parse a `--file` value into (source_path, target_path).
 /// - `<path>` without `:` → adopt in place: source=path, target=path

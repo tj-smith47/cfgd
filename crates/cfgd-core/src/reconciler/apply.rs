@@ -7,6 +7,7 @@ use crate::output::{OwnerLabel, Printer, Role, SectionGuard, collapse_to_subject
 use crate::state::ApplyStatus;
 use crate::to_posix_string;
 
+use super::env_engine::ManagerPathDir;
 use super::format::{
     action_display_subject, condense_action_desc_for_display, format_action_description,
     parse_package_description, parse_resource_from_description,
@@ -515,10 +516,17 @@ fn env_result_unchanged(description: &str) -> bool {
 /// that provisions a manager alphabetically ahead of one already recorded
 /// must not be told PATH "changed" just because grouping by manager name
 /// reordered it.
-pub(super) fn path_dirs_changed(path_dirs_now: &[String], path_dirs_at_plan: &[String]) -> bool {
-    let mut now_sorted = path_dirs_now.to_vec();
+pub(super) fn path_dirs_changed(
+    path_dirs_now: &[ManagerPathDir],
+    path_dirs_at_plan: &[ManagerPathDir],
+) -> bool {
+    // Sorted on the rendered pair: the generated line names the manager beside
+    // the directory, so a directory that changed hands is a content change the
+    // regeneration has to pick up.
+    let key = |d: &ManagerPathDir| (d.dir.clone(), d.manager.clone());
+    let mut now_sorted: Vec<_> = path_dirs_now.iter().map(key).collect();
     now_sorted.sort();
-    let mut at_plan_sorted = path_dirs_at_plan.to_vec();
+    let mut at_plan_sorted: Vec<_> = path_dirs_at_plan.iter().map(key).collect();
     at_plan_sorted.sort();
     now_sorted != at_plan_sorted
 }
@@ -1295,6 +1303,7 @@ impl<'a> super::Reconciler<'a> {
             let env_plan = self.plan_env(
                 &resolved.merged.env,
                 &resolved.merged.aliases,
+                &resolved.merged.entry_owners,
                 resolved.merged.env_scope,
                 module_actions,
                 &secret_env_collector,
@@ -1667,6 +1676,7 @@ impl<'a> super::Reconciler<'a> {
         let (env, aliases, _) = super::verify::merge_module_env_aliases(
             &resolved.merged.env,
             &resolved.merged.aliases,
+            &resolved.merged.entry_owners,
             modules,
         );
         // One statement for the whole merged set: `drift_events` has no index on

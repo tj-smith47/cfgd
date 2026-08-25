@@ -1131,6 +1131,36 @@ cfgd --cache-dir /srv/c paths -o json   # source reflects the override → "flag
 See [Configuration → File locations](configuration.md#file-locations) for the
 per-platform defaults and the override precedence.
 
+### Package tokens
+
+`--package` takes the same token on `profile create`, `profile update`, `module create` and
+`module update`, in both directions (prefix with `-` to remove). The token mirrors the schema
+path the value is written to:
+
+```
+--package <manager>[.<list>]:<name>    # brew:ripgrep, brew.taps:charmbracelet/tap
+--package <name>                       # no colon: the platform's native manager
+```
+
+| Token | Written to |
+|---|---|
+| `ripgrep` | the native manager for this platform (`apt`, `brew`, `winget`, …) |
+| `brew:ripgrep` | `spec.packages.brew.formulae` |
+| `brew.taps:charmbracelet/tap` | `spec.packages.brew.taps` |
+| `brew.casks:firefox` | `spec.packages.brew.casks` |
+| `snap.classic:code` | `spec.packages.snap.classic` |
+| `apt:libc6:amd64` | `spec.packages.apt` (only the first colon splits, so the architecture qualifier stays part of the name) |
+
+A colon-carrying token whose prefix names no manager is an error, never a package name:
+
+```
+$ cfgd profile update base --package brew.tap:charmbracelet/tap
+unknown package manager 'brew.tap' in '--package brew.tap:charmbracelet/tap'; known: apk, apt, apt.packages, brew, brew.casks, brew.formulae, brew.taps, cargo, cargo.packages, chocolatey, dnf, flatpak, flatpak.packages, go, nix, npm, npm.global, pacman, pipx, pkg, scoop, snap, snap.classic, snap.packages, winget, yum, zypper
+```
+
+Confirmation lines name the schema path the value landed in (`Added package: charmbracelet/tap (brew.taps)`),
+so the flag and the file agree about where to look.
+
 ## Profile Commands
 
 ### `cfgd profile list`
@@ -1165,7 +1195,7 @@ cfgd profile create work-linux \
 |---|---|
 | `--inherit <name>` | Inherit from profile (repeatable) |
 | `--module <name>` | Include module (repeatable) |
-| `--package <mgr:pkg>` | Add package (repeatable) |
+| `--package <manager[.list]:name>` | Add package (repeatable); see [Package tokens](#package-tokens) |
 | `--env <key=value>` | Set env var (repeatable) |
 | `--alias <name=command>` | Set shell alias (repeatable) |
 | `--system <key=value>` | Set system setting (repeatable) |
@@ -1196,7 +1226,7 @@ cfgd profile update work --package brew:jq --package -brew:unused --alias vim=nv
 |---|---|
 | `--inherit <name>` | Add/remove inherited profile (prefix with `-` to remove) |
 | `--module <name>` | Add/remove module (prefix with `-` to remove) |
-| `--package <mgr:pkg>` | Add/remove package (prefix with `-` to remove) |
+| `--package <manager[.list]:name>` | Add/remove package (prefix with `-` to remove); see [Package tokens](#package-tokens) |
 | `--file <path>` | Add/remove file (prefix with `-` to remove by target) |
 | `--env <KEY=VALUE>` | Add/remove env var (prefix with `-` to remove by key) |
 | `--alias <name=cmd>` | Add/remove alias (prefix with `-` to remove by name) |
@@ -1323,7 +1353,7 @@ cfgd module create my-tool \
 |---|---|
 | `--description <text>` | Module description |
 | `--depends <name>` | Dependency on another module (repeatable) |
-| `--package <name>` | Add package (repeatable) |
+| `--package <manager[.list]:name>` | Add package (repeatable); see [Package tokens](#package-tokens) |
 | `--file <path>` | Import file (repeatable) |
 | `--private-files` | Mark files as private |
 | `--env <key=value>` | Set env var (repeatable) |
@@ -1343,7 +1373,7 @@ cfgd module update nvim --depends node --env EDITOR=nvim --alias vim=nvim
 
 | Flag | Description |
 |---|---|
-| `--package <name>` | Add/remove package (prefix with `-` to remove) |
+| `--package <manager[.list]:name>` | Add/remove package (prefix with `-` to remove); see [Package tokens](#package-tokens) |
 | `--file <path>` | Add/remove file (prefix with `-` to remove by target) |
 | `--env <KEY=VALUE>` | Add/remove env var (prefix with `-` to remove by key) |
 | `--alias <name=cmd>` | Add/remove alias (prefix with `-` to remove by name) |
