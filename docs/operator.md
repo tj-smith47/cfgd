@@ -251,6 +251,8 @@ kubectl cfgd debug app --module nettools:v1 --image busybox:1.36 --namespace dem
 kubectl attach -n demo app -c cfgd-debug -it
 ```
 
+The debug shell's prompt names the modules mounted into it (`[cfgd:nettools:v1] / $`), so a terminal holding several attached shells says which one is being typed into.
+
 ![attaching a module to a running pod](../demo/cfgd-connect.gif)
 *A pod that cannot see the module, a debug shell that can, and the boundary still holding once that shell exits.*
 

@@ -217,6 +217,44 @@ fn build_volume_mount(name: &str) -> serde_json::Value {
     })
 }
 
+/// The ephemeral container `kubectl cfgd debug` adds to the pod: an
+/// interactive `sh` with every requested module mounted read-only under
+/// `/cfgd-modules/<name>` and each module's `bin/` ahead of the image's own
+/// `PATH`.
+///
+/// Its `PS1` names the mounted modules with LITERAL brackets
+/// (`[cfgd:nettools:v1] \w $ `). The bash escapes `\[` / `\]` are not
+/// brackets: they mark a span as non-printing, so wrapping visible text in
+/// them makes bash miscount the prompt's width and redraw long command lines
+/// over themselves, while busybox `ash` drops the markers and draws no
+/// brackets at all.
+fn debug_ephemeral_container(parsed: &[(&str, &str)], image: &str) -> serde_json::Value {
+    let mut volume_mounts = Vec::new();
+    let mut path_extensions = Vec::new();
+
+    for (name, _version) in parsed {
+        volume_mounts.push(build_volume_mount(name));
+        path_extensions.push(format!("/cfgd-modules/{name}/bin"));
+    }
+
+    let path_prefix = path_extensions.join(":");
+    let module_names: Vec<_> = parsed.iter().map(|(n, v)| format!("{n}:{v}")).collect();
+    let ps1 = format!("[cfgd:{}] \\w $ ", module_names.join(","));
+
+    serde_json::json!({
+        "name": "cfgd-debug",
+        "image": image,
+        "command": ["sh"],
+        "stdin": true,
+        "tty": true,
+        "env": [
+            {"name": "PATH", "value": format!("{path_prefix}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")},
+            {"name": "PS1", "value": ps1}
+        ],
+        "volumeMounts": volume_mounts
+    })
+}
+
 /// Build the strategic-merge JSON patch body that `kubectl cfgd inject` sends
 /// to the workload (Deployment/StatefulSet/etc). The patch sets the
 /// `cfgd.io/modules` annotation on the *pod template*, not the workload —
@@ -375,30 +413,8 @@ pub(crate) async fn cmd_debug_async(
     };
     let pods: kube::Api<k8s_openapi::api::core::v1::Pod> = kube::Api::namespaced(client, namespace);
 
-    let mut volume_mounts = Vec::new();
-    let mut path_extensions = Vec::new();
-
-    for (name, _version) in parsed {
-        volume_mounts.push(build_volume_mount(name));
-        path_extensions.push(format!("/cfgd-modules/{name}/bin"));
-    }
-
-    let path_prefix = path_extensions.join(":");
     let module_names: Vec<_> = parsed.iter().map(|(n, v)| format!("{n}:{v}")).collect();
-    let ps1 = format!("\\[cfgd:{}\\] \\w $ ", module_names.join(","));
-
-    let ec = serde_json::json!({
-        "name": "cfgd-debug",
-        "image": image,
-        "command": ["sh"],
-        "stdin": true,
-        "tty": true,
-        "env": [
-            {"name": "PATH", "value": format!("{path_prefix}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")},
-            {"name": "PS1", "value": ps1}
-        ],
-        "volumeMounts": volume_mounts
-    });
+    let ec = debug_ephemeral_container(parsed, image);
 
     let patch = serde_json::json!({
         "spec": {

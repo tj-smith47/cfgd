@@ -735,6 +735,30 @@ fn cmd_version_emits_client_version_string() {
     );
 }
 
+#[test]
+fn debug_container_prompt_names_its_modules_in_literal_brackets() {
+    let ec = debug_ephemeral_container(&[("nettools", "v1"), ("tracing", "2.0.0")], "busybox:1.36");
+
+    let env = ec["env"].as_array().expect("env must be a list");
+    let value_of = |key: &str| {
+        env.iter()
+            .find(|e| e["name"] == key)
+            .and_then(|e| e["value"].as_str())
+            .unwrap_or_else(|| panic!("{key} must be set"))
+    };
+
+    assert_eq!(value_of("PS1"), "[cfgd:nettools:v1,tracing:2.0.0] \\w $ ");
+    assert!(
+        !value_of("PS1").contains("\\["),
+        "a non-printing marker around visible prompt text breaks bash's cursor math and draws no bracket under busybox"
+    );
+    assert!(value_of("PATH").starts_with("/cfgd-modules/nettools/bin:/cfgd-modules/tracing/bin:"));
+    assert_eq!(ec["name"], "cfgd-debug");
+    assert_eq!(ec["image"], "busybox:1.36");
+    assert_eq!(ec["volumeMounts"][0]["mountPath"], "/cfgd-modules/nettools");
+    assert_eq!(ec["volumeMounts"][1]["mountPath"], "/cfgd-modules/tracing");
+}
+
 // ============================================================================
 // Mock kube-rs tests — happy paths via injected Client
 // ============================================================================
