@@ -689,6 +689,7 @@ dependencies = [
  "cfgd-core",
  "hostname",
  "hyper-util",
+ "mockito",
  "nix",
  "prometheus-client",
  "prost",

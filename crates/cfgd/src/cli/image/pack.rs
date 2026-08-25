@@ -95,7 +95,6 @@ pub fn cmd_image_pack(
         base: base.map(|s| s.to_string()),
     };
 
-    printer.heading("Pack Image");
     let mut header = vec![
         ("Directory".to_string(), dir.posix().to_string()),
         ("Artifact".to_string(), artifact.to_string()),
@@ -106,15 +105,16 @@ pub fn cmd_image_pack(
     if let Some(p) = platform {
         header.push(("Platform".to_string(), p.to_string()));
     }
-    printer.kv_block(header);
 
-    // One result section over everything the pack produced — the pack verdict,
-    // the digest, the lockfile write and the signing verdict. The header block
-    // above already names the artifact, so a row rendered at depth 0 after it
-    // reads as a second header rather than as a result.
+    // ONE section, named for the command, holding everything the run produced:
+    // what is being packed, the pack verdict, the digest, the lockfile write
+    // and the signing verdict. A second section named `Pack` under a `Pack
+    // Image` title spends the word twice on one screen for two different
+    // things.
     let (digest, platform_str, signed, attestation_attached) = {
-        let pack_sec = printer.section("Pack");
+        let pack_sec = printer.section("Pack Image");
         let _inherit = printer.depth_inheritance();
+        pack_sec.kv_block(header);
         let PackOutcome {
             digest,
             platform: platform_str,

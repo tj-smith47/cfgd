@@ -489,7 +489,7 @@ pub struct ModuleSignature {
     shortname = "mod",
     category = "cfgd",
     printcolumn = r#"{"name": "Artifact", "type": "string", "jsonPath": ".spec.ociArtifact"}"#,
-    printcolumn = r#"{"name": "Verified", "type": "boolean", "jsonPath": ".status.verified"}"#,
+    printcolumn = r#"{"name": "Signature", "type": "string", "jsonPath": ".status.signature"}"#,
     printcolumn = r#"{"name": "Platforms", "type": "string", "jsonPath": ".status.platformsSummary"}"#,
     printcolumn = r#"{"name": "Age", "type": "date", "jsonPath": ".metadata.creationTimestamp"}"#
 )]
@@ -564,6 +564,15 @@ pub struct ModuleStatus {
     pub platforms_summary: Option<String>,
     #[serde(default)]
     pub verified: bool,
+    /// The signature verdict as ONE word (`verified` / `unverified` /
+    /// `unsigned`), and the only field the `Signature` printer column may be
+    /// bound to. `verified` is the same verdict as a raw bool, which reads as
+    /// `true` in a column beside a `kubectl cfgd status` row saying
+    /// `(verified)` about the same module — one fact, two vocabularies. Absent
+    /// when no reconcile has written it, so the JSONPath resolves to nothing
+    /// and the cell stays blank.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
     /// Digest of the cosign signature (if verified).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature_digest: Option<String>,
@@ -574,6 +583,14 @@ pub struct ModuleStatus {
     pub conditions: Vec<Condition>,
 }
 
+/// A module whose declared signature was verified.
+pub const SIGNATURE_VERIFIED: &str = "verified";
+/// A module that declares a signature which did not verify.
+pub const SIGNATURE_UNVERIFIED: &str = "unverified";
+/// A module that declares no signature at all — nothing to verify, which is a
+/// different fact from a signature that failed.
+pub const SIGNATURE_UNSIGNED: &str = "unsigned";
+
 impl ModuleStatus {
     /// The ONE derivation of [`ModuleStatus::platforms_summary`] from
     /// [`ModuleStatus::available_platforms`]. Every writer of the status goes
@@ -581,6 +598,23 @@ impl ModuleStatus {
     #[must_use]
     pub fn summarize_platforms(platforms: &[String]) -> Option<String> {
         (!platforms.is_empty()).then(|| platforms.join(", "))
+    }
+
+    /// The ONE derivation of [`ModuleStatus::signature`] — the word every
+    /// surface naming a module's signature verdict prints, so the CRD column
+    /// and `kubectl cfgd status` cannot spell one fact two ways.
+    ///
+    /// `declared` is whether the spec asks for a signature at all: a module
+    /// that never claimed one is `unsigned`, not a module whose signature
+    /// failed. Both collapse to `verified == false` on the wire, which is why
+    /// the bool alone cannot answer this.
+    #[must_use]
+    pub fn signature_verdict(verified: bool, declared: bool) -> &'static str {
+        match (verified, declared) {
+            (true, _) => SIGNATURE_VERIFIED,
+            (false, true) => SIGNATURE_UNVERIFIED,
+            (false, false) => SIGNATURE_UNSIGNED,
+        }
     }
 }
 

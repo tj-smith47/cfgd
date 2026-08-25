@@ -23,7 +23,7 @@ pub use archive::{create_tar_gz, create_tar_gz_with_diff_id, extract_tar_gz};
 pub use auth::RegistryAuth;
 pub use build::{build_module, detect_container_runtime};
 pub use pack::{PackOptions, PackOutcome, pack_image};
-pub use pull::{SignaturePolicy, pull_module};
+pub use pull::{SignaturePolicy, artifact_platforms, pull_module};
 pub use push::{
     current_platform, parse_platform_target, push_module, push_module_multiplatform,
     rust_arch_to_oci,
@@ -41,7 +41,7 @@ pub const MEDIA_TYPE_MODULE_CONFIG: &str = "application/vnd.cfgd.module.config.v
 pub const MEDIA_TYPE_MODULE_LAYER: &str = "application/vnd.cfgd.module.layer.v1.tar+gzip";
 
 /// OCI image manifest v2 media type.
-pub(super) const MEDIA_TYPE_OCI_MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
+pub const MEDIA_TYPE_OCI_MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
 
 /// Standard OCI image config media type (the JSON blob whose digest becomes the manifest's config
 /// descriptor). Use this when building a standard mountable image (e.g. `cfgd image pack`), as

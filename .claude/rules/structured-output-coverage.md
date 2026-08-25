@@ -103,7 +103,7 @@ missing from the table.
 | source_show                  | yes               | introspection                                      |
 | source_update                | yes               | update result records                              |
 | source_validate              | yes               | validation result consumed by scripts/CI           |
-| status                       | yes               | drift + last-apply queried by scripts              |
+| status                       | yes               | drift + last-apply queried by scripts; the kubectl plugin's `cmd_status` shares the name and carries `context`, `namespace`, `modules`, `pods` |
 | status_module                | yes               | per-module status queried by scripts               |
 | sync                         | yes               | sync result records                                |
 | upgrade                      | yes               | upgrade result records                             |

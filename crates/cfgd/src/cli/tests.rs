@@ -24300,3 +24300,96 @@ fn walk_rust_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     }
     out
 }
+
+/// A command renders its output under ONE section, named for the command, and
+/// never a second section named for the verb its own title already spent.
+///
+/// `cfgd module push` printed `Push Module` over a `Push` section over a
+/// `✓ Pushed module` row — the word three times, five lines apart, naming a
+/// title, a group and a result. The same pair shipped in `module pull`,
+/// `module build` and `image pack`. The whole population now opens
+/// `printer.section("<Verb> <Noun>")` and puts every row inside it, so this
+/// walks every production file under `src/cli` and fails when a `section(…)`
+/// shares any word with a `heading(…)` in the same file.
+#[test]
+fn no_result_section_respells_a_word_its_command_title_already_spent() {
+    let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
+    let mut offenders = Vec::new();
+    let mut files = walk_rust_files(&cli_dir);
+    files.sort();
+
+    // `printer.heading("X")` / `printer.section("X")`, off a non-comment line.
+    let literals = |body: &str, call: &str| -> Vec<String> {
+        body.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter_map(|l| l.split_once(call))
+            .filter_map(|(_, rest)| rest.split_once('"'))
+            .map(|(name, _)| name.to_string())
+            .collect()
+    };
+    for path in files {
+        if path.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = body
+            .split_once("\n#[cfg(test)]")
+            .map(|(head, _)| head)
+            .unwrap_or(&body);
+        let headings = literals(production, "printer.heading(\"");
+        let sections = literals(production, "printer.section(\"");
+        for heading in &headings {
+            for section in &sections {
+                if section_respells_title(heading, section) {
+                    offenders.push(format!(
+                        "{}: section {section:?} respells a word of heading {heading:?}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a command's rows go under its own titled section, never a second one \
+         named for the verb the title already spent:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Does `section` spend a word `title` already spent? Case- and
+/// punctuation-insensitive, because `Push Module` over `Push:` reads as the
+/// same word twice on screen whatever the literals look like in source.
+fn section_respells_title(title: &str, section: &str) -> bool {
+    let words = |name: &str| -> Vec<String> {
+        name.split_whitespace()
+            .map(|w| {
+                w.trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_lowercase()
+            })
+            .filter(|w| !w.is_empty())
+            .collect()
+    };
+    let title_words = words(title);
+    words(section).iter().any(|sw| title_words.contains(sw))
+}
+
+/// The fence above is a source scan, so its own detector is what has to be
+/// proven: this pins that it flags the pair that shipped (`Push Module` over
+/// `Push`) and clears the pairs the rest of the population renders.
+#[test]
+fn the_respelled_section_detector_flags_the_pair_that_shipped() {
+    assert!(section_respells_title("Push Module", "Push"));
+    assert!(section_respells_title("Pull Module", "Pull"));
+    assert!(section_respells_title("Pack Image", "Pack"));
+    assert!(section_respells_title("Build Module", "Push Module"));
+
+    assert!(!section_respells_title("Sync", "Local Repo"));
+    assert!(!section_respells_title("Sync", "Sources"));
+    assert!(!section_respells_title("Upgrade", "Update Available"));
+    assert!(!section_respells_title("Checkin", "Server Config"));
+    assert!(!section_respells_title("Add Module Registry", "Fetch"));
+}

@@ -9,14 +9,14 @@ use std::sync::Arc;
 
 use kube::runtime::controller::Action;
 
-use super::ControllerStores;
 use super::module::{evaluate_module_verification, reconcile_module};
 use super::test_kube_harness::{
     ExpectedCall, MockKubeHarness, empty_stores, expect_event_post, seeded_store,
 };
+use super::{ArtifactPlatformReader, ControllerStores};
 use crate::crds::{
     ClusterConfigPolicy, ClusterConfigPolicySpec, CosignSignature, Module, ModuleSignature,
-    ModuleSpec, SecurityPolicy,
+    ModuleSpec, ModuleStatus, SecurityPolicy,
 };
 use crate::metrics::ReconcileLabels;
 
@@ -165,6 +165,125 @@ async fn reconcile_module_reads_cluster_config_policies_from_cache_and_records_a
     let verified = conditions.iter().find(|c| c["type"] == "Verified").unwrap();
     assert_eq!(verified["status"], "False");
     assert_eq!(verified["reason"], "NotSigned");
+}
+
+#[tokio::test]
+async fn reconcile_module_records_the_platforms_its_artifact_declares() {
+    let spec = ModuleSpec {
+        oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+        ..Default::default()
+    };
+    let module = make_module("platform-mod", spec);
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_platforms(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path("platform-mod")))
+                .returning_json(&module),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![]),
+        ArtifactPlatformReader::fixed(vec!["linux/amd64".to_string()]),
+    );
+
+    reconcile_module(Arc::new(module), ctx).await.unwrap();
+
+    let report = harness.finish().await;
+    let status_body = report.captured[0].body_json();
+    assert_eq!(
+        status_body["status"]["availablePlatforms"],
+        serde_json::json!(["linux/amd64"]),
+    );
+    assert_eq!(status_body["status"]["platformsSummary"], "linux/amd64");
+}
+
+#[tokio::test]
+async fn reconcile_module_keeps_recorded_platforms_when_the_artifact_is_unchanged() {
+    let spec = ModuleSpec {
+        oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+        ..Default::default()
+    };
+    let mut module = make_module("cached-platform-mod", spec);
+    module.status = Some(ModuleStatus {
+        resolved_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+        available_platforms: vec!["linux/arm64".to_string()],
+        ..Default::default()
+    });
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_platforms(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path("cached-platform-mod")))
+                .returning_json(&module),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![]),
+        // A reader that would answer differently, so a re-read is visible.
+        ArtifactPlatformReader::fixed(vec!["linux/amd64".to_string()]),
+    );
+
+    reconcile_module(Arc::new(module), ctx).await.unwrap();
+
+    let report = harness.finish().await;
+    let status_body = report.captured[0].body_json();
+    assert_eq!(
+        status_body["status"]["availablePlatforms"],
+        serde_json::json!(["linux/arm64"]),
+        "an unchanged artifact reference must cost no registry round-trip"
+    );
+}
+
+#[tokio::test]
+async fn reconcile_module_records_the_signature_verdict_as_one_word() {
+    let signed_spec = ModuleSpec {
+        oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+        signature: Some(ModuleSignature {
+            cosign: Some(CosignSignature {
+                public_key: Some(VALID_PEM.to_string()),
+                ..Default::default()
+            }),
+        }),
+        ..Default::default()
+    };
+    let signed = make_module("signed-mod", signed_spec);
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path("signed-mod")))
+                .returning_json(&signed),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![]),
+    );
+    reconcile_module(Arc::new(signed), ctx).await.unwrap();
+    let report = harness.finish().await;
+    assert_eq!(
+        report.captured[0].body_json()["status"]["signature"],
+        cfgd_crd::SIGNATURE_VERIFIED,
+    );
+
+    let unsigned_spec = ModuleSpec {
+        oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+        ..Default::default()
+    };
+    let unsigned = make_module("unsigned-verdict-mod", unsigned_spec);
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path("unsigned-verdict-mod")))
+                .returning_json(&unsigned),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![]),
+    );
+    reconcile_module(Arc::new(unsigned), ctx).await.unwrap();
+    let report = harness.finish().await;
+    assert_eq!(
+        report.captured[0].body_json()["status"]["signature"],
+        cfgd_crd::SIGNATURE_UNSIGNED,
+    );
 }
 
 #[tokio::test]

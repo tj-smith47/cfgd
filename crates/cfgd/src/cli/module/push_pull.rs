@@ -36,7 +36,6 @@ pub fn cmd_module_push(
         ));
     }
 
-    printer.heading("Push Module");
     let mut header = vec![
         ("Directory".to_string(), dir.to_string()),
         ("Artifact".to_string(), artifact.to_string()),
@@ -44,22 +43,20 @@ pub fn cmd_module_push(
     if let Some(p) = platform {
         header.push(("Platform".to_string(), p.to_string()));
     }
-    printer.kv_block(header);
 
-    // The kv block above nests one level deeper than depth 0 (the
-    // `last_was_top_heading` bump in `render_kv_block`), so the push spinner
-    // needs a real section to match it — a bare `depth_inheritance()` guard
-    // with no section open still resolves to depth 0. `push_module` keeps its
-    // `&Printer` signature (it has non-CLI callers too), so the section is
-    // opened and scoped here rather than threaded into the library call.
-    //
-    // The section stays open across the digest and the signing verdict: all
-    // three are what the push produced, and a `Digest` row emitted after the
-    // guard drops renders at depth 0, reading as a second header block for a
-    // command that already has one.
+    // ONE section, named for the command, holding everything the run produced:
+    // what is being pushed, the push verdict, the digest, the signing verdict
+    // and the CRD apply. A second section named `Push` under a `Push Module`
+    // title spends the word twice on one screen for two different things.
+    // `push_module` keeps its `&Printer` signature (it has non-CLI callers
+    // too), so the section is opened and scoped here rather than threaded into
+    // the library call, and `depth_inheritance` is what settles its spinner at
+    // the section's depth instead of depth 0.
+    let mut applied_name: Option<String> = None;
     let (digest, signed, attestation_attached) = {
-        let push_sec = printer.section("Push");
+        let push_sec = printer.section("Push Module");
         let _inherit = printer.depth_inheritance();
+        push_sec.kv_block(header);
         let digest = cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer))
             .map_err(|e| {
                 crate::cli::cli_error(
@@ -72,20 +69,19 @@ pub fn cmd_module_push(
         push_sec.kv("Digest", &digest);
         let crate::cli::helpers::SignAttestOutcome { signed, attested } =
             crate::cli::helpers::sign_and_attest(printer, artifact, &digest, key, sign, attest)?;
+
+        if apply {
+            let module_yaml = std::fs::read_to_string(dir_path.join("module.yaml"))?;
+            let module_doc = cfgd_core::config::parse_module(&module_yaml)
+                .map_err(|e| anyhow::anyhow!("Failed to parse module.yaml: {e}"))?;
+
+            let signature = build_module_signature(printer, signed, key);
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(apply_module_crd(printer, &module_doc, artifact, signature))?;
+            applied_name = Some(module_doc.metadata.name.clone());
+        }
         (digest, signed, attested)
     };
-
-    let mut applied_name: Option<String> = None;
-    if apply {
-        let module_yaml = std::fs::read_to_string(dir_path.join("module.yaml"))?;
-        let module_doc = cfgd_core::config::parse_module(&module_yaml)
-            .map_err(|e| anyhow::anyhow!("Failed to parse module.yaml: {e}"))?;
-
-        let signature = build_module_signature(printer, signed, key);
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(apply_module_crd(printer, &module_doc, artifact, signature))?;
-        applied_name = Some(module_doc.metadata.name.clone());
-    }
 
     printer.emit(Doc::new().with_data(serde_json::json!({
         "dir": dir,
@@ -383,29 +379,22 @@ pub fn cmd_module_pull(
 ) -> anyhow::Result<()> {
     let output_path = Path::new(output);
 
-    printer.heading("Pull Module");
-    printer.kv_block([("Artifact", artifact_ref), ("Output", output)]);
-
     let mut module_name: Option<String> = None;
     let mut module_description: Option<String> = None;
     let mut package_count: Option<usize> = None;
     let mut file_count: Option<usize> = None;
 
-    // Same shape as `cmd_module_push`'s section around `push_module`: the kv
-    // block above nests one level deeper than depth 0 (the
-    // `last_was_top_heading` bump in `render_kv_block`), so the pull spinner
-    // `pull_module` opens on this same bare `printer` needs a real section to
-    // match it — a bare `depth_inheritance()` guard with no section open
-    // still resolves to depth 0. `pull_module` keeps its `&Printer`
-    // signature (it has non-CLI callers too), so the section is opened and
-    // scoped here rather than threaded into the library call. Every verdict
-    // the pull produced — the verifications it gated on, the pull itself, and
-    // what the pulled module turned out to contain — belongs inside it: a row
-    // emitted after the guard drops renders at depth 0 and reads as a second
-    // header block.
+    // Same shape as `cmd_module_push`: ONE section named for the command,
+    // holding what is being pulled, the verifications the pull gated on, the
+    // pull verdict and what the pulled module turned out to contain.
+    // `pull_module` keeps its `&Printer` signature (it has non-CLI callers
+    // too), so the section is opened and scoped here rather than threaded into
+    // the library call, and `depth_inheritance` settles its spinner at the
+    // section's depth instead of depth 0.
     {
-        let pull_sec = printer.section("Pull");
+        let pull_sec = printer.section("Pull Module");
         let _inherit = printer.depth_inheritance();
+        pull_sec.kv_block([("Artifact", artifact_ref), ("Output", output)]);
 
         if require_signature {
             cfgd_core::oci::verify_signature(artifact_ref, &verify_opts).map_err(|e| {
@@ -823,9 +812,10 @@ mod tests {
         /// `cmd_module_push`'s push spinner used to render at
         /// depth 0 unconditionally (a bare `printer.spinner()` call inside
         /// `push_module`, a library fn with no `SectionGuard` of its own).
-        /// It now runs inside a real `printer.section("Push")` plus
-        /// `depth_inheritance()`, so the settled line nests one level deeper
-        /// than the section header instead of sitting flush with it.
+        /// It now runs inside the command's one `printer.section("Push
+        /// Module")` plus `depth_inheritance()`, so the settled line nests one
+        /// level deeper than the section header instead of sitting flush with
+        /// it.
         #[test]
         #[serial]
         fn push_settle_line_nests_under_the_push_section_header() {
@@ -852,7 +842,7 @@ mod tests {
             drop(printer);
 
             let output = cfgd_core::test_helpers::captured_text(&buf);
-            crate::cli::test_support::assert_nests_under(&output, "Push", "Pushed module");
+            crate::cli::test_support::assert_nests_under(&output, "Push Module", "Pushed module");
         }
 
         #[test]
@@ -1326,13 +1316,12 @@ spec:
     /// `cmd_module_pull` called `pull_module` on a bare
     /// `printer` with no section wrapping it, while `cmd_module_push` (see
     /// `push_settle_line_nests_under_the_push_section_header` below) already
-    /// opened `printer.section("Push")` around the matching `push_module`
-    /// call — an asymmetry, since both library fns open their own bare
-    /// top-level spinner the same way. `cmd_module_pull` now opens
-    /// `printer.section("Pull")` + `depth_inheritance()` around
-    /// `pull_module`, so its settle line nests one level deeper than a
-    /// "Pull" section header instead of sitting flush with it, matching
-    /// push's shape exactly.
+    /// opened a section around the matching `push_module` call — an asymmetry,
+    /// since both library fns open their own bare top-level spinner the same
+    /// way. `cmd_module_pull` now opens `printer.section("Pull Module")` +
+    /// `depth_inheritance()` around `pull_module`, so its settle line nests one
+    /// level deeper than the section header instead of sitting flush with it,
+    /// matching push's shape exactly.
     #[test]
     fn pull_settle_line_nests_under_the_pull_section_header() {
         let mut server = mockito::Server::new();
@@ -1399,7 +1388,7 @@ spec:
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
-        crate::cli::test_support::assert_nests_under(&output, "Pull", "Pulled module");
+        crate::cli::test_support::assert_nests_under(&output, "Pull Module", "Pulled module");
     }
 
     #[test]

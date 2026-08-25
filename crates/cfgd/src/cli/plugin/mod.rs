@@ -114,11 +114,21 @@ enum PluginCommand {
     },
     /// Show fleet module status
     #[command(
-        long_about = "Show per-node module status across the cluster (cache hits, pull errors, staged versions).\n\n\
+        long_about = "Show the registered modules and the pods asking for them.\n\n\
+                      Modules are cluster-scoped, so every one is listed. Pods are read from a \
+                      single namespace: the one --namespace names, else the kubeconfig current \
+                      context's, else \"default\".\n\n\
                       Examples:\n  \
-                      kubectl cfgd status"
+                      kubectl cfgd status\n  \
+                      kubectl cfgd status --namespace demo\n  \
+                      kubectl cfgd -o json status"
     )]
-    Status,
+    Status {
+        /// Namespace to list module-requesting pods from (defaults to the
+        /// kubeconfig current context's namespace, then "default")
+        #[arg(long, short)]
+        namespace: Option<String>,
+    },
     /// Show client, server, operator, and CSI versions
     #[command(
         long_about = "Print the client plugin version, the Kubernetes apiserver version, and the \
@@ -341,7 +351,10 @@ pub fn plugin_main() -> anyhow::Result<()> {
             let namespace = resolve_namespace(namespace);
             cmd_inject(&printer, &resource, &module, &namespace)
         }
-        PluginCommand::Status => cmd_status(&printer),
+        PluginCommand::Status { namespace } => {
+            let namespace = resolve_namespace(namespace);
+            cmd_status(&printer, &namespace)
+        }
         PluginCommand::Version { namespace } => cmd_version(&printer, &namespace),
         PluginCommand::Deploy {
             filename,
@@ -807,14 +820,75 @@ pub fn cmd_deploy(
     Ok(())
 }
 
-pub fn cmd_status(printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_status(printer: &Printer, namespace: &str) -> anyhow::Result<()> {
+    let context = current_context_name();
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(cmd_status_async(printer, None))
+    rt.block_on(cmd_status_async(printer, None, &context, namespace))
+}
+
+/// The kubeconfig's current-context NAME, which `kube::Config` does not carry
+/// (it resolves a context into a connection and keeps no label for it). Read
+/// from the kubeconfig directly so the fact block names the same context
+/// `kubectl config current-context` would; an in-cluster or absent kubeconfig
+/// has no context to name.
+fn current_context_name() -> String {
+    kube::config::Kubeconfig::read()
+        .ok()
+        .and_then(|kc| kc.current_context)
+        .unwrap_or_else(|| "in-cluster".to_string())
+}
+
+/// One module row: the facts both the human render and `-o json` answer from.
+struct ModuleRow {
+    name: String,
+    artifact: String,
+    verified: bool,
+    signature: String,
+}
+
+impl ModuleRow {
+    fn from_object(module: &kube::core::DynamicObject) -> Self {
+        let verified = module
+            .data
+            .pointer("/status/verified")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        Self {
+            name: module.metadata.name.clone().unwrap_or_else(|| "?".into()),
+            artifact: module
+                .data
+                .pointer("/spec/ociArtifact")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("-")
+                .to_string(),
+            verified,
+            // The controller writes the verdict; a Module it has not reconciled
+            // yet carries none, and the same three-word vocabulary is derived
+            // here rather than spelling a fourth wording for that case.
+            signature: module
+                .data
+                .pointer("/status/signature")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    let declared = module.data.pointer("/spec/signature").is_some();
+                    cfgd_crd::ModuleStatus::signature_verdict(verified, declared).to_string()
+                }),
+        }
+    }
+}
+
+/// One pod row: which cfgd modules the pod's annotation asks for.
+struct PodRow {
+    name: String,
+    modules: Vec<String>,
 }
 
 pub(crate) async fn cmd_status_async(
     printer: &Printer,
     client: Option<kube::Client>,
+    context: &str,
+    namespace: &str,
 ) -> anyhow::Result<()> {
     let client = match client {
         Some(c) => c,
@@ -823,13 +897,13 @@ pub(crate) async fn cmd_status_async(
                 "cluster",
                 "kube_connect_failed",
                 format!("Failed to connect to cluster: {e}"),
-                serde_json::json!({}),
+                serde_json::json!({ "namespace": namespace }),
             )
         })?,
     };
 
     let modules: kube::Api<kube::core::DynamicObject> = kube::Api::all_with(
-        client,
+        client.clone(),
         &kube::discovery::ApiResource {
             group: "cfgd.io".into(),
             version: "v1alpha1".into(),
@@ -847,60 +921,82 @@ pub(crate) async fn cmd_status_async(
                 "modules",
                 "list_failed",
                 format!("failed to list modules: {e}"),
-                serde_json::json!({}),
+                serde_json::json!({ "namespace": namespace }),
             )
         })?;
+    let module_rows: Vec<ModuleRow> = list.items.iter().map(ModuleRow::from_object).collect();
 
-    let entries: Vec<serde_json::Value> = list
+    let pods: kube::Api<k8s_openapi::api::core::v1::Pod> = kube::Api::namespaced(client, namespace);
+    let pod_list = pods
+        .list(&kube::api::ListParams::default())
+        .await
+        .map_err(|e| {
+            crate::cli::cli_error(
+                "pods",
+                "list_failed",
+                format!("failed to list pods: {e}"),
+                serde_json::json!({ "namespace": namespace }),
+            )
+        })?;
+    let pod_rows: Vec<PodRow> = pod_list
         .items
         .iter()
-        .map(|module| {
-            let name = module.metadata.name.as_deref().unwrap_or("?");
-            let verified = module
-                .data
-                .pointer("/status/verified")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let artifact = module
-                .data
-                .pointer("/spec/ociArtifact")
-                .and_then(|v| v.as_str())
-                .unwrap_or("-");
-            serde_json::json!({
-                "name": name,
-                "artifact": artifact,
-                "verified": verified,
+        .filter_map(|pod| {
+            let annotation = pod
+                .metadata
+                .annotations
+                .as_ref()?
+                .get(cfgd_core::MODULES_ANNOTATION)?;
+            Some(PodRow {
+                name: pod.metadata.name.clone().unwrap_or_else(|| "?".into()),
+                modules: annotation
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|m| !m.is_empty())
+                    .map(str::to_string)
+                    .collect(),
             })
         })
         .collect();
 
-    let doc = Doc::new().section_or_collapse("Modules", |sb| {
-        if list.items.is_empty() {
-            sb.status(Role::Info, "No modules found")
-        } else {
-            let mut sb = sb;
-            for module in &list.items {
-                let name = module.metadata.name.as_deref().unwrap_or("?");
-                let verified = module
-                    .data
-                    .pointer("/status/verified")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let artifact = module
-                    .data
-                    .pointer("/spec/ociArtifact")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("-");
-                let status_icon = if verified { "verified" } else { "unverified" };
-                sb = sb.kv(name, format!("{artifact} ({status_icon})"));
+    let doc = Doc::new()
+        .heading("Status")
+        .kv_block([("Context", context), ("Namespace", namespace)])
+        .section_or_collapse("Modules", |sb| {
+            if module_rows.is_empty() {
+                sb.status(Role::Info, "No modules found")
+            } else {
+                module_rows.iter().fold(sb, |sb, row| {
+                    sb.kv(&row.name, format!("{} ({})", row.artifact, row.signature))
+                })
             }
-            sb
-        }
-    });
+        })
+        .section_or_collapse("Pods", |sb| {
+            if pod_rows.is_empty() {
+                sb.status(Role::Info, "No pods requesting modules")
+            } else {
+                pod_rows
+                    .iter()
+                    .fold(sb, |sb, row| sb.kv(&row.name, row.modules.join(", ")))
+            }
+        });
 
     printer.emit(doc.with_data(serde_json::json!({
-        "modules": entries,
-        "pods": Vec::<serde_json::Value>::new(),
+        "context": context,
+        "namespace": namespace,
+        "modules": module_rows
+            .iter()
+            .map(|row| serde_json::json!({
+                "name": row.name,
+                "artifact": row.artifact,
+                "verified": row.verified,
+                "signature": row.signature,
+            }))
+            .collect::<Vec<_>>(),
+        "pods": pod_rows
+            .iter()
+            .map(|row| serde_json::json!({ "name": row.name, "modules": row.modules }))
+            .collect::<Vec<_>>(),
     })));
 
     Ok(())
@@ -1134,6 +1230,10 @@ pub(crate) async fn cmd_version_async(
                 "cfgd": env!("CARGO_PKG_VERSION"),
                 "operator": operator_label,
                 "csi": csi_label,
+                // Which namespace the operator/CSI labels above describe: a
+                // reader comparing two runs cannot tell "not deployed" from
+                // "not deployed THERE" without it.
+                "namespace": namespace,
             })),
     );
 

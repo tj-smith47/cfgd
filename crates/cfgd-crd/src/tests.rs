@@ -445,9 +445,102 @@ fn module_crd_has_printer_columns() {
     let columns = version.additional_printer_columns.as_ref().unwrap();
     let col_names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
     assert!(col_names.contains(&"Artifact"));
-    assert!(col_names.contains(&"Verified"));
+    assert!(col_names.contains(&"Signature"));
     assert!(col_names.contains(&"Platforms"));
     assert!(col_names.contains(&"Age"));
+}
+
+/// A printer column resolving to an ARRAY prints the Go rendering of the
+/// slice, so an empty one reads as the literal `[]` where an absent value
+/// leaves the cell blank — `kubectl get` has no way to join one. A column
+/// resolving to a BOOL prints `true`/`false`, a second vocabulary beside the
+/// word every human surface spells for the same verdict. Every column on every
+/// kind therefore binds to a derived display field: a list gets a summary
+/// string (`platformsSummary`), a verdict gets a word (`signature`), and the
+/// raw `availablePlatforms` / `verified` fields stay on the wire for machines.
+#[test]
+fn every_printer_column_binds_to_a_display_field() {
+    use kube::CustomResourceExt;
+
+    let crds = [
+        ("MachineConfig", MachineConfig::crd()),
+        ("ConfigPolicy", ConfigPolicy::crd()),
+        ("ClusterConfigPolicy", ClusterConfigPolicy::crd()),
+        ("DriftAlert", DriftAlert::crd()),
+        ("Module", Module::crd()),
+    ];
+
+    for (kind, crd) in crds {
+        for version in &crd.spec.versions {
+            let schema = version
+                .schema
+                .as_ref()
+                .and_then(|s| s.open_api_v3_schema.as_ref())
+                .unwrap_or_else(|| panic!("{kind} must publish a schema"));
+            for column in version.additional_printer_columns.iter().flatten() {
+                let Some(resolved) = resolve_column_schema(schema, &column.json_path) else {
+                    // `metadata.*` and a `conditions[?(...)]` filter resolve
+                    // outside the spec/status schema this walk can see; both
+                    // select a scalar by construction.
+                    continue;
+                };
+                assert!(
+                    resolved != "array" && resolved != "boolean",
+                    "{kind}'s {} column binds to a raw {resolved} ({}) — bind it to a derived display field instead",
+                    column.name,
+                    column.json_path,
+                );
+            }
+        }
+    }
+}
+
+/// The walk above is only a fence if it can SEE the shapes it rejects.
+/// `Module` carries both (`availablePlatforms`, the list `platformsSummary`
+/// renders; `verified`, the bool `signature` spells), so resolving them is the
+/// positive control the fence's negative depends on.
+#[test]
+fn the_display_column_fence_resolves_the_raw_shapes_it_rejects() {
+    use kube::CustomResourceExt;
+
+    let crd = Module::crd();
+    let schema = crd.spec.versions[0]
+        .schema
+        .as_ref()
+        .and_then(|s| s.open_api_v3_schema.as_ref())
+        .expect("Module publishes a schema");
+    assert_eq!(
+        resolve_column_schema(schema, ".status.availablePlatforms").as_deref(),
+        Some("array"),
+    );
+    assert_eq!(
+        resolve_column_schema(schema, ".status.verified").as_deref(),
+        Some("boolean"),
+    );
+    assert_eq!(
+        resolve_column_schema(schema, ".status.signature").as_deref(),
+        Some("string"),
+    );
+}
+
+/// Walk a dotted `jsonPath` through a CRD's OpenAPI schema and answer the
+/// leaf's `type`. `None` means the path leaves what the schema describes
+/// (a `metadata` field, or a JSONPath filter expression).
+fn resolve_column_schema(
+    root: &k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::JSONSchemaProps,
+    json_path: &str,
+) -> Option<String> {
+    if json_path.contains('[') {
+        return None;
+    }
+    let mut node = root;
+    for segment in json_path.trim_start_matches('.').split('.') {
+        if segment == "metadata" {
+            return None;
+        }
+        node = node.properties.as_ref()?.get(segment)?;
+    }
+    node.type_.clone()
 }
 
 #[test]

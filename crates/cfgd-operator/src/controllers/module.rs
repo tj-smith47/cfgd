@@ -72,7 +72,8 @@ pub(super) async fn reconcile_module(
     let resolved_artifact = obj.spec.oci_artifact.clone();
     let verified = ver.status == "True";
 
-    let available_platforms = vec![];
+    let available_platforms =
+        resolve_available_platforms(&ctx, &obj, avail_status, resolved_artifact.as_deref()).await;
     let desired = ModuleStatus {
         // Stamped on every reconcile, so a reader can tell whether the verdict
         // below describes the spec it just applied or the one it replaced.
@@ -84,6 +85,9 @@ pub(super) async fn reconcile_module(
         platforms_summary: ModuleStatus::summarize_platforms(&available_platforms),
         available_platforms,
         verified,
+        signature: Some(
+            ModuleStatus::signature_verdict(verified, obj.spec.signature.is_some()).to_string(),
+        ),
         signature_digest: ver.signature_digest,
         attestations: vec![],
         conditions,
@@ -137,6 +141,44 @@ pub(super) async fn reconcile_module(
 
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
+/// The platforms the module's artifact declares, read off its OCI manifest.
+///
+/// Re-read only when nothing is recorded for the artifact the spec now names:
+/// the reconcile requeues every 60 seconds, and a registry round-trip per
+/// module per minute buys nothing while the reference is unchanged. A module
+/// with no artifact, or one whose artifact is not admissible, has no manifest
+/// to read and answers empty.
+async fn resolve_available_platforms(
+    ctx: &ControllerContext,
+    obj: &Module,
+    avail_status: &str,
+    artifact: Option<&str>,
+) -> Vec<String> {
+    let Some(artifact) = artifact else {
+        return Vec::new();
+    };
+    if avail_status != "True" {
+        return Vec::new();
+    }
+    if let Some(prev) = obj.status.as_ref()
+        && prev.resolved_artifact.as_deref() == Some(artifact)
+        && !prev.available_platforms.is_empty()
+    {
+        return prev.available_platforms.clone();
+    }
+
+    let reader = ctx.artifact_platforms.clone();
+    let reference = artifact.to_string();
+    match cfgd_core::spawn_blocking_with_test_home(move || reader.read_platforms(&reference)).await
+    {
+        Ok(platforms) => platforms,
+        Err(e) => {
+            warn!(artifact = %artifact, error = %e, "artifact platform read did not complete");
+            Vec::new()
+        }
+    }
+}
+
 async fn evaluate_module_availability<'a>(
     stores: &ControllerStores,
     module_name: &str,

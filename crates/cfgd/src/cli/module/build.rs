@@ -25,7 +25,6 @@ pub fn cmd_module_build(
         ));
     }
 
-    printer.heading("Build Module");
     let mut header = vec![("Directory".to_string(), dir.to_string())];
     if let Some(t) = target {
         header.push(("Target".to_string(), t.to_string()));
@@ -33,7 +32,6 @@ pub fn cmd_module_build(
     if let Some(img) = base_image {
         header.push(("Base image".to_string(), img.to_string()));
     }
-    printer.kv_block(header);
 
     let default_platform = cfgd_core::oci::current_platform();
     let targets: Vec<&str> = target
@@ -43,9 +41,21 @@ pub fn cmd_module_build(
     let mut output_artifacts: Vec<String> = Vec::new();
     let mut digest_value: Option<String> = None;
 
-    if targets.len() == 1 {
-        let output_dir = cfgd_core::oci::build_module(dir_path, Some(targets[0]), base_image)
-            .map_err(|e| {
+    // ONE section, named for the command, holding everything the run produced:
+    // what is being built, each build's verdict, the push, the digest and the
+    // signing verdict. A second section named `Push` under a `Build Module`
+    // title reads as a separate command rather than as this one's result, and
+    // it is also what gives `push_module` — a bare-`&Printer` library call with
+    // no `SectionGuard` of its own — a depth to inherit through
+    // `depth_inheritance` instead of rendering at depth 0.
+    {
+        let build_sec = printer.section("Build Module");
+        let _inherit = printer.depth_inheritance();
+        build_sec.kv_block(header);
+
+        if targets.len() == 1 {
+            let output_dir = cfgd_core::oci::build_module(dir_path, Some(targets[0]), base_image)
+                .map_err(|e| {
                 crate::cli::cli_error(
                     dir,
                     "build_failed",
@@ -53,22 +63,10 @@ pub fn cmd_module_build(
                     serde_json::json!({ "dir": dir, "target": targets[0] }),
                 )
             })?;
-        printer.status_simple(Role::Ok, format!("Built to {}", output_dir.posix()));
-        output_artifacts.push(output_dir.display().to_string());
+            printer.status_simple(Role::Ok, format!("Built to {}", output_dir.posix()));
+            output_artifacts.push(output_dir.display().to_string());
 
-        if let Some(art) = artifact {
-            // Nest the push spinner under a real section: `printer.status_simple`
-            // above ran at depth 0, so nothing bumped the surrounding depth, but
-            // opening one here still gives `push_module` (a bare-`&Printer`
-            // library call, no `SectionGuard` of its own) somewhere to inherit
-            // depth from instead of rendering at depth 0 unconditionally.
-            // The section stays open across the digest and the signing
-            // verdict, matching `cmd_module_push`: all three are what the push
-            // produced, and a row emitted after the guard drops renders at
-            // depth 0 as a second header block.
-            let digest = {
-                let push_sec = printer.section("Push");
-                let _inherit = printer.depth_inheritance();
+            if let Some(art) = artifact {
                 let digest =
                     cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(printer))
                         .map_err(|e| {
@@ -79,7 +77,7 @@ pub fn cmd_module_build(
                                 serde_json::json!({ "artifact": art, "target": targets[0] }),
                             )
                         })?;
-                push_sec.kv("Digest", &digest);
+                build_sec.kv("Digest", &digest);
                 if sign {
                     cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
                         crate::cli::cli_error(
@@ -91,53 +89,44 @@ pub fn cmd_module_build(
                     })?;
                     printer.status_simple(Role::Ok, "Signed artifact with cosign");
                 }
-                digest
-            };
-            digest_value = Some(digest);
-        }
-    } else {
-        let mut builds: Vec<(std::path::PathBuf, String)> = Vec::new();
-        for t in &targets {
-            // One `target:<t>` owner group per platform, the same idiom
-            // `cli/sync.rs` uses per source: a bare loop of top-level spinners
-            // has no owner to attribute a build to when several run in
-            // sequence, and gives the spinner nowhere to inherit depth from.
-            let owner = printer.section_owner(&cfgd_core::output::OwnerLabel::new(
-                "target",
-                (*t).to_string(),
-            ));
-            let sp = owner.spinner(format!("Building for {t}"));
-            let output_dir = match cfgd_core::oci::build_module(dir_path, Some(t), base_image) {
-                Ok(d) => {
-                    sp.finish_ok(format!("Built {t} to {}", d.posix()));
-                    d
-                }
-                Err(e) => {
-                    sp.finish_fail(format!("Build failed for {t}"))
-                        .detail(cfgd_core::output::collapse_to_subject_line(&e));
-                    return Err(crate::cli::cli_error(
-                        dir,
-                        "build_failed",
-                        cfgd_core::output::collapse_to_subject_line(&e),
-                        serde_json::json!({ "dir": dir, "target": *t }),
-                    ));
-                }
-            };
-            output_artifacts.push(output_dir.display().to_string());
-            builds.push((output_dir, t.to_string()));
-        }
+                digest_value = Some(digest);
+            }
+        } else {
+            let mut builds: Vec<(std::path::PathBuf, String)> = Vec::new();
+            for t in &targets {
+                // One `target:<t>` owner group per platform, the same idiom
+                // `cli/sync.rs` uses per source: a bare loop of spinners has no
+                // owner to attribute a build to when several run in sequence.
+                let owner = build_sec.section_owner(&cfgd_core::output::OwnerLabel::new(
+                    "target",
+                    (*t).to_string(),
+                ));
+                let sp = owner.spinner(format!("Building for {t}"));
+                let output_dir = match cfgd_core::oci::build_module(dir_path, Some(t), base_image) {
+                    Ok(d) => {
+                        sp.finish_ok(format!("Built {t} to {}", d.posix()));
+                        d
+                    }
+                    Err(e) => {
+                        sp.finish_fail(format!("Build failed for {t}"))
+                            .detail(cfgd_core::output::collapse_to_subject_line(&e));
+                        return Err(crate::cli::cli_error(
+                            dir,
+                            "build_failed",
+                            cfgd_core::output::collapse_to_subject_line(&e),
+                            serde_json::json!({ "dir": dir, "target": *t }),
+                        ));
+                    }
+                };
+                output_artifacts.push(output_dir.display().to_string());
+                builds.push((output_dir, t.to_string()));
+            }
 
-        if let Some(art) = artifact {
-            let build_refs: Vec<(&Path, &str)> = builds
-                .iter()
-                .map(|(dir, plat)| (dir.as_path(), plat.as_str()))
-                .collect();
-            // See the single-target branch above: same section-plus-inheritance
-            // pairing so the multi-platform push spinner nests instead of
-            // rendering at depth 0 regardless of the header above it.
-            let digest = {
-                let push_sec = printer.section("Push");
-                let _inherit = printer.depth_inheritance();
+            if let Some(art) = artifact {
+                let build_refs: Vec<(&Path, &str)> = builds
+                    .iter()
+                    .map(|(dir, plat)| (dir.as_path(), plat.as_str()))
+                    .collect();
                 let digest =
                     cfgd_core::oci::push_module_multiplatform(&build_refs, art, Some(printer))
                         .map_err(|e| {
@@ -148,7 +137,7 @@ pub fn cmd_module_build(
                                 serde_json::json!({ "artifact": art, "targets": &targets }),
                             )
                         })?;
-                push_sec.kv("Digest", &digest);
+                build_sec.kv("Digest", &digest);
                 if sign {
                     cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
                         crate::cli::cli_error(
@@ -160,9 +149,8 @@ pub fn cmd_module_build(
                     })?;
                     printer.status_simple(Role::Ok, "Signed artifact with cosign");
                 }
-                digest
-            };
-            digest_value = Some(digest);
+                digest_value = Some(digest);
+            }
         }
     }
 

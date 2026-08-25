@@ -35,6 +35,25 @@ Reach for the composer matching the call site's shape; never hand-build a `forma
 - `data_line(text)` — a raw structured-output line.
 - `emit(doc)` — `Doc` emit (for `-o json|yaml|jsonpath|template`).
 
+## One titled section per command — a result section never respells the title
+
+A command's output is headed ONCE, by the thing the command is. `cfgd module push` opened a `Push Module` heading, printed its header facts under it, then opened a `Push` section for the result rows — two headings, one of them a word already spent, and a nesting level that carried no information because everything the command did lived inside it.
+
+```
+BAD                                   GOOD
+────────────────────────────────      ────────────────────────────────
+Push Module                           Push Module
+  Directory: ./mod                      Directory: ./mod
+  Artifact:  ghcr.io/a/b:v1             Artifact:  ghcr.io/a/b:v1
+  Push                                  ✓ Pushed module
+    ✓ Pushed module                     Digest: sha256:…
+    Digest: sha256:…                    ✓ Signed with cosign
+```
+
+The rule: **the command's title IS its section**, opened with `printer.section("<Verb> <Noun>")` plus `let _inherit = printer.depth_inheritance();`, and the header facts, the result rows and every owner sub-section go inside it. A second section under that title may not respell any word the title spent — `Push Module` → `Push` is banned, `Sync` → `Sources` is fine, because a sub-section names a DIFFERENT subject, never the same one again.
+
+`no_result_section_respells_a_word_its_command_title_already_spent` (`crates/cfgd/src/cli/tests.rs`) walks every production `.rs` under `crates/cfgd/src/cli/`, pairs each file's `printer.heading` / `printer.section` literals, and fails on the overlap.
+
 ## Sanitizing text cfgd did not author
 
 `cursor_safe` (`output/mod.rs`) is the ONE renderer FOLD, and it covers every slot above that carries caller text. **A call site echoing a gateway field, a remote source's description or a tool's captured stderr through one of those slots does NOT sanitize it by hand.**

@@ -859,9 +859,9 @@ spec:
     - jsonPath: .spec.ociArtifact
       name: Artifact
       type: string
-    - jsonPath: .status.verified
-      name: Verified
-      type: boolean
+    - jsonPath: .status.signature
+      name: Signature
+      type: string
     - jsonPath: .status.platformsSummary
       name: Platforms
       type: string
@@ -1078,6 +1078,17 @@ spec:
                 nullable: true
                 type: string
               resolvedArtifact:
+                nullable: true
+                type: string
+              signature:
+                description: |-
+                  The signature verdict as ONE word (`verified` / `unverified` /
+                  `unsigned`), and the only field the `Signature` printer column may be
+                  bound to. `verified` is the same verdict as a raw bool, which reads as
+                  `true` in a column beside a `kubectl cfgd status` row saying
+                  `(verified)` about the same module — one fact, two vocabularies. Absent
+                  when no reconcile has written it, so the JSONPath resolves to nothing
+                  and the cell stays blank.
                 nullable: true
                 type: string
               signatureDigest:

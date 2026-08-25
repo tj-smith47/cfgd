@@ -99,6 +99,85 @@ pub fn pull_module(
     }
 }
 
+/// The platforms an already-pushed artifact declares, newest read straight off
+/// its manifest document — no blob is downloaded, the answer being a label
+/// rather than content.
+///
+/// The two shapes [`super::push_module`] and [`super::push_module_multiplatform`]
+/// write are both read here: an index names an `os`/`architecture` pair per
+/// entry, and a single-platform manifest carries the whole `os/arch` string in
+/// its [`crate::OCI_ANNOTATION_PLATFORM`] annotation. An artifact declaring
+/// neither answers an empty list rather than an error — a manifest a third
+/// party pushed is a legitimate artifact that simply says nothing about its
+/// platform.
+pub fn artifact_platforms(artifact_ref: &str) -> Result<Vec<String>, OciError> {
+    let oci_ref = OciReference::parse(artifact_ref)?;
+    let auth = RegistryAuth::resolve(&oci_ref.registry);
+    let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
+
+    let url = format!(
+        "{}/{}/manifests/{}",
+        oci_ref.api_base(),
+        oci_ref.repository,
+        oci_ref.reference_str(),
+    );
+    let accept = format!(
+        "{MEDIA_TYPE_OCI_MANIFEST}, {}, {}",
+        super::MEDIA_TYPE_OCI_INDEX,
+        super::MEDIA_TYPE_DOCKER_MANIFEST_LIST
+    );
+    let resp = authenticated_request(
+        &agent,
+        "GET",
+        &url,
+        auth.as_ref(),
+        Some(&accept),
+        None,
+        None,
+    )
+    .map_err(|e| OciError::ManifestNotFound {
+        reference: format!("{oci_ref}: {e}"),
+    })?;
+    let body = resp
+        .into_body()
+        .read_to_string()
+        .map_err(|e| OciError::RequestFailed {
+            message: format!("cannot read manifest body: {e}"),
+        })?;
+    let doc: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| OciError::RequestFailed {
+            message: format!("invalid manifest JSON: {e}"),
+        })?;
+
+    // Branch on the presence of `manifests` rather than on `mediaType`, so a
+    // registry that omits or abbreviates the type is still read correctly —
+    // the same test `oci::pack` applies to a base image.
+    if let Some(entries) = doc.get("manifests").and_then(|m| m.as_array()) {
+        // An index lists its entries in the order the pusher wrote them, which
+        // is the order the column reads best in, so duplicates are dropped by
+        // first sighting rather than by sorting.
+        let mut seen = std::collections::HashSet::new();
+        let platforms: Vec<String> = entries
+            .iter()
+            .filter_map(|entry| {
+                let platform = entry.get("platform")?;
+                let os = platform.get("os")?.as_str()?;
+                let arch = platform.get("architecture")?.as_str()?;
+                Some(format!("{os}/{arch}"))
+            })
+            .filter(|p| seen.insert(p.clone()))
+            .collect();
+        return Ok(platforms);
+    }
+
+    Ok(doc
+        .get("annotations")
+        .and_then(|a| a.get(crate::OCI_ANNOTATION_PLATFORM))
+        .and_then(|p| p.as_str())
+        .map(|p| vec![p.to_string()])
+        .unwrap_or_default())
+}
+
 /// The fallible half of [`pull_module`]: every step from signature
 /// verification through extraction runs under one `Result` the caller
 /// matches once, rather than an early `?` abandoning the spinner mid-pull.
@@ -227,6 +306,79 @@ mod tests {
     use crate::oci::archive::create_tar_gz;
     use crate::oci::test_helpers::{create_test_module_dir, registry_from_url};
     use crate::oci::{MEDIA_TYPE_MODULE_CONFIG, MEDIA_TYPE_MODULE_LAYER};
+
+    #[test]
+    fn artifact_platforms_reads_the_annotation_of_a_single_platform_artifact() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        server
+            .mock("GET", "/v2/test/onemod/manifests/v1")
+            .with_status(200)
+            .with_header("Content-Type", MEDIA_TYPE_OCI_MANIFEST)
+            .with_body(
+                serde_json::json!({
+                    "schemaVersion": 2,
+                    "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+                    "annotations": { crate::OCI_ANNOTATION_PLATFORM: "linux/amd64" },
+                })
+                .to_string(),
+            )
+            .create();
+
+        let platforms = artifact_platforms(&format!("{registry}/test/onemod:v1")).unwrap();
+        assert_eq!(platforms, vec!["linux/amd64".to_string()]);
+    }
+
+    #[test]
+    fn artifact_platforms_reads_every_entry_of_an_index_in_order() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        server
+            .mock("GET", "/v2/test/multimod/manifests/v1")
+            .with_status(200)
+            .with_header("Content-Type", crate::oci::MEDIA_TYPE_OCI_INDEX)
+            .with_body(
+                serde_json::json!({
+                    "schemaVersion": 2,
+                    "mediaType": crate::oci::MEDIA_TYPE_OCI_INDEX,
+                    "manifests": [
+                        { "platform": { "os": "linux", "architecture": "arm64" } },
+                        { "platform": { "os": "linux", "architecture": "amd64" } },
+                        // A duplicate entry (an attestation manifest re-stating
+                        // its subject's platform) names no second platform.
+                        { "platform": { "os": "linux", "architecture": "arm64" } },
+                        // An entry with no platform block contributes nothing.
+                        { "digest": "sha256:deadbeef" },
+                    ],
+                })
+                .to_string(),
+            )
+            .create();
+
+        let platforms = artifact_platforms(&format!("{registry}/test/multimod:v1")).unwrap();
+        assert_eq!(
+            platforms,
+            vec!["linux/arm64".to_string(), "linux/amd64".to_string()]
+        );
+    }
+
+    #[test]
+    fn artifact_platforms_of_an_artifact_declaring_none_is_empty() {
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+
+        server
+            .mock("GET", "/v2/test/plainmod/manifests/v1")
+            .with_status(200)
+            .with_header("Content-Type", MEDIA_TYPE_OCI_MANIFEST)
+            .with_body(serde_json::json!({ "schemaVersion": 2, "layers": [] }).to_string())
+            .create();
+
+        let platforms = artifact_platforms(&format!("{registry}/test/plainmod:v1")).unwrap();
+        assert!(platforms.is_empty());
+    }
 
     #[test]
     fn pull_module_downloads_and_verifies_digest() {

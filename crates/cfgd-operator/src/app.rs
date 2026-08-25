@@ -587,6 +587,7 @@ mod tests {
             recorder,
             metrics: m,
             stores: crate::controllers::test_kube_harness::empty_stores(),
+            artifact_platforms: crate::controllers::ArtifactPlatformReader::fixed(Vec::new()),
         });
     }
 

@@ -134,6 +134,57 @@ pub struct ControllerContext {
     pub recorder: Recorder,
     pub metrics: Metrics,
     pub stores: ControllerStores,
+    pub artifact_platforms: ArtifactPlatformReader,
+}
+
+/// How a Module's artifact platforms are read.
+///
+/// Reading them means fetching the artifact's manifest from its registry, so
+/// this is a value the context carries rather than a call the reconcile makes
+/// directly: a controller test drives `reconcile_module` end to end, and must
+/// reach no registry to do it. Production installs
+/// [`ArtifactPlatformReader::from_registry`]; a test installs
+/// [`ArtifactPlatformReader::fixed`] and gets the same reconcile with a known
+/// answer.
+type PlatformLookup = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
+
+#[derive(Clone)]
+pub struct ArtifactPlatformReader(PlatformLookup);
+
+impl ArtifactPlatformReader {
+    /// The production reader: the platforms the artifact's own manifest names.
+    ///
+    /// A registry that cannot be reached, or an artifact that declares no
+    /// platform, answers an empty list — the `Platforms` column then stays
+    /// blank, which is what an unknown platform set looks like. It is not a
+    /// reconcile failure: the module is still admissible, and the next
+    /// reconcile re-reads.
+    #[must_use]
+    pub fn from_registry() -> Self {
+        Self(Arc::new(
+            |reference| match cfgd_core::oci::artifact_platforms(reference) {
+                Ok(platforms) => platforms,
+                Err(e) => {
+                    warn!(reference = %reference, error = %e, "cannot read artifact platforms");
+                    Vec::new()
+                }
+            },
+        ))
+    }
+
+    /// A reader that answers `platforms` for every reference.
+    #[cfg(test)]
+    #[must_use]
+    pub fn fixed(platforms: Vec<String>) -> Self {
+        Self(Arc::new(move |_| platforms.clone()))
+    }
+
+    /// Read the platforms `reference` declares. Blocking: callers dispatch it
+    /// off the reactor.
+    #[must_use]
+    pub fn read_platforms(&self, reference: &str) -> Vec<String> {
+        (self.0)(reference)
+    }
 }
 
 /// How long a reconcile waits for a watch cache to finish its initial list
@@ -404,6 +455,7 @@ pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> 
         recorder,
         metrics,
         stores,
+        artifact_platforms: ArtifactPlatformReader::from_registry(),
     });
 
     let mc_ctx = Arc::clone(&ctx);

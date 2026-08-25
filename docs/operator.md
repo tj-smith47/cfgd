@@ -240,7 +240,30 @@ Two settings matter in production:
 - `CFGD_CSI_ALLOWED_REGISTRIES` on the CSI driver restricts which registries a pod's `ociRef` may pull from. Unset means any registry is accepted, which the driver warns about at startup.
 - `spec.security` on a `ClusterConfigPolicy` gates which modules may be admitted at all. `trustedRegistries` is a list of registry prefixes (a trailing `*` or `/` widens the match), and `allowUnsigned` decides whether a `Module` may carry an `ociArtifact` with no cosign signature. Both default to the strict answer: `allowUnsigned` is `false`, so creating any `ClusterConfigPolicy` at all starts rejecting unsigned modules. A cluster with no `ClusterConfigPolicy` enforces neither. See [OCI Artifact Signing](modules.md#oci-artifact-signing-cosign).
 
-`kubectl cfgd status` lists the registered modules and whether each one verified.
+`kubectl get modules` reports each module's signature verdict in its `SIGNATURE` column, as one of three words:
+
+| Verdict | Meaning |
+|---|---|
+| `verified` | the module declares a signature and it checked out |
+| `unverified` | the module declares a signature that did not check out |
+| `unsigned` | the module declares no signature |
+
+`kubectl cfgd status` names the context and namespace it read, lists the registered modules with the same three-word verdict, and lists the pods in that namespace whose `cfgd.io/modules` annotation asks for modules:
+
+```
+Status
+  Context    kind-cfgd
+  Namespace  demo
+
+Modules
+  nettools     ghcr.io/cfgd/nettools:1.0.0 (verified)
+  debug-utils  ghcr.io/cfgd/debug-utils:2.0.0 (unsigned)
+
+Pods
+  app  nettools:1.0.0, debug-utils:2.0.0
+```
+
+Modules are cluster-scoped, so every one is listed. Pods come from a single namespace: the one `--namespace` names, else the kubeconfig current context's, else `default`.
 
 ### Debug Containers
 

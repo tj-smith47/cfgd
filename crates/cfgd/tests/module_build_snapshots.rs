@@ -78,15 +78,18 @@ fn module_build_missing_yaml_human() {
 #[test]
 fn module_build_bridge_one_blank_line() {
     // Mirrors production's real section shape (`cli/module/build.rs`'s
-    // multi-target loop): one `target:<t>` owner group per platform, the
-    // same idiom the "Fetch" / "registry:<name>" owner groups elsewhere use
-    // — see `build_failure_settle_line_nests_under_the_target_owner_header`,
-    // which asserts the settled line renders deeper than the header for the
-    // real command.
+    // multi-target loop): the command's one `Build Module` section, holding a
+    // `target:<t>` owner group per platform — the same idiom the "Fetch" /
+    // "registry:<name>" owner groups elsewhere use. See
+    // `build_failure_settle_line_nests_under_the_target_owner_header`, which
+    // asserts the settled line renders deeper than the header for the real
+    // command.
     let (printer, cap) = Printer::for_test_doc();
-    printer.heading("Build Module");
     {
-        let owner = printer.section_owner(&OwnerLabel::new("target", "linux/amd64"));
+        let build_sec = printer.section("Build Module");
+        let _inherit = printer.depth_inheritance();
+        build_sec.kv_block([("Directory", "."), ("Targets", "linux/amd64")]);
+        let owner = build_sec.section_owner(&OwnerLabel::new("target", "linux/amd64"));
         let sp = owner.spinner("Building for linux/amd64");
         sp.finish_ok("Built linux/amd64 to /tmp/build-out");
     }

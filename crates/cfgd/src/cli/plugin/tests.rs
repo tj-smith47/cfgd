@@ -420,7 +420,7 @@ fn plugin_cli_parse_inject_command() {
 #[test]
 fn plugin_cli_parse_status_command() {
     let cli = PluginCli::try_parse_from(["kubectl-cfgd", "status"]).unwrap();
-    assert!(matches!(cli.command, PluginCommand::Status));
+    assert!(matches!(cli.command, PluginCommand::Status { .. }));
 }
 
 #[test]
@@ -662,7 +662,7 @@ fn cmd_status_kube_connect_failed_returns_error_meta() {
     let _kc = EnvVarGuard::set("KUBECONFIG", "/nonexistent-kubeconfig-cfgd-test");
     let (printer, _cap) = Printer::for_test_doc();
 
-    let err = cmd_status(&printer).unwrap_err();
+    let err = cmd_status(&printer, "default").unwrap_err();
     drop(printer);
 
     let meta = err
@@ -804,6 +804,24 @@ mod mock_kube {
                     "image": "ubuntu:22.04"
                 }]
             }
+        })
+    }
+
+    /// A pod carrying the cfgd modules annotation — what makes a pod one this
+    /// command reports.
+    fn annotated_pod_json(name: &str, namespace: &str, modules: &str) -> serde_json::Value {
+        let mut pod = pod_json(name, namespace);
+        pod["metadata"]["annotations"] =
+            serde_json::json!({ cfgd_core::MODULES_ANNOTATION: modules });
+        pod
+    }
+
+    fn pod_list_response(items: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "PodList",
+            "metadata": {"resourceVersion": "1"},
+            "items": items,
         })
     }
 
@@ -974,11 +992,19 @@ mod mock_kube {
                             "kind": "Module",
                             "metadata": {"name": "debug-utils"},
                             "spec": {"ociArtifact": "ghcr.io/cfgd/debug-utils:2.0.0"},
-                            "status": {"verified": false}
+                            "status": {"verified": false, "signature": "unsigned"}
                         }
                     ]
                 });
                 json_response(200, &list)
+            } else if path.contains("/pods") {
+                json_response(
+                    200,
+                    &pod_list_response(vec![
+                        annotated_pod_json("app", "demo", "nettools:1.0.0,debug-utils:2.0.0"),
+                        pod_json("unrelated", "demo"),
+                    ]),
+                )
             } else {
                 json_response(404, &serde_json::json!({"message": "not found"}))
             }
@@ -986,18 +1012,44 @@ mod mock_kube {
 
         let (printer, cap) = Printer::for_test_doc();
 
-        let result = cmd_status_async(&printer, Some(client)).await;
+        let result = cmd_status_async(&printer, Some(client), "kind-cfgd", "demo").await;
         drop(printer);
 
         assert!(result.is_ok(), "cmd_status should succeed, got: {result:?}");
         let json = cap.json().expect("status doc must carry data payload");
+        assert_eq!(json["context"], "kind-cfgd");
+        assert_eq!(json["namespace"], "demo");
         let modules = json["modules"].as_array().expect("modules should be array");
         assert_eq!(modules.len(), 2);
         assert_eq!(modules[0]["name"], "nettools");
         assert_eq!(modules[0]["artifact"], "ghcr.io/cfgd/nettools:1.0.0");
         assert_eq!(modules[0]["verified"], true);
+        assert_eq!(
+            modules[0]["signature"], "verified",
+            "a module the controller has not written a verdict for derives the same three-word vocabulary"
+        );
         assert_eq!(modules[1]["name"], "debug-utils");
         assert_eq!(modules[1]["verified"], false);
+        assert_eq!(modules[1]["signature"], "unsigned");
+
+        let human = cfgd_core::output::strip_ansi(&cap.human());
+        // spot-check the shape a person reads, not only the payload a script does
+        assert!(human.contains("Status"), "human render:\n{human}");
+        crate::cli::test_support::assert_nests_under(&human, "Status", "Context");
+        crate::cli::test_support::assert_nests_under(&human, "Modules", "nettools");
+        crate::cli::test_support::assert_nests_under(&human, "Pods", "app");
+
+        let pods = json["pods"].as_array().expect("pods should be array");
+        assert_eq!(
+            pods.len(),
+            1,
+            "only the pod carrying the modules annotation is a cfgd pod"
+        );
+        assert_eq!(pods[0]["name"], "app");
+        assert_eq!(
+            pods[0]["modules"],
+            serde_json::json!(["nettools:1.0.0", "debug-utils:2.0.0"])
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1012,6 +1064,8 @@ mod mock_kube {
                     "items": []
                 });
                 json_response(200, &list)
+            } else if path.contains("/pods") {
+                json_response(200, &pod_list_response(vec![]))
             } else {
                 json_response(404, &serde_json::json!({"message": "not found"}))
             }
@@ -1019,13 +1073,14 @@ mod mock_kube {
 
         let (printer, cap) = Printer::for_test_doc();
 
-        let result = cmd_status_async(&printer, Some(client)).await;
+        let result = cmd_status_async(&printer, Some(client), "kind-cfgd", "demo").await;
         drop(printer);
 
         assert!(result.is_ok(), "cmd_status should succeed with empty list");
         let json = cap.json().unwrap();
         let modules = json["modules"].as_array().unwrap();
         assert!(modules.is_empty());
+        assert!(json["pods"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1045,7 +1100,7 @@ mod mock_kube {
 
         let (printer, _cap) = Printer::for_test_doc();
 
-        let result = cmd_status_async(&printer, Some(client)).await;
+        let result = cmd_status_async(&printer, Some(client), "kind-cfgd", "demo").await;
 
         assert!(result.is_err(), "must fail on 403");
         let err_msg = result.unwrap_err().to_string();
@@ -1283,10 +1338,12 @@ mod mock_kube {
                         "kind": "Module",
                         "metadata": {"name": "nettools"},
                         "spec": {"ociArtifact": "ghcr.io/cfgd/nettools:1.0.0"},
-                        "status": {"verified": true}
+                        "status": {"verified": true, "signature": "verified"}
                     }]
                 }),
             )
+        } else if path.contains("/pods") {
+            json_response(200, &pod_list_response(vec![]))
         } else {
             json_response(404, &serde_json::json!({"message": "not found"}))
         }
@@ -1299,6 +1356,8 @@ mod mock_kube {
         cmd_status_async(
             &json_printer,
             Some(mock_client(status_module_list_response)),
+            "kind-cfgd",
+            "demo",
         )
         .await
         .expect("json-format status must succeed");
@@ -1313,6 +1372,8 @@ mod mock_kube {
         cmd_status_async(
             &yaml_printer,
             Some(mock_client(status_module_list_response)),
+            "kind-cfgd",
+            "demo",
         )
         .await
         .expect("yaml-format status must succeed");
@@ -1966,6 +2027,67 @@ images:
         assert!(
             stdout.contains("registry.jarvispro.io/other/thing:xyz"),
             "unmapped volume reference must survive verbatim: {stdout}"
+        );
+    }
+}
+
+/// Every plugin subcommand offering `--namespace` resolves it the way plain
+/// `kubectl` does: an explicit flag, else the kubeconfig current context's
+/// namespace, else `default`. A variant that reached `cmd_*` with the raw
+/// `Option` would silently pick its own fallback, and two subcommands run
+/// back to back would read different namespaces from one kubeconfig.
+#[test]
+fn every_namespace_taking_plugin_variant_resolves_through_one_helper() {
+    let source = include_str!("mod.rs");
+    let dispatch = source
+        .split_once("match cli.command {")
+        .expect("plugin dispatch is a match on cli.command")
+        .1;
+
+    // The variants clap declares with an OPTIONAL namespace — `version`
+    // declares a `String` with a clap default instead, and so has nothing to
+    // resolve.
+    let enum_body = source
+        .split_once("enum PluginCommand {")
+        .expect("plugin subcommands are one enum")
+        .1;
+    let mut optional_ns_variants: Vec<&str> = Vec::new();
+    let mut current: Option<&str> = None;
+    for line in enum_body.lines() {
+        if line == "}" {
+            break;
+        }
+        if let Some(name) = line
+            .strip_prefix("    ")
+            .and_then(|l| l.strip_suffix(" {"))
+            .filter(|n| !n.is_empty() && n.chars().all(char::is_alphanumeric))
+        {
+            current = Some(name);
+        }
+        if line.trim() == "namespace: Option<String>,"
+            && let Some(name) = current.take()
+        {
+            optional_ns_variants.push(name);
+        }
+    }
+    // Positive control: the walk really reads variants, so its per-variant
+    // assertion below is not vacuously satisfied by an empty list.
+    assert!(
+        optional_ns_variants.len() >= 4 && optional_ns_variants.contains(&"Status"),
+        "expected the namespace-taking plugin variants to be found, got {optional_ns_variants:?}"
+    );
+
+    for variant in optional_ns_variants {
+        let arm = dispatch
+            .split_once(&format!("PluginCommand::{variant} {{"))
+            .unwrap_or_else(|| panic!("{variant} must have a dispatch arm"))
+            .1;
+        // The arm ends at the next variant's arm, or at the match's close.
+        let arm = arm.split("PluginCommand::").next().unwrap_or(arm);
+        assert!(
+            arm.contains("resolve_namespace(namespace)"),
+            "PluginCommand::{variant} takes an optional --namespace but does not \
+             resolve it through resolve_namespace"
         );
     }
 }
