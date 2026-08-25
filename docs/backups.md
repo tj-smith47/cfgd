@@ -123,6 +123,14 @@ daemon's timer will next fire it (`nextRunAt` in `-o json`). Every backup comman
 `-` when the state store could not be opened, the same degradation the Last Run column
 takes: an unknown count is not a count of zero.
 
+The count includes the safety snapshots [`cfgd backup restore`](#restoring) takes, because they
+occupy the destination and count against `retention` like any other. When there is at least one,
+the column says so (`2 (1 safety)`); `-o json` keeps `snapshots` as the total and adds
+`safetySnapshots` for the share of it a restore wrote. **Last Run and Next Run read backups only.**
+A safety snapshot is a side effect of putting data back, never a backup of the unit, so it is not
+the unit's Last Run and does not re-anchor its schedule: restore a unit at noon and an hourly
+schedule still fires on the last real run's clock.
+
 `cfgd backup list <name> --snapshots` switches the view from the backup to its snapshots, the
 ones [`cfgd backup restore`](#restoring) can put back:
 
@@ -130,16 +138,17 @@ ones [`cfgd backup restore`](#restoring) can put back:
 $ cfgd backup list notes-db --snapshots
 Snapshots: notes-db
 
-Snapshot                   Created               Size
-───────────────────────────────────────────────────────
-notes.db.20260813T061322Z  2026-08-13T06:13:22Z  8.0 KB
-notes.db.20260813T061321Z  2026-08-13T06:13:21Z  8.0 KB
-notes.db.20260813T061306Z  2026-08-13T06:13:06Z  8.0 KB
+Snapshot                   Kind    Created               Size
+─────────────────────────────────────────────────────────────
+notes.db.20260813T061322Z  safety  2026-08-13T06:13:22Z  8.0 KB
+notes.db.20260813T061321Z  run     2026-08-13T06:13:21Z  8.0 KB
+notes.db.20260813T061306Z  run     2026-08-13T06:13:06Z  8.0 KB
 
 $ cfgd --output json backup list notes-db --snapshots
 [
   {
     "created": "2026-08-13T06:13:22Z",
+    "kind": "safety",
     "name": "notes.db.20260813T061322Z",
     "sizeBytes": 8192
   }
@@ -149,7 +158,9 @@ $ cfgd --output json backup list notes-db --snapshots
 `name` is the snapshot's path **relative to the backup's `destination`**, so a nested
 `namePattern` lists `daily/notes.db.20260813T061322Z`: the exact string `restore --at` accepts.
 `created` is the ISO 8601 UTC time the run that wrote it finished, on the same scale as
-`backup list`'s Last Run column. The `Size` column uses the same `1.2 MB` / `4.0 KB` / `12 B`
+`backup list`'s Last Run column. `Kind` is `run` for a backup of the unit and `safety` for the copy
+[`cfgd backup restore`](#restoring) took of what it was about to overwrite; both restore, and both
+count against retention, but only a `run` is the unit's Last Run. The `Size` column uses the same `1.2 MB` / `4.0 KB` / `12 B`
 scale `cfgd upgrade` prints; `-o json` reports raw bytes in `sizeBytes` and leaves formatting
 to you.
 
@@ -606,9 +617,12 @@ staging removed      ← on every path, success or failure
 - **The overlay is not atomic as a whole.** Each file is replaced atomically (temp file + rename),
   but a directory restore interrupted halfway leaves the target part old and part new. The safety
   snapshot is what recovers it; a single-file backup has no such window.
-- **The safety snapshot is an ordinary run.** It writes a normal `backup_runs` row and
-  **participates in normal retention**, so it counts against `retention` and can evict an older
-  snapshot. Its path is reported as `safetySnapshot` in `-o json` and as the `→` line in human
+- **The safety snapshot is an ordinary snapshot, but not an ordinary run.** It writes a normal
+  `backup_runs` row and **participates in normal retention**, so it counts against `retention`, can
+  evict an older snapshot, and lists (as `Kind: safety`) and restores like any other. What it is
+  not is a backup of the unit: `backup list` never reports it as the unit's **Last Run**, and the
+  daemon never re-anchors **Next Run** on it, so restoring a unit does not push its schedule out.
+  Its path is reported as `safetySnapshot` in `-o json` and as the `→` line in human
   output. If it fails to produce a snapshot, the restore is **abandoned**: cfgd will not overwrite
   data whose current contents were not captured.
 - **It is skipped on the target, not on the flag.** `--to` pointing back at the source, or at a

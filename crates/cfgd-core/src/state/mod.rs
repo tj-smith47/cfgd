@@ -27,7 +27,7 @@ pub use pending_config::{
     save_pending_server_config,
 };
 pub use types::{
-    ApplyRecord, ApplyStatus, BackupRunDraft, BackupRunRecord, BackupRunStatus,
+    ApplyRecord, ApplyStatus, BackupRunDraft, BackupRunKind, BackupRunRecord, BackupRunStatus,
     ComplianceHistoryRow, ConfigSourceRecord, DriftEvent, FileBackupRecord, JournalEntry,
     MODULE_STATUS_ERROR, MODULE_STATUS_INSTALLED, ManagedResource, ModuleFileRecord,
     ModuleStateRecord, PendingDecision, SOURCE_STATUS_ACTIVE, SOURCE_STATUS_ERROR,
@@ -456,6 +456,15 @@ const MIGRATIONS: &[&str] = &[
         id INTEGER PRIMARY KEY CHECK (id = 1),
         timestamp TEXT NOT NULL
     );",
+    // Migration 16: say what wrote a `backup_runs` row. `cfgd backup restore`
+    // records the safety copy it takes of the target through the same recording
+    // tail an ordinary run uses, so without this column `latest_backup_run`
+    // answers the restore's row — the unit's Last Run reads the restore's clock
+    // and an interval schedule re-anchors on it. Every existing row is a real
+    // run, which is exactly what the DEFAULT says, so no backfill is needed.
+    // The ledger still holds both kinds: retention prunes and `list_snapshots`
+    // restores from every payload on disk, whichever wrote it.
+    "ALTER TABLE backup_runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'run';",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable

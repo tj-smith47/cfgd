@@ -598,6 +598,12 @@ pub struct BackupListEntry {
     /// as zero, which is a unit whose snapshots have all been pruned away.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshots: Option<usize>,
+    /// How many of `snapshots` a restore took as a safety copy rather than a
+    /// backup of the unit. A subset of the total, never a second population:
+    /// they occupy the same destination and count against the same retention.
+    /// `None` alongside a `None` total, for the same reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_snapshots: Option<usize>,
 }
 
 /// One snapshot on disk, for `cfgd backup list <name> --snapshots`.
@@ -609,6 +615,10 @@ pub struct BackupListEntry {
 #[serde(rename_all = "camelCase")]
 pub struct BackupSnapshotEntry {
     pub name: String,
+    /// `run` for a backup of the unit, `safety` for the copy a restore took of
+    /// what it was about to overwrite. Both restore; only a `run` is the unit's
+    /// last run.
+    pub kind: String,
     /// ISO 8601 UTC time the run that wrote the snapshot finished, on the same
     /// scale as `BackupListEntry::last_run_at`.
     pub created: String,
@@ -619,6 +629,7 @@ impl From<&cfgd_core::backup::SnapshotInfo> for BackupSnapshotEntry {
     fn from(info: &cfgd_core::backup::SnapshotInfo) -> Self {
         Self {
             name: info.name.clone(),
+            kind: info.kind.as_str().to_string(),
             created: info.created.clone(),
             size_bytes: info.size_bytes,
         }

@@ -10,15 +10,16 @@
 //!
 //! Restores are not recorded in the state DB. The `backup_runs` table is the
 //! ledger retention pruning walks, and a restore produces no artifact for it to
-//! prune — the safety snapshot a restore-to-source takes IS recorded, as an
-//! ordinary run.
+//! prune — the safety snapshot a restore-to-source takes IS recorded, under
+//! [`BackupRunKind::Safety`] so it lists and restores like any other snapshot
+//! without standing in for the unit's last backup.
 
 use std::path::{Path, PathBuf};
 
 use crate::errors::{BackupError, CfgdError, Result};
 use crate::output::{Printer, collapse_to_subject_line};
 use crate::reconciler::ScriptPhase;
-use crate::state::StateStore;
+use crate::state::{BackupRunKind, StateStore};
 
 use super::{BackupOperation, BackupUnit};
 
@@ -38,6 +39,10 @@ pub struct SnapshotInfo {
     pub created: String,
     /// Size recorded for the snapshot when it was taken.
     pub size_bytes: u64,
+    /// What wrote it: a backup of the unit, or the safety copy a restore took
+    /// of what it was about to overwrite. Both are listed and both restore —
+    /// the kind is what stops a safety copy being read as the unit's last run.
+    pub kind: BackupRunKind,
     /// `backup_runs` row id of the run that wrote it. Selection happens before
     /// the restore takes the unit's lock, so [`restore_backup`] re-resolves the
     /// chosen snapshot by this id once the lock is held.
@@ -173,6 +178,7 @@ pub fn list_snapshots(unit: &BackupUnit<'_>, store: &StateStore) -> Result<Vec<S
             path: path.to_path_buf(),
             created: run.finished_at,
             size_bytes: run.size_bytes.unwrap_or(0),
+            kind: run.kind,
             run_id: run.id,
         });
     }
@@ -246,8 +252,9 @@ pub fn select_snapshot<'s>(
 ///    snapshot being restored can be the one it evicts;
 /// 3. `preBackup` hooks;
 /// 4. a safety snapshot of the target's current contents, taken through
-///    [`super::snapshot_and_record`] so it is an ordinary run with an ordinary
-///    record that ordinary retention prunes. Skipped when the target is not the
+///    [`super::snapshot_and_record`] so it gets a `backup_runs` row that
+///    ordinary retention prunes, marked [`BackupRunKind::Safety`] rather than
+///    standing in as the unit's last run. Skipped when the target is not the
 ///    live source (nothing of the unit's is being overwritten) or the source
 ///    does not exist yet (there is nothing to protect). A safety snapshot that
 ///    produces no artifact aborts the restore;

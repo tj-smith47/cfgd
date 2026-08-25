@@ -1,6 +1,7 @@
 [
   {
     "created": "<NEXT_RUN>",
+    "kind": "run",
     "name": "notes.txt.<TIMESTAMP>",
     "sizeBytes": 12
   }

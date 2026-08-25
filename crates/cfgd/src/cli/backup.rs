@@ -97,15 +97,29 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry]) -> Doc {
             e.source.clone(),
             e.schedule.clone().unwrap_or_else(|| "-".into()),
             e.retention.to_string(),
-            e.snapshots
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| "-".into()),
+            snapshots_cell(e.snapshots, e.safety_snapshots),
             last_run,
             e.next_run_at.clone().unwrap_or_else(|| "-".into()),
         ]);
     }
     doc = doc.table(t);
     doc.with_data(entries)
+}
+
+/// The Snapshots cell: the total, with the safety-snapshot share called out
+/// when there is one (`2 (1 safety)`).
+///
+/// A safety snapshot occupies the destination and counts against retention like
+/// any other, so the cell leads with the total a reader compares to `Retention`.
+/// The parenthetical is what stops the total reading as "this unit backed up
+/// twice" after a single run and a restore. `-` when the count is unknown,
+/// unchanged: an unreadable store is not a count of zero.
+fn snapshots_cell(total: Option<usize>, safety: Option<usize>) -> String {
+    match (total, safety) {
+        (Some(n), Some(s)) if s > 0 => format!("{n} ({s} safety)"),
+        (Some(n), _) => n.to_string(),
+        (None, _) => "-".to_string(),
+    }
 }
 
 /// Build the `cfgd backup list <name> --snapshots` Doc. Pure; the caller
@@ -123,10 +137,11 @@ pub fn build_backup_snapshot_list_doc(name: &str, entries: &[BackupSnapshotEntry
         return doc.with_data(entries);
     }
 
-    let mut t = Table::new(["Snapshot", "Created", "Size"]);
+    let mut t = Table::new(["Snapshot", "Kind", "Created", "Size"]);
     for e in entries {
         t = t.row([
             e.name.clone(),
+            e.kind.clone(),
             e.created.clone(),
             format_bytes(e.size_bytes),
         ]);
@@ -236,7 +251,7 @@ pub fn cmd_backup_list(
         .iter()
         .map(|spec| {
             let last = state.and_then(|state| state.latest_backup_run(&spec.name).ok().flatten());
-            let snapshots =
+            let counts =
                 unit_dirs
                     .as_ref()
                     .zip(state)
@@ -244,7 +259,7 @@ pub fn cmd_backup_list(
                         let unit = BackupUnit::new(spec, config_dir, profile_name, state_dir);
                         cfgd_core::backup::list_snapshots(&unit, state)
                             .ok()
-                            .map(|s| s.len())
+                            .map(|s| (s.len(), s.iter().filter(|i| i.kind.is_safety()).count()))
                     });
             BackupListEntry {
                 name: spec.name.clone(),
@@ -263,7 +278,8 @@ pub fn cmd_backup_list(
                         last.as_ref().map(|r| r.finished_at.as_str()),
                     )
                 }),
-                snapshots,
+                snapshots: counts.map(|(total, _)| total),
+                safety_snapshots: counts.map(|(_, safety)| safety),
             }
         })
         .collect();

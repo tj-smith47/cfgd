@@ -1650,7 +1650,7 @@ cfgd backup run                                       # run every backup declare
 cfgd backup run notes-db                              # run only the named backup
 cfgd backup list                                      # inventory + snapshot count + last-run status + next scheduled run; alias: ls
 cfgd backup list notes-db                             # only that unit's row
-cfgd backup list notes-db --snapshots                 # its snapshots: name, created, size
+cfgd backup list notes-db --snapshots                 # its snapshots: name, kind, created, size
 cfgd backup restore notes-db                          # newest snapshot, back over the source
 cfgd backup restore notes-db --at 20260730T120000Z    # pick an older one
 cfgd backup restore notes-db --to /tmp/inspect --yes  # somewhere else, no prompt
@@ -1681,9 +1681,12 @@ Structured output (`-o json`) payload for `backup run`: an array of
 `skipped` (the unit was already running). A refused unit does not add a second document to stdout:
 the payload is always one JSON value and the nonzero exit code carries the failure. For
 `backup list`: an array of
-`{ name, source, schedule?, retention, snapshots?, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`.
-For `backup list <name> --snapshots`: an array of `{ name, created, sizeBytes }`, newest first,
-where `name` is the snapshot's path relative to the backup's `destination`. For `backup restore`:
+`{ name, source, schedule?, retention, snapshots?, safetySnapshots?, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`,
+where `snapshots` is the total and `safetySnapshots` the share of it a restore wrote.
+For `backup list <name> --snapshots`: an array of `{ name, kind, created, sizeBytes }`, newest first,
+where `name` is the snapshot's path relative to the backup's `destination` and `kind` is `run` or
+`safety`. A safety snapshot lists, restores and counts against retention like any other, but is
+never the unit's `lastRunAt` and never re-anchors `nextRunAt`. For `backup restore`:
 a single `{ name, snapshot, restoredTo, restored, clean, sizeBytes, safetySnapshot?, error? }`;
 when the operator declines at the confirmation prompt,
 `{ name, snapshot, restoredTo, restored: false, declined: true }`. The declined payload omits

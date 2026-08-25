@@ -1,5 +1,5 @@
 Snapshots: docs
 
-Snapshot                    Created               Size
-──────────────────────────────────────────────────────
-notes.txt.<TIMESTAMP>  <NEXT_RUN>  12 B
+Snapshot                    Kind  Created               Size
+────────────────────────────────────────────────────────────
+notes.txt.<TIMESTAMP>  run   <NEXT_RUN>  12 B

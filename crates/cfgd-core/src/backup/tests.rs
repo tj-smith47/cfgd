@@ -757,6 +757,7 @@ fn prune_with_planted_row(h: &Harness, victim: &Path) -> BackupRunRecord {
         .store
         .record_backup_run(&BackupRunDraft {
             name: "db".to_string(),
+            kind: BackupRunKind::Run,
             source: "/var/lib/app/data.db".to_string(),
             destination_path: Some(crate::to_posix_string(victim)),
             size_bytes: Some(1),
@@ -1487,6 +1488,7 @@ fn seed_snapshot(
     h.store
         .record_backup_run(&BackupRunDraft {
             name: name.to_string(),
+            kind: BackupRunKind::Run,
             source: "/src".to_string(),
             destination_path: Some(crate::to_posix_string(&path)),
             size_bytes: Some(body.len() as u64),
@@ -1561,6 +1563,7 @@ fn list_snapshots_ignores_a_record_pointing_outside_the_destination() {
     h.store
         .record_backup_run(&BackupRunDraft {
             name: "db".to_string(),
+            kind: BackupRunKind::Run,
             source: "/src".to_string(),
             destination_path: Some(crate::to_posix_string(&stray)),
             size_bytes: Some(7),
@@ -1838,6 +1841,20 @@ fn restore_records_no_run_of_its_own_beyond_the_safety_snapshot() {
         runs.len(),
         2,
         "one row for the original run, one for the safety snapshot — a restore records nothing"
+    );
+    // Newest first: the safety copy the restore took, then the run it restored.
+    assert_eq!(
+        runs.iter().map(|r| r.kind).collect::<Vec<_>>(),
+        vec![BackupRunKind::Safety, BackupRunKind::Run]
+    );
+    let latest = h
+        .store
+        .latest_backup_run("db")
+        .expect("query")
+        .expect("row");
+    assert_eq!(
+        latest.id, runs[1].id,
+        "the restore must not become the unit's last run"
     );
 }
 

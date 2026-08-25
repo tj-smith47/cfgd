@@ -19,7 +19,7 @@ use crate::reconciler::{
     ReconcileContext, ScriptEnvContext, ScriptPhase, ScriptReport, ScriptSubject, build_script_env,
     effective_continue_on_error, execute_script, script_default_workdir,
 };
-use crate::state::{BackupRunDraft, BackupRunRecord, BackupRunStatus, StateStore};
+use crate::state::{BackupRunDraft, BackupRunKind, BackupRunRecord, BackupRunStatus, StateStore};
 
 pub mod restore;
 pub mod schedule;
@@ -269,6 +269,7 @@ pub fn run_backup(
         unit,
         printer,
         &source,
+        BackupRunKind::Run,
         started_at,
         RunOutcome {
             pre_error,
@@ -291,8 +292,12 @@ struct RunOutcome {
 /// the unit's lock already held by the caller.
 ///
 /// The safety snapshot [`restore::restore_backup`] takes needs exactly this half
-/// of [`run_backup`]: an ordinary row and an ordinary retention prune, inside
-/// the lock and inside the hook envelope the restore already holds open.
+/// of [`run_backup`]: a row and an ordinary retention prune, inside
+/// the lock and inside the hook envelope the restore already holds open. The row
+/// is recorded as [`BackupRunKind::Safety`], which is the one thing that makes
+/// it not an ordinary run: it still lists, still restores and still counts
+/// against retention, but it is never the unit's Last Run and never re-anchors
+/// its schedule.
 /// Re-entering [`run_backup`] would do neither — the `flock` is per open file
 /// description, so the nested acquire would report the restore as the holder of
 /// the unit it is restoring, and the unit's hooks would run a second time around
@@ -312,6 +317,7 @@ fn snapshot_and_record(
         unit,
         printer,
         &source,
+        BackupRunKind::Safety,
         started_at,
         RunOutcome {
             pre_error: None,
@@ -512,6 +518,7 @@ fn record_run(
     unit: &BackupUnit<'_>,
     printer: &Printer,
     source: &Path,
+    kind: BackupRunKind,
     started_at: String,
     outcome: RunOutcome,
 ) -> Result<BackupRunRecord> {
@@ -539,6 +546,7 @@ fn record_run(
 
     let draft = BackupRunDraft {
         name: unit.spec.name.clone(),
+        kind,
         source: crate::to_posix_string(source),
         destination_path: artifact
             .as_ref()
