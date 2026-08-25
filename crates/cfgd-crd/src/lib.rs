@@ -490,7 +490,7 @@ pub struct ModuleSignature {
     category = "cfgd",
     printcolumn = r#"{"name": "Artifact", "type": "string", "jsonPath": ".spec.ociArtifact"}"#,
     printcolumn = r#"{"name": "Verified", "type": "boolean", "jsonPath": ".status.verified"}"#,
-    printcolumn = r#"{"name": "Platforms", "type": "string", "jsonPath": ".status.availablePlatforms"}"#,
+    printcolumn = r#"{"name": "Platforms", "type": "string", "jsonPath": ".status.platformsSummary"}"#,
     printcolumn = r#"{"name": "Age", "type": "date", "jsonPath": ".metadata.creationTimestamp"}"#
 )]
 #[serde(rename_all = "camelCase")]
@@ -543,10 +543,25 @@ pub enum MountPolicy {
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModuleStatus {
+    /// The `metadata.generation` every other field here was computed from. A
+    /// status whose `observedGeneration` is behind `metadata.generation`
+    /// describes the PREVIOUS spec, which is what lets a caller wait for a
+    /// verdict about the spec it just applied instead of reading the one it
+    /// replaced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_generation: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_artifact: Option<String>,
     #[serde(default)]
     pub available_platforms: Vec<String>,
+    /// `availablePlatforms` rendered as one comma-joined string for the
+    /// `Platforms` printer column, and the only field that column may be bound
+    /// to: a column resolving to an array prints the Go rendering of the
+    /// slice, so an empty one reads as the literal `[]` where an absent value
+    /// leaves the cell empty. Absent when no platform is known, so the
+    /// JSONPath resolves to nothing and the cell stays blank.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platforms_summary: Option<String>,
     #[serde(default)]
     pub verified: bool,
     /// Digest of the cosign signature (if verified).
@@ -557,6 +572,16 @@ pub struct ModuleStatus {
     pub attestations: Vec<String>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
+}
+
+impl ModuleStatus {
+    /// The ONE derivation of [`ModuleStatus::platforms_summary`] from
+    /// [`ModuleStatus::available_platforms`]. Every writer of the status goes
+    /// through it, so the column and the list it summarizes cannot disagree.
+    #[must_use]
+    pub fn summarize_platforms(platforms: &[String]) -> Option<String> {
+        (!platforms.is_empty()).then(|| platforms.join(", "))
+    }
 }
 
 // ---------------------------------------------------------------------------

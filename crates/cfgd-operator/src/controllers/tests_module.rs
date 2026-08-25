@@ -364,6 +364,68 @@ async fn reconcile_module_repeated_reconciles_patch_status_once() {
     }
 }
 
+/// Every reconcile stamps the generation it read, and a spec edit is written
+/// through even when every verdict comes out the same. Without the stamp a
+/// reader has no way to tell a status describing the spec it just applied from
+/// one describing the spec it replaced, and the equality short-circuit above
+/// would keep the OLD status on a re-specced Module indefinitely.
+#[tokio::test]
+async fn reconcile_module_stamps_the_generation_its_status_describes() {
+    let spec = ModuleSpec {
+        oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+        ..Default::default()
+    };
+    let mut module = make_module("stamped-mod", spec);
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path("stamped-mod")))
+                .returning_json(&module),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![]),
+    );
+    reconcile_module(Arc::new(module.clone()), ctx)
+        .await
+        .unwrap();
+    let first = harness.finish().await;
+    let status = first.captured[0].body_json()["status"].clone();
+    assert_eq!(
+        status["observedGeneration"], 1,
+        "the status must name the generation it was computed from: {status}"
+    );
+    assert!(
+        status.get("platformsSummary").is_none(),
+        "no known platform must leave the column's field absent, so the cell \
+         is empty rather than an empty list: {status}"
+    );
+
+    // The spec moves on. Every verdict is unchanged, so only the stamp
+    // differs — and that alone must still be written.
+    module.status = Some(serde_json::from_value(status).expect("status round-trips"));
+    module.metadata.generation = Some(2);
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path("stamped-mod")))
+                .returning_json(&module),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![]),
+    );
+    reconcile_module(Arc::new(module.clone()), ctx)
+        .await
+        .unwrap();
+    let second = harness.finish().await;
+    assert_eq!(
+        second.captured[0].body_json()["status"]["observedGeneration"],
+        2,
+        "a re-specced Module must have its status re-stamped"
+    );
+}
+
 /// A changed verdict is still announced: the same Module under a policy that
 /// now forbids unsigned artifacts patches and re-emits.
 #[tokio::test]

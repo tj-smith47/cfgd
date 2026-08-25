@@ -21,7 +21,7 @@ spec:
     - jsonPath: .status.verified
       name: Verified
       type: boolean
-    - jsonPath: .status.availablePlatforms
+    - jsonPath: .status.platformsSummary
       name: Platforms
       type: string
     - jsonPath: .metadata.creationTimestamp
@@ -216,6 +216,26 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              observedGeneration:
+                description: |-
+                  The `metadata.generation` every other field here was computed from. A
+                  status whose `observedGeneration` is behind `metadata.generation`
+                  describes the PREVIOUS spec, which is what lets a caller wait for a
+                  verdict about the spec it just applied instead of reading the one it
+                  replaced.
+                format: int64
+                nullable: true
+                type: integer
+              platformsSummary:
+                description: |-
+                  `availablePlatforms` rendered as one comma-joined string for the
+                  `Platforms` printer column, and the only field that column may be bound
+                  to: a column resolving to an array prints the Go rendering of the
+                  slice, so an empty one reads as the literal `[]` where an absent value
+                  leaves the cell empty. Absent when no platform is known, so the
+                  JSONPath resolves to nothing and the cell stays blank.
+                nullable: true
+                type: string
               resolvedArtifact:
                 nullable: true
                 type: string

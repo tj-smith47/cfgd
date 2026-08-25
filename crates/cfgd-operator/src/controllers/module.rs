@@ -72,9 +72,17 @@ pub(super) async fn reconcile_module(
     let resolved_artifact = obj.spec.oci_artifact.clone();
     let verified = ver.status == "True";
 
+    let available_platforms = vec![];
     let desired = ModuleStatus {
+        // Stamped on every reconcile, so a reader can tell whether the verdict
+        // below describes the spec it just applied or the one it replaced.
+        // This also keeps the equality check honest: a spec-only edit bumps
+        // the generation, so the status is rewritten even when every verdict
+        // came out the same.
+        observed_generation: current_generation,
         resolved_artifact,
-        available_platforms: vec![],
+        platforms_summary: ModuleStatus::summarize_platforms(&available_platforms),
+        available_platforms,
         verified,
         signature_digest: ver.signature_digest,
         attestations: vec![],
