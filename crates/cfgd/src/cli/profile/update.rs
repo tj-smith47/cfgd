@@ -502,9 +502,11 @@ pub fn cmd_profile_update(
         Doc::new()
             .status(
                 Role::Ok,
+                // The heading above already names the profile; a footer
+                // respelling it makes the reader check whether two subjects
+                // are in play.
                 format!(
-                    "Updated profile '{}' ({})",
-                    name,
+                    "{} written",
                     cfgd_core::pluralize(changes as usize, "change")
                 ),
             )

@@ -509,7 +509,7 @@ mod tests {
         // The Windowed script arm picks its role from `non_fatal` at the call
         // site, so the primitive has to carry an arbitrary role through rather
         // than offering three fixed collapses.
-        for (role, glyph) in [(Role::Warn, "⚠"), (Role::Fail, "✗"), (Role::Skipped, "—")] {
+        for (role, glyph) in [(Role::Warn, "⚠"), (Role::Fail, "✗"), (Role::Skipped, "∅")] {
             let (w, buf) = window(0, Verbosity::Normal);
             let _ = w.finish_with(role, "script finished");
             let out = crate::test_helpers::captured_text(&buf);

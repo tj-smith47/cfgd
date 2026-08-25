@@ -16,4 +16,4 @@ Policy
   Secrets Read Allowed    false
   System Changes Allowed  false
   Locked
-    ⊙ env: CORP_PROXY
+    ◉ env: CORP_PROXY

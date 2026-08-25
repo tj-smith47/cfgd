@@ -1,5 +1,5 @@
 Create Profile: newprof
-✓ Created profile 'newprof' at <CONFIG_DIR>/profiles/newprof/profile.yaml
+✓ Created at <CONFIG_DIR>/profiles/newprof/profile.yaml
 
 → Activate with: cfgd profile switch newprof
 

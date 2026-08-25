@@ -10,4 +10,4 @@ Sources
     ⚠ permission changes need approval
     Permission Changes
       - Locked items increased from 0 to 2
-    ⊙ skipped (permission changes rejected)
+    ◉ skipped (permission changes rejected)

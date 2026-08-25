@@ -177,7 +177,7 @@ pub struct RunTally {
     pub skipped: usize,
     pub failed: usize,
     /// What the run set out to do. The `Actions  N planned` header row and the
-    /// `⊙ N actions not attempted` shortfall line read the same field.
+    /// `◉ N actions not attempted` shortfall line read the same field.
     pub planned_total: usize,
     pub status: ApplyStatus,
     pub aborted: Option<u8>,
@@ -675,7 +675,8 @@ impl<'a> ApplyRun<'a> {
                 Some(filter) => phase
                     .owned_actions()
                     .filter(|(owner, action)| {
-                        action_matches_phase_filter(&phase.name, owner, action, filter)
+                        action.pre_skip_reason().is_none()
+                            && action_matches_phase_filter(&phase.name, owner, action, filter)
                     })
                     .count(),
                 None => phase.action_count(),
@@ -690,7 +691,7 @@ impl<'a> ApplyRun<'a> {
     /// alignment column over, so the header's `Actions N planned` and the
     /// rollup's counts reconcile against one list rather than two: a unit whose
     /// `preBackup` hook fails renders one line fewer than this and the
-    /// difference surfaces as the run's `⊙ N actions not attempted`.
+    /// difference surfaces as the run's `◉ N actions not attempted`.
     fn pending_backup_count(&self) -> usize {
         self.backups.as_ref().map_or(0, |p| {
             p.units
@@ -818,6 +819,13 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
                     Action::System(SystemAction::Skip { unknown: true, .. })
                 ) {
                     owner_section.status_simple(Role::Warn, subject.to_string());
+                } else if let Some(reason) = action.pre_skip_reason() {
+                    // Settled here rather than previewed: the host has already
+                    // answered, so the plan states the same outcome, with the
+                    // same detail, the apply will state.
+                    owner_section
+                        .status(Role::Skipped, subject.to_string())
+                        .detail(reason);
                 } else if let Some(marker) = &subject.marker {
                     owner_section.bullet_marker(marker.clone(), subject.body.clone());
                 } else {
@@ -836,7 +844,7 @@ pub fn render_plan_tree(plan: &Plan, filter: Option<&PhaseFilter>, printer: &Pri
 /// The two counts are deliberately different sources. A unit whose `preBackup`
 /// hook list aborted never ran the hooks after the failure, so it emits fewer
 /// lines than it planned, and that difference is the run's
-/// `⊙ N actions not attempted`. A `Busy` skip contributes no item at all —
+/// `◉ N actions not attempted`. A `Busy` skip contributes no item at all —
 /// the unit IS being backed up, just not here — so its one `Role::Skipped` line
 /// moves neither count nor exit code and the unit surfaces only as the
 /// shortfall.

@@ -7,13 +7,19 @@ const ICON_WARN: &str = "⚠";
 const ICON_FAIL: &str = "✗";
 const ICON_PENDING: &str = "○";
 const ICON_RUNNING: &str = "◐";
-const ICON_SKIPPED: &str = "—";
+// Never an em dash: `—` is already the renderer's GLUE, the mark that says a
+// detail follows on this line, so a skip marked with it says two things at
+// once. U+2205 over the circled `⊘`/`⊗` shapes because it is present in
+// FiraCode Nerd Font Mono, which the recorded demos render in.
+const ICON_SKIPPED: &str = "∅";
 const ICON_ARROW: &str = "→";
-// A circled mark, matching the ○/● family the rest of the set draws from.
-// The enclosed-alphanumeric `ⓘ` reads better in prose but is absent from
-// JetBrains Mono, DejaVu and every other common terminal font, so it renders
-// as a tofu box — including in cfgd's own recorded demo.
-const ICON_INFO: &str = "⊙";
+// U+25C9, verified present in FiraCode Nerd Font Mono (the recorded demos'
+// font), JetBrains Mono and DejaVu Sans Mono via `fc-list ":charset=25C9"`.
+// It stays in the ○/◐ family the rest of the set draws from without being the
+// filled `●` that would read as the END of the pending → running progression.
+// The enclosed-alphanumeric `ⓘ` reads better in prose but is absent from every
+// common terminal font, so it renders as a tofu box.
+const ICON_INFO: &str = "◉";
 
 /// Single style slot held by `Theme`. Wraps `console::Style` (used for the
 /// 256-color fallback path and for non-color attributes like bold/dim) and
@@ -1005,9 +1011,9 @@ mod tests {
         assert_eq!(t.icon_fail, "✗");
         assert_eq!(t.icon_pending, "○");
         assert_eq!(t.icon_running, "◐");
-        assert_eq!(t.icon_skipped, "—");
+        assert_eq!(t.icon_skipped, "∅");
         assert_eq!(t.icon_arrow, "→");
-        assert_eq!(t.icon_info, "⊙");
+        assert_eq!(t.icon_info, "◉");
     }
 
     /// Every default glyph must be text-presentation AND drawn from a block the
@@ -1085,6 +1091,45 @@ mod tests {
         // and the renderer silently ignores.
         for name in Theme::PRESET_NAMES {
             assert!(Theme::preset(name).is_some(), "{name} has no preset arm");
+        }
+    }
+
+    /// One glyph, one meaning — across every preset, not just the default.
+    ///
+    /// Two roles sharing a glyph makes the icon column unreadable, and the
+    /// renderer's own `—` glue (the mark that says a detail follows) is
+    /// reserved: `Role::Skipped` wore it, so every skipped line read as a
+    /// subject with an empty detail.
+    #[test]
+    fn no_preset_spells_two_meanings_with_one_glyph() {
+        const GLUE_DASH: &str = "—";
+        for name in Theme::PRESET_NAMES {
+            let Some(t) = Theme::preset(name) else {
+                continue;
+            };
+            let icons = [
+                ("ok", &t.icon_ok),
+                ("warn", &t.icon_warn),
+                ("fail", &t.icon_fail),
+                ("pending", &t.icon_pending),
+                ("running", &t.icon_running),
+                ("skipped", &t.icon_skipped),
+                ("arrow", &t.icon_arrow),
+                ("info", &t.icon_info),
+            ];
+            for (i, (role, glyph)) in icons.iter().enumerate() {
+                assert_ne!(
+                    glyph.as_str(),
+                    GLUE_DASH,
+                    "{name}: {role} wears the renderer's detail glue"
+                );
+                for (other, other_glyph) in icons.iter().skip(i + 1) {
+                    assert_ne!(
+                        glyph, other_glyph,
+                        "{name}: {role} and {other} are spelled the same"
+                    );
+                }
+            }
         }
     }
 

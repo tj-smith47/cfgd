@@ -351,6 +351,28 @@ pub enum Action {
     Manager(ManagerAction),
 }
 
+impl Action {
+    /// Why this action cannot run on THIS host, answered from the machine while
+    /// the plan is still being read.
+    ///
+    /// A plan listing an action it is certain to skip must say so where it lists
+    /// it, and must not price it into `N actions planned` — the apply reports
+    /// the same skip, and a plan promising one more action than the apply
+    /// performs is a shortfall the reader has no way to explain. The ONE seam:
+    /// a second gate of this shape extends the match rather than filtering at
+    /// its own call site, so the count and the render cannot disagree.
+    pub fn pre_skip_reason(&self) -> Option<&'static str> {
+        match self {
+            Action::Env(EnvAction::RefreshLiveSession { .. })
+                if !crate::session_manager_available() =>
+            {
+                Some(crate::NO_SESSION_MANAGER)
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Module-level action — first-class phase, not flattened into packages/files.
 #[derive(Debug, Serialize)]
 pub struct ModuleAction {
@@ -900,8 +922,15 @@ impl Phase {
         ordered.into_iter()
     }
 
+    /// The actions this phase intends to EXECUTE — a pre-skipped action is
+    /// listed by the tree but never counted, so the plan's promise and the
+    /// apply's tally are one number.
     pub fn action_count(&self) -> usize {
-        self.groups.iter().map(|g| g.actions.len()).sum()
+        self.groups
+            .iter()
+            .flat_map(|g| g.actions.iter())
+            .filter(|a| a.pre_skip_reason().is_none())
+            .count()
     }
 
     pub fn is_empty(&self) -> bool {

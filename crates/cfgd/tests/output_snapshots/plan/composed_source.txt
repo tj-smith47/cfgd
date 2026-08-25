@@ -18,4 +18,4 @@ Phase: Prerequisites
   cfgd:session
     - publish 1 var to the session manager
 
-⊙ 6 actions planned
+◉ 6 actions planned

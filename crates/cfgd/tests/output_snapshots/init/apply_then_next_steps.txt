@@ -7,7 +7,7 @@ Phase: Files
   profile:default
     - create <TMP>/home/.gitconfig
 
-⊙ 1 action planned
+◉ 1 action planned
 
 Next Steps
   cfgd apply          — apply configuration

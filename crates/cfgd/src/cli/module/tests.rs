@@ -749,6 +749,58 @@ fn make_module_create_args(name: &str) -> super::ModuleCreateArgs {
     }
 }
 
+/// Walks every module verb whose Doc opens with a heading naming the module:
+/// none of them may respell that name in a footer. The profile verbs carry the
+/// same rule in `profile::tests`; a heading plus a footer both quoting the
+/// subject reads as two subjects.
+///
+/// Pinned on the QUOTED spelling: a heading states `Create Module: walkmod`
+/// bare, and a path that happens to contain the name is data, not a naming.
+#[test]
+fn no_module_verb_respells_the_name_its_heading_already_stated() {
+    let quoted = |verb: &str,
+                  name: &str,
+                  fixture: Option<&str>,
+                  run: &dyn Fn(&super::Cli, &cfgd_core::output::Printer)| {
+        let dir = tempfile::tempdir().unwrap();
+        if let Some(fixture) = fixture {
+            make_module(
+                dir.path(),
+                fixture,
+                &format!(
+                    "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {fixture}\nspec:\n  packages: []\n"
+                ),
+            );
+        }
+        let cli = test_cli(dir.path());
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        run(&cli, &printer);
+        drop(printer);
+        let output = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            !output.contains(&format!("'{name}'")),
+            "`module {verb}` respells its subject in a footer:\n{output}"
+        );
+    };
+
+    quoted("create", "walkmod-new", None, &|cli, printer| {
+        let mut args = make_module_create_args("walkmod-new");
+        args.packages = vec!["jq".to_string()];
+        cmd_module_create(cli, printer, &args).expect("create");
+    });
+    quoted("update", "walkmod", Some("walkmod"), &|cli, printer| {
+        let args = super::ModuleUpdateArgs {
+            packages: vec!["jq".to_string()],
+            ..make_module_update_args("walkmod")
+        };
+        cmd_module_update_local(cli, printer, &args).expect("update");
+    });
+    quoted("delete", "walkmod", Some("walkmod"), &|cli, printer| {
+        cmd_module_delete(cli, printer, "walkmod", true, false, false).expect("delete");
+    });
+}
+
 // ─── --package grammar on the module surfaces ─────────────
 
 #[test]
@@ -1289,7 +1341,7 @@ fn cmd_module_create_with_env_and_aliases() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Created module 'env-mod'"),
+        output.contains("Created at"),
         "should confirm creation, got: {output}"
     );
 }
@@ -2849,7 +2901,7 @@ fn cmd_module_delete_with_yes_succeeds() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Deleted module 'to-delete'"),
+        output.contains("Deleted"),
         "should confirm deletion, got: {output}"
     );
     assert!(
@@ -2881,7 +2933,7 @@ fn cmd_module_delete_without_yes_and_prompt_confirmed_proceeds_with_deletion() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Deleted module 'prompt-yes-mod'"),
+        output.contains("Deleted"),
         "should confirm deletion, got: {output}"
     );
     assert!(
@@ -2955,7 +3007,7 @@ fn cmd_module_create_with_apply_and_yes_drives_full_apply_sequence() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Created module 'apply-noop-mod'"),
+        output.contains("Created at"),
         "should announce create: {output}"
     );
     assert!(
@@ -3066,7 +3118,7 @@ fn cmd_module_create_interactive_drives_full_prompt_sequence_via_harness() {
     // no files or scripts should appear in the doc.
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Created module 'interactive-mod'"),
+        output.contains("Created at"),
         "should announce create: {output}"
     );
 }
@@ -4251,7 +4303,7 @@ fn cmd_module_update_combined_operations() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Updated module 'mod1'"),
+        output.contains("written"),
         "should confirm update, got: {output}"
     );
 }

@@ -837,7 +837,7 @@ fn an_installed_source_package_auto_accepts_instead_of_minting() {
 }
 
 /// Every minted row carries ONE action, and a decision ROW therefore never
-/// renders it: `⊙ Recommended packages.cargo.eza` says everything there is to
+/// renders it: `◉ Recommended packages.cargo.eza` says everything there is to
 /// say, because `install` is the only thing a source decision ever asks.
 ///
 /// The moment a second action is minted that stops being true — the row would

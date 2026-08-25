@@ -469,6 +469,20 @@ check_pattern error \
     '\.unwrap\(\)[^_]|\.unwrap\(\)$|\.expect\(' \
     'main\.rs:|gen_crds\.rs:|test_helpers\.rs:|/tests\.rs:|_test\.rs:|/test_[^/]*\.rs:|/tests_[^/]*\.rs:'
 
+log_section "One Noun Per Concept"
+# A counted package reads `3 packages` on every human surface — the status
+# headline, the module table, an add/remove confirmation. `3 pkgs` is a second
+# noun for one concept, and a reader who learns the surface says "pkgs" then
+# greps for it in `-o json`, which says "packages".
+#
+# Narrow on the COUNTED form on purpose: `pkg` is also a real package manager
+# name (FreeBSD's), so `"pkg"` as a manager literal is correct and must not be
+# caught.
+check_pattern error \
+    "Counted packages read 'package(s)', never the 'pkg(s)' abbreviation" \
+    'pluralize\([^)]*"pkgs?"|plural_noun\([^)]*"pkgs?"|"[^"]*[0-9}] pkgs?\b' \
+    ""
+
 log_section "Console/Indicatif Encapsulation"
 check_pattern error \
     "console/indicatif/syntect only used in output/" \

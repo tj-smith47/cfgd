@@ -2366,7 +2366,7 @@ fn profile_create_succeeds_despite_unrelated_ambiguous_profile() {
     assert!(pdir.join("fresh").join("profile.yaml").exists());
     let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        out.contains("Created profile 'fresh'"),
+        out.contains("Created at"),
         "success Doc must still render; got: {out:?}"
     );
     assert!(
@@ -2388,7 +2388,7 @@ fn profile_delete_succeeds_despite_unrelated_ambiguous_profile() {
     assert!(!pdir.join("work.yaml").exists());
     let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        out.contains("Deleted profile 'work'"),
+        out.contains("Deleted"),
         "success Doc must still render; got: {out:?}"
     );
     assert!(

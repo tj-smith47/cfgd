@@ -893,6 +893,13 @@ pub struct JournalEntry {
     pub script_output: Option<String>,
 }
 
+/// The recorded id of the live-session refresh, once
+/// `env:session:refresh` has been split into its `(type, id)` halves.
+/// Two readers match on it — the rollback classifier and the status
+/// dashboard's Managed Resources table — and a second spelling would let one
+/// of them treat the session surface as an ordinary env file.
+pub const ENV_SESSION_RESOURCE_ID: &str = "refresh";
+
 impl JournalEntry {
     /// Whether this entry's writes are covered by the file-backup restore
     /// path, so rollback must not report it as an unrecoverable action.
@@ -912,7 +919,7 @@ impl JournalEntry {
         self.action_type == "file"
             || self.resource_id.starts_with("file:")
             || (self.action_type == "module" && self.resource_id.split(':').nth(1) == Some("files"))
-            || (self.action_type == "env" && self.resource_id != "refresh")
+            || (self.action_type == "env" && self.resource_id != ENV_SESSION_RESOURCE_ID)
     }
 }
 

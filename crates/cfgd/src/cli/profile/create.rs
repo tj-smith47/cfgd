@@ -289,10 +289,7 @@ pub fn cmd_profile_create(
         &serde_yaml::to_string(&doc)?,
     )?;
 
-    let mut out = Doc::new().status(
-        Role::Ok,
-        format!("Created profile '{}' at {}", name, profile_path.posix()),
-    );
+    let mut out = Doc::new().status(Role::Ok, format!("Created at {}", profile_path.posix()));
     if !doc.spec.inherits.is_empty() {
         out = out.kv("Inherits", doc.spec.inherits.join(", "));
     }

@@ -6,4 +6,4 @@ Phase: System
 
 Caveats
   profile:snapshot
-    ⊙ Writing seccomp profile default-audit: <TMPDIR>/cfgd-seccomp/default-audit.json
+    ◉ Writing seccomp profile default-audit: <TMPDIR>/cfgd-seccomp/default-audit.json

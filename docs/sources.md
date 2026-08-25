@@ -285,9 +285,9 @@ Policy
   System Changes Allowed  false
   Allowed Target Paths    ~/.config/**, ~/.bashrc
   Required
-    ⊙ file: ~/.bashrc
+    ◉ file: ~/.bashrc
   Recommended
-    ⊙ system: shellAliases
+    ◉ system: shellAliases
 ```
 
 Each provided profile is headed by the `profile:<name>` token an apply header uses, and
@@ -398,7 +398,7 @@ Plan
   Phases   Prerequisites, Packages
 
 Pending Decisions (not included in this plan)
-  ⊙ recommended packages.brew.k9s — install by acme-corp (run `cfgd decide accept/reject`)
+  ◉ recommended packages.brew.k9s — install by acme-corp (run `cfgd decide accept/reject`)
 
 Phase: Prerequisites
   cfgd:managers
@@ -408,11 +408,11 @@ Phase: Packages
   profile:default
     - brew install ripgrep
 
-⊙ 2 actions planned
+◉ 2 actions planned
 
 $ cfgd decide accept packages.brew.k9s
 $ cfgd plan            # k9s now plans alongside ripgrep
-⊙ 3 actions planned
+◉ 3 actions planned
 ```
 
 `cfgd decide` is the only way to move an item out of Pending; neither `plan` nor `apply` resolves a decision for you.

@@ -7,6 +7,6 @@ source:reject-src
        <SHA>..<SHA>  master     -> origin/master
   Permission Changes
     ⚠ Required items increased from 0 to 2
-  ⊙ skipped (permission changes rejected)
+  ◉ skipped (permission changes rejected)
 
 ⚠ Updated 0, skipped 1, errored 0

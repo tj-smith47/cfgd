@@ -8,4 +8,4 @@ Compliant  0
 Warning    0
 Violation  0
 
-⊙ No checks performed
+◉ No checks performed

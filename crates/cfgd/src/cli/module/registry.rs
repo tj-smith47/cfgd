@@ -458,10 +458,7 @@ pub fn cmd_module_upgrade(
 
     printer.emit(
         Doc::new()
-            .status(
-                Role::Ok,
-                format!("Updated module '{}' in modules.lock", name),
-            )
+            .status(Role::Ok, "Updated in modules.lock")
             .hint(MSG_RUN_APPLY)
             .with_data(serde_json::json!({
                 "name": name,

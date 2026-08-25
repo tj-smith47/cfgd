@@ -1,2 +1,2 @@
 Initialize cfgd
-  ⊙ Already initialized at <TARGET_DIR>
+  ◉ Already initialized at <TARGET_DIR>

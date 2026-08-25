@@ -1,7 +1,6 @@
 Status
-  Config     /etc/cfgd/cfgd.yaml
-  Profile    default
-  Last Scan  2h ago
+  Config   /etc/cfgd/cfgd.yaml
+  Profile  default
 
 Last Apply
   Time     2026-05-14T11:30:00Z
@@ -9,6 +8,7 @@ Last Apply
   Result   Success
 
 Drift
+  scanned 2h ago
   ⚠ file ~/.zshrc                      — want: hash-desired, have: hash-actual
   ⚠ package ripgrep source:team-config — want: 14.1.0, have: 13.0.0
 
@@ -19,10 +19,10 @@ Config Sources
 
 Pending Decisions
   source:team-config
-    ⊙ 1 pending item
-    ⊙ Recommended package/curl
+    ◉ 1 pending item
+    ◉ Recommended package/curl
 
 Modules
-  ✓ module:shell-config — 0 pkgs, 4 files, Synced
+  ✓ module:shell-config — 0 packages, 4 files, Synced
 
 → `cfgd diff` checks the live machine; `cfgd status --scan` records the result

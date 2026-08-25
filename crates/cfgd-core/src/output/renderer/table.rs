@@ -153,6 +153,44 @@ impl Renderer {
             fit_widths(&mut widths, wrap::line_budget(term_cols, depth));
         }
         let clamped = |cell: &str, i: usize| wrap::clamp(cell, widths[i]);
+        // Lay every row out BEFORE any padding is decided. A wrapping column
+        // breaks at word boundaries, so the widest line it actually paints can
+        // be far narrower than the width it was allotted — padding to the
+        // allotment leaves that slack in front of every later column, which
+        // reads as the last column being right-anchored rather than
+        // left-packed two spaces after its neighbour.
+        let empty_roles: Vec<Option<Role>> = Vec::new();
+        let laid_out_rows: Vec<Vec<Vec<String>>> = rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .enumerate()
+                    .take(cols)
+                    .map(|(i, cell)| {
+                        if t.wrap_cells {
+                            wrap::wrap_segment(cell, "", "", Some(widths[i]))
+                        } else {
+                            vec![clamped(cell, i)]
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut widths: Vec<usize> = headers
+            .iter()
+            .enumerate()
+            .map(|(i, h)| UnicodeWidthStr::width(clamped(h, i).as_str()))
+            .collect();
+        for row in &laid_out_rows {
+            for (i, lines) in row.iter().enumerate() {
+                let widest = lines
+                    .iter()
+                    .map(|l| UnicodeWidthStr::width(l.as_str()))
+                    .max()
+                    .unwrap_or(0);
+                widths[i] = widths[i].max(widest);
+            }
+        }
         // Header row. Pad by the display-width deficit so CJK / emoji / accented
         // cells line up with ASCII neighbours — `format!("{:<w$}", ...)` pads by
         // char count, which over-pads multi-byte and under-pads zero-width.
@@ -183,24 +221,11 @@ impl Renderer {
         body.push(self.theme.muted.apply_to(&sep).to_string());
         // Data rows. Padding runs against the plain string so widths stay
         // honest; per-cell roles re-style the padded cell post-hoc.
-        let empty_roles: Vec<Option<Role>> = Vec::new();
-        for (row_idx, row) in rows.iter().enumerate() {
+        for (row_idx, laid_out) in laid_out_rows.iter().enumerate() {
             let roles_for_row = t.row_roles.get(row_idx).unwrap_or(&empty_roles);
             // One physical line per cell normally; a wrapping table lays each
             // cell out over as many as its column needs, and the row is as
             // tall as its tallest cell.
-            let laid_out: Vec<Vec<String>> = row
-                .iter()
-                .enumerate()
-                .take(cols)
-                .map(|(i, cell)| {
-                    if t.wrap_cells {
-                        wrap::wrap_segment(cell, "", "", Some(widths[i]))
-                    } else {
-                        vec![clamped(cell, i)]
-                    }
-                })
-                .collect();
             let height = laid_out.iter().map(Vec::len).max().unwrap_or(0);
             for physical in 0..height {
                 let line: String = laid_out
@@ -541,6 +566,51 @@ mod tests {
             indent,
             prefix_display_width(lines[0], "Resource"),
             "a continuation line starts at the Resource column:\n{out}"
+        );
+    }
+
+    /// Every column is left-packed two spaces after the widest value its
+    /// neighbour actually paints. A wrapping column breaks at word boundaries,
+    /// so the lines it emits are usually narrower than the width it was
+    /// allotted; padding to the allotment instead of to the painted width
+    /// pushes the last column right by the unused remainder, and the reader
+    /// sees a right-anchored `Source`.
+    #[test]
+    fn a_wrapped_column_is_sized_by_what_it_paints_not_by_its_allotment() {
+        let cols = 100;
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = NarrowSink(StringSink(buf.clone()), cols);
+        let r = Renderer::new(Theme::default(), Verbosity::Normal);
+        let packages: Vec<String> = (0..28).map(|i| format!("pkg-number-{i}")).collect();
+        let wide = format!("apt: {}", packages.join(", "));
+        let t = Table::new(["Type", "Owner", "Resource", "Source"])
+            .row(["file", "module:nvim", "~/.config/nvim (6 files)", "local"])
+            .row(["package", "module:nvim", wide.as_str(), "local"])
+            .wrapping();
+        r.render_table(&sink, 0, &t);
+        let out = crate::test_helpers::captured_text(&buf);
+        let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+
+        let resource_col = prefix_display_width(lines[0], "Resource");
+        let source_col = prefix_display_width(lines[0], "Source");
+        let widest_resource = lines
+            .iter()
+            .enumerate()
+            // Index 1 is the `─` rule, whose columns are joined by `──` rather
+            // than by the two-space gap this measurement splits on.
+            .filter(|(i, _)| *i != 1)
+            .map(|(_, l)| {
+                let cell: String = l.chars().skip(resource_col).collect();
+                let cell = cell.split("  ").next().unwrap_or_default().to_string();
+                display_width(&cell)
+            })
+            .max()
+            .unwrap_or(0);
+        assert_eq!(
+            source_col,
+            resource_col + widest_resource + 2,
+            "Source is left-packed two spaces after the widest painted Resource \
+             value (widest {widest_resource}):\n{out}"
         );
     }
 

@@ -505,7 +505,7 @@ mod tests {
             },
         );
         let out = crate::test_helpers::captured_text(&buf);
-        assert_eq!(out.trim_end(), "⊙ note");
+        assert_eq!(out.trim_end(), "◉ note");
     }
 
     #[test]

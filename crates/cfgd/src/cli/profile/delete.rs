@@ -153,7 +153,7 @@ pub fn cmd_profile_delete(
 
     printer.emit(
         Doc::new()
-            .status(Role::Ok, format!("Deleted profile '{}'", name))
+            .status(Role::Ok, "Deleted")
             .with_data(serde_json::json!({
                 "name": name,
                 "cancelled": false,

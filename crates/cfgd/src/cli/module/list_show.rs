@@ -75,7 +75,12 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
                 (e.source.clone(), source_role(&e.source)),
                 status_cell(&e.status),
                 (
-                    format!("{} pkgs, {} files, {} deps", e.packages, e.files, e.depends),
+                    format!(
+                        "{}, {}, {}",
+                        cfgd_core::pluralize(e.packages, "package"),
+                        cfgd_core::pluralize(e.files, "file"),
+                        cfgd_core::pluralize(e.depends, "dep")
+                    ),
                     None,
                 ),
             ]);

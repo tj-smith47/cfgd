@@ -247,6 +247,52 @@ fn explain_cmd_field_path_multi_child_object_shows_own_header_and_tree_stays_col
     );
 }
 
+/// A field list that MARKS expandable fields explains the mark exactly once,
+/// and a list carrying no mark says nothing about it.
+///
+/// The legend was missing entirely: `[+]` appeared beside a field with no
+/// statement anywhere of what it meant or how to act on it, so the reader had
+/// to guess that a second `cfgd explain` call was on offer.
+#[test]
+fn every_field_list_carrying_the_mark_explains_it_once() {
+    let render = |resource: &str, recursive: bool| {
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        cmd_explain(&printer, Some(resource), recursive).unwrap();
+        printer.flush();
+        cfgd_core::test_helpers::captured_text(&buf)
+    };
+    let legend = "expands a field marked [+]";
+
+    // Every schema's own field list, and the drill-down beneath it: whichever
+    // of the two carries a mark carries the legend, and never twice.
+    for schema in super::all_schemas() {
+        for resource in [schema.name.clone(), format!("{}.spec", schema.name)] {
+            let out = render(&resource, false);
+            let marks = out.matches("[+]").count();
+            let legends = out.matches(legend).count();
+            if marks > usize::from(legends > 0) {
+                assert_eq!(
+                    legends, 1,
+                    "`cfgd explain {resource}` marks a field and never says what the mark means:\n{out}"
+                );
+            } else {
+                assert_eq!(
+                    legends, 0,
+                    "`cfgd explain {resource}` explains a mark it never printed:\n{out}"
+                );
+            }
+        }
+    }
+
+    // `--recursive` has already expanded everything, so it mints no mark and
+    // earns no legend.
+    let recursive = render("Config", true);
+    assert!(
+        !recursive.contains(legend),
+        "an expanded tree explains nothing about expanding: {recursive}"
+    );
+}
+
 #[test]
 fn explain_cmd_field_descriptions_render_documented_ai_fields() {
     // Non-recursive on purpose: descriptions belong to the field-list view.

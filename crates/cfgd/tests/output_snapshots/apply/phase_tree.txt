@@ -6,14 +6,14 @@ Apply
 
 Phase: Prerequisites
   cfgd:managers
-    ✓ refresh brew index
+    ✓ refresh brew index (XXs)
 
 Phase: Packages
   profile:tiny
-    ✓ brew install ripgrep
+    ✓ brew install ripgrep (XXs)
 
 Phase: Files
   profile:tiny
-    ✓ create <TARGET>
+    ✓ create <TARGET> (XXs)
 
 ✓ Apply complete — 3 actions succeeded (XXs)

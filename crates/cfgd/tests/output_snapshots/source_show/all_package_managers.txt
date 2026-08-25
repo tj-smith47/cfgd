@@ -17,11 +17,11 @@ Policy
   Secrets Read Allowed    false
   System Changes Allowed  false
   Required
-    ⊙ brew formula: git
-    ⊙ brew formula: ripgrep
-    ⊙ brew cask: iterm2
-    ⊙ apt: build-essential
-    ⊙ cargo: cargo-edit
-    ⊙ pipx: black
-    ⊙ dnf: gcc
-    ⊙ npm: typescript
+    ◉ brew formula: git
+    ◉ brew formula: ripgrep
+    ◉ brew cask: iterm2
+    ◉ apt: build-essential
+    ◉ cargo: cargo-edit
+    ◉ pipx: black
+    ◉ dnf: gcc
+    ◉ npm: typescript

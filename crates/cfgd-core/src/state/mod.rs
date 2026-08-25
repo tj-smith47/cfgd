@@ -28,11 +28,11 @@ pub use pending_config::{
 };
 pub use types::{
     ApplyRecord, ApplyStatus, ApplySummary, BackupRunDraft, BackupRunKind, BackupRunRecord,
-    BackupRunStatus, ComplianceHistoryRow, ConfigSourceRecord, DriftEvent, FileBackupRecord,
-    JournalEntry, MODULE_STATUS_ERROR, MODULE_STATUS_INSTALLED, ManagedResource, ModuleFileRecord,
-    ModuleStateRecord, PendingDecision, SOURCE_STATUS_ACTIVE, SOURCE_STATUS_ERROR,
-    SourceConfigHash, SourceConflictRecord, backup_run_status_display, module_status_display,
-    source_status_display,
+    BackupRunStatus, ComplianceHistoryRow, ConfigSourceRecord, DriftEvent, ENV_SESSION_RESOURCE_ID,
+    FileBackupRecord, JournalEntry, MODULE_STATUS_ERROR, MODULE_STATUS_INSTALLED, ManagedResource,
+    ModuleFileRecord, ModuleStateRecord, PendingDecision, SOURCE_STATUS_ACTIVE,
+    SOURCE_STATUS_ERROR, SourceConfigHash, SourceConflictRecord, backup_run_status_display,
+    module_status_display, source_status_display,
 };
 
 /// Canonical state DB filename. The single source of truth so the default and

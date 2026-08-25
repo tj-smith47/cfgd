@@ -179,7 +179,7 @@ mod tests {
     fn info_uses_its_theme_icon_and_style() {
         let t = Theme::default();
         let (icon, style) = role_glyph(&t, Role::Info);
-        assert_eq!(icon, Some("⊙"));
+        assert_eq!(icon, Some("◉"));
         assert_eq!(style_repr(&style), style_repr(&t.info));
         assert_ne!(style_repr(&style), style_repr(&ThemedStyle::plain()));
         // The ASCII preset downgrades it like every other glyph.

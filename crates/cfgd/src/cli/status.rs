@@ -383,6 +383,7 @@ fn drift_section<T>(
     doc: Doc,
     drift: &[T],
     checked_live: bool,
+    scan_note: Option<&str>,
     row: impl Fn(SectionBuilder, &T) -> SectionBuilder,
 ) -> Doc {
     doc.section("Drift", |s| {
@@ -394,18 +395,45 @@ fn drift_section<T>(
             // No hint on this line: the report closes with ONE, and the two
             // together put two spellings of "go check the machine" on a single
             // screen — this one and the header's `--scan` line.
-            s.status(
-                Role::Ok,
-                if checked_live {
-                    "No drift detected"
-                } else {
-                    "No drift recorded"
-                },
-            )
+            let subject = if checked_live {
+                "No drift detected"
+            } else {
+                "No drift recorded"
+            };
+            // When the recording was taken qualifies what "no drift" is worth,
+            // so it rides the verdict rather than sitting in a header row the
+            // reader has to carry down the page.
+            s.status_with(Role::Ok, subject, |f| match scan_note {
+                Some(note) => f.detail(note),
+                None => f,
+            })
         } else {
+            // The same fact, one line above the findings: with rows to state,
+            // the verdict line the detail would ride does not exist. It is a
+            // label for the rows beneath it rather than a finding of its own,
+            // so it takes the iconless role — a glyph here would read as an
+            // eighth drift row.
+            let s = match scan_note {
+                Some(note) => s.status(Role::Secondary, note),
+                None => s,
+            };
             drift.iter().fold(s, &row)
         }
     })
+}
+
+/// How a recorded-state dashboard dates its drift: the scan's age, or that no
+/// scan has ever run. `None` is the LIVE branch — a `--scan` run just asked the
+/// machine, so its findings need no timestamp — and every surface holding no
+/// scan stamp at all.
+fn scan_note(last_scan_at: Option<&str>, now: &str) -> String {
+    match last_scan_at {
+        Some(ts) => {
+            let age = cfgd_core::humanize_age_since(ts, now).unwrap_or_else(|| ts.to_string());
+            format!("scanned {age}")
+        }
+        None => "never scanned".to_string(),
+    }
 }
 
 /// Render the fleet-wide "Drift" section: one row per recorded event, named by
@@ -414,6 +442,7 @@ fn render_drift_section(
     doc: Doc,
     drift: &[cfgd_core::state::DriftEvent],
     checked_live: bool,
+    scan_note: Option<&str>,
 ) -> Doc {
     let drop_env_file_row = cfgd_core::output::env_file_row_is_redundant(
         drift.iter().map(|e| e.resource_type.as_str()),
@@ -422,7 +451,7 @@ fn render_drift_section(
         .iter()
         .filter(|e| !(drop_env_file_row && e.resource_type == "env"))
         .collect();
-    drift_section(doc, &rows, checked_live, |s, event| {
+    drift_section(doc, &rows, checked_live, scan_note, |s, event| {
         // A "script" / "Running script" resource_id is the raw run_str body
         // (preserved byte-identical for UPSERT matching against prior drift
         // rows) — condense only here, at the point it enters a status subject,
@@ -500,7 +529,7 @@ fn render_module_drift_section(doc: Doc, drift: &[ModuleDrift], checked_live: bo
             .then_with(|| a.surface.cmp(b.surface))
             .then_with(|| a.item.cmp(&b.item))
     });
-    drift_section(doc, &ordered, checked_live, |s, d| {
+    drift_section(doc, &ordered, checked_live, None, |s, d| {
         let subject = format!(
             "{}:{} {}",
             OwnerLabel::new("module", &d.owner).plain(),
@@ -580,23 +609,18 @@ pub fn build_fleet_status_doc(
     // `--exit-code` run just checked the machine itself, so its Drift section
     // already speaks for how current the display is.
     //
-    // The hint it earns is emitted ONCE, at the foot of the report, rather than
-    // here: a line under the header and a second one inside Drift were two
-    // spellings of the same suggestion on one screen.
-    let mut stale = false;
-    if !output.drift_checked_live {
-        match &output.last_scan_at {
-            Some(ts) => {
-                let age = cfgd_core::humanize_age_since(ts, now).unwrap_or_else(|| ts.clone());
-                doc = doc.kv("Last Scan", &age);
-                stale = cfgd_core::is_stale_since(ts, now, SCAN_STALENESS_SECS);
-            }
-            None => {
-                doc = doc.kv("Last Scan", "never");
-                stale = true;
-            }
-        }
-    }
+    // The date rides the Drift verdict it qualifies, and the hint it earns is
+    // emitted ONCE at the foot of the report: a header row, a line inside
+    // Drift and a closing hint were three spellings of one suggestion.
+    let (stale, note) = if output.drift_checked_live {
+        (false, None)
+    } else {
+        let stale = output
+            .last_scan_at
+            .as_deref()
+            .is_none_or(|ts| cfgd_core::is_stale_since(ts, now, SCAN_STALENESS_SECS));
+        (stale, Some(scan_note(output.last_scan_at.as_deref(), now)))
+    };
 
     match &output.last_apply {
         Some(last) => {
@@ -622,7 +646,12 @@ pub fn build_fleet_status_doc(
         }
     }
 
-    doc = render_drift_section(doc, &output.drift, output.drift_checked_live);
+    doc = render_drift_section(
+        doc,
+        &output.drift,
+        output.drift_checked_live,
+        note.as_deref(),
+    );
 
     if !configured_sources.is_empty() {
         doc = doc.section("Config Sources", |s| {
@@ -666,14 +695,10 @@ pub fn build_fleet_status_doc(
 
     doc = doc.section_if_nonempty("Modules", &output.modules, |s, mods| {
         mods.iter().fold(s, |s, m| {
-            // Fixed units, so they agree with their own count: one package is
-            // `1 pkg`, not `1 pkgs`.
             let summary = format!(
-                "{} pkg{}, {} file{}",
-                m.packages,
-                if m.packages == 1 { "" } else { "s" },
-                m.files,
-                if m.files == 1 { "" } else { "s" }
+                "{}, {}",
+                cfgd_core::pluralize(m.packages, "package"),
+                cfgd_core::pluralize(m.files, "file")
             );
             // The dashboard reads RECORDED state only, so no row here can
             // claim `Drifted` — this surface's Drift section is what reports
@@ -757,6 +782,8 @@ fn managed_resource_rows(
             // stored id itself.
             let resource = if r.resource_type == "script" || r.resource_type == "Running script" {
                 condense_script_label(&r.resource_id)
+            } else if is_session_env_row(r) {
+                session_env_resource()
             } else {
                 r.resource_id.clone()
             };
@@ -783,13 +810,13 @@ fn managed_resource_rows(
             _ if detail.is_empty() => NO_DETAIL.to_string(),
             _ => detail.to_string(),
         };
-        rows.push([surface.to_string(), owner, resource, r.source.clone()]);
+        rows.push([display_type(surface), owner, resource, r.source.clone()]);
     }
 
     for ((manager, source), mut packages) in own_packages {
         packages.sort_unstable();
         rows.push([
-            "packages".to_string(),
+            display_type("package"),
             OWNER_SELF.to_string(),
             format!("{manager}: {}", packages.join(", ")),
             source.to_string(),
@@ -800,6 +827,26 @@ fn managed_resource_rows(
     // letting the shape of the rows decide the order.
     rows.sort();
     rows
+}
+
+/// Whether this recorded row is the live-session env surface — the one row
+/// whose stored id names the ACT (`refresh`) rather than a resource.
+fn is_session_env_row(r: &cfgd_core::state::ManagedResource) -> bool {
+    r.resource_type == "env" && r.resource_id == cfgd_core::state::ENV_SESSION_RESOURCE_ID
+}
+
+/// What the Resource column calls the live-session env surface.
+///
+/// A heading reading `Managed Resources` has to name a resource, and on a host
+/// with nothing to publish INTO, the row says so with the same sentence the
+/// apply settles that action with — the dashboard resolving it from the same
+/// probe rather than reporting a surface it cannot reach as ordinary state.
+fn session_env_resource() -> String {
+    if cfgd_core::session_manager_available() {
+        "session env".to_string()
+    } else {
+        format!("session env — {}", cfgd_core::NO_SESSION_MANAGER)
+    }
 }
 
 /// The `(manager, package)` halves of a `package` row's `<manager>/<package>`
@@ -935,19 +982,22 @@ pub(super) fn recorded_module_tallies(
     tallies
 }
 
-/// The word the Type column reads for a recorded `resource_type`.
+/// The word the Type column reads for a recorded `resource_type` or for a
+/// module row's own surface.
 ///
-/// The recorded types are a state-matching vocabulary and stay exactly as they
-/// are; the column names the SURFACE, in the same words a module row's own id
-/// spells them (`files`, `packages`), so one table does not call one thing two
-/// names depending on who declared it.
-fn display_type(resource_type: &str) -> String {
-    match resource_type {
-        "file" => "files".to_string(),
-        "package" => "packages".to_string(),
-        "Running script" => "script".to_string(),
-        other => other.to_string(),
+/// The recorded vocabularies are state-matching keys and stay exactly as they
+/// are; the column names the KIND, and names it in the singular the way
+/// `kubectl get` does — the Resource column beside it already carries the
+/// count, so a plural here only made one table spell one kind two ways
+/// depending on which producer recorded the row.
+fn display_type(kind: &str) -> String {
+    match kind {
+        "file" | "files" => "file",
+        "package" | "packages" => "package",
+        "script" | "Running script" => "script",
+        other => other,
     }
+    .to_string()
 }
 
 /// Build the per-module `cfgd status <module>` Doc.
@@ -1930,13 +1980,13 @@ mod tests {
             rows,
             vec![
                 [
-                    "packages".to_string(),
+                    "package".to_string(),
                     "cfgd".to_string(),
                     "apt: git".to_string(),
                     "local".to_string()
                 ],
                 [
-                    "packages".to_string(),
+                    "package".to_string(),
                     "cfgd".to_string(),
                     "brew: bat, ripgrep".to_string(),
                     "local".to_string()
@@ -2022,6 +2072,45 @@ mod tests {
         assert_eq!(resources, vec!["4 files", "zsh", "-"]);
     }
 
+    /// The live-session row names the RESOURCE cfgd manages, not the act it
+    /// performed on it — every other row in the table is a noun — and when the
+    /// host has no session manager the row says so, from the same probe the
+    /// apply resolves the action with. A bare `refresh` left the reader with a
+    /// verb and no way to tell whether anything is being managed at all.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    #[serial_test::serial]
+    fn the_session_env_row_names_the_resource_and_says_when_none_can_be_reached() {
+        let session_cell = || {
+            let rows = managed_resource_rows(
+                &[recorded("env", cfgd_core::state::ENV_SESSION_RESOURCE_ID)],
+                &[],
+            );
+            rows[0][2].clone()
+        };
+
+        let _missing = cfgd_core::test_helpers::EnvVarGuard::set(
+            cfgd_core::SYSTEMCTL_BIN_ENV,
+            "/no/such/systemctl",
+        );
+        assert_eq!(
+            session_cell(),
+            format!("session env — {}", cfgd_core::NO_SESSION_MANAGER),
+            "with nothing to publish to, the row says so"
+        );
+
+        let present = std::env::current_exe().expect("the test binary is a real file");
+        let _available = cfgd_core::test_helpers::EnvVarGuard::set(
+            cfgd_core::SYSTEMCTL_BIN_ENV,
+            &present.to_string_lossy(),
+        );
+        assert_eq!(
+            session_cell(),
+            "session env",
+            "a reachable session manager needs no qualifier"
+        );
+    }
+
     /// A recorded type is a state-matching token; the Type column names the
     /// surface in the same words a module row's own id spells them, so one
     /// table never calls one thing two names depending on who declared it.
@@ -2036,12 +2125,57 @@ mod tests {
             &[],
         );
         let types: Vec<&str> = rows.iter().map(|r| r[0].as_str()).collect();
-        assert_eq!(types, vec!["env", "files", "script"]);
+        assert_eq!(types, vec!["env", "file", "script"]);
         assert!(rows.iter().all(|r| r[1] == "cfgd"), "{rows:?}");
     }
 
+    /// Every kind the Type column can print, in the singular — `kubectl get`'s
+    /// shape, where the column names WHAT a row is and the row beside it
+    /// carries how many.
+    ///
+    /// The population is both producers: every `resource_type`
+    /// `action_resource_info` records (plus the legacy `"Running script"` that
+    /// `execute_script` stamped), and the three surfaces a module row's own id
+    /// spells. A new kind reaching this column without an arm renders whatever
+    /// its producer spelled, so it is listed here or it is not covered.
+    #[test]
+    fn every_kind_the_type_column_prints_is_singular() {
+        const RECORDED_KINDS: &[&str] = &[
+            "file",
+            "package",
+            "secret",
+            "system",
+            "script",
+            "module",
+            "env",
+            "env-rc",
+            "env-session",
+            "manager",
+            "Running script",
+        ];
+        const MODULE_SURFACES: &[&str] = &["files", "packages", "script"];
+
+        for kind in RECORDED_KINDS.iter().chain(MODULE_SURFACES) {
+            let word = display_type(kind);
+            assert!(
+                !word.ends_with('s') || word.ends_with("ss"),
+                "{kind:?} prints as the plural {word:?}"
+            );
+            assert!(
+                !word.contains(' '),
+                "{kind:?} prints as a phrase, not a kind: {word:?}"
+            );
+        }
+        // The two spellings of one surface collapse onto one word, which is the
+        // whole point: a `files` module row and a `file` profile row are the
+        // same kind of thing.
+        assert_eq!(display_type("files"), display_type("file"));
+        assert_eq!(display_type("packages"), display_type("package"));
+        assert_eq!(display_type("Running script"), display_type("script"));
+    }
+
     /// The module health line's units agree with their own counts: a module
-    /// with one of each reads `1 pkg, 1 file`, and anything else — including
+    /// with one of each reads `1 package, 1 file`, and anything else — including
     /// zero — keeps the plural.
     #[test]
     fn module_status_line_units_agree_with_their_counts() {
@@ -2095,30 +2229,35 @@ mod tests {
         let out = cfgd_core::test_helpers::captured_text(&buf);
 
         assert!(
-            out.contains("1 pkg, 1 file,"),
+            out.contains("1 package, 1 file,"),
             "a single package and file must read singular: {out}"
         );
         assert!(
-            out.contains("3 pkgs, 12 files,"),
+            out.contains("3 packages, 12 files,"),
             "many must stay plural: {out}"
         );
         assert!(
-            out.contains("0 pkgs, 0 files,"),
+            out.contains("0 packages, 0 files,"),
             "zero keeps the plural: {out}"
         );
     }
 
-    /// The recorded-state header says when the shown state was last checked
-    /// against the machine, and hints at `--scan` once that answer is old
+    /// When the shown state was last checked rides the Drift VERDICT it
+    /// qualifies, and the report hints at `--scan` once that answer is old
     /// enough to be misleading. The threshold is the daemon's default
     /// reconcile interval: past it, the dashboard is showing something a live
     /// daemon would never have let get this stale.
+    ///
+    /// No separate `Last Scan` row: it sat in the header, pages above the
+    /// verdict it qualifies, leaving the reader to carry a timestamp down to
+    /// `No drift recorded` and decide for themselves what that verdict was
+    /// worth. The `-o json` payload keeps `lastScan` either way.
     ///
     /// A run that DID scan says nothing here — its Drift section already
     /// speaks for how current the display is — which is the branch that keeps
     /// `--scan`'s own output from carrying a hint pointing back at itself.
     #[test]
-    fn status_header_dates_the_recorded_state_and_hints_when_it_is_stale() {
+    fn status_dates_the_drift_verdict_and_hints_when_it_is_stale() {
         fn header(last_scan_at: Option<&str>, checked_live: bool) -> String {
             let output = StatusOutput {
                 last_apply: None,
@@ -2153,23 +2292,100 @@ mod tests {
         // Exactly at the threshold is not yet stale — `is_stale_since` is
         // "more than", so the boundary belongs to the fresh side and a daemon
         // reconciling on schedule never trips the hint.
+        // The date is ON the verdict line, not in a row of its own.
+        let verdict = |out: &str| {
+            out.lines()
+                .find(|l| l.contains("No drift recorded") || l.contains("No drift detected"))
+                .unwrap_or_else(|| panic!("no drift verdict rendered: {out}"))
+                .to_string()
+        };
+
         let fresh = header(Some("2026-05-14T10:00:00Z"), false);
-        assert!(fresh.contains("Last Scan"), "no age row: {fresh}");
-        assert!(fresh.contains("5m ago"), "wrong age rendered: {fresh}");
+        assert!(
+            !fresh.contains("Last Scan"),
+            "the date rides the verdict, it is not a header row: {fresh}"
+        );
+        assert!(
+            verdict(&fresh).contains("scanned 5m ago"),
+            "wrong age rendered: {fresh}"
+        );
         assert!(!fresh.contains(hint), "a fresh scan must not hint: {fresh}");
 
         let stale = header(Some("2026-05-14T08:00:00Z"), false);
-        assert!(stale.contains("2h ago"), "wrong age rendered: {stale}");
+        assert!(
+            verdict(&stale).contains("scanned 2h ago"),
+            "wrong age rendered: {stale}"
+        );
         assert!(stale.contains(hint), "a stale scan must hint: {stale}");
 
         let never = header(None, false);
-        assert!(never.contains("never"), "no never row: {never}");
+        assert!(
+            verdict(&never).contains("never scanned"),
+            "an unscanned host says so on the verdict: {never}"
+        );
         assert!(never.contains(hint), "an unscanned host must hint: {never}");
 
         let scanned = header(Some("2026-05-14T08:00:00Z"), true);
         assert!(
-            !scanned.contains("Last Scan") && !scanned.contains(hint),
+            !scanned.contains("scanned ") && !scanned.contains(hint),
             "a run that just scanned must not date or hint at itself: {scanned}"
+        );
+        assert!(
+            !scanned.contains("Last Scan"),
+            "no scan row on any branch: {scanned}"
+        );
+    }
+
+    /// The dating survives findings being present. With rows to state there is
+    /// no verdict line to hang a detail off, and the fact still qualifies every
+    /// row beneath it — a recorded dashboard whose findings carry no date is
+    /// exactly the header row this change removed, minus the date.
+    #[test]
+    fn a_recorded_drift_finding_is_dated_by_the_same_scan_note_the_verdict_carries() {
+        let output = StatusOutput {
+            last_apply: None,
+            drift: vec![cfgd_core::state::DriftEvent {
+                id: 1,
+                timestamp: "2026-05-14T08:00:00Z".to_string(),
+                resource_type: "file".to_string(),
+                resource_id: "~/.zshrc".to_string(),
+                expected: Some("hash-desired".to_string()),
+                actual: Some("hash-actual".to_string()),
+                resolved_by: None,
+                source: "local".to_string(),
+                want: None,
+                have: None,
+            }],
+            sources: Vec::new(),
+            pending_decisions: Vec::new(),
+            modules: Vec::new(),
+            managed_resources: Vec::new(),
+            warnings: Vec::new(),
+            classification_degraded: false,
+            classification_degraded_code: None,
+            classification_degraded_reason: None,
+            drift_checked_live: false,
+            last_scan_at: Some("2026-05-14T08:00:00Z".to_string()),
+        };
+
+        let out = dashboard(&output);
+        assert!(
+            out.contains("scanned 2h ago"),
+            "findings are dated too, not only the empty verdict: {out}"
+        );
+        assert!(
+            !out.contains("Last Scan"),
+            "the date never returns to a header row: {out}"
+        );
+
+        // A live scan speaks for its own currency on both branches.
+        let live = StatusOutput {
+            drift_checked_live: true,
+            ..output
+        };
+        assert!(
+            !dashboard(&live).contains("scanned "),
+            "a run that just scanned does not date its own findings"
         );
     }
 
@@ -2282,7 +2498,7 @@ mod tests {
     }
 
     /// The Modules headline and the Managed Resources table answer the same
-    /// question and must give the same number: the headline said `28 pkgs`
+    /// question and must give the same number: the headline said `28 packages`
     /// over a table listing 24.
     #[test]
     fn the_module_headline_counts_what_the_table_lists() {
@@ -2307,7 +2523,7 @@ mod tests {
 
         let listed: usize = managed_resource_rows(&resources, &output.modules)
             .iter()
-            .filter(|row| row[0] == "packages")
+            .filter(|row| row[0] == "package")
             .map(|row| {
                 row[2]
                     .rsplit(": ")
@@ -2317,7 +2533,7 @@ mod tests {
             .sum();
         assert_eq!(packages, listed, "headline vs table: {out}");
         assert!(
-            out.contains("4 pkgs, 6 files"),
+            out.contains("4 packages, 6 files"),
             "the headline reports the recorded tally: {out}"
         );
     }

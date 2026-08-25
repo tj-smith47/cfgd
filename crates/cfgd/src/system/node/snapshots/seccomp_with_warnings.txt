@@ -7,4 +7,4 @@ Phase: System
 Caveats
   profile:snapshot
     ⚠ Skipping seccomp profile traversal-profile (../../etc/cfgd-snap-traversal.json): path traversal — it contains '..'
-    ⊙ Writing seccomp profile allow-audit: <TMPDIR>/cfgd-seccomp/allow-audit.json
+    ◉ Writing seccomp profile allow-audit: <TMPDIR>/cfgd-seccomp/allow-audit.json

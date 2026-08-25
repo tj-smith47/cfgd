@@ -3075,13 +3075,16 @@ fn shell_env_reminder_names_the_written_env_file() {
         !home.is_empty() && home != "~",
         "the test home must resolve to a real sandbox path, got: {home}"
     );
+    // The reminder is the report's closing instruction, so it renders at the
+    // foot with no `Caveats` heading and no owner group around it — there is
+    // nothing to caveat here, only something to do next.
     assert!(
-        out.contains("Caveats"),
-        "expected Caveats heading, got: {out}"
+        !out.contains("Caveats"),
+        "a lone next step opens no Caveats section, got: {out}"
     );
     assert!(
-        out.contains("cfgd:env"),
-        "expected the cfgd:env owner group, got: {out}"
+        !out.contains("cfgd:env"),
+        "a next step is not a remark about one owner, got: {out}"
     );
     assert!(
         out.contains("Run `source ~/.cfgd.env`"),
@@ -3163,9 +3166,13 @@ fn shell_env_reminder_fires_for_source_line_injection_alone() {
 
     let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        out.contains("Caveats") && out.contains("cfgd:env"),
+        out.contains("Run `source ~/.cfgd.env`"),
         "an rc file that only just learned to source the env file still leaves \
          the running shell stale: {out}"
+    );
+    assert!(
+        !out.contains("Caveats"),
+        "a lone next step opens no Caveats section, got: {out}"
     );
 }
 

@@ -2,7 +2,7 @@
 //!
 //! Left to the terminal, a status line longer than the window breaks at
 //! column 0, so its tail reads as a separate unmarked line sitting outside the
-//! layout — `⊙ sudo apt-get install … python3-pip py` followed by
+//! layout — `◉ sudo apt-get install … python3-pip py` followed by
 //! `thon3-venv rustc ruby-full` hard against the left edge. Wrapping here
 //! instead lets the continuation start under the first word of the line above
 //! it, which is what makes it read as the same line.
@@ -91,7 +91,7 @@ pub(crate) fn clamp(text: &str, max: usize) -> String {
 }
 
 /// Display width of the line's marker column — a leading one-column glyph
-/// (`✓`, `⊙`, `-`, …) plus the space after it. Zero when the line does not
+/// (`✓`, `◉`, `-`, …) plus the space after it. Zero when the line does not
 /// open with one, so a plain sentence wraps flush rather than hanging off its
 /// own first word.
 fn marker_width(visible: &str) -> usize {
@@ -353,9 +353,9 @@ mod tests {
 
     #[test]
     fn continuation_hangs_under_the_first_word_after_the_glyph() {
-        let out = wrap_body("⊙ alpha bravo charlie delta", "", Some(24));
+        let out = wrap_body("◉ alpha bravo charlie delta", "", Some(24));
         assert_eq!(out.len(), 2, "got: {out:?}");
-        assert_eq!(out[0], "⊙ alpha bravo charlie");
+        assert_eq!(out[0], "◉ alpha bravo charlie");
         assert_eq!(out[1], "  delta");
     }
 
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn a_terminal_too_narrow_to_wrap_usefully_is_left_alone() {
-        let long = "⊙ alpha bravo charlie delta echo foxtrot";
+        let long = "◉ alpha bravo charlie delta echo foxtrot";
         assert_eq!(wrap_body(long, "", Some(10)), vec![long.to_string()]);
     }
 
@@ -430,7 +430,7 @@ mod tests {
     fn the_hang_comes_from_the_first_line_not_each_continuation() {
         // "Temporal" is eight columns wide, so a continuation asked for its own
         // marker width would get zero and fall back to column 0.
-        let out = wrap_body("⊙ alpha\nTemporal support is disabled.", "", Some(80));
+        let out = wrap_body("◉ alpha\nTemporal support is disabled.", "", Some(80));
         assert_eq!(out[1], "  Temporal support is disabled.");
     }
 
@@ -450,8 +450,8 @@ mod tests {
 
     #[test]
     fn a_continuation_that_is_itself_too_long_wraps_to_the_same_column() {
-        let out = wrap_body("⊙ head\nalpha bravo charlie delta echo", "", Some(24));
-        assert_eq!(out[0], "⊙ head");
+        let out = wrap_body("◉ head\nalpha bravo charlie delta echo", "", Some(24));
+        assert_eq!(out[0], "◉ head");
         assert_eq!(out[1], "  alpha bravo charlie");
         assert_eq!(out[2], "  delta echo");
     }

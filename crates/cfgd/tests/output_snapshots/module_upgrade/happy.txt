@@ -1,14 +1,14 @@
 Update module:upmod
 
 Changes
-  ⊙ (no spec changes)
+  ◉ (no spec changes)
 
 Old commit     <COMMIT_SHA>
 New commit     <COMMIT_SHA>
 New integrity  sha256:<INTEGRITY>
 
-⊙ Tag 'v1.1.0' is unsigned
+◉ Tag 'v1.1.0' is unsigned
 
-✓ Updated module 'upmod' in modules.lock
+✓ Updated in modules.lock
 
 → Run 'cfgd plan' to preview changes, then 'cfgd apply'

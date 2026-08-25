@@ -1,2 +1,2 @@
 Script Output: Apply #1
-⊙ No journal entries for apply #1
+◉ No journal entries for apply #1

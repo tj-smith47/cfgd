@@ -78,6 +78,28 @@ pub struct SessionRefresh {
 const LAUNCHCTL_BIN_ENV: &str = "CFGD_LAUNCHCTL_BIN";
 const SETX_BIN_ENV: &str = "CFGD_SETX_BIN";
 
+/// The one-line detail every surface uses for a session refresh that had
+/// nothing to talk to. The planner renders it ahead of the run, the apply
+/// settles with it, and the status dashboard reports it — three surfaces, one
+/// sentence.
+pub const NO_SESSION_MANAGER: &str = "no session manager";
+
+/// Whether this host has a session manager [`refresh_session_env`] could
+/// reach, answered from the same seam the setter spawns through.
+///
+/// A probe, not an attempt: it is what lets a plan say up front that the
+/// publish will be skipped, instead of promising work cfgd already knows it
+/// cannot do.
+pub fn session_manager_available() -> bool {
+    if cfg!(windows) {
+        crate::command_available_with_seam(SETX_BIN_ENV, "setx")
+    } else if cfg!(target_os = "macos") {
+        crate::command_available_with_seam(LAUNCHCTL_BIN_ENV, "launchctl")
+    } else {
+        crate::systemctl_available()
+    }
+}
+
 /// Which output stream a failing setter writes its diagnostic to.
 enum ErrStream {
     Stdout,

@@ -1,6 +1,6 @@
 Create Module: apply-mod
 
-Created module 'apply-mod' at <CONFIG_DIR>/modules/apply-mod
+Created at <CONFIG_DIR>/modules/apply-mod
   (none)
 
 → Add to a profile with: cfgd profile update <profile> --module <name>

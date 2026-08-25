@@ -2290,7 +2290,7 @@ fn every_script_exit_emits_one_status() {
             }),
             false,
             5_000,
-            '\u{2014}',
+            '\u{2205}',
         ),
         (
             "onlyIf fails",
@@ -2301,7 +2301,7 @@ fn every_script_exit_emits_one_status() {
             }),
             false,
             5_000,
-            '\u{2014}',
+            '\u{2205}',
         ),
         (
             "unless holds",
@@ -2312,7 +2312,7 @@ fn every_script_exit_emits_one_status() {
             }),
             false,
             5_000,
-            '\u{2014}',
+            '\u{2205}',
         ),
         (
             "interactive without a tty",
@@ -2457,7 +2457,7 @@ fn unspawnable_script_emits_one_status_without_opening_a_window() {
         "no window may open before the spawn fails: {out}"
     );
     assert!(
-        !out.contains('\u{2299}'),
+        !out.contains('\u{25C9}'),
         "a dropped window's Info line is the two-line regression: {out}"
     );
 }
@@ -2558,7 +2558,7 @@ fn script_status_fail_after_window_emits_one_fail() {
         lines[0]
     );
     assert!(
-        !out.contains('\u{2299}'),
+        !out.contains('\u{25C9}'),
         "the window was finished, not dropped: {out}"
     );
 }
@@ -2584,7 +2584,7 @@ fn script_status_status_after_open_window_emits_one_line() {
     let lines = settled_lines(&out);
 
     assert_eq!(lines.len(), 1, "exactly one settled line: {out}");
-    assert!(lines[0].starts_with('\u{2014}'), "got: {}", lines[0]);
+    assert!(lines[0].starts_with('\u{2205}'), "got: {}", lines[0]);
     assert!(
         lines[0].contains("postApply: exit 1"),
         "the marked subject: {}",

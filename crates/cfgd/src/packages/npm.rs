@@ -1526,7 +1526,7 @@ mod tests {
                 .lines()
                 .map(str::trim_start)
                 .filter(|l| {
-                    ['\u{2713}', '\u{2717}', '\u{26A0}', '\u{2014}', '\u{2299}']
+                    ['\u{2713}', '\u{2717}', '\u{26A0}', '\u{2014}', '\u{25C9}']
                         .iter()
                         .any(|g| l.starts_with(*g))
                 })

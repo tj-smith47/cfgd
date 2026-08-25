@@ -823,7 +823,7 @@ fn backup_run_reports_a_busy_unit_and_still_runs_the_others() {
     // `apply` renders the same event as Skipped; the unit IS being backed up,
     // just not by us. Only the exit code distinguishes the two surfaces.
     assert!(
-        human.contains("backup:docs") && human.contains("— snapshot"),
+        human.contains("backup:docs") && human.contains("∅ snapshot"),
         "a busy unit renders with the Skipped role inside its own group, matching apply: {human:?}"
     );
     assert!(
@@ -831,7 +831,7 @@ fn backup_run_reports_a_busy_unit_and_still_runs_the_others() {
         "a busy unit is not a failed backup: {human:?}"
     );
     assert!(
-        human.contains("⊙ 1 action not attempted"),
+        human.contains("◉ 1 action not attempted"),
         "the snapshot the held lock cost the run is counted, not silently dropped: {human:?}"
     );
     assert!(

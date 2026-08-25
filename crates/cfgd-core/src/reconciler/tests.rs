@@ -22011,6 +22011,97 @@ fn metadata_detail_is_muted_and_error_detail_is_not() {
     );
 }
 
+/// Every action that RAN reports how long it took; a skipped one reports no
+/// time at all.
+///
+/// A one-second floor made the suffix's absence ambiguous — "finished in under
+/// a second" and "never ran" rendered identically — so a reader comparing two
+/// runs could not tell which lines the second run had actually done.
+#[test]
+fn an_executed_action_is_timed_and_a_skipped_one_is_not() {
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![DispatchLogManager::new("brew", &log, true)]);
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::cfgd("session"),
+                vec![Action::Env(EnvAction::RefreshLiveSession { vars: vec![] })],
+            ),
+            packages_phase(vec![install_action("brew", &["neovim"])])
+                .phases
+                .remove(0),
+        ],
+        warnings: vec![],
+    };
+
+    let outcome = ConcurrentApply::new(registry, plan).run(|| {});
+    let transcript = crate::normalize_snapshot_durations(&outcome.transcript);
+    let line_with = |needle: &str| {
+        transcript
+            .lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} missing from:\n{transcript}"))
+            .to_string()
+    };
+
+    let installed = line_with("neovim");
+    assert!(
+        installed.contains("(XXs)"),
+        "an executed action is timed however briefly: {installed:?}"
+    );
+    let skipped = line_with("the session manager");
+    assert!(
+        !skipped.contains("(XXs)"),
+        "a skipped action did no work, so it has no elapsed time: {skipped:?}"
+    );
+}
+
+/// A plan resolves session-manager availability from the machine and renders
+/// the publish it is CERTAIN to skip as skipped — with the detail the apply
+/// would give — while leaving it out of `N actions planned`.
+///
+/// Previewing it as ordinary work made `cfgd plan` promise an action the apply
+/// then reported skipped, and the two counts disagreed by one on every host
+/// with no session manager.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[test]
+#[serial_test::serial]
+fn a_plan_pre_skips_the_session_publish_no_manager_can_perform() {
+    let _seam =
+        crate::test_helpers::EnvVarGuard::set(crate::SYSTEMCTL_BIN_ENV, "/no/such/systemctl");
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Prerequisites,
+            &Owner::cfgd("session"),
+            vec![Action::Env(EnvAction::RefreshLiveSession {
+                vars: vec![("EDITOR".to_string(), "nvim".to_string())],
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    assert_eq!(
+        plan.total_actions(),
+        0,
+        "a publish no manager can perform is not an action this run will take"
+    );
+
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    crate::reconciler::render_plan_tree(&plan, None, &printer);
+    drop(printer);
+    let out = crate::output::strip_ansi(&cap.human());
+    assert!(
+        out.contains(crate::NO_SESSION_MANAGER),
+        "the pre-skipped line states the apply's own reason: {out}"
+    );
+    assert!(
+        out.contains(&crate::output::Theme::default().icon_skipped),
+        "a pre-skipped line wears the skip glyph: {out}"
+    );
+}
+
 /// A live-session refresh that cannot reach any session manager must say so —
 /// never render as "unchanged", which claims the surface was already correct
 /// rather than never reachable. Guards the fix for the defect where an
@@ -22702,6 +22793,83 @@ fn a_next_step_renders_as_a_hint_below_the_reports() {
     );
 }
 
+/// A next step closes the REPORT, not an owner group inside `Caveats`.
+///
+/// Nested under `cfgd:env` it read as a remark about that one owner, indented
+/// two levels below a heading whose subject is "things that went sideways" —
+/// while the thing it actually says is what the reader does next about the
+/// whole run. It renders after the section closes, at the report's foot, and a
+/// run whose only note is a next step opens no `Caveats` heading at all.
+#[test]
+fn a_next_step_renders_below_the_closed_caveats_section() {
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    crate::reconciler::render_caveats(
+        &printer,
+        &[
+            (
+                Owner::cfgd("env"),
+                vec![crate::providers::ActionNote::next_step(
+                    "Run `source ~/.cfgd.env`",
+                )],
+            ),
+            (
+                Owner::profile("work"),
+                vec![crate::providers::ActionNote::warn(
+                    "npm",
+                    "deprecated: glob@7",
+                )],
+            ),
+        ],
+    );
+    drop(printer);
+    let out = crate::output::strip_ansi(&cap.human());
+    let step = out
+        .lines()
+        .find(|l| l.contains("Run `source"))
+        .unwrap_or_else(|| panic!("the next step must render: {out}"));
+    let warn = out
+        .lines()
+        .find(|l| l.contains("deprecated: glob@7"))
+        .unwrap_or_else(|| panic!("the report must render: {out}"));
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    assert_eq!(
+        indent(step),
+        0,
+        "a next step closes the report at column 0, not inside a caveat group: {out}"
+    );
+    assert!(
+        indent(warn) > 0,
+        "a report still nests under its owner group: {out}"
+    );
+    assert!(
+        !out.contains("cfgd:env"),
+        "an owner whose only note is a next step opens no caveat group: {out}"
+    );
+}
+
+/// A run whose only note is a next step prints the step and no `Caveats`
+/// heading — the heading would introduce an empty section.
+#[test]
+fn a_lone_next_step_opens_no_caveats_heading() {
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    crate::reconciler::render_caveats(
+        &printer,
+        &[(
+            Owner::cfgd("env"),
+            vec![crate::providers::ActionNote::next_step(
+                "Run `source ~/.cfgd.env`",
+            )],
+        )],
+    );
+    drop(printer);
+    let out = crate::output::strip_ansi(&cap.human());
+    assert!(out.contains("Run `source"), "the step must render: {out}");
+    assert!(
+        !out.contains("Caveats"),
+        "nothing to caveat, so no heading: {out}"
+    );
+}
+
 /// A configurator that narrates from `apply`, the way every real one does while
 /// it walks the keys it is setting.
 struct NarratingConfigurator;
@@ -22788,7 +22956,7 @@ fn configurator_narration_collects_into_the_run_wide_caveats_group() {
     // action line — it rides in `ApplyResult.caveats` for a caller to render
     // once as the run's closing `Caveats` section.
     assert!(
-        status + 1 >= lines.len() || !lines[status + 1].trim_start().starts_with('\u{2299}'),
+        status + 1 >= lines.len() || !lines[status + 1].trim_start().starts_with('\u{25C9}'),
         "apply()'s own transcript carries no attached narration: {out}"
     );
     assert_eq!(

@@ -401,8 +401,24 @@ fn enum_line(f: &FieldNode) -> String {
 /// column the renderer then aligns against the other rows — with the same
 /// two-space gap a kv block puts between its key and its value. Char padding
 /// is column padding here because a schema field name is an ASCII identifier.
+/// Whether a field drills in — the ONE predicate behind the `[+]` mark and
+/// behind the legend explaining it, so a list can never mark a field it then
+/// says nothing about (or explain a mark it never printed).
+fn is_expandable(f: &FieldNode) -> bool {
+    !f.children.is_empty() || !f.variants.is_empty()
+}
+
+/// The `[+]` legend, or `None` when nothing in `fields` carries the mark.
+///
+/// `[+]` is minted only by [`field_row`], so a `--recursive` tree — which has
+/// already expanded every field — never earns it.
+fn expandable_hint(base: &str, fields: &[&FieldNode], recursive: bool) -> Option<String> {
+    (!recursive && fields.iter().any(|f| is_expandable(f)))
+        .then(|| format!("cfgd explain {base}.<field> expands a field marked [+]"))
+}
+
 fn field_row(f: &FieldNode, name_width: usize) -> CommandPair {
-    let expandable = !f.children.is_empty() || !f.variants.is_empty();
+    let expandable = is_expandable(f);
     let req = if f.required { " (required)" } else { "" };
     let more = if expandable { " [+]" } else { "" };
     let type_span = type_span(f);
@@ -509,7 +525,8 @@ pub fn build_explain_index_doc() -> Doc {
 pub fn build_explain_schema_doc(schema: &ResourceSchema, recursive: bool) -> Doc {
     let output = schema_to_output(schema);
     let fields = sorted_by_name(schema.fields.iter());
-    Doc::new()
+    let hint = expandable_hint(&schema.name.to_lowercase(), &fields, recursive);
+    let doc = Doc::new()
         .heading_title("Explain", schema.name.clone())
         .paragraph(schema.description.clone())
         .kv_block([
@@ -520,8 +537,12 @@ pub fn build_explain_schema_doc(schema: &ResourceSchema, recursive: bool) -> Doc
         ])
         .section("Fields (under spec)", |s| {
             append_fields(s, &fields, recursive)
-        })
-        .with_data(output)
+        });
+    match hint {
+        Some(h) => doc.hint(h),
+        None => doc,
+    }
+    .with_data(output)
 }
 
 /// Build the unknown-resource-type error carrying `CliErrorMeta` so the central
@@ -573,6 +594,7 @@ pub fn build_explain_drilldown_doc(
         }
         None => Doc::new().heading_title("Explain", path_str.clone()),
     };
+    let mut marked: Vec<&FieldNode> = Vec::new();
     if let Some(f) = node {
         doc = doc.paragraph(described_with_enum(f));
         let variants: Vec<&FieldNode> = f.variants.iter().collect();
@@ -586,9 +608,15 @@ pub fn build_explain_drilldown_doc(
         doc = doc.section_if_nonempty("Fields", &children, |s, children| {
             append_fields(s, children, recursive)
         });
+        marked.extend(variants.iter().copied());
+        marked.extend(children.iter().copied());
     } else {
         let all = sorted_by_name(fields.iter());
         doc = doc.section("Fields", |s| append_fields(s, &all, recursive));
+        marked.extend(all.iter().copied());
+    }
+    if let Some(h) = expandable_hint(&path_str, &marked, recursive) {
+        doc = doc.hint(h);
     }
     doc.with_data(ExplainDrilldownOutput {
         path: path_str,

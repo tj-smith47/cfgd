@@ -7,4 +7,4 @@ Changed
   ⚠ package:ripgrep (Compliant → Warning)   — version mismatch: want 14.0.0, have 13.0.0
   ✓ system:sysctl.vm.swappiness (Warning → Compliant)
 
-⊙ Compliance diff — 0 added, 0 removed, 3 changed
+◉ Compliance diff — 0 added, 0 removed, 3 changed

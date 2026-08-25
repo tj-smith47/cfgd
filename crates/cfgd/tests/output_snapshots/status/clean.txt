@@ -1,7 +1,6 @@
 Status
-  Config     /etc/cfgd/cfgd.yaml
-  Profile    default
-  Last Scan  5m ago
+  Config   /etc/cfgd/cfgd.yaml
+  Profile  default
 
 Last Apply
   Time     2026-05-14T10:00:00Z
@@ -10,19 +9,19 @@ Last Apply
   Summary  12 actions applied
 
 Drift
-  ✓ No drift recorded
+  ✓ No drift recorded — scanned 5m ago
 
 Modules
-  ✓ module:base      — 5 pkgs, 3 files, Synced
-  ✓ module:dev-tools — 18 pkgs, 12 files, Synced
+  ✓ module:base      — 5 packages, 3 files, Synced
+  ✓ module:dev-tools — 18 packages, 12 files, Synced
 
 Managed Resources
-  Type      Owner             Resource                                    Source
-  ──────────────────────────────────────────────────────────────────────────────
-  env       cfgd              /home/user/.cfgd.env                        local 
-  files     cfgd              ~/.bashrc                                   local 
-  files     module:dev-tools  /home/user/.config/nvim (12 files)          local 
-  packages  cfgd              brew: bat, ripgrep                          local 
-  packages  module:dev-tools  apt: cargo, gcc, git                        local 
-  packages  module:dev-tools  brew: age, fd, neovim                       local 
-  script    module:dev-tools  preApply (1 script), postApply (2 scripts)  local 
+  Type     Owner             Resource                                    Source
+  ─────────────────────────────────────────────────────────────────────────────
+  env      cfgd              /home/user/.cfgd.env                        local 
+  file     cfgd              ~/.bashrc                                   local 
+  file     module:dev-tools  /home/user/.config/nvim (12 files)          local 
+  package  cfgd              brew: bat, ripgrep                          local 
+  package  module:dev-tools  apt: cargo, gcc, git                        local 
+  package  module:dev-tools  brew: age, fd, neovim                       local 
+  script   module:dev-tools  preApply (1 script), postApply (2 scripts)  local 

@@ -93,7 +93,7 @@ Every note collects into the run's `ApplyResult.caveats`, grouped by the `kind:n
 Caveats
   profile:work
     ⚠ reload deferred: /proc is read-only     ← Warn renders before Info within a group
-    ⊙ sysctl -w net.ipv4.ip_forward=1
+    ◉ sysctl -w net.ipv4.ip_forward=1
 ```
 
 Both land in one `NoteSink` and route through one rule (`NoteSink::report_tagged`), one collection point (`Reconciler::settle_action`, called from both dispatch paths) and one render path (`reconciler::render_caveats`, opened through `Printer::section_caveats`, whose heading composes through `output::AccentHeading` rather than a hand-styled string). `cli::plan_ops::print_caveats` is the one assembler for a real `cfgd apply`; a snapshot bridge is the only other caller. **Never grow a second drain or a second render path.** A context nobody drains settles on the printer, so a standalone caller loses nothing.

@@ -2572,7 +2572,7 @@ fn restore_target_reports_the_link_it_followed_alongside_what_was_asked_for() {
 /// The icons a SETTLED item line can start with. `◐` is deliberately absent:
 /// a running script's window is one live line that its outcome replaces on a
 /// terminal, and counting it would double every hook.
-const STATUS_ICONS: [char; 4] = ['✓', '⚠', '✗', '—'];
+const STATUS_ICONS: [char; 4] = ['✓', '⚠', '✗', '∅'];
 
 /// Drive `specs` through the run skeleton — header, `Backups` pseudo-phase,
 /// rollup — and return the human render with its exit status.
@@ -2688,7 +2688,7 @@ fn backup_pre_hook_failure_reports_the_shortfall() {
         "the failed hook and the snapshot it cost: {human}"
     );
     assert!(
-        human.contains("⊙ 1 action not attempted"),
+        human.contains("◉ 1 action not attempted"),
         "the hook the abort never reached must be counted: {human}"
     );
     assert!(
@@ -2770,7 +2770,7 @@ fn a_busy_unit_renders_inside_its_group_and_moves_no_exit_code() {
     let lines = rendered_item_lines(&human);
     assert_eq!(lines.len(), 1, "a refused unit renders one line: {human}");
     assert!(
-        lines[0].starts_with("— snapshot"),
+        lines[0].starts_with("∅ snapshot"),
         "a refused unit is a skip, and the group heading already named it: {:?}",
         lines[0]
     );

@@ -461,7 +461,7 @@ mod tests {
         assert_eq!(row.text(), "  ✓ pipx install pynvim");
         let drawn = crate::test_helpers::captured_text(&buf);
         assert!(
-            !drawn.contains('⊙'),
+            !drawn.contains('◉'),
             "the abandoned window left a record of its own: {drawn:?}"
         );
     }

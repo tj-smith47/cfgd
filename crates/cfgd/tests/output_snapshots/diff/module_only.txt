@@ -2,7 +2,7 @@ Diff: diff-mod
 
 Files
   module:diff-mod
-    ⊙ <CONFIG_DIR>/mod-out/conf (new file)
+    ◉ <CONFIG_DIR>/mod-out/conf (new file)
     module content
 
 ⚠ Drift detected — 1 file (packages, shell clean)

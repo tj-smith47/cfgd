@@ -22,8 +22,8 @@ Managed Resources
   env      EDITOR   
 
 Modules
-  ⊙ dev-tools
-  ⊙ shell
+  ◉ dev-tools
+  ◉ shell
 
 Manifest
   Name         team-config
@@ -41,7 +41,7 @@ Policy
     Backend           sops
     Mode              Always
   Required
-    ⊙ file: ~/.bashrc
-    ⊙ env: EDITOR
+    ◉ file: ~/.bashrc
+    ◉ env: EDITOR
   Recommended
-    ⊙ system: shellAliases
+    ◉ system: shellAliases

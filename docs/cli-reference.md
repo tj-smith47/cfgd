@@ -275,7 +275,7 @@ Phase: Post-Scripts
   module:localmod
     - postApply: jq --version
 
-⊙ 4 actions planned
+◉ 4 actions planned
 ```
 
 `--phase modules` selects every module-owned action wherever it was planned, so
@@ -759,11 +759,11 @@ Diff
 
 Files
   profile:work
-    ⊙ /home/you/.gitconfig (new file)
+    ◉ /home/you/.gitconfig (new file)
     [user]
     name = You
   module:nvim
-    ⊙ /home/you/.config/nvim/stylua.toml
+    ◉ /home/you/.config/nvim/stylua.toml
     -# not mine
     +indent_type = "Spaces"
 
@@ -814,7 +814,7 @@ Diff: nvim
 
 Files
   module:nvim
-    ⊙ /home/you/.config/nvim/stylua.toml
+    ◉ /home/you/.config/nvim/stylua.toml
     -# not mine
     +indent_type = "Spaces"
 
@@ -1330,9 +1330,9 @@ per entry labelled with its hook, in the order the hooks run:
 
 ```
 Scripts
-  ⊙ preApply: mkdir -p ~/.config/dev-tools
-  ⊙ postApply: echo 'post-apply hook ran'
-  ⊙ onDrift: notify-send 'dev-tools drifted'
+  ◉ preApply: mkdir -p ~/.config/dev-tools
+  ◉ postApply: echo 'post-apply hook ran'
+  ◉ onDrift: notify-send 'dev-tools drifted'
 ```
 
 `--show-values` renders each script's whole body instead of its condensed

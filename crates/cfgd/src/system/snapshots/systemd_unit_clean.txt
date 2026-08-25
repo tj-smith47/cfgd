@@ -6,4 +6,4 @@ Phase: System
 
 Caveats
   profile:snapshot
-    ⊙ systemctl disable cfgd-snap-test.service
+    ◉ systemctl disable cfgd-snap-test.service

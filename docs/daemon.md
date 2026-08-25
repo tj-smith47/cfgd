@@ -92,10 +92,10 @@ Only the title differs, and the header gains a `Trigger` row naming what woke th
 ```console
 $ cfgd daemon
 Daemon
-⊙ Starting cfgd daemon...
+◉ Starting cfgd daemon...
 ✓ Health: /run/user/0/cfgd/cfgd.sock
 ✓ Intervals: reconcile=5s
-⊙ Daemon running — press Ctrl+C to stop
+◉ Daemon running — press Ctrl+C to stop
  INFO running reconciliation check
  INFO reconcile: drift detected actions=1
  INFO drift policy is Auto — applying actions actions=1

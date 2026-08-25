@@ -2,7 +2,7 @@
 //!
 //! Cases:
 //!   - `profile_delete/happy.{txt,json}` — `--yes` path against a real
-//!     tempdir profile: file removed, `Role::Ok "Deleted profile '<name>'"`
+//!     tempdir profile: file removed, `Role::Ok "Deleted"`
 //!     emitted.
 //!   - `profile_delete/cancelled.{txt,json}` — queued `Confirm(false)`
 //!     takes the early-return arm; the cancelled Doc carries

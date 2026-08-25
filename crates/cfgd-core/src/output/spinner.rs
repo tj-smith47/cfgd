@@ -838,7 +838,7 @@ mod tests {
         assert!(!out.contains('✓'), "Drop must never claim success: {out:?}");
         assert!(!out.contains('✗'), "Drop must never claim failure: {out:?}");
         assert!(
-            out.contains('—'),
+            out.contains('∅'),
             "Drop must settle with the muted Skipped glyph: {out:?}"
         );
     }
@@ -950,7 +950,7 @@ mod tests {
             "the settled line must carry the neutral marker: {held:?}"
         );
         assert!(
-            lines[0].trim_start().starts_with('\u{2014}'),
+            lines[0].trim_start().starts_with('\u{2205}'),
             "the settled line must carry the muted Skipped glyph, not a bar: {held:?}"
         );
         assert!(

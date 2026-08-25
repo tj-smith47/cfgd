@@ -587,7 +587,7 @@ Phase: Post-Scripts
     - postApply: nvim --headless "+Lazy! sync" +qa
     - postApply: nvim --headless -c "MasonInstallAll" -c "qa"
 
-⊙ 13 actions planned
+◉ 13 actions planned
 ```
 
 A module's package line names the manager that won resolution, the manager-specific package
@@ -658,8 +658,8 @@ Source: team-config
   ...
 
 Modules
-  ⊙ dev-tools
-  ⊙ shell
+  ◉ dev-tools
+  ◉ shell
 ```
 
 A source that delivers only modules (no profiles) is valid; see [Source-Delivered Module Bodies](sources.md#source-delivered-module-bodies) for the full contract.

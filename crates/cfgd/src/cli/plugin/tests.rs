@@ -1955,11 +1955,11 @@ images:
         // stdout is the pipeline into `kubectl apply -f -`: nothing but the
         // manifest may land there, and the split capture states that directly.
         assert!(
-            !stdout.contains('\u{2299}'),
+            !stdout.contains('\u{25C9}'),
             "no status line may reach the data channel: {stdout}"
         );
         assert!(
-            stderr.contains("\u{2299} pinned registry.jarvispro.io/gome/server:abc"),
+            stderr.contains("\u{25C9} pinned registry.jarvispro.io/gome/server:abc"),
             "the rewrite summary must reach the human channel on stderr: {stderr}"
         );
         // The unmapped volume passes through untouched.

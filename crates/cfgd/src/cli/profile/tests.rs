@@ -560,6 +560,47 @@ fn make_profile_update_args() -> super::super::ProfileUpdateArgs {
     }
 }
 
+/// Walks every profile verb whose Doc opens with a heading naming the profile:
+/// none of them may respell that name in a footer. A heading and a footer
+/// carrying the same quoted subject read as two subjects, and the reader stops
+/// to check whether the run touched one profile or two.
+///
+/// Pinned on the QUOTED spelling: a heading states `Create Profile: work` bare,
+/// and a path that happens to contain the name is data, not a second naming.
+#[test]
+fn no_profile_verb_respells_the_name_its_heading_already_stated() {
+    let quoted =
+        |verb: &str, name: &str, run: &dyn Fn(&super::super::Cli, &cfgd_core::output::Printer)| {
+            let dir = setup_config_dir();
+            let cli = test_cli(dir.path());
+            let (printer, buf) =
+                cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+            run(&cli, &printer);
+            drop(printer);
+            let output = cfgd_core::test_helpers::captured_text(&buf);
+            assert!(
+                !output.contains(&format!("'{name}'")),
+                "`profile {verb}` respells its subject in a footer:\n{output}"
+            );
+        };
+
+    quoted("create", "walkprof", &|cli, printer| {
+        let mut args = make_profile_create_args("walkprof");
+        // Any content flag: bare args take the interactive arm, which cannot
+        // run without a TTY.
+        args.env = vec!["WALK_VAR=1".to_string()];
+        cmd_profile_create(cli, printer, &args).expect("create");
+    });
+    quoted("update", "default", &|cli, printer| {
+        let mut args = make_profile_update_args();
+        args.env = vec!["WALK_VAR=1".to_string()];
+        cmd_profile_update(cli, printer, "default", &args).expect("update");
+    });
+    quoted("delete", "work", &|cli, printer| {
+        cmd_profile_delete(cli, printer, "work", true, false).expect("delete");
+    });
+}
+
 // --- cmd_profile_show ---
 
 #[test]
@@ -1069,7 +1110,7 @@ fn profile_create_with_system_settings() {
     );
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Created profile"),
+        output.contains("Created at"),
         "should confirm profile creation, got: {output}"
     );
 }
@@ -1179,7 +1220,7 @@ fn profile_update_add_env() {
         "should confirm env was set, got: {output}"
     );
     assert!(
-        output.contains("Updated profile"),
+        output.contains("written"),
         "should confirm profile updated, got: {output}"
     );
 }
@@ -1207,7 +1248,7 @@ fn profile_update_remove_env() {
         "should confirm env removal, got: {output}"
     );
     assert!(
-        output.contains("Updated profile"),
+        output.contains("written"),
         "should confirm profile updated, got: {output}"
     );
 }
@@ -1238,7 +1279,7 @@ fn profile_update_add_alias() {
         "should confirm alias was set, got: {output}"
     );
     assert!(
-        output.contains("Updated profile"),
+        output.contains("written"),
         "should confirm profile updated, got: {output}"
     );
 }
@@ -1384,7 +1425,7 @@ fn profile_update_add_system_setting() {
         "should confirm system setting was set, got: {output}"
     );
     assert!(
-        output.contains("Updated profile"),
+        output.contains("written"),
         "should confirm profile updated, got: {output}"
     );
 }
@@ -1536,7 +1577,7 @@ fn profile_update_no_changes_succeeds() {
         "should report no changes, got: {output}"
     );
     assert!(
-        !output.contains("Updated profile"),
+        !output.contains("written"),
         "should NOT report profile updated when no changes were made, got: {output}"
     );
 }
@@ -1594,7 +1635,7 @@ fn profile_delete_with_yes_flag() {
     assert!(!profile_path.exists(), "profile file should be deleted");
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Deleted profile 'work'"),
+        output.contains("Deleted"),
         "should confirm deletion, got: {output}"
     );
 }
@@ -1826,7 +1867,7 @@ fn profile_delete_without_yes_and_prompt_confirmed_proceeds() {
     );
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Deleted profile 'work'"),
+        output.contains("Deleted"),
         "should announce deletion: {output}"
     );
 }
@@ -2137,7 +2178,7 @@ fn profile_create_output_messages() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Created profile 'fancy'"),
+        output.contains("Created at"),
         "should confirm creation, got: {output}"
     );
     assert!(
@@ -3592,7 +3633,7 @@ fn profile_update_add_file() {
         "should confirm file was added, got: {output}"
     );
     assert!(
-        output.contains("Updated profile"),
+        output.contains("written"),
         "should confirm profile updated, got: {output}"
     );
 }
@@ -4176,7 +4217,7 @@ fn profile_create_with_file_copies_source_and_populates_files_spec() {
     // Output must confirm the profile was created.
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Created profile 'fileprof'"),
+        output.contains("Created at"),
         "should confirm creation: {output}"
     );
 }

@@ -758,6 +758,30 @@ pub fn expand_env_value_tilde(value: &str) -> String {
         .join(":")
 }
 
+/// Fold one PATH entry to the single form two spellings of the same directory
+/// compare equal in: `$HOME` / `${HOME}` / `~` resolved to `home`, separators
+/// folded to `/`, and any trailing `/` dropped.
+///
+/// Comparison only — never render the result. A generated env file is written
+/// by two producers (cfgd's own bootstrapped-manager line and whatever the
+/// merged `PATH` env var declares), and without one key they publish the same
+/// directory twice under two spellings.
+pub fn normalize_path_entry(entry: &str, home: &std::path::Path) -> String {
+    let home = to_posix_string(home);
+    let home = home.trim_end_matches('/');
+    let entry = posixify_text(entry.trim());
+    // A prefix match must end at a segment boundary, or `$HOMEBREW_PREFIX`
+    // resolves as `$HOME` followed by a `BREW_PREFIX` remainder.
+    let expanded = ["${HOME}", "$HOME", "~"]
+        .iter()
+        .find_map(|token| {
+            let rest = entry.strip_prefix(token)?;
+            (rest.is_empty() || rest.starts_with('/')).then(|| format!("{home}{rest}"))
+        })
+        .unwrap_or_else(|| entry.into_owned());
+    expanded.trim_end_matches('/').to_string()
+}
+
 /// Resolve the user's home directory, consulting the test override first.
 /// Unix production path: checks HOME.
 /// Windows production path: checks USERPROFILE first, then HOME (for WSL/Git Bash contexts).

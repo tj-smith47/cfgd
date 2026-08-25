@@ -135,9 +135,6 @@ fn action_reports_its_own_status(action: &Action) -> bool {
         )
 }
 
-/// Elapsed times below this read as noise on a line whose subject is the point.
-const MIN_REPORTED_DURATION: std::time::Duration = std::time::Duration::from_secs(1);
-
 /// The per-phase display inputs every settled action line is built from.
 struct PhaseLedger<'p> {
     phase_name: PhaseName,
@@ -315,24 +312,35 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
     if groups.iter().all(|(_, notes)| notes.is_empty()) {
         return;
     }
-    let section = printer.section_caveats();
-    for (owner, notes) in groups {
-        if notes.is_empty() {
-            continue;
-        }
-        let group =
-            section.section_owner(&OwnerLabel::new(owner.kind.as_str(), owner.name.as_str()));
-        let mut ordered: Vec<&ActionNote> = notes.iter().collect();
-        // Reports first, next steps last: a hint is what the reader does after
-        // reading everything the run had to say about itself.
-        ordered.sort_by_key(|note| (note.hint, note.role != Role::Warn));
-        for note in ordered {
-            if note.hint {
-                group.hint(note.body());
-            } else {
+    // A next step is what the reader does after reading everything the run had
+    // to say about itself, so it belongs at the report's FOOT — not indented
+    // inside one owner's caveat group, where it reads as a remark about that
+    // owner rather than as the run's closing instruction.
+    let mut next_steps: Vec<String> = Vec::new();
+    {
+        let mut section = None;
+        for (owner, notes) in groups {
+            for note in notes.iter().filter(|n| n.hint) {
+                let body = note.body();
+                if !next_steps.contains(&body) {
+                    next_steps.push(body);
+                }
+            }
+            let mut reports: Vec<&ActionNote> = notes.iter().filter(|n| !n.hint).collect();
+            if reports.is_empty() {
+                continue;
+            }
+            let section = section.get_or_insert_with(|| printer.section_caveats());
+            let group =
+                section.section_owner(&OwnerLabel::new(owner.kind.as_str(), owner.name.as_str()));
+            reports.sort_by_key(|note| note.role != Role::Warn);
+            for note in reports {
                 group.status_simple(note.role, note.body());
             }
         }
+    }
+    for step in next_steps {
+        printer.hint(step);
     }
 }
 
@@ -764,7 +772,10 @@ impl<'a> super::Reconciler<'a> {
             .map(|phase| match phase_filter {
                 Some(filter) => phase
                     .owned_actions()
-                    .filter(|(owner, a)| action_matches_phase_filter(&phase.name, owner, a, filter))
+                    .filter(|(owner, a)| {
+                        a.pre_skip_reason().is_none()
+                            && action_matches_phase_filter(&phase.name, owner, a, filter)
+                    })
                     .count(),
                 None => phase.action_count(),
             })
@@ -1858,14 +1869,19 @@ impl<'a> super::Reconciler<'a> {
                 let role = settled_success_role(action, action_changed);
                 let detail = if noop.is_none() && !action_changed {
                     Some(if desc.ends_with(ENV_NO_SESSION_MANAGER_SUFFIX) {
-                        "no session manager".to_string()
+                        crate::NO_SESSION_MANAGER.to_string()
                     } else {
                         "unchanged".to_string()
                     })
                 } else {
                     env_write_summary(action)
                 };
-                let duration = (elapsed >= MIN_REPORTED_DURATION).then_some(elapsed);
+                // Every action that DID something is timed, however briefly: a
+                // threshold makes the suffix's absence ambiguous between "fast"
+                // and "not measured", and a reader comparing two runs cannot
+                // tell which. `Role::Ok` is exactly "not a declared noop, and it
+                // changed something" — everything else did no work to time.
+                let duration = (role == Role::Ok).then_some(elapsed);
                 // A displaced original is a fact about the user's own file, not
                 // a note about the write, so it is not muted the way an
                 // `unchanged` aside is. It does not REPLACE what the row

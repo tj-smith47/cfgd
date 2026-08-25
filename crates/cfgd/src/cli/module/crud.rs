@@ -237,11 +237,9 @@ pub fn cmd_module_create(
     // Write
     scaffold_module_document(&doc, &module_yaml_path)?;
 
-    let summary_sec = printer.section(format!(
-        "Created module '{}' at {}",
-        name,
-        module_dir.posix()
-    ));
+    // The heading above already names the module; a section respelling it
+    // makes the reader check whether two subjects are in play.
+    let summary_sec = printer.section(format!("Created at {}", module_dir.posix()));
     if !doc.spec.packages.is_empty() {
         summary_sec.kv(
             "Packages",
@@ -735,8 +733,7 @@ pub fn cmd_module_update_local(
             .status(
                 Role::Ok,
                 format!(
-                    "Updated module '{}' ({})",
-                    name,
+                    "{} written",
                     cfgd_core::pluralize(changes as usize, "change")
                 ),
             )
@@ -954,12 +951,12 @@ pub fn cmd_module_delete(
     if had_lock {
         lockfile.modules.retain(|e| e.name != name);
         modules::save_lockfile(&config_dir, &lockfile)?;
-        printer.status_simple(Role::Info, format!("Removed '{}' from modules.lock", name));
+        printer.status_simple(Role::Info, "Removed from modules.lock");
     }
 
     printer.emit(
         Doc::new()
-            .status(Role::Ok, format!("Deleted module '{}'", name))
+            .status(Role::Ok, "Deleted")
             .with_data(serde_json::json!({
                 "name": name,
                 "cancelled": false,

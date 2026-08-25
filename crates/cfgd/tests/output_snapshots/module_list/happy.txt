@@ -1,7 +1,7 @@
 Modules
 
-Module     Active  Source  Status      Contents               
-──────────────────────────────────────────────────────────────
-base       yes     local   Synced      3 pkgs, 5 files, 0 deps
-dev-tools  yes     remote  NotApplied  7 pkgs, 2 files, 1 deps
-extras     -       local   NotApplied  1 pkgs, 0 files, 0 deps
+Module     Active  Source  Status      Contents                   
+──────────────────────────────────────────────────────────────────
+base       yes     local   Synced      3 packages, 5 files, 0 deps
+dev-tools  yes     remote  NotApplied  7 packages, 2 files, 1 dep 
+extras     -       local   NotApplied  1 package, 0 files, 0 deps 

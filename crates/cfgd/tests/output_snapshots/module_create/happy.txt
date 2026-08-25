@@ -1,6 +1,6 @@
 Create Module: happy-mod
 
-Created module 'happy-mod' at <CONFIG_DIR>/modules/happy-mod
+Created at <CONFIG_DIR>/modules/happy-mod
   Packages  curl
 
 → Add to a profile with: cfgd profile update <profile> --module <name>

@@ -571,7 +571,7 @@ fn module_delete_cleans_lockfile_entry() {
 
     let human = strip_ansi(&cap.human());
     assert!(
-        human.contains("Removed 'lock-mod' from modules.lock"),
+        human.contains("Removed from modules.lock"),
         "human output must contain lockfile removal message; got:\n{human}"
     );
 

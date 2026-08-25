@@ -389,6 +389,75 @@ impl ManagerPathDir {
     }
 }
 
+/// How the home directory is spelled inside a generated file's derived PATH
+/// line. `$HOME` is live in every dialect whose PATH line interpolates
+/// (bash/zsh double quotes, PowerShell double quotes); fish single-quotes each
+/// entry to suppress expansion, so there the literal path is the only spelling
+/// that resolves.
+const HOME_TOKEN: &str = "$HOME";
+
+/// The PATH separator a declared `PATH` value uses on `platform`.
+fn path_separator(platform: EnvPlatform) -> char {
+    match platform {
+        EnvPlatform::Windows => ';',
+        _ => ':',
+    }
+}
+
+/// The manager PATH directories the generated line still has to publish, in
+/// the spelling that file uses for the home directory.
+///
+/// One file, two producers of one variable: this derived line and whatever the
+/// merged `PATH` env var declares. A directory both name lands on PATH twice,
+/// so the derived line — cfgd's own bookkeeping — yields to the declaration.
+/// The match is on [`crate::normalize_path_entry`], because `$HOME/.cargo/bin`
+/// and `/home/tj/.cargo/bin` are one directory written two ways.
+///
+/// `home_token` is the spelling the surviving entries render in, so a file
+/// never mixes a literal home with a `$HOME` on two lines of one artifact.
+fn effective_path_dirs(
+    path_dirs: &[ManagerPathDir],
+    env: &[EnvVar],
+    home: &Path,
+    platform: EnvPlatform,
+    home_token: Option<&str>,
+) -> Vec<ManagerPathDir> {
+    let separator = path_separator(platform);
+    let declared: std::collections::HashSet<String> = env
+        .iter()
+        .filter(|e| e.name == "PATH")
+        .flat_map(|e| e.value.split(separator))
+        .map(|entry| crate::normalize_path_entry(entry, home))
+        .collect();
+    let home_str = crate::to_posix_string(home);
+    let home_str = home_str.trim_end_matches('/');
+    path_dirs
+        .iter()
+        .filter(|d| !declared.contains(&crate::normalize_path_entry(&d.dir, home)))
+        .map(|d| {
+            let dir = match home_token {
+                Some(token) => home_spelled(&d.dir, home_str, token),
+                None => d.dir.clone(),
+            };
+            ManagerPathDir::new(d.manager.clone(), dir)
+        })
+        .collect()
+}
+
+/// `dir` with a leading `home` replaced by `token`, or `dir` unchanged when it
+/// lies outside the home directory. The prefix must end at a segment boundary,
+/// so `/home/tjs` is not read as `$HOME` plus an `s`.
+fn home_spelled(dir: &str, home: &str, token: &str) -> String {
+    if home.is_empty() {
+        return dir.to_string();
+    }
+    let posix = crate::posixify_text(dir);
+    match posix.strip_prefix(home) {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("{token}{rest}"),
+        _ => dir.to_string(),
+    }
+}
+
 /// The primary managed env file for `platform` — the first `ManagedFile`
 /// [`env_targets`] pushes, and the only one the per-item checks read. Named
 /// once here because a display surface reads that file back to show what a
@@ -417,10 +486,11 @@ fn unix_targets(
     } = content;
     // Interactive (all scopes): the cfgd-owned env file + a source line in the
     // user's interactive rc, plus fish when it's in use.
+    let posix_dirs = effective_path_dirs(path_dirs, env, home, platform, Some(HOME_TOKEN));
     out.push(EnvTarget::ManagedFile {
         path: primary_env_file_path(home, platform),
-        content: generate_env_file_content(env, aliases, path_dirs, origins),
-        rendered: RenderedCounts::of(env, aliases),
+        content: generate_env_file_content(env, aliases, &posix_dirs, origins),
+        rendered: RenderedCounts::of(env, aliases, !posix_dirs.is_empty()),
     });
     let interactive_rc = if probe.shell.contains("zsh") {
         home.join(".zshrc")
@@ -432,10 +502,11 @@ fn unix_targets(
         line: UNIX_SOURCE_LINE.to_string(),
     });
     if probe.fish_present {
+        let fish_dirs = effective_path_dirs(path_dirs, env, home, platform, None);
         out.push(EnvTarget::ManagedFile {
             path: home.join(".config/fish/conf.d/cfgd-env.fish"),
-            content: generate_fish_env_content(env, aliases, path_dirs, origins),
-            rendered: RenderedCounts::of(env, aliases),
+            content: generate_fish_env_content(env, aliases, &fish_dirs, origins),
+            rendered: RenderedCounts::of(env, aliases, !fish_dirs.is_empty()),
         });
     }
 
@@ -480,7 +551,7 @@ fn unix_targets(
             out.push(EnvTarget::ManagedFile {
                 path: home.join(".config/environment.d/cfgd.conf"),
                 content: generate_environment_d_content(env),
-                rendered: RenderedCounts::of(env, &[]),
+                rendered: RenderedCounts::of(env, &[], false),
             });
         }
         if platform == EnvPlatform::MacOs {
@@ -515,10 +586,11 @@ fn windows_targets(
         origins,
     } = content;
     // PowerShell env file + dot-source into both profile locations.
+    let ps_dirs = effective_path_dirs(path_dirs, env, home, EnvPlatform::Windows, Some(HOME_TOKEN));
     out.push(EnvTarget::ManagedFile {
         path: primary_env_file_path(home, EnvPlatform::Windows),
-        content: generate_powershell_env_content(env, aliases, path_dirs, origins),
-        rendered: RenderedCounts::of(env, aliases),
+        content: generate_powershell_env_content(env, aliases, &ps_dirs, origins),
+        rendered: RenderedCounts::of(env, aliases, !ps_dirs.is_empty()),
     });
     for dir in ["Documents/PowerShell", "Documents/WindowsPowerShell"] {
         out.push(EnvTarget::SourceLine {
@@ -530,8 +602,8 @@ fn windows_targets(
     if probe.git_bash_present {
         out.push(EnvTarget::ManagedFile {
             path: home.join(".cfgd.env"),
-            content: generate_env_file_content(env, aliases, path_dirs, origins),
-            rendered: RenderedCounts::of(env, aliases),
+            content: generate_env_file_content(env, aliases, &ps_dirs, origins),
+            rendered: RenderedCounts::of(env, aliases, !ps_dirs.is_empty()),
         });
         out.push(EnvTarget::SourceLine {
             rc_path: home.join(".bashrc"),
@@ -552,12 +624,17 @@ impl RenderedCounts {
     /// entries whose names pass the same safety filter every generator
     /// applies before emitting a line, so the count describes the file rather
     /// than the declaration list it was derived from.
-    fn of(env: &[EnvVar], aliases: &[ShellAlias]) -> Self {
+    ///
+    /// `path_line` is cfgd's own bootstrapped-PATH export, which is a written
+    /// line like any other — a count that omitted it named 3 vars over a file
+    /// holding four `export`s.
+    fn of(env: &[EnvVar], aliases: &[ShellAlias], path_line: bool) -> Self {
         Self {
-            vars: env
-                .iter()
-                .filter(|e| crate::validate_env_var_name(&e.name).is_ok())
-                .count(),
+            vars: usize::from(path_line)
+                + env
+                    .iter()
+                    .filter(|e| crate::validate_env_var_name(&e.name).is_ok())
+                    .count(),
             aliases: aliases
                 .iter()
                 .filter(|a| crate::validate_alias_name(&a.name).is_ok())
@@ -649,4 +726,190 @@ pub fn launchd_env_plist(label: &str, vars: &BTreeMap<String, String>) -> String
         label = crate::xml_escape(label),
         script = crate::xml_escape(&setenv_script),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn probe() -> EnvHostProbe {
+        EnvHostProbe {
+            shell: "/bin/bash".to_string(),
+            fish_present: true,
+            bash_profile_exists: false,
+            bash_login_exists: false,
+            git_bash_present: false,
+            zsh_present: false,
+        }
+    }
+
+    fn ev(name: &str, value: &str) -> EnvVar {
+        EnvVar {
+            name: name.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    /// `path_dirs` naming three managers, one of which the declared `PATH`
+    /// below already publishes under a `$HOME` spelling.
+    fn dirs(home: &str) -> Vec<ManagerPathDir> {
+        vec![
+            ManagerPathDir::new("brew", "/opt/brewroot/bin"),
+            ManagerPathDir::new("cargo", format!("{home}/.cargo/bin")),
+            ManagerPathDir::new("npm", format!("{home}/.npm-global/bin")),
+        ]
+    }
+
+    fn managed_file<'a>(targets: &'a [EnvTarget], name: &str) -> (&'a str, RenderedCounts) {
+        targets
+            .iter()
+            .find_map(|t| match t {
+                EnvTarget::ManagedFile {
+                    path,
+                    content,
+                    rendered,
+                } if crate::to_posix_string(path).ends_with(name) => {
+                    Some((content.as_str(), *rendered))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no managed file ending in {name}"))
+    }
+
+    fn path_line<'a>(content: &'a str, prefix: &str) -> &'a str {
+        content
+            .lines()
+            .find(|l| l.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no {prefix} line in:\n{content}"))
+    }
+
+    fn unix_targets_for(home: &Path) -> Vec<EnvTarget> {
+        let home_str = home.to_string_lossy().into_owned();
+        let env = vec![ev("PATH", "$HOME/.cargo/bin:$PATH"), ev("EDITOR", "nvim")];
+        let dirs = dirs(&home_str);
+        let origins = EnvOrigins::default();
+        let probe = probe();
+        env_targets(
+            EnvContent::new(&env, &[], &dirs, &origins),
+            EnvScope::All,
+            home,
+            &probe,
+            EnvPlatform::Linux,
+        )
+    }
+
+    /// bash/zsh: the surviving entries spell home `$HOME` — the same spelling
+    /// the declared line uses — and the entry the declaration already
+    /// publishes is gone. The count is the number of `export` lines written.
+    #[test]
+    fn bash_path_line_drops_a_declared_dir_and_spells_home_once() {
+        let home = Path::new("/home/tj");
+        let targets = unix_targets_for(home);
+        let (content, rendered) = managed_file(&targets, ".cfgd.env");
+        let line = path_line(content, "export PATH=");
+        assert_eq!(
+            line,
+            "export PATH=\"/opt/brewroot/bin:$HOME/.npm-global/bin:$PATH\" # manager:brew,npm",
+            "in:\n{content}"
+        );
+        assert!(
+            !line.contains("/home/tj"),
+            "one spelling of home per file: {line}"
+        );
+        let exports = content.lines().filter(|l| l.starts_with("export ")).count();
+        assert_eq!(rendered.vars, exports, "in:\n{content}");
+        assert_eq!(rendered.vars, 3);
+    }
+
+    /// fish single-quotes each entry, which suppresses `$HOME`, so its one
+    /// spelling is the literal path. The declared entry drops out the same way.
+    #[test]
+    fn fish_path_line_drops_a_declared_dir_and_keeps_a_literal_home() {
+        let home = Path::new("/home/tj");
+        let targets = unix_targets_for(home);
+        let (content, rendered) = managed_file(&targets, "cfgd-env.fish");
+        let line = path_line(content, "set -gx PATH '");
+        assert_eq!(
+            line,
+            "set -gx PATH '/opt/brewroot/bin' '/home/tj/.npm-global/bin' $PATH # manager:brew,npm",
+            "in:\n{content}"
+        );
+        assert!(!line.contains("$HOME"), "fish cannot expand it: {line}");
+        let sets = content
+            .lines()
+            .filter(|l| l.starts_with("set -gx "))
+            .count();
+        assert_eq!(rendered.vars, sets, "in:\n{content}");
+    }
+
+    /// PowerShell interpolates `$HOME` inside double quotes, so it takes the
+    /// token spelling; `;` is the separator a declared value is split on.
+    #[test]
+    fn powershell_path_line_drops_a_declared_dir_and_spells_home_once() {
+        let home = Path::new("C:/Users/tj");
+        let env = vec![
+            ev("PATH", "$HOME/.cargo/bin;$PATH"),
+            ev("EDITOR", "nvim.exe"),
+        ];
+        let dirs = dirs("C:/Users/tj");
+        let origins = EnvOrigins::default();
+        let targets = env_targets(
+            EnvContent::new(&env, &[], &dirs, &origins),
+            EnvScope::All,
+            home,
+            &probe(),
+            EnvPlatform::Windows,
+        );
+        let (content, rendered) = managed_file(&targets, ".cfgd-env.ps1");
+        let line = path_line(content, "$env:PATH = ");
+        assert_eq!(
+            line,
+            "$env:PATH = \"/opt/brewroot/bin;$HOME/.npm-global/bin;$env:PATH\" # manager:brew,npm",
+            "in:\n{content}"
+        );
+        assert!(
+            !line.contains("C:/Users/tj"),
+            "one spelling of home per file: {line}"
+        );
+        let assignments = content.lines().filter(|l| l.starts_with("$env:")).count();
+        assert_eq!(rendered.vars, assignments, "in:\n{content}");
+    }
+
+    /// `environment.d` renders declared variables only — no derived PATH line,
+    /// so its count must not gain one.
+    #[test]
+    fn environment_d_has_no_derived_path_line_and_counts_only_declarations() {
+        let home = Path::new("/home/tj");
+        let targets = unix_targets_for(home);
+        let (content, rendered) = managed_file(&targets, "environment.d/cfgd.conf");
+        assert!(
+            !content.contains("/opt/brewroot/bin"),
+            "no derived PATH line here:\n{content}"
+        );
+        assert_eq!(rendered.vars, 2, "in:\n{content}");
+    }
+
+    /// The launchd agent publishes declared variables through `launchctl
+    /// setenv`; it carries no derived PATH line either.
+    #[test]
+    fn launchd_agent_has_no_derived_path_line_and_counts_only_declarations() {
+        let home = Path::new("/Users/tj");
+        let home_str = home.to_string_lossy().into_owned();
+        let env = vec![ev("PATH", "$HOME/.cargo/bin:$PATH"), ev("EDITOR", "nvim")];
+        let dirs = dirs(&home_str);
+        let origins = EnvOrigins::default();
+        let targets = env_targets(
+            EnvContent::new(&env, &[], &dirs, &origins),
+            EnvScope::All,
+            home,
+            &probe(),
+            EnvPlatform::MacOs,
+        );
+        let (content, rendered) = managed_file(&targets, "com.cfgd.user-environment.plist");
+        assert!(
+            !content.contains("/opt/brewroot/bin"),
+            "no derived PATH line here:\n{content}"
+        );
+        assert_eq!(rendered.vars, 2, "in:\n{content}");
+    }
 }

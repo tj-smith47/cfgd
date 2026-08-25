@@ -239,16 +239,16 @@ golden_doc!(regression, worked_example_status, |p, cap| {
         .section("Modules", |s| {
             // Subject is the owner token — the same string the module's group
             // is headed with in an apply tree — and the detail is the producer's
-            // own `{pkgs}, {files}, {state}` order (`cli/status.rs`), so the
+            // own `{packages}, {files}, {state}` order (`cli/status.rs`), so the
             // worked example cannot model a line the command does not emit.
             s.status_with(Role::Ok, "module:base", |sf| {
-                sf.detail("5 pkgs, 3 files, installed")
+                sf.detail("5 packages, 3 files, installed")
             })
             .status_with(Role::Ok, "module:dev-tools", |sf| {
-                sf.detail("18 pkgs, 12 files, installed")
+                sf.detail("18 packages, 12 files, installed")
             })
             .status_with(Role::Warn, "module:shell-config", |sf| {
-                sf.detail("0 pkgs, 4 files, error")
+                sf.detail("0 packages, 4 files, error")
             })
         });
     p.emit(doc);

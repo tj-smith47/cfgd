@@ -519,7 +519,11 @@ pub fn assert_snapshot_at(base: &std::path::Path, name: &str, actual: &str) {
 pub use crate::output::strip_ansi;
 
 /// Strip ` (N.Ns)` spinner finish-duration markers so snapshots survive
-/// runtime variance. Matches ` (` + digits + `.` + digits + `s)`.
+/// runtime variance. Matches ` (` + digits + `.` + digits + `s)`, and takes
+/// the alignment padding in front of it with it — the renderer pads a short
+/// subject out to the duration column, so leaving that run behind writes the
+/// column's width into the golden as trailing whitespace on some lines and
+/// not others.
 pub fn strip_spinner_duration(s: String) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s.as_str();
@@ -540,6 +544,7 @@ pub fn strip_spinner_duration(s: String) -> String {
                 && after.as_bytes().get(total).copied() == Some(b's')
                 && after.as_bytes().get(total + 1).copied() == Some(b')')
             {
+                out.truncate(out.trim_end_matches(' ').len());
                 rest = &after[total + 2..];
                 continue;
             }

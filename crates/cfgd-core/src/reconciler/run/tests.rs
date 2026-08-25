@@ -140,7 +140,7 @@ impl RunExecutor for StubExecutor {
 
 /// The table test the restructure exists to make writable: every `ApplyStatus`
 /// arm returns lines rather than one of them panicking, and the short arm's
-/// extra line is `Role::Info` (`⊙`) rather than `Role::Pending` (`○`).
+/// extra line is `Role::Info` (`◉`) rather than `Role::Pending` (`○`).
 #[test]
 fn rollup_lines_covers_every_apply_status() {
     let cases: Vec<(ApplyStatus, usize, Vec<Role>)> = vec![
@@ -177,7 +177,7 @@ fn rollup_lines_covers_every_apply_status() {
     }
 
     // The short tally: the extra line is the rollup's, and its role decides
-    // whether the glyph is `⊙` or `○`.
+    // whether the glyph is `◉` or `○`.
     let short = RunTally {
         succeeded: 1,
         skipped: 0,
@@ -199,7 +199,7 @@ fn rollup_lines_covers_every_apply_status() {
         .find(|l| l.contains("not attempted"))
         .unwrap_or_default();
     assert!(
-        glyph_line.contains('⊙'),
+        glyph_line.contains('◉'),
         "shortfall line must carry Role::Info's glyph, got: {glyph_line:?}"
     );
 }

@@ -204,9 +204,9 @@ Phase: Post-Scripts
     - postApply: nvim --headless "+Lazy! sync" +qa
 
 Backups (run on apply)
-  ⊙ mydata
+  ◉ mydata
 
-⊙ 9 actions planned
+◉ 9 actions planned
 ```
 
 The header block states the scope every line below is read against: which

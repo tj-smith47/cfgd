@@ -7,4 +7,4 @@ Phase: Files
   profile:tiny
     - create <TARGET>
 
-⊙ 1 action planned
+◉ 1 action planned

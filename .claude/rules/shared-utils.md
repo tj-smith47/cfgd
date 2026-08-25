@@ -85,6 +85,8 @@ This file is an **INDEX**. The reasoning — why a helper exists, what breaks wi
 - `MergedEnvItems::display_values(kind, id)` (`reconciler/verify.rs`) — supplies that pair for the one kind whose STORED operands are opaque markers. Build the merge once per command; never call it on a value about to be persisted.
 - `reconciler::primary_env_file(home)` — the primary managed env file on this host, and the ONE public spelling of that platform split; a consumer minting its own seeds a basename the real verifier never reads.
 - `module_status_display(stored, drifted)` + `MODULE_STATUS_INSTALLED` / `MODULE_STATUS_ERROR` (`state/types.rs`) — the ONE derivation of the word a person reads for a module's state. `Drifted` is DERIVED, so a recorded-state surface passes `drifted: false`.
+- `ENV_SESSION_RESOURCE_ID` (`state/types.rs`) — the recorded `resource_id` of the live-session env surface; never the bare `"refresh"` literal, which two readers spelled independently.
+- `Action::pre_skip_reason()` (`reconciler/types.rs`) — why an action cannot run on THIS host, answered while the plan is read. The ONE seam: `Phase::action_count` excludes what it names and `render_plan_tree` settles it, so the plan's promise and the apply's tally are one number.
 - `ApplyStatus::{as_str, display_str, human_str}` (`state/types.rs`) — the stored / `-o json` / human spellings of an apply's outcome, pinned as a wire contract.
 - `ApplySummary` + `::to_column()` / `::prose(stored)` (`state/types.rs`) — the ONE typed shape of the `applies.summary` column and the ONE prose rendering every human surface reads it back through. Never build the column with `json!`, and never print the stored string.
 - `ApplyResult::{succeeded, skipped, failed}` + `RunTally.skipped` (`reconciler/`) — a successful action that CHANGED nothing is skipped, not done. Every count comes from these; `!failed` is not a success count.
@@ -130,6 +132,7 @@ A PowerShell function-wrapper alias carries its command as a quoted string built
 
 - `default_config_dir()` — cross-platform config dir.
 - `expand_tilde(path)` — expand `~/` to home (`HOME`, then `USERPROFILE` on Windows).
+- `normalize_path_entry(entry, home)` — fold ONE `PATH` entry to the form two spellings of the same directory compare equal in (`$HOME`/`${HOME}`/`~` resolved, separators folded, trailing `/` dropped). COMPARISON only; never render the result. Every env dialect's derived manager-PATH line drops a directory the declared `PATH` already carries through this one key.
 - `absolutize_path(path)` — make a path absolute LEXICALLY without requiring it to exist; use at any CLI entry point. Never canonicalizes, so a symlinked config keeps the name the user gave it.
 - `resolve_relative_path(path, base)` — resolve relative to base with traversal validation.
 - `resolve_managed_file_source(source, config_dir)` — the ONE resolution of a `spec.files[].source` against the config dir, taken by BOTH readers of that field.
@@ -177,6 +180,7 @@ The **30-second memo convention** and the exclusion a TTL guard needs are in `ut
 - `require_tool(name, install_hint)` — the uniform "X not found" error for every `command_available`-gated flow.
 - `tool_cmd(env_var, default)` — the generic seam-honouring `Command` factory.
 - `systemctl_cmd()` / `systemctl_available()` / `SYSTEMCTL_BIN_ENV` — the ONE `systemctl` factory, predicate and seam. Never `Command::new("systemctl")` (unshimmable and unbounded) or `command_available("systemctl")` (answers from PATH while the spawn answers from the seam).
+- `session_manager_available()` / `NO_SESSION_MANAGER` — whether THIS host has a live-session environment manager (`setx` / `launchctl` / `systemctl --user`), and the ONE wording for its absence. The plan, the apply's skip detail and `status`'s session row all answer from it, so no two surfaces can disagree about whether the publish can happen.
 - `reg_cmd()` / `REG_BIN_ENV` — the same for the Windows registry, shared by the session-env refresh and the `windowsRegistry` configurator. The registry is not a path, so redirecting the BINARY is a test's only sandbox.
 - Keyed system configurators name their own seams beside their `tool_cmd` factories (`CFGD_GSETTINGS_BIN`, `CFGD_XFCONF_QUERY_BIN`, `CFGD_KREADCONFIG_BIN` / `CFGD_KWRITECONFIG_BIN`, `CFGD_DEFAULTS_BIN`; `windowsRegistry` reuses `CFGD_REG_BIN`). They gate availability differently — seam-answered for `gsettings`/`xfconf`/`kdeConfig`, platform-gated for `macosDefaults`/`windowsRegistry`. Drive them through `test_helpers::ToolShim`.
 - `register_bootstrapped_path_dirs(dirs)` — make the PATH directories cfgd created THIS RUN visible to later resolutions; never `set_var("PATH", …)`, unsound once any thread is live.

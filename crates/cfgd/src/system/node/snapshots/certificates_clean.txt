@@ -6,5 +6,5 @@ Phase: System
 
 Caveats
   profile:snapshot
-    ⊙ Setting permissions 0600 on <TMPDIR>/pki/kubelet-client.crt (kubelet-client)
-    ⊙ Setting permissions 0600 on <TMPDIR>/pki/kubelet-client.key (kubelet-client)
+    ◉ Setting permissions 0600 on <TMPDIR>/pki/kubelet-client.crt (kubelet-client)
+    ◉ Setting permissions 0600 on <TMPDIR>/pki/kubelet-client.key (kubelet-client)
