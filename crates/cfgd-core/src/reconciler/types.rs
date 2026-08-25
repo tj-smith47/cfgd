@@ -524,6 +524,12 @@ impl OwnerKind {
     /// Parse an owner token's kind word. The inverse of [`OwnerKind::as_str`];
     /// the pair is round-trip tested so a sixth kind cannot be added to one
     /// side only.
+    ///
+    /// The generated env file's PATH line carries a `# manager:brew,cargo`
+    /// comment, which uses a wider vocabulary than this enum on purpose:
+    /// the name half is a comma list no `Owner` name may hold, so
+    /// `from_token("manager")` stays `None` rather than minting an owner
+    /// that names two things at once. See `EnvOrigins` in `env_engine.rs`.
     pub fn from_token(token: &str) -> Option<OwnerKind> {
         match token {
             "profile" => Some(OwnerKind::Profile),
@@ -993,6 +999,13 @@ pub struct ActionResult {
     pub success: bool,
     pub error: Option<String>,
     pub changed: bool,
+    /// The action reached its own line and that line settled `Role::Skipped` —
+    /// a declared skip, a converged no-op, an environment that had nowhere to
+    /// publish to. Carried on the record rather than re-derived, so the closing
+    /// tally, the stored summary and the glyph the reader saw are one verdict:
+    /// counting a skip as a success is what let `13 actions succeeded` stand
+    /// over a tree showing twelve ✓ and one —.
+    pub skipped: bool,
 }
 
 /// Result of an entire apply operation.
@@ -1037,8 +1050,21 @@ pub struct RollbackResult {
 }
 
 impl ApplyResult {
+    /// Actions that ran and did something. A skipped action is NOT one of
+    /// these — it settled a skip dash on screen, and a count claiming it as a
+    /// success contradicts the line the reader kept.
     pub fn succeeded(&self) -> usize {
-        self.action_results.iter().filter(|r| r.success).count()
+        self.action_results
+            .iter()
+            .filter(|r| r.success && !r.skipped)
+            .count()
+    }
+
+    pub fn skipped(&self) -> usize {
+        self.action_results
+            .iter()
+            .filter(|r| r.success && r.skipped)
+            .count()
     }
 
     pub fn failed(&self) -> usize {

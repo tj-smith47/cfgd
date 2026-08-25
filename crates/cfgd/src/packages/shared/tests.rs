@@ -348,6 +348,97 @@ fn extract_caveats_pip_in_both_streams() {
     assert_eq!(notes.len(), 2);
 }
 
+/// No registered manager may emit a caveat with nothing in it: a blank body
+/// paints a lone warning glyph beside the manager tag and tells the reader
+/// nothing. Walked over every manager name so a new extractor arm is covered
+/// by being registered, and driven with the shapes that produced one — a
+/// header with only spacer lines under it, and a self-tag with no text.
+#[test]
+fn no_manager_can_emit_an_empty_caveat() {
+    let blank_shapes = [
+        "==> Caveats\n\n\n==> Summary\n",
+        "npm warn \nnpm warn install-scripts\nnpm warn install-scripts\n",
+        "WARNING:\n",
+        "warning:   \n",
+        "Caveat:\n",
+        "note:\n",
+        "\n\n",
+    ];
+    for manager in cfgd_core::config::ALL_MANAGER_NAMES {
+        for shape in blank_shapes {
+            for output in [test_cmd_output(shape, ""), test_cmd_output("", shape)] {
+                for note in extract_caveats(manager, &output) {
+                    assert!(
+                        !note.message.trim().is_empty(),
+                        "{manager} emitted an empty caveat from {shape:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A caveat already labelled by the tool that printed it is double-tagged by
+/// the time it renders: the owner group names the manager and the note carries
+/// its `[manager]` tag, so `⚠ [npm] npm warn deprecated …` says npm three
+/// times. Every extractor strips the tool's own label.
+#[test]
+fn no_manager_repeats_its_own_label_inside_a_caveat() {
+    let cases = [
+        ("npm", "npm warn deprecated glob@7: no longer supported\n"),
+        ("pipx", "WARNING: pipx is not on PATH\n"),
+        ("pip", "WARNING: pip is out of date\n"),
+        ("cargo", "warning: cargo-audit is unmaintained\n"),
+        ("winget", "Note: restart required\n"),
+    ];
+    for (manager, line) in cases {
+        let notes = extract_caveats(manager, &test_cmd_output(line, line));
+        assert!(!notes.is_empty(), "{manager} dropped its caveat: {line:?}");
+        for note in &notes {
+            let lowered = note.message.to_lowercase();
+            for tag in ["npm warn", "warning:", "note:", "warn:", "caveat:"] {
+                assert!(
+                    !lowered.starts_with(tag),
+                    "{manager} kept its own {tag:?} label: {:?}",
+                    note.message
+                );
+            }
+        }
+    }
+}
+
+/// One npm advisory is one caveat however many physical lines npm wrapped it
+/// over, and the code it repeats on every line is said once.
+#[test]
+fn npm_wraps_one_advisory_into_one_caveat() {
+    let output = test_cmd_output(
+        "npm warn deprecated inflight@1.0.6: This module is not supported\n\
+         npm warn deprecated \n\
+         npm warn deprecated Use lru-cache instead\n",
+        "",
+    );
+    let notes = extract_caveats("npm", &output);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0]
+            .message
+            .starts_with("deprecated: inflight@1.0.6: This module is not supported"),
+        "{:?}",
+        notes[0].message
+    );
+    assert!(
+        notes[0].message.contains("\n  Use lru-cache instead"),
+        "the wrapped line reads as a continuation: {:?}",
+        notes[0].message
+    );
+    assert_eq!(
+        notes[0].message.matches("deprecated").count(),
+        1,
+        "the repeated code is said once: {:?}",
+        notes[0].message
+    );
+}
+
 #[test]
 fn extract_caveats_npm_warn_uppercase_and_lowercase() {
     let output = test_cmd_output("npm warn old-dep\nnpm WARN peer issue\n", "");
@@ -476,13 +567,9 @@ fn strip_arch_suffix_with_dots_in_name() {
 fn extract_caveats_brew_caveats_only_blank_lines() {
     let output = test_cmd_output("==> Caveats\n\n\n==> Summary\n", "");
     let notes = extract_caveats("brew", &output);
-    // Blank lines are captured, joined, then trimmed — result is empty string
-    // but caveat_lines is non-empty so an ActionNote with empty message is produced
-    assert_eq!(notes.len(), 1);
-    assert!(
-        notes[0].message.is_empty(),
-        "message should be empty after trim"
-    );
+    // A caveat block holding nothing but blank lines says nothing. Emitted, it
+    // paints a lone warning glyph beside the manager tag.
+    assert!(notes.is_empty(), "{notes:?}");
 }
 
 #[test]

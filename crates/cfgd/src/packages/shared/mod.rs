@@ -93,7 +93,7 @@ pub(super) fn windows_pkg_argv(name: &str, resolved: Option<&std::path::Path>) -
 
 /// Build a base `Command` for a package-manager binary, resolving it to a full
 /// path so a Windows script shim (`.ps1`/`.cmd`) is invoked correctly rather than
-/// dying with "program not found" (see [`windows_pkg_argv`]). On non-Windows this
+/// dying with "program not found" (see `windows_pkg_argv`). On non-Windows this
 /// is just `Command::new(<resolved-or-name>)`.
 fn build_pkg_command(name: &str, resolved: Option<PathBuf>) -> Command {
     #[cfg(windows)]
@@ -128,13 +128,72 @@ where
     build_pkg_command(name, resolver())
 }
 
-/// Extract caveats/warnings from package manager output.
-pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<ActionNote> {
-    let combined = format!("{}\n{}", output.stdout, output.stderr);
-    let mut notes = Vec::new();
+/// The leading self-tag a manager stamps on its own advisory lines, stripped
+/// before the line becomes a caveat body.
+///
+/// Every caveat already renders under the `[<manager>]` owner tag
+/// `ActionNote::body` composes, so a body that opens with the manager's own
+/// word says it twice: `⚠ [cargo] warning: be sure to add …`. Matched
+/// case-insensitively and only at the START — a marker in the middle of a
+/// sentence is part of what the manager is saying.
+const CAVEAT_SELF_TAGS: &[&str] = &["warning:", "warn:", "caveat:", "caveats:", "note:"];
 
-    match manager {
-        "brew" | "brew-cask" => {
+/// One advisory line, with the manager's own tag taken off the front.
+fn strip_caveat_self_tag(line: &str) -> &str {
+    let trimmed = line.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    for tag in CAVEAT_SELF_TAGS {
+        if let Some(rest) = lower.strip_prefix(tag) {
+            return trimmed[trimmed.len() - rest.len()..].trim_start();
+        }
+    }
+    trimmed
+}
+
+/// npm's per-line advisory shape: `npm warn <code> <text>`, one line per
+/// physical line of ONE message.
+///
+/// Returns `(code, text)`. npm repeats the prefix and the code on every line it
+/// wraps, so four lines of a single `install-scripts` advisory arrived as four
+/// caveats — one of them the blank spacer line npm puts in the middle, which
+/// rendered as a bare `⚠ [npm] npm warn install-scripts` with nothing after it.
+fn npm_warn_parts(line: &str) -> Option<(&str, &str)> {
+    let trimmed = line.trim_end();
+    let rest = trimmed
+        .trim_start()
+        .strip_prefix("npm warn ")
+        .or_else(|| trimmed.trim_start().strip_prefix("npm WARN "))?;
+    let rest = rest.trim_start();
+    match rest.split_once(char::is_whitespace) {
+        Some((code, text)) => Some((code, text)),
+        // The spacer line: the code alone, with nothing said under it.
+        None => Some((rest, "")),
+    }
+}
+
+/// Extract caveats/warnings from package manager output.
+///
+/// Every arm yields BODIES; the tail is what turns one into an [`ActionNote`],
+/// so the "no empty caveat, ever" rule is stated once instead of per manager. A
+/// blank body paints a lone glyph beside an owner tag and tells a reader
+/// nothing — see `no_manager_can_emit_an_empty_caveat`.
+pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<ActionNote> {
+    extract_caveat_bodies(manager, output)
+        .into_iter()
+        .filter(|body| !body.trim().is_empty())
+        .map(|body| ActionNote::warn(manager, body.trim_end()))
+        .collect()
+}
+
+fn extract_caveat_bodies(manager: &str, output: &CommandOutput) -> Vec<String> {
+    let combined = format!("{}\n{}", output.stdout, output.stderr);
+    let mut notes: Vec<String> = Vec::new();
+
+    // By FAMILY, not by name: `brew-tap` prints the same `==> Caveats` block
+    // its formulae and casks do, and matching the two spelled-out names left a
+    // tap's caveat to the generic arm, one line at a time.
+    match (cfgd_core::manager_family(manager), manager) {
+        ("brew", _) => {
             // Homebrew prints "==> Caveats" followed by caveat text until next "==> " or end
             let mut in_caveats = false;
             let mut caveat_lines = Vec::new();
@@ -147,7 +206,7 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Acti
                 if in_caveats {
                     if line.starts_with("==> ") {
                         if !caveat_lines.is_empty() {
-                            notes.push(ActionNote::warn(manager, caveat_lines.join("\n").trim()));
+                            notes.push(caveat_lines.join("\n").trim().to_string());
                         }
                         in_caveats = false;
                     } else {
@@ -156,22 +215,34 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Acti
                 }
             }
             if in_caveats && !caveat_lines.is_empty() {
-                notes.push(ActionNote::warn(manager, caveat_lines.join("\n").trim()));
+                notes.push(caveat_lines.join("\n").trim().to_string());
             }
         }
-        "npm" | "pnpm" => {
+        (_, "npm" | "pnpm") => {
+            // One caveat per CODE-run, not per line: npm repeats
+            // `npm warn <code>` on every physical line of one message.
+            let mut open: Option<(String, Vec<String>)> = None;
             for line in combined.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("npm warn") || trimmed.starts_with("npm WARN") {
-                    notes.push(ActionNote::warn(manager, trimmed));
+                let Some((code, text)) = npm_warn_parts(line) else {
+                    continue;
+                };
+                match &mut open {
+                    Some((current, body)) if current == code => body.push(text.to_string()),
+                    _ => {
+                        if let Some(note) = open.take().map(npm_caveat_body) {
+                            notes.push(note);
+                        }
+                        open = Some((code.to_string(), vec![text.to_string()]));
+                    }
                 }
             }
+            notes.extend(open.map(npm_caveat_body));
         }
-        "pip" | "pipx" => {
+        (_, "pip" | "pipx") => {
             for line in combined.lines() {
                 let trimmed = line.trim();
-                if trimmed.starts_with("WARNING:") {
-                    notes.push(ActionNote::warn(manager, trimmed));
+                if trimmed.to_ascii_uppercase().starts_with("WARNING:") {
+                    notes.push(strip_caveat_self_tag(trimmed).to_string());
                 }
             }
         }
@@ -182,12 +253,35 @@ pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<Acti
                 let lower = trimmed.to_lowercase();
                 if lower.contains("warning:") || lower.contains("caveat") || lower.contains("note:")
                 {
-                    notes.push(ActionNote::warn(manager, trimmed));
+                    notes.push(strip_caveat_self_tag(trimmed).to_string());
                 }
             }
         }
     }
     notes
+}
+
+/// `install-scripts: 1 package has …` plus the run's remaining lines, each
+/// indented two columns so the message reads as one advisory. The blank spacer
+/// lines npm wraps with are dropped: they carry nothing, and each one painted
+/// as a caveat of its own — the empty `⚠ [npm]` row beside three real ones.
+///
+/// A run that says nothing but its code keeps the code: the spacers that
+/// carry no text are the ones REPEATING an open code, so a run reduced to
+/// nothing is a line npm printed as `npm warn <text>` with no code at all.
+fn npm_caveat_body((code, lines): (String, Vec<String>)) -> String {
+    let mut body = String::new();
+    for line in lines.iter().map(|l| l.trim()).filter(|l| !l.is_empty()) {
+        if body.is_empty() {
+            body.push_str(&format!("{code}: {line}"));
+        } else {
+            body.push_str(&format!("\n  {line}"));
+        }
+    }
+    if body.is_empty() {
+        return code;
+    }
+    body
 }
 
 /// Run a command, mapping IO errors to PackageError::CommandFailed and non-zero

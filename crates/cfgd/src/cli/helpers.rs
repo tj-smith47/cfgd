@@ -434,6 +434,31 @@ impl PackageRef {
         self.slot.as_deref().unwrap_or(native)
     }
 
+    /// The word a confirmation line calls this entry — `Added tap:` for
+    /// `brew.taps`, `Added cask:` for `brew.casks`, `Added package:` for
+    /// everything else including a bare name and a custom manager.
+    ///
+    /// Read off the schema table rather than decided here, so the add verb and
+    /// the remove verb cannot disagree and a new sub-list gets its noun from
+    /// one place.
+    pub(in crate::cli) fn noun(&self) -> &'static str {
+        self.schema_path
+            .as_deref()
+            .and_then(cfgd_core::config::package_schema_path)
+            .map_or(cfgd_core::config::DEFAULT_PACKAGE_NOUN, |p| p.noun())
+    }
+
+    /// [`Self::noun`] opening a sentence (`Tap 'x' not found in brew.taps`).
+    /// Every noun in the table is one plain ASCII word.
+    pub(in crate::cli) fn noun_capitalized(&self) -> String {
+        let noun = self.noun();
+        let mut chars = noun.chars();
+        match chars.next() {
+            Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+            None => noun.to_string(),
+        }
+    }
+
     /// `charmbracelet/tap (brew.taps)` — the schema path the value was written
     /// to, so the confirmation names a path the user can go and look at.
     pub(in crate::cli) fn display(&self, native: &str) -> String {
@@ -1143,7 +1168,7 @@ pub(in crate::cli) struct DesiredState {
     pub source_env: std::collections::HashMap<String, Vec<cfgd_core::config::EnvVar>>,
     pub source_commits: std::collections::HashMap<String, String>,
     /// Source security-constraint violations surfaced when the caller composed in
-    /// [`ConstraintMode::Report`] (read paths). Empty for `Enforce` callers
+    /// [`cfgd_core::composition::ConstraintMode::Report`] (read paths). Empty for `Enforce` callers
     /// (apply/plan), which abort on the first violation instead.
     pub constraint_violations: Vec<cfgd_core::composition::ConstraintViolation>,
 }
@@ -1274,7 +1299,7 @@ pub(in crate::cli) fn compose_with_sources(
 }
 
 /// Reword `conflict.details`'s persisted `" <- "` arrow to `" from "` for
-/// terminal display. `conflict.details` is [`composition::record`]'s
+/// terminal display. `conflict.details` is `composition::record`'s
 /// persisted string and keeps its own `<-` shape in storage (see that
 /// module's doc comment); this is the ONE display-side reword, shared by
 /// `display_and_persist_conflicts` below and `source::helpers::format_conflict_preview_lines`,
@@ -1569,11 +1594,7 @@ pub(in crate::cli) fn sign_and_attest(
     })
 }
 
-/// The display form of a commit id: enough to identify it, short enough for
-/// two of them to sit on one line.
-pub(in crate::cli) fn short_commit(commit: &str) -> &str {
-    &commit[..commit.len().min(12)]
-}
+pub(in crate::cli) use cfgd_core::short_commit;
 
 #[cfg(test)]
 pub(crate) mod tests;

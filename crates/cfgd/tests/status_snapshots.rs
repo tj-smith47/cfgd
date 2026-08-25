@@ -62,7 +62,14 @@ fn dev_tools_declared() -> ModuleDeclared {
             ("neovim", "brew"),
         ]
         .into_iter()
-        .map(|(pkg, mgr)| (pkg.to_string(), mgr.to_string()))
+        // One name can be declared under two managers, so the map holds a SET
+        // per name: a row names a manager only when every name in it agrees.
+        .map(|(pkg, mgr)| {
+            (
+                pkg.to_string(),
+                std::collections::BTreeSet::from([mgr.to_string()]),
+            )
+        })
         .collect(),
         script_summary: declared_surfaces(18, 12).script_summary(),
     }
@@ -193,6 +200,7 @@ fn drift_output() -> StatusOutput {
             created_at: "2026-05-14T08:00:00Z".into(),
             resolved_at: None,
             resolution: None,
+            content_hash: None,
         }],
         modules: vec![ModuleStatusEntry {
             name: "shell-config".into(),

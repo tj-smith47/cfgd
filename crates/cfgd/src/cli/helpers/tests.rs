@@ -87,6 +87,41 @@ fn parse_package_flag_sub_list_prefix_resolves_to_its_write_slot() {
     assert_eq!(casks.manager.as_deref(), Some("brew-cask"));
 }
 
+/// Every `--package` prefix the table names carries its own noun into the
+/// confirmation line, and a bare name or a custom manager falls back to
+/// `package`. Walked over the whole table, so a prefix added later is named
+/// correctly by both the add verb and the remove verb or fails here.
+#[test]
+fn every_package_prefix_names_its_entries_in_the_confirmation_line() {
+    for path in cfgd_core::config::PACKAGE_SCHEMA_PATHS {
+        let pkg = parse(&format!("{}:thing", path.path)).unwrap();
+        assert_eq!(
+            pkg.noun(),
+            path.noun(),
+            "`--package {}:` renamed its entries on the way to the CLI",
+            path.path
+        );
+        assert_eq!(
+            pkg.noun_capitalized(),
+            format!(
+                "{}{}",
+                path.noun()[..1].to_ascii_uppercase(),
+                &path.noun()[1..]
+            ),
+        );
+    }
+    assert_eq!(parse("brew.taps:charmbracelet/tap").unwrap().noun(), "tap");
+    assert_eq!(parse("brew.casks:firefox").unwrap().noun(), "cask");
+    assert_eq!(parse("ripgrep").unwrap().noun(), "package");
+    assert_eq!(
+        parse_package_flag("mise:node", &["mise".to_string()], "apt")
+            .unwrap()
+            .noun(),
+        "package",
+        "a custom manager has no sub-list of its own"
+    );
+}
+
 #[test]
 fn parse_package_flag_snap_classic_writes_a_slot_no_manager_is_named_for() {
     // `snap.classic` has no registered manager of its own — the `snap` manager

@@ -84,9 +84,15 @@ impl ModuleSurfaces {
         }
     }
 
-    /// The per-hook script tally a summary row renders: `3 preApply, 6
-    /// postApply`, in execution order. `None` when the module declares no
-    /// scripts at all, so the row is left out rather than reading empty.
+    /// The per-hook script tally a summary row renders: `preApply (3 scripts),
+    /// postApply (6 scripts)`, in execution order. `None` when the module
+    /// declares no scripts at all, so the row is left out rather than reading
+    /// empty.
+    ///
+    /// Subject first, count parenthesised: the row this lands in sits beside a
+    /// module's file row (`/home/tj/.config/nvim (6 files)`), and a resource
+    /// cell that led with its count would read as a different kind of fact than
+    /// its neighbour.
     pub fn script_summary(&self) -> Option<String> {
         if self.scripts.is_empty() {
             return None;
@@ -94,7 +100,13 @@ impl ModuleSurfaces {
         Some(
             self.scripts
                 .iter()
-                .map(|h| format!("{} {}", h.bodies.len(), h.hook))
+                .map(|h| {
+                    format!(
+                        "{} ({})",
+                        h.hook,
+                        crate::pluralize(h.bodies.len(), "script")
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(", "),
         )
@@ -149,7 +161,7 @@ mod tests {
         }));
         assert_eq!(
             surfaces.script_summary().as_deref(),
-            Some("1 preApply, 2 postApply")
+            Some("preApply (1 script), postApply (2 scripts)")
         );
         assert_eq!(surfaces.hook_names(), vec!["preApply", "postApply"]);
     }
@@ -221,7 +233,7 @@ mod tests {
         assert_eq!(surfaces.script_total(), 3);
         assert_eq!(
             surfaces.script_summary().as_deref(),
-            Some("1 preApply, 2 postApply")
+            Some("preApply (1 script), postApply (2 scripts)")
         );
     }
 

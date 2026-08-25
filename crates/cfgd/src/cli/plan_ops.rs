@@ -106,10 +106,9 @@ fn shell_env_reminder_note(
         format!("source {shown}")
     };
 
-    Some(cfgd_core::providers::ActionNote::untagged(
-        Role::Warn,
-        format!("run `{command}`, or open a new shell"),
-    ))
+    Some(cfgd_core::providers::ActionNote::next_step(format!(
+        "Run `{command}`, or open a new shell"
+    )))
 }
 
 /// The env file the shell the user is *standing in* can actually source.

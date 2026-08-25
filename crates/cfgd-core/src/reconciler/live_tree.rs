@@ -1386,6 +1386,83 @@ mod tests {
     }
 
     #[test]
+    fn a_lifted_group_wait_leaves_no_blank_line_in_the_scrollback() {
+        // The observed defect: `profile:base` was held behind the module tier,
+        // drew a group-wide `waiting on modules` row, and when the barrier
+        // lifted the row was retired — but the boundary between that group's
+        // last committed line and the next group's heading kept a blank line
+        // no other owner boundary has.
+        let (printer, screen) = Printer::for_test_live_terminal(24, 120);
+        let section = printer.section_phase(&PhaseName::Packages.section_label());
+        let base = Owner::profile("base");
+        let nvim = Owner::module("nvim");
+        let tap = install("brew-tap", "charmbracelet/tap");
+        let gum = install("brew", "gum");
+        let npm = install("npm", "yarn");
+
+        let mut tree = PhaseTree::new(&printer, Some(&section), None, section.depth + 1, 30);
+        let running_tap = tree.dispatched(&base, &tap);
+        // The barrier: base still holds `gum`, and the module tier is in
+        // flight, so the group wears one wait row.
+        tree.waiting(&Held {
+            waits: vec![Wait {
+                owner: &base,
+                action: None,
+                subject: "waiting on modules".to_string(),
+            }],
+            pending_owners: vec![base.token(), nvim.token()],
+        });
+        // The wait hangs on the lane that is WAITING, in the action-row column
+        // of its own owner group — not at the group heading's column, and not
+        // under the group it is waiting on, which is running its own work.
+        let waiting = screen.contents();
+        let wait_line = waiting
+            .lines()
+            .find(|line| line.contains("waiting on modules"))
+            .unwrap_or_else(|| panic!("no wait row drawn: {waiting}"));
+        let row_indent = waiting
+            .lines()
+            .find(|line| line.contains("brew-tap install"))
+            .map(|line| line.len() - line.trim_start().len())
+            .unwrap_or_else(|| panic!("no action row drawn: {waiting}"));
+        assert_eq!(
+            wait_line.len() - wait_line.trim_start().len(),
+            row_indent,
+            "the wait row sits off the action-row column: {waiting}"
+        );
+        let running_npm = tree.dispatched(&nvim, &npm);
+        running_tap.finish();
+        tree.settled(&base, &tap, done("brew-tap install charmbracelet/tap"));
+        // Barrier lifted: no group wait left to draw.
+        tree.waiting(&Held {
+            waits: Vec::new(),
+            pending_owners: vec![base.token(), nvim.token()],
+        });
+        tree.dispatched(&base, &gum).finish();
+        tree.settled(&base, &gum, done("brew install gum"));
+        running_npm.finish();
+        tree.settled(&nvim, &npm, done("npm install yarn"));
+        tree.finish();
+        drop(section);
+
+        let held = screen.contents();
+        assert!(
+            !held.contains("waiting on modules"),
+            "the retired wait row survived on screen: {held}"
+        );
+        let lines: Vec<&str> = held
+            .lines()
+            .map(str::trim_end)
+            .skip_while(|line| !line.contains("Phase: Packages"))
+            .take_while(|line| !line.contains("npm install yarn"))
+            .collect();
+        assert!(
+            !lines.iter().any(|line| line.trim().is_empty()),
+            "a blank line survives inside the phase tree: {lines:?}"
+        );
+    }
+
+    #[test]
     fn a_settled_row_padded_to_the_alignment_ceiling_keeps_its_duration_live() {
         // The alignment ceiling (`affordable_column`) caps the phase's column
         // by the terminal's complete-line budget, so a padded settled line

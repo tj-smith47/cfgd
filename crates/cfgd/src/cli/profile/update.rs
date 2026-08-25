@@ -199,7 +199,7 @@ pub fn cmd_profile_update(
         let pkgs = doc.spec.packages.get_or_insert_with(Default::default);
         packages::add_package(pkg.slot_or(&default_mgr), &pkg.name, pkgs)?;
         printer
-            .status(Role::Ok, "Added package")
+            .status(Role::Ok, format!("Added {}", pkg.noun()))
             .qualifier(pkg.display(&default_mgr));
         changes += 1;
     }
@@ -209,7 +209,7 @@ pub fn cmd_profile_update(
         let pkgs = doc.spec.packages.get_or_insert_with(Default::default);
         if packages::remove_package(pkg.slot_or(&default_mgr), &pkg.name, pkgs)? {
             printer
-                .status(Role::Ok, "Removed package")
+                .status(Role::Ok, format!("Removed {}", pkg.noun()))
                 .qualifier(pkg.display(&default_mgr));
             changes += 1;
         } else {
@@ -232,7 +232,8 @@ pub fn cmd_profile_update(
             printer.status_simple(
                 Role::Warn,
                 format!(
-                    "Package '{}' not found in {}",
+                    "{} '{}' not found in {}",
+                    pkg.noun_capitalized(),
                     pkg.name,
                     pkg.schema_path.as_deref().unwrap_or(&default_mgr)
                 ),

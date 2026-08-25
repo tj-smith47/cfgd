@@ -84,6 +84,7 @@ fn action_result(success: bool) -> ActionResult {
         success,
         error: None,
         changed: true,
+        skipped: false,
     }
 }
 
@@ -156,6 +157,7 @@ fn rollup_lines_covers_every_apply_status() {
     for (status, count, roles) in cases {
         let tally = RunTally {
             succeeded: 2,
+            skipped: 0,
             failed: 1,
             planned_total: 3,
             status: status.clone(),
@@ -178,6 +180,7 @@ fn rollup_lines_covers_every_apply_status() {
     // whether the glyph is `⊙` or `○`.
     let short = RunTally {
         succeeded: 1,
+        skipped: 0,
         failed: 0,
         planned_total: 4,
         status: ApplyStatus::Success,
@@ -210,6 +213,7 @@ fn rollup_lines_covers_every_apply_status() {
 fn a_run_that_attempted_nothing_says_so_instead_of_completing() {
     let nothing = RunTally {
         succeeded: 0,
+        skipped: 0,
         failed: 0,
         planned_total: 3,
         status: ApplyStatus::Success,
@@ -261,6 +265,7 @@ fn a_completed_rollup_names_the_run_it_finished() {
     ] {
         let tally = RunTally {
             succeeded: 1,
+            skipped: 0,
             failed: 0,
             planned_total: 1,
             status: ApplyStatus::Success,
@@ -277,6 +282,7 @@ fn a_completed_rollup_names_the_run_it_finished() {
 
     let partial = RunTally {
         succeeded: 1,
+        skipped: 0,
         failed: 1,
         planned_total: 2,
         status: ApplyStatus::Partial,
@@ -318,6 +324,7 @@ fn a_rollup_carrying_failures_does_not_lead_with_a_tick() {
     ] {
         let tally = RunTally {
             succeeded,
+            skipped: 0,
             failed,
             planned_total: succeeded + failed,
             status: status.clone(),
@@ -345,6 +352,7 @@ fn a_rollup_carrying_failures_does_not_lead_with_a_tick() {
 fn abort_rollup_keeps_the_lowercase_cli_sentence() {
     let tally = RunTally {
         succeeded: 2,
+        skipped: 0,
         failed: 0,
         planned_total: 5,
         status: ApplyStatus::Aborted,
@@ -371,6 +379,7 @@ fn an_abort_that_killed_an_action_names_the_failure_too() {
     // not-attempted line, and the closing line reads as a clean stop.
     let tally = RunTally {
         succeeded: 2,
+        skipped: 0,
         failed: 1,
         planned_total: 3,
         status: ApplyStatus::Aborted,
@@ -391,6 +400,7 @@ fn rollup_attaches_elapsed_to_the_last_line_emitted() {
     render_run_rollup(
         &RunTally {
             succeeded: 1,
+            skipped: 0,
             failed: 1,
             planned_total: 2,
             status: ApplyStatus::Partial,
@@ -423,6 +433,7 @@ fn rollup_attaches_elapsed_to_the_last_line_emitted() {
 fn tally_merge_adds_counts_and_takes_the_worse_status() {
     let mut base = RunTally {
         succeeded: 3,
+        skipped: 0,
         failed: 0,
         planned_total: 3,
         status: ApplyStatus::Success,
@@ -430,6 +441,7 @@ fn tally_merge_adds_counts_and_takes_the_worse_status() {
     };
     base.merge(RunTally {
         succeeded: 1,
+        skipped: 0,
         failed: 1,
         planned_total: 3,
         status: ApplyStatus::Partial,
@@ -443,6 +455,7 @@ fn tally_merge_adds_counts_and_takes_the_worse_status() {
     // A lesser status never masks a higher-severity one.
     let mut failed = RunTally {
         succeeded: 0,
+        skipped: 0,
         failed: 2,
         planned_total: 2,
         status: ApplyStatus::Failed,
@@ -450,6 +463,7 @@ fn tally_merge_adds_counts_and_takes_the_worse_status() {
     };
     failed.merge(RunTally {
         succeeded: 1,
+        skipped: 0,
         failed: 0,
         planned_total: 1,
         status: ApplyStatus::Partial,

@@ -3,8 +3,6 @@ Status
   Profile    default
   Last Scan  2h ago
 
-→ Run `cfgd status --scan` for a live check
-
 Last Apply
   Time     2026-05-14T11:30:00Z
   Profile  default
@@ -26,3 +24,5 @@ Pending Decisions
 
 Modules
   ✓ module:shell-config — 0 pkgs, 4 files, Synced
+
+→ `cfgd diff` checks the live machine; `cfgd status --scan` records the result

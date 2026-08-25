@@ -634,6 +634,7 @@ fn apply_result_counts() {
                 success: true,
                 error: None,
                 changed: true,
+                skipped: false,
             },
             ActionResult {
                 phase: "files".to_string(),
@@ -641,6 +642,7 @@ fn apply_result_counts() {
                 success: false,
                 error: Some("failed".to_string()),
                 changed: false,
+                skipped: false,
             },
         ],
         status: ApplyStatus::Partial,
@@ -21181,6 +21183,84 @@ fn prerequisite_node(tool: &str, installer: &str, required_by: &[&str]) -> Actio
 /// Apply a manager-node plan on this thread, returning the run, the tree it
 /// rendered and the state it wrote — the shape for every node test that needs
 /// no rendezvous.
+/// A skipped action is not a success. The footer counted `13 actions
+/// succeeded` over a tree where one of the thirteen wore the skip dash, and
+/// the stored column said the same, because the tally read `!failed`. Both
+/// halves — what the reader sees and what the row records — carry the split.
+#[test]
+fn an_apply_with_a_skipped_action_renders_and_stores_the_split() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(TrackingPackageManager::new("brew")));
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("work"),
+            vec![
+                Action::Package(PackageAction::Install {
+                    manager: "brew".to_string(),
+                    packages: vec!["ripgrep".to_string()],
+                    origin: "local".to_string(),
+                }),
+                Action::Package(PackageAction::Skip {
+                    manager: "apt".to_string(),
+                    reason: "not available on this host".to_string(),
+                    origin: "local".to_string(),
+                }),
+            ],
+        )],
+        warnings: vec![],
+    };
+
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    let mut exec = ReconcilerExecutor {
+        reconciler: &reconciler,
+        resolved: &resolved,
+        modules: &[],
+    };
+    let result = crate::reconciler::ApplyRun::new(
+        crate::reconciler::RunContext {
+            title: crate::reconciler::RunTitle::Apply,
+            config_path: None,
+            profile: Some("work"),
+            sources: &[],
+            modules: &[],
+            trigger: None,
+        },
+        &plan,
+    )
+    .execute(&printer, crate::reconciler::Confirm::Skip, &mut exec)
+    .expect("apply");
+    let out = crate::output::strip_ansi(&cap.human());
+    let crate::reconciler::RunDisposition::Applied { result, .. } = result else {
+        panic!("the run applied its plan: {out}");
+    };
+
+    assert_eq!(result.succeeded(), 1, "{:?}", result.action_results);
+    assert_eq!(result.skipped(), 1, "{:?}", result.action_results);
+    assert_eq!(result.failed(), 0);
+    assert!(
+        out.contains("1 action succeeded, 1 skipped"),
+        "the footer must not claim a skip as work done: {out}"
+    );
+
+    let stored = state
+        .get_apply(result.apply_id)
+        .unwrap()
+        .and_then(|record| record.summary)
+        .unwrap_or_default();
+    let parsed: serde_json::Value = serde_json::from_str(&stored).expect("summary json");
+    assert_eq!(parsed["succeeded"], 1, "stored: {stored}");
+    assert_eq!(parsed["skipped"], 1, "stored: {stored}");
+    assert_eq!(parsed["total"], 2, "stored: {stored}");
+    assert_eq!(
+        crate::state::ApplySummary::prose(&stored),
+        "1 succeeded, 1 skipped, 0 failed"
+    );
+}
+
 fn apply_manager_plan(
     registry: &ProviderRegistry,
     state: &crate::state::StateStore,
@@ -22136,8 +22216,9 @@ fn platform_skip_renders_as_header_annotation_not_a_phase() {
         "a skip is an in-scope action and is counted: {out}"
     );
     assert!(
-        out.contains("2 actions succeeded"),
-        "the rollup reconciles against the planned count: {out}"
+        out.contains("1 action succeeded, 1 skipped"),
+        "the rollup reconciles against the planned count, and a skip is \
+         counted as a skip rather than as work that was done: {out}"
     );
 
     // A run whose ONLY in-scope work is a platform-gated skip renders header +
@@ -22193,7 +22274,7 @@ fn platform_skip_renders_as_header_annotation_not_a_phase() {
             "Profile  work".to_string(),
             "Modules  wsl-tools skipped: platform not matched (requires: windows)".to_string(),
             "Actions  1 planned".to_string(),
-            "\u{2713} Apply complete \u{2014} 1 action succeeded".to_string(),
+            "\u{2713} Apply complete \u{2014} 1 action skipped".to_string(),
         ],
         "header + annotation + rollup and nothing else"
     );
@@ -22572,6 +22653,53 @@ impl PackageManager for NotePushingManager {
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
         Ok(None)
     }
+}
+
+/// A next step is not a warning. `⚠ run `source ~/.cfgd.env`, or open a new
+/// shell` marked an instruction with the glyph a problem wears, and stood
+/// among the run's real warnings; it renders as a hint, after everything the
+/// run had to report, and reads as an instruction ("Run", not "run").
+#[test]
+fn a_next_step_renders_as_a_hint_below_the_reports() {
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    crate::reconciler::render_caveats(
+        &printer,
+        &[(
+            Owner::cfgd("env"),
+            vec![
+                crate::providers::ActionNote::next_step("Run `source ~/.cfgd.env`"),
+                crate::providers::ActionNote::warn("npm", "deprecated: glob@7"),
+                crate::providers::ActionNote::info("npm", "installed into ~/.npm-global"),
+            ],
+        )],
+    );
+    drop(printer);
+    let out = crate::output::strip_ansi(&cap.human());
+    let lines: Vec<&str> = out
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let position = |needle: &str| {
+        lines
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} missing from: {out}"))
+    };
+    assert!(
+        position("Run `source") > position("deprecated: glob@7")
+            && position("Run `source") > position("installed into"),
+        "the next step must come last: {out}"
+    );
+    let step = lines[position("Run `source")];
+    assert!(
+        !step.starts_with('\u{26a0}'),
+        "a next step wears the warning glyph: {step:?}"
+    );
+    assert!(
+        step.contains("Run `source"),
+        "a next step is an instruction, capitalized: {step:?}"
+    );
 }
 
 /// A configurator that narrates from `apply`, the way every real one does while

@@ -134,7 +134,13 @@ pub fn build_log_doc(output: &LogOutput) -> Doc {
                         .unwrap_or("-")
                         .to_string(),
                     record.status.human_str().to_string(),
-                    record.summary.clone().unwrap_or_else(|| "-".into()),
+                    // The same prose the status dashboard's Summary row reads,
+                    // not the stored wire shape — one column, one rendering.
+                    record
+                        .summary
+                        .as_deref()
+                        .map(cfgd_core::state::ApplySummary::prose)
+                        .unwrap_or_else(|| "-".into()),
                 ]
             })
             .collect();
@@ -188,6 +194,37 @@ mod tests {
         assert!(
             !out.contains("inProgress"),
             "log Status column leaked the camelCase wire token, got: {out}"
+        );
+    }
+
+    /// The Summary column is the sibling of `cfgd status`'s Summary row, and
+    /// reads the same prose. It printed the stored wire shape verbatim.
+    #[test]
+    fn log_summary_column_never_shows_a_stored_wire_shape() {
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        let mut output = in_progress_log();
+        output.entries[0].summary = Some(
+            cfgd_core::state::ApplySummary::Actions {
+                total: 13,
+                succeeded: 12,
+                skipped: 1,
+                failed: 0,
+                not_run: None,
+                aborted: false,
+            }
+            .to_column(),
+        );
+        printer.emit(build_log_doc(&output));
+        drop(printer);
+
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("12 succeeded, 1 skipped, 0 failed"),
+            "the Summary column must read as prose: {out}"
+        );
+        assert!(
+            !out.contains("{\"") && !out.contains("\"succeeded\""),
+            "a stored wire shape reached a human surface: {out}"
         );
     }
 

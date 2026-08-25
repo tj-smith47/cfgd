@@ -10,19 +10,19 @@ Last Apply
   Summary  12 actions applied
 
 Drift
-  ✓ No drift recorded — `cfgd diff` checks the live machine
+  ✓ No drift recorded
 
 Modules
   ✓ module:base      — 5 pkgs, 3 files, Synced
   ✓ module:dev-tools — 18 pkgs, 12 files, Synced
 
 Managed Resources
-  Type      Owner             Resource                            Source
-  ──────────────────────────────────────────────────────────────────────
-  env       cfgd              /home/user/.cfgd.env                local 
-  files     cfgd              ~/.bashrc                           local 
-  files     module:dev-tools  /home/user/.config/nvim (12 files)  local 
-  packages  cfgd              brew: bat, ripgrep                  local 
-  packages  module:dev-tools  apt: cargo, gcc, git                local 
-  packages  module:dev-tools  brew: age, fd, neovim               local 
-  script    module:dev-tools  1 preApply, 2 postApply             local 
+  Type      Owner             Resource                                    Source
+  ──────────────────────────────────────────────────────────────────────────────
+  env       cfgd              /home/user/.cfgd.env                        local 
+  files     cfgd              ~/.bashrc                                   local 
+  files     module:dev-tools  /home/user/.config/nvim (12 files)          local 
+  packages  cfgd              brew: bat, ripgrep                          local 
+  packages  module:dev-tools  apt: cargo, gcc, git                        local 
+  packages  module:dev-tools  brew: age, fd, neovim                       local 
+  script    module:dev-tools  preApply (1 script), postApply (2 scripts)  local 

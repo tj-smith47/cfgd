@@ -481,11 +481,16 @@ pub fn cmd_module_update_local(
         if doc.spec.packages.iter().any(|p| p.name == pkg.name) {
             printer.status_simple(
                 Role::Info,
-                format!("Package '{}' already in module", pkg.name),
+                format!(
+                    "{} '{}' already in module",
+                    pkg.noun_capitalized(),
+                    pkg.name
+                ),
             );
             continue;
         }
         let qualifier = pkg.display(&native);
+        let pkg_noun = pkg.noun();
         doc.spec.packages.push(config::ModulePackageEntry {
             name: pkg.name,
             min_version: None,
@@ -499,7 +504,7 @@ pub fn cmd_module_update_local(
             ..Default::default()
         });
         printer
-            .status(Role::Ok, "Added package")
+            .status(Role::Ok, format!("Added {}", pkg_noun))
             .qualifier(qualifier);
         changes += 1;
     }
@@ -510,13 +515,17 @@ pub fn cmd_module_update_local(
         doc.spec.packages.retain(|p| p.name != pkg.name);
         if doc.spec.packages.len() < before {
             printer
-                .status(Role::Ok, "Removed package")
+                .status(Role::Ok, format!("Removed {}", pkg.noun()))
                 .qualifier(pkg.display(&native));
             changes += 1;
         } else {
             printer.status_simple(
                 Role::Warn,
-                format!("Package '{}' not found in module", pkg.name),
+                format!(
+                    "{} '{}' not found in module",
+                    pkg.noun_capitalized(),
+                    pkg.name
+                ),
             );
         }
     }

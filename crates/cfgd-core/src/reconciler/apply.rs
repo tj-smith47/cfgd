@@ -109,6 +109,19 @@ fn declared_noop_role(action: &Action) -> Option<Role> {
     }
 }
 
+/// The role a SUCCESSFUL action's line settles at.
+///
+/// The ONE derivation, read by the line the tree paints and by the `skipped`
+/// flag its [`ActionResult`] carries: a run whose footer counts an outcome the
+/// glyph above it contradicts is the defect this shares its answer to prevent.
+fn settled_success_role(action: &Action, changed: bool) -> Role {
+    match (declared_noop_role(action), changed) {
+        (Some(role), _) => role,
+        (None, true) => Role::Ok,
+        (None, false) => Role::Skipped,
+    }
+}
+
 /// `execute_script` emits a script action's one status line itself, so the tree
 /// must not add a second for the two action shapes that reach it.
 fn action_reports_its_own_status(action: &Action) -> bool {
@@ -310,9 +323,15 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
         let group =
             section.section_owner(&OwnerLabel::new(owner.kind.as_str(), owner.name.as_str()));
         let mut ordered: Vec<&ActionNote> = notes.iter().collect();
-        ordered.sort_by_key(|note| note.role != Role::Warn);
+        // Reports first, next steps last: a hint is what the reader does after
+        // reading everything the run had to say about itself.
+        ordered.sort_by_key(|note| (note.hint, note.role != Role::Warn));
         for note in ordered {
-            group.status_simple(note.role, note.body());
+            if note.hint {
+                group.hint(note.body());
+            } else {
+                group.status_simple(note.role, note.body());
+            }
         }
     }
 }
@@ -547,6 +566,10 @@ fn merge_env_result(results: &mut Vec<ActionResult>, description: String, change
         .find(|r| r.success && env_result_key(&r.description) == key)
     {
         prev.changed = prev.changed || changed;
+        // The row the Env phase settled said "unchanged" and wore a skip dash;
+        // a regeneration that has now written the file makes that verdict
+        // stale, and a stale skip is a success missing from the tally.
+        prev.skipped = prev.skipped && !prev.changed;
         prev.description = if prev.changed {
             key.to_string()
         } else {
@@ -563,6 +586,9 @@ fn merge_env_result(results: &mut Vec<ActionResult>, description: String, change
         success: true,
         error: None,
         changed,
+        // The same verdict the Env phase's own row settles on: a write that
+        // changed nothing is a no-op, whichever late input triggered it.
+        skipped: !changed,
     });
 }
 
@@ -1237,7 +1263,8 @@ impl<'a> super::Reconciler<'a> {
         if let Some(code) = aborted_code {
             self.record_managed_resources(apply_id, &results, resolved, module_actions)?;
             self.update_module_state(module_actions, Some(apply_id), &results)?;
-            let succeeded = results.iter().filter(|r| r.success).count();
+            let succeeded = results.iter().filter(|r| r.success && !r.skipped).count();
+            let skipped = results.iter().filter(|r| r.success && r.skipped).count();
             // `total` is what the run PLANNED, not what it reached: an aborted
             // run's whole point is that those two numbers differ, and a stored
             // record whose total is the reached count reads as a clean sweep
@@ -1246,14 +1273,15 @@ impl<'a> super::Reconciler<'a> {
             // accounted for — the dispatcher deliberately reports none of them
             // action by action.
             let not_run = planned_total.saturating_sub(results.len());
-            let summary = serde_json::json!({
-                "total": planned_total,
-                "succeeded": succeeded,
-                "failed": results.len() - succeeded,
-                "notRun": not_run,
-                "aborted": true,
-            })
-            .to_string();
+            let summary = crate::state::ApplySummary::Actions {
+                total: planned_total,
+                succeeded,
+                skipped,
+                failed: results.len() - succeeded - skipped,
+                not_run: Some(not_run),
+                aborted: true,
+            }
+            .to_column();
             self.state
                 .update_apply_status(apply_id, ApplyStatus::Aborted, Some(&summary))?;
             return Ok(ApplyResult {
@@ -1331,6 +1359,7 @@ impl<'a> super::Reconciler<'a> {
                                 success: false,
                                 error: Some(e.to_string()),
                                 changed: false,
+                                skipped: false,
                             });
                         }
                     }
@@ -1379,6 +1408,9 @@ impl<'a> super::Reconciler<'a> {
                             success: true,
                             error: None,
                             changed,
+                            // A script reports its own outcome line; the tree
+                            // settles no role for it and this record invents none.
+                            skipped: false,
                         });
                     }
                     Err(e) => {
@@ -1390,6 +1422,7 @@ impl<'a> super::Reconciler<'a> {
                             success: false,
                             error: Some(format!("{}", e)),
                             changed: false,
+                            skipped: false,
                         });
                         if !continue_on_err {
                             return Err(e);
@@ -1454,6 +1487,7 @@ impl<'a> super::Reconciler<'a> {
                                 success: true,
                                 error: None,
                                 changed,
+                                skipped: false,
                             });
                         }
                         Err(e) => {
@@ -1469,6 +1503,7 @@ impl<'a> super::Reconciler<'a> {
                                 success: false,
                                 error: Some(format!("{}", e)),
                                 changed: false,
+                                skipped: false,
                             });
                             if !continue_on_err {
                                 return Err(e);
@@ -1490,12 +1525,16 @@ impl<'a> super::Reconciler<'a> {
         };
 
         // Update apply status from "in-progress" placeholder to final
-        let summary = serde_json::json!({
-            "total": total,
-            "succeeded": total - failed,
-            "failed": failed,
-        })
-        .to_string();
+        let skipped = results.iter().filter(|r| r.success && r.skipped).count();
+        let summary = crate::state::ApplySummary::Actions {
+            total,
+            succeeded: total - failed - skipped,
+            skipped,
+            failed,
+            not_run: None,
+            aborted: false,
+        }
+        .to_column();
         // One transaction for the whole bookkeeping tail. Every write below is a
         // per-row insert in a loop over the run's results, its modules and its
         // touched files; individually committed, a large apply paid one WAL
@@ -1768,6 +1807,12 @@ impl<'a> super::Reconciler<'a> {
             success,
             error,
             changed,
+            // An action that reports its own status line settles its own
+            // outcome, so the tree never decides one for it and this record
+            // must not invent one either.
+            skipped: success
+                && !action_reports_its_own_status(action)
+                && settled_success_role(action, action_changed) == Role::Skipped,
         });
 
         if action_reports_its_own_status(action) {
@@ -1810,11 +1855,7 @@ impl<'a> super::Reconciler<'a> {
             },
             None => {
                 let noop = declared_noop_role(action);
-                let role = match (noop, action_changed) {
-                    (Some(role), _) => role,
-                    (None, true) => Role::Ok,
-                    (None, false) => Role::Skipped,
-                };
+                let role = settled_success_role(action, action_changed);
                 let detail = if noop.is_none() && !action_changed {
                     Some(if desc.ends_with(ENV_NO_SESSION_MANAGER_SUFFIX) {
                         "no session manager".to_string()

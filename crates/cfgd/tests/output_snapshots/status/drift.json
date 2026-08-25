@@ -44,6 +44,7 @@
   "pendingDecisions": [
     {
       "action": "install",
+      "contentHash": null,
       "createdAt": "2026-05-14T08:00:00Z",
       "id": 5,
       "resolution": null,

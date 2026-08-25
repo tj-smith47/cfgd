@@ -1171,8 +1171,9 @@ $ cfgd profile update base --package brew.tap:charmbracelet/tap
 unknown package manager 'brew.tap' in '--package brew.tap:charmbracelet/tap'; known: apk, apt, apt.packages, brew, brew.casks, brew.formulae, brew.taps, cargo, cargo.packages, chocolatey, dnf, flatpak, flatpak.packages, go, nix, npm, npm.global, pacman, pipx, pkg, scoop, snap, snap.classic, snap.packages, winget, yum, zypper
 ```
 
-Confirmation lines name the schema path the value landed in (`Added package: charmbracelet/tap (brew.taps)`),
-so the flag and the file agree about where to look.
+Confirmation lines name what the entry is, then the schema path the value landed in
+(`Added tap: charmbracelet/tap (brew.taps)`, `Added cask: firefox (brew.casks)`,
+`Added package: ripgrep (brew)`), so the flag and the file agree about where to look.
 
 ## Profile Commands
 

@@ -382,6 +382,27 @@ pub struct PackageSchemaPath {
     pub manager: &'static str,
 }
 
+/// What a `--package` token names when the schema path says nothing more
+/// specific.
+pub const DEFAULT_PACKAGE_NOUN: &str = "package";
+
+impl PackageSchemaPath {
+    /// The word a confirmation line calls this path's entries — `tap`, `cask`,
+    /// or plain `package`.
+    ///
+    /// Decided by the sub-list the path names, so a new sub-list picks its noun
+    /// by being spelled after what it holds; `package_schema_paths_choose_a_noun`
+    /// walks the whole table. `✓ Added package: charmbracelet/tap (brew.taps)`
+    /// told the user cfgd had installed something it had merely made available.
+    pub fn noun(&self) -> &'static str {
+        match self.path.rsplit('.').next() {
+            Some("taps") => "tap",
+            Some("casks") => "cask",
+            _ => DEFAULT_PACKAGE_NOUN,
+        }
+    }
+}
+
 /// Every `<manager>[.<list>]` path under `spec.packages` that holds package
 /// NAMES, in the order a "known:" list spells them.
 ///
@@ -666,6 +687,42 @@ impl PackageClaim {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every entry in the table answers with the noun its own sub-list holds,
+    /// so a confirmation line never calls a tap or a cask a "package". Walked
+    /// over the whole table rather than spot-checked: a path added later picks
+    /// its noun here or trips this test.
+    #[test]
+    fn package_schema_paths_choose_a_noun() {
+        for path in PACKAGE_SCHEMA_PATHS {
+            let expected = match path.path.rsplit('.').next() {
+                Some("taps") => "tap",
+                Some("casks") => "cask",
+                _ => DEFAULT_PACKAGE_NOUN,
+            };
+            assert_eq!(
+                path.noun(),
+                expected,
+                "{} names its entries {:?}",
+                path.path,
+                path.noun()
+            );
+        }
+        // The two the sweep above derives from the same rule it is testing, as
+        // literals: the sub-lists whose entries are NOT packages.
+        assert_eq!(
+            package_schema_path("brew.taps").map(|p| p.noun()),
+            Some("tap")
+        );
+        assert_eq!(
+            package_schema_path("brew.casks").map(|p| p.noun()),
+            Some("cask")
+        );
+        assert_eq!(
+            package_schema_path("brew.formulae").map(|p| p.noun()),
+            Some("package")
+        );
+    }
 
     /// Walk a fully-populated `PackagesSpec` and require every list of package
     /// NAMES in it to be reachable by a `--package` prefix. Derived from the

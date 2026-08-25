@@ -57,6 +57,9 @@ pub struct StatusOutput {
 #[serde(rename_all = "camelCase")]
 pub struct ModuleStatusEntry {
     pub name: String,
+    /// What this host manages for the module — the counts its Managed
+    /// Resources rows add up to, from `recorded_module_tallies`, never a
+    /// second count taken off the resolved declaration.
     pub packages: usize,
     pub files: usize,
     pub status: String,
@@ -79,8 +82,15 @@ pub struct ModuleStatusEntry {
 pub struct ModuleDeclared {
     /// Directory the module's declared file targets share, POSIX-folded.
     pub file_root: Option<String>,
-    /// Resolved package name to the manager that installs it.
-    pub package_managers: std::collections::BTreeMap<String, String>,
+    /// Resolved package name to every manager the module declares it under.
+    ///
+    /// A SET per name, because one name can be declared twice: `nvim` resolves
+    /// `neovim` under the host's native manager AND under `npm`. Keyed
+    /// name-to-one-manager, the second declaration overwrote the first, and the
+    /// native row — whose names then disagreed about who installs them — lost
+    /// its manager prefix entirely and rendered a bare package list beside rows
+    /// spelled `apt:`, `npm:`, `pipx:`.
+    pub package_managers: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     /// `3 preApply, 6 postApply`, from [`cfgd_core::modules::ModuleSurfaces`] —
     /// the same tally, and the same rendering, `cfgd status <module>` reports.
     pub script_summary: Option<String>,
@@ -90,11 +100,15 @@ impl ModuleDeclared {
     fn of(module: &cfgd_core::modules::ResolvedModule) -> Self {
         Self {
             file_root: common_target_root(&module.files),
-            package_managers: module
-                .packages
-                .iter()
-                .map(|p| (p.resolved_name.clone(), p.manager.clone()))
-                .collect(),
+            package_managers: module.packages.iter().fold(
+                std::collections::BTreeMap::new(),
+                |mut map, p| {
+                    map.entry(p.resolved_name.clone())
+                        .or_default()
+                        .insert(p.manager.clone());
+                    map
+                },
+            ),
             script_summary: cfgd_core::modules::ModuleSurfaces::of_resolved(module)
                 .script_summary(),
         }
@@ -377,13 +391,17 @@ fn drift_section<T>(
             // has asked nothing of the machine, and "No drift detected" over a
             // host whose last apply left a declared package uninstalled is an
             // assurance no query backs.
-            if checked_live {
-                s.status(Role::Ok, "No drift detected")
-            } else {
-                s.status_with(Role::Ok, "No drift recorded", |sf| {
-                    sf.detail("`cfgd diff` checks the live machine")
-                })
-            }
+            // No hint on this line: the report closes with ONE, and the two
+            // together put two spellings of "go check the machine" on a single
+            // screen — this one and the header's `--scan` line.
+            s.status(
+                Role::Ok,
+                if checked_live {
+                    "No drift detected"
+                } else {
+                    "No drift recorded"
+                },
+            )
         } else {
             drift.iter().fold(s, &row)
         }
@@ -561,19 +579,21 @@ pub fn build_fleet_status_doc(
     // Only the recorded-state dashboard needs a staleness signal: a `--scan`/
     // `--exit-code` run just checked the machine itself, so its Drift section
     // already speaks for how current the display is.
+    //
+    // The hint it earns is emitted ONCE, at the foot of the report, rather than
+    // here: a line under the header and a second one inside Drift were two
+    // spellings of the same suggestion on one screen.
+    let mut stale = false;
     if !output.drift_checked_live {
         match &output.last_scan_at {
             Some(ts) => {
                 let age = cfgd_core::humanize_age_since(ts, now).unwrap_or_else(|| ts.clone());
                 doc = doc.kv("Last Scan", &age);
-                if cfgd_core::is_stale_since(ts, now, SCAN_STALENESS_SECS) {
-                    doc = doc.hint("Run `cfgd status --scan` for a live check");
-                }
+                stale = cfgd_core::is_stale_since(ts, now, SCAN_STALENESS_SECS);
             }
             None => {
-                doc = doc
-                    .kv("Last Scan", "never")
-                    .hint("Run `cfgd status --scan` for a live check");
+                doc = doc.kv("Last Scan", "never");
+                stale = true;
             }
         }
     }
@@ -588,7 +608,11 @@ pub fn build_fleet_status_doc(
                 s = s.kv("Result", last.status.human_str());
                 // decision-summary-ok: the `applies` record's own summary column, not a pending decision's
                 if let Some(summary) = &last.summary {
-                    s = s.kv("Summary", summary);
+                    // Prose, never the stored column: the wire shape is what
+                    // `-o json` carries, and a human row reading
+                    // `{"failed":0,"succeeded":22,"total":22}` makes the reader
+                    // parse JSON to learn the apply went fine.
+                    s = s.kv("Summary", cfgd_core::state::ApplySummary::prose(summary));
                 }
                 s
             });
@@ -679,8 +703,19 @@ pub fn build_fleet_status_doc(
         },
     );
 
+    if stale {
+        doc = doc.hint(SCAN_HINT);
+    }
+
     doc.with_data(output)
 }
+
+/// The ONE line a recorded-state report closes with when its drift is
+/// unchecked or stale: what looks, and what records the looking. Two commands
+/// in one sentence, at the foot of the report, because the reader needs them
+/// after reading it rather than before.
+pub(super) const SCAN_HINT: &str =
+    "`cfgd diff` checks the live machine; `cfgd status --scan` records the result";
 
 /// The owner column's word for what cfgd manages on the profile's own behalf
 /// rather than for a module.
@@ -796,10 +831,7 @@ fn module_id_parts<'a>(resource_type: &str, resource_id: &'a str) -> Option<(&'a
 /// what the current resolution says about it. Full paths are
 /// `cfgd status --module -o wide`'s job.
 fn module_files_resource(recorded_count: &str, declared: Option<&ModuleDeclared>) -> String {
-    let count = recorded_count
-        .parse::<usize>()
-        .ok()
-        .map(|n| cfgd_core::pluralize(n, "file"));
+    let count = module_files_count(recorded_count).map(|n| cfgd_core::pluralize(n, "file"));
     let root = declared.and_then(|d| d.file_root.clone());
     match (root, count) {
         (Some(root), Some(count)) => format!("{root} ({count})"),
@@ -817,20 +849,90 @@ fn module_files_resource(recorded_count: &str, declared: Option<&ModuleDeclared>
 /// resolution, and only when every name in the row agrees on one, so the row
 /// can never name a manager that installs some other part of its own list.
 fn module_packages_resource(recorded: &str, declared: Option<&ModuleDeclared>) -> String {
-    let mut names: Vec<&str> = recorded.split(',').filter(|n| !n.is_empty()).collect();
+    let names = module_package_names(recorded);
     if names.is_empty() {
         return NO_DETAIL.to_string();
     }
-    names.sort_unstable();
     let list = names.join(", ");
-    let managers: std::collections::BTreeSet<&str> = names
-        .iter()
-        .filter_map(|n| declared?.package_managers.get(*n).map(String::as_str))
-        .collect();
-    match managers.len() {
-        1 => format!("{}: {list}", managers.iter().next().unwrap_or(&"")),
-        _ => list,
+    match row_manager(&names, declared) {
+        Some(manager) => format!("{manager}: {list}"),
+        None => list,
     }
+}
+
+/// The manager that installed every name in one recorded row, or `None` when
+/// resolution cannot say.
+///
+/// The INTERSECTION of the per-name manager sets, not their union: the planner
+/// emits one action — and so one recorded row — per manager, so every name in a
+/// row shares an installer, and a name declared under two managers narrows to
+/// the one its row-mates agree on. Taking one manager per name instead let
+/// `neovim`, declared natively AND under npm, decide the whole native row's
+/// answer was ambiguous.
+fn row_manager<'a>(names: &[&str], declared: Option<&'a ModuleDeclared>) -> Option<&'a str> {
+    let declared = declared?;
+    let mut shared: Option<std::collections::BTreeSet<&str>> = None;
+    for name in names {
+        let managers: std::collections::BTreeSet<&str> = declared
+            .package_managers
+            .get(*name)?
+            .iter()
+            .map(String::as_str)
+            .collect();
+        shared = Some(match shared {
+            Some(acc) => acc.intersection(&managers).copied().collect(),
+            None => managers,
+        });
+    }
+    let shared = shared?;
+    (shared.len() == 1)
+        .then(|| shared.into_iter().next())
+        .flatten()
+}
+
+/// The package names one `module:<name>:packages:<a,b,c>` id records, sorted.
+///
+/// The ONE read of that field, shared by the table cell and the per-module
+/// tally the Modules headline reports — a count derived a second way is how the
+/// headline came to claim 28 packages over a table listing 24.
+fn module_package_names(recorded: &str) -> Vec<&str> {
+    let mut names: Vec<&str> = recorded.split(',').filter(|n| !n.is_empty()).collect();
+    names.sort_unstable();
+    names
+}
+
+/// The file count one `module:<name>:files:<n>` id records.
+fn module_files_count(recorded: &str) -> Option<usize> {
+    recorded.parse::<usize>().ok()
+}
+
+/// What the Managed Resources table says this host manages for each module, as
+/// `name -> (packages, files)`.
+///
+/// The Modules headline reports these counts rather than the module's resolved
+/// declaration, because the two answer different questions and the report put
+/// them one section apart: resolution says what the module WOULD put on a host,
+/// the recorded rows say what cfgd HAS put on this one. Only the second is
+/// what the table beneath the headline lists, and a headline that disagrees
+/// with the table under it is a report arguing with itself.
+pub(super) fn recorded_module_tallies(
+    items: &[cfgd_core::state::ManagedResource],
+) -> std::collections::BTreeMap<String, (usize, usize)> {
+    let mut tallies: std::collections::BTreeMap<String, (usize, usize)> =
+        std::collections::BTreeMap::new();
+    for r in items {
+        let Some((module, rest)) = module_id_parts(&r.resource_type, &r.resource_id) else {
+            continue;
+        };
+        let (surface, detail) = rest.split_once(':').unwrap_or((rest, ""));
+        let entry = tallies.entry(module.to_string()).or_default();
+        match surface {
+            "packages" => entry.0 += module_package_names(detail).len(),
+            "files" => entry.1 += module_files_count(detail).unwrap_or(0),
+            _ => {}
+        }
+    }
+    tallies
 }
 
 /// The word the Type column reads for a recorded `resource_type`.
@@ -907,7 +1009,16 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView) ->
 
     doc = match view {
         ModuleStatusView::Compact => {
-            render_module_drift_section(doc, &output.drift, output.drift_checked_live)
+            let doc = render_module_drift_section(doc, &output.drift, output.drift_checked_live);
+            // Same rule as the fleet report: the Drift line states what is
+            // recorded, and the ONE hint about checking the machine closes the
+            // report. This surface holds no scan timestamp, so "unchecked" is
+            // the whole of its staleness.
+            if output.drift_checked_live {
+                doc
+            } else {
+                doc.hint(SCAN_HINT)
+            }
         }
         // No Drift section: every finding is already an inline verdict on the
         // inventory row for the thing it was found on, and repeating it below
@@ -1213,6 +1324,7 @@ pub(super) fn cmd_status(
     }
 
     let state_map = module_state_map(state);
+    let tallies = recorded_module_tallies(&resources);
     let module_entries: Vec<ModuleStatusEntry> = resolved_modules
         .iter()
         .map(|module| {
@@ -1220,10 +1332,11 @@ pub(super) fn cmd_status(
                 .get(&module.name)
                 .map(|s| s.status.clone())
                 .unwrap_or_else(|| "not applied".into());
+            let (packages, files) = tallies.get(&module.name).copied().unwrap_or_default();
             ModuleStatusEntry {
                 name: module.name.clone(),
-                packages: module.packages.len(),
-                files: module.files.len(),
+                packages,
+                files,
                 status,
                 declared: ModuleDeclared::of(module),
             }
@@ -1727,6 +1840,21 @@ mod tests {
         }
     }
 
+    /// A declared-package map keyed the way `ModuleDeclared::of` builds it:
+    /// one name can be declared under two managers, so the value is a set.
+    fn declared_managers(
+        pairs: &[(&str, &str)],
+    ) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+        let mut map: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        for (package, manager) in pairs {
+            map.entry((*package).to_string())
+                .or_default()
+                .insert((*manager).to_string());
+        }
+        map
+    }
+
     fn nvim_entry(declared: ModuleDeclared) -> ModuleStatusEntry {
         ModuleStatusEntry {
             name: "nvim".to_string(),
@@ -1838,11 +1966,8 @@ mod tests {
     fn a_module_row_names_its_owner_and_reads_its_detail_from_the_resolution() {
         let declared = ModuleDeclared {
             file_root: Some("/home/u/.config/nvim".to_string()),
-            package_managers: [("git", "apt"), ("gcc", "apt")]
-                .into_iter()
-                .map(|(p, m)| (p.to_string(), m.to_string()))
-                .collect(),
-            script_summary: Some("3 preApply, 6 postApply".to_string()),
+            package_managers: declared_managers(&[("git", "apt"), ("gcc", "apt")]),
+            script_summary: Some("preApply (3 scripts), postApply (6 scripts)".to_string()),
         };
         let rows = managed_resource_rows(
             &[
@@ -1859,7 +1984,7 @@ mod tests {
             vec![
                 "/home/u/.config/nvim (6 files)",
                 "apt: gcc, git",
-                "3 preApply, 6 postApply",
+                "preApply (3 scripts), postApply (6 scripts)",
             ]
         );
     }
@@ -1870,10 +1995,7 @@ mod tests {
     #[test]
     fn a_package_row_names_a_manager_only_when_every_name_agrees() {
         let split = ModuleDeclared {
-            package_managers: [("git", "apt"), ("neovim", "brew")]
-                .into_iter()
-                .map(|(p, m)| (p.to_string(), m.to_string()))
-                .collect(),
+            package_managers: declared_managers(&[("git", "apt"), ("neovim", "brew")]),
             ..ModuleDeclared::default()
         };
         let rows = managed_resource_rows(
@@ -2048,6 +2170,194 @@ mod tests {
         assert!(
             !scanned.contains("Last Scan") && !scanned.contains(hint),
             "a run that just scanned must not date or hint at itself: {scanned}"
+        );
+    }
+
+    /// The whole dashboard for a `StatusOutput`, rendered the way `cmd_status`
+    /// renders it. Every clock-reading input is supplied, so a render pins.
+    fn dashboard(output: &StatusOutput) -> String {
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(build_fleet_status_doc(
+            output,
+            &[],
+            std::path::Path::new("/etc/cfgd/cfgd.yaml"),
+            "default",
+            "2026-05-14T10:05:00Z",
+            &Default::default(),
+        ));
+        drop(printer);
+        cfgd_core::test_helpers::captured_text(&buf)
+    }
+
+    fn empty_output() -> StatusOutput {
+        StatusOutput {
+            last_apply: None,
+            drift: Vec::new(),
+            sources: Vec::new(),
+            pending_decisions: Vec::new(),
+            modules: Vec::new(),
+            managed_resources: Vec::new(),
+            warnings: Vec::new(),
+            classification_degraded: false,
+            classification_degraded_code: None,
+            classification_degraded_reason: None,
+            drift_checked_live: false,
+            // Old enough for the scan hint to be earned; the fresh case sets
+            // its own stamp.
+            last_scan_at: Some("2026-05-14T08:00:00Z".to_string()),
+        }
+    }
+
+    /// The Summary row is a sentence. It read the stored wire shape verbatim:
+    /// `Summary  {"failed":0,"succeeded":22,"total":22}`.
+    #[test]
+    fn the_summary_row_never_shows_a_stored_wire_shape() {
+        let mut output = empty_output();
+        output.last_apply = Some(ApplyRecord {
+            id: 4,
+            timestamp: "2026-05-14T09:00:00Z".to_string(),
+            profile: "default".to_string(),
+            plan_hash: "deadbeef".to_string(),
+            status: ApplyStatus::Success,
+            summary: Some(
+                cfgd_core::state::ApplySummary::Actions {
+                    total: 22,
+                    succeeded: 21,
+                    skipped: 1,
+                    failed: 0,
+                    not_run: None,
+                    aborted: false,
+                }
+                .to_column(),
+            ),
+        });
+        let out = dashboard(&output);
+        assert!(
+            out.contains("21 succeeded, 1 skipped, 0 failed"),
+            "the Summary row must read as prose: {out}"
+        );
+        assert!(
+            !out.contains("{\"") && !out.contains("\"succeeded\""),
+            "a stored wire shape reached a human surface: {out}"
+        );
+    }
+
+    /// One screen, one hint for one need. The Drift section stated the absence
+    /// AND pointed at `--scan`, and the header pointed at it again; the report
+    /// now states the absence plainly and closes with the one hint, and only
+    /// while the recorded state is old enough for it to matter.
+    #[test]
+    fn the_scan_hint_is_said_once_and_last() {
+        let out = dashboard(&empty_output());
+        assert!(
+            out.contains("No drift recorded"),
+            "the drift line states the absence plainly: {out}"
+        );
+        let hint_lines: Vec<&str> = out
+            .lines()
+            .filter(|l| l.contains("cfgd status --scan"))
+            .collect();
+        assert_eq!(hint_lines.len(), 1, "one hint, one need: {out}");
+        assert!(
+            hint_lines[0].contains("cfgd diff"),
+            "the hint says what each command answers: {out}"
+        );
+        let last = out
+            .lines()
+            .rfind(|l| !l.trim().is_empty())
+            .unwrap_or_default();
+        assert!(
+            last.contains("cfgd status --scan"),
+            "a next step closes the report: {out}"
+        );
+
+        // A host whose recorded state is current has no need to be told, so
+        // the report closes on its own content.
+        let mut fresh = empty_output();
+        fresh.last_scan_at = Some("2026-05-14T10:04:00Z".to_string());
+        assert!(
+            !dashboard(&fresh).contains("cfgd status --scan"),
+            "a fresh scan needs no hint"
+        );
+    }
+
+    /// The Modules headline and the Managed Resources table answer the same
+    /// question and must give the same number: the headline said `28 pkgs`
+    /// over a table listing 24.
+    #[test]
+    fn the_module_headline_counts_what_the_table_lists() {
+        let resources = vec![
+            recorded("module", "nvim:packages:ripgrep,fd,bat"),
+            recorded("module", "nvim:packages:neovim"),
+            recorded("module", "nvim:files:6"),
+        ];
+        let tallies = recorded_module_tallies(&resources);
+        let (packages, files) = tallies.get("nvim").copied().unwrap_or_default();
+
+        let mut output = empty_output();
+        output.modules = vec![ModuleStatusEntry {
+            name: "nvim".to_string(),
+            packages,
+            files,
+            status: "installed".to_string(),
+            declared: ModuleDeclared::default(),
+        }];
+        output.managed_resources = resources.clone();
+        let out = dashboard(&output);
+
+        let listed: usize = managed_resource_rows(&resources, &output.modules)
+            .iter()
+            .filter(|row| row[0] == "packages")
+            .map(|row| {
+                row[2]
+                    .rsplit(": ")
+                    .next()
+                    .map_or(0, |names| names.split(", ").count())
+            })
+            .sum();
+        assert_eq!(packages, listed, "headline vs table: {out}");
+        assert!(
+            out.contains("4 pkgs, 6 files"),
+            "the headline reports the recorded tally: {out}"
+        );
+    }
+
+    /// A packages row names the manager that installs it. One row rendered
+    /// bare beside `apt:`, `cargo:`, `npm:` and `pipx:` siblings, because the
+    /// declaration map held one manager per NAME and a package declared twice
+    /// (natively and under npm) collapsed onto whichever won.
+    #[test]
+    fn every_packages_row_spells_its_manager() {
+        for manager in cfgd_core::config::ALL_MANAGER_NAMES {
+            let declared = ModuleDeclared {
+                package_managers: declared_managers(&[("thing", manager)]),
+                ..ModuleDeclared::default()
+            };
+            let rows = managed_resource_rows(
+                &[recorded("module", "nvim:packages:thing")],
+                &[nvim_entry(declared)],
+            );
+            assert_eq!(
+                rows[0][2],
+                format!("{manager}: thing"),
+                "a {manager} row lost its prefix"
+            );
+        }
+
+        // The name declared under TWO managers still names the manager of the
+        // row it is in: the recorded row is per manager, so every name in one
+        // row shares an installer.
+        let both = ModuleDeclared {
+            package_managers: declared_managers(&[("neovim", "apt"), ("neovim", "npm")]),
+            ..ModuleDeclared::default()
+        };
+        let rows = managed_resource_rows(
+            &[recorded("module", "nvim:packages:neovim")],
+            &[nvim_entry(both)],
+        );
+        assert_eq!(
+            rows[0][2], "neovim",
+            "two managers claim it, so no row may claim one of them"
         );
     }
 

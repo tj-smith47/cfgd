@@ -359,6 +359,12 @@ pub struct ActionNote {
     /// fallback is a [`Role::Warn`]; a report of work done on the side is a
     /// [`Role::Info`].
     pub role: Role,
+    /// The note is a NEXT STEP for the reader, not a report about the run —
+    /// nothing went wrong, there is simply something left to do. It renders
+    /// through `Printer::hint`, so it wears the same `→` a hint anywhere else
+    /// in the CLI does instead of a warning glyph over a sentence that warns
+    /// about nothing.
+    pub hint: bool,
 }
 
 impl ActionNote {
@@ -368,6 +374,7 @@ impl ActionNote {
             tag: Some(tag.into()),
             message: message.into(),
             role: Role::Warn,
+            hint: false,
         }
     }
 
@@ -377,6 +384,20 @@ impl ActionNote {
             tag: Some(tag.into()),
             message: message.into(),
             role: Role::Info,
+            hint: false,
+        }
+    }
+
+    /// An untagged NEXT STEP the reader has to take once the run is over —
+    /// re-sourcing a generated env file, opening a new shell. Nothing about it
+    /// is a warning, and giving it a warning glyph is what made the closing
+    /// Caveats block read as though the apply had gone wrong.
+    pub fn next_step(message: impl Into<String>) -> Self {
+        Self {
+            tag: None,
+            message: message.into(),
+            role: Role::Info,
+            hint: true,
         }
     }
 
@@ -386,6 +407,7 @@ impl ActionNote {
             tag: None,
             message: message.into(),
             role,
+            hint: false,
         }
     }
 
@@ -433,8 +455,14 @@ impl NoteSink {
         })
     }
 
+    /// A note with nothing to say is refused here rather than at each
+    /// producer: a blank message renders as a lone glyph beside an owner tag
+    /// (`⚠ [npm] `), which is a caveat that tells the reader nothing and costs
+    /// them a line to work that out. Every producer — a manager's caveat
+    /// extraction, a `PackageAction::Skip` whose `reason` is empty, a
+    /// configurator's narration — routes through this one gate.
     pub fn push(&self, note: ActionNote) {
-        if !self.collecting {
+        if !self.collecting || note.message.trim().is_empty() {
             return;
         }
         self.notes
@@ -460,11 +488,15 @@ impl NoteSink {
         message: impl Into<String>,
     ) {
         let message = message.into();
+        if message.trim().is_empty() {
+            return;
+        }
         if self.collecting {
             self.push(ActionNote {
                 tag: tag.map(str::to_string),
                 message,
                 role,
+                hint: false,
             });
         } else {
             // Untagged once it settles: a standalone line has no action line
@@ -736,7 +768,7 @@ pub trait PackageManager: Send + Sync {
 /// PackageManager` — rather than living on the trait as a defaulted method, so no
 /// implementation can answer this question differently from its own plan. A
 /// manager that returned `true` here while planning `None` would be claimed as a
-/// candidate by [`crate::modules::resolve`] and then never provisioned.
+/// candidate by [`crate::modules::resolve_package`] and then never provisioned.
 pub trait PackageManagerExt {
     fn can_bootstrap(&self) -> bool;
     fn feasible_bootstrap_plan(&self) -> Option<BootstrapPlan>;

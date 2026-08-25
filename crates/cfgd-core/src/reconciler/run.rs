@@ -170,6 +170,11 @@ pub trait RunExecutor {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunTally {
     pub succeeded: usize,
+    /// Actions that reached their line and settled a skip. Split out of
+    /// `succeeded` because the closing line is the account a reader keeps, and
+    /// a skip dash on screen counted as a success there is a footer that
+    /// contradicts the tree above it.
+    pub skipped: usize,
     pub failed: usize,
     /// What the run set out to do. The `Actions  N planned` header row and the
     /// `⊙ N actions not attempted` shortfall line read the same field.
@@ -183,6 +188,7 @@ impl RunTally {
     pub fn empty() -> Self {
         Self {
             succeeded: 0,
+            skipped: 0,
             failed: 0,
             planned_total: 0,
             status: ApplyStatus::Success,
@@ -196,6 +202,7 @@ impl RunTally {
     /// arithmetic stays honest, and takes the worse `status` of the two.
     pub fn merge(&mut self, other: RunTally) {
         self.succeeded += other.succeeded;
+        self.skipped += other.skipped;
         self.failed += other.failed;
         self.planned_total += other.planned_total;
         if status_severity(&other.status) > status_severity(&self.status) {
@@ -209,7 +216,7 @@ impl RunTally {
     /// panic path.
     fn shortfall(&self) -> usize {
         self.planned_total
-            .saturating_sub(self.succeeded + self.failed)
+            .saturating_sub(self.succeeded + self.skipped + self.failed)
     }
 
     /// The run planned work and reached none of it — every action was withheld
@@ -221,7 +228,7 @@ impl RunTally {
     /// two things on screen that could tell the user what happened — the ✓ and
     /// the exit code — disagreed.
     fn nothing_attempted(&self) -> bool {
-        self.planned_total > 0 && self.succeeded == 0 && self.failed == 0
+        self.planned_total > 0 && self.succeeded == 0 && self.skipped == 0 && self.failed == 0
     }
 }
 
@@ -245,6 +252,7 @@ impl ApplyResult {
     pub fn tally(&self) -> RunTally {
         RunTally {
             succeeded: self.succeeded(),
+            skipped: self.skipped(),
             failed: self.failed(),
             planned_total: self.planned_total,
             status: self.status.clone(),
@@ -376,7 +384,7 @@ impl<'a> ApplyRun<'a> {
     /// which is what makes the two reconcilable afterwards, plus one per
     /// pending backup item. With no plan it is the pending backup items alone.
     /// A backup item is one hook entry or one unit's snapshot; see
-    /// [`ApplyRun::pending_backup_count`] for what the engine can enumerate
+    /// `ApplyRun::pending_backup_count` for what the engine can enumerate
     /// ahead of the run.
     pub fn header(&self, printer: &Printer) {
         let mut rows: Vec<KvPair> = Vec::new();
@@ -836,6 +844,9 @@ fn backup_report_tally(report: &crate::backup::BackupRunReport, planned: usize) 
     let succeeded = report.items.iter().filter(|item| item.ok).count();
     RunTally {
         succeeded,
+        // A `Busy` skip contributes no item at all, so there is nothing here
+        // for a skipped count to hold; the unit surfaces as the shortfall.
+        skipped: 0,
         failed: report.items.len() - succeeded,
         planned_total: planned,
         // A skip is not a partial run of this unit; it is no run of it, so it
@@ -924,6 +935,24 @@ pub fn align_width(phase: &Phase) -> usize {
 /// Each line is `(role, subject, detail)`: the detail glues to the subject
 /// through the ONE canonical " — " composer at render time
 /// (`StatusBuilder::detail`), never baked into the subject string by hand.
+/// `13 actions succeeded`, or `12 actions succeeded, 1 skipped` — the ONE
+/// rendering of what a run's actions came to, so no closing line can claim a
+/// skipped action as a success. Silent about skips when there were none: a
+/// clean run's line does not name outcomes that did not occur.
+fn outcome_counts(tally: &RunTally) -> String {
+    // A run whose every action was skipped says so outright: "0 actions
+    // succeeded, 1 skipped" leads with a count of nothing and reads as a
+    // shortfall the run does not have.
+    if tally.succeeded == 0 && tally.skipped > 0 {
+        return format!("{} skipped", pluralize(tally.skipped, "action"));
+    }
+    let succeeded = format!("{} succeeded", pluralize(tally.succeeded, "action"));
+    match tally.skipped {
+        0 => succeeded,
+        skipped => format!("{succeeded}, {skipped} skipped"),
+    }
+}
+
 fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<String>)> {
     match tally.status {
         // Partial leads with a Warn title line naming the outcome, because the
@@ -943,11 +972,7 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<
                     tally.succeeded, tally.planned_total
                 )),
             ),
-            (
-                Role::Ok,
-                format!("{} succeeded", pluralize(tally.succeeded, "action")),
-                None,
-            ),
+            (Role::Ok, outcome_counts(tally), None),
             (
                 Role::Accent,
                 format!("{} failed", pluralize(tally.failed, "action")),
@@ -968,10 +993,7 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<
         ApplyStatus::Success => vec![(
             Role::Ok,
             format!("{} complete", title.as_str()),
-            Some(format!(
-                "{} succeeded",
-                pluralize(tally.succeeded, "action")
-            )),
+            Some(outcome_counts(tally)),
         )],
         ApplyStatus::Failed => vec![(
             Role::Fail,

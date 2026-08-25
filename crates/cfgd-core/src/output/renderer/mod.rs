@@ -510,6 +510,14 @@ impl Renderer {
     /// block per logical emission: with bars live, indicatif clears and redraws
     /// once around the whole block rather than once per line.
     fn emit_block(&self, w: &dyn Writer, lines: &[String]) {
+        // An emission that produced no line has nothing to route. The plain
+        // path already writes nothing, but `println` takes a STRING and joining
+        // nothing yields `""` — one blank row painted into the live region,
+        // between the lines around it, for every emission the renderer merely
+        // buffered (a status held for column alignment, a deferred header).
+        if lines.is_empty() {
+            return;
+        }
         let plain = || {
             for line in lines {
                 w.write_line(line);
@@ -630,7 +638,7 @@ impl Emitting<'_> {
     ///
     /// A section's pending statuses are always older than whatever is still in
     /// the kv buffer: a status buffered while kv rows were waiting empties them
-    /// on the way in ([`super::status`]'s buffered route), so at most one of
+    /// on the way in ([`super::printer::Printer::status`]'s buffered route), so at most one of
     /// the two ever holds content that predates the other. Draining them the
     /// other way round would invert exactly the call order this exists to keep.
     pub(crate) fn drain_buffers(&mut self) {
@@ -934,7 +942,7 @@ impl Renderer {
     /// Bullet: glyph `-`, then space, then text. Uncolored except for an
     /// optional leading styled `marker` (`run PreApply script: <body>`), the
     /// bullet counterpart of a status line's marker slot — `marker` composes
-    /// through [`finalize_subject`] exactly as a status line's marker does, so
+    /// through `finalize_subject` exactly as a status line's marker does, so
     /// a planned script's marker in the preview tree carries the same
     /// `Role::Accent` styling it gets once the script actually runs
     /// (`StatusBuilder::marker`) instead of reading as plain body text. The
@@ -1612,6 +1620,31 @@ mod tests {
         for line in ["one", "two", "three", "single"] {
             assert!(drawn.contains(line), "{line:?} missing from: {drawn:?}");
         }
+    }
+
+    /// An emission the renderer only BUFFERED — a status a live section holds
+    /// back for column alignment, a section header deferred until its first
+    /// child — produces no line, and must therefore draw nothing. Routed, an
+    /// empty block joined to `""` and indicatif printed one blank row into the
+    /// middle of the live region: every owner-group boundary in an apply's
+    /// phase tree carried a blank line no other boundary had.
+    #[test]
+    fn an_emission_that_produced_no_line_draws_nothing() {
+        let f = BarsFixture::new(false);
+        let before = f.cycles();
+        f.renderer.emit_with(&f.sink, |_| {});
+        assert_eq!(
+            f.cycles(),
+            before,
+            "a buffered emission drew: {:?}",
+            f.drawn()
+        );
+        assert!(
+            f.drawn().is_empty() && f.sunk().is_empty(),
+            "a buffered emission wrote a line: drawn {:?}, sunk {:?}",
+            f.drawn(),
+            f.sunk()
+        );
     }
 
     /// The latch is shared by every renderer AND by the tracing writer, so
