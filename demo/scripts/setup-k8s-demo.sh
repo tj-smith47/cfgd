@@ -317,7 +317,6 @@ kind: Module
 metadata:
   name: nettools
 spec:
-  packages: []
   files:
     - source: bin/netcheck.sh
       target: bin/netcheck.sh
@@ -339,7 +338,6 @@ kind: Module
 metadata:
   name: nettools
 spec:
-  packages: []
   ociArtifact: "${REGISTRY_NAME}:5000/demo/nettools:v1"
   mountPolicy: Debug
 EOF
@@ -359,7 +357,7 @@ spec:
 EOF
 }
 
-# The tape types `cfgd module push ./tools`, `kubectl apply -f module.yaml` and
+# The tape types `cfgd module push ./tools`, `kubectl apply -f module-crd.yaml` and
 # `kubectl apply -f pod.yaml` against these. They are written here rather than
 # in the tape so the recording opens on a ready fixture instead of on a wall of
 # heredocs.
@@ -375,7 +373,6 @@ kind: Module
 metadata:
   name: tools
 spec:
-  packages: []
   files:
     - source: bin/hello.sh
       target: bin/hello.sh
@@ -406,13 +403,15 @@ EOF
     # carries the public half of the demo key: that is what the operator's
     # verification check reads, and what flips `kubectl cfgd status` from
     # `unverified` to `verified`.
-    cat > "$fixture/module.yaml" <<EOF
+    # Not `module.yaml`: the module directory's own manifest is also
+    # `kind: Module`, and two files of one basename and one kind read as one
+    # file on camera.
+    cat > "$fixture/module-crd.yaml" <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
   name: tools
 spec:
-  packages: []
   ociArtifact: "${REGISTRY_NAME}:5000/demo/tools:v1"
   mountPolicy: Always
   signature:
@@ -429,6 +428,8 @@ metadata:
   annotations:
     cfgd.io/modules: "tools:v1"
 spec:
+  # busybox's sleep as PID 1 ignores SIGTERM
+  terminationGracePeriodSeconds: 1
   containers:
     - name: app
       image: busybox:1.36

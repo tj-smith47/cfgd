@@ -64,6 +64,7 @@ Type "clear"
 Enter
 Sleep 500ms
 Show
+Sleep 1s
 
 # Beat 1: a converged machine. `--scan` runs the live scan (content +
 # package), not the fast recorded-only dashboard `status` gives by default —
@@ -80,13 +81,13 @@ Enter
 Wait@60s /cfgd\$$/
 Sleep 4s
 
-# Beat 2: sabotage a real module-managed file from outside cfgd. `rm` first
-# because the file is deployed via Symlink — editing through the link in
-# place (`echo >>` alone) would edit cfgd's own cached source and leave
-# source and target trivially matching. Breaking the link first is what
-# turns this into genuine drift. No Wait here: both commands are local and
-# instant.
-Type "rm ~/.config/nvim/stylua.toml && echo '# not mine' > ~/.config/nvim/stylua.toml"
+# Beat 2: sabotage a real module-managed file from outside cfgd. The file is
+# deployed via Symlink, and GNU sed -i writes a new file and renames it over
+# the link, so the target becomes a regular file holding different bytes —
+# genuine drift. (A `>` redirect would write THROUGH the link onto cfgd's
+# own module source, and source and target would still match.) No Wait
+# here: the command is local and instant.
+Type "sed -i 's/indent_width = 2/indent_width = 4/' ~/.config/nvim/stylua.toml"
 Enter
 Sleep 2s
 

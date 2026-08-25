@@ -52,6 +52,7 @@ Type "clear"
 Enter
 Sleep 500ms
 Show
+Sleep 1s
 
 # Beat 0: the starting point, on camera — converged machine, nvim module
 # applied, no drift recorded. Without this frame beats 7/8 have no baseline.
@@ -75,12 +76,14 @@ Wait@60s /cfgd\$$/
 Sleep 4s
 
 # Beat 3: mutate the profile from the CLI — a tap, a formula delivered
-# through brew, and a shell alias, one command, no editor. `catn` (not
-# `k=kubectl`) because the demo image is bare Ubuntu with no kubectl on
-# PATH — the alias has to be one beat 6 can actually run.
+# through brew, and a shell alias, one command, no editor. The tap token
+# spells the schema path beat 2 just rendered (`brew.taps`), so what is typed
+# is what lands in the file. `catn` (not `k=kubectl`) because the demo image
+# is bare Ubuntu with no kubectl on PATH — the alias has to be one beat 6 can
+# actually run.
 Type "cfgd profile update base \"
 Enter
-Type "    --package brew-tap:charmbracelet/tap \"
+Type "    --package brew.taps:charmbracelet/tap \"
 Enter
 Type "    --package brew:gum \"
 Enter

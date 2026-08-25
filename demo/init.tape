@@ -56,6 +56,7 @@ Enter
 Wait@2m /cfgd\$$/
 Sleep 1s
 Show
+Sleep 1s
 
 Type "nvim"
 Enter

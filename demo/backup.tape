@@ -66,6 +66,7 @@ Type "clear"
 Enter
 Sleep 500ms
 Show
+Sleep 1s
 
 # Beat 1: the declaration. cfgd backup list reads the recorded runs, so a
 # never-run backup shows its source/retention with "never" in Last Run.

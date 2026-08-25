@@ -42,15 +42,26 @@ Type "source ~/.cfgd.env"
 Enter
 Wait@30s /cfgd\$$/
 
+# Same two-npm residue drift.tape's hidden setup clears (see its comment):
+# without this the opening `cfgd plan` would show neovim/yarn under brew's
+# npm on a take whose first claim is a converged machine.
+Type "cfgd apply --module nvim --phase packages --yes"
+Enter
+Wait@30m /cfgd\$$/
+
 # The real tj-smith47/cfgd-config `base` profile also declares two modules
 # this container can never converge (jarvis: private repo, no SSH credentials
 # baked in; clift: needs charm's apt repo, not present on a bare Ubuntu
 # base) — stripped here for the same reason drift/author/backup.tape do:
 # both are unrelated to this tape's claim (the subscription lifecycle), so
-# showing cfgd correctly refuse them would just be noise.
+# showing cfgd correctly refuse them would just be noise. The apply after it
+# settles whatever the strip changed, so beat 1's plan is genuinely empty.
 Type "cfgd profile update base --module -jarvis --module -clift"
 Enter
 Wait@30s /cfgd\$$/
+Type "cfgd apply --yes"
+Enter
+Wait@10m /cfgd\$$/
 
 # The decision flow's opt-in is the machine's own reconcile policy
 # (`spec.daemon.reconcile.autoApply` — docs/sources.md "Auto-apply policy"),
@@ -100,17 +111,64 @@ Type "clear"
 Enter
 Sleep 500ms
 Show
+Sleep 1s
 
 # ── Act one: living with a subscription ────────────────────────────────────
 
-# Beat 1: subscribe, on camera. The machine's reconcile policy (set in the
-# hidden setup) classifies everything this source delivers at the default
-# Notify tier, so incoming items queue as pending decisions instead of being
-# silently absorbed.
+# Beat 1: the starting point, stated by the tool rather than assumed — a
+# converged machine with nothing to apply. Everything the subscription adds
+# below is measured against this.
+Type "cfgd plan"
+Enter
+Wait@60s /cfgd\$$/
+Sleep 3s
+
+# Beat 2: subscribe, on camera. `source add` renders the manifest before it
+# asks — the profile the source provides and what that profile declares
+# (EDITOR=vim), and the policy it comes under — so what is being subscribed
+# to is on screen before anything is written. The machine's reconcile policy
+# (set in the hidden setup) classifies everything this source delivers at
+# the default Notify tier, so incoming items queue as pending decisions
+# instead of being silently absorbed.
 Type "cfgd source add file://$HOME/team-config --name team --branch master --profile team --yes"
 Enter
 Wait@30s /cfgd\$$/
-Sleep 4s
+Sleep 6s
+
+Hide
+Type "clear"
+Enter
+Sleep 500ms
+Show
+Sleep 1s
+
+# Beat 3: the same plan, after. The header now names the composed source
+# (`Sources  team (profile team)`), and the one thing it delivers is
+# WITHHELD — listed as a pending decision, not queued as an action — because
+# nobody has said yes to it yet.
+Type "cfgd plan"
+Enter
+Wait@60s /cfgd\$$/
+Sleep 5s
+
+# Beat 4: the decision, with its content. Each row names the resource and
+# what accepting it sets (`EDITOR=vim`), under the source that delivers it.
+Type "cfgd decide"
+Enter
+Wait@10s /cfgd\$$/
+Sleep 5s
+
+# Beat 5: accept, then apply. Accepting records the decision; apply is what
+# moves the machine — the env write lands, and the line it writes carries
+# the source's own name as its owner.
+Type "cfgd decide accept --all"
+Enter
+Wait@10s /cfgd\$$/
+Sleep 3s
+Type "cfgd apply --yes"
+Enter
+Wait@60s /cfgd\$$/
+Sleep 5s
 
 # Hidden: the team ships a change upstream — a second env var in the team
 # profile. `-c commit.gpgsign=false` because the signing demand is act two's
@@ -123,35 +181,32 @@ Type "clear"
 Enter
 Sleep 500ms
 Show
+Sleep 1s
 
-# Beat 2: the pull. `cfgd sync` fetches the source and reports the movement
+# Beat 6: the pull. `cfgd sync` fetches the source and reports the movement
 # as `commit: <old> → <new>` — the subscription saw upstream change.
 Type "cfgd sync"
 Enter
 Wait@30s /cfgd\$$/
 Sleep 4s
 
-# Beat 3: what arrived, before it touches the machine. `cfgd decide` lists
-# every source item still awaiting an answer — the initial delivery's EDITOR
-# and the pull's new PAGER both list, because nothing has been accepted yet
-# and plan/apply withhold an unanswered item however it arrived.
+# Beat 7: what arrived is a new decision, not a silent change: only PAGER
+# is pending now, because EDITOR was answered in beat 5. Accept and apply
+# close the loop the same way.
 Type "cfgd decide"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 5s
-
-# Beat 4: accept the batch, then apply. Accepting records the decisions;
-# apply is what actually moves the machine.
+Sleep 4s
 Type "cfgd decide accept --all"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 3s
+Sleep 2s
 Type "cfgd apply --yes"
 Enter
 Wait@60s /cfgd\$$/
 Sleep 4s
 
-# Beat 5: the subscription at rest — synced, healthy, applied.
+# Beat 8: the subscription at rest — synced, healthy, applied.
 Type "cfgd source list"
 Enter
 Wait@10s /cfgd\$$/
@@ -159,38 +214,33 @@ Sleep 4s
 
 # ── Act two: the trust wall ────────────────────────────────────────────────
 
-# Hidden scene cut: flip the subscription's signing demand on. `source add`
-# has no flag for `subscription.requireSignedCommits`, so the demand is a
-# direct edit of the written cfgd.yaml (docs/sources.md "Demanding signed
-# commits" — no CLI verb exists to set it).
 Hide
-Type "sed -i 's/requireSignedCommits: false/requireSignedCommits: true/' ~/.config/cfgd/cfgd.yaml && clear"
+Type "clear"
 Enter
 Sleep 500ms
 Show
+Sleep 1s
 
-# Beat 6: the demand, from the far side. HEAD is unsigned, so `cfgd source
-# show team` cannot even load the manifest to render a policy — verification
-# runs before that, and refuses. The refusal line names the demand on its
-# own: "source requires signed commits". The successful policy render
-# (Require Signed Commits: true) is beat 8b, once the fix lands and the same
-# manifest actually resolves.
-Type "cfgd source show team"
+# Beat 9: the demand, on camera. The subscription's signing requirement is a
+# knob on the subscription (`subscription.requireSignedCommits`, docs/
+# sources.md "Demanding signed commits"), set with the same verb every other
+# subscription knob takes.
+Type "cfgd source update team --require-signed-commits"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 4s
+Sleep 3s
 
-# Beat 7: the wall itself. `cfgd sync` really fetches the fixture, really
+# Beat 10: the wall itself. `cfgd sync` really fetches the fixture, really
 # runs `git log --format=%G?` against its HEAD, and really refuses — the
-# unsigned-HEAD message below is cfgd's own, unedited. Held longer than the
-# other beats because the refusal line is the whole claim and must be
-# legible on its own before the screen clears for the fix.
+# unsigned-HEAD line below is cfgd's own, unedited, under the source it
+# refuses. Held longer than the other beats because the refusal is the whole
+# claim and must be legible on its own before the screen clears for the fix.
 Type "cfgd sync"
 Enter
 Wait@10s /cfgd\$$/
 Sleep 6s
 
-# Beat 8: the fix. A brand-new signed commit (never an amend — cfgd's fetch
+# Beat 11: the fix. A brand-new signed commit (never an amend — cfgd's fetch
 # only fast-forwards the cache, and an amended HEAD is a diverged rewrite the
 # fast-forward check silently leaves stale; a real second commit on top of
 # the unsigned HEAD keeps the history linear). Hidden, since authoring a
@@ -206,21 +256,22 @@ Type "clear"
 Enter
 Sleep 500ms
 Show
+Sleep 1s
 Type "cfgd sync"
 Enter
 Wait@10s /cfgd\$$/
 Sleep 4s
 
-# Beat 8b: the render beat 6 couldn't reach. Same command, now that the
-# manifest verifies — `source show` resolves the subscription policy
-# directly, including `Require Signed Commits: true`, the field QP13 added
-# and the reason this tape stopped slicing the written YAML with awk.
+# Beat 12: the subscription, described by the tool: its state, the policy it
+# now runs under (`Require Signed Commits  true`), and the profile it
+# provides with what that profile declares — the same render beat 2 showed
+# before subscribing, now from the subscriber's side.
 Type "cfgd source show team"
 Enter
 Wait@10s /cfgd\$$/
-Sleep 4s
+Sleep 6s
 
-# Beat 9: the payoff — the arc closes where act one rested: a healthy
+# Beat 13: the payoff — the arc closes where act one rested: a healthy
 # subscription, now behind a signing demand it satisfies. `cfgd status` also
 # proves it but buries the source row under the module's full
 # managed-resource table, which has nothing to do with this tape's claim.

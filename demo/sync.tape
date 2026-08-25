@@ -41,6 +41,7 @@ Type "clear"
 Enter
 Sleep 500ms
 Show
+Sleep 1s
 
 # Beat 1: hop onto machine B — the machine nobody will touch. Its hostname
 # is in the prompt, so every later frame says which machine is on camera.
@@ -68,7 +69,8 @@ Sleep 5s
 Type ":qa"
 Enter
 Wait@15s /machine-b:~\$$/
-Sleep 1s
+# Long enough to read the returned prompt before the scene cut below wipes it.
+Sleep 3s
 
 # Hidden scene cut: nvim leaves VHS's terminal unable to scroll the primary
 # screen (and can leave a stale scroll region) until a full reset — without
@@ -80,6 +82,7 @@ Type "printf '\033c'; clear"
 Enter
 Sleep 300ms
 Show
+Sleep 1s
 
 # Beat 4: leave B untouched and hop onto machine A.
 Type "exit"
@@ -153,18 +156,10 @@ Wait@10s /machine-b:~\$$/
 Sleep 1s
 
 # Beat 9: A's commit is at the tip of B's clone — nobody ran git here.
-Type "git -C ~/.config/cfgd log --oneline -1"
+Type "git -C ~/.config/cfgd --no-pager log -1 --format='%h %s'"
 Enter
 Wait+Screen@10s /relative line numbers/
 Sleep 4s
-
-# Beat 9b: ask for a pull by hand — there is nothing left to pull, because
-# the daemon already did the work. One line, and it doubles as the manual
-# escape hatch the docs point at for machines that don't run the daemon.
-Type "cfgd pull"
-Enter
-Wait@30s /machine-b:~\$$/
-Sleep 3s
 
 # Beat 10: AFTER — the same file at the same line, reopened: the inserted
 # option now sits directly beneath `opt.number = true`, and the gutter
@@ -174,6 +169,7 @@ Sleep 3s
 Type "nvim +52 ~/.config/nvim/lua/config/options.lua"
 Enter
 Wait+Screen@20s /1 opt\.relativenumber = true/
+# Whenever upstream plugins have moved past the module's lazy-lock.json,
 # lazy.nvim's update toast slides in ~2s after open and covers the tail of the
 # inserted line for its 5s nvim-notify timeout. Sleep past its whole lifecycle,
 # then re-gate on the full line: while the toast is up, `= true` is covered and
