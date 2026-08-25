@@ -149,7 +149,7 @@ pub fn restore_target(unit: &BackupUnit<'_>, to: Option<&Path>) -> RestoreTarget
 /// Read from the run records, not a directory glob, so the list agrees with
 /// what retention pruning walks. Two gates apply on top: a record whose path is
 /// not demonstrably inside *this* unit's destination is ignored (the same
-/// [`super::is_snapshot_within`] check pruning uses, so a stale or foreign row
+/// `is_snapshot_within` check pruning uses, so a stale or foreign row
 /// can never be offered as a restore source), and a record whose payload is no
 /// longer on disk is ignored too — a snapshot you cannot restore is not one.
 pub fn list_snapshots(unit: &BackupUnit<'_>, store: &StateStore) -> Result<Vec<SnapshotInfo>> {
@@ -252,7 +252,7 @@ pub fn select_snapshot<'s>(
 ///    snapshot being restored can be the one it evicts;
 /// 3. `preBackup` hooks;
 /// 4. a safety snapshot of the target's current contents, taken through
-///    [`super::snapshot_and_record`] so it gets a `backup_runs` row that
+///    `snapshot_and_record` so it gets a `backup_runs` row that
 ///    ordinary retention prunes, marked [`BackupRunKind::Safety`] rather than
 ///    standing in as the unit's last run. Skipped when the target is not the
 ///    live source (nothing of the unit's is being overwritten) or the source

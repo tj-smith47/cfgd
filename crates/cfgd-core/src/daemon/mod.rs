@@ -182,8 +182,8 @@ pub(crate) fn resolve_daemon_modules(
 /// The reconcile loop must see the same source-composed desired state every
 /// other command does, but the tight tick must never touch the network — the
 /// daemon's own repo-sync task handles fetch cadence. So this loads each source
-/// from its on-disk cache ([`SourceManager::load_sources_cached`]), warns+skips
-/// never-synced sources, then runs the shared [`SourceManager::compose`] path.
+/// from its on-disk cache ([`crate::sources::SourceManager::load_sources_cached`]), warns+skips
+/// never-synced sources, then runs the shared [`crate::sources::SourceManager::compose`] path.
 /// With no sources configured it returns the local profile unchanged and empty
 /// module roots.
 ///
@@ -275,7 +275,7 @@ const WINDOWS_SYSTEM_PIPE_PATH: &str = r"\\.\pipe\cfgd-system";
 /// the client-side connect (`connect_daemon_ipc`), and `cfgd paths`, so all
 /// agree on the socket location. Precedence:
 /// 1. `CFGD_DAEMON_IPC_PATH` — verbatim override (test harnesses, operators).
-/// 2. `cfgd.sock` under [`resolve_runtime_dir`]`(runtime_over)`, honoring the
+/// 2. `cfgd.sock` under [`crate::resolve_runtime_dir`]`(runtime_over)`, honoring the
 ///    `--runtime-dir` flag / `CFGD_RUNTIME_DIR` env / `$XDG_RUNTIME_DIR/cfgd`
 ///    (per-user tmpfs on Linux) / `$HOME/.cache/cfgd/runtime` (Linux fallback)
 ///    / `$HOME/Library/Application Support/cfgd/runtime` (macOS). World-writable
@@ -1243,7 +1243,7 @@ pub(super) fn init_daemon_state(override_dir: Option<&Path>, scope: crate::Scope
     init_daemon_state_with_warning(override_dir, scope).0
 }
 
-/// Like [`init_daemon_state`] but also returns a printer-facing warning
+/// Like the test-only `init_daemon_state` but also returns a printer-facing warning
 /// message when the platform default state dir resolution fails — callers
 /// can surface it in the startup banner so operators aren't dependent on
 /// catching the `tracing::warn!` line.

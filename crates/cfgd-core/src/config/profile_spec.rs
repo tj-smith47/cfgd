@@ -1041,7 +1041,7 @@ pub(crate) fn validate_file_patch_shape(
 }
 
 /// Validate the `patch` strategy shape of every managed file
-/// (`spec.files.managed`). See [`validate_file_patch_shape`].
+/// (`spec.files.managed`). See `validate_file_patch_shape`.
 pub fn validate_managed_file_specs(specs: &[ManagedFileSpec]) -> Result<()> {
     for spec in specs {
         validate_file_patch_shape(

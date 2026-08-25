@@ -1,6 +1,6 @@
 //! Multi-provider agent-skill rendering.
 //!
-//! A single logical [`SkillModel`](crate::generate::SkillModel) renders to each
+//! A single logical [`crate::generate::SkillModel`] renders to each
 //! coding-agent platform's native primitive (Claude Code `SKILL.md`, Gemini TOML
 //! command, Copilot prompt file, Codex `AGENTS.md` block, Cursor `.mdc` rule).
 //! Each platform implements [`SkillProvider`]; consumers depend on the registry
@@ -41,7 +41,7 @@ pub enum SkillScope {
 /// The result of probing whether a provider's agent is present at a scope.
 ///
 /// Detection never shells out: it uses filesystem checks and/or a PATH lookup via
-/// [`command_available`](crate::util::process::command_available) (never a fork).
+/// [`crate::command_available`] (never a fork).
 /// A given provider may use either or both (claude-code is filesystem-only).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Detection {
@@ -95,7 +95,7 @@ impl RenderedSkill {
     /// managed block), so callers that need the on-disk content — the golden gate
     /// in particular — must route through this method rather than reading
     /// `contents` directly, or they would snapshot an empty file. The managed-block
-    /// form is produced by the same [`splice_block`] writer `install` uses, so the
+    /// form is produced by the same `splice_block` writer `install` uses, so the
     /// returned bytes cannot drift from a real fresh install.
     pub fn effective_fresh_install(&self) -> String {
         match &self.managed_section {

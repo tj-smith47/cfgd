@@ -9,7 +9,7 @@ impl<'a> super::Reconciler<'a> {
     /// with the bytes it currently holds, and report how many rows moved. Both
     /// halves of the machine are covered: a profile-level `spec.files.managed`
     /// entry has a row of its own, while a module's files share one aggregate row
-    /// (see [`Self::module_link_deployed_rows`]).
+    /// (see `Self::module_link_deployed_rows`).
     ///
     /// Silent by construction: it prints nothing, plans nothing and executes no
     /// action, so a converged run still reports having nothing to do. Symlink and

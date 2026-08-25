@@ -109,7 +109,7 @@ impl KeyringEntry {
 /// Parse `gpg --list-keys --with-colons --with-fingerprint <email>` output
 /// into a list of `KeyringEntry` values.
 ///
-/// The format is documented at https://git.gnupg.org/cgi-bin/gitweb.cgi?p=gnupg.git;a=blob;f=doc/DETAILS
+/// The format is documented at <https://git.gnupg.org/cgi-bin/gitweb.cgi?p=gnupg.git;a=blob;f=doc/DETAILS>
 /// Relevant record types used here:
 ///   - `pub` : public key record
 ///   - `uid` : user ID record (email extracted here)

@@ -304,7 +304,7 @@ pub fn latest_module_version(
 /// a remote repo, without relying on a local cache being fully populated.
 ///
 /// Module versions are published as git tags named `<module>/<version>` (e.g.
-/// `tmux/v2.0.0`). The version part is sorted with [`group_module_tags`]
+/// `tmux/v2.0.0`). The version part is sorted with `group_module_tags`
 /// (loose-semver), so the returned value is the highest version (e.g.
 /// `v2.0.0`). Returns `Ok(None)` when no `<module>/<version>` tag exists for
 /// the module.

@@ -450,6 +450,22 @@ pub fn cmd_double_quoted(value: &str) -> String {
 /// parent's bootstrap, the CLI's stranded-install warning, and the concurrent
 /// `Packages` dispatch, whose lane must be the binary rather than the name or
 /// three `brew` processes run at once.
+///
+/// One action lanes on somebody else's family: a `ManagerAction::Provision`
+/// takes its `via`'s, because the command that runs is the mediator's
+/// (`provision npm via apt` is an `apt-get install`) and two provisions
+/// mediated by one system manager, laned on their own names, hold that
+/// manager's lock against each other.
+///
+/// Never applied where the manager is NAMED rather than serialized: the phase
+/// tree's action subjects, the journal's `resource_id`, every other persisted
+/// or `-o json` string, and the availability sub-gate (`Slot::drains`, which
+/// asks the registry whether a manager needs bootstrapping) all keep the
+/// REGISTERED name — those surfaces have to say the manager the user declared,
+/// and `brew-cask` is not `brew`. The one display exception is the
+/// blocked-action wait bar, which names the LANE on purpose: an action held
+/// back by a running `brew` is waiting on brew, and `waiting on brew-cask`
+/// would name something that is not in the way.
 #[must_use]
 pub fn manager_family(manager: &str) -> &str {
     manager.split('-').next().unwrap_or(manager)
@@ -574,6 +590,11 @@ pub fn xml_escape(s: &str) -> String {
 /// `absence_literals_are_a_pinned_wire_contract` in this file's test module
 /// pins the three literals byte-for-byte; touching one means updating that
 /// test deliberately, not by accident, and auditing both consumers.
+///
+/// A fourth absence-shaped phrase in the same family but answering a DIFFERENT
+/// question — "not cached", a source cache miss rather than "does this exist" —
+/// stays outside the enum on purpose. Widening it to catch every such phrase
+/// would blur the three questions it exists to keep separate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Absence {
     NotInstalled,

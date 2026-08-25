@@ -139,7 +139,7 @@ pub fn cmd_apply(
 /// a signal abort to its conventional exit code.
 ///
 /// Non-apply terminal paths (dry-run, aborted-confirmation, nothing-to-do)
-/// report [`ApplyStatus::Success`] with no abort code — they did not run
+/// report [`cfgd_core::state::ApplyStatus::Success`] with no abort code — they did not run
 /// actions, so they never warrant a failure exit. Keeping the exit decision in
 /// `cmd_apply` lets in-process tests capture the rendered failure shape without
 /// `process::exit` aborting the harness.

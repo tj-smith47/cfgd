@@ -102,7 +102,7 @@ pub struct Printer {
 pub enum ColorChoice {
     /// Colour when the terminal and the output format both allow it —
     /// `console`'s own tty/`CLICOLOR` detection, read once, minus the cases
-    /// [`colors_must_be_disabled`] rules out.
+    /// `colors_must_be_disabled` rules out.
     Auto,
     /// Colour whatever the terminal says, short of the one case that would
     /// corrupt data. What `--color always` selects, for a run piped into a
@@ -254,7 +254,7 @@ impl Printer {
     /// is written closes that gap.
     ///
     /// Inherits every ambient terminal decision and test channel from `self` —
-    /// see [`Printer::build_derived`]. `cmd_init` re-themes mid-run and keeps
+    /// see `Printer::build_derived`. `cmd_init` re-themes mid-run and keeps
     /// using the derived printer for the apply that follows; a re-probed
     /// `interactive_stdin`/`live_region` there is the pty-hang shape this
     /// closes (a `prompt_queue` reset to `None` would also silently drop a
@@ -269,7 +269,7 @@ impl Printer {
 
     /// A copy of this printer at `verbosity`, inheriting the theme (preset plus
     /// `spec.theme.overrides`) and every ambient terminal decision and test
-    /// channel from `self` — see [`Printer::build_derived`].
+    /// channel from `self` — see `Printer::build_derived`.
     ///
     /// The one way to mint the quiet sink a command hands to a library call, and
     /// the daemon's own printer. Deriving `live_region`/`multi_progress` from
@@ -687,7 +687,7 @@ impl Printer {
     /// the match is written once and no call site can forget it.
     ///
     /// Correct at ANY depth: the bar is opened through
-    /// [`Printer::narration_bar`], which carries the depth-inheritance guard.
+    /// `Printer::narration_bar`, which carries the depth-inheritance guard.
     ///
     /// [`Spinner::set_message`]: super::spinner::Spinner::set_message
     /// [`Printer::narrate_silent`]: Printer::narrate_silent

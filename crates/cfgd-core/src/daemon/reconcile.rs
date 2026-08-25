@@ -1132,7 +1132,7 @@ pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str
 
 // --- Auto-apply decision handling ---
 
-/// Record the rows a [`SourcePolicyReview`] asked for, and notify once per
+/// Record the rows a [`crate::reconciler::SourcePolicyReview`] asked for, and notify once per
 /// source.
 ///
 /// The daemon's wrapper over the shared [`crate::reconciler::mint_decisions`]:

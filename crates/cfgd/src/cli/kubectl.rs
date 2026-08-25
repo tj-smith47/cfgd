@@ -22,7 +22,7 @@ pub fn run_inherit(args: &[&str]) -> std::io::Result<i32> {
 }
 
 /// Run an arbitrary argv with inherited stdio — used for `cfgd plugin exec`
-/// where argv[0] is already `kubectl` but was built as a full vector. Keeps
+/// where `argv[0]` is already `kubectl` but was built as a full vector. Keeps
 /// the `std::process::Command` allocation out of `plugin.rs`.
 pub fn run_argv_inherit(argv: &[String]) -> std::io::Result<i32> {
     if argv.is_empty() {

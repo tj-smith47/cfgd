@@ -235,7 +235,7 @@ fn append_line_once(path: &Path, line: &str, var_marker: &str) -> std::io::Resul
 /// Silently migrate a legacy combined data dir (state DB + `sources/` cache) to
 /// the split state and cache roots. A no-op when no home is resolvable or the
 /// new roots can't be resolved. Runs on every startup (idempotent); the heavy
-/// lifting and all output live in [`migrate_legacy_data_dirs_at`].
+/// lifting and all output live in `migrate_legacy_data_dirs_at`.
 pub fn migrate_legacy_data_dirs(printer: &Printer) {
     let Some(legacy) = cfgd_core::legacy_data_dir() else {
         return;

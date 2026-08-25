@@ -407,7 +407,7 @@ fn build_actions(
 ///
 /// Derived from the registry rather than listed at the CLI, and from the SAME
 /// two rules the planner seeds nodes with: a manager is named by the node it
-/// would be planned under ([`node_manager`]'s family collapse, which folds
+/// would be planned under (`node_manager`'s family collapse, which folds
 /// `brew-cask` onto `brew` only when `brew` is itself registered), and a tool
 /// is named by the bootstrap plan that shells out to it. A validator listing
 /// families alone refused `--phase prerequisites.curl` — a spelling

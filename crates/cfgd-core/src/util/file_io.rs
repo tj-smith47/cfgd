@@ -381,7 +381,7 @@ pub fn atomic_write_merged(
 /// strategy to the copy strategy.
 ///
 /// Errors with `PermissionDenied` when the link resolves to a file owned by
-/// someone other than the link's owner — see [`resolve_write_target`].
+/// someone other than the link's owner — see `resolve_write_target`.
 pub fn atomic_write_resolved(
     target: &std::path::Path,
     content: &[u8],

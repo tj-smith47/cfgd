@@ -105,7 +105,7 @@ impl<'a> super::Reconciler<'a> {
         )
     }
 
-    /// [`Reconciler::plan`], reporting each phase to `observe` as that phase's
+    /// [`super::Reconciler::plan`], reporting each phase to `observe` as that phase's
     /// contents are computed.
     ///
     /// The seam exists so a command can narrate a plan while it is being built
@@ -121,7 +121,7 @@ impl<'a> super::Reconciler<'a> {
     /// pre-scripts and a module's own are computed under `Modules`.
     ///
     /// Observation changes nothing about the plan: the `Plan` this returns is
-    /// the one [`Reconciler::plan`] returns for the same inputs.
+    /// the one [`super::Reconciler::plan`] returns for the same inputs.
     pub fn plan_observed(
         &self,
         resolved: &ResolvedProfile,
@@ -971,7 +971,7 @@ impl<'a> super::Reconciler<'a> {
     ///
     /// The survivor-gated form of [`crate::modules::fill_available_versions`],
     /// and what every planning path calls in its place: a package the manager
-    /// already reports installed is elided by [`Self::plan_modules`], so it
+    /// already reports installed is elided by `Self::plan_modules`, so it
     /// renders no description, persists no string, and its version query buys
     /// nothing — pricing a converged machine's whole declared set per
     /// invocation was a multi-second silent wait before every plan and apply.
@@ -980,8 +980,8 @@ impl<'a> super::Reconciler<'a> {
     /// byte-identical to the unconditional fill's, and the module's recorded
     /// packages hash is unchanged for planned work.
     ///
-    /// Elision is judged through [`Self::package_survives_elision`] against
-    /// the same enumeration [`Self::retain_uninstalled`] reads. On the success
+    /// Elision is judged through `Self::package_survives_elision` against
+    /// the same enumeration `Self::retain_uninstalled` reads. On the success
     /// path both cost one memoized listing per manager; this pass additionally
     /// holds a FAILED read for its whole run, since the memo caches successes
     /// only. It fails OPEN everywhere the planner does: no

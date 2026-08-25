@@ -11,7 +11,7 @@ use crate::errors::OperatorError;
 const FIELD_MANAGER_PREFIX: &str = "cfgd-operator-leader";
 const LEASE_NAME: &str = "cfgd-operator-leader";
 
-/// Format a [`jiff::Timestamp`] as an RFC 3339 string with fixed microsecond
+/// Format a `jiff::Timestamp` as an RFC 3339 string with fixed microsecond
 /// precision and a `Z` zulu offset, byte-identical to how `k8s-openapi`'s own
 /// `MicroTime` serializer renders the wire value. Used to build the
 /// `renewTime`/`acquireTime` strings the Kubernetes API server expects.

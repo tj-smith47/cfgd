@@ -11,7 +11,7 @@
 //! `✗`, and its muted `—` glyph is distinct from the animated running frame
 //! too. `ProgressBar` settles the same way (see its own doc). The one
 //! exception is a spinner whose bar it BORROWED from a
-//! [`super::live_row::LiveRow`]: that line has an owner who will settle or
+//! `super::live_row::LiveRow`: that line has an owner who will settle or
 //! retire it, so an abandoned one leaves it alone rather than clearing it and
 //! recording a second line for the action the row is about to describe.
 use std::io::IsTerminal;
@@ -61,7 +61,7 @@ pub(super) fn clamp_label(sink: &dyn Writer, message: &str, depth: usize) -> Str
 /// at every spinner call site in the workspace — a literal `"..."` or `…`
 /// left in a caller's format string becomes inert rather than doubled.
 ///
-/// It is also where a live-bar label meets [`cursor_safe`], for the same
+/// It is also where a live-bar label meets [`super::cursor_safe`], for the same
 /// reason every permanent status subject does and because the label carries
 /// the same text: a module's own `run:` body, a registry URL, an OCI
 /// reference, a source name. Folding here rather than at the paint covers
@@ -71,7 +71,7 @@ pub(super) fn clamp_label(sink: &dyn Writer, message: &str, depth: usize) -> Str
 /// sequence is still the trailing character when the strip looks.
 ///
 /// The label's own COAT goes on last, after the fold, for the ordering
-/// [`cursor_safe`] forbids reversing — see [`paint_in_flight_label`]. Every
+/// [`super::cursor_safe`] forbids reversing — see [`paint_in_flight_label`]. Every
 /// consumer that turns a live label back into a PERMANENT line runs it through
 /// `finalize_subject`, whose fold strips that coat again, so a settled line
 /// renders the same bytes it always did.

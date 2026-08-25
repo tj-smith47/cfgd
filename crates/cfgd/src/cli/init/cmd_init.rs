@@ -561,10 +561,10 @@ pub(super) struct ApplyPlanOpts<'a> {
 /// Run the scaffolded configuration through the one run skeleton: header,
 /// preview + confirmation, execution tree, rollup.
 ///
-/// Returns the resulting [`ApplyStatus`] so the caller can map a partial or
+/// Returns the resulting [`cfgd_core::state::ApplyStatus`] so the caller can map a partial or
 /// total failure to a nonzero process exit, the same way `cfgd apply` does.
 /// The terminal paths that run no actions (nothing to do, dry-run, declined
-/// confirmation) report [`ApplyStatus::Success`]: nothing failed because
+/// confirmation) report [`cfgd_core::state::ApplyStatus::Success`]: nothing failed because
 /// nothing ran.
 pub(super) fn apply_plan(
     plan: &mut cfgd_core::reconciler::Plan,

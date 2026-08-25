@@ -64,7 +64,7 @@ impl StatusFields {
         self
     }
     /// A subject qualifier (`curl: missing`) — role slot / warning colon /
-    /// muted qualifier, composed through [`super::renderer::finalize_subject`]
+    /// muted qualifier, composed through `super::renderer::finalize_subject`
     /// at render time. Lands ahead of `label` in the same at-end-of-subject
     /// slot; the colon and qualifier text are always styled the same way,
     /// never a per-call role.

@@ -209,7 +209,7 @@ pub fn compute_summary(checks: &[ComplianceCheck]) -> ComplianceSummary {
 const VOLATILE_SNAPSHOT_FIELDS: &[&str] = &["timestamp"];
 
 /// Digest an already-serialized snapshot's CONTENT, ignoring
-/// [`VOLATILE_SNAPSHOT_FIELDS`].
+/// `VOLATILE_SNAPSHOT_FIELDS`.
 ///
 /// Takes the serialized form rather than the struct so the state migration that
 /// re-derives `content_hash` from a stored `snapshot_json` reaches the same

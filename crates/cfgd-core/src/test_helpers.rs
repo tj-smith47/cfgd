@@ -1,3 +1,34 @@
+//! Reusable test mocks, builders and RAII pins for the process-global state a
+//! test cannot otherwise reach.
+//!
+//! # Which exclusion a TTL guard needs
+//!
+//! Every memo ceiling here is one process-global atomic and a test binary is
+//! one process, so a concurrent pin from another test is visible. What that
+//! costs is decided by what the test ASSERTS on, and the guards answer it three
+//! different ways on purpose — copying a sibling's answer is how a test ends up
+//! excluding the wrong thing. Ask what a concurrent pin could do to the claim:
+//!
+//! - the test asserts on an ANSWER the memo returns (`command_path` resolves
+//!   this binary): a longer ceiling only lets entries live longer and a zero one
+//!   only recomputes them, so neither changes the answer. No exclusion —
+//!   `CommandPathMemoTtlGuard` carries none.
+//! - the test asserts on a COUNT of the work the memo saved (one version query,
+//!   one enumeration, one reused derivation): another test's zero pin makes the
+//!   memoized answer recompute, which is exactly the number being measured. A
+//!   named `serial_test` group, declared at every call site
+//!   (`available_version_memo`, `enumeration_memo`, `tick_cache_reuse`; the
+//!   availability sweep shares the UNNAMED group its own count tests use).
+//! - the test asserts WHETHER SOMETHING HAPPENED at all (a transfer was
+//!   attempted, or was spared), which is not a counter that can share a group:
+//!   the lock inside the guard (`GitRefreshWindowGuard`), taken by construction
+//!   so no call site can forget it.
+//!
+//! The lock is the strongest of the three and still the narrowest: it excludes
+//! other PINS, never an unpinned concurrent reader of the same setting. Any
+//! test whose claim turns on the pinned value must therefore pin — in whichever
+//! direction it needs — rather than assume the default is live.
+
 // Reusable test mocks and builders — gated behind `test-helpers` feature.
 //
 // Provides mock implementations of the core provider traits (FileManager,

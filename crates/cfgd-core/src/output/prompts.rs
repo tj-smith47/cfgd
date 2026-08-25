@@ -76,7 +76,7 @@ pub(super) fn stdin_is_terminal() -> bool {
 impl Printer {
     /// Whether a `prompt_*` call could reach a human at all.
     ///
-    /// The predicate behind [`non_interactive_err`], exposed so a caller that
+    /// The predicate behind `non_interactive_err`, exposed so a caller that
     /// wraps a prompt failure in its own error can tell "nowhere to ask" apart
     /// from a prompt that was reached and then failed — and word the two
     /// differently instead of quoting the prompt's message back inside its own.

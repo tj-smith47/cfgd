@@ -304,7 +304,7 @@ pub(crate) fn build_subscription_preview_input(
     }
 }
 
-/// Render each [`ConflictResolution`] as a user-facing warning line, in the
+/// Render each [`cfgd_core::composition::ConflictResolution`] as a user-facing warning line, in the
 /// order returned by the composition engine. Returns an empty `Vec` when
 /// `conflicts` is empty so the caller can take the "no conflicts with
 /// current config" branch on `is_empty()`.
@@ -313,7 +313,7 @@ pub(crate) fn build_subscription_preview_input(
 /// caller renders each line through `status_simple` inside a section, which
 /// supplies its own). Any change to this shape is consumer-visible.
 ///
-/// `conflict.details` is [`composition::record`]'s persisted string and
+/// `conflict.details` is `composition::record`'s persisted string and
 /// keeps its own `<-` shape in storage (see that module's doc comment); this
 /// is a DISPLAY path only, so the arrow is reworded to "from" here through
 /// `crate::cli::helpers::reword_conflict_arrow_for_display` — the same

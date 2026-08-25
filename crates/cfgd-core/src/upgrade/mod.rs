@@ -937,7 +937,7 @@ pub struct AppliedUpdate {
 /// (so each keeps its distinct no-asset error/presentation) and supply only
 /// their own success/failure surface around the returned [`AppliedUpdate`].
 ///
-/// `cfg` carries the effective [`UpdateConfig`] so the **ride-along** skill
+/// `cfg` carries the effective [`crate::config::UpdateConfig`] so the **ride-along** skill
 /// refresh (rule 2 in `dedup`'s module docs) runs here, in the single apply
 /// owner: every apply site inherits it, making a separate skill prompt after a
 /// binary upgrade unrepresentable. The refresh touches **user-scope skills

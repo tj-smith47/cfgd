@@ -278,7 +278,7 @@ impl super::Printer {
     /// this — there is no second tail implementation to drift from it.
     /// Open a bounded output window at the ambient depth — the innermost open
     /// section while a `DepthInheritGuard` is held, column 0 otherwise. The
-    /// same relationship [`Printer::run`] has to `run_command`: a caller
+    /// same relationship [`super::printer::Printer::run`] has to `run_command`: a caller
     /// inside a section gets its window indented under the line it belongs to
     /// without naming a depth it would have to keep in sync.
     #[must_use]

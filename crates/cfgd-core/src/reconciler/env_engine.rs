@@ -298,6 +298,11 @@ impl EnvOrigins {
 /// whose directories it publishes, in dir order and deduped
 /// (` # manager:brew,cargo`). One comment for the whole line, because the line
 /// is one `export`; empty when nothing named a manager.
+///
+/// This vocabulary is deliberately WIDER than [`super::OwnerKind`]'s: the name
+/// half is a comma list, which no `Owner` name may hold, so reading it back
+/// through `OwnerKind::from_token("manager")` stays `None` on purpose rather
+/// than minting an owner that names two things at once.
 pub(super) fn path_dirs_comment(dirs: &[ManagerPathDir]) -> String {
     let mut managers: Vec<&str> = Vec::new();
     for dir in dirs {
@@ -373,7 +378,7 @@ impl ManagerPathDir {
     }
 
     /// A directory no manager claims. The sentinel render behind
-    /// [`super::env_files::path_dirs_line_prefix`] takes this: the prefix is
+    /// `super::env_files::path_dirs_line_prefix` takes this: the prefix is
     /// the text BEFORE the trailing comment, so naming a manager there would
     /// put a comment in the very string that has to match a real line's head.
     pub fn unowned(dir: impl Into<String>) -> Self {

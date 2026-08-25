@@ -266,7 +266,7 @@ pub(super) fn verify_env(
     }
 }
 
-/// Pure computation behind [`verify_env`]: re-derive the exact env targets
+/// Pure computation behind `verify_env`: re-derive the exact env targets
 /// the planner would write for this scope and check each against what is
 /// actually on disk. Never touches the state store — the entry point for a
 /// caller that wants the same checks without persisting a drift record
@@ -446,7 +446,7 @@ impl MergedEnvItems {
 
     /// The line a declared env var or alias renders as, for a DISPLAY surface
     /// that wants to show a drifted item's real value rather than the opaque
-    /// `current`/`missing or changed` markers [`verify_env_items`] returns.
+    /// `current`/`missing or changed` markers `verify_env_items` returns.
     /// Never called from a path that persists or ships its result: that is
     /// exactly the content the opaque markers exist to keep out of
     /// `drift_events` and the device gateway. `resource_type` is `"env-var"` or
@@ -515,7 +515,7 @@ impl MergedEnvItems {
     /// The DISPLAY `(want, have)` pair for one env-var/alias row, recomputed
     /// from the machine: `want` is the line the current declaration renders as
     /// ([`Self::declared_line`]), `have` is the line the managed file actually
-    /// holds ([`deployed_env_item_line`]), or [`crate::Absence::Missing`] when
+    /// holds (`deployed_env_item_line`), or [`crate::Absence::Missing`] when
     /// no deployed line claims the name. `None` for any other resource kind,
     /// for an item no longer declared, and for a managed file that exists but
     /// could not be read — the caller keeps the operands it already has. Being

@@ -114,7 +114,7 @@ pub fn try_git_cmd(
     }
 }
 
-/// Env-var seam name for the cosign binary path. See [`tool_binary_name`].
+/// Env-var seam name for the cosign binary path. See [`crate::tool_binary_name`].
 pub const COSIGN_BIN_ENV: &str = "CFGD_COSIGN_BIN";
 
 /// Build a base `cosign` `Command` — the shared factory for signature / attestation
@@ -126,7 +126,7 @@ pub const COSIGN_BIN_ENV: &str = "CFGD_COSIGN_BIN";
 /// future env / timeout hardening) uniform and lets the module-boundary audit
 /// point at one place instead of tracking every caller.
 ///
-/// The binary name honors `CFGD_COSIGN_BIN` for tests via [`tool_cmd`].
+/// The binary name honors `CFGD_COSIGN_BIN` for tests via [`crate::tool_cmd`].
 ///
 /// Callers add their own subcommand (`sign`, `verify-blob`, `verify-attestation`,
 /// `attest`, etc.) and any additional flags.
@@ -135,7 +135,7 @@ pub fn cosign_cmd() -> std::process::Command {
 }
 
 /// Verify cosign is available, honoring the `CFGD_COSIGN_BIN` test seam.
-/// Delegates to [`require_tool_with_seam`] to share the env-var-override logic
+/// Delegates to [`crate::require_tool_with_seam`] to share the env-var-override logic
 /// with every other shimmable tool in cfgd-core.
 pub fn require_cosign() -> std::result::Result<(), String> {
     super::process::require_tool_with_seam(COSIGN_BIN_ENV, "cosign", None)

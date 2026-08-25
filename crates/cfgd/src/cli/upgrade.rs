@@ -258,7 +258,7 @@ pub fn cmd_upgrade(
 /// (so it never pollutes the `-o json` stdout channel), and otherwise
 /// interval-gates against the persisted last-checked timestamp *before* any
 /// network call — a within-interval startup makes no API request. `Manual`
-/// short-circuits inside [`run_update_check`].
+/// short-circuits inside [`cfgd_core::upgrade::run_update_check`].
 ///
 /// Best-effort: any error is swallowed (logged via tracing) so a self-update
 /// check never fails a normal command.
@@ -342,12 +342,12 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
 ///
 /// The decision + effectful orchestration (rule 1 suppression, the
 /// policy→action mapping, `Auto` refresh → re-aggregate → project-only
-/// remainder) is single-sourced in [`run_standalone_skill_action`]; this
-/// function only renders the returned [`StandaloneSkillOutcome`] as a
+/// remainder) is single-sourced in [`cfgd_core::upgrade::run_standalone_skill_action`]; this
+/// function only renders the returned [`cfgd_core::upgrade::StandaloneSkillOutcome`] as a
 /// `Printer` Doc. It returns that outcome so tests assert the decision SHAPE,
 /// not rendered text.
 ///
-/// Only [`StandaloneSkillOutcome::NoticeNeeded`] emits — exactly one consolidated
+/// Only [`cfgd_core::upgrade::StandaloneSkillOutcome::NoticeNeeded`] emits — exactly one consolidated
 /// notice covering both scopes. `Refreshed`/`Suppressed`/`Silent` emit nothing.
 fn surface_stale_skills(
     printer: &Printer,
@@ -388,9 +388,9 @@ fn emit_skill_stale_notice(printer: &Printer, staleness: cfgd_core::upgrade::Ski
     );
 }
 
-/// Extract the inner [`UpgradeError`] from a [`CfgdError`] for the startup
+/// Extract the inner [`cfgd_core::errors::UpgradeError`] from a [`cfgd_core::errors::CfgdError`] for the startup
 /// check's fetch closure, which must yield the module-level error type that
-/// [`run_update_check`] threads.
+/// [`cfgd_core::upgrade::run_update_check`] threads.
 fn unwrap_upgrade_err(e: cfgd_core::errors::CfgdError) -> cfgd_core::errors::UpgradeError {
     match e {
         cfgd_core::errors::CfgdError::Upgrade(u) => u,

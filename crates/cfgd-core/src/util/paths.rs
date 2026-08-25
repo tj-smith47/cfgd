@@ -145,7 +145,7 @@ pub(crate) fn systemd_dir(env_var: &str) -> Option<std::path::PathBuf> {
 ///      data shares one location. An existing `~/.config/cfgd` (from a build
 ///      that used it) is always preferred and read in place so an upgrade never
 ///      strands config; the CLI offers a one-time prompt to move it or pin
-///      `XDG_CONFIG_HOME` (see [`resolve_macos_config_dir`] and
+///      `XDG_CONFIG_HOME` (see `resolve_macos_config_dir` and
 ///      [`macos_legacy_config_migration`]).
 ///    - Windows: `%APPDATA%\cfgd`
 ///
@@ -1022,6 +1022,11 @@ pub fn dir_size(path: &std::path::Path) -> std::result::Result<u64, std::io::Err
 /// applied too (Unix), so a `0700` tree does not land as a `0755` copy that
 /// exposes what the original protected. Windows has no mode bits, so the copy
 /// inherits the destination's inherited ACL there.
+///
+/// Skipping symlinks on the READ side and creating the destination itself make
+/// this correct ONLY where cfgd owns the destination. Writing into live user
+/// data — a restore overlay — needs a walker that stats each DESTINATION entry
+/// unfollowed, or a symlink already standing there redirects the write.
 pub fn copy_dir_recursive(
     src: &std::path::Path,
     dst: &std::path::Path,

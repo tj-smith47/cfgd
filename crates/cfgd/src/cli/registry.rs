@@ -265,7 +265,7 @@ pub(in crate::cli) fn build_registry_with_config_and_packages(
 /// The package-manager set installed into every freshly-built registry.
 ///
 /// Production always returns the real built-in managers. In test builds a
-/// thread-local seam ([`PackageManagerFactoryGuard`]) can substitute a
+/// thread-local seam (`PackageManagerFactoryGuard`) can substitute a
 /// deterministic set so package-resolution tests stay hermetic regardless of
 /// which native manager the host has installed — e.g. `winget` is absent on
 /// non-interactive Windows CI hosts, which otherwise makes bare-name module

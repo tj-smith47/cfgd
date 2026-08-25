@@ -133,11 +133,12 @@ pub(super) fn profiles_using_module(
 
 /// Parse helm-style `--set` overrides and apply them to a ModuleDocument.
 /// Supported paths:
-///   package.<name>.minVersion=<value>
-///   package.<name>.prefer=<a>,<b>,<c>
-///   package.<name>.alias.<manager>=<alias>
-///   package.<name>.platforms=<a>,<b>
-///   package.<name>.script=<value>
+///
+///     package.<name>.minVersion=<value>
+///     package.<name>.prefer=<a>,<b>,<c>
+///     package.<name>.alias.<manager>=<alias>
+///     package.<name>.platforms=<a>,<b>
+///     package.<name>.script=<value>
 pub(super) fn apply_module_sets(
     sets: &[String],
     doc: &mut config::ModuleDocument,

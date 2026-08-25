@@ -1,3 +1,22 @@
+//! Spawning external commands, and knowing what resolves on this machine.
+//!
+//! # The 30-second memo convention
+//!
+//! Four process-scoped memos sit at a 30s ceiling — [`command_path`]'s,
+//! `ENUMERATION_MEMO_TTL`, `AVAILABLE_VERSION_MEMO_TTL` and `REPO_REFRESH_TTL`
+//! — and a fifth picks the same number rather than inventing one. The rule the
+//! number encodes: a memo whose FIRST bound is
+//! [`command_resolution_generation`] (everything cfgd itself does) needs a
+//! second bound for the changes cfgd cannot see — a package a human installed
+//! by hand, a tag someone pushed — and 30s is short enough that a long-lived
+//! daemon notices within one tick and long enough that a single CLI invocation
+//! never pays the question twice.
+//!
+//! Each keeps its OWN named constant: they answer four different questions, and
+//! one shared constant would make tuning any of them move the other three.
+//! Every one is pinnable from tests by its own RAII guard, and every one caps
+//! its entry count so its size is independent of how long the process runs.
+
 use super::fs_perms::is_executable;
 
 /// Grace period between SIGTERM and SIGKILL when a watchdog kills a child.
@@ -23,7 +42,7 @@ pub struct CommandOutcome {
     pub timed_out: bool,
 }
 
-/// Run a [`Command`] with a timeout, surfacing whether the timeout fired.
+/// Run a [`std::process::Command`] with a timeout, surfacing whether the timeout fired.
 ///
 /// On timeout the watchdog sends SIGTERM, waits [`KILL_GRACE_PERIOD`] for the
 /// child to exit cleanly, then escalates to SIGKILL (Unix) / `TerminateProcess`
@@ -42,7 +61,7 @@ pub struct CommandOutcome {
 /// pipes open, so `wait_with_output` would block past the timeout it exists to
 /// enforce — a shell-wrapped command (`run_guard_command`, a user `run:` body)
 /// backgrounding a daemon is enough to trigger it. Readers get
-/// [`PIPE_DRAIN_GRACE`] after child exit to reach EOF; past that they are
+/// `PIPE_DRAIN_GRACE` after child exit to reach EOF; past that they are
 /// abandoned and whatever they captured so far is returned.
 pub fn command_output_with_timeout_outcome(
     cmd: &mut std::process::Command,
@@ -162,7 +181,7 @@ fn take_pipe_buffer(buffer: &std::sync::Arc<std::sync::Mutex<Vec<u8>>>) -> Vec<u
     std::mem::take(&mut *buffer.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
-/// Run a [`Command`] with a timeout, discarding the timeout signal.
+/// Run a [`std::process::Command`] with a timeout, discarding the timeout signal.
 ///
 /// Thin wrapper over [`command_output_with_timeout_outcome`] for callers that
 /// only need the captured output. Callers that must distinguish a hang from a
@@ -488,6 +507,18 @@ pub fn command_resolution_generation() -> u64 {
 /// on the machine — the cost is one atomic increment, and the cost of missing
 /// one is a manager that stays "not available" for the rest of the run after the
 /// bootstrap that installed it succeeded.
+///
+/// A path that TAKES a binary off the machine bumps it for the mirror reason: a
+/// memo still answering `Some(path)` for something the run just deleted has the
+/// next tick plan against a tool that is gone. Every path of either shape calls
+/// it — the package install and uninstall arms, a manager provision (BEFORE the
+/// outcome propagates, since a cascade that failed at its last step may still
+/// have installed the manager), lifecycle script execution (a `preApply` hook
+/// installing a toolchain is the one effect cfgd cannot predict), and the
+/// orphaned-package prune (unconditionally and before its outcome is matched, a
+/// partial failure having already removed whatever it removed). Registering a
+/// bootstrapped PATH directory bumps it too, from
+/// [`register_bootstrapped_path_dirs`].
 pub fn invalidate_command_resolution() {
     COMMAND_RESOLUTION_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
@@ -791,6 +822,11 @@ pub fn systemctl_cmd() -> std::process::Command {
 }
 
 /// Whether `systemctl` resolves, honoring [`SYSTEMCTL_BIN_ENV`].
+///
+/// Never `command_available("systemctl")` at a call site: that answers from
+/// `PATH` while the spawn answers from the seam, so a test that redirected the
+/// binary reads "unavailable" and skips the very branch it installed the shim
+/// for.
 pub fn systemctl_available() -> bool {
     command_available_with_seam(SYSTEMCTL_BIN_ENV, "systemctl")
 }

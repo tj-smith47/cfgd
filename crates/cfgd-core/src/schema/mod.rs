@@ -157,7 +157,7 @@ impl KindEntry {
     /// diffable form (the golden schema gate), use [`KindEntry::pretty_schema`].
     ///
     /// Emitted as draft-07 (via [`migrate_to_draft_07`]) with whitespace-collapsed
-    /// descriptions (via [`normalize_descriptions`]), so the embedded skill
+    /// descriptions (via `normalize_descriptions`), so the embedded skill
     /// schema stays consistent with the published draft-07 editor schemas and
     /// carries the same single-line descriptions the `explain` walk shows.
     pub fn json_schema(&self) -> String {

@@ -527,8 +527,8 @@ impl Cli {
         }
     }
 
-    /// Installation scope selected by `--scope` (`CFGD_SCOPE`): [`Scope::System`]
-    /// for `system`, [`Scope::User`] otherwise. Threaded into every directory
+    /// Installation scope selected by `--scope` (`CFGD_SCOPE`): [`cfgd_core::Scope::System`]
+    /// for `system`, [`cfgd_core::Scope::User`] otherwise. Threaded into every directory
     /// resolver so the whole CLI surface agrees on one root.
     pub fn scope(&self) -> cfgd_core::Scope {
         self.scope_arg.into()
@@ -1483,6 +1483,7 @@ pub enum AliasCommand {
 }
 
 #[derive(Parser)]
+#[allow(rustdoc::invalid_html_tags)]
 pub struct ProfileCreateArgs {
     /// Profile name
     pub name: String,
@@ -1536,6 +1537,7 @@ pub struct ProfileCreateArgs {
 }
 
 #[derive(Parser)]
+#[allow(rustdoc::invalid_html_tags)]
 pub struct ProfileUpdateArgs {
     /// Profile name (default: active profile)
     pub name: Option<String>,
@@ -1658,6 +1660,7 @@ pub enum ProfileCommand {
 }
 
 #[derive(Parser)]
+#[allow(rustdoc::invalid_html_tags)]
 pub struct ModuleCreateArgs {
     /// Module name
     pub name: String,
@@ -1698,6 +1701,7 @@ pub struct ModuleCreateArgs {
 }
 
 #[derive(Parser)]
+#[allow(rustdoc::invalid_html_tags)]
 pub struct ModuleUpdateArgs {
     /// Module name
     pub name: String,

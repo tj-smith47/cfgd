@@ -266,7 +266,7 @@ impl EnvironmentConfigurator {
 
     /// Write the system LaunchDaemon plist that publishes env vars system-wide via
     /// `launchctl setenv` at load (root launchd, system domain). Path-parameterized inner
-    /// ([`write_launchd_plist_to`]) so tests target a temp path, never the real
+    /// (`write_launchd_plist_to`) so tests target a temp path, never the real
     /// `/Library/LaunchDaemons` — mirrors the Linux `write_etc_environment_to` pattern.
     fn macos_write_launchd_plist(managed: &BTreeMap<String, String>) -> Result<()> {
         Self::write_launchd_plist_to(&Self::macos_plist_path(), managed)

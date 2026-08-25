@@ -63,7 +63,7 @@ impl InstalledPackages {
 /// racing for the same manager should produce one spawn, not two, which is the
 /// same one-operation-per-manager rule the apply lanes run under.
 ///
-/// The whole protocol lives in [`InstalledEnumerations::get_or_enumerate`]
+/// The whole protocol lives in `InstalledEnumerations::get_or_enumerate`
 /// rather than in the caller, so the tests that pin it drive the same code
 /// `PackageContext::installed_for` does. `PackageContext` borrows its printer
 /// and state store and is therefore neither `Send` nor `Sync`; this type is

@@ -480,12 +480,12 @@ impl super::CfgdFileManager {
     /// `~`-expanded internally. A drifted target shows a unified diff; a missing
     /// target shows the would-be-created content syntax-highlighted; a missing
     /// source emits a warning and reports a non-matching record naming it. The
-    /// record shape matches [`Self::file_drift_one`]. Shared by the profile-file path
+    /// record shape matches `Self::file_drift_one`. Shared by the profile-file path
     /// ([`Self::diff`]) and the module-file path so both render identically.
     ///
     /// `per_file_strategy` is the entry's own strategy override, if any — it is
     /// resolved to an effective [`FileStrategy`] internally via
-    /// [`Self::effective_strategy`], the same resolution `plan()` performs, so
+    /// `Self::effective_strategy`, the same resolution `plan()` performs, so
     /// this and the plan agree on what "converged" means for the same entry.
     pub fn diff_one(
         &self,
@@ -853,7 +853,7 @@ pub(crate) fn module_patch_binding(
 
 /// Render one `Patch` file's inline diff and report its drift record.
 ///
-/// The counterpart of [`CfgdFileManager::diff_one`] for targets cfgd only
+/// The counterpart of [`crate::files::CfgdFileManager::diff_one`] for targets cfgd only
 /// partially owns: a converged target prints nothing, a drifted one shows
 /// current → merged, and a target that does not exist yet shows the content the
 /// merge would create. Shared by the profile-file and module-file diff paths.

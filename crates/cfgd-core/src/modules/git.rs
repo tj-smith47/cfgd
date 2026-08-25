@@ -206,10 +206,10 @@ pub(super) fn resolve_subdir(
 /// Checks out the specified tag/ref if provided.
 ///
 /// Two round-trips are skipped here, and both are skips of work that could not
-/// change the answer. A pin the cache already resolves ([`cache_answers_pinned_ref`])
+/// change the answer. A pin the cache already resolves (`cache_answers_pinned_ref`)
 /// never fetches at all — the commit is immutable, so there is nothing upstream
 /// could tell us. Everything else fetches at most once per repository per
-/// refresh window (see [`fetch_existing_repo`]): a module declaring twenty files
+/// refresh window (see `fetch_existing_repo`): a module declaring twenty files
 /// out of one repo used to run twenty full fetch cycles of the same refs.
 pub fn fetch_git_source(
     git_src: &GitSource,

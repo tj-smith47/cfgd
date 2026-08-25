@@ -3,78 +3,77 @@ paths: ["crates/**/*.rs"]
 ---
 # cfgd Output System — critical design constraint
 
-The `output` module (`crates/cfgd-core/src/output/`) provides:
-- `Printer` struct: the sole interface for writing to the terminal
-- Methods:
-  - `printer.heading(text)` — top-level title
-  - `printer.heading_title(&TitleLabel)` — top-level `Label: value` title (`Status: dev-tools`), styled through `TitleLabel`'s 3 slots (label / colon / value) instead of `heading`'s single `theme.header` coat. `Doc::heading_title(label, value)` is the structured builder entry point; a heading with no value part stays a plain `heading(...)`/`Doc::heading(...)`. `Doc::heading_title_typed(label, value, type_span)` / `TitleLabel::typed` is the one variant beside it: a named span INSIDE the value (`cfgd explain`'s `<[]ModuleFileEntry>`) is lifted out of the accent coat into `theme.type_hint`, so a rendered schema type takes the same slot the field rows below it do. Same shape as `CommandPair::typed` — the caller names the span, the composer folds and then paints, the match is anchored at the END of the value (`rfind`), a span the value does not carry paints nothing, and `plain()` (the `-o json` `heading` field) is untouched
-  - `printer.heading_owner_prefixed(prefix, &OwnerLabel)` — top-level `<Verb> <owner>` heading (`Add source:acme`), styled through `OwnerLabel`'s 3 slots for the token instead of folding the whole line into `heading`'s single `theme.header` coat. Named `_prefixed` because the verb is the point: an owner token names WHOSE the rows below it are, which is a section's job, so a bare `kind:name` never occupies a top-level heading slot. There is deliberately no unprefixed counterpart on either side — the buffered `Doc::heading_owner` was removed with `cfgd source show`'s last use of it, and `HeadingKind` now carries only `Plain` and `Title` so the shape is unrepresentable rather than merely unused
-  - `printer.kv(key, value)` — single key/value pair. Both halves are folded through `cursor_safe` at the renderer, so a call site echoing a gateway field, a source manifest string or a module's own paths through a kv row does NOT fold it itself
-  - `printer.kv_block(pairs)` — multi-pair block
-  - `SectionGuard::kv_rows(rows)` — `kv_block` over hand-built `KvPair`s, so a row can carry an ANNOTATION (`KvPair::annotated(key, value, note)`) beside its value: the renderer parenthesises it and paints it `theme.muted`, or stands it alone as the row when the value is empty. `Doc::kv_rows(rows)` / `SectionBuilder::kv_rows(rows)` are the buffered counterparts. Two slots reach a kv value, and both are the RENDERER's — a caller never paints one itself, because the fold above would eat the coat. The second is `KvPair::role_valued(key, value, role)`, which tints the VALUE with the role's own theme slot (`Status  Drifted` in the warning colour) through the same `role_glyph` mapping every other role-styled surface reads; the fold runs first and the coat goes on after, and the tint is display-only (`#[serde(skip)]`, byte-identical to a plain row with colour off). The third is `KvPair::nested(key, value)`, which indents a row two columns to say it belongs to the row above it (`Scripts 9`, then `preApply 3`); the renderer takes the block's key column over the INDENTED widths, so a caller padding its own key would misalign every value in the block. All three are `#[serde(skip)]` and display-only — an unnested, unannotated, untinted row renders byte-for-byte what it always did. (This is also why `Printer::muted` no longer exists: composing a muted fragment into a kv value was its only use, and these slots replace it.)
-  - `printer.command_list(pairs)` — a "command — description" list; `kv_block`'s counterpart for a left column that is a shell command rather than a data-carrying key. Its key column carries no `KEY_WIDTH_CAP` (wrapping a command onto its own line severs the glue that makes the list scannable) and its glue is the canonical `" — "` em-dash, never `kv_block`'s plain whitespace gap — this is a list of DESCRIPTIONS, not a list of VALUES. `Doc::command_list(pairs)` / `SectionBuilder::command_list(pairs)` are the buffered builder entry points; `SectionGuard::command_list(pairs)` is the nested-section streaming entry point. Reach for this whenever a two-column list's left side NAMES a thing — a command a user types, or a schema field and its type (`cfgd explain`) — never for an ordinary key/value fact, which stays `kv_block`. A description too long for the terminal hangs to the DESCRIPTION column, not to the row's left edge, and a row whose description is empty renders its left column alone with no trailing glue. A prefix's width is measured with its styling stripped (an SGR run is a coat, never a column), and a hang stands the wrap down rather than chopping words into the sliver it leaves — when it takes more than half the terminal, and whenever it would split a word the terminal could hold whole. A row built with `CommandPair::typed(key, type_span, value)` carries a TYPE SPAN — the `<[]ModuleFileEntry>` substring inside its own key — which the renderer paints `theme.type_hint` while the rest of the key keeps `theme.secondary`, so a schema type reads as its own column without a caller ever painting one (the same split `KvPair::role_valued` takes on a value). `type_hint` is the ONE slot a rendered schema type takes, in this row and in `cfgd explain`'s drill-down heading (`TitleLabel::typed`) alike — its own slot rather than `theme.accent`, which already means the Caveats heading and a title heading's value, so a preset maps a type to whatever its own syntax spec calls one (Dracula's cyan-italic Types, Solarized's yellow `Type`) without dragging those two along. The coat goes on AFTER `cursor_safe`, for the reason `compose_kv_value` does: the fold strips ANSI, so a key painted before it reaches the renderer arrives unstyled. `type_span` is `#[serde(skip)]` and display-only — STRIPPED, the three joined spans are byte-identical to the single-coat row they replace, which is what keeps every `cfgd explain` golden a golden, since a golden is captured stripped. With colour OFF but styling live the row is NOT byte-identical: `theme.type_hint` carries `.italic()` under the default theme and `StyledText` emits an attrs-only SGR in that state, per the product-wide policy that NO_COLOR governs COLOUR only (`no_color_keeps_italic_for_default_accent`), so the span renders `ESC [ 3 m … ESC [ 0 m` around text the old single coat left bare. A span the key does not actually contain paints nothing rather than guessing, and the span is matched from the END of the key (`rfind`), the position every producer composes it at
-  - `Doc::paragraph(text)` — a prose paragraph: wrapped body text with no glyph, no key column and no verbatim contract, for what a documentation surface says ABOUT the thing the heading above it just named (`cfgd explain`). Laid out through `wrap_segment` with the same prefix on both sides (`wrap_body` would read a one-column first word as a glyph and hang the continuations under it), painted `theme.muted` per physical line so no SGR run stays open across a wrap. Binds to a heading directly above it the way a kv block does, and an empty or whitespace-only string emits nothing — the guard is in the renderer, so the invariant holds for every caller. Buffered-`Doc` only — the one producer builds a `Doc`, so there is no streaming `Printer::paragraph`
-  - `printer.status_simple(role, subject)` — concise status line; `role: Role::{Ok, Info, Warn, Fail, Skipped, Pending, Running, Accent, Secondary}`. `Accent` = "attention without alarm" (orange-family); `Secondary` = "structural pivot / label / identifier" (pink/magenta-family). Both have no icon and are suppressed at `Verbosity::Quiet` like every non-`Fail` role. The SUBJECT is folded through `cursor_safe` at the renderer boundary — the same fold `status`'s builder path, the buffered `Doc` path, the live-row path and the output window's non-TTY announce all apply — so a gateway JSON field or a tool's captured stderr echoed into a subject cannot erase the line it is written on, and cannot measure zero columns against the alignment the section pads to. **`cursor_safe` (`output/mod.rs`) is the ONE such fold. The slots that apply it are: status subject, qualifier, detail, trailing label, leading marker and target path; the always-visible advisory (`alert`/`deprecation`); kv key, value and annotation; `command_list`'s command and description; bullet, hint, note, paragraph, code-block line, streamed child line; every table header and cell; heading (both the depth-0 render and the re-route branch) and section name, plus a section's empty-state placeholder; `OwnerLabel::styled`'s kind, name and prefix and `TitleLabel::styled`'s label and value, folded by the composer because it paints them itself; and every LIVE-REGION label — spinner, progress bar, output window and `LiveRow` all funnel through `compose_in_flight_subject`, which folds and then PAINTS (`theme.info`, the slot its own animated frame carries, with a trailing `kind:name` owner token routed to `OwnerLabel`'s three slots instead), plus `LiveRow::set_note`; and ONE slot outside the renderer entirely — `structured.rs::write_diagnostic`, the human stderr line `emit_structured` writes under `-o name` / `jsonpath=` / `template=` / `template-file=` (an error doc's message, a template or template-file diagnostic), which reaches the terminal without passing a renderer and so is folded at its own write; and ONE more outside `output/`'s renderer — `tracing_writer.rs::LiveTracingSink::emit_with`, which folds the WHOLE formatted event, on BOTH of its destinations (the live region's `println` and the stderr fall-through), so all ~190 `warn!`/`error!` sites are covered by construction rather than one at a time. A subscriber wiring that writer therefore passes `.with_ansi(false)` (`cfgd/src/main.rs`, `cfgd/src/cli/plugin/mod.rs`, `cfgd-operator/src/app.rs`) — the fold strips ANSI, so the formatter's own level tint would be eaten anyway, and telling an `ESC [ 0 m` from an `ESC [ 2 K` would mean a second sanitation policy with its own parser. `tracing_subscriber` escapes ESC and the C1 range inside the `message` field ALONE, so a `\r` and every `%`-formatted field value walk through it untouched; the fold is what makes the line safe.** That list is the whole of the FOLD. It is not the whole of the sanitation: three surfaces take the ESCAPE policy instead — the approval screen, `prompts.rs`, and the two RAW CONTENT renderers — and all three are named below. A call site echoing a gateway field or a remote source's description through a folded slot still does NOT sanitize it by hand. Four things are deliberately NOT folded and each is a decision, not a gap: (1) a PRE-APPROVAL surface escapes with `escape_control_chars` instead, so the operator SEES what they are approving — the WHOLE of `print_module_review_summary` (`cli/module/registry.rs`), owner heading and closing `Commit`/`Integrity` rows included, `review_entry` among them; the permission-change bullets in `cli/sync.rs` / `cli/source/update.rs`; and every `prompt_*` message plus `prompt_select`'s option list (`output/prompts.rs::shown`), because `inquire` writes straight to the terminal and nothing downstream would fold them. `prompt_select` therefore takes its answer back by INDEX — the drawn list is escaped while the returned option stays the caller's own byte-exact string, and matching the drawn text against the raw list would miss precisely the option that carried a control character. `prompt_text`'s `default` takes a THIRD policy, and it is neither of the other two: `prompts.rs::proposed` STRIPS its control characters. A default is a value cfgd is PROPOSING — `inquire` pre-fills it into the editable buffer and hands it back AS the answer — so escaping it would write `\x0d` into the value instead of showing it, and leaving it raw lets a proposal repaint the line offering it (a directory basename may legally carry a `\r`, and one is offered as the default source name in `cli/source/create.rs`). Dropping the character is the only resolution under which what is DRAWN and what is RETURNED are the same string; an `ESC` goes with the rest, leaving its payload (`[2K`) standing as visible text. The fold is the identity on what escaping produces (no ESC byte survives it), so the two policies compose rather than fight, and a module's own `run:` body reaches the terminal escaped rather than stripped; (2) every `plain()` form and every `-o json` / persisted string, because a payload stays byte-exact — which is also why a `Doc`-built screen (`source_manifest_doc_sections`, `cli/source/show.rs`, which both `source show` and `source add`'s pre-confirm review render) stays on the fold even though `source add` shows it ahead of a confirm: its rows ARE the payload; (3) the DATA channels — `raw.rs`'s stdout write (`data_line`) and `emit_structured`'s own `sink_stdout` arms (`-o json` / `yaml` / `name` / selector output), which stay byte-exact for the machine reading them; only the human stderr half of that file ESCAPES — see (4), and note that `data_line` is the only one of `raw.rs`'s three writers that is a data channel; (4) the RAW CONTENT renderers — `raw.rs`'s `render_diff` and `render_syntax_highlight`, which write stderr and carry text cfgd did not author (a module's own file under `cfgd plan --diff`, a model-authored manifest under `cfgd generate`, seven lines above its Accept/Reject prompt). They escape each content line with `escape_control_chars` INSIDE the renderer, before the theme or syntect paints it, rather than folding: these are pre-approval screens by the same reasoning as (1) — `strip_ansi` would DELETE an `ESC [ 2 K` that is about to be written to disk, and the operator has to see the bytes they are approving. Escaping in the RENDERER rather than at each call site is what makes the guarantee hold for every caller (`cfgd generate`, `files/plan.rs`, `cli/plan_ops.rs`, `SectionGuard::diff` / `::syntax_highlight`), so a call site passing module content does not sanitize by hand. The policy is one pass with no exemptions: a `\t` escapes with everything else, and a source line that renders `\x09` where it held a tab still says what it holds. A CRLF stays one line break — `str::lines` drops its return for the highlighter, and `render_diff` strips it explicitly — while a LONE `\r` is escaped and shown. `cursor_safe_slots.rs` covers both renderers on the emulated screen, and `raw.rs`'s own `syntax_highlight_escapes_hostile_content_before_it_is_highlighted` covers the colour-ON arm a test printer never reaches. It strips ANSI and then escapes every surviving C0/C1 control character except `\n`, which the subject slot lays out as an indented continuation; a `\r` that opens a CRLF is part of that line break and collapses with it, while a LONE `\r` is escaped. `strip_ansi` alone is NOT that guarantee — it consumes only ESC-introduced sequences, so a bare `\r` walks through it and repaints the row — and `escape_control_chars` alone is not either, because it escapes the newline. Two placements are deliberate and must be kept: a table and a `command_list` fold BEFORE their column widths are taken (a width measured over a `\t` describes text that is not what renders, and mis-sizes every column after it), and a slot handed an ALREADY-STYLED string (`render_heading_styled`, `render_section_open_styled`) is folded by the composer that painted it — `OwnerLabel::styled` and `TitleLabel::styled` fold their own text slots — because folding a styled string at the renderer would eat the renderer's own SGR. Their `plain()` forms are NOT folded, and neither is any persisted or `-o json` string: the fold is display-only. Five terminal writers take NEITHER policy, each for a stated reason, and the list is meant to be complete: (a) INHERITED CHILD STDIO — `cli/kubectl.rs`, the editor spawns in `cli/helpers.rs` and `secrets/age.rs`, `secrets/sops.rs`'s `sops` invocation, the interactive `cosign generate-key-pair` in `cli/module/keys.rs` (both of them), the `useradd` in `packages/brew`'s Linuxbrew-as-root bootstrap, and an interactive script's TTY: the child owns the terminal for the length of its run and cfgd is not in the byte path at all, so there is nothing to fold (a child cfgd PIPES rather than inherits goes through `OutputWindow::push_line` / `dump_below`, which sanitizes at `window.rs`); (b) CLAP'S OWN error/help writer (`cli/mod.rs`), which echoes the argv the user typed at their own terminal a moment earlier; (c) `cfgd-csi`'s JSON log line, whose SERIALIZER is its sanitizer — `serde_json` escapes every C0 byte, and folding a serialized line would emit `\xNN` inside its strings and cost every consumer a parseable payload; the C1 range `serde_json` passes through is closed by `main.rs::C1Escaping`, which rewrites it as the `\u00XX` JSON escape, so the line stays parseable and the field decodes back byte-exact; (d) the Windows service's file + Event Log layers (`daemon/service/windows.rs`), which write a log FILE rather than a terminal; (e) the DEFAULT PANIC HOOK, which writes its message raw to stderr — no production panic in the workspace interpolates untrusted text (every `panic!`/`expect` carrying a value is inside a `#[cfg(test)]` module and renders it with `{:?}`, which Debug-escapes control characters), so cfgd installs no hook of its own and a panic message is cfgd-authored text. A production panic that ever DOES quote a module-, gateway- or remote-supplied value needs `escape_control_chars` at the interpolation, since nothing downstream of `std`'s hook can fold it. `every_subscriber_writes_through_a_folding_writer` (`output/tests/fences.rs`) is what keeps (c) the only unfolded subscriber writing to a terminal. A new slot that renders caller text routes through `cursor_safe` and is added to this list; nothing else in the renderer folds, and the only renderer-side ESCAPE is (4).
-  - `printer.status(role, subject)` — returns `StatusBuilder` for `.detail(...)`, `.duration(...)`, `.label(label_role, label_text)`, `.qualifier(text)`, `.drift(expected, actual)`, `.with_data(...)`. The `.label(...)` form appends a styled label at end-of-subject (enforced by API construction — see `compose_subject_with_label`). The `.qualifier(text)` form composes `subject` `":"` `qualifier` as three slots — the subject keeps its role styling, the colon takes `Role::Warn`'s colour, and the qualifier renders `theme.muted` — replacing a hand-built `format!("{subject}: {value}")` string, so a "Label: value" status line can never bake its separator or its value into one undifferentiated span. Lands ahead of `.label(...)` in the composition order (`finalize_subject`: marker, then qualifier, then label), so a subject may carry both. `doc::StatusFields::qualifier(text)` is the same composer for the buffered `Doc` path, reached via `status_with(role, subject, |f| f.qualifier(...))` since `Doc`/`SectionBuilder::status` returns `Self`, not a chainable builder. A colon that is part of the DATA itself (a path, a URL, a k8s name) is not a qualifier — leave the literal string alone. The `.drift(...)` form is `.detail(cfgd_core::output::drift_detail(expected, actual))` — the ONE canonical `want: <expected>, have: <actual>` spelling of a planned-vs-actual mismatch, so it can never be baked into the subject by hand. `doc::StatusFields::drift(...)` is the same composer for the buffered `Doc` path (`SectionBuilder::status_with`).
-  - `printer.hint(text)`, `printer.note(text)` — supplementary output
-  - `printer.deprecation(text)` — a notice that the SPELLING the user reached for is on the way out (a legacy flag or filter pattern). Always visible: it survives the structured-output auto-quiet, and writes to stderr only so the `-o` data channel stays pure
-  - `printer.alert(text)` — a persistent advisory about what THIS run will actually do, when acting on the output without it would mean acting on a wrong picture (a `--skip` that stranded package installs). Same always-visible stderr routing as `deprecation`; separate because a deprecation is about spelling and an alert is about effect. Not a substitute for `status_simple(Role::Warn, …)`, which is the ordinary warning and is correctly suppressed under `-o json`. The ONE always-visible emit that is correct at any depth: it is called where the effect is discovered (a source-constraint bypass, mid-composition, under whatever section the command opened), so it renders at the open section's depth and never trips the top-level structural assert. `deprecation` keeps that assert, because a deprecation is drained at the command boundary that owns the terminal
-  - `printer.table(table)` — tabular data
-  - `printer.section(name)` — returns `SectionGuard` (drop ends the section). Beyond `bullet`/`kv`/`kv_block`/`command_list`/`hint`/`note`/`table`/`code_block`, it also carries `.diff(old, new)` and `.syntax_highlight(code, lang)` — the section-scoped counterparts of `Printer::diff`/`Printer::syntax_highlight` below, for a caller already holding the guard rather than an ambient `DepthInheritGuard`. A nested plain `section()` opened while another section is already open (`header_depth != 0`, whether reached through `Doc::subsection` or hand-nested `SectionGuard::section` calls) paints its heading `theme.secondary` instead of the outer level's `theme.header`, so a reader can tell the nesting apart from styling alone without counting indent columns; an OWNER section (`kind:name`) is unaffected. A first-level section always keeps `theme.header`
-  - `printer.section_owner(&OwnerLabel)` / `printer.section_owner_or_collapse(&OwnerLabel)` — open a top-level section headed by a styled owner token (`module:nvim`) instead of a hand-built `format!("{kind}:{name}")` string; `_or_collapse` leaves no trace when nothing renders inside it (for a caller that cannot know whether the owner has anything to say until after it has said it). `SectionGuard::section_owner(&OwnerLabel)` / `.section_owner_or_collapse(&OwnerLabel)` are the nested-section counterparts, for opening an owner-headed section inside a section already open. `Doc::section_owner(&OwnerLabel, build)` is the buffered-`Doc` counterpart of the top-level pair and `Doc::subsection_owner(&OwnerLabel, build)` of the nested one (both backed by the private `SectionBuilder::new_owner`). A `Doc` whose whole report belongs to one owner opens with `Doc::section_owner` and hangs its blocks off it as subsections (`cfgd source show`) — the owner is never the `Doc`'s heading
-  - `printer.diff(old, new)` / `printer.syntax_highlight(code, lang)` — nest at whatever depth the ambient `DepthInheritGuard` (`printer.depth_inheritance()`) or ordinary top-level call currently holds, flushing any pending section header first exactly like every other emission — there is no longer a "raw block skips header-flushing" special case a caller has to route around by hand-emitting a `heading()` ahead of the diff
-  - `printer.spinner(label)` — returns `Spinner` with `.finish_ok(subject)` / `.finish_fail(subject).detail(e)` / `.set_message(m)` (`&mut self`, clamped via `clamp_label`, becomes the label `Drop` settles with). Abandoned without an explicit finish (an early `?` between creation and the matching `finish_ok`/`finish_fail`), `Drop` settles it as `Role::Skipped` + `" (interrupted)"` — Drop cannot know whether the in-flight work succeeded or failed, so this is the one honest record, distinct from both settled roles and from the animated running frame. Suppressed at `Verbosity::Quiet` exactly like the running spinner it replaces. A spinner borrowed from a `LiveRow` (its `.window(subject)`) is exempt: the row settles its own line, and Drop would double it
-  - `printer.narrate(running, |sp| …)` — the settle-safe wrapper over `printer.spinner`, and what a long wait whose failure NOBODY ELSE reports is narrated with (a wait somebody else has the outcome line for takes `narrate_silent`, below): it opens the spinner, hands the closure `&mut Spinner` so each step renames the line with `set_message`, and matches ONCE on the result — success retires the bar silently, failure settles `Role::Fail` at whatever step `set_message` last named. Success is silent by construction: narration is live-region-only, so a successful run's permanent output is byte-identical to the same run before the spinner existed, which is what lets every golden in the suite stay a golden — a site that wants an outcome line writes it itself, after. The failure settle carries no detail, because the error it returns is about to be rendered at the CLI boundary and a detail here would print it twice. Reach for this instead of a hand-rolled `printer.spinner` + inner-fn + match at any site whose body can `?`: it IS that discipline, written once, so no call site can abandon a bar to `Drop`'s generic `(interrupted)`. A wait inside a command that derives a Quiet printer for its library work (`compliance`, `source show`) is narrated through the OWNING printer, so `Quiet` and `-o json` suppress it per policy and the structured channel stays pure
-  - `printer.narrate_silent(running, |sp| …)` — the same wrapper for a wait whose OUTCOME LINE belongs to somebody else: identical construction and identical `&mut Spinner`, but the bar is retired SILENTLY on BOTH arms. Three shapes need it, and the criterion is who else says the failure, never how the `Err` travels: the site settles its own outcome afterwards; the caller SWALLOWS the `Err` and words it (`PackageContext::installed_for`, whose five callers each render their own row or check); or the caller ALREADY EMITTED a permanent line naming this same wait, so a settled line would repeat it (`server_client::post_with_retry`, whose five callers propagate the error perfectly well and would still get the sentence twice). That third condition is the one a reader guesses wrong: propagating to the CLI boundary is NOT sufficient to make a wait a `narrate` site. Because `Role::Fail` is the one role that survives `Verbosity::Quiet`, every duplicate lands on stderr even under `-o json`. The bar carries the WAITING half of the caller's words rather than repeating them (`{label}: waiting for response`), so the permanent line and the live one do not read as one sentence printed twice
-  - `Spinner::finish_silent()` — retire a bar printing nothing, for a caller whose outcome line is written by someone ELSE: concurrent lane spinners collapsed into one summary, or a narrated wait whose result is rendered after it (a backup snapshot's row, a restore's status line). Suppresses `Drop`'s `Skipped`/`(interrupted)` settle exactly as an explicit `finish_*` does. `narrate`'s success path is this call, and `narrate_silent` is BOTH of its paths. A spinner built by hand reaches for it directly only where neither wrapper fits: an `output/` internal (a lane's collapsed row, an output window's own bar), or one of the four product waits `shared-utils.md`'s `narrate` bullet enumerates — the clearest being `upgrade`'s install tail, which holds an `Option<&Printer>` and so has no printer to call a wrapper on. A plain wait whose failure belongs to somebody else takes `narrate_silent` instead of re-deriving the protocol
-  - `printer.progress_bar(...)` — returns `ProgressBar` with `.inc(delta)`, `.set_position(pos)`, `.set_message(m)` (`&mut self`, same clamp-and-remember-for-Drop contract as `Spinner::set_message`), `.finish(self)`. `Drop` parity with `Spinner`: abandoned without `.finish()`, it settles `Role::Skipped` + `" (interrupted)"` at its label instead of leaving its last paint on screen forever. Every step of a loop driving one bar across many items (`crates/cfgd/src/files/apply.rs`'s "Applying files") must route its own fallible work through an inner fn/match-once and call `.finish()` on EVERY exit path (success and failure) rather than let an early `?` abandon the bar to Drop — the same LEAK-site discipline `Spinner` callers already follow
-  - `printer.live_row_at(depth)` / `printer.live_row_after(depth, &row)` / `printer.live_row_first(depth)` — return a `LiveRow`, ONE line of the live region the CALLER owns for its whole life and rewrites in place: `set_action_status(&RowStatus, column)` (a pending or settled tree line), `window(subject)` (running, with the child's output tailing below it), `set_owner_label(&label)` (a group heading), `set_note(text)` (a muted `… ` line about the region itself), and `retire()` to take the line down. `retire` ERASES the line — it does not commit it; the permanent line is written separately into a `SectionGuard` (`reconciler::apply::emit_action_line`) and the row is retired once it has been. The erase is the row's `Drop`, which `retire` is a named call to, so a row that ends any other way — an abandoned handle, an unwind — takes its line with it too. Its order is load-bearing: the bar is CLEARED while it is still in the `MultiProgress` and removed after, because removal hides the bar's draw target and a clear issued after it paints nothing, leaving the last live paint on the terminal for whatever writes next to land beneath. `live_row_after` inserts directly beneath an existing row, which is what keeps one group's rows contiguous while another group is still growing; `live_row_first` inserts at the top, the one slot an over-full region never truncates. `printer.live_row_budget()` reports how many ROWS the region can hold before the terminal's height truncates it from the FOOT — spend the budget on rows that have nothing left to say (pending work, and settled rows whose outcome is already held for commit); NEVER retire a running row's line, or the region hides exactly the work the reader is waiting on. It is a row count, not a count of the terminal lines indicatif ends up painting: a running row tails its child's output below itself, a subject may carry `\n` continuations, and either can soft-wrap. `LIVE_REGION_HEADROOM` is the slack that covers the difference, so a caller keeps its OWN rows inside the budget and does not claim the region can never overflow
-  - `printer.run(cmd, fmt)` — buffered command execution with live output
-  - `printer.data_line(text)` — raw structured-output line
-  - `printer.emit(doc)` — `Doc` emit (for `-o json|yaml|jsonpath|template`)
+The `output` module (`crates/cfgd-core/src/output/`) provides the `Printer` struct: the sole interface for writing to the terminal. This file is the CATALOG of that surface and the RULES for reaching it; the reasoning behind each composer lives in its own rustdoc.
 
-**An error `Doc` under a selector format always echoes to stderr first.** `emit_structured`
-(`crates/cfgd-core/src/output/structured.rs`) routes `-o name` / `jsonpath=` / `template=` /
-`template-file=` through the reader's SUCCESS-shaped selector; an error doc's shape
-(`error`/`message`/`name`) almost never satisfies one written for `.items[].foo`, so — unlike
-`json`/`yaml`, which dump the whole payload regardless of selector — a non-matching selector on
-an error doc used to print nothing to stdout and nothing anywhere else, leaving only the exit
-code to say a failure happened. `emit_structured` now writes `doc.error_message()` to
-`sink_stderr` unconditionally, before evaluating the selector, whenever `doc.is_error` and the
-format is one of those four. The selector still runs afterward and may separately match
-something in the error doc's own fields (e.g. `jsonpath={.name}` against a `not_found` error) and
-print that to stdout — so a selector format can render an error twice: once as the guaranteed
-stderr diagnostic, once as whatever stdout the selector produced. Documented in
-`docs/cli-reference.md`'s "Error output" section; keep the two in sync.
+## Printer surface
+
+Reach for the composer matching the call site's shape; never hand-build a `format!` string a composer owns.
+
+- `heading(text)` — top-level title.
+- `heading_title(&TitleLabel)` — a `Label: value` title, styled through `TitleLabel`'s three slots. `Doc::heading_title(label, value)` is the buffered entry point; `Doc::heading_title_typed(label, value, type_span)` lifts a span inside the value into `theme.type_hint`. A heading with no value part stays a plain `heading`.
+- `heading_owner_prefixed(prefix, &OwnerLabel)` — a `<Verb> <owner>` heading (`Add source:acme`), and the ONLY heading slot an owner token may occupy. No unprefixed counterpart exists: an owner names WHOSE the rows below it are, which is a section's job.
+- `kv(key, value)` / `kv_block(pairs)` — a key/value fact and a block of them.
+- `SectionGuard::kv_rows(rows)` / `Doc::kv_rows(rows)` / `SectionBuilder::kv_rows(rows)` — `kv_block` over hand-built `KvPair`s, and how a row reaches the three renderer-owned slots: `annotated(key, value, note)` (a muted parenthesised note about the value), `role_valued(key, value, role)` (the VALUE tinted by what it says, through the same `role_glyph` mapping every role-styled surface reads) and `nested(key, value)` (indented to say it belongs to the row above). **A caller never paints or indents one itself** — the fold would eat the coat, and a hand-padded key misaligns the block. All three are `#[serde(skip)]`, display-only, and why `Printer::muted` no longer exists.
+- `command_list(pairs)` — a "command — description" list, `kv_block`'s counterpart for a left column that NAMES a thing rather than carrying data. No `KEY_WIDTH_CAP`, the canonical `" — "` glue, and a long description hangs to the DESCRIPTION column. `CommandPair::typed(key, type_span, value)` paints a type span `theme.type_hint`. `Doc` / `SectionBuilder` / `SectionGuard` counterparts exist.
+- `Doc::paragraph(text)` — a prose paragraph: no glyph, no key column, no verbatim contract, for what a documentation surface says ABOUT the heading above it. Empty input emits nothing; buffered-`Doc` only.
+- `status_simple(role, subject)` — a concise status line. `Role::{Ok, Info, Warn, Fail, Skipped, Pending, Running, Accent, Secondary}`; `Accent` is "attention without alarm", `Secondary` a "structural pivot / label / identifier". Both are iconless and suppressed at `Verbosity::Quiet` like every non-`Fail` role.
+- `status(role, subject)` — a `StatusBuilder` for `.detail`, `.duration`, `.label(role, text)`, `.qualifier(text)`, `.drift(expected, actual)`, `.with_data`. `.qualifier` composes `subject: qualifier` as THREE slots — a colon that is part of the DATA (a path, a URL) is not a qualifier. `.drift` is the ONE canonical `want: X, have: Y` spelling. `doc::StatusFields` carries both for the buffered path, via `status_with`.
+- `hint(text)` / `note(text)` — supplementary output.
+- `deprecation(text)` — the SPELLING the user reached for is on the way out. Always visible, stderr-only so the `-o` channel stays pure; keeps the top-level structural assert, being drained at the command boundary.
+- `alert(text)` — a persistent advisory about what THIS run will actually do. Separate from `deprecation` because a deprecation is about spelling and an alert about effect, and not a substitute for `status_simple(Role::Warn, …)`, correctly suppressed under `-o json`. The ONE always-visible emit correct at any depth.
+- `table(table)` — tabular data.
+- `section(name)` — a `SectionGuard` (drop ends it) carrying `bullet`/`kv`/`kv_block`/`command_list`/`hint`/`note`/`table`/`code_block` plus `.diff` and `.syntax_highlight`. A nested plain section paints its heading `theme.secondary`, so nesting reads from styling alone; a first-level or OWNER section is unaffected.
+- `section_owner(&OwnerLabel)` / `section_owner_or_collapse(&OwnerLabel)` — a top-level section headed by a styled owner token; `_or_collapse` leaves no trace when nothing renders inside it. `SectionGuard` carries the nested pair, `Doc::section_owner` / `subsection_owner` the buffered ones. A `Doc` belonging wholly to one owner opens with `Doc::section_owner` — the owner is never the `Doc`'s heading.
+- `diff(old, new)` / `syntax_highlight(code, lang)` — nest at whatever depth is ambient, flushing any pending section header first like every other emission.
+- `spinner(label)` — a `Spinner` with `.finish_ok` / `.finish_fail(...).detail(e)` / `.set_message`. Abandoned without an explicit finish, `Drop` settles it `Role::Skipped` + `" (interrupted)"`, the one honest record. A spinner borrowed from a `LiveRow` is exempt: the row settles its own line.
+- `narrate(running, |sp| …)` — the settle-safe wrapper, for a long wait whose failure NOBODY ELSE reports. Success retires the bar SILENTLY, so a successful run's permanent output is byte-identical and every golden stays a golden; failure settles `Role::Fail` at whatever step `set_message` last named, with no detail. **Reach for this instead of a hand-rolled spinner + match at any site whose body can `?`.** A wait inside a command deriving a Quiet printer is narrated through the OWNING printer.
+- `narrate_silent(running, |sp| …)` — the same for a wait whose OUTCOME LINE belongs to somebody else. The criterion is who else SAYS the failure, never how the `Err` travels — propagating to the CLI boundary is NOT what makes a wait a `narrate` site. `Role::Fail` survives `Verbosity::Quiet`, so every duplicate this prevents would land beside a `-o json` payload carrying the same fact.
+- `Spinner::finish_silent()` — retire a bar printing nothing. Reach for it directly only where neither wrapper fits: an `output/` internal, or a site with no printer to call a wrapper on.
+- `progress_bar(...)` — `.inc`, `.set_position`, `.set_message`, `.finish(self)`, and `Drop` parity with `Spinner`. A loop driving one bar across many items routes its fallible work through an inner fn and calls `.finish()` on EVERY exit path.
+- `live_row_at(depth)` / `live_row_after(depth, &row)` / `live_row_first(depth)` — a `LiveRow`, ONE line of the live region the CALLER owns and rewrites in place (`set_action_status`, `window`, `set_owner_label`, `set_note`, `retire`). `retire` ERASES rather than commits; the permanent line goes separately into a `SectionGuard`. `live_row_budget()` reports how many ROWS fit before truncation from the FOOT (a row count, not the terminal LINES a soft-wrapped or child-tailing row can paint — `LIVE_REGION_HEADROOM` covers that slack) — spend it on rows with nothing left to say, and NEVER retire a running row.
+- `run(cmd, fmt)` — buffered command execution with live output.
+- `data_line(text)` — a raw structured-output line.
+- `emit(doc)` — `Doc` emit (for `-o json|yaml|jsonpath|template`).
+
+## Sanitizing text cfgd did not author
+
+`cursor_safe` (`output/mod.rs`) is the ONE renderer FOLD, and it covers every slot above that carries caller text. **A call site echoing a gateway field, a remote source's description or a tool's captured stderr through one of those slots does NOT sanitize it by hand.**
+
+Two other policies exist and are not interchangeable with it: a PRE-APPROVAL surface ESCAPES (the fold strips ANSI, and a screen the operator approves from has to SHOW it), and `prompt_text`'s `default` STRIPS (a default is returned AS the answer). Every payload — a `plain()` form, a persisted string, `-o json`, `data_line` — stays byte-exact.
+
+**The full routed-slot inventory, the escape/strip surfaces and the five terminal writers that take no policy are in `output/mod.rs`'s module doc.** A new slot rendering caller text routes through `cursor_safe` and is added there.
+
+**An error `Doc` under a selector format always echoes to stderr first.** `emit_structured` (`output/structured.rs`) routes `-o name` / `jsonpath=` / `template[-file]=` through the reader's SUCCESS-shaped selector, which an error doc's shape almost never satisfies — so a non-matching selector printed nothing anywhere, leaving only the exit code. `doc.error_message()` now reaches `sink_stderr` unconditionally before the selector runs, and the selector may separately match a field, so a selector format can render an error twice. Kept in sync with `docs/cli-reference.md`'s "Error output".
 
 **Every module receives a `&Printer` (or `Arc<Printer>` in async contexts). This is non-negotiable.**
 
-**Collapse a captured error before it becomes a status subject.** When formatting an `io::Error`, `CfgdError`, or command stderr into a `status[_simple]` subject or detail, route through `cfgd_core::output::collapse_to_subject_line(err)`: an error's own line breaks are an artifact of how it was captured, not structure the reader wants, and a one-line subject is what scans.
+## Collapsing an error or a script body into a subject
 
-A subject that is *genuinely* multi-line — a brew caveat is two sentences — may carry `\n`. The renderer lays those out as continuations of the status line, indented to the marker column by `renderer::wrap::wrap_body`, so they read as part of the line they belong to rather than as unmarked lines at column 0. Never hand-roll that indent at a call site; the renderer is the single layout authority and a `\n` continuation must look identical to a soft-wrapped one.
+**Collapse a captured error before it becomes a status subject.** Route an `io::Error`, `CfgdError` or command stderr through `cfgd_core::output::collapse_to_subject_line(err)`: an error's line breaks are an artifact of capture, not structure, and a one-line subject is what scans.
 
-For a user-authored script body (a `run:` entry, an `--add-*-script`/`--remove-*-script` CLI value) landing in a status subject, route through `cfgd_core::output::condense_script_label(body)` instead: it trims each line, drops empties, and truncates the first line to 80 chars with `…` (or appends ` …` if more lines follow) — a lossy, DISPLAY-only summary appropriate for "Added script: …" / "Removed script: …" confirmations. Never use it for:
-- **persisted / machine-matched strings** (a resource-id, journal `resource_id`, `ActionResult.description`, a `-o json` payload field) — these must stay byte-identical to the raw body so state-matching and `-o json` consumers never see a reshaped id
-- **pre-approval security-review contexts** (a module `add`/`upgrade` diff, `print_module_review_summary`) — the user must see the FULL script before approving it runs on their machine; render via `bullet()` for a single logical line or `code_block()` for a multi-line body instead of truncating
-- **"not found" echoes of a user-typed search argument** — prefer `collapse_to_subject_line` there too, since hiding the tail of the exact string that failed to match defeats the point of the error
+A subject that is *genuinely* multi-line — a brew caveat is two sentences — may carry `\n`; the renderer lays those out as continuations indented to the marker column. Never hand-roll that indent: a `\n` continuation must look identical to a soft-wrapped one.
 
-When you are holding an `Action` and its already-formatted description (apply/plan/daemon display paths), call `cfgd_core::reconciler::condense_action_desc_for_display(action, desc)` rather than deciding per call site: it applies `condense_script_label` to exactly the two arms that embed a raw script body and passes everything else through. Cataloged in `shared-utils.md`.
+For a user-authored script body landing in a subject, route through `cfgd_core::output::condense_script_label(body)` instead — a lossy, DISPLAY-only summary. Never use it for:
 
-Forbidden outside the `output/` module itself:
+- **persisted / machine-matched strings** (a resource-id, journal `resource_id`, `ActionResult.description`, a `-o json` field) — they stay byte-identical to the raw body.
+- **pre-approval security-review contexts** (a module `add`/`upgrade` diff, `print_module_review_summary`) — the user must see the FULL script before approving it. Use `bullet()` or `code_block()`.
+- **"not found" echoes of a user-typed search argument** — prefer `collapse_to_subject_line`, since hiding the tail of the string that failed to match defeats the error.
+
+Holding an `Action` and its already-formatted description, call `cfgd_core::reconciler::condense_action_desc_for_display(action, desc)` rather than deciding per call site.
+
+## Forbidden outside the `output/` module
+
 - `println!`, `eprintln!`, `print!`, `eprint!`
 - `console::*` direct use
-- `indicatif::ProgressBar::new` or `MultiProgress::new` directly
-- `log::*` macros — use `tracing::*` instead
-- The following method names are reserved-banned (the audit gate in `.claude/scripts/audit.sh` rejects them outside `output/` itself): `success`, `warning`, `info`, `error`, `header`, `subheader`, `key_value`, `newline`, `plan_phase`, `stdout_line`.
+- `indicatif::ProgressBar::new` / `MultiProgress::new` directly
+- `log::*` macros — use `tracing::*`
+- These method names are reserved-banned (rejected by `.claude/scripts/audit.sh` outside `output/`): `success`, `warning`, `info`, `error`, `header`, `subheader`, `key_value`, `newline`, `plan_phase`, `stdout_line`.
 
 See Hard Rule #1 in `hard-rules.md`.
 
 ## Provider narration goes to the note sink, never to the printer
 
-A `PackageManager` or `SystemConfigurator` executes UNDER an action line the reconciler
-settles from the plan. A `status_simple` called from inside one of them therefore lands
-*above* the line describing the same work, outside the phase tree. Both traits carry a
-context whose `report` is the narration channel:
+A `PackageManager` or `SystemConfigurator` executes UNDER an action line the reconciler settles from the plan, so a `status_simple` from inside one lands *above* the line describing the same work, outside the phase tree. Both traits carry a context whose `report` is the narration channel:
 
 ```rust
 // PackageManager — the tag names the speaker, because the action line names the package
@@ -84,10 +83,7 @@ cx.report(Role::Warn, self.name(), "brew: run `brew link --force`");
 cx.report(Role::Info, format!("systemctl {action} {name}"));
 ```
 
-Every note reported this way collects into the run's `ApplyResult.caveats` — grouped by
-the `kind:name` owner that produced it — and renders exactly once, as a single closing
-`Caveats` section printed after the run's summary line, instead of attached under the
-action that produced it:
+Every note collects into the run's `ApplyResult.caveats`, grouped by the `kind:name` owner that produced it, and renders once as a closing `Caveats` section:
 
 ```
 ✓ set sysctl.net.ipv4.ip_forward: 0 → 1     ← the reconciler's line, from the plan
@@ -100,107 +96,46 @@ Caveats
     ⊙ sysctl -w net.ipv4.ip_forward=1
 ```
 
-Both land in one `NoteSink` and route through one rule (`NoteSink::report_tagged`), then
-through one collection point — `Reconciler::settle_action`, called from both the
-concurrent-lane dispatch and the serial dispatch loop, is the ONE place a settled action's
-notes are folded into the run's `caveats` collector via `collect_caveats` — and one render
-path, `cfgd_core::reconciler::render_caveats` (opened through `Printer::section_caveats`,
-which composes the "Caveats" heading through `output::AccentHeading` (`pub(super)`,
-`output/accent_heading.rs`) instead of hand-styling a string — `theme.accent`, unstyled
-of bold, since bold never pairs with a colour-bearing slot. `AccentHeading` deliberately
-does NOT route through `PhaseLabel`: "Caveats" is not a phase, and `PhaseLabel` would
-render `Phase: Caveats`). `cli::plan_ops::print_caveats` is the one assembler for a real `cfgd apply`
-(it also folds the `cfgd:env` re-source reminder into that owner's group, always last); a
-per-configurator snapshot bridge is the only other caller. Never grow a second drain or a
-second render path. A context nobody drains (`SystemContext::new`, `PackageContext::new`,
-`NoteSink::discarded()`) settles the report on the printer instead, so a standalone caller
-loses nothing.
+Both land in one `NoteSink` and route through one rule (`NoteSink::report_tagged`), one collection point (`Reconciler::settle_action`, called from both dispatch paths) and one render path (`reconciler::render_caveats`, opened through `Printer::section_caveats`, whose heading composes through `output::AccentHeading` rather than a hand-styled string). `cli::plan_ops::print_caveats` is the one assembler for a real `cfgd apply`; a snapshot bridge is the only other caller. **Never grow a second drain or a second render path.** A context nobody drains settles on the printer, so a standalone caller loses nothing.
 
-`SystemContext`'s fields are private: `report` and `run_silent` are the whole surface, so
-`cx.printer.status_simple` is not expressible rather than merely discouraged. Never add a
-`printer()` accessor. A snapshot bridge that drives a configurator directly renders through
-`render_caveats` after its own closing summary, so its golden pins the real run-wide shape
-production emits rather than one the test assembled.
+`SystemContext`'s fields are private: `report` and `run_silent` are the whole surface, so `cx.printer.status_simple` is not expressible rather than merely discouraged. **Never add a `printer()` accessor.** A snapshot bridge driving a configurator directly renders through `render_caveats` after its own closing summary, so its golden pins the real run-wide shape.
 
 ## Source-constraint mode (every `compose_with_sources` call site)
 
-**`ConstraintMode::Report` is for read paths; every path that mutates the machine composes in `Enforce`.** Decide on what the command *does*, not on what it reads: `backup run` reads config like `status` but executes hooks and writes snapshots, so it is `Enforce`. `Report` records a source violation and continues (the read still has to render); `Enforce` aborts on the first one.
+**`ConstraintMode::Report` is for read paths; every path that mutates the machine composes in `Enforce`.** Decide on what the command *does*, not on what it reads: `backup run` reads config like `status` but executes hooks and writes snapshots, so it is `Enforce`. `Report` records a violation and continues; `Enforce` aborts on the first one.
 
 | Mode | Commands |
 |---|---|
-| `Report` | `status`, `diff`, `verify`, `compliance *`, `backup list`, `checkin`, `decide` — anything whose whole job is to describe state (`decide`'s composition is a classification READ; its write is a decision-store row, never a change to the machine, and `Enforce` would disable answering exactly when a source violates a constraint) |
+| `Report` | `status`, `diff`, `verify`, `compliance *`, `backup list`, `checkin`, `decide` — anything whose whole job is to describe state (`decide`'s composition is a classification READ; its write is a decision-store row, and `Enforce` would disable answering exactly when a source violates a constraint) |
 | `Enforce` | `apply`, `plan`, `daemon`, `backup run`, `backup restore`, `source add` — anything that runs a script, writes a file, or takes a snapshot |
 
-`Report` is not "skip the check": `compose` still warns per violation, and any script surface a
-read path would EXECUTE is marked unrunnable in the composed spec (`composition::block_barred_scripts`
-poisons a barred source's `patch.script`, so evaluating the file degrades instead of running it).
-Adding a script surface that a `Report`-mode command evaluates means extending that marking too —
-a surface only `Enforce` reaches needs nothing.
+`Report` is not "skip the check": `compose` still warns per violation, and any script surface a read path would EXECUTE is marked unrunnable in the composed spec (`composition::block_barred_scripts` poisons a barred source's `patch.script`, so evaluating the file degrades instead of running it). A new script surface a `Report`-mode command evaluates extends that marking too.
 
 ## Structured-output coverage
 
-Every `cmd_*` function in `crates/cfgd/src/cli/` must have a row in
-`.claude/rules/structured-output-coverage.md`; `.claude/scripts/audit.sh`
-fails when one is missing.
+Every `cmd_*` function in `crates/cfgd/src/cli/` must have a row in `.claude/rules/structured-output-coverage.md`; `.claude/scripts/audit.sh` fails when one is missing.
 
 ## No `tracing::info!`/`warn!`/`error!` in the config/module/source domains
 
-Banned anywhere under `crates/cfgd-core/src/config/`,
-`crates/cfgd-core/src/modules/`, or `crates/cfgd-core/src/sources/` — the three
-domains whose whole job is turning user-authored YAML/TOML into cfgd's typed
-config. `tracing::info!`/`warn!`/`error!` writes to a channel that's invisible
-without `RUST_LOG` set (and `info!` is the least visible of the three — the cfgd
-binary's own default filter is `warn`); a legacy-key deprecation, an ambiguous-profile notice,
-or a malformed-manifest warning routed there is an advisory the user never
-sees, the exact bug `warn_on_legacy_theme_keys` shipped with before it was
-rerouted (see `parse::REMOVED_THEME_KEYS` / `RENAMED_THEME_KEYS`).
+Banned anywhere under `crates/cfgd-core/src/{config,modules,sources}/` — the three domains turning user-authored YAML/TOML into typed config. Those macros write to a channel invisible without `RUST_LOG` (`info!` least of all, the binary's default filter being `warn`), so a legacy-key deprecation routed there is an advisory the user never sees.
 
-Use instead: collect the message into a `Vec<String>` the caller can drain
-through `printer.deprecation(text)` (or `printer.alert(text)` for a run-affecting
-notice) at the command boundary that actually owns a terminal — these core
-functions have many callers, none of which hold a `Printer`. `parse_config`'s
-`CfgdConfig.deprecations` field (`#[serde(skip)]`, drained once per command via
-`crates/cfgd/src/cli/helpers.rs`) is the working example to extend, not to
-reinvent per call site.
+Use instead: collect the message into a `Vec<String>` the caller drains through `printer.deprecation(text)` — or `printer.alert(text)` for a run-affecting notice — at the command boundary that owns a terminal. `CfgdConfig.deprecations` is the working example to extend, not to reinvent per call site.
 
-`.claude/scripts/audit.sh` enforces this on the DOMAIN — every non-test `.rs`
-under those three directories — rather than on a function-name shape. An earlier
-revision anchored on a `fn parse_*` / `fn load_*` signature and walked the
-function's brace span; it selected the wrong set, because `warn_on_legacy_theme_keys`
-is named neither, and neither is any advisory helper a parse function calls
-(`check_yaml_anchor_limit`, `read_manifest`, `validate_source_name`, …). The
-domain anchor covers all of them and needs no span walk, so no string literal or
-body-less trait signature can end a scan early.
+The gate enforces this on the DOMAIN — every non-test `.rs` under those directories — never on a function-name shape: an earlier revision anchored on `fn parse_*` / `fn load_*` and missed `warn_on_legacy_theme_keys` and every advisory helper a parse function calls.
 
-Escape hatch for a genuinely internal diagnostic (one no interactive user is
-meant to read) — mirrors `native-ok:` / `spawn-blocking-ok:` — mark the call
-line or the comment line directly above it:
+Escape hatch for a genuinely internal diagnostic, mirroring `native-ok:` / `spawn-blocking-ok:` — mark the call line or the comment line directly above it:
 
 ```rust
 tracing::warn!("cache miss for {}", key); // tracing-ok: internal cache-timing diagnostic, not user-facing
 ```
 
-The marker counts only inside a comment, only with a reason written after it,
-and is inherited only from a comment line — a call cannot exempt itself by
-naming the hatch in its own message string, and a marked call does not exempt
-the unmarked call beneath it.
+The marker counts only inside a comment, only with a reason after it, and is inherited only from a comment line — a call cannot exempt itself by naming the hatch in its own message string, and a marked call does not exempt the unmarked call beneath it.
 
-**What disqualifies a message from the hatch**, whatever the marker says: a
-message describing the user's own config, a key they wrote, a migration they
-have to perform, or anything that changes what they should do next is
-user-facing. "Internal" means a diagnostic whose entire audience is someone
-already reading `RUST_LOG` output — cache timings, retry counts, protocol
-traces.
+**What disqualifies a message from the hatch**, whatever the marker says: a message describing the user's own config, a key they wrote, a migration they must perform, or anything that changes what they should do next. "Internal" means a diagnostic whose entire audience is someone already reading `RUST_LOG`.
 
 ## A tracing event never restates a Printer line
 
-**Whatever the domain: if a `Printer` already says it on this path, the tracing
-event may not say it again.** The duplicate is not merely noise — it is a second
-copy of the same sentence written to the ONE stream the live region repaints,
-and any write there that does not go through the region strands the last paint
-of whatever bar is on screen. `cfgd module push` printed its result three times
-that way (spinner label, `info!`, `finish_ok` + `Digest` kv) and left the
-spinner frozen on the terminal doing it.
+**If a `Printer` already says it on this path, the tracing event may not say it again.** The duplicate is a second copy of the same sentence on the ONE stream the live region repaints, and any write there bypassing the region strands the last paint of whatever bar is on screen. `cfgd module push` printed its result three times that way and froze its spinner doing it.
 
 ```rust
 // WRONG — the caller already prints "Signed artifact"
@@ -210,92 +145,24 @@ tracing::info!(reference = artifact_ref, "artifact signed with cosign");
 tracing::debug!(reference = artifact_ref, "artifact signed with cosign");
 ```
 
-Demote to `debug!` when the event carries a field the printed line does not (a
-digest, a pid, a count) — that keeps it for whoever is reading `RUST_LOG` and
-takes it out of everyone else's terminal. Delete it when it carries nothing the
-printed line does not.
+Demote to `debug!` when the event carries a field the printed line does not; delete it when it carries nothing extra. A non-duplicate stays at its own level, carrying the `// tracing-ok: <why>` marker inside the banned domains.
 
-An event that is NOT a duplicate — a genuinely internal diagnostic, an event
-the daemon's journal is the only reader of — stays at the level it belongs at
-and carries the `// tracing-ok: <why>` marker inside the banned domains.
+**What the audit gate enforces, exactly.** `tracing::info!` is rejected in every non-test `.rs` under `crates/cfgd-core/src` and `crates/cfgd/src` — the whole of both crates — with one exemption and one hatch:
 
-**What the audit gate enforces, exactly.** `tracing::info!` is rejected in every
-non-test `.rs` under `crates/cfgd-core/src` and `crates/cfgd/src` — the whole of
-both crates, not the three config/module/source domains above — with one
-exemption and one hatch:
+- **`daemon/` is exempt at any depth in either crate.** There the log IS the output: a service under systemd/launchd prints its ticks to journald through this channel and no other, which is why `cfgd daemon run` keeps `info` as its tracing floor.
+- **The `// tracing-ok: <why>` hatch applies**, read exactly as the domain gate's is.
 
-- **`daemon/` is exempt at any depth in either crate.** There the log IS the
-  output: a service under systemd/launchd prints its ticks to journald through
-  this channel and no other, which is why `cfgd daemon run` keeps `info` as its
-  tracing floor (`main.rs::runs_reconcile_loop`).
-- **The `// tracing-ok: <why>` hatch applies**, read the same way as the domain
-  gate's: only inside a comment, only with a reason after it, inherited only
-  from the comment line directly above the call, and never from the call's own
-  message string.
-
-`warn!` and `error!` are NOT part of this gate — outside the three domains above
-they stay legal, because the binary's default filter is `warn` and those levels
-reach the user. `info!` is the level nobody sees without `RUST_LOG`, so an
-`info!` outside the daemon is a line nobody reads AND a strand risk when they
-do.
+`warn!` and `error!` are NOT part of this gate — outside the three domains above they reach the user, the default filter being `warn`. `info!` outside the daemon is a line nobody reads AND a strand risk when they do.
 
 ## The two mechanisms that keep tracing off the live region
 
-One is the writer, in `output/`; the other is the default filter, which lives
-where the flags are parsed — `crates/cfgd/src/main.rs`. Nothing outside `output/`
-may build a `MakeWriter` of its own, and nothing but `main.rs` picks a default
-filter.
+One is the writer, in `output/`; the other is the default filter, which lives where the flags are parsed. Nothing outside `output/` may build a `MakeWriter` of its own, and nothing but `main.rs` picks a default filter.
 
-- **`output::LiveTracingWriter`** (`output/tracing_writer.rs`) — the `MakeWriter`
-  the cfgd binary installs on its subscriber. Every event is written through the
-  printer's `MultiProgress`, so it clears the bars, lands, and lets them repaint
-  beneath it. `main.rs` builds one before the subscriber (the subscriber has to
-  be live for anything the printer's construction logs) and calls `attach(&printer)`
-  once the process printer exists; an unattached writer, and one attached to a
-  printer with no live region, writes plain stderr. It is the writer every
-  subscriber in the workspace takes, and the
-  `every_subscriber_writes_through_a_folding_writer` fence
-  (`output/tests/fences.rs`) is what keeps that true. Its predicate is POSITIVE:
-  it asks whether a wiring routes through this writer and refuses everything
-  else, rather than listing the streams to refuse — a refusal list grown one
-  name at a time passed `.with_writer(std::io::stdout)`, which is exactly the
-  writer `fmt::Layer::default` takes. Three offenses fall out of that one
-  question: a writer that is not this one (judged wherever a `with_writer(`
-  stands, so an unrecognized construction spelling is still caught by its
-  argument), a construction that names no writer at all (every `fmt` spelling
-  the crate offers, read across the lines rustfmt splits a chain onto), and a
-  folding wiring that left `.with_ansi(false)` off. A binding is resolved
-  through its INITIALIZER, not its name, so an identifier called
-  `tracing_writer` holding something else is refused. A writer that is no
-  terminal (a log file, a test capture) or a formatter whose own serializer is
-  the sanitizer takes the marker hatch every sibling gate carries:
-  `// unfolded-writer-ok: <why>` on the construction line, the writer's own
-  line, or the line above either, reason required.
-- **`crates/cfgd/src/main.rs::tracing_filter_for(quiet, verbose, daemon)`** — the
-  default filter. A command defaults to `warn`; the flags keep the meanings they
-  document (`-v` = `debug`, `-vv` = `trace`) and `--quiet` is `error`, so only
-  the no-flag default moved. The RECONCILE LOOP keeps `info` as its floor —
-  `cfgd daemon` (bare), `cfgd daemon run` and the SCM-launched `cfgd daemon
-  service`, selected by `main.rs::runs_reconcile_loop` — because there the log
-  IS the output: a service prints its ticks to journald through this channel and
-  no other. `daemon install` / `uninstall` / `status` are ordinary one-shot
-  commands and keep the `warn` default, since they report through the `Printer`.
-  `RUST_LOG` outranks all of it.
+- **`output::LiveTracingWriter`** (`output/tracing_writer.rs`) — the `MakeWriter` the binary installs. Every event is written through the printer's `MultiProgress`, so it clears the bars, lands, and lets them repaint beneath it. `main.rs` builds one before the subscriber and `attach(&printer)`s once the process printer exists; unattached, it writes plain stderr. The `every_subscriber_writes_through_a_folding_writer` fence (`output/tests/fences.rs`) keeps it the writer every subscriber takes, with a POSITIVE predicate — a refusal list grown one name at a time had passed `.with_writer(std::io::stdout)`, exactly what `fmt::Layer::default` takes. It catches a writer that is not this one (judged at its argument), a construction naming no writer, and a folding wiring missing `.with_ansi(false)`; a binding resolves through its INITIALIZER, never its name. A non-terminal writer, or a formatter whose serializer is its own sanitizer, takes the `// unfolded-writer-ok: <why>` marker.
+- **`crates/cfgd/src/main.rs::tracing_filter_for(quiet, verbose, daemon)`** — the default filter: `warn` by default, `-v` debug, `-vv` trace, `--quiet` error. The RECONCILE LOOP keeps `info` as its floor (`cfgd daemon` bare, `daemon run`, the SCM-launched `daemon service`, selected by `runs_reconcile_loop`), the log being its output. `daemon install` / `uninstall` / `status` are one-shot commands reporting through the `Printer` and keep `warn`. `RUST_LOG` outranks all of it.
 
 ## `LiveBarState` is shared by every renderer writing one live region
 
-`renderer::LiveBarState` (the live-bar count plus the broken-terminal latch) is
-held in an `Arc` and carried through `Printer::build_derived`, because a derived
-printer writes the SAME `MultiProgress` and the SAME sinks as its parent. A
-derived renderer counting its own bars starts at zero, answers the routing gate
-"no bar is live" while the parent's spinner is painting, and raw-writes over it
-— which is what froze `cfgd sync`'s spinner, since every quiet library sink
-(`cli/sync.rs`, `cli/compliance.rs`, `cli/source/show.rs`, `cli/daemon.rs`,
-`cli/module/registry.rs`'s `null_lib_printer`, `daemon/sync.rs`) is a derived
-printer whose `Fail` statuses, `alert()`s and
-`deprecation()`s survive `Verbosity::Quiet`. Never mint a fresh `LiveBarState`
-for a renderer that shares an existing region.
+`renderer::LiveBarState` (the live-bar count plus the broken-terminal latch) is held in an `Arc` and carried through `Printer::build_derived`, a derived printer writing the SAME `MultiProgress` and sinks as its parent. A derived renderer counting its own bars starts at zero, answers the routing gate "no bar is live" while the parent's spinner paints, and raw-writes over it — which froze `cfgd sync`'s spinner, every quiet library sink being a derived printer whose `Fail` statuses, `alert()`s and `deprecation()`s survive `Verbosity::Quiet`. **Never mint a fresh `LiveBarState` for a renderer sharing an existing region.**
 
-A claim about a stranded paint is provable on ONE surface only —
-`Printer::for_test_live_terminal`, the emulated screen. See `shared-utils.md`,
-"three live-region capture constructors".
+A claim about a stranded paint is provable on ONE surface only — `Printer::for_test_live_terminal`, the emulated screen (`shared-utils.md`, Test guards).

@@ -252,7 +252,7 @@ pub struct ModuleFileEntry {
 }
 
 /// Validate the `patch` strategy shape of every module file entry
-/// (`spec.files`). See [`validate_file_patch_shape`].
+/// (`spec.files`). See `validate_file_patch_shape`.
 pub fn validate_module_file_entries(entries: &[ModuleFileEntry]) -> Result<()> {
     for entry in entries {
         validate_file_patch_shape(

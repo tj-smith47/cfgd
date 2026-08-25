@@ -114,7 +114,7 @@ impl<'p> StatusBuilder<'p> {
     /// A subject qualifier (`curl: missing`): subject keeps
     /// its role-slot styling untouched, the colon is always `Role::Warn`, the
     /// qualifier text is always `theme.muted`. Composed through
-    /// [`super::renderer::finalize_subject`] at Drop, landing ahead of
+    /// `super::renderer::finalize_subject` at Drop, landing ahead of
     /// `label` in the same at-end-of-subject slot. Not a builder-chained
     /// `StatusLabel` like `label`/`marker`: the styling is fixed, never a
     /// per-call role choice.

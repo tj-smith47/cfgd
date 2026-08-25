@@ -38,7 +38,9 @@ use super::window::OutputWindow;
 
 /// How close to the bottom of the terminal a live region may grow before
 /// indicatif stops drawing the rows at its foot. Two lines for the shell's own
-/// prompt and one for the line the region is drawn under.
+/// prompt and one for the line the region is drawn under, plus slack for a
+/// row painting more terminal lines than it counts as (see
+/// [`super::Printer::live_row_budget`]).
 const LIVE_REGION_HEADROOM: usize = 3;
 
 /// One action line of the phase tree, as the caller that owns the row holds
@@ -316,6 +318,13 @@ impl super::Printer {
     /// recently — the opposite of what a reader needs. A caller that can choose
     /// NOT to draw a row (one describing work that has not started) asks here
     /// first. `0` when there is no live region at all.
+    ///
+    /// This is a ROW count, not a count of the terminal lines indicatif ends
+    /// up painting: a running row tails its child's output below itself, a
+    /// subject may carry `\n` continuations, and either can soft-wrap.
+    /// `LIVE_REGION_HEADROOM` is the slack that covers that difference, so a
+    /// caller keeps its OWN rows inside the budget and does not claim the
+    /// region can never overflow.
     pub(crate) fn live_row_budget(&self) -> usize {
         if !self.live_bars() {
             return 0;

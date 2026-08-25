@@ -41,7 +41,7 @@ pub fn system_resource_key(configurator: &str, key: &str) -> String {
 ///
 /// The ONE statement of the rule, so the two enforcement sites cannot drift
 /// apart in what they detect or in what they say: this crate asserts it in
-/// debug builds through [`debug_assert_system_key_undoubled`], and each
+/// debug builds through `debug_assert_system_key_undoubled`, and each
 /// configurator's diff test asserts it unconditionally against its own fixture
 /// (`cfgd::system::assert_keys_undoubled`).
 pub fn system_key_doubling_error(configurator: &str, key: &str) -> Option<String> {

@@ -1,6 +1,66 @@
 //! Typed-component output system — the sole interface for terminal output
 //! across cfgd. See `.claude/specs/2026-05-14-output-system-redesign-design.md`
 //! for the design.
+//!
+//! # Three sanitation policies for text cfgd did not author
+//!
+//! A module's caveat, a remote's manifest string, a tool's captured stderr: any
+//! of them can carry bytes that repaint the very line describing them. Which
+//! policy a surface takes is decided by what the surface is FOR, and the three
+//! are not interchangeable.
+//!
+//! **FOLD** ([`cursor_safe`]) is the default and covers every renderer slot
+//! carrying caller text: the status subject, qualifier, detail, label, marker
+//! and target path; the always-visible advisory; both halves of a kv row plus
+//! its annotation; both columns of a `command_list`; the bullet, hint, note,
+//! paragraph, code-block line and streamed child line; every table header and
+//! cell; a heading and a section's name and empty-state placeholder; and every
+//! live-region label, which funnels through `spinner.rs`'s composer (that one
+//! folds and then PAINTS, so the fold cannot eat its own coat). Two slots sit
+//! outside the renderer and fold at their own write: `structured.rs`'s human
+//! stderr diagnostic under the selector formats, and
+//! `tracing_writer.rs`'s sink, which folds the whole formatted event on both
+//! destinations and so covers every `warn!`/`error!` site by construction — a
+//! subscriber taking that writer passes `.with_ansi(false)`, since the fold
+//! strips ANSI and telling an `ESC [ 0 m` from an `ESC [ 2 K` would mean a
+//! second policy with its own parser.
+//!
+//! **ESCAPE** ([`crate::escape_control_chars`]) is what a PRE-APPROVAL surface
+//! takes instead, because the fold STRIPS an ANSI sequence and a screen the
+//! operator is approving from has to SHOW it — a value carrying `\x1b[2K` is
+//! approved and then written to disk with those bytes in it. That covers the
+//! module review summary, the permission-change bullets, every prompt message
+//! and `prompt_select`'s option list (`inquire` is a terminal writer no
+//! renderer fold reaches, which is also why that call takes its answer back by
+//! INDEX: the drawn list is escaped while the returned option stays byte-exact,
+//! and matching drawn text against the raw list would miss precisely the option
+//! that carried a control character). The two RAW CONTENT renderers in
+//! `raw.rs` escape per line INSIDE the renderer for the same reason, so no call
+//! site handing them module content sanitizes by hand.
+//!
+//! **STRIP** is the third, and `prompt_text`'s `default` is its only slot: a
+//! default is pre-filled into the editable buffer and handed back AS the
+//! answer, so escaping it would write `\x0d` into the value while leaving it
+//! raw lets a proposal repaint the line offering it. Dropping the character is
+//! the only resolution under which what is DRAWN and what is RETURNED are the
+//! same string.
+//!
+//! The policies compose rather than fight: after escaping there is no ESC byte
+//! left to strip and no control character left to escape, so a later fold is
+//! the identity on it.
+//!
+//! Never folded, and each a decision: every `plain()` form and every persisted
+//! or `-o json` string (a payload stays byte-exact), and `raw.rs`'s `data_line`
+//! (the machine channel). Five terminal writers take no policy at all —
+//! inherited CHILD STDIO (the child owns the terminal and cfgd is not in the
+//! byte path; a PIPED child is sanitized at `window.rs`), clap's own error and
+//! help writer (it echoes the argv the user just typed), `cfgd-csi`'s JSON log
+//! line (its serializer is its sanitizer, and folding it would cost the
+//! consumer a parseable payload), the Windows service's file and Event Log
+//! layers (a log file, not a terminal), and the default panic hook (cfgd
+//! installs none, and no production panic interpolates untrusted text — one
+//! that ever quotes a module- or remote-supplied value escapes at the
+//! interpolation, nothing downstream of `std`'s hook being able to fold it).
 
 pub mod role;
 pub use role::Role;
@@ -194,7 +254,7 @@ pub fn collapse_to_subject_line(err: impl std::fmt::Display) -> String {
 }
 
 /// The ONE spelling of a planned-vs-actual mismatch: `want: <expected>,
-/// have: <actual>`. [`super::status_builder::StatusBuilder::drift`] and
+/// have: <actual>`. [`status_builder::StatusBuilder::drift`] and
 /// `doc::StatusFields::drift` both compose their detail slot through this —
 /// two DISPLAY producers that would otherwise drift apart (two different
 /// spellings were observed: `want {}, have {}` with no colon, and this

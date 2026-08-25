@@ -48,6 +48,19 @@ pub enum ResolvedConflict {
 
 /// Whether a file target is a file cfgd never wrote — it exists on disk and
 /// nothing cfgd recorded accounts for it.
+///
+/// The state store is asked TWO questions, not one: whether a module deployed
+/// this file (`module_file_manifest`, keyed by posix fs key) and only then
+/// whether a profile `spec.files` target claims it (`managed_resources`).
+/// Asking the second alone made a module-deployed file whose link a user
+/// replaced read as a stranger's — the module deploy path records into the
+/// manifest and writes no `managed_resources` row at all, so the file cfgd
+/// itself put there was reserved for adoption.
+///
+/// Three targets are excluded before either lookup: one already holding the
+/// bytes the write would put there (converged is not conflicted), a `Patch`
+/// entry (it merges in place, so every conflict outcome is wrong for it), and a
+/// symlink into the config dir or the module cache (cfgd's own).
 pub fn is_unmanaged_file(target: &Path, config_dir: &Path, state: &StateStore) -> bool {
     if !target.exists() && target.symlink_metadata().is_err() {
         return false;
@@ -236,6 +249,17 @@ pub type ConflictResolver<'a> =
 /// `resolve` answers the policy for one target; a caller with a settled policy
 /// hands back the same answer every time, and the CLI's interactive caller
 /// prompts. It is the whole of what core cannot decide.
+///
+/// Three callers sweep — `apply`, `init`'s apply, and the daemon's tick, the
+/// last only when its drift policy is `Auto`, since a report-only tick
+/// displaces nothing and any sidecar it took would copy a file nobody was about
+/// to overwrite. `cfgd plan` deliberately never sweeps and must not start: a
+/// preview that copied the user's files aside would mutate the disk to describe
+/// what an apply WOULD do.
+///
+/// Nothing here announces a conflict ahead of the run header. The sweep is
+/// silent, the prompt says its own piece, and a settled `Backup` reports itself
+/// on the action row that performs the copy.
 pub fn sweep_unmanaged_file_targets(
     plan: &mut Plan,
     config_dir: &Path,
