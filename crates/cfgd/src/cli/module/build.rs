@@ -62,33 +62,38 @@ pub fn cmd_module_build(
             // opening one here still gives `push_module` (a bare-`&Printer`
             // library call, no `SectionGuard` of its own) somewhere to inherit
             // depth from instead of rendering at depth 0 unconditionally.
+            // The section stays open across the digest and the signing
+            // verdict, matching `cmd_module_push`: all three are what the push
+            // produced, and a row emitted after the guard drops renders at
+            // depth 0 as a second header block.
             let digest = {
-                let _push_sec = printer.section("Push");
+                let push_sec = printer.section("Push");
                 let _inherit = printer.depth_inheritance();
-                cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(printer))
-                    .map_err(|e| {
+                let digest =
+                    cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(printer))
+                        .map_err(|e| {
+                            crate::cli::cli_error(
+                                art,
+                                "push_failed",
+                                cfgd_core::output::collapse_to_subject_line(&e),
+                                serde_json::json!({ "artifact": art, "target": targets[0] }),
+                            )
+                        })?;
+                push_sec.kv("Digest", &digest);
+                if sign {
+                    cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
                         crate::cli::cli_error(
                             art,
-                            "push_failed",
+                            "sign_failed",
                             cfgd_core::output::collapse_to_subject_line(&e),
-                            serde_json::json!({ "artifact": art, "target": targets[0] }),
+                            serde_json::json!({ "artifact": art }),
                         )
-                    })?
+                    })?;
+                    printer.status_simple(Role::Ok, "Signed artifact with cosign");
+                }
+                digest
             };
-            printer.kv("Digest", &digest);
             digest_value = Some(digest);
-
-            if sign {
-                cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
-                    crate::cli::cli_error(
-                        art,
-                        "sign_failed",
-                        cfgd_core::output::collapse_to_subject_line(&e),
-                        serde_json::json!({ "artifact": art }),
-                    )
-                })?;
-                printer.status_simple(Role::Ok, "Signed artifact");
-            }
         }
     } else {
         let mut builds: Vec<(std::path::PathBuf, String)> = Vec::new();
@@ -131,33 +136,33 @@ pub fn cmd_module_build(
             // pairing so the multi-platform push spinner nests instead of
             // rendering at depth 0 regardless of the header above it.
             let digest = {
-                let _push_sec = printer.section("Push");
+                let push_sec = printer.section("Push");
                 let _inherit = printer.depth_inheritance();
-                cfgd_core::oci::push_module_multiplatform(&build_refs, art, Some(printer)).map_err(
-                    |e| {
+                let digest =
+                    cfgd_core::oci::push_module_multiplatform(&build_refs, art, Some(printer))
+                        .map_err(|e| {
+                            crate::cli::cli_error(
+                                art,
+                                "push_failed",
+                                cfgd_core::output::collapse_to_subject_line(&e),
+                                serde_json::json!({ "artifact": art, "targets": &targets }),
+                            )
+                        })?;
+                push_sec.kv("Digest", &digest);
+                if sign {
+                    cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
                         crate::cli::cli_error(
                             art,
-                            "push_failed",
+                            "sign_failed",
                             cfgd_core::output::collapse_to_subject_line(&e),
-                            serde_json::json!({ "artifact": art, "targets": &targets }),
+                            serde_json::json!({ "artifact": art }),
                         )
-                    },
-                )?
+                    })?;
+                    printer.status_simple(Role::Ok, "Signed artifact with cosign");
+                }
+                digest
             };
-            printer.kv("Digest", &digest);
             digest_value = Some(digest);
-
-            if sign {
-                cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
-                    crate::cli::cli_error(
-                        art,
-                        "sign_failed",
-                        cfgd_core::output::collapse_to_subject_line(&e),
-                        serde_json::json!({ "artifact": art }),
-                    )
-                })?;
-                printer.status_simple(Role::Ok, "Signed artifact");
-            }
         }
     }
 

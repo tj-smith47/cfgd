@@ -3,7 +3,7 @@ use std::path::Path;
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::oci::{PackOptions, PackOutcome};
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Printer};
 
 /// Options forwarded from the `cfgd image pack` clap args to the handler.
 pub struct ImagePackOptions<'a> {
@@ -108,37 +108,41 @@ pub fn cmd_image_pack(
     }
     printer.kv_block(header);
 
-    let PackOutcome {
-        digest,
-        platform: platform_str,
-    } = cfgd_core::oci::pack_image(dir, artifact, &pack_opts, Some(printer)).map_err(|e| {
-        crate::cli::cli_error(
-            artifact,
-            "pack_failed",
-            cfgd_core::output::collapse_to_subject_line(&e),
-            serde_json::json!({ "artifact": artifact, "dir": dir.posix().to_string() }),
-        )
-    })?;
+    // One result section over everything the pack produced — the pack verdict,
+    // the digest, the lockfile write and the signing verdict. The header block
+    // above already names the artifact, so a row rendered at depth 0 after it
+    // reads as a second header rather than as a result.
+    let (digest, platform_str, signed, attestation_attached) = {
+        let pack_sec = printer.section("Pack");
+        let _inherit = printer.depth_inheritance();
+        let PackOutcome {
+            digest,
+            platform: platform_str,
+        } = cfgd_core::oci::pack_image(dir, artifact, &pack_opts, Some(printer)).map_err(|e| {
+            crate::cli::cli_error(
+                artifact,
+                "pack_failed",
+                cfgd_core::output::collapse_to_subject_line(&e),
+                serde_json::json!({ "artifact": artifact, "dir": dir.posix().to_string() }),
+            )
+        })?;
+        pack_sec.kv("Digest", &digest);
 
-    printer.kv("Digest", &digest);
+        if let Some(lock_path) = lock {
+            let entry = cfgd_core::config::ImageLockEntry {
+                reference: artifact.to_string(),
+                digest: digest.clone(),
+                pinned: crate::cli::image::lockfile::pinned_reference(artifact, &digest)?,
+                locked_at: cfgd_core::utc_now_iso8601(),
+            };
+            crate::cli::image::lockfile::update_image_lock_entry(Path::new(lock_path), entry)?;
+            pack_sec.kv("Locked", lock_path);
+        }
 
-    let crate::cli::helpers::SignAttestOutcome {
-        signed,
-        attested: attestation_attached,
-    } = crate::cli::helpers::sign_and_attest(printer, artifact, &digest, key, sign, attest)?;
-
-    if let Some(lock_path) = lock {
-        let entry = cfgd_core::config::ImageLockEntry {
-            reference: artifact.to_string(),
-            digest: digest.clone(),
-            pinned: crate::cli::image::lockfile::pinned_reference(artifact, &digest)?,
-            locked_at: cfgd_core::utc_now_iso8601(),
-        };
-        crate::cli::image::lockfile::update_image_lock_entry(Path::new(lock_path), entry)?;
-        printer.kv("Locked", lock_path);
-    }
-
-    printer.status_simple(Role::Ok, format!("Packed and pushed {artifact}"));
+        let crate::cli::helpers::SignAttestOutcome { signed, attested } =
+            crate::cli::helpers::sign_and_attest(printer, artifact, &digest, key, sign, attest)?;
+        (digest, platform_str, signed, attested)
+    };
 
     printer.emit(Doc::new().with_data(serde_json::json!({
         "artifact": artifact,

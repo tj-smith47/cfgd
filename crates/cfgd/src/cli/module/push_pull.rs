@@ -52,25 +52,28 @@ pub fn cmd_module_push(
     // with no section open still resolves to depth 0. `push_module` keeps its
     // `&Printer` signature (it has non-CLI callers too), so the section is
     // opened and scoped here rather than threaded into the library call.
-    let digest = {
-        let _push_sec = printer.section("Push");
+    //
+    // The section stays open across the digest and the signing verdict: all
+    // three are what the push produced, and a `Digest` row emitted after the
+    // guard drops renders at depth 0, reading as a second header block for a
+    // command that already has one.
+    let (digest, signed, attestation_attached) = {
+        let push_sec = printer.section("Push");
         let _inherit = printer.depth_inheritance();
-        cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer)).map_err(|e| {
-            crate::cli::cli_error(
-                artifact,
-                "push_failed",
-                e.to_string(),
-                serde_json::json!({ "artifact": artifact, "dir": dir, "platform": platform }),
-            )
-        })?
+        let digest = cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer))
+            .map_err(|e| {
+                crate::cli::cli_error(
+                    artifact,
+                    "push_failed",
+                    e.to_string(),
+                    serde_json::json!({ "artifact": artifact, "dir": dir, "platform": platform }),
+                )
+            })?;
+        push_sec.kv("Digest", &digest);
+        let crate::cli::helpers::SignAttestOutcome { signed, attested } =
+            crate::cli::helpers::sign_and_attest(printer, artifact, &digest, key, sign, attest)?;
+        (digest, signed, attested)
     };
-
-    printer.kv("Digest", &digest);
-
-    let crate::cli::helpers::SignAttestOutcome {
-        signed,
-        attested: attestation_attached,
-    } = crate::cli::helpers::sign_and_attest(printer, artifact, &digest, key, sign, attest)?;
 
     let mut applied_name: Option<String> = None;
     if apply {
@@ -383,31 +386,10 @@ pub fn cmd_module_pull(
     printer.heading("Pull Module");
     printer.kv_block([("Artifact", artifact_ref), ("Output", output)]);
 
-    if require_signature {
-        cfgd_core::oci::verify_signature(artifact_ref, &verify_opts).map_err(|e| {
-            crate::cli::cli_error(
-                artifact_ref,
-                "verify_failed",
-                e.to_string(),
-                serde_json::json!({ "artifact": artifact_ref, "step": "signature" }),
-            )
-        })?;
-        printer.status_simple(Role::Ok, "Signature verified");
-    }
-
-    if verify_attestation {
-        cfgd_core::oci::verify_attestation(artifact_ref, "slsaprovenance1", &verify_opts).map_err(
-            |e| {
-                crate::cli::cli_error(
-                    artifact_ref,
-                    "verify_failed",
-                    e.to_string(),
-                    serde_json::json!({ "artifact": artifact_ref, "step": "attestation" }),
-                )
-            },
-        )?;
-        printer.status_simple(Role::Ok, "SLSA provenance attestation verified");
-    }
+    let mut module_name: Option<String> = None;
+    let mut module_description: Option<String> = None;
+    let mut package_count: Option<usize> = None;
+    let mut file_count: Option<usize> = None;
 
     // Same shape as `cmd_module_push`'s section around `push_module`: the kv
     // block above nests one level deeper than depth 0 (the
@@ -416,10 +398,40 @@ pub fn cmd_module_pull(
     // match it — a bare `depth_inheritance()` guard with no section open
     // still resolves to depth 0. `pull_module` keeps its `&Printer`
     // signature (it has non-CLI callers too), so the section is opened and
-    // scoped here rather than threaded into the library call.
+    // scoped here rather than threaded into the library call. Every verdict
+    // the pull produced — the verifications it gated on, the pull itself, and
+    // what the pulled module turned out to contain — belongs inside it: a row
+    // emitted after the guard drops renders at depth 0 and reads as a second
+    // header block.
     {
-        let _pull_sec = printer.section("Pull");
+        let pull_sec = printer.section("Pull");
         let _inherit = printer.depth_inheritance();
+
+        if require_signature {
+            cfgd_core::oci::verify_signature(artifact_ref, &verify_opts).map_err(|e| {
+                crate::cli::cli_error(
+                    artifact_ref,
+                    "verify_failed",
+                    e.to_string(),
+                    serde_json::json!({ "artifact": artifact_ref, "step": "signature" }),
+                )
+            })?;
+            printer.status_simple(Role::Ok, "Signature verified");
+        }
+
+        if verify_attestation {
+            cfgd_core::oci::verify_attestation(artifact_ref, "slsaprovenance1", &verify_opts)
+                .map_err(|e| {
+                    crate::cli::cli_error(
+                        artifact_ref,
+                        "verify_failed",
+                        e.to_string(),
+                        serde_json::json!({ "artifact": artifact_ref, "step": "attestation" }),
+                    )
+                })?;
+            printer.status_simple(Role::Ok, "SLSA provenance attestation verified");
+        }
+
         cfgd_core::oci::pull_module(
             artifact_ref,
             output_path,
@@ -434,28 +446,22 @@ pub fn cmd_module_pull(
                 serde_json::json!({ "artifact": artifact_ref, "output": output }),
             )
         })?;
-    }
 
-    printer.status_simple(Role::Ok, format!("Pulled {artifact_ref} to {output}"));
-
-    let mut module_name: Option<String> = None;
-    let mut module_description: Option<String> = None;
-    let mut package_count: Option<usize> = None;
-    let mut file_count: Option<usize> = None;
-    if output_path.join("module.yaml").exists() {
-        let contents = std::fs::read_to_string(output_path.join("module.yaml"))?;
-        if let Ok(doc) = cfgd_core::config::parse_module(&contents) {
-            let mut pairs = vec![("Module".to_string(), doc.metadata.name.clone())];
-            if let Some(desc) = &doc.metadata.description {
-                pairs.push(("Description".to_string(), desc.clone()));
+        if output_path.join("module.yaml").exists() {
+            let contents = std::fs::read_to_string(output_path.join("module.yaml"))?;
+            if let Ok(doc) = cfgd_core::config::parse_module(&contents) {
+                let mut pairs = vec![("Module".to_string(), doc.metadata.name.clone())];
+                if let Some(desc) = &doc.metadata.description {
+                    pairs.push(("Description".to_string(), desc.clone()));
+                }
+                pairs.push(("Packages".to_string(), doc.spec.packages.len().to_string()));
+                pairs.push(("Files".to_string(), doc.spec.files.len().to_string()));
+                pull_sec.kv_block(pairs);
+                module_name = Some(doc.metadata.name.clone());
+                module_description = doc.metadata.description.clone();
+                package_count = Some(doc.spec.packages.len());
+                file_count = Some(doc.spec.files.len());
             }
-            pairs.push(("Packages".to_string(), doc.spec.packages.len().to_string()));
-            pairs.push(("Files".to_string(), doc.spec.files.len().to_string()));
-            printer.kv_block(pairs);
-            module_name = Some(doc.metadata.name.clone());
-            module_description = doc.metadata.description.clone();
-            package_count = Some(doc.spec.packages.len());
-            file_count = Some(doc.spec.files.len());
         }
     }
 
@@ -846,7 +852,7 @@ mod tests {
             drop(printer);
 
             let output = cfgd_core::test_helpers::captured_text(&buf);
-            crate::cli::test_support::assert_nests_under(&output, "Push", "Pushed module to");
+            crate::cli::test_support::assert_nests_under(&output, "Push", "Pushed module");
         }
 
         #[test]
@@ -1393,11 +1399,7 @@ spec:
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
-        crate::cli::test_support::assert_nests_under(
-            &output,
-            "Pull",
-            &format!("Pulled module from {artifact_ref}"),
-        );
+        crate::cli::test_support::assert_nests_under(&output, "Pull", "Pulled module");
     }
 
     #[test]

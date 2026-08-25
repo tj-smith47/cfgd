@@ -75,8 +75,11 @@ pub fn pull_module(
         artifact_ref,
     ) {
         Ok(()) => {
+            // Settled without the reference: the caller's header block names
+            // it, and the running message above already carried it while the
+            // wait was the only thing on screen.
             if let Some(s) = spinner {
-                let _ = s.finish_ok(format!("Pulled module from {artifact_ref}"));
+                let _ = s.finish_ok("Pulled module");
             }
             tracing::debug!(
                 reference = %oci_ref,

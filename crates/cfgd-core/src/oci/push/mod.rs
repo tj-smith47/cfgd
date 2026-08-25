@@ -36,8 +36,11 @@ pub fn push_module(
     let spinner = printer.map(|p| p.spinner(format!("Pushing module to {artifact_ref}")));
     match push_module_inner(&agent, dir, &oci_ref, auth.as_ref(), platform) {
         Ok((digest, _size)) => {
+            // The running message names the reference because the wait is the
+            // only thing on screen; the settled line does not, because every
+            // caller has already headed the run with the same reference.
             if let Some(s) = spinner {
-                let _ = s.finish_ok(format!("Pushed module to {artifact_ref}"));
+                let _ = s.finish_ok("Pushed module");
             }
             Ok(digest)
         }
@@ -227,7 +230,7 @@ pub fn push_module_multiplatform(
     match &result {
         Ok(index_digest) => {
             if let Some(s) = spinner {
-                let _ = s.finish_ok(format!("Pushed multi-platform module to {artifact_ref}"));
+                let _ = s.finish_ok("Pushed multi-platform module");
             }
             tracing::debug!(
                 reference = %oci_ref,
