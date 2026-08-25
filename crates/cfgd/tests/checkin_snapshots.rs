@@ -125,10 +125,7 @@ fn checkin_server_pushed_config_human() {
     {
         let push_sec = printer.section("Server Config");
         push_sec.status_simple(Role::Ok, "Saved to <PATH>");
-        push_sec.status_simple(
-            Role::Info,
-            "Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'",
-        );
+        push_sec.hint("Run 'cfgd plan' to preview changes, then 'cfgd apply'");
     }
     printer.status_simple(Role::Info, "No drift to report");
     printer.emit(build_checkin_doc(&CheckinOutput {

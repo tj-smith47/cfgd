@@ -284,6 +284,14 @@ pub struct PlanOutput {
     pub context: String,
     pub phases: Vec<PlanPhaseOutput>,
     pub total_actions: usize,
+    /// The sources this plan's composition drew a layer from, in layering
+    /// order — the structured counterpart of the header's `Sources` row.
+    /// Without it a consumer reading a plan carrying `<- team` provenance on
+    /// its actions has no way to learn what `team` is or which of its profiles
+    /// this machine subscribed to. Empty (and omitted from the wire) for a run
+    /// that composed none, so every existing payload stays byte-exact.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<cfgd_core::reconciler::ComposedSource>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     /// Names of schedule-less `spec.backups[]` entries that a non-dry-run
@@ -788,6 +796,37 @@ pub struct SourceShowOutput {
     /// than serializing as a `null` a consumer has to special-case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<SourcePolicyOutput>,
+    /// What the source's own manifest DECLARES — the same facts the human
+    /// render's `Manifest` and `Profiles` sections read. `None` when the
+    /// manifest could not be loaded, and omitted from the wire in that case
+    /// rather than serializing a `null` a consumer has to special-case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<SourceManifestOutput>,
+}
+
+/// A config source's manifest as a structured payload, shared by `source show`
+/// and `source add` so both answer "what does this source provide" with one
+/// shape.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceManifestOutput {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub profiles: Vec<SourceManifestProfileOutput>,
+    pub modules: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceManifestProfileOutput {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub inherits: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -1429,6 +1468,7 @@ mod tests {
                 )],
             }],
             total_actions: 1,
+            sources: vec![],
             warnings: vec![],
             pending_backups: vec![],
             pending_decisions: vec![],
@@ -1459,6 +1499,7 @@ mod tests {
             context: "default".to_string(),
             phases: vec![],
             total_actions: 0,
+            sources: vec![],
             warnings: vec!["missing tool".to_string()],
             pending_backups: vec![],
             pending_decisions: vec![],
@@ -1474,6 +1515,7 @@ mod tests {
             context: "default".to_string(),
             phases: vec![],
             total_actions: 0,
+            sources: vec![],
             warnings: vec![],
             pending_backups: vec!["photos".to_string()],
             pending_decisions: vec![],
@@ -1854,6 +1896,7 @@ mod tests {
                     mode: Some("Always".to_string()),
                 }),
             }),
+            manifest: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["modules"], json!(["dev-tools"]));
@@ -1927,8 +1970,13 @@ mod tests {
             managed_resources: Vec::new(),
             modules: Vec::new(),
             policy: None,
+            manifest: None,
         };
         let json = serde_json::to_value(&v).unwrap();
+        assert!(
+            json.get("manifest").is_none(),
+            "an unloadable manifest is omitted from the wire, never null: {json}"
+        );
         assert!(
             json.get("policy").is_none(),
             "no manifest means no effective policy to report — the key must be \

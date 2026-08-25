@@ -71,6 +71,7 @@ fn ctx(title: RunTitle) -> RunContext<'static> {
         title,
         config_path: None,
         profile: Some("work"),
+        sources: &[],
         modules: &[],
         trigger: None,
     }
@@ -642,6 +643,7 @@ fn header_omits_every_empty_row_and_skips_the_modules_phase() {
             title: RunTitle::Apply,
             config_path: None,
             profile: None,
+            sources: &[],
             modules: &modules,
             trigger: Some("drift (3 resources)"),
         },
@@ -1067,4 +1069,85 @@ fn phase_coverage_decides_only_whether_the_modules_phase_is_walked() {
     };
     assert_eq!(walked(PhaseCoverage::Complete), vec!["Modules", "Packages"]);
     assert_eq!(walked(PhaseCoverage::Rendered), vec!["Packages"]);
+}
+
+// --- composed sources ---
+
+fn layer(source: &str, profile_name: &str) -> crate::config::ProfileLayer {
+    crate::config::ProfileLayer {
+        source: source.to_string(),
+        profile_name: profile_name.to_string(),
+        priority: 0,
+        policy: crate::config::LayerPolicy::Required,
+        spec: crate::config::ProfileSpec::default(),
+    }
+}
+
+#[test]
+fn composed_sources_skip_the_local_layer_and_dedup_by_source() {
+    let layers = vec![
+        layer(crate::config::LOCAL_LAYER, "work"),
+        layer("team", "team"),
+        layer("team", "team"),
+        layer("infra", ""),
+    ];
+    let sources = ComposedSource::from_profile_layers(&layers);
+    assert_eq!(
+        sources,
+        vec![
+            ComposedSource {
+                name: "team".to_string(),
+                profile: Some("team".to_string()),
+            },
+            ComposedSource {
+                name: "infra".to_string(),
+                profile: None,
+            },
+        ],
+        "the operator's own layer is not a source, and one source is announced once"
+    );
+}
+
+#[test]
+fn header_names_the_sources_a_run_composed() {
+    let plan = plan_of(vec![phase(PhaseName::Files, vec![create("/tmp/one")])]);
+    let sources = ComposedSource::from_profile_layers(&[layer("team", "team"), layer("infra", "")]);
+    let run = ApplyRun::new(
+        RunContext {
+            title: RunTitle::Apply,
+            config_path: None,
+            profile: Some("work"),
+            sources: &sources,
+            modules: &[],
+            trigger: None,
+        },
+        &plan,
+    );
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    run.header(&printer);
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains("Sources  team (profile team), infra"),
+        "sources row missing: {out:?}"
+    );
+    let profile_at = out.find("Profile").expect("profile row");
+    let sources_at = out.find("Sources").expect("sources row");
+    assert!(
+        profile_at < sources_at,
+        "the sources row states what layered ON the profile, so it follows it: {out:?}"
+    );
+}
+
+#[test]
+fn header_omits_the_sources_row_when_nothing_composed() {
+    let plan = plan_of(vec![phase(PhaseName::Files, vec![create("/tmp/one")])]);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    ApplyRun::new(ctx(RunTitle::Apply), &plan).header(&printer);
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(
+        !out.contains("Sources"),
+        "a purely local run must not claim a source: {out:?}"
+    );
 }

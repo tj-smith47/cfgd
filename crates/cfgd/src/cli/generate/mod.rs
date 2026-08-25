@@ -11,7 +11,7 @@ use crate::ai::tools;
 use crate::generate;
 use crate::packages;
 
-use super::{Cli, config_dir, open_state_store};
+use super::{Cli, MSG_RUN_APPLY, config_dir, open_state_store};
 
 #[derive(Debug, Args)]
 pub struct GenerateArgs {
@@ -347,7 +347,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
                 "Tokens",
                 format!("{} in, {} out", input_tokens, output_tokens),
             )
-            .hint("Run 'cfgd apply --dry-run' to preview what would be applied.")
+            .hint(MSG_RUN_APPLY)
             .with_data(serde_json::json!({
                 "target": target_label(&args.target),
                 "provider": provider,

@@ -18,7 +18,7 @@ Your behavior depends on how the user invoked you.
    - Present this proposal via `present_yaml` as a structured outline. Wait for confirmation before proceeding.
 3. **Generate modules**: In dependency order (leaves first), investigate and generate each module. Use `present_yaml` for each one. Call `write_module_yaml` on acceptance, then `adopt_files` for any referenced config files.
 4. **Generate profiles**: After all modules are accepted, generate each profile. Use `present_yaml` for each one. Call `write_profile_yaml` on acceptance.
-5. **Finalize**: Call `list_generated` to summarize what was written. Suggest `cfgd apply --dry-run` as the next step.
+5. **Finalize**: Call `list_generated` to summarize what was written. Suggest `cfgd plan` to preview the changes, then `cfgd apply`, as the next step.
 
 ### Module mode (`cfgd generate module <name>`)
 

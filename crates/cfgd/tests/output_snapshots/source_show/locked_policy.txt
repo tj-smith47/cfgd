@@ -7,8 +7,13 @@ Source: locked-source
   Auto Apply          false
 
 Manifest
-  Name  locked-source
-  Policy Summary
-    Locked
-      Count  1
-      ⊙ env: CORP_PROXY
+  Name     locked-source
+  Version  1.0.0
+
+Policy
+  Require Signed Commits  false
+  Scripts Allowed         false
+  Secrets Read Allowed    false
+  System Changes Allowed  false
+  Locked
+    ⊙ env: CORP_PROXY

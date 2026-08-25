@@ -818,22 +818,18 @@ impl super::CfgdFileManager {
     }
 
     /// Resolve a source path relative to the config directory.
-    fn resolve_source_path(&self, source: &str) -> std::result::Result<PathBuf, FileError> {
-        let resolved = cfgd_core::resolve_relative_path(&PathBuf::from(source), &self.config_dir)
-            .map_err(|_| FileError::PathTraversal {
-            path: self.config_dir.join(source),
-            root: self.config_dir.clone(),
-        })?;
-        // If the path exists, do a full canonicalization check
-        if resolved.exists() {
-            cfgd_core::validate_path_within(&resolved, &self.config_dir).map_err(|_| {
-                FileError::PathTraversal {
-                    path: resolved.clone(),
-                    root: self.config_dir.clone(),
-                }
-            })?;
-        }
-        Ok(resolved)
+    pub(crate) fn resolve_source_path(
+        &self,
+        source: &str,
+    ) -> std::result::Result<PathBuf, FileError> {
+        // The shared resolver, so the row `cfgd decide` renders for a withheld
+        // `files.*` item describes the same bytes this action would write.
+        cfgd_core::resolve_managed_file_source(source, &self.config_dir).ok_or_else(|| {
+            FileError::PathTraversal {
+                path: self.config_dir.join(source),
+                root: self.config_dir.clone(),
+            }
+        })
     }
 }
 

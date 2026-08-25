@@ -73,6 +73,7 @@ pub fn cmd_plan(
     // used, custom managers included.
     let mut registry = desired.take_registry(&cfg);
     let source_env = desired.source_env;
+    let composed_sources = desired.sources;
     let mut resolved_modules = desired.modules;
     let mut effective_resolved = desired.resolved;
     registry.set_system_config_dir(&config_dir);
@@ -239,6 +240,7 @@ pub fn cmd_plan(
             title: reconciler::RunTitle::Plan,
             config_path: Some(&cli.config),
             profile: profile_label.as_deref(),
+            sources: &composed_sources,
             modules: &module_names,
             trigger: None,
         },

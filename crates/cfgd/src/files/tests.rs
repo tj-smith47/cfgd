@@ -74,6 +74,60 @@ fn detect_language_from_extension() {
     assert_eq!(detect_language(Path::new("noext")), "txt");
 }
 
+/// `cfgd decide` describes a withheld `files.*` item by reading the file the
+/// action would write. The two resolutions must therefore be ONE: the file
+/// manager's `resolve_source_path` and `cfgd_core::resolve_managed_file_source`
+/// answer the same path for the same entry, INCLUDING a source-delivered one —
+/// nothing in composition rebases a source-delivered `source:` onto its own
+/// checkout, so a source's entry resolves against the local config directory
+/// exactly as a local entry does, and the decide row is live for both.
+#[test]
+fn a_source_delivered_files_source_resolves_the_same_way_for_the_plan_and_the_decide_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path();
+    let files_dir = config_dir.join("files");
+    fs::create_dir_all(&files_dir).unwrap();
+    fs::write(files_dir.join("bashrc"), "one\ntwo\n").unwrap();
+
+    let target = config_dir.join("target").join("bashrc");
+    let resolved = make_resolved_profile(
+        vec![],
+        FilesSpec {
+            managed: vec![ManagedFileSpec {
+                patch: None,
+                source: "files/bashrc".to_string(),
+                target: target.clone(),
+                strategy: Some(FileStrategy::Copy),
+                private: false,
+                // Delivered BY a source, which is the case the row is about.
+                origin: Some("team-config".to_string()),
+                encryption: None,
+                permissions: None,
+            }],
+            permissions: HashMap::new(),
+        },
+    );
+    let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+
+    assert_eq!(
+        fm.resolve_source_path("files/bashrc").unwrap(),
+        cfgd_core::resolve_managed_file_source("files/bashrc", config_dir).unwrap(),
+        "the plan action and the decide row must name one file"
+    );
+
+    // And they agree on a refusal: a symlink inside the config directory
+    // pointing out of it is caught by canonicalization, not by the input check.
+    let outside = dir.path().parent().unwrap().join("cfgd-escape-probe");
+    fs::write(&outside, "escaped").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, files_dir.join("escape")).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&outside, files_dir.join("escape")).unwrap();
+    assert!(fm.resolve_source_path("files/escape").is_err());
+    assert!(cfgd_core::resolve_managed_file_source("files/escape", config_dir).is_none());
+    let _ = fs::remove_file(&outside);
+}
+
 #[test]
 fn plan_creates_file_when_target_missing() {
     let dir = tempfile::tempdir().unwrap();

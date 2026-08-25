@@ -624,6 +624,7 @@ pub fn run_backup_run(
         title: cfgd_core::reconciler::RunTitle::Backup,
         config_path: Some(cli.config.as_path()),
         profile: Some(profile_name),
+        sources: &[],
         modules: &[],
         trigger: None,
     };

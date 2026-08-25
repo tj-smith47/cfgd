@@ -63,6 +63,125 @@ pub fn declared_decision_paths(merged: &MergedProfile) -> HashSet<String> {
     resources
 }
 
+/// What one decision path actually asks the operator to accept.
+///
+/// A decision row's stored `summary` restates the row's own coordinates
+/// (`recommended env.EDITOR (from team)`), which the surface rendering it has
+/// already said twice over: the owner heading names the source, and the row's
+/// own subject names the tier and the resource. What it never says is the one
+/// thing the operator is being asked about — the CONTENT the source wants to
+/// put on the machine. This recovers that from the profile the source
+/// delivered, in the same vocabulary [`declared_decision_paths`] mints the
+/// path with, so a path and its content can never describe different entries.
+///
+/// `None` means the content is unrecoverable — the resource is no longer
+/// declared, the grammar does not parse, or a file's own bytes cannot be read
+/// — and the caller falls back to the persisted summary rather than inventing
+/// a shape. The file arm deliberately reports SIZE and mode, never the body:
+/// a decision list is a scannable index, not a diff.
+pub fn decision_resource_content(
+    merged: &MergedProfile,
+    resource: &str,
+    config_dir: &Path,
+) -> Option<String> {
+    let (kind, rest) = resource.split_once('.')?;
+    match kind {
+        "env" => merged
+            .env
+            .iter()
+            .find(|ev| ev.name == rest)
+            .map(|ev| format!("{}={}", ev.name, ev.value)),
+        "packages" => {
+            let (decision_manager, package) = rest.split_once('.')?;
+            merged.packages.manager_names().iter().find_map(|manager| {
+                if decision_manager_name(manager) != Some(decision_manager) {
+                    return None;
+                }
+                config::desired_packages_for_spec(manager, &merged.packages)
+                    .iter()
+                    .any(|p| p == package)
+                    .then(|| format!("{manager} install {package}"))
+            })
+        }
+        "files" => merged
+            .files
+            .managed
+            .iter()
+            .find(|f| to_posix_string(&f.target) == rest)
+            .and_then(|f| managed_file_content(f, &merged.files, config_dir)),
+        "system" => merged.system.get(rest).map(yaml_one_line),
+        _ => None,
+    }
+}
+
+/// The size-and-mode line one managed file entry stands for.
+///
+/// Both halves are best-effort and the row degrades rather than lying: an
+/// unreadable source yields `None` (the caller falls back to the summary), and
+/// a file with no declared mode simply says nothing about one.
+fn managed_file_content(
+    file: &config::ManagedFileSpec,
+    files: &config::FilesSpec,
+    config_dir: &Path,
+) -> Option<String> {
+    // The SAME resolution the plan action takes, so the row and the write it
+    // describes can never name two different files.
+    let path = crate::resolve_managed_file_source(&file.source, config_dir)?;
+    let lines = count_lines(&path)?;
+    let mode = file.permissions.as_deref().or_else(|| {
+        files
+            .permissions
+            .get(&to_posix_string(&file.target))
+            .map(String::as_str)
+    });
+    let counted = crate::pluralize(lines, "line");
+    Some(match mode {
+        Some(mode) => format!("{counted}, mode {mode}"),
+        None => counted,
+    })
+}
+
+/// Lines in `path`, counted over a STREAM.
+///
+/// A decision list can carry many `files.*` rows and each one is a whole file
+/// the row states the size of; reading each into memory to count `\n` costs the
+/// full byte length of every one of them for a number that needs none of it.
+/// A file with no trailing newline still ends a line, which is what the final
+/// `+ 1` accounts for; an empty file is zero lines rather than one.
+fn count_lines(path: &Path) -> Option<usize> {
+    use std::io::BufRead;
+    let mut reader = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+    let mut lines = 0usize;
+    let mut ended_with_newline = true;
+    loop {
+        let buf = reader.fill_buf().ok()?;
+        if buf.is_empty() {
+            break;
+        }
+        lines += buf.iter().filter(|b| **b == b'\n').count();
+        ended_with_newline = buf.last() == Some(&b'\n');
+        let consumed = buf.len();
+        reader.consume(consumed);
+    }
+    Some(lines + usize::from(!ended_with_newline))
+}
+
+/// A system setting rendered as ONE line, whatever its YAML shape.
+///
+/// A plain scalar renders as the operator wrote it; anything structured falls
+/// back to compact JSON, which is the only always-one-line rendering of an
+/// arbitrary YAML value — a decision row has one line to spend and a block
+/// scalar would break the list it sits in.
+fn yaml_one_line(value: &serde_yaml::Value) -> String {
+    match value {
+        serde_yaml::Value::String(s) => s.clone(),
+        serde_yaml::Value::Bool(b) => b.to_string(),
+        serde_yaml::Value::Number(n) => n.to_string(),
+        serde_yaml::Value::Null => "null".to_string(),
+        other => serde_json::to_string(other).unwrap_or_else(|_| "<unrenderable>".to_string()),
+    }
+}
+
 /// The manager segment a package's decision path carries, from the planner's
 /// manager name.
 ///
@@ -353,6 +472,11 @@ pub struct WithheldDecisions {
     /// Source batches no row can name (dotted custom manager) — withheld
     /// fail-closed and warned about on the run header instead of listed.
     pub undecidable: Vec<UndecidableBatch>,
+    /// What the rows above would actually put on the machine, when the caller
+    /// could resolve it. Display-only, and carried here so the run header's
+    /// withheld rows read the SAME derivation `cfgd decide` and `cfgd status`
+    /// render from rather than a fourth wording of the same fact.
+    pub contents: DecisionContents,
 }
 
 impl WithheldDecisions {
@@ -400,6 +524,16 @@ impl WithheldDecisions {
             );
         }
         self.declined = declined;
+        self
+    }
+
+    /// Attach what the withheld rows would put on the machine.
+    ///
+    /// Resolved by the caller, which already holds the composed profile the
+    /// content is recovered from; a run that cannot resolve one simply does not
+    /// call this and every row falls back to its persisted summary.
+    pub fn with_contents(mut self, contents: DecisionContents) -> Self {
+        self.contents = contents;
         self
     }
 
@@ -510,12 +644,138 @@ pub struct DecisionMint {
     pub annotation: Option<String>,
 }
 
+/// The glue between a decision summary's coordinates and its annotation.
+///
+/// Written once because it is JOINED here and SPLIT by
+/// [`decision_row_annotation`]: a summary is the only place the annotation is
+/// persisted, so the two spellings have to be the same one.
+const SUMMARY_ANNOTATION_GLUE: &str = " — ";
+
+/// The version-conflict annotation a stored row carries, if any.
+///
+/// A surface that renders a decision's CONTENT instead of its summary
+/// (`decide`, `status`) still has to say WHY an installed package is being
+/// asked about, and the summary is where that fact lives once the mint is
+/// gone.
+pub fn decision_row_annotation(summary: &str) -> Option<&str> {
+    summary.split_once(SUMMARY_ANNOTATION_GLUE).map(|(_, a)| a)
+}
+
+/// What each pending decision is actually asking the operator to accept.
+///
+/// A row's persisted `summary` restates its own coordinates, which every render
+/// has already said: the owner heading names the source and the subject names
+/// the tier and the resource. The CONTENT is the one thing neither says, and it
+/// lives in the profile the source delivered — so the LOOKUP is built ONCE by
+/// the caller, from the desired state it already resolved, and handed to every
+/// surface that lists a decision. Deriving it inside a renderer would mean a
+/// second config parse per surface, and three surfaces each deriving their own
+/// is how one screen comes to describe an item differently from the next.
+///
+/// A resource whose content cannot be recovered — no longer declared, an
+/// unreadable file — keeps the persisted summary rather than rendering an
+/// empty detail.
+#[derive(Debug, Default)]
+pub struct DecisionContents(HashMap<(String, String), String>);
+
+impl DecisionContents {
+    /// One [`source_delivered_profile`] per SOURCE, not per row: the merge
+    /// clones every layer that source contributed, and a per-row derivation
+    /// pays it once per item the source delivered.
+    pub fn for_decisions(
+        resolved: &ResolvedProfile,
+        decisions: &[PendingDecision],
+        config_dir: &Path,
+    ) -> Self {
+        let mut by_source: BTreeMap<&str, Vec<&PendingDecision>> = BTreeMap::new();
+        for d in decisions {
+            by_source.entry(&d.source).or_default().push(d);
+        }
+        let mut map = HashMap::new();
+        for (source, items) in by_source {
+            let delivered = source_delivered_profile(resolved, source);
+            for item in items {
+                if let Some(content) =
+                    decision_resource_content(&delivered, &item.resource, config_dir)
+                {
+                    map.insert((source.to_string(), item.resource.clone()), content);
+                }
+            }
+        }
+        Self(map)
+    }
+
+    /// The ONE composition of a decision row, for every surface that lists one:
+    /// `cfgd decide`, `cfgd status`, and the plan/apply run header.
+    ///
+    /// The subject names the tier and the resource (`Recommended env.EDITOR`);
+    /// the detail says what the source would put on the machine
+    /// (`EDITOR=vim`), carrying the version-conflict annotation the persisted
+    /// summary is the only home for.
+    ///
+    /// A row whose content could not be recovered renders the SUBJECT ALONE.
+    /// The stored `summary` is deliberately never the fallback: it restates the
+    /// tier, the resource and the source, all three of which the subject and
+    /// the `source:<name>` owner heading above it have already said — printing
+    /// it produced `Optional env.GONE — optional env.GONE (from team-config)`,
+    /// which is the duplication this composer exists to remove.
+    pub fn decision_row(&self, item: &PendingDecision) -> (String, Option<String>) {
+        let subject = format!("{} {}", title_cased_tier(&item.tier), item.resource);
+        let content = self.0.get(&(item.source.clone(), item.resource.clone()));
+        let annotation = decision_row_annotation(&item.summary);
+        let detail = match (content, annotation) {
+            (Some(content), Some(annotation)) => {
+                Some(format!("{content}{SUMMARY_ANNOTATION_GLUE}{annotation}"))
+            }
+            (Some(content), None) => Some(content.clone()),
+            // The annotation is real information about an installed package
+            // that the subject cannot carry, so it stands alone when the
+            // content is gone — unlike the coordinates the summary restates.
+            (None, Some(annotation)) => Some(annotation.to_string()),
+            (None, None) => None,
+        };
+        (subject, detail)
+    }
+}
+
+/// The tier word as it opens a decision row's subject, TitleCased to match
+/// every other subject-opening word on the same dashboard.
+///
+/// Display only: `PendingDecision.tier` is the raw `spec.policy` key the user
+/// wrote and the token every `-o json` reader and `cfgd decide` matches on, so
+/// it is never rewritten at the source. It lives here beside the tier constants
+/// rather than in one surface's helpers because all three surfaces that name a
+/// decision read it — the run header rendered a raw `recommended` while
+/// `decide` and `status` rendered `Recommended`, two spellings of one row.
+/// Generic rather than a three-arm match over the known tiers, so a policy key
+/// cfgd does not recognise still renders as itself instead of vanishing.
+pub fn title_cased_tier(tier: &str) -> String {
+    let mut chars = tier.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// A decision list grouped by the source that raised each row, alphabetically.
+///
+/// The grouping every listing surface renders as `source:<name>` owner
+/// sections — the heading is what says WHOSE the rows are, which is why no row
+/// carries a `by <source>` of its own.
+pub fn decisions_by_source(rows: &[PendingDecision]) -> BTreeMap<&str, Vec<&PendingDecision>> {
+    let mut by_source: BTreeMap<&str, Vec<&PendingDecision>> = BTreeMap::new();
+    for d in rows {
+        by_source.entry(&d.source).or_default().push(d);
+    }
+    by_source
+}
+
 impl DecisionMint {
     /// The `pending_decisions.summary` text the row carries.
     pub fn summary(&self) -> String {
         match &self.annotation {
             Some(annotation) => format!(
-                "{} {} (from {}) — {}",
+                "{} {} (from {}){SUMMARY_ANNOTATION_GLUE}{}",
                 self.tier, self.resource, self.source, annotation
             ),
             None => format!("{} {} (from {})", self.tier, self.resource, self.source),
@@ -1711,5 +1971,30 @@ mod verdict_tests {
             }
             _ => panic!("a mismatch stays a conflict"),
         }
+    }
+
+    #[test]
+    fn a_mints_annotation_round_trips_out_of_its_summary() {
+        let mint = DecisionMint {
+            source: "team".to_string(),
+            resource: "packages.brew.curl".to_string(),
+            tier: TIER_RECOMMENDED.to_string(),
+            annotation: Some("installed 7.1, source wants ^8".to_string()),
+        };
+        assert_eq!(
+            decision_row_annotation(&mint.summary()),
+            Some("installed 7.1, source wants ^8"),
+            "the join and the split must be the same glue"
+        );
+
+        let plain = DecisionMint {
+            annotation: None,
+            ..mint
+        };
+        assert_eq!(
+            decision_row_annotation(&plain.summary()),
+            None,
+            "a summary carrying no annotation must not invent one"
+        );
     }
 }

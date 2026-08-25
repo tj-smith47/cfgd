@@ -3658,11 +3658,7 @@ fn next_steps_lines_starts_with_checkin_then_apply() {
         "first line: {}",
         lines[0].0
     );
-    assert!(
-        lines[1].0.contains("apply --dry-run"),
-        "second: {}",
-        lines[1].0
-    );
+    assert!(lines[1].0.contains("cfgd plan"), "second: {}", lines[1].0);
     assert!(lines[2].0.contains("cfgd apply"), "third: {}", lines[2].0);
     assert!(
         lines[3].0.contains("daemon install"),

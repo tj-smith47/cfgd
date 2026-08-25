@@ -155,7 +155,7 @@ pub fn cmd_checkin(
         match cfgd_core::state::save_pending_server_config(desired) {
             Ok(path) => {
                 push_sec.status_simple(Role::Ok, format!("Saved to {}", path.posix()));
-                push_sec.status_simple(Role::Info, MSG_RUN_APPLY);
+                push_sec.hint(MSG_RUN_APPLY);
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to save pending server config");

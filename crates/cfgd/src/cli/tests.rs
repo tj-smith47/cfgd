@@ -462,6 +462,129 @@ fn no_subcommand_declares_its_own_yes_flag() {
     }
 }
 
+/// Every boolean SUBSCRIPTION knob `cfgd source update` can set comes as a
+/// `--x` / `--no-x` pair: a single `--x` could only ever turn a knob on, so a
+/// demand once recorded would be unrevokable from the CLI. The pair is what
+/// keeps "the caller said nothing" distinct from "the caller said false", so an
+/// ordinary `cfgd source update` never resets a stored `true`. Walk the real
+/// clap definition so the next knob added to this subcommand trips here.
+#[test]
+fn every_source_update_toggle_is_a_settable_unsettable_pair() {
+    use clap::CommandFactory;
+
+    let root = Cli::command();
+    let source = root
+        .get_subcommands()
+        .find(|c| c.get_name() == "source")
+        .expect("cfgd source exists");
+    let update = source
+        .get_subcommands()
+        .find(|c| c.get_name() == "update")
+        .expect("cfgd source update exists");
+
+    let longs: Vec<&str> = update
+        .get_arguments()
+        .filter_map(|a| a.get_long())
+        .collect();
+    let positives: Vec<&str> = longs
+        .iter()
+        .copied()
+        .filter(|l| !l.starts_with("no-"))
+        .collect();
+    assert!(
+        !positives.is_empty(),
+        "source update declares no toggles at all"
+    );
+
+    for positive in &positives {
+        let negative = format!("no-{positive}");
+        assert!(
+            longs.contains(&negative.as_str()),
+            "`--{positive}` has no `--{negative}` counterpart; a toggle must be unsettable"
+        );
+        // clap 4 exposes no `requires`/`conflicts` getters, so both properties
+        // are asserted through the parser itself — which is the stronger claim
+        // anyway: what matters is that the argv is refused, not how.
+        for half in [positive.to_string(), negative.clone()] {
+            assert!(
+                !update
+                    .get_arguments()
+                    .any(|a| a.get_long() == Some(half.as_str()) && a.get_action().takes_values()),
+                "`--{half}` is a toggle and must take no value"
+            );
+            assert!(
+                Cli::try_parse_from(["cfgd", "source", "update", &format!("--{half}")]).is_err(),
+                "`--{half}` with no named source must be refused; without one it edits nothing"
+            );
+        }
+        assert!(
+            Cli::try_parse_from([
+                "cfgd",
+                "source",
+                "update",
+                "acme",
+                &format!("--{positive}"),
+                &format!("--{negative}"),
+            ])
+            .is_err(),
+            "`--{positive}` and `--{negative}` at once must be refused"
+        );
+    }
+
+    // The pair really does reach the two ends, and silence really is neither.
+    let parse = |args: &[&str]| {
+        let cli = Cli::try_parse_from(args).expect("parses");
+        match cli.command {
+            Some(Command::Source {
+                command:
+                    SourceCommand::Update {
+                        require_signed_commits,
+                        no_require_signed_commits,
+                        ..
+                    },
+            }) => super::paired_flag(require_signed_commits, no_require_signed_commits),
+            _ => panic!("not a source update"),
+        }
+    };
+    assert_eq!(parse(&["cfgd", "source", "update", "acme"]), None);
+    assert_eq!(
+        parse(&[
+            "cfgd",
+            "source",
+            "update",
+            "acme",
+            "--require-signed-commits"
+        ]),
+        Some(true)
+    );
+    assert_eq!(
+        parse(&[
+            "cfgd",
+            "source",
+            "update",
+            "acme",
+            "--no-require-signed-commits"
+        ]),
+        Some(false)
+    );
+    assert!(
+        Cli::try_parse_from([
+            "cfgd",
+            "source",
+            "update",
+            "acme",
+            "--require-signed-commits",
+            "--no-require-signed-commits",
+        ])
+        .is_err(),
+        "both halves at once must be refused"
+    );
+    assert!(
+        Cli::try_parse_from(["cfgd", "source", "update", "--require-signed-commits"]).is_err(),
+        "a toggle with no named source must be refused"
+    );
+}
+
 #[test]
 fn theme_flag_is_global_and_refuses_an_unknown_preset() {
     let cli = Cli::try_parse_from(["cfgd", "status", "--theme", "dracula"])
@@ -935,7 +1058,7 @@ fn default_noninteractive_priority_is_midpoint() {
     assert_eq!(super::DEFAULT_NONINTERACTIVE_PRIORITY, 500);
 }
 
-// --- display_source_manifest ---
+// --- source_manifest_doc_sections ---
 
 fn manifest_yaml(extra_spec: &str) -> cfgd_core::config::ConfigSourceDocument {
     let yaml = format!(
@@ -952,56 +1075,239 @@ spec:
     serde_yaml::from_str(&yaml).expect("manifest fixture must parse")
 }
 
-#[test]
-fn display_source_manifest_returns_provided_profiles_in_listed_order() {
-    let manifest = manifest_yaml("  provides:\n    profiles: [dev, prod, ci]\n");
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
-    let profiles = super::display_source_manifest(&printer, &manifest);
-    assert_eq!(profiles, vec!["dev", "prod", "ci"]);
+/// Render the shared composer with no subscription and no checked-out
+/// profiles — the shape `cfgd source add` reaches before it has either.
+fn manifest_sections_text(manifest: &cfgd_core::config::ConfigSourceDocument) -> String {
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    // Derived once and handed in, exactly as `source show` does it — the
+    // builder never re-derives a policy of its own.
+    let policy = crate::cli::source::show::effective_source_policy(
+        None,
+        &manifest.spec.policy.constraints,
+        false,
+    );
+    printer.emit(crate::cli::source::show::source_manifest_doc_sections(
+        cfgd_core::output::Doc::new(),
+        manifest,
+        Some(&policy),
+        None,
+    ));
+    drop(printer);
+    cfgd_core::test_helpers::captured_text(&buf)
 }
 
 #[test]
-fn display_source_manifest_emits_metadata_header_kv_lines() {
-    let manifest = manifest_yaml("  provides: {}\n");
-    let (printer, buf) =
-        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::display_source_manifest(&printer, &manifest);
-    drop(printer);
-    let out = cfgd_core::test_helpers::captured_text(&buf);
-    assert!(out.contains("Source Manifest"), "header missing: {out}");
+fn source_manifest_sections_render_the_metadata_rows() {
+    let out = manifest_sections_text(&manifest_yaml("  provides: {}\n"));
+    assert!(out.contains("Manifest"), "Manifest header missing: {out}");
     assert!(
         out.contains("Name") && out.contains("acme-platform"),
-        "Name kv missing: {out}"
+        "Name row missing: {out}"
     );
     assert!(
         out.contains("Version") && out.contains("1.4.0"),
-        "Version kv missing: {out}"
+        "Version row missing: {out}"
     );
     assert!(
         out.contains("Description") && out.contains("Acme platform baseline"),
-        "Description kv missing: {out}"
+        "Description row missing: {out}"
     );
 }
 
 #[test]
-fn display_source_manifest_omits_profiles_kv_when_empty() {
-    // When the manifest provides no profiles, the "Profiles:" key/value
-    // line is suppressed entirely (rather than printing an empty value).
-    let manifest = manifest_yaml("  provides: {}\n");
-    let (printer, buf) = cfgd_core::output::Printer::for_test();
-    let profiles = super::display_source_manifest(&printer, &manifest);
-    assert!(profiles.is_empty());
+fn source_manifest_sections_omit_optional_metadata_when_absent() {
+    let manifest: cfgd_core::config::ConfigSourceDocument = serde_yaml::from_str(
+        r#"apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: minimal
+spec:
+  provides: {}
+"#,
+    )
+    .unwrap();
+    let out = manifest_sections_text(&manifest);
+    assert!(out.contains("Name") && out.contains("minimal"));
+    assert!(
+        !out.contains("Version"),
+        "Version row must be suppressed when None: {out}"
+    );
+    assert!(
+        !out.contains("Description"),
+        "Description row must be suppressed when None: {out}"
+    );
+}
+
+#[test]
+fn source_manifest_sections_omit_the_profiles_block_when_none_are_provided() {
+    let out = manifest_sections_text(&manifest_yaml("  provides: {}\n"));
+    assert!(
+        !out.contains("Profiles"),
+        "the Profiles block must be suppressed when none provided, got: {out}"
+    );
+}
+
+/// Every provided profile is headed by the same `profile:<name>` owner token
+/// an apply header names a layer with, and its manifest description stands as
+/// prose beneath it.
+#[test]
+fn source_manifest_sections_head_each_provided_profile_with_its_owner_token() {
+    let manifest = manifest_yaml(
+        "  provides:\n    profileDetails:\n      - name: dev\n        description: Developer workstation\n      - name: ci\n",
+    );
+    let out = manifest_sections_text(&manifest);
+    assert!(out.contains("Profiles"), "Profiles header missing: {out}");
+    assert!(
+        out.contains("profile:dev"),
+        "dev owner token missing: {out}"
+    );
+    assert!(out.contains("profile:ci"), "ci owner token missing: {out}");
+    assert!(
+        out.contains("Developer workstation"),
+        "the entry's description must render: {out}"
+    );
+}
+
+/// The subscriber must see what a profile DECLARES before subscribing — env
+/// values included — rendered through the same inventory `cfgd profile show`
+/// builds rather than a second renderer of this screen's own.
+#[test]
+fn source_manifest_sections_render_a_provided_profiles_own_content() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("dev.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: dev\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n  packages:\n    brew:\n      - ripgrep\n",
+    )
+    .unwrap();
+    let manifest = manifest_yaml("  provides:\n    profiles: [dev]\n");
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    printer.emit(crate::cli::source::show::source_manifest_doc_sections(
+        cfgd_core::output::Doc::new(),
+        &manifest,
+        None,
+        Some(dir.path()),
+    ));
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        !out.contains("Profiles"),
-        "Profiles label must be suppressed when none provided, got: {out}"
+        out.contains("EDITOR") && out.contains("vim"),
+        "an env value must be visible before subscribing: {out}"
+    );
+    assert!(
+        out.contains("brew formulae") && out.contains("ripgrep"),
+        "packages must render through the profile inventory: {out}"
     );
 }
 
+/// A manifest promising a profile the checkout does not carry says so — and
+/// only when there was somewhere to look. With no profiles directory at all
+/// the profile is left unelaborated, because "not shipped" and "could not
+/// look" are different facts.
 #[test]
-fn display_source_manifest_summarizes_required_recommended_locked_counts() {
-    // Each tier with a non-zero count emits a labeled line.
+fn source_manifest_sections_report_a_profile_the_source_does_not_ship() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = manifest_yaml("  provides:\n    profiles: [dev]\n");
+    let render = |profiles_dir: Option<&std::path::Path>| {
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        printer.emit(crate::cli::source::show::source_manifest_doc_sections(
+            cfgd_core::output::Doc::new(),
+            &manifest,
+            None,
+            profiles_dir,
+        ));
+        drop(printer);
+        cfgd_core::test_helpers::captured_text(&buf)
+    };
+
+    let missing = render(Some(dir.path()));
+    assert!(
+        missing.contains("not found in the source"),
+        "a promised profile the tree does not carry must be reported: {missing}"
+    );
+
+    let uncached = render(None);
+    assert!(
+        !uncached.contains("not found in the source"),
+        "with no checkout to look in, absence must not be claimed: {uncached}"
+    );
+    assert!(
+        uncached.contains("profile:dev"),
+        "the promised profile is still named: {uncached}"
+    );
+}
+
+/// One polarity for every constraint — `Scripts Allowed  false`, never a
+/// `Scripts: blocked` status line beside it on the other surface.
+#[test]
+fn source_manifest_sections_render_policy_rows_in_one_polarity() {
+    let manifest = manifest_yaml(
+        r#"  provides: {}
+  policy:
+    constraints:
+      noScripts: true
+      noSecretsRead: true
+      allowedTargetPaths: ["/etc/cfgd", "/var/lib/cfgd"]
+"#,
+    );
+    let out = manifest_sections_text(&manifest);
+    assert!(out.contains("Policy"), "Policy header missing: {out}");
+    assert!(
+        out.contains("Scripts Allowed") && out.contains("false"),
+        "scripts row missing: {out}"
+    );
+    assert!(
+        out.contains("Secrets Read Allowed"),
+        "secrets row missing: {out}"
+    );
+    assert!(
+        out.contains("Allowed Target Paths") && out.contains("/etc/cfgd, /var/lib/cfgd"),
+        "allowed-paths row must be comma-joined, got: {out}"
+    );
+    assert!(
+        !out.contains("Scripts: blocked") && !out.contains("Secret access: blocked"),
+        "the old status-line polarity must be gone: {out}"
+    );
+}
+
+/// With a subscription in hand the policy is EFFECTIVE: the subscriber's own
+/// `allowScripts` opt-in outranks the manifest's `noScripts`.
+#[test]
+fn source_manifest_sections_render_the_effective_policy_when_a_spec_is_given() {
+    let manifest =
+        manifest_yaml("  provides: {}\n  policy:\n    constraints:\n      noScripts: true\n");
+    let mut spec: cfgd_core::config::SourceSpec = serde_yaml::from_str(
+        "name: acme\norigin:\n  type: Git\n  url: https://example.com/acme.git\n",
+    )
+    .unwrap();
+    spec.subscription.allow_scripts = true;
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let policy = crate::cli::source::show::effective_source_policy(
+        Some(&spec),
+        &manifest.spec.policy.constraints,
+        false,
+    );
+    printer.emit(crate::cli::source::show::source_manifest_doc_sections(
+        cfgd_core::output::Doc::new(),
+        &manifest,
+        Some(&policy),
+        None,
+    ));
+    drop(printer);
+    let out = cfgd_core::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains("Scripts Allowed") && out.contains("true"),
+        "the subscriber's opt-in must win: {out}"
+    );
+}
+
+/// The rows ARE the count: a tier renders its items and no `Count` row above
+/// them.
+#[test]
+fn source_manifest_sections_render_tier_items_without_a_count_row() {
     let manifest = manifest_yaml(
         r#"  provides: {}
   policy:
@@ -1021,122 +1327,49 @@ fn display_source_manifest_summarizes_required_recommended_locked_counts() {
           value: locked-value
 "#,
     );
-    let (printer, buf) =
-        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::display_source_manifest(&printer, &manifest);
-    drop(printer);
-    let out = cfgd_core::test_helpers::captured_text(&buf);
-    assert!(out.contains("Policy"), "Policy header missing: {out}");
+    let out = manifest_sections_text(&manifest);
+    assert!(out.contains("Locked"), "Locked tier missing: {out}");
+    assert!(out.contains("Required"), "Required tier missing: {out}");
     assert!(
-        out.contains("1 item locked") && out.contains("cannot override"),
-        "locked tier line missing: {out}"
+        out.contains("Recommended"),
+        "Recommended tier missing: {out}"
     );
     assert!(
-        out.contains("1 item required") && out.contains("team requirement"),
-        "required tier line missing: {out}"
+        out.contains("LOCKED_VAR") && out.contains("REQUIRED_VAR") && out.contains("REC_TWO"),
+        "each tier must render its own items: {out}"
     );
     assert!(
-        out.contains("2 items recommended"),
-        "recommended count line missing: {out}"
+        !out.contains("Count"),
+        "a Count row restates what the rows already say: {out}"
     );
 }
 
 #[test]
-fn display_source_manifest_omits_zero_count_tiers() {
-    // When a tier has zero items its line must NOT appear.
-    let manifest = manifest_yaml("  provides: {}\n");
-    let (printer, buf) = cfgd_core::output::Printer::for_test();
-    super::display_source_manifest(&printer, &manifest);
-    drop(printer);
-    let out = cfgd_core::test_helpers::captured_text(&buf);
+fn source_manifest_sections_omit_tiers_that_declare_nothing() {
+    let out = manifest_sections_text(&manifest_yaml("  provides: {}\n"));
     assert!(
-        !out.contains("item required") && !out.contains("items recommended"),
-        "zero-count tiers must be suppressed, got: {out}"
+        !out.contains("Locked") && !out.contains("Required") && !out.contains("Recommended"),
+        "empty tiers must be suppressed, got: {out}"
     );
 }
 
+/// The `-o json` counterpart carries the same facts the human render shows.
 #[test]
-fn display_source_manifest_constraints_render_each_blocked_axis() {
+fn source_manifest_output_carries_the_provided_profiles() {
     let manifest = manifest_yaml(
-        r#"  provides: {}
-  policy:
-    constraints:
-      noScripts: true
-      noSecretsRead: true
-      allowedTargetPaths: ["/etc/cfgd", "/var/lib/cfgd"]
-"#,
+        "  provides:\n    profileDetails:\n      - name: dev\n        description: Developer workstation\n      - name: backend\n        inherits: [dev]\n    modules: [nvim]\n",
     );
-    let (printer, buf) =
-        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::display_source_manifest(&printer, &manifest);
-    drop(printer);
-    let out = cfgd_core::test_helpers::captured_text(&buf);
+    let v =
+        serde_json::to_value(crate::cli::source::show::source_manifest_output(&manifest)).unwrap();
+    assert_eq!(v["name"], "acme-platform");
+    assert_eq!(v["version"], "1.4.0");
+    assert_eq!(v["profiles"][0]["name"], "dev");
+    assert_eq!(v["profiles"][0]["description"], "Developer workstation");
+    assert_eq!(v["profiles"][1]["inherits"][0], "dev");
+    assert_eq!(v["modules"][0], "nvim");
     assert!(
-        out.contains("Scripts: blocked"),
-        "no-scripts line missing: {out}"
-    );
-    assert!(
-        out.contains("Secret access: blocked"),
-        "no-secrets line missing: {out}"
-    );
-    assert!(
-        out.contains("Allowed paths") && out.contains("/etc/cfgd, /var/lib/cfgd"),
-        "allowed-paths line must be comma-joined, got: {out}"
-    );
-}
-
-#[test]
-fn display_source_manifest_constraints_omitted_when_unrestricted() {
-    // noScripts and noSecretsRead default to true via default_true; turn
-    // them off to verify the suppression branches.
-    let manifest = manifest_yaml(
-        r#"  provides: {}
-  policy:
-    constraints:
-      noScripts: false
-      noSecretsRead: false
-      allowedTargetPaths: []
-"#,
-    );
-    let (printer, buf) = cfgd_core::output::Printer::for_test();
-    super::display_source_manifest(&printer, &manifest);
-    drop(printer);
-    let out = cfgd_core::test_helpers::captured_text(&buf);
-    assert!(
-        !out.contains("Scripts: blocked")
-            && !out.contains("Secret access: blocked")
-            && !out.contains("Allowed paths"),
-        "no constraint lines should appear when all unrestricted, got: {out}"
-    );
-}
-
-#[test]
-fn display_source_manifest_omits_optional_metadata_kv_when_absent() {
-    // Manifest with only the required `name` field — no version, no
-    // description. The Name kv must still appear; the other two suppressed.
-    let manifest: cfgd_core::config::ConfigSourceDocument = serde_yaml::from_str(
-        r#"apiVersion: cfgd.io/v1alpha1
-kind: ConfigSource
-metadata:
-  name: minimal
-spec:
-  provides: {}
-"#,
-    )
-    .unwrap();
-    let (printer, buf) =
-        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::display_source_manifest(&printer, &manifest);
-    drop(printer);
-    let out = cfgd_core::test_helpers::captured_text(&buf);
-    assert!(out.contains("Name") && out.contains("minimal"));
-    assert!(
-        !out.contains("Version"),
-        "Version kv must be suppressed when None: {out}"
-    );
-    assert!(
-        !out.contains("Description"),
-        "Description kv must be suppressed when None: {out}"
+        v["profiles"][0].get("inherits").is_none(),
+        "an empty inherits list is omitted from the wire: {v}"
     );
 }
 
@@ -10182,7 +10415,7 @@ fn build_plan_output_empty_plan() {
         phases: vec![],
         warnings: vec![],
     };
-    let output = super::build_plan_output(&plan, "apply", None, &[], &Default::default());
+    let output = super::build_plan_output(&plan, "apply", None, &[], &Default::default(), &[]);
     assert_eq!(output.context, "apply");
     assert_eq!(output.total_actions, 0);
     assert!(output.phases.is_empty());
@@ -10202,7 +10435,7 @@ fn build_plan_output_with_actions() {
         )],
         warnings: vec!["something".into()],
     };
-    let output = super::build_plan_output(&plan, "reconcile", None, &[], &Default::default());
+    let output = super::build_plan_output(&plan, "reconcile", None, &[], &Default::default(), &[]);
     assert_eq!(output.context, "reconcile");
     assert_eq!(output.total_actions, 1);
     assert_eq!(output.phases.len(), 1);
@@ -10244,6 +10477,7 @@ fn build_plan_output_with_phase_filter() {
         Some(&PhaseFilter::Phase(reconciler::PhaseName::Files)),
         &[],
         &Default::default(),
+        &[],
     );
     assert_eq!(output.total_actions, 1);
     assert_eq!(output.phases.len(), 1);
@@ -14144,6 +14378,8 @@ fn cmd_source_add_duplicate_fails() {
         auto_apply: false,
         pin_version: None,
         yes: true,
+        require_signed_commits: false,
+        allow_scripts: false,
     };
     let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
     assert_error_contains(&result, "already exists");
@@ -14226,7 +14462,7 @@ fn cmd_config_edit_with_invalid_config_and_prompt_declined_breaks_with_warning()
 #[test]
 fn cmd_source_update_no_sources_succeeds() {
     let h = CliTestHarness::builder().build();
-    super::source::cmd_source_update(&h.cli(), h.printer(), None).unwrap();
+    super::source::cmd_source_update(&h.cli(), h.printer(), None, Default::default()).unwrap();
     h.assert_header("Update Sources");
     h.assert_output_contains("No sources configured");
 }
@@ -14235,7 +14471,12 @@ fn cmd_source_update_no_sources_succeeds() {
 fn cmd_source_update_named_not_found_fails() {
     // Need a config with sources so it doesn't take the "no sources" early return
     let h = CliTestHarness::builder().rich_config().build();
-    let result = super::source::cmd_source_update(&h.cli(), h.printer(), Some("nonexistent"));
+    let result = super::source::cmd_source_update(
+        &h.cli(),
+        h.printer(),
+        Some("nonexistent"),
+        Default::default(),
+    );
     assert_error_contains(&result, "not found");
 }
 
@@ -19285,7 +19526,13 @@ spec:
 "#;
     let h = CliTestHarness::builder().config(config_no_sources).build();
     let cli = h.cli_with_command(Command::Source {
-        command: SourceCommand::Update { name: None },
+        command: SourceCommand::Update {
+            name: None,
+            require_signed_commits: false,
+            no_require_signed_commits: false,
+            allow_scripts: false,
+            no_allow_scripts: false,
+        },
     });
     super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
     h.assert_header("Update Sources");
@@ -19661,6 +19908,8 @@ mod cmd_source_add_local {
             auto_apply: false,
             pin_version: None,
             yes: true,
+            require_signed_commits: false,
+            allow_scripts: false,
         }
     }
 
@@ -20074,7 +20323,7 @@ mod cmd_source_add_local {
             // No name → updates every source. Drives the
             // `mgr.get(...).is_some()` happy path + upsert_config_source +
             // the group's `updated` success line.
-            super::source::cmd_source_update(&h.cli(), h.printer(), None)
+            super::source::cmd_source_update(&h.cli(), h.printer(), None, Default::default())
                 .expect("cmd_source_update should succeed against the staged source");
 
             h.assert_output_contains("source:upd-src");
@@ -20129,8 +20378,13 @@ mod cmd_source_add_local {
             // source. The post-update slice must contain src-b AND must NOT
             // mention src-a; without the second assertion the test would
             // pass even if the name filter was wired to update everything.
-            super::source::cmd_source_update(&h.cli(), h.printer(), Some("src-b"))
-                .expect("named update should succeed");
+            super::source::cmd_source_update(
+                &h.cli(),
+                h.printer(),
+                Some("src-b"),
+                Default::default(),
+            )
+            .expect("named update should succeed");
 
             let full = h.output();
             let update_out = &full[baseline_len..];
@@ -20232,8 +20486,13 @@ mod cmd_source_add_local {
             // Err → continue. The cache nevertheless got the v2 manifest
             // written by SourceManager::load_source BEFORE the permission
             // check ran, so cmd_source_show can render its policy section.
-            super::source::cmd_source_update(&h.cli(), h.printer(), Some("shown-src"))
-                .expect("cmd_source_update");
+            super::source::cmd_source_update(
+                &h.cli(),
+                h.printer(),
+                Some("shown-src"),
+                Default::default(),
+            )
+            .expect("cmd_source_update");
 
             let baseline_len = h.output().len();
             super::source::cmd_source_show(&h.cli(), h.printer(), "shown-src")
@@ -20254,8 +20513,12 @@ mod cmd_source_add_local {
                 "expected manifest description, got: {show_out}"
             );
             assert!(
-                show_out.contains("Policy Summary"),
-                "expected Policy Summary subheader, got: {show_out}"
+                show_out.contains("Profiles") && show_out.contains("profile:default"),
+                "expected the provided profile under its owner token, got: {show_out}"
+            );
+            assert!(
+                show_out.contains("Policy"),
+                "expected Policy subheader, got: {show_out}"
             );
             assert!(
                 show_out.contains("Required") && show_out.contains("Recommended"),
@@ -20308,8 +20571,13 @@ mod cmd_source_add_local {
             push_replacement_manifest(&scratch, &bare, v2);
 
             let baseline_len = h.output().len();
-            super::source::cmd_source_update(&h.cli(), h.printer(), Some("perm-src"))
-                .expect("cmd_source_update should not bubble up the cancelled prompt");
+            super::source::cmd_source_update(
+                &h.cli(),
+                h.printer(),
+                Some("perm-src"),
+                Default::default(),
+            )
+            .expect("cmd_source_update should not bubble up the cancelled prompt");
 
             let full = h.output();
             let update_out = &full[baseline_len..];
@@ -20340,8 +20608,9 @@ mod cmd_source_add_local {
         with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             // Stage a real source so cmd_source_add succeeds — then bulldoze
             // the bare upstream so the *next* fetch fails. cmd_source_update
-            // should surface the failure via the "Failed to update source"
-            // error line + flip the state-store status to 'error'.
+            // should surface the failure as an `update failed` row under the
+            // source's own owner heading + flip the state-store status to
+            // 'error'.
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "doomed-src", None);
             let h = CliTestHarness::builder().build();
@@ -20366,15 +20635,20 @@ mod cmd_source_add_local {
 
             // Call the non-exiting core directly: `cmd_source_update` would
             // `process::exit(1)` on this failure and abort the test binary.
-            let error_count =
-                super::source::run_source_update(&h.cli(), h.printer(), Some("doomed-src"))
-                    .expect("run_source_update should not bubble up a fetch failure");
+            let error_count = super::source::run_source_update(
+                &h.cli(),
+                h.printer(),
+                Some("doomed-src"),
+                Default::default(),
+            )
+            .expect("run_source_update should not bubble up a fetch failure");
             assert_eq!(
                 error_count, 1,
                 "the single doomed source should count as 1 failure"
             );
 
-            h.assert_output_contains("Failed to update source 'doomed-src'");
+            h.assert_output_contains("source:doomed-src");
+            h.assert_output_contains("✗ update failed");
 
             // The status update arm should have flipped the row to 'error'.
             let store =
@@ -21845,6 +22119,37 @@ fn plan_preview_names_the_decision_that_declined_a_resource() {
     );
 }
 
+/// The run header's withheld rows read the same content derivation `cfgd
+/// decide` and `cfgd status` render from — three surfaces naming one item must
+/// not describe it three ways.
+#[test]
+#[serial_test::serial]
+fn plan_preview_says_what_a_withheld_decision_would_put_on_the_machine() {
+    let f = decision_fixture(false);
+    f.with_pending_decision();
+
+    super::plan::cmd_plan(&f.h.cli(), f.h.printer(), &plan_args()).unwrap();
+    let output = cfgd_core::output::strip_ansi(&f.h.output());
+
+    assert!(
+        output.contains("— 1 line"),
+        "the withheld row says what the file would deliver, not only who sent it:\n{output}"
+    );
+    assert!(
+        output.contains("source:acme") && output.contains("cfgd decide accept/reject"),
+        "the owner section names the source and one hint says how to answer:\n{output}"
+    );
+    assert!(
+        !output.contains("by acme"),
+        "whose the item is belongs to the owner heading, not to every row:\n{output}"
+    );
+    assert_eq!(
+        output.matches("cfgd decide accept/reject").count(),
+        1,
+        "the instruction is ONE hint under the block, never a per-row suffix:\n{output}"
+    );
+}
+
 #[test]
 #[serial_test::serial]
 fn plan_payload_counts_and_lists_only_the_decided_actions() {
@@ -22771,7 +23076,7 @@ fn a_foreign_config_plan_names_the_truth_instead_of_a_decide_that_will_refuse() 
         "the item is still withheld and named:\n{output}"
     );
     assert!(
-        !output.contains("run `cfgd decide accept/reject`"),
+        !output.contains("cfgd decide accept/reject"),
         "no instruction naming a command that will refuse:\n{output}"
     );
     assert!(
@@ -22806,7 +23111,7 @@ fn a_recorded_row_keeps_its_decide_instruction_on_every_config() {
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
     assert!(
-        output.contains("run `cfgd decide accept/reject`"),
+        output.contains("cfgd decide accept/reject"),
         "a recorded row is answerable everywhere:\n{output}"
     );
 }

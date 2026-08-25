@@ -123,6 +123,7 @@ fn plan_output_roundtrips_through_emit() {
             },
         ],
         total_actions: 3,
+        sources: vec![],
         warnings: vec!["module 'foo' has no provider".into()],
         pending_backups: vec!["photos".into()],
         pending_decisions: vec![],

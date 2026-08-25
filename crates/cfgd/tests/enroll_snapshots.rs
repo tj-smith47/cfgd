@@ -58,7 +58,7 @@ fn enroll_next_steps_section_lists_four_commands() {
     assert!(human.contains("Next Steps"), "got:\n{human}");
     for cmd in [
         "cfgd checkin",
-        "cfgd apply --dry-run",
+        "cfgd plan",
         "cfgd apply",
         "cfgd daemon install",
     ] {

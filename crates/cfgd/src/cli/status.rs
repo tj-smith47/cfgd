@@ -549,6 +549,7 @@ pub fn build_fleet_status_doc(
     config_path: &Path,
     profile_name: &str,
     now: &str,
+    decision_contents: &super::DecisionContents,
 ) -> Doc {
     let mut doc = Doc::new()
         .heading("Status")
@@ -585,6 +586,7 @@ pub fn build_fleet_status_doc(
                     s = s.kv(key, value);
                 }
                 s = s.kv("Result", last.status.human_str());
+                // decision-summary-ok: the `applies` record's own summary column, not a pending decision's
                 if let Some(summary) = &last.summary {
                     s = s.kv("Summary", summary);
                 }
@@ -626,11 +628,9 @@ pub fn build_fleet_status_doc(
         });
     }
 
-    doc = doc.section_if_nonempty(
-        "Pending Decisions",
-        &output.pending_decisions,
-        super::build_pending_decisions_table_section,
-    );
+    doc = doc.section_if_nonempty("Pending Decisions", &output.pending_decisions, |s, rows| {
+        super::build_pending_decisions_table_section(s, rows, decision_contents)
+    });
 
     // Rendered beside the pending rows those batches would otherwise be:
     // "why isn't requests installed?" must be answerable from the dashboard,
@@ -1346,12 +1346,18 @@ pub(super) fn cmd_status(
         Vec::new()
     };
 
+    // Built from the composition this command already resolved: the rows say
+    // what each withheld item would put on the machine, and re-deriving that
+    // at the render would be a second parse of the same config.
+    let decision_contents =
+        super::DecisionContents::for_decisions(&resolved, &output.pending_decisions, &config_dir);
     printer.emit(build_fleet_status_doc(
         &output,
         &configured_source_names,
         &cli.config,
         profile_name,
         &cfgd_core::utc_now_iso8601(),
+        &decision_contents,
     ));
 
     if exit_code && !live_drift.is_empty() {
@@ -1961,6 +1967,7 @@ mod tests {
             std::path::Path::new("/etc/cfgd/cfgd.yaml"),
             "default",
             "2026-05-12T14:30:25Z",
+            &Default::default(),
         ));
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -2013,6 +2020,7 @@ mod tests {
                 "default",
                 // Pinned, never the wall clock: the age is a rendered value.
                 "2026-05-14T10:05:00Z",
+                &Default::default(),
             ));
             drop(printer);
             cfgd_core::test_helpers::captured_text(&buf)

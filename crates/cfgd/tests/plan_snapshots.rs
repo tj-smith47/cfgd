@@ -74,6 +74,7 @@ fn happy_plan_output() -> PlanOutput {
             )],
         }],
         total_actions: 1,
+        sources: vec![],
         warnings: vec![],
         pending_backups: vec![],
         pending_decisions: vec![],
@@ -113,6 +114,7 @@ fn owner_groups_plan_output() -> PlanOutput {
             ],
         }],
         total_actions: 2,
+        sources: vec![],
         warnings: vec![],
         pending_backups: vec![],
         pending_decisions: vec![],
@@ -452,4 +454,44 @@ fn strip_ansi(s: &str) -> String {
         }
     }
     out
+}
+
+/// A run that composed a source names it in the header, so the reader can tell
+/// which of the rows below arrived from a subscription rather than from their
+/// own profile.
+#[test]
+fn plan_composed_source_human() {
+    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    // The delivered profile writes env, whose targets hang off `$HOME`; an
+    // unguarded test home is named after the pid and would not be host-stable.
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let (workspace, config_dir, state_dir) = common::local_source_setup("", |_workspace| {
+        (
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n".to_string(),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: ACME_EDITOR\n      value: vim\n".to_string(),
+        )
+    });
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_plan(&cli, &printer, &plan_args()).unwrap();
+    drop(printer);
+
+    let normalized = normalize_tempdir_paths(
+        &cap.human(),
+        config_dir.path(),
+        &[
+            (workspace.path(), "<WORKSPACE>"),
+            (state_dir.path(), "<STATE_DIR>"),
+            (home.path(), "<HOME>"),
+        ],
+    );
+    let stripped = strip_spinner_duration(strip_ansi(&normalized));
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "plan/composed_source.txt",
+        &stripped
+    );
 }

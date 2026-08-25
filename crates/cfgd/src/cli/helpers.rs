@@ -1135,6 +1135,11 @@ pub(in crate::cli) struct DesiredState {
     /// nothing. `set_system_config_dir` is the caller's to apply: the read paths
     /// that never set it must keep not setting it.
     registry: std::cell::OnceCell<ProviderRegistry>,
+    /// The sources this composition actually drew a layer from, in layering
+    /// order. Read off the composed layers rather than off `cfg.spec.sources`,
+    /// so a subscription that contributed nothing is not announced as though it
+    /// had, and the profile named is the one that really merged.
+    pub sources: Vec<cfgd_core::reconciler::ComposedSource>,
     pub source_env: std::collections::HashMap<String, Vec<cfgd_core::config::EnvVar>>,
     pub source_commits: std::collections::HashMap<String, String>,
     /// Source security-constraint violations surfaced when the caller composed in
@@ -1371,6 +1376,12 @@ pub(in crate::cli) fn resolve_desired_state(
         ..
     } = composition;
 
+    // Taken BEFORE the module isolation below replaces `resolved` with a zeroed
+    // profile: that replacement drops every layer, and the header would then
+    // stop naming the sources a `--module` run still composed its module roots
+    // from.
+    let sources = cfgd_core::reconciler::ComposedSource::from_profile_layers(&resolved.layers);
+
     let config_dir = ctx.config_dir();
 
     // `--module` without `--with-profile` isolates: only the named modules
@@ -1465,6 +1476,7 @@ pub(in crate::cli) fn resolve_desired_state(
         resolved,
         modules,
         registry,
+        sources,
         source_env,
         source_commits,
         constraint_violations,

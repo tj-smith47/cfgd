@@ -3,7 +3,7 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::config::{
     EnvVar, ManagedFileSpec, PackagesSpec, ProfileLayer, ResolvedProfile, SecretSpec,
 };
-use cfgd_core::output::{Doc, Printer};
+use cfgd_core::output::{Doc, KvPair, Printer};
 
 /// Build the `cfgd profile show` Doc from a resolved profile. Pure; consumes
 /// nothing — the caller serializes `{name, resolved}` as the structured payload.
@@ -21,44 +21,91 @@ pub fn build_profile_show_doc(resolved: &ResolvedProfile, name: &str, config_pat
         })
     });
 
-    let mut env_sorted: Vec<&EnvVar> = resolved.merged.env.iter().collect();
-    env_sorted.sort_by(|a, b| a.name.cmp(&b.name));
-    doc = doc.section_if_nonempty("Env", &env_sorted, |s, items| {
-        items.iter().fold(s, |s, ev| s.kv(&ev.name, &ev.value))
-    });
-
-    let package_rows = package_display_rows(&resolved.merged.packages);
-    doc = doc.section_if_nonempty("Packages", &package_rows, |s, rows| {
-        rows.iter().fold(s, |s, (label, value)| s.kv(label, value))
-    });
-
-    doc = doc.section_if_nonempty("Files", &resolved.merged.files.managed, |s, files| {
-        files.iter().fold(s, |s, file: &ManagedFileSpec| {
-            s.kv(&file.source, file.target.display_posix())
-        })
-    });
-
-    let system_keys: Vec<&String> = resolved.merged.system.keys().collect();
-    doc = doc.section_if_nonempty("System", &system_keys, |s, keys| {
-        keys.iter().fold(s, |s, k| s.kv(k.as_str(), "(configured)"))
-    });
-
-    doc = doc.section_if_nonempty("Secrets", &resolved.merged.secrets, |s, secrets| {
-        secrets.iter().fold(s, |s, secret: &SecretSpec| {
-            let value = match (&secret.target, &secret.envs) {
-                (Some(t), Some(envs)) => format!("{} (envs: {})", t.posix(), envs.join(", ")),
-                (Some(t), None) => t.display_posix(),
-                (None, Some(envs)) => format!("envs: {}", envs.join(", ")),
-                (None, None) => "(invalid)".to_string(),
-            };
-            s.kv(&secret.source, value)
-        })
-    });
+    for (name, rows) in profile_inventory_blocks(resolved) {
+        if rows.is_empty() {
+            continue;
+        }
+        doc = doc.section(name, |s| s.kv_rows(rows));
+    }
 
     doc.with_data(serde_json::json!({
         "name": name,
         "resolved": resolved,
     }))
+}
+
+/// A profile's own inventory — Env, Packages, Files, System, Secrets — as
+/// named blocks of kv rows, in the order `cfgd profile show` has always
+/// rendered them. A block with no rows is returned empty rather than omitted,
+/// so a caller decides whether an empty block is a skipped section or an
+/// empty-state one.
+///
+/// The ONE derivation of those rows. `cfgd profile show` renders each block as
+/// a top-level section; `cfgd source show` / `cfgd source add` render the same
+/// blocks as subsections under the `profile:<name>` owner of each profile the
+/// source provides. Only the section DEPTH differs, so what a subscriber reads
+/// before subscribing and what they read afterwards cannot say different
+/// things about the same profile.
+pub fn profile_inventory_blocks(resolved: &ResolvedProfile) -> Vec<(&'static str, Vec<KvPair>)> {
+    let mut env_sorted: Vec<&EnvVar> = resolved.merged.env.iter().collect();
+    env_sorted.sort_by(|a, b| a.name.cmp(&b.name));
+
+    vec![
+        (
+            "Env",
+            env_sorted
+                .iter()
+                .map(|ev| KvPair::new(&ev.name, &ev.value))
+                .collect(),
+        ),
+        (
+            "Packages",
+            package_display_rows(&resolved.merged.packages)
+                .into_iter()
+                .map(|(label, value)| KvPair::new(label, value))
+                .collect(),
+        ),
+        (
+            "Files",
+            resolved
+                .merged
+                .files
+                .managed
+                .iter()
+                .map(|file: &ManagedFileSpec| {
+                    KvPair::new(&file.source, file.target.display_posix().to_string())
+                })
+                .collect(),
+        ),
+        (
+            "System",
+            resolved
+                .merged
+                .system
+                .keys()
+                .map(|k| KvPair::new(k.as_str(), "(configured)"))
+                .collect(),
+        ),
+        (
+            "Secrets",
+            resolved
+                .merged
+                .secrets
+                .iter()
+                .map(|secret: &SecretSpec| {
+                    let value = match (&secret.target, &secret.envs) {
+                        (Some(t), Some(envs)) => {
+                            format!("{} (envs: {})", t.posix(), envs.join(", "))
+                        }
+                        (Some(t), None) => t.display_posix().to_string(),
+                        (None, Some(envs)) => format!("envs: {}", envs.join(", ")),
+                        (None, None) => "(invalid)".to_string(),
+                    };
+                    KvPair::new(&secret.source, value)
+                })
+                .collect(),
+        ),
+    ]
 }
 
 /// Flatten a `PackagesSpec` into `(label, value)` rows in the same order the

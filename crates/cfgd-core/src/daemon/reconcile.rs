@@ -882,10 +882,13 @@ pub(crate) fn handle_reconcile(
             .iter()
             .map(|module| module.name.clone())
             .collect();
+        let composed_sources =
+            crate::reconciler::ComposedSource::from_profile_layers(&resolved.layers);
         let run_ctx = || crate::reconciler::RunContext {
             title: crate::reconciler::RunTitle::Reconcile,
             config_path: Some(config_path),
             profile: Some(profile_name),
+            sources: &composed_sources,
             modules: &module_names,
             trigger: Some(&trigger),
         };

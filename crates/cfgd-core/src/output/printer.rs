@@ -934,6 +934,32 @@ impl Printer {
         }
     }
 
+    /// [`Printer::section_owner`] for a caller that cannot know whether the
+    /// owner has anything to say until after it has said it — the top-level
+    /// counterpart of [`super::section_guard::SectionGuard::section_owner_or_collapse`].
+    ///
+    /// `cfgd source update` opens one group per source before it knows whether
+    /// the fetch, the permission review or the knob writes will render a row,
+    /// and an owner heading over nothing reads as a source that was consulted
+    /// and had nothing wrong with it.
+    #[must_use = "section closes when SectionGuard is dropped; bind it"]
+    pub fn section_owner_or_collapse(
+        &self,
+        label: &super::OwnerLabel,
+    ) -> super::section_guard::SectionGuard<'_> {
+        self.renderer.render_section_open_styled(
+            &label.plain(),
+            Some(label.styled(&self.renderer.theme)),
+            /*keep_when_empty=*/ false,
+        );
+        super::section_guard::SectionGuard {
+            printer: self,
+            renderer: self.renderer.clone(),
+            sink: self.sink_stderr.clone(),
+            depth: 1,
+        }
+    }
+
     /// Open the run's closing `Caveats` section — provider narration
     /// collected during the run, grouped under the owner that produced it and
     /// rendered once at the very end instead of inline under each action.

@@ -663,3 +663,109 @@ fn package_context_is_only_built_through_its_constructors() {
         offenders.join("\n")
     );
 }
+
+/// The files that RENDER a pending-decision row. The fence below refuses a
+/// `.summary` read anywhere in them, which is the point: a decision's stored
+/// summary restates its own coordinates, and a row that reads one is a screen
+/// describing an item by its label rather than by what it would put on the
+/// machine. [`DecisionContents::decision_row`] is the ONE composer, and the summary
+/// reaches a row only through the version-conflict annotation it derives.
+///
+/// [`DecisionContents::decision_row`]: crate::reconciler::DecisionContents::decision_row
+const DECISION_ROW_RENDERERS: &[&str] = &[
+    "cfgd-core/src/reconciler/run.rs",
+    "cfgd/src/cli/source/helpers.rs",
+    "cfgd/src/cli/decide.rs",
+    "cfgd/src/cli/status.rs",
+];
+
+/// A pending decision's stored `summary` restates its own coordinates. Every
+/// surface that LISTS a decision — `cfgd decide`, `cfgd status`, the run
+/// header's withheld rows — renders through [`DecisionContents::decision_row`]
+/// instead, so three screens naming one item cannot describe it three ways.
+///
+/// The predicate is STRUCTURAL rather than a list of binding names: any
+/// `.summary` field read inside a row-rendering file is refused, whatever the
+/// binding is called. The earlier name list (`item.summary`, `row.summary`, …)
+/// went green the moment a renderer bound the decision to any other name, which
+/// is a fence that guards a spelling instead of a rule. A read that is
+/// genuinely about something else (an `applies` record's summary column, a
+/// `-o json` serialization of the stored row) carries
+/// `// decision-summary-ok: <why>` on its own line or the line above it.
+///
+/// [`DecisionContents::decision_row`]: crate::reconciler::DecisionContents::decision_row
+#[test]
+fn no_decision_row_renderer_reads_the_stored_summary() {
+    let mut offenders = Vec::new();
+    let mut scanned = 0usize;
+    for path in workspace_rust_files() {
+        let posix = crate::to_posix_string(&path);
+        if !DECISION_ROW_RENDERERS.iter().any(|f| posix.ends_with(f)) {
+            continue;
+        }
+        scanned += 1;
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let lines: Vec<&str> = body.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || !reads_a_summary_field(line) {
+                continue;
+            }
+            let hatched = line.contains("decision-summary-ok:")
+                || i.checked_sub(1)
+                    .is_some_and(|p| lines[p].contains("decision-summary-ok:"));
+            if !hatched {
+                offenders.push(format!("{}:{}: {}", path.display(), i + 1, trimmed));
+            }
+        }
+    }
+    assert_eq!(
+        scanned,
+        DECISION_ROW_RENDERERS.len(),
+        "every listed row renderer must exist and be scanned; a renamed file \
+         silently empties this fence"
+    );
+    assert!(
+        offenders.is_empty(),
+        "render a decision through DecisionContents::decision_row; the stored summary \
+         belongs to reconciler/pending.rs:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// `<expr>.summary` — a field read, never `.summary()` (the accessor on a
+/// minted decision, which lives in `pending.rs` and is not what a row reads)
+/// and never `foo_summary` (a script summary, a diff summary).
+fn reads_a_summary_field(line: &str) -> bool {
+    line.match_indices(".summary").any(|(at, _)| {
+        // A following `(` is the accessor method; a following identifier
+        // character is a longer field name (`.summary_counts`). The dot in the
+        // pattern already excludes `script_summary` and its siblings.
+        let after = line[at + ".summary".len()..].chars().next();
+        !matches!(after, Some(c) if c == '(' || c.is_alphanumeric() || c == '_')
+    })
+}
+
+/// The matcher itself, so the fence above cannot pass because it never matches
+/// anything. `pending.rs` is where the summary legitimately lives.
+#[test]
+fn the_summary_matcher_finds_the_reads_that_do_exist() {
+    assert!(reads_a_summary_field("let a = decision.summary;"));
+    assert!(reads_a_summary_field("f.detail(&self.summary)"));
+    assert!(!reads_a_summary_field("refreshed.summary()"));
+    assert!(!reads_a_summary_field("d.script_summary.clone()"));
+    assert!(!reads_a_summary_field("snapshot.summary_counts"));
+
+    let pending = workspace_rust_files()
+        .into_iter()
+        .find(|p| crate::to_posix_string(p).ends_with("reconciler/pending.rs"))
+        .unwrap_or_else(|| panic!("reconciler/pending.rs must exist"));
+    let body = std::fs::read_to_string(&pending).unwrap_or_else(|e| panic!("{pending:?}: {e}"));
+    assert!(
+        body.lines().any(reads_a_summary_field),
+        "the fallback's own file must contain the reads this fence refuses \
+         elsewhere; if it does not, the fence guards nothing"
+    );
+}

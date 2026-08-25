@@ -424,6 +424,19 @@ resolving one-to-one against a sibling action's own `description`:
 }
 ```
 
+A run that composed one or more [sources](sources.md) names them, in layering order,
+in a `sources` array beside `totalActions` (omitted when the run was purely local).
+The human header carries the same list as a **Sources** row under **Profile**:
+
+```jsonc
+{
+  "sources": [
+    { "name": "team", "profile": "team" },
+    { "name": "infra" }
+  ]
+}
+```
+
 A [source](sources.md#automatic-apply-decisions) item still awaiting `cfgd decide` (or one
 you rejected) is withheld from the plan: it is absent from the phases, from
 `totalActions`, and from what `apply` executes (with `--yes` or with the
@@ -1530,6 +1543,8 @@ cfgd source add git@github.com:acme/dev-config.git \
 | `--sync-interval <dur>` | Sync interval (`30m`, `1h`, `6h`) |
 | `--auto-apply` | Reconcile and apply immediately after a refresh that changed this source, regardless of `daemon.reconcile.driftPolicy`; items awaiting a decision stay withheld |
 | `--pin-version <range>` | Pin to a semver version range (`~1.0`, `>=2.0`) |
+| `--require-signed-commits` | Demand a valid signature on this source's HEAD commit. Enforced by the subscribing clone itself, so an unsigned HEAD refuses the subscription |
+| `--allow-scripts` | Let this source's lifecycle scripts run even when its own `constraints.noScripts` would reject them |
 
 The URL may be any git URL or the GitHub shorthand `owner/repo`, both equally
 supported:
@@ -1608,6 +1623,26 @@ skips it). See [Source Removal](sources.md#source-removal).
 Fetch latest from sources (all or specific). Exits non-zero
 (`1`, `ExitCode::Error`) if any source fails to update, so CI can detect a
 failed refresh from `$?` alone; the per-source failure is also printed.
+
+The two subscriber-side trust knobs are settable here as `--flag`/`--no-flag`
+pairs, each of which requires a named source:
+
+| Flag | Description |
+|---|---|
+| `--require-signed-commits` | Start demanding a valid signature on this source's HEAD commit |
+| `--no-require-signed-commits` | Stop demanding one. A source whose own manifest demands one is still verified |
+| `--allow-scripts` | Start letting this source's lifecycle scripts run |
+| `--no-allow-scripts` | Stop letting them run |
+
+```sh
+cfgd source update acme --require-signed-commits
+cfgd source update acme --no-allow-scripts
+```
+
+An omitted flag leaves the stored value alone, so a plain `cfgd source update`
+never resets a demand. The edit is written **after** the fetch: it records what
+every future fetch must satisfy, so setting it does not retroactively fail the
+update that set it. The next `cfgd sync` is where an unsigned HEAD is refused.
 
 ### `cfgd source override <source> <action> <path> [value]`
 

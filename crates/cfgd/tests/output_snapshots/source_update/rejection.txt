@@ -1,11 +1,11 @@
 Update Sources
-◐ Fetching source:reject-src
-  From file://<BARE_ROOT>/reject-src-source
-   * branch            master     -> FETCH_HEAD
-     <SHA>..<SHA>  master     -> origin/master
-✓ Fetching source:reject-src
 
 source:reject-src
+  ◐ Fetching source:reject-src
+    From file://<BARE_ROOT>/reject-src-source
+     * branch            master     -> FETCH_HEAD
+       <SHA>..<SHA>  master     -> origin/master
+  ✓ Fetching source:reject-src
   Permission Changes
     ⚠ Required items increased from 0 to 2
   ⊙ skipped (permission changes rejected)

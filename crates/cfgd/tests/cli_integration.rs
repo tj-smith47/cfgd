@@ -1562,9 +1562,11 @@ fn source_update_all_failed_exits_1() {
         .assert()
         .code(1);
     let out = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    // The source is named ONCE, by the owner heading the failure rows hang
+    // under; the row itself carries the cause the git layer reported.
     assert!(
-        out.contains("Failed to update source 'my-source'"),
-        "stderr must name the failed source, got:\n{out}"
+        out.contains("source:my-source") && out.contains("update failed —"),
+        "stderr must name the failed source and its cause, got:\n{out}"
     );
 }
 

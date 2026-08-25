@@ -16,6 +16,16 @@
       "resourceType": "env"
     }
   ],
+  "manifest": {
+    "description": "Team-wide baseline",
+    "modules": [
+      "dev-tools",
+      "shell"
+    ],
+    "name": "team-config",
+    "profiles": [],
+    "version": "3.1.0"
+  },
   "modules": [
     "dev-tools",
     "shell"

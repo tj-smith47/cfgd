@@ -8,4 +8,4 @@ Add source:doomed-src
 ✗ Cloning source:doomed-src — exit 128
 ✗ Failed to clone source 'doomed-src' (libgit2) — failed to fetch source 'doomed-src': failed to resolve path '<BARE>': <os error>; class=Os (2)
 
-✗ Failed to load source 'doomed-src': source error: failed to fetch source 'doomed-src': failed to resolve path '<BARE>': <os error>; class=Os (2)
+✗ Failed to load source 'doomed-src': fetch failed: failed to resolve path '<BARE>': <os error>; class=Os (2)

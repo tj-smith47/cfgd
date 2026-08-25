@@ -828,6 +828,38 @@ pub fn resolve_relative_path(
     }
 }
 
+/// The ONE resolution of a `spec.files[].source` into the file the planner
+/// will actually read, and the reason the plan action and every surface that
+/// DESCRIBES that action name the same bytes.
+///
+/// `resolve_relative_path` validates the input; a resolved path that EXISTS is
+/// then checked for containment in `config_dir`, because a symlink inside the
+/// config directory can point anywhere and only canonicalization sees it.
+/// Refused resolutions answer `None` — a caller that must say why maps it onto
+/// its own error type (the file manager renders `PathTraversal`).
+///
+/// It lives here rather than in the file manager because `cfgd decide` renders
+/// what a withheld `files.*` decision would put on the machine, and that row
+/// has to read the same file the action would write. Two copies of the rule
+/// meant a source-delivered or symlinked path could be described by one and
+/// refused by the other. **Every managed file's source is resolved against the
+/// LOCAL config directory, whatever source delivered the entry** — nothing in
+/// composition rebases a source-delivered `source:` onto its own checkout — so
+/// there is exactly one rule here rather than a per-origin split.
+pub fn resolve_managed_file_source(
+    source: &str,
+    config_dir: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    if source.is_empty() {
+        return None;
+    }
+    let resolved = resolve_relative_path(&std::path::PathBuf::from(source), config_dir).ok()?;
+    if resolved.exists() && validate_path_within(&resolved, config_dir).is_err() {
+        return None;
+    }
+    Some(resolved)
+}
+
 /// Validate that a resolved path does not escape a root directory.
 ///
 /// Canonicalizes both paths and checks containment. Returns the canonicalized

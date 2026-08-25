@@ -11,4 +11,4 @@ New integrity  sha256:<INTEGRITY>
 
 ✓ Updated module 'upmod' in modules.lock
 
-→ Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'
+→ Run 'cfgd plan' to preview changes, then 'cfgd apply'

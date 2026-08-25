@@ -432,7 +432,17 @@ pub(in crate::cli) fn withheld_for_run(
         .with_unrecorded(&review.to_mint, &scope)
         .with_undecidable(review.undecidable.clone())
         .with_auto_accepted(&review.auto_accepted);
-    Ok((withheld, review))
+    // Resolved AFTER the folds above, so an unrecorded row this run classified
+    // is priced the same way a stored one is — the header must not show the
+    // content of some withheld rows and the summary of others.
+    let rows: Vec<_> = withheld
+        .pending
+        .iter()
+        .chain(withheld.rejected.iter())
+        .cloned()
+        .collect();
+    let contents = reconciler::DecisionContents::for_decisions(resolved, &rows, ctx.config_dir());
+    Ok((withheld.with_contents(contents), review))
 }
 
 /// Whether a run may record the decisions its policy review classified NOW.
@@ -467,6 +477,7 @@ pub(in crate::cli) fn build_plan_output(
     phase_filter: Option<&PhaseFilter>,
     pending_backups: &[String],
     withheld: &reconciler::WithheldDecisions,
+    sources: &[reconciler::ComposedSource],
 ) -> PlanOutput {
     let phases: Vec<PlanPhaseOutput> =
         reconciler::in_scope_tree(plan, phase_filter, reconciler::PhaseCoverage::Complete)
@@ -502,6 +513,7 @@ pub(in crate::cli) fn build_plan_output(
         context: context_name.to_string(),
         phases,
         total_actions,
+        sources: sources.to_vec(),
         warnings: plan.warnings.clone(),
         pending_backups: pending_backups.to_vec(),
         pending_decisions: withheld.pending.clone(),
@@ -693,7 +705,14 @@ pub(in crate::cli) fn display_plan_preview(
     run.header(printer);
 
     // Build structured output
-    let plan_output = build_plan_output(plan, context, phase_filter, pending_backups, withheld);
+    let plan_output = build_plan_output(
+        plan,
+        context,
+        phase_filter,
+        pending_backups,
+        withheld,
+        run.sources(),
+    );
 
     // Structured-output routing: when -o yaml/json/etc., emit the plan as the
     // doc's data payload and skip the human render.

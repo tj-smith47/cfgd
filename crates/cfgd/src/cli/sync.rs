@@ -20,11 +20,10 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
     };
 
     {
+        // The section keeps only its pull outcome: the header's `Config` row
+        // already names this location, and stating it again three lines later
+        // makes one fact read as two.
         let repo_sec = printer.section("Local Repo");
-        // The repo being pulled is the config DIRECTORY, which the `Config` row
-        // above names only a file inside of — and a pull failure otherwise
-        // reports a remote nothing on screen says where to look for.
-        repo_sec.kv("Path", config_dir.display_posix());
         let sp = repo_sec.spinner("Pulling from remote");
         match cfgd_core::daemon::git_pull_sync(&config_dir) {
             Ok(Some(movement)) => {
@@ -259,7 +258,7 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                 }
                 Err(e) => {
                     sp.finish_fail("sync failed")
-                        .detail(cfgd_core::output::collapse_to_subject_line(e));
+                        .detail(crate::cli::source::source_failure_detail(&e));
                     sync_payload.sources.push(SourceSyncOutput {
                         name: source_spec.name.clone(),
                         status: "failed".to_string(),
@@ -271,9 +270,10 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
     }
 
     let doc = if changes_detected {
-        Doc::new()
-            .status(Role::Info, format!("Sources updated. {}", MSG_RUN_APPLY))
-            .with_data(&sync_payload)
+        // The `source:<name>` rows above already said the sources updated; all
+        // that is left to say is what to run next, in the one spelling every
+        // other command uses for it.
+        Doc::new().hint(MSG_RUN_APPLY).with_data(&sync_payload)
     } else {
         Doc::new().with_data(&sync_payload)
     };

@@ -232,6 +232,7 @@ pub fn run_apply(
     // used, custom managers included.
     let mut registry = desired.take_registry(&cfg);
     let source_env = desired.source_env;
+    let composed_sources = desired.sources;
     let source_commits = desired.source_commits;
     let mut resolved_modules = desired.modules;
     let mut effective_resolved = desired.resolved;
@@ -470,6 +471,7 @@ pub fn run_apply(
         title,
         config_path: Some(cli.config.as_path()),
         profile: profile_label.as_deref(),
+        sources: &composed_sources,
         modules: &module_names,
         trigger: None,
     };

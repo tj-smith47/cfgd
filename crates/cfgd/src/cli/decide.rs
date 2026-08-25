@@ -162,10 +162,12 @@ pub(super) fn cmd_decide(
         String,
     )> = None;
     let mut warnings: Vec<String> = Vec::new();
+    let mut composed: Option<cfgd_core::config::ResolvedProfile> = None;
     match classification {
-        Ok((withheld, _)) => {
+        Ok((withheld, _, resolved)) => {
             warnings = withheld.undecidable.iter().map(|b| b.warning()).collect();
             decisions.extend(withheld.pending.into_iter().filter(|d| d.id == 0));
+            composed = resolved;
         }
         Err(e) => {
             let code = super::output_types::ClassificationDegradedCode::from_error(&e);
@@ -177,10 +179,17 @@ pub(super) fn cmd_decide(
             classification_degraded = Some((code, reason));
         }
     }
+    let contents = match &composed {
+        Some(resolved) => {
+            super::DecisionContents::for_decisions(resolved, &decisions, &super::config_dir(cli))
+        }
+        None => Default::default(),
+    };
     printer.emit(build_decide_list_doc(
         &decisions,
         &warnings,
         classification_degraded,
+        &contents,
     ));
     Ok(())
 }
@@ -203,14 +212,22 @@ pub(super) fn cmd_decide(
 /// config with zero sources has no source items either way — both answer
 /// "nothing unrecorded" instead of running composition, so a local manifest
 /// typo on a sourceless machine cannot disable answering the store's rows.
+///
+/// The resolved profile travels back out with the verdict because the listing
+/// renders each pending row's CONTENT, and this is the one composition the
+/// command performs — deriving it again at the render would be a second
+/// config parse per invocation. `None` is a run with nothing to classify.
+type Classification = (
+    reconciler::WithheldDecisions,
+    reconciler::SourcePolicyReview,
+    Option<cfgd_core::config::ResolvedProfile>,
+);
+
 fn source_classification(
     ctx: &RunContext<'_>,
     state: &cfgd_core::state::StateStore,
     writes: plan_ops::DecisionWrites<'_>,
-) -> anyhow::Result<(
-    reconciler::WithheldDecisions,
-    reconciler::SourcePolicyReview,
-)> {
+) -> anyhow::Result<Classification> {
     let cli = ctx.cli();
     if !cli.config.exists() {
         return Ok(Default::default());
@@ -235,7 +252,7 @@ fn source_classification(
     // Decide enumerates no package state (it stays offline), so the
     // classification auto-accepts nothing here — installed-but-undecided items
     // keep listing until a run that enumerates (plan/apply/tick) releases them.
-    plan_ops::withheld_for_run(
+    let (withheld, review) = plan_ops::withheld_for_run(
         ctx,
         state,
         cfg,
@@ -244,7 +261,8 @@ fn source_classification(
         writes,
         &reconciler::ActualPackages::default(),
     )
-    .context("source classification failed")
+    .context("source classification failed")?;
+    Ok((withheld, review, Some(desired.resolved)))
 }
 
 /// Pure builder: bulk-resolution Doc (`accept --all` / `accept --source`).
@@ -315,6 +333,7 @@ pub fn build_decide_list_doc(
     decisions: &[PendingDecision],
     warnings: &[String],
     classification_degraded: Option<(super::output_types::ClassificationDegradedCode, String)>,
+    contents: &super::DecisionContents,
 ) -> Doc {
     let payload = DecideListOutput {
         decisions: decisions.to_vec(),
@@ -331,7 +350,7 @@ pub fn build_decide_list_doc(
     }
 
     warn_lines(Doc::new().section("Pending Decisions", |s| {
-        build_pending_decisions_table_section(s, decisions)
+        build_pending_decisions_table_section(s, decisions, contents)
     }))
     .hint("Use `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to resolve")
     .hint(

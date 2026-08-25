@@ -318,6 +318,7 @@ pub fn cmd_module_create(
             title: cfgd_core::reconciler::RunTitle::Apply,
             config_path: Some(config_path.as_path()),
             profile: None,
+            sources: &[],
             modules: &module_names,
             trigger: None,
         };

@@ -376,6 +376,7 @@ fn init_apply_then_next_steps_bridge_invariant() {
             title: cfgd_core::reconciler::RunTitle::Plan,
             config_path: Some(config_path.as_path()),
             profile: Some("default"),
+            sources: &[],
             modules: &modules,
             trigger: None,
         },

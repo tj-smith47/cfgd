@@ -1039,6 +1039,8 @@ pub fn source_add_args(url: impl Into<String>) -> SourceAddArgs {
         auto_apply: false,
         pin_version: None,
         yes: true,
+        require_signed_commits: false,
+        allow_scripts: false,
     }
 }
 
@@ -1062,10 +1064,23 @@ pub fn make_bare_source_repo(
         "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: {source_name}\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n{extra}",
     );
     std::fs::write(src.join("cfgd-source.yaml"), yaml).expect("write cfgd-source.yaml");
+    // A manifest that PROMISES `default` and ships no `profiles/default.yaml`
+    // is a broken source, and a fixture shaped that way can only ever exercise
+    // the missing-profile arm of every surface that renders what a source
+    // provides.
+    std::fs::create_dir_all(src.join("profiles")).expect("profiles dir");
+    std::fs::write(
+        src.join("profiles").join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n  packages:\n    brew:\n      formulae:\n        - ripgrep\n",
+    )
+    .expect("write profiles/default.yaml");
     let mut index = src_repo.index().expect("index");
     index
         .add_path(std::path::Path::new("cfgd-source.yaml"))
         .expect("add_path");
+    index
+        .add_path(std::path::Path::new("profiles/default.yaml"))
+        .expect("add_path profile");
     index.write().expect("index_write");
     let tree_id = index.write_tree().expect("write_tree");
     let tree = src_repo.find_tree(tree_id).expect("find_tree");

@@ -609,10 +609,13 @@ pub(super) fn apply_plan(
     } else {
         cfgd_core::reconciler::RunTitle::Apply
     };
+    let composed_sources =
+        cfgd_core::reconciler::ComposedSource::from_profile_layers(&resolved.layers);
     let ctx = cfgd_core::reconciler::RunContext {
         title,
         config_path: Some(config_path.as_path()),
         profile: opts.profile,
+        sources: &composed_sources,
         modules: &module_names,
         trigger: None,
     };

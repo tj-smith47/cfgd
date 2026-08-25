@@ -626,6 +626,7 @@ pub(super) fn run_scheduled_backups(
         title: crate::reconciler::RunTitle::Backup,
         config_path: Some(config_path),
         profile: single_profile,
+        sources: &[],
         modules: &[],
         trigger: Some(SCHEDULE_TRIGGER),
     };

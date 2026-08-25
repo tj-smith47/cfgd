@@ -25,10 +25,30 @@ pub use priority::cmd_source_priority;
 pub use remove::cmd_source_remove;
 pub use replace::cmd_source_replace;
 pub use show::cmd_source_show;
-pub use update::cmd_source_update;
+pub use update::{SubscriptionEdits, cmd_source_update};
 
-#[cfg(test)]
-pub(in crate::cli) use update::run_source_update;
+// Public so an integration test can drive the fetch loop without
+// `cmd_source_update`'s process-exiting tail aborting the test binary.
+pub use update::run_source_update;
+
+/// The detail half of the ONE failure row a per-source operation settles on,
+/// rendered under the `source:<name>` owner section the caller has already
+/// opened (`✗ sync failed — <cause>`, `✗ update failed — <cause>`).
+///
+/// A [`SourceError`] hands back its `cause()` rather than its `Display`,
+/// because the owner heading directly above the row already names the source;
+/// the full sentence would put that name on the line twice. Anything else
+/// collapses as it always did — those errors carry no name to strip.
+///
+/// [`SourceError`]: cfgd_core::errors::SourceError
+pub(in crate::cli) fn source_failure_detail(err: &cfgd_core::errors::CfgdError) -> String {
+    match err {
+        cfgd_core::errors::CfgdError::Source(source_err) => {
+            cfgd_core::output::collapse_to_subject_line(source_err.cause())
+        }
+        other => cfgd_core::output::collapse_to_subject_line(other),
+    }
+}
 
 /// Warning emitted when writing `sources.lock` fails after a source mutation.
 /// The lockfile is advisory (it records resolved commit SHAs), so every caller
@@ -50,8 +70,8 @@ pub(in crate::cli) use helpers::{
 #[cfg(test)]
 pub(in crate::cli) use helpers::{
     DEFAULT_NONINTERACTIVE_PRIORITY, add_source_to_config, build_subscription_preview_input,
-    count_policy_items, display_source_manifest, format_conflict_preview_lines, infer_source_name,
-    parse_priority_input, remove_source_from_config, resolve_non_interactive_profile,
+    count_policy_items, format_conflict_preview_lines, infer_source_name, parse_priority_input,
+    remove_source_from_config, resolve_non_interactive_profile,
 };
 
 // Glob-import all helpers so siblings can reference them as `super::*`-imported

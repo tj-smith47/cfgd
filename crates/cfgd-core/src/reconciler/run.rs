@@ -64,10 +64,62 @@ pub struct RunContext<'a> {
     pub title: RunTitle,
     pub config_path: Option<&'a std::path::Path>,
     pub profile: Option<&'a str>,
+    /// The sources this run's composition drew from, in the order they were
+    /// layered. Empty for a run that composed none, which renders no row.
+    pub sources: &'a [ComposedSource],
     pub modules: &'a [String],
     /// What woke this run — the daemon's only extra row (`drift (3 resources)`,
     /// `schedule (daily)`).
     pub trigger: Option<&'a str>,
+}
+
+/// One source a run's composition drew from, as the header names it and as the
+/// `-o json` plan payload carries it.
+///
+/// The profile travels beside the name rather than baked into it because the
+/// two are separate facts about the subscription — the source is WHO delivered
+/// the layer, the profile is WHICH of its profiles this machine subscribed to —
+/// and a structured consumer must be able to read either without parsing a
+/// rendered string apart.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposedSource {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+}
+
+impl ComposedSource {
+    /// The sources a composed profile actually drew a layer from, in layering
+    /// order, one entry per source however many layers it contributed.
+    ///
+    /// Derived from the LAYERS rather than from `spec.sources`, so a
+    /// subscription that contributed nothing is not announced as though it had
+    /// and the profile named is the one that really merged. The ONE derivation:
+    /// the CLI's apply/plan paths and the daemon's reconcile tick both read it,
+    /// and a header that named different sources depending on which surface
+    /// printed it would describe two machines.
+    pub fn from_profile_layers(layers: &[crate::config::ProfileLayer]) -> Vec<Self> {
+        let mut seen = std::collections::HashSet::new();
+        layers
+            .iter()
+            .filter(|layer| layer.source != crate::config::LOCAL_LAYER)
+            .filter(|layer| seen.insert(layer.source.clone()))
+            .map(|layer| Self {
+                name: layer.source.clone(),
+                profile: Some(layer.profile_name.clone()).filter(|p| !p.is_empty()),
+            })
+            .collect()
+    }
+
+    /// The header's rendering: `team (profile team)`, or the bare name when the
+    /// subscription named no profile.
+    fn display(&self) -> String {
+        match &self.profile {
+            Some(profile) => format!("{} (profile {profile})", self.name),
+            None => self.name.clone(),
+        }
+    }
 }
 
 /// Whether a run asks before it acts.
@@ -222,6 +274,13 @@ pub struct ApplyRun<'a> {
 }
 
 impl<'a> ApplyRun<'a> {
+    /// The sources this run composed, so the `-o json` payload and the header
+    /// row above it read the same list rather than two independently threaded
+    /// copies of it.
+    pub fn sources(&self) -> &'a [ComposedSource] {
+        self.ctx.sources
+    }
+
     pub fn new(ctx: RunContext<'a>, plan: &'a Plan) -> Self {
         Self {
             ctx,
@@ -327,6 +386,21 @@ impl<'a> ApplyRun<'a> {
         if let Some(profile) = self.ctx.profile {
             rows.push(KvPair::new("Profile", profile.to_string()));
         }
+        // Directly under `Profile`, because the sources are what that profile
+        // was composed FROM. A plain value rather than an annotation: the
+        // subscribed profile is part of what the row states, not an aside about
+        // it.
+        if !self.ctx.sources.is_empty() {
+            rows.push(KvPair::new(
+                "Sources",
+                self.ctx
+                    .sources
+                    .iter()
+                    .map(ComposedSource::display)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
+        }
         // A platform-gated module contributed no work, so it leaves the name
         // list and returns as an annotation on it. That annotation IS the
         // render of `PhaseName::Modules`, which prints no block of its own.
@@ -411,35 +485,53 @@ impl<'a> ApplyRun<'a> {
         let Some(withheld) = self.withheld else {
             return;
         };
-        let row = |d: &crate::state::PendingDecision, suffix: &str| {
-            (
-                format!("{} {}", d.tier, d.resource),
-                format!("{} by {} ({suffix})", d.action, d.source),
-            )
+        // The rows are the ones `cfgd decide` and `cfgd status` render, from
+        // the same composer and grouped the same way: the owner heading names
+        // the source, the subject names the tier and resource, and the detail
+        // says what would land on the machine. What is run-SPECIFIC is the
+        // instruction, and it is ONE hint under the block rather than a suffix
+        // repeated on every row.
+        let block = |title: &str, rows: &[crate::state::PendingDecision], role, hint: &str| {
+            let section = printer.section(title);
+            for (source, items) in super::decisions_by_source(rows) {
+                let owner = section.section_owner(&OwnerLabel::new("source", source));
+                for item in items {
+                    let (subject, detail) = withheld.contents.decision_row(item);
+                    let line = owner.status(role, subject);
+                    match detail {
+                        Some(detail) => line.detail(detail),
+                        None => line,
+                    };
+                }
+            }
+            section.hint(hint);
         };
         if !withheld.pending.is_empty() {
-            let section = printer.section("Pending Decisions (not included in this plan)");
-            for d in &withheld.pending {
-                // An unrecorded item (`id` 0) is answerable only where `cfgd
-                // decide` can mint its row. On a run whose config does not own
-                // the store, the usual instruction names a command that will
-                // refuse — so say what is true instead. Recorded rows resolve
-                // without a mint and keep the instruction everywhere.
-                let suffix = if d.id == 0 && !self.decide_answerable {
-                    "not yet recorded; decide from the machine's own config, or with --state-dir"
-                } else {
-                    "run `cfgd decide accept/reject`"
-                };
-                let (subject, detail) = row(d, suffix);
-                section.status(Role::Info, subject).detail(detail);
-            }
+            // An unrecorded item (`id` 0) is answerable only where `cfgd
+            // decide` can mint its row. On a run whose config does not own the
+            // store, the usual instruction names a command that will refuse —
+            // so say what is true instead. Recorded rows resolve without a mint
+            // and keep the instruction everywhere.
+            let unrecorded = withheld.pending.iter().any(|d| d.id == 0);
+            let hint = if unrecorded && !self.decide_answerable {
+                "Not yet recorded — answer from the machine's own config, or pass --state-dir"
+            } else {
+                "Run `cfgd decide accept/reject` to answer"
+            };
+            block(
+                "Pending Decisions (not included in this plan)",
+                &withheld.pending,
+                Role::Info,
+                hint,
+            );
         }
         if !withheld.rejected.is_empty() {
-            let section = printer.section("Declined Decisions (not included in this plan)");
-            for d in &withheld.rejected {
-                let (subject, detail) = row(d, "declined; run `cfgd decide accept` to include");
-                section.status(Role::Skipped, subject).detail(detail);
-            }
+            block(
+                "Declined Decisions (not included in this plan)",
+                &withheld.rejected,
+                Role::Skipped,
+                "Run `cfgd decide accept` to include",
+            );
         }
     }
 

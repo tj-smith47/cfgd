@@ -259,6 +259,62 @@ cfgd source remove acme-corp                            # unsubscribe
 cfgd source update                                      # fetch latest from all sources
 ```
 
+### What a source provides
+
+`cfgd source add` renders the source's manifest before it asks you to confirm, and
+`cfgd source show` renders the same block afterwards. Both go through one composer, so a
+subscription decision and a later inspection describe the source identically:
+
+```
+Manifest
+  Name         acme-corp
+  Version      1.0.0
+  Description  Team-wide baseline
+
+Profiles
+  profile:default
+    Env
+      EDITOR  vim
+    Packages
+      brew formulae  ripgrep
+
+Policy
+  Require Signed Commits  false
+  Scripts Allowed         false
+  Secrets Read Allowed    false
+  System Changes Allowed  false
+  Allowed Target Paths    ~/.config/**, ~/.bashrc
+  Required
+    ⊙ file: ~/.bashrc
+  Recommended
+    ⊙ system: shellAliases
+```
+
+Each provided profile is headed by the `profile:<name>` token an apply header uses, and
+its contents are the same inventory `cfgd profile show` renders. Env values are shown in
+full (secrets stay `${secret:...}` references), so you see what a subscription would put
+in your environment before you take it. A profile the manifest promises but the checkout
+does not carry is reported under its own token rather than rendered empty.
+
+The `Policy` rows read in one polarity (`Scripts Allowed  false`, never a mix of
+"allowed" and "blocked" phrasings). On `source show` they are the *effective* policy,
+folding in your own subscription's `allowScripts` / `requireSignedCommits`; on
+`source add` they are the policy the pending subscription would take. `Locked`,
+`Required` and `Recommended` list their items directly, with no separate count row.
+
+Both surfaces carry the same data under `-o json`, in an additive `manifest` object:
+
+```console
+$ cfgd source show acme-corp -o json | jq '.manifest'
+{
+  "name": "acme-corp",
+  "version": "1.0.0",
+  "description": "Team-wide baseline",
+  "profiles": [{ "name": "default" }],
+  "modules": ["dev-tools"]
+}
+```
+
 Override or reject a source's recommendation (e.g., "I don't want kubectx, and I prefer nvim over VS Code"):
 
 ```sh
@@ -445,6 +501,14 @@ spec:
       subscription:
         profile: acme-backend
         allowScripts: true   # opt in to this source's scripts
+```
+
+The same knob from the CLI:
+
+```sh
+cfgd source add acme/config --allow-scripts
+cfgd source update acme --allow-scripts
+cfgd source update acme --no-allow-scripts
 ```
 
 With `allowScripts: true`, the source's scripts are permitted and every command that composes sources warns, naming each surface it found, so the execution is visible before any apply. It is a warning rather than a note deliberately: a note renders only under `-v`, which is not where the line announcing that third-party code will run belongs.
@@ -819,6 +883,16 @@ spec:
 ```
 
 The two flags are ORed. Either one asking is enough, and neither turns the other off. The subscriber flag is the trust anchor, because the manifest's copy lives inside the cached clone.
+
+The subscriber flag is settable from the CLI, at subscribe time and afterwards:
+
+```sh
+cfgd source add acme/config --require-signed-commits   # verified by the subscribing clone
+cfgd source update acme --require-signed-commits       # start demanding one
+cfgd source update acme --no-require-signed-commits    # stop demanding one
+```
+
+`cfgd source add` sets it **before** the clone, so an unsigned HEAD refuses the subscription outright. `cfgd source update` sets it **after** the fetch: the demand describes every future fetch rather than the one that recorded it, so the next `cfgd sync` is where an unsigned HEAD is refused. Omitting both halves of the pair leaves the stored value alone.
 
 `spec.security.allowUnsigned` still bypasses both. Set it only where signatures are unavailable.
 

@@ -14,4 +14,4 @@ module:alpha
 
 ✓ Locked remote module 'alpha' in modules.lock
 
-→ Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'
+→ Run 'cfgd plan' to preview changes, then 'cfgd apply'

@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::validate_source_priority;
-use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, SectionBuilder};
+use cfgd_core::output::{OwnerLabel, Role, SectionBuilder};
 
 // --- Source cache layout ---
 
@@ -89,97 +89,6 @@ pub(crate) fn parse_priority_input(input: &str) -> anyhow::Result<u32> {
     validate_source_priority(n).map_err(|m| anyhow::anyhow!(m))
 }
 
-/// Emit the "Source Manifest" + "Policy" sections via a buffered Doc and
-/// return the list of profile names the manifest provides. Doc-based so
-/// kv ordering inside sections renders deterministically (the SectionGuard
-/// path defers kv emission past section close, mis-ordering with the
-/// section header).
-pub(crate) fn display_source_manifest(
-    printer: &Printer,
-    manifest: &config::ConfigSourceDocument,
-) -> Vec<String> {
-    let provided_profiles = cfgd_core::config::source_profile_names(&manifest.spec.provides);
-
-    let mut doc = Doc::new().section("Source Manifest", |s| {
-        let mut s = s.kv("Name", &manifest.metadata.name);
-        if let Some(ref version) = manifest.metadata.version {
-            s = s.kv("Version", version);
-        }
-        if let Some(ref desc) = manifest.metadata.description {
-            s = s.kv("Description", desc);
-        }
-        if !provided_profiles.is_empty() {
-            s = s.kv("Profiles", provided_profiles.join(", "));
-        }
-        s
-    });
-
-    let policy = &manifest.spec.policy;
-    let required_count = count_policy_items(&policy.required);
-    let recommended_count = count_policy_items(&policy.recommended);
-    let locked_count = count_policy_items(&policy.locked);
-    let constraints = &manifest.spec.policy.constraints;
-
-    let any_policy_content = locked_count > 0
-        || required_count > 0
-        || recommended_count > 0
-        || constraints.no_scripts
-        || constraints.no_secrets_read
-        || !constraints.allowed_target_paths.is_empty();
-
-    if any_policy_content {
-        doc = doc.section("Policy", |s| {
-            let mut s = s;
-            if locked_count > 0 {
-                s = s.status(
-                    Role::Warn,
-                    format!(
-                        "{} locked (cannot override)",
-                        cfgd_core::pluralize(locked_count, "item")
-                    ),
-                );
-            }
-            if required_count > 0 {
-                s = s.status(
-                    Role::Info,
-                    format!(
-                        "{} required (team requirement)",
-                        cfgd_core::pluralize(required_count, "item")
-                    ),
-                );
-            }
-            if recommended_count > 0 {
-                s = s.status(
-                    Role::Info,
-                    format!(
-                        "{} recommended",
-                        cfgd_core::pluralize(recommended_count, "item")
-                    ),
-                );
-            }
-            if constraints.no_scripts {
-                s = s.status(Role::Info, "Scripts: blocked");
-            }
-            if constraints.no_secrets_read {
-                s = s.status(Role::Info, "Secret access: blocked");
-            }
-            if !constraints.allowed_target_paths.is_empty() {
-                s = s.status(
-                    Role::Info,
-                    format!(
-                        "Allowed paths: {}",
-                        constraints.allowed_target_paths.join(", ")
-                    ),
-                );
-            }
-            s
-        });
-    }
-
-    printer.emit(doc);
-    provided_profiles
-}
-
 pub(crate) fn count_policy_items(items: &config::PolicyItems) -> usize {
     let mut count = 0;
     if let Some(ref pkgs) = items.packages {
@@ -203,28 +112,12 @@ pub(crate) fn count_policy_items(items: &config::PolicyItems) -> usize {
     count
 }
 
-/// The tier word as it opens a pending-decision status subject, TitleCased to
-/// match every other subject-opening word on the same dashboard.
-///
-/// Display only: `PendingDecision.tier` is the raw `spec.policy` key the user
-/// wrote and the token every `-o json` reader and `cfgd decide` matches on, so
-/// it is never rewritten at the source. Generic rather than a three-arm match
-/// over the known tiers, so a policy key cfgd does not recognise still renders
-/// as itself instead of vanishing.
-fn title_cased_tier(tier: &str) -> String {
-    let mut chars = tier.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
-}
-
 /// Append a per-source breakdown of pending decisions to a [`SectionBuilder`].
 ///
 /// Grouped by source name (BTreeMap → alphabetical order). Each source becomes
 /// a nested subsection headed by its `source:<name>` owner token, whose first
-/// status line carries the count and whose remaining lines list the per-item
-/// tier/resource/summary triplet. Returns the augmented builder so callers can
+/// status line carries the count and whose remaining lines say what each item
+/// would put on the machine. Returns the augmented builder so callers can
 /// chain further composition.
 ///
 /// The single renderer behind both `cfgd decide`'s listing and `cfgd status`'s
@@ -233,28 +126,26 @@ fn title_cased_tier(tier: &str) -> String {
 pub(crate) fn build_pending_decisions_table_section(
     s: SectionBuilder,
     decisions: &[cfgd_core::state::PendingDecision],
+    contents: &cfgd_core::reconciler::DecisionContents,
 ) -> SectionBuilder {
-    let mut by_source: std::collections::BTreeMap<&str, Vec<&cfgd_core::state::PendingDecision>> =
-        std::collections::BTreeMap::new();
-    for d in decisions {
-        by_source.entry(&d.source).or_default().push(d);
-    }
-    by_source.into_iter().fold(s, |s, (source_name, items)| {
-        let count = items.len();
-        let plural = if count == 1 { "" } else { "s" };
-        // The same `source:<name>` token every other source-owned line carries —
-        // one screen must not name one source two ways.
-        s.subsection_owner(&OwnerLabel::new("source", source_name), |sub| {
-            let sub = sub.status(Role::Info, format!("{count} pending item{plural}"));
-            items.iter().fold(sub, |sub, item| {
-                sub.status_with(
-                    Role::Info,
-                    format!("{} {}", title_cased_tier(&item.tier), item.resource),
-                    |f| f.detail(format!("{} ({})", item.summary, item.action)),
-                )
+    cfgd_core::reconciler::decisions_by_source(decisions)
+        .into_iter()
+        .fold(s, |s, (source_name, items)| {
+            let count = items.len();
+            let plural = if count == 1 { "" } else { "s" };
+            // The same `source:<name>` token every other source-owned line
+            // carries — one screen must not name one source two ways.
+            s.subsection_owner(&OwnerLabel::new("source", source_name), |sub| {
+                let sub = sub.status(Role::Info, format!("{count} pending item{plural}"));
+                items.iter().fold(sub, |sub, item| {
+                    let (subject, detail) = contents.decision_row(item);
+                    sub.status_with(Role::Info, subject, |f| match detail {
+                        Some(detail) => f.detail(detail),
+                        None => f,
+                    })
+                })
             })
         })
-    })
 }
 
 pub(crate) fn add_source_to_config(

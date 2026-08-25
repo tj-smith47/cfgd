@@ -251,7 +251,7 @@ fn finish_enrollment(
                 printer
                     .status(Role::Info, "Server pushed desired config")
                     .detail(format!("saved to {}", path.posix()));
-                printer.status_simple(Role::Info, MSG_RUN_APPLY);
+                printer.hint(MSG_RUN_APPLY);
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to save pending server config");
@@ -313,7 +313,7 @@ pub(super) fn build_device_credential(
 pub(super) fn next_steps_lines() -> &'static [(&'static str, &'static str)] {
     &[
         ("cfgd checkin --server-url <url>", "report status to server"),
-        ("cfgd apply --dry-run", "preview configuration"),
+        ("cfgd plan", "preview configuration"),
         ("cfgd apply", "apply configuration"),
         ("cfgd daemon install", "start background sync"),
     ]

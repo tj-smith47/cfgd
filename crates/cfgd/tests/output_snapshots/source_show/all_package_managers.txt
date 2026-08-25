@@ -8,15 +8,20 @@ Source: full-pkg-source
 
 Manifest
   Name         full-pkg-source
+  Version      1.0.0
   Description  All package manager types
-  Policy Summary
-    Required
-      Count  8
-      ⊙ brew formula: git
-      ⊙ brew formula: ripgrep
-      ⊙ brew cask: iterm2
-      ⊙ apt: build-essential
-      ⊙ cargo: cargo-edit
-      ⊙ pipx: black
-      ⊙ dnf: gcc
-      ⊙ npm: typescript
+
+Policy
+  Require Signed Commits  false
+  Scripts Allowed         false
+  Secrets Read Allowed    false
+  System Changes Allowed  false
+  Required
+    ⊙ brew formula: git
+    ⊙ brew formula: ripgrep
+    ⊙ brew cask: iterm2
+    ⊙ apt: build-essential
+    ⊙ cargo: cargo-edit
+    ⊙ pipx: black
+    ⊙ dnf: gcc
+    ⊙ npm: typescript

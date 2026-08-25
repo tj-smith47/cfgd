@@ -1,0 +1,7 @@
+Update Sources
+
+source:missing-team
+  ✗ update failed        — git error: 'file:///nonexistent/path/that/does/not/exist.git' is a local path or file:// URL, which is not allowed as a source origin (pass a git URL, e.g. https://github.com/acme/config.git)
+  ✓ requireSignedCommits — false → true
+
+✗ 1 source failed to update

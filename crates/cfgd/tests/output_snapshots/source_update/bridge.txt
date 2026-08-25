@@ -1,10 +1,10 @@
 Update Sources
-◐ Fetching source:bridge-upd
-  From file://<BARE_ROOT>/bridge-upd-source
-   * branch            master     -> FETCH_HEAD
-✓ Fetching source:bridge-upd
 
 source:bridge-upd
+  ◐ Fetching source:bridge-upd
+    From file://<BARE_ROOT>/bridge-upd-source
+     * branch            master     -> FETCH_HEAD
+  ✓ Fetching source:bridge-upd
   ✓ updated
 
 ✓ Updated 1 source

@@ -17,7 +17,7 @@
 cfgd init                  # scaffold an empty config repo
 cfgd generate              # scan, propose structure, generate
 cfgd profile switch base   # activate the generated base profile
-cfgd apply --dry-run       # preview what would be applied
+cfgd plan                  # preview what would be applied
 cfgd apply                 # apply to the machine
 ```
 

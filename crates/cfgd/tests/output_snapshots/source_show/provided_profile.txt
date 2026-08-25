@@ -30,6 +30,13 @@ Manifest
   Version      3.1.0
   Description  Team-wide baseline
 
+Profiles
+  profile:dev
+    Env
+      EDITOR  vim
+    Packages
+      brew formulae  ripgrep
+
 Policy
   Require Signed Commits  true (bypassed: security.allowUnsigned)
   Scripts Allowed         false

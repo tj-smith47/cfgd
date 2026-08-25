@@ -1,0 +1,21 @@
+◐ Cloning source:acme
+  Cloning into '<STATE_DIR>/sources/acme'...
+✓ Cloning source:acme
+
+Plan
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  default
+  Sources  acme (profile default)
+  Phases   Prerequisites
+
+Phase: Prerequisites
+  cfgd:env
+    - write <HOME>/.cfgd.env
+    - inject source line into <HOME>/.bashrc
+    - inject source line into <HOME>/.zshenv
+    - inject source line into <HOME>/.profile
+    - write <HOME>/.config/environment.d/cfgd.conf
+  cfgd:session
+    - publish 1 var to the session manager
+
+⊙ 6 actions planned

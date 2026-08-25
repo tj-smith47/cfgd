@@ -42,7 +42,10 @@ pub enum CfgdError {
     #[error("daemon error: {0}")]
     Daemon(#[from] DaemonError),
 
-    #[error("source error: {0}")]
+    // Transparent: every `SourceError` sentence already names the source and
+    // says what went wrong, so the wrapper's own prefix added a category label
+    // ahead of a sentence that reads perfectly without one.
+    #[error(transparent)]
     Source(#[from] SourceError),
 
     #[error("composition error: {0}")]
@@ -648,6 +651,40 @@ pub enum SourceError {
     SignatureVerificationFailed { name: String, message: String },
 }
 
+impl SourceError {
+    /// The failure WITHOUT the source's own name, for a row already rendered
+    /// under a `source:<name>` owner. [`Display`] keeps the full sentence for a
+    /// top-level boundary that has no heading to inherit the subject from;
+    /// under one, repeating the name puts it on the line twice.
+    ///
+    /// [`Display`]: std::fmt::Display
+    pub fn cause(&self) -> String {
+        match self {
+            Self::NotFound { .. } => "not found".to_string(),
+            Self::FetchFailed { message, .. } => format!("fetch failed: {message}"),
+            Self::InvalidManifest { message, .. } => {
+                format!("invalid ConfigSource manifest: {message}")
+            }
+            Self::PinRefNotFound { pin, available, .. } => format!(
+                "no git ref matched pin '{pin}'{}",
+                available
+                    .as_ref()
+                    .map(|a| format!(" (available tags: {a})"))
+                    .unwrap_or_default()
+            ),
+            Self::EmptyProvides { .. } => "provides neither profiles nor modules".to_string(),
+            Self::ProfileNotFound { profile, .. } => format!("profile '{profile}' not found"),
+            // The one variant carrying no name: its Display already reads as a
+            // cause, so the two forms coincide rather than one being derived.
+            Self::CacheError { message } => format!("source cache error: {message}"),
+            Self::GitError { message, .. } => format!("git error: {message}"),
+            Self::SignatureVerificationFailed { message, .. } => {
+                format!("signature verification failed: {message}")
+            }
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CompositionError {
     #[error("cannot override locked resource '{resource}' from source '{source_name}'")]
@@ -1050,5 +1087,123 @@ mod tests {
 
         let io_err: CfgdError = std::io::Error::new(std::io::ErrorKind::NotFound, "gone").into();
         assert_eq!(io_err.kind(), "io");
+    }
+
+    /// One of every [`SourceError`] variant, so a rule about how these read is
+    /// asserted over the whole population rather than over whichever variants a
+    /// test author happened to remember. A variant added without a line here
+    /// fails to compile: the match below is exhaustive by construction.
+    fn source_error_population(name: &str) -> Vec<SourceError> {
+        let population = vec![
+            SourceError::NotFound { name: name.into() },
+            SourceError::FetchFailed {
+                name: name.into(),
+                message: "boom".into(),
+            },
+            SourceError::InvalidManifest {
+                name: name.into(),
+                message: "boom".into(),
+            },
+            SourceError::PinRefNotFound {
+                name: name.into(),
+                pin: "~1".into(),
+                available: Some("v1.0.0".into()),
+            },
+            SourceError::EmptyProvides { name: name.into() },
+            SourceError::ProfileNotFound {
+                name: name.into(),
+                profile: "work".into(),
+            },
+            SourceError::CacheError {
+                message: "disk full".into(),
+            },
+            SourceError::GitError {
+                name: name.into(),
+                message: "boom".into(),
+            },
+            SourceError::SignatureVerificationFailed {
+                name: name.into(),
+                message: "boom".into(),
+            },
+        ];
+        // Exhaustiveness gate: a new variant has no arm here and fails to build,
+        // which is what makes the population above a population rather than a list.
+        for err in &population {
+            match err {
+                SourceError::NotFound { .. }
+                | SourceError::FetchFailed { .. }
+                | SourceError::InvalidManifest { .. }
+                | SourceError::PinRefNotFound { .. }
+                | SourceError::EmptyProvides { .. }
+                | SourceError::ProfileNotFound { .. }
+                | SourceError::CacheError { .. }
+                | SourceError::GitError { .. }
+                | SourceError::SignatureVerificationFailed { .. } => {}
+            }
+        }
+        population
+    }
+
+    /// Every `SourceError` variant that embeds a source NAME must leave it out
+    /// of `cause()`: the row rendering a cause sits under a `source:<name>`
+    /// owner heading, and a cause repeating the name puts it on the line twice.
+    /// Walk the whole population so the next variant trips here.
+    #[test]
+    fn every_named_source_error_leaves_its_name_out_of_its_cause() {
+        const NAME: &str = "zzsentinelzz";
+        let population: Vec<SourceError> = source_error_population(NAME)
+            .into_iter()
+            // The one nameless variant is asserted on separately below.
+            .filter(|e| !matches!(e, SourceError::CacheError { .. }))
+            .collect();
+        for err in &population {
+            let cause = err.cause();
+            assert!(
+                !cause.contains(NAME),
+                "cause() must not name the source: {cause}"
+            );
+            assert!(!cause.is_empty(), "every variant states a cause");
+            // Display keeps the full sentence, for a boundary with no heading.
+            assert!(
+                err.to_string().contains(NAME),
+                "Display must still name the source: {err}"
+            );
+        }
+        // The one nameless variant: cause and Display coincide.
+        let cache = SourceError::CacheError {
+            message: "disk full".into(),
+        };
+        assert_eq!(cache.cause(), cache.to_string());
+    }
+
+    /// A source failure renders under a `source:<name>` owner as
+    /// `✗ sync failed — <cause>`, where the em-dash is the row's OWN glue
+    /// between the outcome and its cause. A message that uses ` — ` again for
+    /// a second clause puts two em-dashes with two different meanings on one
+    /// line, which is the shape the source-error reword exists to remove —
+    /// a second clause is parenthesised instead. Walk the whole population so
+    /// the next variant, and the next literal in an existing one, trips here.
+    #[test]
+    fn no_source_error_uses_an_em_dash_as_a_clause_separator() {
+        for err in source_error_population("acme") {
+            for rendered in [err.to_string(), err.cause()] {
+                assert!(
+                    !rendered.contains(" — "),
+                    "parenthesise the second clause instead: {rendered}"
+                );
+            }
+        }
+    }
+
+    /// `CfgdError::Source` is transparent: no category prefix ahead of a
+    /// sentence that already names the source and says what went wrong.
+    #[test]
+    fn a_wrapped_source_error_renders_without_a_category_prefix() {
+        let wrapped: CfgdError = SourceError::NotFound {
+            name: "acme".into(),
+        }
+        .into();
+        assert_eq!(wrapped.to_string(), "source 'acme' not found");
+        assert_eq!(wrapped.kind(), "source");
     }
 }

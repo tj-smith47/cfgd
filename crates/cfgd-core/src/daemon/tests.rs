@@ -830,6 +830,45 @@ fn an_installed_source_package_auto_accepts_instead_of_minting() {
     );
 }
 
+/// Every minted row carries ONE action, and a decision ROW therefore never
+/// renders it: `⊙ Recommended packages.cargo.eza` says everything there is to
+/// say, because `install` is the only thing a source decision ever asks.
+///
+/// The moment a second action is minted that stops being true — the row would
+/// have to name which one is being asked about — so this test walks the
+/// recorded action set rather than asserting one row's value, and a second
+/// action fails it here instead of shipping an ambiguous row.
+#[test]
+fn every_minted_decision_asks_the_same_one_action() {
+    let store = test_state();
+    let policy = AutoApplyPolicyConfig::default();
+    let merged = cargo_profile(&["bat", "eza"]);
+    let actual = cargo_observation(&[("bat", None)], &[("bat", "bat"), ("eza", "eza")]);
+    let review = review_source_policy(
+        &store,
+        "acme",
+        &tiered_items(&merged, crate::config::LayerPolicy::Recommended),
+        &policy,
+        &actual,
+    )
+    .unwrap();
+    assert!(!review.to_mint.is_empty(), "the review must mint something");
+    crate::reconciler::mint_decisions(&store, &review);
+
+    // The population every LISTING surface reads — `cfgd decide`, `cfgd
+    // status` and the run header all render rows from here.
+    let listed = store.pending_decisions().unwrap();
+    assert!(!listed.is_empty(), "rows must have landed to be walked");
+    let actions: std::collections::BTreeSet<String> =
+        listed.into_iter().map(|d| d.action).collect();
+    assert_eq!(
+        actions,
+        std::collections::BTreeSet::from([crate::reconciler::DECISION_ACTION_INSTALL.to_string()]),
+        "a decision row omits its action because there is only one; \
+         minting a second means every listing surface must start rendering it"
+    );
+}
+
 #[test]
 fn a_mismatched_version_pin_stays_pending_with_the_conflict_annotated() {
     // `docs/sources.md`: a version mismatch never auto-accepts — the row
@@ -18632,6 +18671,7 @@ mod backup_timers {
             title,
             config_path: None,
             profile: Some("workstation"),
+            sources: &[],
             modules: &[],
             trigger: None,
         };

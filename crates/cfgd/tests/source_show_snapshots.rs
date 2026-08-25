@@ -26,11 +26,14 @@ use cfgd::cli::output_types::{
     SourceEncryptionOutput, SourcePolicyOutput, SourceResourceEntry, SourceShowOutput,
     SourceStateInfo,
 };
-use cfgd::cli::source::show::{build_source_not_found_error, build_source_show_doc};
+use cfgd::cli::source::show::{
+    build_source_not_found_error, build_source_show_doc, effective_source_policy,
+    source_manifest_output,
+};
 use cfgd_core::config::{
     AptSpec, BrewSpec, CargoSpec, ConfigSourceDocument, ConfigSourceMetadata, ConfigSourcePolicy,
-    ConfigSourceProvides, ConfigSourceSpec, EnvVar, ManagedFileSpec, NpmSpec, PackagesSpec,
-    PolicyItems, SourceConstraints,
+    ConfigSourceProvides, ConfigSourceSpec, EncryptionConstraint, EncryptionMode, EnvVar,
+    ManagedFileSpec, NpmSpec, PackagesSpec, PolicyItems, SourceConstraints,
 };
 use cfgd_core::output::Printer;
 use pretty_assertions::assert_eq;
@@ -90,6 +93,7 @@ fn happy_output() -> SourceShowOutput {
                 mode: Some("Always".into()),
             }),
         }),
+        manifest: Some(source_manifest_output(&happy_manifest())),
     }
 }
 
@@ -138,10 +142,33 @@ fn happy_manifest() -> ConfigSourceDocument {
                 },
                 locked: PolicyItems::default(),
                 optional: PolicyItems::default(),
-                constraints: SourceConstraints::default(),
+                // The rendered Policy block is DERIVED from these constraints
+                // and the subscription below, so the fixture states them rather
+                // than hand-setting a `SourcePolicyOutput` the render could
+                // contradict.
+                constraints: SourceConstraints {
+                    no_scripts: true,
+                    no_secrets_read: true,
+                    allowed_target_paths: vec!["~/.config/**".into(), "~/.bashrc".into()],
+                    allow_system_changes: false,
+                    require_signed_commits: true,
+                    encryption: Some(EncryptionConstraint {
+                        required_targets: vec!["secrets/**".into()],
+                        backend: Some("sops".into()),
+                        mode: Some(EncryptionMode::Always),
+                    }),
+                },
             },
         },
     }
+}
+
+/// The happy manifest with a PROFILE promised as well, for the two goldens
+/// that pin what a subscriber sees of a profile before subscribing to it.
+fn manifest_promising_a_profile() -> ConfigSourceDocument {
+    let mut manifest = happy_manifest();
+    manifest.spec.provides.profiles = vec!["dev".into()];
+    manifest
 }
 
 fn empty_output() -> SourceShowOutput {
@@ -159,6 +186,7 @@ fn empty_output() -> SourceShowOutput {
         managed_resources: Vec::new(),
         modules: Vec::new(),
         policy: None,
+        manifest: None,
     }
 }
 
@@ -167,9 +195,83 @@ fn source_show_happy_human() {
     let output = happy_output();
     let manifest = happy_manifest();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest)));
+    printer.emit(build_source_show_doc(&output, Some(&manifest), None));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/happy.txt");
+}
+
+/// A promised profile the checkout DOES carry is elaborated in place: the
+/// subscriber reads the profile's own declared content — env values, packages —
+/// off this screen before deciding to subscribe. Golden, because the elaboration
+/// is a whole nested inventory and an assertion on two substrings would not
+/// notice it losing a block.
+#[test]
+fn source_show_provided_profile_human() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("dev.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: dev\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n  packages:\n    brew:\n      - ripgrep\n",
+    )
+    .unwrap();
+    let output = happy_output();
+    let manifest = manifest_promising_a_profile();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_source_show_doc(
+        &output,
+        Some(&manifest),
+        Some(dir.path()),
+    ));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/provided_profile.txt");
+}
+
+/// The absence arm: the manifest promises `dev` and the checkout does not carry
+/// it. That reads as a manifest/checkout disagreement, NOT as a load failure —
+/// the golden is what keeps the two worded apart.
+#[test]
+fn source_show_missing_profile_human() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = happy_output();
+    let manifest = manifest_promising_a_profile();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_source_show_doc(
+        &output,
+        Some(&manifest),
+        Some(dir.path()),
+    ));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/missing_profile.txt");
+}
+
+/// The FAILURE arm beside it: the file is there and does not load. "declared by
+/// the manifest but not found in the source" would be a lie about a profile
+/// that is right there, so this one names the cause instead.
+#[test]
+fn source_show_unloadable_profile_human() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("dev.yaml"),
+        "spec: [this is not a profile\n",
+    )
+    .unwrap();
+    let output = happy_output();
+    let manifest = manifest_promising_a_profile();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_source_show_doc(
+        &output,
+        Some(&manifest),
+        Some(dir.path()),
+    ));
+    drop(printer);
+    let human = cap.human();
+    assert!(
+        human.contains("could not be loaded"),
+        "a load failure must not read as an absence: {human}"
+    );
+    assert!(
+        !human.contains("not found in the source"),
+        "the absence wording must not claim a file that exists is missing: {human}"
+    );
 }
 
 #[test]
@@ -177,7 +279,7 @@ fn source_show_happy_json() {
     let output = happy_output();
     let manifest = happy_manifest();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest)));
+    printer.emit(build_source_show_doc(&output, Some(&manifest), None));
     drop(printer);
     let expected = serde_json::to_value(&output).unwrap();
     let actual = cap.json().expect("doc captured json");
@@ -195,7 +297,7 @@ fn source_show_lists_delivered_modules_human_and_json() {
     let output = happy_output();
     let manifest = happy_manifest();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest)));
+    printer.emit(build_source_show_doc(&output, Some(&manifest), None));
     drop(printer);
 
     let human = cap.human();
@@ -217,7 +319,7 @@ fn source_show_no_modules_omits_field() {
     // (serde skip_serializing_if) and renders no Modules section.
     let output = empty_output();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, None));
+    printer.emit(build_source_show_doc(&output, None, None));
     drop(printer);
 
     let human = cap.human();
@@ -236,7 +338,7 @@ fn source_show_no_modules_omits_field() {
 fn source_show_empty_human() {
     let output = empty_output();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, None));
+    printer.emit(build_source_show_doc(&output, None, None));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/empty.txt");
 }
@@ -284,10 +386,11 @@ fn source_show_state_with_locked_ref_and_commit() {
         managed_resources: Vec::new(),
         modules: Vec::new(),
         policy: None,
+        manifest: None,
     };
 
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, None));
+    printer.emit(build_source_show_doc(&output, None, None));
     drop(printer);
 
     let human = cap.human();
@@ -364,12 +467,20 @@ fn source_show_locked_policy_section_renders() {
         state: None,
         managed_resources: Vec::new(),
         modules: Vec::new(),
-        policy: None,
+        // A manifest and a derived policy always travel together in
+        // production, so the fixture derives one rather than leaving the
+        // screen's Policy rows to a shape `cmd_source_show` never emits.
+        policy: Some(effective_source_policy(
+            None,
+            &manifest_with_locked_policy().spec.policy.constraints,
+            false,
+        )),
+        manifest: None,
     };
     let manifest = manifest_with_locked_policy();
 
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest)));
+    printer.emit(build_source_show_doc(&output, Some(&manifest), None));
     drop(printer);
 
     // "env:" and its qualifier now render in separate theme slots; strip SGR
@@ -383,8 +494,12 @@ fn source_show_locked_policy_section_renders() {
         human.contains("env: CORP_PROXY"),
         "locked env entry must render: {human}"
     );
-    // The Count kv must appear inside the Locked subsection.
-    assert!(human.contains("Count"), "Count kv must appear: {human}");
+    // The rows ARE the count — a `Count` kv above them restated what the
+    // reader can already see.
+    assert!(
+        !human.contains("Count"),
+        "the Count kv must be gone: {human}"
+    );
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/locked_policy.txt");
 }
 
@@ -460,12 +575,17 @@ fn source_show_all_package_manager_types_render() {
         state: None,
         managed_resources: Vec::new(),
         modules: Vec::new(),
-        policy: None,
+        policy: Some(effective_source_policy(
+            None,
+            &manifest_with_all_package_managers().spec.policy.constraints,
+            false,
+        )),
+        manifest: None,
     };
     let manifest = manifest_with_all_package_managers();
 
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_show_doc(&output, Some(&manifest)));
+    printer.emit(build_source_show_doc(&output, Some(&manifest), None));
     drop(printer);
 
     // Each manager label and its qualifier now render in separate theme

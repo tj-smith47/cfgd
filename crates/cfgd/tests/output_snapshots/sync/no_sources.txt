@@ -3,5 +3,4 @@ Sync
   Profile  tiny
 
 Local Repo
-  Path  <CONFIG_DIR>
   ⚠ Pull failed — open repo: could not find repository at '<CONFIG_DIR>'; class=Repository (6); code=NotFound (-3)

@@ -14,6 +14,6 @@ module:mymod
 
 ✓ Locked remote module 'mymod' in modules.lock
 
-→ Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'
+→ Run 'cfgd plan' to preview changes, then 'cfgd apply'
 
 ✓ Updated profile 'default' (1 change)

@@ -1041,7 +1041,7 @@ fn cmd_generate_scan_only_with_plugin_manager() {
 // above don't reach): consent skip via yes=true, AiConfig fallback when
 // no cfgd.yaml exists, AnthropicClient construction with the
 // CFGD_ANTHROPIC_URL test seam, the conversation loop body, token-usage
-// tally, and the final "Run 'cfgd apply --dry-run'" hint. The mock
+// tally, and the final "Run 'cfgd plan'" hint. The mock
 // returns a text-only response (no tool_use) so the loop breaks after
 // one iteration.
 
@@ -1137,8 +1137,8 @@ mod cmd_generate_mockito {
         );
         // The final hint always renders.
         assert!(
-            output.contains("cfgd apply --dry-run"),
-            "should point user at dry-run: {output}"
+            output.contains("cfgd plan"),
+            "should point user at the canonical preview command: {output}"
         );
     }
 

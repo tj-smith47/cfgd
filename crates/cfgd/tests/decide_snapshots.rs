@@ -52,7 +52,12 @@ fn pending_fixture() -> Vec<PendingDecision> {
 fn decide_pending_human() {
     let decisions = pending_fixture();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_decide_list_doc(&decisions, &[], None));
+    printer.emit(build_decide_list_doc(
+        &decisions,
+        &[],
+        None,
+        &Default::default(),
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "decide/pending.txt");
 }
@@ -61,7 +66,12 @@ fn decide_pending_human() {
 fn decide_pending_json() {
     let decisions = pending_fixture();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_decide_list_doc(&decisions, &[], None));
+    printer.emit(build_decide_list_doc(
+        &decisions,
+        &[],
+        None,
+        &Default::default(),
+    ));
     drop(printer);
 
     let actual = cap.json().expect("doc captured json");
@@ -79,7 +89,7 @@ fn decide_pending_json() {
 #[test]
 fn decide_empty_human() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_decide_list_doc(&[], &[], None));
+    printer.emit(build_decide_list_doc(&[], &[], None, &Default::default()));
     drop(printer);
     let human = cap.human();
     assert!(
@@ -116,7 +126,12 @@ fn decide_pending_multi_source_human() {
         ),
     ];
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_decide_list_doc(&decisions, &[], None));
+    printer.emit(build_decide_list_doc(
+        &decisions,
+        &[],
+        None,
+        &Default::default(),
+    ));
     drop(printer);
     let human = cap.human();
     let app = human
@@ -146,7 +161,12 @@ fn decide_pending_single_item_human() {
         "Create bashrc",
     )];
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_decide_list_doc(&decisions, &[], None));
+    printer.emit(build_decide_list_doc(
+        &decisions,
+        &[],
+        None,
+        &Default::default(),
+    ));
     drop(printer);
     let human = cap.human();
     assert!(
@@ -179,4 +199,110 @@ fn decide_after_accept_human() {
         "bulk accept must hint about next reconcile, got:\n{human}"
     );
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "decide/after_accept.txt");
+}
+
+/// The row says WHAT is being decided, not a restatement of its own
+/// coordinates: the content the source would put on the machine, recovered
+/// from the profile it delivered.
+#[test]
+fn decide_pending_names_the_content_of_each_item() {
+    let config_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(config_dir.path().join("files")).unwrap();
+    std::fs::write(
+        config_dir.path().join("files").join("bashrc"),
+        "line one\nline two\nline three\n",
+    )
+    .unwrap();
+
+    let spec: cfgd_core::config::ProfileSpec = serde_yaml::from_str(
+        "env:\n  - name: EDITOR\n    value: vim\npackages:\n  brew:\n    - curl\nfiles:\n  managed:\n    - source: files/bashrc\n      target: /home/u/.bashrc\n      permissions: \"0644\"\nsystem:\n  shellAliases:\n    gs: git status\n",
+    )
+    .unwrap();
+    let layers = vec![cfgd_core::config::ProfileLayer {
+        source: "team-config".to_string(),
+        profile_name: "team".to_string(),
+        priority: 500,
+        policy: cfgd_core::config::LayerPolicy::Recommended,
+        spec,
+    }];
+    let merged = cfgd_core::config::merge_layers(&layers);
+    let resolved = cfgd_core::config::ResolvedProfile { layers, merged };
+
+    let decisions = vec![
+        pending(
+            "team-config",
+            "env.EDITOR",
+            "recommended",
+            "install",
+            "recommended env.EDITOR (from team-config)",
+        ),
+        pending(
+            "team-config",
+            "packages.brew.curl",
+            "recommended",
+            "install",
+            "recommended packages.brew.curl (from team-config) — installed 7.1, source wants ^8",
+        ),
+        pending(
+            "team-config",
+            "files./home/u/.bashrc",
+            "required",
+            "install",
+            "required files./home/u/.bashrc (from team-config)",
+        ),
+        pending(
+            "team-config",
+            "system.shellAliases",
+            "recommended",
+            "install",
+            "recommended system.shellAliases (from team-config)",
+        ),
+        // Nothing in the delivered profile declares it any more, so the row
+        // stands as its subject alone: the stored summary is a persisted
+        // string no display row reads.
+        pending(
+            "team-config",
+            "env.GONE",
+            "optional",
+            "install",
+            "optional env.GONE (from team-config)",
+        ),
+    ];
+    let contents = cfgd_core::reconciler::DecisionContents::for_decisions(
+        &resolved,
+        &decisions,
+        config_dir.path(),
+    );
+
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_decide_list_doc(&decisions, &[], None, &contents));
+    drop(printer);
+    let human = cap.human();
+    // The subject column is padded by the renderer, so each row is asserted
+    // as its two halves rather than as one joined literal.
+    assert!(
+        human.contains("Recommended env.EDITOR") && human.contains("— EDITOR=vim"),
+        "env row must name the value: {human}"
+    );
+    assert!(
+        human.contains("— brew install curl — installed 7.1, source wants ^8"),
+        "package row must name the install and keep its conflict annotation: {human}"
+    );
+    assert!(
+        human.contains("— 3 lines, mode 0644"),
+        "file row must name size and mode, never the body: {human}"
+    );
+    assert!(
+        human.contains("— {\"gs\":\"git status\"}"),
+        "a structured system setting renders on one line: {human}"
+    );
+    assert!(
+        !human.contains("line one"),
+        "a file's body is never rendered into a decision row: {human}"
+    );
+    assert!(
+        human.contains("Optional env.GONE") && !human.contains("(from team-config)"),
+        "an unrecoverable item renders its subject alone, never the stored summary: {human}"
+    );
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "decide/pending_content.txt");
 }

@@ -423,7 +423,7 @@ impl SourceManager {
                 name: spec.name.clone(),
                 message: format!(
                     "'{}' is a local path or file:// URL, which is not allowed as a source \
-                     origin — pass a git URL (e.g. https://github.com/acme/config.git)",
+                     origin (pass a git URL, e.g. https://github.com/acme/config.git)",
                     spec.origin.url
                 ),
             }
@@ -1553,7 +1553,7 @@ pub(super) fn classify_signature_status(name: &str, status: &str) -> Result<()> 
         }
         "N" => Err(SourceError::SignatureVerificationFailed {
             name: name.to_string(),
-            message: "HEAD commit is not signed — source requires signed commits".into(),
+            message: "HEAD commit is not signed (source requires signed commits)".into(),
         }
         .into()),
         "B" => Err(SourceError::SignatureVerificationFailed {
@@ -1563,7 +1563,7 @@ pub(super) fn classify_signature_status(name: &str, status: &str) -> Result<()> 
         .into()),
         "E" => Err(SourceError::SignatureVerificationFailed {
             name: name.to_string(),
-            message: "signature cannot be checked — ensure the signing key is imported".into(),
+            message: "signature cannot be checked (ensure the signing key is imported)".into(),
         }
         .into()),
         "X" | "Y" => Err(SourceError::SignatureVerificationFailed {

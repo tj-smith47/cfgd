@@ -33,6 +33,7 @@ pub fn build_source_not_found_error(name: &str, available: &[String]) -> anyhow:
 pub fn build_source_show_doc(
     output: &SourceShowOutput,
     manifest: Option<&ConfigSourceDocument>,
+    profiles_dir: Option<&Path>,
 ) -> Doc {
     // A `Label: value` title, never a `kind:name` owner token: an owner names
     // whose the rows below it are, which is a section's job, and hanging the
@@ -105,11 +106,124 @@ pub fn build_source_show_doc(
         s
     });
 
-    // What this source enforces, combining the manifest's constraints with
-    // this subscriber's own overrides — an operator auditing a source reads
-    // this instead of opening its manifest YAML.
-    if let Some(ref policy) = output.policy {
-        doc = doc.section("Policy", |s| {
+    if let Some(m) = manifest {
+        // The policy the payload carries IS the policy the human render shows:
+        // this builder is pure, so re-deriving one here from a spec would let a
+        // caller's `-o json` disagree with its own screen.
+        doc = source_manifest_doc_sections(doc, m, output.policy.as_ref(), profiles_dir);
+    }
+
+    doc.with_data(output)
+}
+
+/// The ONE render of what a config source IS — its manifest, the profiles it
+/// provides (with their content), and the policy it enforces.
+///
+/// `cfgd source add` shows it before the subscribe confirm and `cfgd source
+/// show` after the subscription's own state; before this existed the two
+/// rendered the same `ConfigSourcePolicy` two different ways (status lines
+/// against kv rows, item counts against the items themselves) and neither
+/// rendered what the source's profiles actually declare — so what a subscriber
+/// approved and what they could inspect afterwards were different screens.
+///
+/// `policy` is the ALREADY-DERIVED effective policy — [`effective_source_policy`]
+/// runs once at the call site and feeds both this render and the caller's
+/// payload, so no screen can contradict its own `-o json`. `None` renders no
+/// Policy block at all, which is the honest answer for a caller that could not
+/// derive one. `profiles_dir` is the source's checked-out `profiles/`
+/// directory — absent, or unreadable for one profile, the profile still gets
+/// its heading and description and simply carries no inventory.
+pub fn source_manifest_doc_sections(
+    doc: Doc,
+    manifest: &ConfigSourceDocument,
+    policy: Option<&SourcePolicyOutput>,
+    profiles_dir: Option<&Path>,
+) -> Doc {
+    let mut doc = doc.section("Manifest", |s| {
+        let mut rows = vec![KvPair::new("Name", &manifest.metadata.name)];
+        if let Some(ref version) = manifest.metadata.version {
+            rows.push(KvPair::new("Version", version));
+        }
+        if let Some(ref desc) = manifest.metadata.description {
+            rows.push(KvPair::new("Description", desc));
+        }
+        s.kv_rows(rows)
+    });
+
+    let provided = cfgd_core::config::source_profile_names(&manifest.spec.provides);
+    doc = doc.section_if_nonempty("Profiles", &provided, |s, names| {
+        names.iter().fold(s, |s, name| {
+            let entry = manifest
+                .spec
+                .provides
+                .profile_details
+                .iter()
+                .find(|e| &e.name == name);
+            // The same `profile:<name>` token an apply header names a layer
+            // with — one screen must not name a profile two ways.
+            s.subsection_owner(
+                &cfgd_core::output::OwnerLabel::new("profile", name),
+                |sub| {
+                    let mut sub = match entry.and_then(|e| e.description.as_deref()) {
+                        Some(desc) => sub.paragraph(desc),
+                        None => sub,
+                    };
+                    // Three outcomes, three different facts, and only ONE of
+                    // them is the source promising a profile it does not ship.
+                    // "There is no checkout to look in" claims nothing; a
+                    // profile whose manifest is right there but malformed
+                    // (unparseable YAML, an inheritance cycle, an invalid
+                    // secret/file/backup spec) sends the operator hunting for a
+                    // missing file if it reads as absence — the same "could not
+                    // look" vs "is absent" split `try_file_identity` draws.
+                    match profiles_dir.map(|dir| cfgd_core::config::resolve_profile(name, dir)) {
+                        Some(Ok(resolved)) => {
+                            for (block, rows) in
+                                crate::cli::profile::show::profile_inventory_blocks(&resolved)
+                            {
+                                if rows.is_empty() {
+                                    continue;
+                                }
+                                sub = sub.subsection(block, |b| b.kv_rows(rows));
+                            }
+                            sub
+                        }
+                        Some(Err(e)) if profile_is_absent(&e) => sub.status(
+                            Role::Warn,
+                            "declared by the manifest but not found in the source",
+                        ),
+                        Some(Err(e)) => sub.status_with(
+                            Role::Warn,
+                            format!("profile {name} could not be loaded"),
+                            |f| f.detail(cfgd_core::output::collapse_to_subject_line(&e)),
+                        ),
+                        None => sub,
+                    }
+                },
+            )
+        })
+    });
+
+    // The Policy block holds two independent halves: the DERIVED constraint
+    // rows (which need `policy`) and the manifest's own TIER items (which do
+    // not). A caller with no derived policy still renders the tiers — dropping
+    // them would hide what the source locks and requires over a value that
+    // describes something else entirely.
+    let tiers = &manifest.spec.policy;
+    let tiers_rendered: Vec<(&str, &PolicyItems)> = [
+        ("Locked", &tiers.locked),
+        ("Required", &tiers.required),
+        ("Recommended", &tiers.recommended),
+    ]
+    .into_iter()
+    .filter(|(_, items)| count_policy_items(items) > 0)
+    .collect();
+    if policy.is_none() && tiers_rendered.is_empty() {
+        return doc;
+    }
+    doc.section("Policy", |s| {
+        let mut s = s;
+        if let Some(policy) = policy {
             // `allowUnsigned` bypasses the demand entirely — the screen must
             // say so beside the flag, or `true` reads as enforced when the
             // check never runs.
@@ -121,23 +235,25 @@ pub fn build_source_show_doc(
             } else {
                 policy.require_signed_commits.to_string()
             };
-            let mut s = s
-                .kv("Require Signed Commits", require_signed_commits_value)
-                .kv("Scripts Allowed", policy.scripts_allowed.to_string())
-                .kv(
+            let mut rows = vec![
+                KvPair::new("Require Signed Commits", require_signed_commits_value),
+                KvPair::new("Scripts Allowed", policy.scripts_allowed.to_string()),
+                KvPair::new(
                     "Secrets Read Allowed",
                     policy.secrets_read_allowed.to_string(),
-                )
-                .kv(
+                ),
+                KvPair::new(
                     "System Changes Allowed",
                     policy.system_changes_allowed.to_string(),
-                );
+                ),
+            ];
             if !policy.allowed_target_paths.is_empty() {
-                s = s.kv(
+                rows.push(KvPair::new(
                     "Allowed Target Paths",
                     policy.allowed_target_paths.join(", "),
-                );
+                ));
             }
+            s = s.kv_rows(rows);
             if let Some(ref enc) = policy.encryption {
                 s = s.subsection("Encryption", |sub| {
                     let mut sub = sub;
@@ -153,61 +269,42 @@ pub fn build_source_show_doc(
                     sub
                 });
             }
-            s
-        });
+        }
+        // The rows ARE the count: a `Count` row above them restated what the
+        // reader can see, and disagreed with it the moment a tier carried an
+        // item kind `append_policy_items` does not render.
+        for (name, items) in tiers_rendered {
+            s = s.subsection(name, |inner| append_policy_items(inner, items));
+        }
+        s
+    })
+}
+
+/// The manifest as a structured payload — the `-o json` counterpart of
+/// [`source_manifest_doc_sections`]'s `Manifest` and `Profiles` sections, so a
+/// machine consumer reads the same facts the human render shows.
+pub fn source_manifest_output(
+    manifest: &ConfigSourceDocument,
+) -> crate::cli::output_types::SourceManifestOutput {
+    use crate::cli::output_types::{SourceManifestOutput, SourceManifestProfileOutput};
+    let details = &manifest.spec.provides.profile_details;
+    SourceManifestOutput {
+        name: manifest.metadata.name.clone(),
+        version: manifest.metadata.version.clone(),
+        description: manifest.metadata.description.clone(),
+        profiles: cfgd_core::config::source_profile_names(&manifest.spec.provides)
+            .into_iter()
+            .map(|name| {
+                let entry = details.iter().find(|e| e.name == name);
+                SourceManifestProfileOutput {
+                    description: entry.and_then(|e| e.description.clone()),
+                    inherits: entry.map(|e| e.inherits.clone()).unwrap_or_default(),
+                    name,
+                }
+            })
+            .collect(),
+        modules: manifest.spec.provides.modules.clone(),
     }
-
-    if let Some(m) = manifest {
-        doc = doc.section("Manifest", |s| {
-            let mut s = s.kv("Name", &m.metadata.name);
-            if let Some(ref desc) = m.metadata.description {
-                s = s.kv("Description", desc);
-            }
-
-            let policy = &m.spec.policy;
-            let locked = count_policy_items(&policy.locked);
-            let required = count_policy_items(&policy.required);
-            let recommended = count_policy_items(&policy.recommended);
-
-            if locked + required + recommended > 0 {
-                s = s.subsection("Policy Summary", |sub| {
-                    let sub = if locked > 0 {
-                        sub.subsection("Locked", |inner| {
-                            append_policy_items(
-                                inner.kv("Count", locked.to_string()),
-                                &policy.locked,
-                            )
-                        })
-                    } else {
-                        sub
-                    };
-                    let sub = if required > 0 {
-                        sub.subsection("Required", |inner| {
-                            append_policy_items(
-                                inner.kv("Count", required.to_string()),
-                                &policy.required,
-                            )
-                        })
-                    } else {
-                        sub
-                    };
-                    if recommended > 0 {
-                        sub.subsection("Recommended", |inner| {
-                            append_policy_items(
-                                inner.kv("Count", recommended.to_string()),
-                                &policy.recommended,
-                            )
-                        })
-                    } else {
-                        sub
-                    }
-                });
-            }
-            s
-        });
-    }
-
-    doc.with_data(output)
 }
 
 /// What `source` enforces, combining the subscriber's own overrides with the
@@ -220,17 +317,22 @@ pub fn build_source_show_doc(
 /// `signed_commits_bypassed` states whether this subscriber actually
 /// enforces it, so the screen never renders an unqualified `true` for a
 /// check that never runs.
-fn effective_source_policy(
-    source_spec: &SourceSpec,
+/// `source_spec` is `None` for a caller that has no subscription yet (`cfgd
+/// source add`, before the confirm): the manifest's own constraints are then
+/// the whole answer, since there are no subscriber overrides to combine with.
+pub fn effective_source_policy(
+    source_spec: Option<&SourceSpec>,
     constraints: &SourceConstraints,
     allow_unsigned: bool,
 ) -> SourcePolicyOutput {
-    let require_signed_commits =
-        source_spec.requires_signed_commits(constraints.require_signed_commits);
+    let require_signed_commits = source_spec
+        .map(|s| s.requires_signed_commits(constraints.require_signed_commits))
+        .unwrap_or(constraints.require_signed_commits);
     SourcePolicyOutput {
         require_signed_commits,
         signed_commits_bypassed: require_signed_commits && allow_unsigned,
-        scripts_allowed: source_spec.subscription.allow_scripts || !constraints.no_scripts,
+        scripts_allowed: source_spec.is_some_and(|s| s.subscription.allow_scripts)
+            || !constraints.no_scripts,
         secrets_read_allowed: !constraints.no_secrets_read,
         system_changes_allowed: constraints.allow_system_changes,
         allowed_target_paths: constraints.allowed_target_paths.clone(),
@@ -242,6 +344,22 @@ fn effective_source_policy(
             }
         }),
     }
+}
+
+/// Whether a `resolve_profile` failure means the profile is ABSENT from the
+/// checkout, as opposed to present and unloadable.
+///
+/// Only the two not-found shapes may be reported as a source promising a
+/// profile it does not ship; a parse error, an inheritance cycle and an invalid
+/// secret/file/backup spec all describe a file that IS there.
+fn profile_is_absent(err: &cfgd_core::errors::CfgdError) -> bool {
+    matches!(
+        err,
+        cfgd_core::errors::CfgdError::Config(
+            cfgd_core::errors::ConfigError::ProfileNotFound { .. }
+                | cfgd_core::errors::ConfigError::NotFound { .. }
+        )
+    )
 }
 
 fn append_policy_items(mut s: SectionBuilder, items: &PolicyItems) -> SectionBuilder {
@@ -363,6 +481,7 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
             .collect(),
         modules: Vec::new(),
         policy: None,
+        manifest: None,
     };
 
     let allow_unsigned = cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned);
@@ -401,13 +520,19 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
     if let Some(m) = manifest {
         output.modules = m.spec.provides.modules.clone();
         output.policy = Some(effective_source_policy(
-            source_spec,
+            Some(source_spec),
             &m.spec.policy.constraints,
             allow_unsigned,
         ));
+        output.manifest = Some(source_manifest_output(m));
     }
 
-    printer.emit(build_source_show_doc(&output, manifest));
+    let profiles_dir = mgr.source_profiles_dir(name).ok();
+    printer.emit(build_source_show_doc(
+        &output,
+        manifest,
+        profiles_dir.as_deref(),
+    ));
     Ok(())
 }
 
@@ -432,14 +557,14 @@ mod tests {
             ..SourceConstraints::default()
         };
         assert!(
-            effective_source_policy(&source_spec(false, false), &manifest_only, false)
+            effective_source_policy(Some(&source_spec(false, false)), &manifest_only, false)
                 .require_signed_commits,
             "the manifest alone must be enough"
         );
 
         assert!(
             effective_source_policy(
-                &source_spec(false, true),
+                Some(&source_spec(false, true)),
                 &SourceConstraints::default(),
                 false
             )
@@ -449,7 +574,7 @@ mod tests {
 
         assert!(
             !effective_source_policy(
-                &source_spec(false, false),
+                Some(&source_spec(false, false)),
                 &SourceConstraints::default(),
                 false
             )
@@ -462,7 +587,7 @@ mod tests {
     fn scripts_allowed_is_the_subscribers_opt_in_or_no_constraint_at_all() {
         assert!(
             !effective_source_policy(
-                &source_spec(false, false),
+                Some(&source_spec(false, false)),
                 &SourceConstraints::default(),
                 false
             )
@@ -472,7 +597,7 @@ mod tests {
 
         assert!(
             effective_source_policy(
-                &source_spec(true, false),
+                Some(&source_spec(true, false)),
                 &SourceConstraints::default(),
                 false
             )
@@ -485,7 +610,7 @@ mod tests {
             ..SourceConstraints::default()
         };
         assert!(
-            effective_source_policy(&source_spec(false, false), &unconstrained, false)
+            effective_source_policy(Some(&source_spec(false, false)), &unconstrained, false)
                 .scripts_allowed,
             "a manifest that does not constrain scripts needs no opt-in"
         );
@@ -499,7 +624,7 @@ mod tests {
             allowed_target_paths: vec!["~/.config/**".to_string()],
             ..SourceConstraints::default()
         };
-        let policy = effective_source_policy(&source_spec(false, false), &constraints, false);
+        let policy = effective_source_policy(Some(&source_spec(false, false)), &constraints, false);
         assert!(policy.secrets_read_allowed);
         assert!(policy.system_changes_allowed);
         assert_eq!(
@@ -520,7 +645,8 @@ mod tests {
             require_signed_commits: true,
             ..SourceConstraints::default()
         };
-        let bypassed = effective_source_policy(&source_spec(false, false), &manifest_demands, true);
+        let bypassed =
+            effective_source_policy(Some(&source_spec(false, false)), &manifest_demands, true);
         assert!(bypassed.require_signed_commits, "the demand still stands");
         assert!(
             bypassed.signed_commits_bypassed,
@@ -528,14 +654,14 @@ mod tests {
         );
 
         let enforced =
-            effective_source_policy(&source_spec(false, false), &manifest_demands, false);
+            effective_source_policy(Some(&source_spec(false, false)), &manifest_demands, false);
         assert!(
             !enforced.signed_commits_bypassed,
             "without allowUnsigned the demand is enforced, not bypassed"
         );
 
         let no_demand = effective_source_policy(
-            &source_spec(false, false),
+            Some(&source_spec(false, false)),
             &SourceConstraints::default(),
             true,
         );
@@ -559,7 +685,7 @@ mod tests {
             }),
             ..SourceConstraints::default()
         };
-        let policy = effective_source_policy(&source_spec(false, false), &constraints, false);
+        let policy = effective_source_policy(Some(&source_spec(false, false)), &constraints, false);
         let enc = policy
             .encryption
             .expect("encryption constraint must pass through");

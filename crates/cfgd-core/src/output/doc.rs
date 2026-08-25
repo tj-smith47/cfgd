@@ -517,6 +517,18 @@ impl SectionBuilder {
         self
     }
 
+    /// The nested counterpart of [`Doc::paragraph`] — prose about whatever the
+    /// section heading above it named, for a description that belongs to a
+    /// section rather than to the report (a source's summary of one profile it
+    /// provides). Empty text appends nothing, same as the `Doc` form.
+    pub fn paragraph(mut self, text: impl Into<String>) -> Self {
+        let text = text.into();
+        if !text.is_empty() {
+            self.children.push(Component::Paragraph { text });
+        }
+        self
+    }
+
     pub fn note(mut self, text: impl Into<String>) -> Self {
         self.children.push(Component::Note { text: text.into() });
         self

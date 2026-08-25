@@ -41,6 +41,7 @@ pub mod validate;
 pub mod verify;
 pub mod workflow;
 
+pub(in crate::cli) use cfgd_core::reconciler::DecisionContents;
 pub use error::{
     CliErrorMeta, cli_error, cli_error_ctx, cli_error_ctx_with_hints,
     cli_error_ctx_with_hints_and_block, cli_error_with_hints, emit_not_found_ignored,
@@ -56,8 +57,8 @@ pub(in crate::cli) use run_context::RunContext;
 #[cfg(test)]
 pub(in crate::cli) use source::{
     DEFAULT_NONINTERACTIVE_PRIORITY, add_source_to_config, build_subscription_preview_input,
-    count_policy_items, display_source_manifest, format_conflict_preview_lines, infer_source_name,
-    parse_priority_input, remove_source_from_config, resolve_non_interactive_profile,
+    count_policy_items, format_conflict_preview_lines, infer_source_name, parse_priority_input,
+    remove_source_from_config, resolve_non_interactive_profile,
 };
 pub(in crate::cli) use source::{
     build_pending_decisions_table_section, build_permission_input, mutate_config_yaml,
@@ -89,7 +90,20 @@ use cfgd_core::reconciler::{
 use cfgd_core::sources::SourceManager;
 use cfgd_core::state::StateStore;
 
-const MSG_RUN_APPLY: &str = "Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'";
+const MSG_RUN_APPLY: &str = "Run 'cfgd plan' to preview changes, then 'cfgd apply'";
+
+/// Collapse a `--flag` / `--no-flag` pair into the edit it asks for. `None` is
+/// "the caller said nothing", which must stay distinct from `Some(false)` — a
+/// stored `true` has to survive an invocation that never mentioned the knob.
+/// clap's `conflicts_with` rejects both halves at once, so the pair can never
+/// arrive contradicting itself.
+fn paired_flag(set: bool, unset: bool) -> Option<bool> {
+    match (set, unset) {
+        (true, _) => Some(true),
+        (_, true) => Some(false),
+        _ => None,
+    }
+}
 
 pub fn default_config_file() -> PathBuf {
     cfgd_core::default_config_dir().join(cfgd_core::config::CONFIG_FILENAME)
@@ -825,7 +839,7 @@ pub enum Command {
 
     /// Manage config sources
     #[command(
-        long_about = "Subscribe to, override, or remove upstream config sources.\n\nA source URL may be any git URL, or the GitHub shorthand `owner/repo`.\n\nExamples:\n  cfgd source add team/config --priority 700                       # GitHub shorthand\n  cfgd source add https://github.com/team/config --priority 700\n  cfgd source add https://gitlab.example.com/team/config.git\n  cfgd source add git@git.example.com:team/config.git\n  cfgd source list\n  cfgd source replace team team/config-v2\n  cfgd source override team set env.EDITOR vim\n  cfgd source remove team --keep-all\n  cfgd source remove team --ignore-not-found"
+        long_about = "Subscribe to, override, or remove upstream config sources.\n\nA source URL may be any git URL, or the GitHub shorthand `owner/repo`.\n\nExamples:\n  cfgd source add team/config --priority 700                       # GitHub shorthand\n  cfgd source add https://github.com/team/config --priority 700\n  cfgd source add https://gitlab.example.com/team/config.git\n  cfgd source add git@git.example.com:team/config.git\n  cfgd source add team/config --require-signed-commits            # demand a signed HEAD\n  cfgd source list\n  cfgd source update team --require-signed-commits               # start demanding one\n  cfgd source update team --no-require-signed-commits            # stop demanding one\n  cfgd source update team --allow-scripts\n  cfgd source replace team team/config-v2\n  cfgd source override team set env.EDITOR vim\n  cfgd source remove team --keep-all\n  cfgd source remove team --ignore-not-found"
     )]
     Source {
         #[command(subcommand)]
@@ -1182,6 +1196,15 @@ pub struct SourceAddArgs {
     /// Pin to a semver version range (e.g., "~1.0", ">=2.0")
     #[arg(long = "pin-version")]
     pub pin_version: Option<String>,
+    /// Demand that this source's HEAD commit carry a valid GPG/SSH signature.
+    /// Only ever adds strictness — a source whose own manifest already demands
+    /// signatures is verified either way
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub require_signed_commits: bool,
+    /// Let this source's lifecycle scripts run even when its own
+    /// `constraints.noScripts` would reject them
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub allow_scripts: bool,
     /// Skip confirmation prompt
     #[arg(from_global)]
     pub yes: bool,
@@ -1229,6 +1252,24 @@ pub enum SourceCommand {
     Update {
         /// Specific source to update (default: all)
         name: Option<String>,
+
+        /// Demand that this source's HEAD commit carry a valid GPG/SSH signature
+        #[arg(long, requires = "name", conflicts_with = "no_require_signed_commits")]
+        require_signed_commits: bool,
+
+        /// Stop demanding a signature on this source's HEAD commit. A source
+        /// whose own manifest demands one is still verified
+        #[arg(long, requires = "name")]
+        no_require_signed_commits: bool,
+
+        /// Let this source's lifecycle scripts run even when its own
+        /// `constraints.noScripts` would reject them
+        #[arg(long, requires = "name", conflicts_with = "no_allow_scripts")]
+        allow_scripts: bool,
+
+        /// Stop letting this source's lifecycle scripts run
+        #[arg(long, requires = "name")]
+        no_allow_scripts: bool,
     },
 
     /// Override a source's recommendation
@@ -2564,9 +2605,24 @@ pub fn execute(
                 *yes,
                 *ignore_not_found,
             ),
-            SourceCommand::Update { name } => {
-                source::cmd_source_update(cli, printer, name.as_deref())
-            }
+            SourceCommand::Update {
+                name,
+                require_signed_commits,
+                no_require_signed_commits,
+                allow_scripts,
+                no_allow_scripts,
+            } => source::cmd_source_update(
+                cli,
+                printer,
+                name.as_deref(),
+                source::SubscriptionEdits {
+                    require_signed_commits: paired_flag(
+                        *require_signed_commits,
+                        *no_require_signed_commits,
+                    ),
+                    allow_scripts: paired_flag(*allow_scripts, *no_allow_scripts),
+                },
+            ),
             SourceCommand::Override {
                 source,
                 action,

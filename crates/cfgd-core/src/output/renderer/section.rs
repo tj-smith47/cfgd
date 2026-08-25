@@ -188,6 +188,15 @@ impl Renderer {
                 }
                 // Plain `section`: emit header + empty_state placeholder. A
                 // header already committed at open time is not written twice.
+                //
+                // The placeholder IS a child line, so every still-pending
+                // ANCESTOR header has to land above it — the frame is already
+                // popped, so the stack holds exactly those. Without this an
+                // empty nested section printed its own header first and its
+                // parent's afterwards, and the parent then reported itself
+                // empty too (`Profiles` beneath its own `profile:x` row, each
+                // saying `(none)`).
+                self.flush_pending_section_headers(w);
                 if !frame.header_emitted {
                     self.emit_section_header_now(w, &frame);
                 }

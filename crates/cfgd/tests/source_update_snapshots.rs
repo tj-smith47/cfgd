@@ -17,6 +17,9 @@
 //!   - `source_update/rejection.txt` — same fixture, prompt receives
 //!     `Confirm(false)`; emits the "permission changes rejected" skip line.
 //!   - `source_update/bridge.txt` — streaming-to-buffered bridge invariant.
+//!   - `source_update/knob_on_failed_fetch.txt` — a failed fetch and a
+//!     `--require-signed-commits` write in one invocation: both rows under ONE
+//!     `source:<name>` owner section, and the knob lands on disk anyway.
 //!
 //! Goldens live under `tests/output_snapshots/source_update/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test source_update_snapshots
@@ -122,7 +125,7 @@ fn source_update_no_sources_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_update(&cli, &printer, None).unwrap();
+    cmd_source_update(&cli, &printer, None, Default::default()).unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -131,6 +134,129 @@ fn source_update_no_sources_human() {
         "source_update/no_sources.txt",
         &stripped,
     );
+}
+
+/// A source that cannot be fetched settles ONE row under its own
+/// `source:<name>` owner heading, and the row's detail states the cause once —
+/// no `source error:` category prefix, and no second copy of the name the
+/// heading directly above it already carries.
+#[test]
+#[serial]
+fn source_update_source_failure_human() {
+    let _disallow = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
+    let (config_dir, state_dir) = common::unreachable_source_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+    let errors = cfgd::cli::source::run_source_update(
+        &cli,
+        &printer,
+        Some("missing-team"),
+        Default::default(),
+    )
+    .expect("a fetch failure is reported, never bubbled");
+    drop(printer);
+    assert_eq!(errors, 1, "the failed source must be counted");
+
+    let stripped = strip_ansi(&cfgd_core::normalize_for_snapshot(
+        &cap.human(),
+        &[
+            (config_dir.path(), "<CONFIG_DIR>"),
+            (state_dir.path(), "<STATE_DIR>"),
+        ],
+    ));
+    assert!(
+        !stripped.contains("source error:"),
+        "the category prefix must be gone: {stripped}"
+    );
+    assert_eq!(
+        stripped.matches("missing-team").count(),
+        1,
+        "the source is named once, by its owner heading: {stripped}"
+    );
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "source_update/source_failure.txt",
+        &stripped,
+    );
+}
+
+/// A fetch failure and a subscription write in ONE invocation: both rows
+/// belong to the same `source:<name>` owner section, and the knob is written
+/// even though the fetch failed — it records a demand on FUTURE fetches.
+#[test]
+#[serial]
+fn source_update_failed_fetch_still_writes_the_knob_human() {
+    let _disallow = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
+    let (config_dir, state_dir) = common::unreachable_source_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    let errors = cfgd::cli::source::run_source_update(
+        &cli,
+        &printer,
+        Some("missing-team"),
+        cfgd::cli::source::SubscriptionEdits {
+            require_signed_commits: Some(true),
+            allow_scripts: None,
+        },
+    )
+    .expect("a fetch failure is reported, never bubbled");
+    drop(printer);
+    assert_eq!(errors, 1);
+
+    let stripped = strip_ansi(&cfgd_core::normalize_for_snapshot(
+        &cap.human(),
+        &[
+            (config_dir.path(), "<CONFIG_DIR>"),
+            (state_dir.path(), "<STATE_DIR>"),
+        ],
+    ));
+    assert_eq!(
+        stripped.matches("source:missing-team").count(),
+        1,
+        "both rows hang off ONE owner section: {stripped}"
+    );
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "source_update/knob_on_failed_fetch.txt",
+        &stripped,
+    );
+
+    let raw = std::fs::read_to_string(config_dir.path().join("cfgd.yaml")).expect("read config");
+    let written: serde_yaml::Value = serde_yaml::from_str(&raw).expect("parse config");
+    assert_eq!(
+        written["spec"]["sources"][0]["subscription"]["requireSignedCommits"],
+        serde_yaml::Value::Bool(true),
+        "the knob must be on disk: {raw}"
+    );
+}
+
+#[test]
+#[serial]
+fn source_update_failed_fetch_still_writes_the_knob_json() {
+    let _disallow = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
+    let (config_dir, state_dir) = common::unreachable_source_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    cfgd::cli::source::run_source_update(
+        &cli,
+        &printer,
+        Some("missing-team"),
+        cfgd::cli::source::SubscriptionEdits {
+            require_signed_commits: Some(true),
+            allow_scripts: None,
+        },
+    )
+    .expect("a fetch failure is reported, never bubbled");
+    drop(printer);
+
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(json["errors"], 1);
+    assert_eq!(json["sources"][0]["name"], "missing-team");
+    assert_eq!(json["sources"][0]["status"], "error");
+    assert_eq!(json["subscription"]["requireSignedCommits"], true);
 }
 
 #[test]
@@ -144,7 +270,7 @@ fn source_update_not_found_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_source_update(&cli, &printer, Some("missing"))
+    let err = cmd_source_update(&cli, &printer, Some("missing"), Default::default())
         .expect_err("missing source must return Err");
     render_cli_error(&printer, &err);
     drop(printer);
@@ -180,7 +306,7 @@ fn source_update_happy_human() {
     drop(add_printer);
 
     let (printer, cap) = Printer::for_test_doc();
-    cmd_source_update(&cli, &printer, Some("upd-src")).unwrap();
+    cmd_source_update(&cli, &printer, Some("upd-src"), Default::default()).unwrap();
     drop(printer);
 
     let stripped = normalize_paths(
@@ -214,7 +340,7 @@ fn source_update_happy_json() {
     drop(add_printer);
 
     let (printer, cap) = Printer::for_test_doc();
-    cmd_source_update(&cli, &printer, Some("upd-src")).unwrap();
+    cmd_source_update(&cli, &printer, Some("upd-src"), Default::default()).unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -265,7 +391,7 @@ fn source_update_accept_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
-    cmd_source_update(&cli, &printer, Some("accept-src")).unwrap();
+    cmd_source_update(&cli, &printer, Some("accept-src"), Default::default()).unwrap();
     drop(printer);
 
     let stripped = normalize_paths(
@@ -309,7 +435,7 @@ fn source_update_rejection_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
-    cmd_source_update(&cli, &printer, Some("reject-src")).unwrap();
+    cmd_source_update(&cli, &printer, Some("reject-src"), Default::default()).unwrap();
     drop(printer);
 
     let stripped = normalize_paths(
@@ -347,7 +473,7 @@ fn source_update_bridge_one_blank_line() {
     drop(add_printer);
 
     let (printer, cap) = Printer::for_test_doc();
-    cmd_source_update(&cli, &printer, Some("bridge-upd")).unwrap();
+    cmd_source_update(&cli, &printer, Some("bridge-upd"), Default::default()).unwrap();
     drop(printer);
 
     let combined = cap.human();

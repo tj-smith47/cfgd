@@ -8,14 +8,22 @@ Add source:replace-old
   Cloning into '<STATE_DIR>/sources/replace-old'...
 ✓ Cloning source:replace-old
 
-Source Manifest
-  Name      replace-new
-  Version   1.0.0
-  Profiles  default
+Manifest
+  Name     replace-new
+  Version  1.0.0
+
+Profiles
+  profile:default
+    Env
+      EDITOR  vim
+    Packages
+      brew formulae  ripgrep
 
 Policy
-  ⊙ Scripts: blocked
-  ⊙ Secret access: blocked
+  Require Signed Commits  false
+  Scripts Allowed         false
+  Secrets Read Allowed    false
+  System Changes Allowed  false
 
 ✓ No conflicts with current config
 
@@ -23,6 +31,6 @@ Policy
 
 Profile  default
 
-→ Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'
+→ Run 'cfgd plan' to preview changes, then 'cfgd apply'
 
 ✓ replaced with file://<BARE_NEW>

@@ -2589,6 +2589,7 @@ fn render_backup_run(h: &Harness, specs: &[&BackupSpec]) -> (String, crate::stat
             title: crate::reconciler::RunTitle::Backup,
             config_path: None,
             profile: Some("workstation"),
+            sources: &[],
             modules: &[],
             trigger: None,
         };
