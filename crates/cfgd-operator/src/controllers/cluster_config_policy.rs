@@ -14,9 +14,9 @@ use super::config_policy::{
     merge_policy_requirements, validate_policy_compliance,
 };
 use super::{
-    CLUSTER_CONFIG_POLICY_FINALIZER, ControllerContext, FIELD_MANAGER_OPERATOR,
-    FIELD_MANAGER_STATUS, build_condition, compliance_summary, matches_selector,
-    record_reconcile_success, sort_and_cap_machines,
+    CLUSTER_CONFIG_POLICY_FINALIZER, ControllerContext, FIELD_MANAGER_STATUS, add_finalizer,
+    build_condition, compliance_summary, matches_selector, record_reconcile_success,
+    remove_finalizer, sort_and_cap_machines,
 };
 
 // This controller writes nothing onto the machines it evaluates — its verdict
@@ -50,7 +50,7 @@ pub(super) async fn reconcile_cluster_config_policy(
                 policy: name.clone(),
                 namespace: String::new(), // cluster-scoped
             });
-            remove_finalizer(&ccp_api, &name, finalizers).await?;
+            remove_finalizer(&ccp_api, &name, finalizers, CLUSTER_CONFIG_POLICY_FINALIZER).await?;
         }
         record_reconcile_success(&ctx, "cluster_config_policy", start);
         return Ok(Action::await_change());
@@ -59,19 +59,7 @@ pub(super) async fn reconcile_cluster_config_policy(
     if !has_finalizer {
         // The gauge's write path only runs from a normal reconcile; only a
         // finalizer guarantees a last one to remove it in.
-        let mut updated: Vec<String> = finalizers.to_vec();
-        updated.push(CLUSTER_CONFIG_POLICY_FINALIZER.to_string());
-        let patch = serde_json::json!({ "metadata": { "finalizers": updated } });
-        ccp_api
-            .patch(
-                &name,
-                &PatchParams::apply(FIELD_MANAGER_OPERATOR),
-                &Patch::Merge(patch),
-            )
-            .await
-            .map_err(|e| {
-                OperatorError::Reconciliation(format!("failed to add finalizer to {name}: {e}"))
-            })?;
+        add_finalizer(&ccp_api, &name, finalizers, CLUSTER_CONFIG_POLICY_FINALIZER).await?;
         info!(name = %name, "added finalizer to ClusterConfigPolicy");
     }
 
@@ -217,29 +205,4 @@ pub(super) async fn reconcile_cluster_config_policy(
     record_reconcile_success(&ctx, "cluster_config_policy", start);
 
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
-}
-
-/// Drop this controller's finalizer, releasing the policy for deletion.
-async fn remove_finalizer(
-    policies: &Api<ClusterConfigPolicy>,
-    name: &str,
-    finalizers: &[String],
-) -> Result<(), OperatorError> {
-    let remaining: Vec<&str> = finalizers
-        .iter()
-        .filter(|f| f.as_str() != CLUSTER_CONFIG_POLICY_FINALIZER)
-        .map(String::as_str)
-        .collect();
-    let patch = serde_json::json!({ "metadata": { "finalizers": remaining } });
-    policies
-        .patch(
-            name,
-            &PatchParams::apply(FIELD_MANAGER_OPERATOR),
-            &Patch::Merge(patch),
-        )
-        .await
-        .map_err(|e| {
-            OperatorError::Reconciliation(format!("failed to remove finalizer from {name}: {e}"))
-        })?;
-    Ok(())
 }

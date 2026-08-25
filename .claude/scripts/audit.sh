@@ -238,6 +238,39 @@ _strip_test_blocks_uncached() {
     ' "$filepath"
 }
 
+# --- Drop the lines inside every `impl <Trait> for <Type>` block ---
+# A method name inside a trait impl is chosen by the TRAIT, not by the author,
+# so it can never be evidence of copy-paste. Reads the `<file>:<line>:<text>`
+# stream `strip_test_blocks_from_file` produces and drops the whole block,
+# header included; the trait's own declaration, every inherent method and every
+# free function still reach the duplicate gate. `for<'a>` (a HRTB bound) needs no
+# exclusion — it carries no space after `for`. Brace depth is counted through
+# `code_only`, so a brace inside a string or a comment cannot desynchronise the
+# tracker, and a header whose `{` sits on a later line (a `where` clause) is
+# still tracked, because the block is only left once a brace has actually opened.
+drop_trait_impl_lines() {
+    awk "$AWK_LIB"'
+    BEGIN { depth = 0; in_impl = 0 }
+    {
+        line = $0
+        sub(/^[^:]*:[0-9]+:/, "", line)
+        code = code_only(line)
+        if (!in_impl && code ~ /^[[:space:]]*impl[^A-Za-z0-9_].* for /) {
+            in_impl = 1
+            depth = 0
+        }
+        if (!in_impl) { print; next }
+        opens = gsub(/{/, "{", code)
+        was = depth
+        depth += opens - gsub(/}/, "}", code)
+        if (depth <= 0 && (was > 0 || opens > 0)) {
+            in_impl = 0
+            depth = 0
+        }
+    }
+    '
+}
+
 # --- Extract test blocks from a file (the inverse of strip) ---
 # The test-hygiene gates (sleep-ok, raw-capture-ok, path-guard-ok) anchor to
 # TEST code only — a raw sleep or a raw capture-buffer read is a production
@@ -710,6 +743,71 @@ ALLOWED_FN_PAIRS=(
     "token crates/cfgd/src/cli/output_types.rs"
     "owner crates/cfgd/src/cli/output_types.rs"
     "actions crates/cfgd/src/cli/output_types.rs"
+    # Four conventions and two delegates, each a name two unrelated things
+    # answer. `X::of(source) -> Self` is the derivation convention (`Tier::of`
+    # keeps the budget); `role` maps an enum onto an output `Role`
+    # (`SkillResultStatus` keeps it); `with_config_dir` is the `#[must_use]`
+    # builder convention (`SopsBackend` keeps it); `report` is `sidecar`'s own
+    # private line printer, not one of `providers`' note sinks (which keep it).
+    # The two delegates CALL the definition they share a name with:
+    # `lanes::registers_family_sources` resolves an action's manager and asks
+    # the trait method, and `cli::apply::refresh_link_deployed_hashes` wraps the
+    # reconciler's in the log-and-continue the two apply paths need.
+    "of crates/cfgd-core/src/reconciler/env_engine.rs"
+    "of crates/cfgd-core/src/modules/surfaces.rs"
+    "of crates/cfgd/src/cli/status.rs"
+    "role crates/cfgd/src/cli/status.rs"
+    "with_config_dir crates/cfgd-core/src/reconciler/mod.rs"
+    "report crates/cfgd-core/src/reconciler/sidecar.rs"
+    "registers_family_sources crates/cfgd-core/src/reconciler/lanes.rs"
+    "refresh_link_deployed_hashes crates/cfgd/src/cli/apply.rs"
+    # The names below were blanket-excused by NAME until the trait-impl skip
+    # above landed. The skip covers each trait's IMPLS; what still collides is
+    # the trait's own declaration against an unrelated inherent method, a free
+    # function, or a second trait — so each keeps its budget here instead.
+    # Process entry points, one per binary/server, sharing only the verb.
+    "run crates/cfgd-csi/src/app.rs"
+    "run crates/cfgd-operator/src/controllers/mod.rs"
+    "run crates/cfgd/src/mcp/server/mod.rs"
+    # `mcp::resources::read` reads a resource; these three read a withheld
+    # decision, a registry key, and a tool-annotation preset.
+    "read crates/cfgd-core/src/reconciler/pending.rs"
+    "read crates/cfgd/src/mcp/brontes.rs"
+    "read crates/cfgd/src/system/windows_registry.rs"
+    # `SkillProvider::list` is the trait; these build a JSON-RPC method payload.
+    "list crates/cfgd/src/mcp/prompts.rs"
+    "list crates/cfgd/src/mcp/resources.rs"
+    "list crates/cfgd/src/mcp/tools.rs"
+    # `SecretProvider::resolve` is the trait; these resolve a registry
+    # credential and a directory set.
+    "resolve crates/cfgd-core/src/oci/auth/mod.rs"
+    "resolve crates/cfgd-core/src/util/paths.rs"
+    # `PackageManager::install` is the trait; these install a skill and a
+    # signal handler.
+    "install crates/cfgd-core/src/daemon/mod.rs"
+    "install crates/cfgd-core/src/providers/skill/mod.rs"
+    # `SystemConfigurator::apply` is the trait; these run a reconcile.
+    "apply crates/cfgd-core/src/reconciler/apply.rs"
+    "apply crates/cfgd-core/src/reconciler/run.rs"
+    # A spec's own validation vs a web session token's.
+    "validate crates/cfgd-operator/src/gateway/api/mod.rs"
+    # `SkillProvider::render` renders a skill; `IniDoc::render` serializes a file.
+    "render crates/cfgd-core/src/reconciler/patch.rs"
+    # The three `DaemonHooks` methods keep the budget; these are the cfgd-crate
+    # free functions the workstation hooks delegate to.
+    "plan_packages crates/cfgd/src/packages/mod.rs"
+    "plan_packages_observed crates/cfgd/src/packages/mod.rs"
+    "prune_orphaned_packages crates/cfgd/src/packages/mod.rs"
+    # `PackageManager::name` is the trait; this names a scanned profile entry.
+    "name crates/cfgd-core/src/config/parse.rs"
+    # `cfgd_core::expand_tilde` is the shared helper and keeps the budget; the
+    # `DaemonHooks` method is the hook surface over it.
+    "expand_tilde crates/cfgd-core/src/daemon/mod.rs"
+    # `SystemConfigurator::diff` is the trait; this diffs a file's content.
+    "diff crates/cfgd/src/files/plan.rs"
+    # `Platform::detect` is the one platform detection and keeps the budget;
+    # `SkillProvider::detect` finds an installed skill.
+    "detect crates/cfgd-core/src/providers/skill/mod.rs"
 )
 allowed_pairs_file="$STRIP_CACHE_DIR/allowed-fn-pairs"
 printf '%s\n' "${ALLOWED_FN_PAIRS[@]}" > "$allowed_pairs_file"
@@ -721,6 +819,7 @@ fn_dupes=$(while IFS= read -r -d '' rsfile; do
         */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/output/*) continue ;;
     esac
     strip_test_blocks_from_file "$rsfile" \
+        | drop_trait_impl_lines \
         | grep -E '^\S+:[0-9]+:\s*(pub\s+)?(async\s+)?fn [a-z0-9_]+\(' \
         | sed 's|^\([^:]*\):[0-9]*:.*fn \([a-z0-9_]*\)(.*|\2 \1|' \
         || true
@@ -728,49 +827,27 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
     | sort -u | grep -vxF -f "$allowed_pairs_file" \
     | awk '{print $1}' | sort | uniq -c | sort -rn \
     | awk '$1 > 1 && \
-        $2 != "new" && $2 != "default" && $2 != "from" && $2 != "fmt" && $2 != "drop" && \
-        $2 != "name" && $2 != "is_available" && $2 != "bootstrap_plan" && $2 != "bootstrap" && \
-        $2 != "installed_packages" && $2 != "install" && $2 != "uninstall" && \
-        $2 != "mediated_packages" && \
-        $2 != "refresh_index" && $2 != "has_index" && $2 != "listed_identity" && \
-        $2 != "plan_packages_observed" && \
-        $2 != "diff" && $2 != "apply" && $2 != "current_state" && \
-        $2 != "scan_source" && $2 != "scan_target" && \
-        $2 != "get" && $2 != "set" && $2 != "delete" && $2 != "list" && $2 != "resolve" && \
-        $2 != "open" && $2 != "init_tables" && $2 != "run" && $2 != "build" && $2 != "test" && \
-        $2 != "validate" && $2 != "main" && $2 != "plan_packages" && $2 != "from_str" && \
-        $2 != "expand_tilde" && $2 != "encrypt_file" && $2 != "edit_file" && \
-        $2 != "decrypt_file" && $2 != "build_registry" && $2 != "as_str" && \
-        $2 != "router" && $2 != "set_device_config" && $2 != "record_drift_event" && \
-        $2 != "list_drift_events" && $2 != "list_fleet_events" && $2 != "read_current_config" && \
-        $2 != "load_profile" && $2 != "plan" && $2 != "plan_files" && \
+        $2 != "new" && $2 != "get" && $2 != "set" && $2 != "delete" && \
+        $2 != "open" && $2 != "init_tables" && $2 != "build" && \
+        $2 != "test" && $2 != "main" && $2 != "as_str" && $2 != "router" && \
+        $2 != "set_device_config" && $2 != "record_drift_event" && \
+        $2 != "list_drift_events" && $2 != "list_fleet_events" && \
+        $2 != "read_current_config" && $2 != "load_profile" && $2 != "plan" && \
         $2 != "list_devices" && $2 != "get_device" && $2 != "enroll" && \
         $2 != "display_name" && $2 != "config_path" && $2 != "checkin" && \
-        $2 != "from_spec" && $2 != "extend_registry_custom_managers" && \
-        $2 != "available_version" && \
-        $2 != "load_module" && \
-        $2 != "installed_packages_with_versions" && $2 != "success" && \
-        $2 != "version_meets_minimum" && \
-        $2 != "resolved_prefix" && $2 != "record_resolved_prefix" && \
-        $2 != "run_migrations" && $2 != "request_challenge" && $2 != "path_dirs" && \
-        $2 != "created_path_dirs" && \
-        $2 != "package_aliases" && $2 != "is_empty" && $2 != "len" && $2 != "expecting" && \
-        $2 != "error" && $2 != "enroll_info" && $2 != "parse" && \
-        $2 != "cmd_status" && \
+        $2 != "from_spec" && $2 != "load_module" && $2 != "success" && \
+        $2 != "run_migrations" && $2 != "request_challenge" && \
+        $2 != "is_empty" && $2 != "len" && $2 != "error" && \
+        $2 != "enroll_info" && $2 != "parse" && $2 != "cmd_status" && \
         $2 != "terminate_process" && $2 != "set_file_permissions" && \
         $2 != "is_same_inode" && $2 != "is_root" && $2 != "is_executable" && \
         $2 != "run_health_server" && $2 != "run_as_windows_service" && \
-        $2 != "read" && $2 != "write" && $2 != "flush" && \
         $2 != "home_dir_var" && $2 != "file_permissions_mode" && \
         $2 != "create_symlink_impl" && $2 != "cleanup_old_binary" && \
         $2 != "atomic_replace" && $2 != "acquire_apply_lock" && \
-        $2 != "recv_sighup" && $2 != "recv_sigterm" && $2 != "read_command_output" && \
-        $2 != "unavailable" && $2 != "set_fail_apply" && \
-        $2 != "status" && $2 != "label" && \
-        $2 != "render" && $2 != "detect" && $2 != "target_path" && $2 != "id" && \
-        $2 != "package_identity" && $2 != "persisted_uninstall" && \
-        $2 != "set_config_dir" && $2 != "content_drift" && \
-        $2 != "build_file_manager" && $2 != "prune_orphaned_packages" && \
+        $2 != "recv_sighup" && $2 != "recv_sigterm" && \
+        $2 != "read_command_output" && $2 != "unavailable" && \
+        $2 != "set_fail_apply" && $2 != "status" && $2 != "label" && \
         $2 != "manager_names" && $2 != "aborted" && $2 != "failed" && \
         $2 != "skipped" && $2 != "metrics_handler" && $2 != "compose" && \
         $2 != "default_cache_dir" && $2 != "default_cache_dir_for" && \

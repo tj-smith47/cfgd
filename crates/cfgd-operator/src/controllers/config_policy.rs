@@ -16,10 +16,11 @@ use crate::metrics::PolicyLabels;
 use cfgd_core::version_satisfies;
 
 use super::{
-    CONFIG_POLICY_FINALIZER, ControllerContext, FIELD_MANAGER_OPERATOR, FIELD_MANAGER_STATUS,
+    CONFIG_POLICY_FINALIZER, ControllerContext, FIELD_MANAGER_STATUS, add_finalizer,
     build_condition, compliance_summary, emit_event, machine_key, matches_selector, namespaced_api,
-    record_reconcile_success, sort_and_cap_machines, upsert_condition,
+    record_reconcile_success, remove_finalizer, sort_and_cap_machines, upsert_condition,
 };
+
 pub(super) async fn reconcile_config_policy(
     obj: Arc<ConfigPolicy>,
     ctx: Arc<ControllerContext>,
@@ -63,7 +64,7 @@ pub(super) async fn reconcile_config_policy(
                 policy: name.clone(),
                 namespace: namespace.clone(),
             });
-            remove_finalizer(&policies, &name, finalizers).await?;
+            remove_finalizer(&policies, &name, finalizers, CONFIG_POLICY_FINALIZER).await?;
         }
         record_reconcile_success(&ctx, "config_policy", start);
         return Ok(Action::await_change());
@@ -75,19 +76,7 @@ pub(super) async fn reconcile_config_policy(
         // reconcile in which to do that. The alternative — having the machine
         // controller ask whether a policy still exists — is the cross-controller
         // coupling that made the two rewrite each other's condition.
-        let mut updated: Vec<String> = finalizers.to_vec();
-        updated.push(CONFIG_POLICY_FINALIZER.to_string());
-        let patch = serde_json::json!({ "metadata": { "finalizers": updated } });
-        policies
-            .patch(
-                &name,
-                &PatchParams::apply(FIELD_MANAGER_OPERATOR),
-                &Patch::Merge(patch),
-            )
-            .await
-            .map_err(|e| {
-                OperatorError::Reconciliation(format!("failed to add finalizer to {name}: {e}"))
-            })?;
+        add_finalizer(&policies, &name, finalizers, CONFIG_POLICY_FINALIZER).await?;
         info!(name = %name, "added finalizer to ConfigPolicy");
     }
 
@@ -375,31 +364,6 @@ async fn clear_compliant_verdicts(machines: &Api<MachineConfig>, names: &[String
             warn!(name = %mc_name, error = %e, "failed to clear Compliant condition on MachineConfig");
         }
     }
-}
-
-/// Drop this controller's finalizer, releasing the policy for deletion.
-async fn remove_finalizer(
-    policies: &Api<ConfigPolicy>,
-    name: &str,
-    finalizers: &[String],
-) -> Result<(), OperatorError> {
-    let remaining: Vec<&str> = finalizers
-        .iter()
-        .filter(|f| f.as_str() != CONFIG_POLICY_FINALIZER)
-        .map(String::as_str)
-        .collect();
-    let patch = serde_json::json!({ "metadata": { "finalizers": remaining } });
-    policies
-        .patch(
-            name,
-            &PatchParams::apply(FIELD_MANAGER_OPERATOR),
-            &Patch::Merge(patch),
-        )
-        .await
-        .map_err(|e| {
-            OperatorError::Reconciliation(format!("failed to remove finalizer from {name}: {e}"))
-        })?;
-    Ok(())
 }
 
 /// Outcome of evaluating one policy against its targeted machines.

@@ -13,8 +13,9 @@ use crate::metrics::DriftLabels;
 use super::drift_alert::has_active_drift_alerts;
 use super::module::resolve_module_refs;
 use super::{
-    ControllerContext, FIELD_MANAGER_OPERATOR, FIELD_MANAGER_STATUS, MACHINE_CONFIG_FINALIZER,
+    ControllerContext, FIELD_MANAGER_STATUS, MACHINE_CONFIG_FINALIZER, add_finalizer,
     build_condition, emit_event, find_condition, namespaced_api, record_reconcile_success,
+    remove_finalizer,
 };
 
 pub(super) async fn reconcile_machine_config(
@@ -32,28 +33,7 @@ pub(super) async fn reconcile_machine_config(
 
     if obj.metadata.deletion_timestamp.is_some() && has_finalizer {
         info!(name = %name, "machineConfig being deleted, running cleanup");
-        let updated: Vec<&str> = finalizers
-            .iter()
-            .filter(|f| f.as_str() != MACHINE_CONFIG_FINALIZER)
-            .map(|f| f.as_str())
-            .collect();
-        let patch = serde_json::json!({
-            "metadata": {
-                "finalizers": updated
-            }
-        });
-        machines_api
-            .patch(
-                &name,
-                &PatchParams::apply(FIELD_MANAGER_OPERATOR),
-                &Patch::Merge(patch),
-            )
-            .await
-            .map_err(|e| {
-                OperatorError::Reconciliation(format!(
-                    "failed to remove finalizer from {name}: {e}"
-                ))
-            })?;
+        remove_finalizer(&machines_api, &name, finalizers, MACHINE_CONFIG_FINALIZER).await?;
         // A deletion pass is a reconciliation that succeeded; during a
         // deletion-heavy period this counter is the only sign the controller
         // is alive at all.
@@ -62,23 +42,7 @@ pub(super) async fn reconcile_machine_config(
     }
 
     if obj.metadata.deletion_timestamp.is_none() && !has_finalizer {
-        let mut updated: Vec<String> = finalizers.to_vec();
-        updated.push(MACHINE_CONFIG_FINALIZER.to_string());
-        let patch = serde_json::json!({
-            "metadata": {
-                "finalizers": updated
-            }
-        });
-        machines_api
-            .patch(
-                &name,
-                &PatchParams::apply(FIELD_MANAGER_OPERATOR),
-                &Patch::Merge(patch),
-            )
-            .await
-            .map_err(|e| {
-                OperatorError::Reconciliation(format!("failed to add finalizer to {name}: {e}"))
-            })?;
+        add_finalizer(&machines_api, &name, finalizers, MACHINE_CONFIG_FINALIZER).await?;
         info!(name = %name, "added finalizer to MachineConfig");
     }
 

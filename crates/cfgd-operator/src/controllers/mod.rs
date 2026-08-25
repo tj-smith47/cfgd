@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::Namespace;
-use kube::api::Api;
+use kube::api::{Api, Patch, PatchParams};
 use kube::core::PartialObjectMeta;
 use kube::runtime::controller::Action;
 use kube::runtime::events::{Event, EventType, Recorder, Reporter};
@@ -291,6 +291,59 @@ pub(super) fn namespaced_api<
     } else {
         Ok(Api::namespaced(client.clone(), namespace))
     }
+}
+
+/// Add `finalizer` to `name`, buying one last reconcile in which to clean up
+/// whatever this controller wrote elsewhere.
+pub(super) async fn add_finalizer<K>(
+    api: &Api<K>,
+    name: &str,
+    finalizers: &[String],
+    finalizer: &str,
+) -> Result<(), OperatorError>
+where
+    K: Clone + serde::de::DeserializeOwned + std::fmt::Debug,
+{
+    let mut updated: Vec<&str> = finalizers.iter().map(String::as_str).collect();
+    updated.push(finalizer);
+    patch_finalizers(api, name, &updated, "add finalizer to").await
+}
+
+/// Drop `finalizer`, releasing `name` for deletion.
+pub(super) async fn remove_finalizer<K>(
+    api: &Api<K>,
+    name: &str,
+    finalizers: &[String],
+    finalizer: &str,
+) -> Result<(), OperatorError>
+where
+    K: Clone + serde::de::DeserializeOwned + std::fmt::Debug,
+{
+    let remaining: Vec<&str> = finalizers
+        .iter()
+        .map(String::as_str)
+        .filter(|f| *f != finalizer)
+        .collect();
+    patch_finalizers(api, name, &remaining, "remove finalizer from").await
+}
+
+async fn patch_finalizers<K>(
+    api: &Api<K>,
+    name: &str,
+    finalizers: &[&str],
+    what: &str,
+) -> Result<(), OperatorError>
+where
+    K: Clone + serde::de::DeserializeOwned + std::fmt::Debug,
+{
+    api.patch(
+        name,
+        &PatchParams::apply(FIELD_MANAGER_OPERATOR),
+        &Patch::Merge(serde_json::json!({ "metadata": { "finalizers": finalizers } })),
+    )
+    .await
+    .map_err(|e| OperatorError::Reconciliation(format!("failed to {what} {name}: {e}")))?;
+    Ok(())
 }
 
 pub async fn run(client: Client, metrics: Metrics) -> Result<(), OperatorError> {
