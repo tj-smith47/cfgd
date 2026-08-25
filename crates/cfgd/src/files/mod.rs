@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use tera::Context;
 
 use cfgd_core::config::{EnvVar, FileStrategy, ResolvedProfile};
-use cfgd_core::errors::{FileError, Result};
+use cfgd_core::errors::Result;
 
 mod apply;
 mod plan;
@@ -94,18 +94,4 @@ impl CfgdFileManager {
         self.secret_backend = backend;
         self.secret_providers = providers;
     }
-}
-
-/// Check whether a file is encrypted with the given backend.
-///
-/// - `"sops"`: parses the file as YAML or JSON and checks for a top-level `sops` key
-///   that contains both `mac` and `lastmodified` sub-keys, which SOPS always writes.
-///   This avoids false positives from files that merely mention "sops" in comments.
-/// - `"age"`: checks whether the file begins with the `age-encryption.org` magic header.
-/// - Any other backend: returns `FileError::UnknownEncryptionBackend`.
-pub(crate) fn is_file_encrypted(
-    path: &Path,
-    backend: &str,
-) -> std::result::Result<bool, FileError> {
-    cfgd_core::is_file_encrypted(path, backend)
 }

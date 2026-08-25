@@ -655,6 +655,49 @@ pub fn tracing_env_filter(default: &str) -> tracing_subscriber::EnvFilter {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default))
 }
 
+/// Read an environment variable, falling back to `default` when it is unset or
+/// not valid UTF-8.
+///
+/// The one spelling of that read for the two server binaries, which configure
+/// themselves entirely from the environment: `cfgd-csi` and `cfgd-operator`
+/// each carried a byte-identical copy.
+pub fn env_or(var: &str, default: &str) -> String {
+    std::env::var(var).unwrap_or_else(|_| default.to_string())
+}
+
+/// Which stop request arrived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownRequest {
+    /// Ctrl-C / SIGINT.
+    Interrupt,
+    /// SIGTERM — how a container runtime and a service manager ask.
+    Terminate,
+}
+
+/// Resolve when this process is asked to stop, reporting which request arrived.
+///
+/// The ONE registration-and-select for the two server binaries; a caller adds
+/// its own logging and error type around it. Reporting WHICH request arrived is
+/// what lets a caller keep a per-signal log line without owning the select.
+///
+/// The daemon's own `ShutdownSignals` is deliberately not folded in: it warns
+/// and keeps running when a handler cannot be registered (so a daemon that can
+/// hear one signal stays responsive to the other) and answers with a POSIX
+/// `128 + signum` exit code. A server that cannot install its handler has no
+/// such half-working state to preserve, so this reports the failure instead.
+///
+/// Unix-only, like the two copies it replaced: both callers are Linux server
+/// binaries, and a Windows arm nobody runs would be an unproven code path.
+#[cfg(unix)]
+pub async fn await_shutdown_request() -> std::io::Result<ShutdownRequest> {
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|e| std::io::Error::other(format!("failed to register SIGTERM handler: {e}")))?;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => Ok(ShutdownRequest::Interrupt),
+        _ = sigterm.recv() => Ok(ShutdownRequest::Terminate),
+    }
+}
+
 /// Check that a CLI tool is available on PATH, returning a unified error
 /// string otherwise. Before this helper, six `if !command_available("X")`
 /// gates across `oci.rs` and `cli/module.rs` each produced a slightly
@@ -1460,6 +1503,48 @@ mod tests {
             composed, "/opt/a",
             "an unset PATH contributes no entries — least of all the empty one \
              `split_paths` invents, which POSIX reads as the current directory"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn env_or_falls_back_only_when_the_variable_is_unset() {
+        let _g = crate::test_helpers::EnvVarGuard::unset("CFGD_TEST_ENV_OR_UNSET");
+        assert_eq!(env_or("CFGD_TEST_ENV_OR_UNSET", "fallback"), "fallback");
+    }
+
+    #[test]
+    #[serial]
+    fn env_or_reads_the_variable_when_it_is_set() {
+        let _g = crate::test_helpers::EnvVarGuard::set("CFGD_TEST_ENV_OR_SET", "explicit");
+        assert_eq!(env_or("CFGD_TEST_ENV_OR_SET", "fallback"), "explicit");
+    }
+
+    #[test]
+    #[serial]
+    fn env_or_keeps_an_explicitly_empty_value() {
+        // Set-to-empty is a deliberate caller action and is distinct from
+        // unset: a server that reads "" must see the operator's own clearing,
+        // not the default it was configured away from.
+        let _g = crate::test_helpers::EnvVarGuard::set("CFGD_TEST_ENV_OR_EMPTY", "");
+        assert_eq!(env_or("CFGD_TEST_ENV_OR_EMPTY", "fallback"), "");
+    }
+
+    /// Drive the wait against a 50 ms timer with no signal sent. The timeout is
+    /// the expected arm — what the test proves is that handler registration
+    /// runs without panicking or erroring, and the hard deadline keeps a
+    /// never-resolving future from blocking the suite.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn await_shutdown_request_registers_its_handlers() {
+        let waited = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            await_shutdown_request(),
+        )
+        .await;
+        assert!(
+            waited.is_err(),
+            "no signal was sent, so the timeout must be what fires"
         );
     }
 }

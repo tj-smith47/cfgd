@@ -10,6 +10,8 @@ use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use cfgd_core::errors::FileError;
+
 use cfgd_core::config::{
     EncryptionMode, EncryptionSpec, EnvVar, FilesSpec, LayerPolicy, ManagedFileSpec, MergedProfile,
     ProfileLayer, ProfileSpec, ResolvedProfile,
@@ -1840,7 +1842,7 @@ sops:
 "#,
     )
     .unwrap();
-    assert!(is_file_encrypted(&file, "sops").unwrap());
+    assert!(cfgd_core::is_file_encrypted(&file, "sops").unwrap());
 }
 
 #[test]
@@ -1857,7 +1859,7 @@ other: data
 "#,
     )
     .unwrap();
-    assert!(!is_file_encrypted(&file, "sops").unwrap());
+    assert!(!cfgd_core::is_file_encrypted(&file, "sops").unwrap());
 }
 
 #[test]
@@ -1870,7 +1872,7 @@ fn is_file_encrypted_detects_age_header() {
         "age-encryption.org/v1\n-> X25519 abc123\n--- abc\nbinarydata\n",
     )
     .unwrap();
-    assert!(is_file_encrypted(&file, "age").unwrap());
+    assert!(cfgd_core::is_file_encrypted(&file, "age").unwrap());
 }
 
 #[test]
@@ -1878,7 +1880,7 @@ fn is_file_encrypted_rejects_plaintext_for_age() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("plain.txt");
     fs::write(&file, "this is not age encrypted\n").unwrap();
-    assert!(!is_file_encrypted(&file, "age").unwrap());
+    assert!(!cfgd_core::is_file_encrypted(&file, "age").unwrap());
 }
 
 #[test]
@@ -1886,7 +1888,7 @@ fn is_file_encrypted_unknown_backend_returns_error() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("file.txt");
     fs::write(&file, "content").unwrap();
-    let result = is_file_encrypted(&file, "gpg");
+    let result = cfgd_core::is_file_encrypted(&file, "gpg");
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(matches!(err, FileError::UnknownEncryptionBackend { .. }));

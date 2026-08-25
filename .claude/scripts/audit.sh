@@ -808,6 +808,31 @@ ALLOWED_FN_PAIRS=(
     # `Platform::detect` is the one platform detection and keeps the budget;
     # `SkillProvider::detect` finds an installed skill.
     "detect crates/cfgd-core/src/providers/skill/mod.rs"
+    # The names below became visible when the extraction widened to generic and
+    # restricted-visibility definitions (`fn name<T>(`, `pub(crate) fn name(`).
+    # Each is a homonym: same word, different question, one keeping the budget.
+    # `util::process`'s reader streams 8 KiB byte chunks and signals EOF on a
+    # channel; the script one reads LINES and stamps each with a shared Instant.
+    "spawn_pipe_reader crates/cfgd-core/src/reconciler/scripts.rs"
+    # `patch.rs` assigns into a `toml_edit::Table` carrying the old value's
+    # decor; this converts a `serde_yaml::Value` into a plain `toml::Table`.
+    "set_toml_value crates/cfgd/src/system/node/format.rs"
+    # `LeaderElector::run` drives a callback under a lease; `app::run` is the
+    # process entry point.
+    "run crates/cfgd-operator/src/leader.rs"
+    # The `#[must_use] fn(mut self, &dyn LaneOutput) -> Self` builder convention
+    # on two unrelated types (`PackageContext` keeps the budget, `PackageExec`).
+    "in_lane crates/cfgd-core/src/reconciler/packages.rs"
+    # `ApplyRun::header` renders the run's kv header; this reads one HTTP header.
+    "header crates/cfgd-core/src/oci/transport.rs"
+    # `ConfigInputRecorder::finish` pops a recording frame; `LiveTree::finish`
+    # commits rows and takes the live region down.
+    "finish crates/cfgd-core/src/reconciler/live_tree.rs"
+    # `Platform::detect` / `Platform::current` are the cataloged host detection
+    # and its memo; the env engine's probe reads shell/rc facts under one `home`
+    # and maps `cfg!` flags onto a 4-variant enum its tests drive per platform.
+    "detect crates/cfgd-core/src/reconciler/env_engine.rs"
+    "current crates/cfgd-core/src/reconciler/env_engine.rs"
 )
 allowed_pairs_file="$STRIP_CACHE_DIR/allowed-fn-pairs"
 printf '%s\n' "${ALLOWED_FN_PAIRS[@]}" > "$allowed_pairs_file"
@@ -820,8 +845,8 @@ fn_dupes=$(while IFS= read -r -d '' rsfile; do
     esac
     strip_test_blocks_from_file "$rsfile" \
         | drop_trait_impl_lines \
-        | grep -E '^\S+:[0-9]+:\s*(pub\s+)?(async\s+)?fn [a-z0-9_]+\(' \
-        | sed 's|^\([^:]*\):[0-9]*:.*fn \([a-z0-9_]*\)(.*|\2 \1|' \
+        | grep -E '^\S+:[0-9]+:\s*(pub[^ ]*\s+)?(async\s+)?fn [a-z0-9_]+[(<]' \
+        | sed 's|^\([^:]*\):[0-9]*:.*fn \([a-z0-9_]*\)[(<].*|\2 \1|' \
         || true
 done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
     | sort -u | grep -vxF -f "$allowed_pairs_file" \

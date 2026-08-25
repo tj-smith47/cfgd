@@ -15,7 +15,6 @@ use cfgd_core::reconciler::{
     PatchBinding, PatchOutcome, ReconcileContext, evaluate_patch, patch_failure_detail,
 };
 
-use super::is_file_encrypted;
 use super::template::is_tera_template;
 
 /// Whether `target_path` is linked to `source_path` under `strategy` —
@@ -285,7 +284,7 @@ impl super::CfgdFileManager {
 
                 // For InRepo (and Always) mode: the source file in the repo must be
                 // encrypted with the declared backend.
-                let encrypted = is_file_encrypted(&source_path, &enc.backend)?;
+                let encrypted = cfgd_core::is_file_encrypted(&source_path, &enc.backend)?;
                 if !encrypted {
                     return Err(FileError::NotEncrypted {
                         path: source_path.clone(),

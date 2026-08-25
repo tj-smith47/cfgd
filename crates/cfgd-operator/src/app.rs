@@ -109,13 +109,13 @@ fn init_otel_tracer() -> Result<opentelemetry_sdk::trace::SdkTracer, Box<dyn std
 }
 
 async fn shutdown_signal() -> Result<()> {
-    let ctrl_c = tokio::signal::ctrl_c();
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .map_err(|e| anyhow::anyhow!("failed to install SIGTERM handler: {e}"))?;
-
-    tokio::select! {
-        _ = ctrl_c => tracing::info!("received SIGINT, initiating graceful shutdown"),
-        _ = sigterm.recv() => tracing::info!("received SIGTERM, initiating graceful shutdown"),
+    match cfgd_core::await_shutdown_request().await? {
+        cfgd_core::ShutdownRequest::Interrupt => {
+            tracing::info!("received SIGINT, initiating graceful shutdown");
+        }
+        cfgd_core::ShutdownRequest::Terminate => {
+            tracing::info!("received SIGTERM, initiating graceful shutdown");
+        }
     }
     Ok(())
 }
@@ -249,7 +249,7 @@ pub async fn run() -> Result<()> {
     let (mut health_handle, health_state) = spawn_health_server();
     let (mut metrics_handle, metrics) = spawn_metrics_server();
 
-    let cert_dir = env::env_or("WEBHOOK_CERT_DIR", "/tmp/k8s-webhook-server/serving-certs");
+    let cert_dir = cfgd_core::env_or("WEBHOOK_CERT_DIR", "/tmp/k8s-webhook-server/serving-certs");
     let webhook_port = env::parse_port_env("WEBHOOK_PORT", 9443);
 
     let mut webhook_handle: Option<tokio::task::JoinHandle<()>> = None;

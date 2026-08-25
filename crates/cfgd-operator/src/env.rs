@@ -35,11 +35,6 @@ pub fn parse_bool_env(var: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Read an env var, returning the value or `default` when unset.
-pub fn env_or(var: &str, default: &str) -> String {
-    std::env::var(var).unwrap_or_else(|_| default.to_string())
-}
-
 /// Parse an env var as a `u32`, falling back to `default` on missing or
 /// unparseable values. Used for retention windows / size knobs that don't
 /// need the port-specific warning shape.
@@ -160,35 +155,6 @@ mod tests {
     fn parse_bool_env_rejects_empty_string() {
         with_test_env_var("CFGD_TEST_BOOL_EMPTY", Some(""), || {
             assert!(!parse_bool_env("CFGD_TEST_BOOL_EMPTY"));
-        });
-    }
-
-    // --- env_or ---
-
-    #[test]
-    #[serial]
-    fn env_or_returns_default_when_unset() {
-        with_test_env_var("CFGD_TEST_S_UNSET", None, || {
-            assert_eq!(env_or("CFGD_TEST_S_UNSET", "fallback"), "fallback");
-        });
-    }
-
-    #[test]
-    #[serial]
-    fn env_or_returns_value_when_set() {
-        with_test_env_var("CFGD_TEST_S_SET", Some("explicit"), || {
-            assert_eq!(env_or("CFGD_TEST_S_SET", "fallback"), "explicit");
-        });
-    }
-
-    #[test]
-    #[serial]
-    fn env_or_returns_empty_string_when_set_to_empty() {
-        // Setting a var to "" is a deliberate caller action, not unset.
-        // Returning "" lets callers distinguish "user explicitly cleared"
-        // from "not configured."
-        with_test_env_var("CFGD_TEST_S_EMPTY", Some(""), || {
-            assert_eq!(env_or("CFGD_TEST_S_EMPTY", "fallback"), "");
         });
     }
 

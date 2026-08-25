@@ -39,7 +39,7 @@ pub fn is_leader_election_enabled() -> bool {
 /// The namespace in which the operator runs leader-election leases. Reads
 /// `POD_NAMESPACE`; defaults to `cfgd-system` when unset.
 pub fn leader_namespace() -> String {
-    env::env_or("POD_NAMESPACE", cfgd_core::CFGD_SYSTEM_NAMESPACE)
+    cfgd_core::env_or("POD_NAMESPACE", cfgd_core::CFGD_SYSTEM_NAMESPACE)
 }
 
 /// The identity string this operator instance uses for leader election.
@@ -64,7 +64,7 @@ pub fn webhook_certs_present(cert_dir: &Path) -> bool {
 pub fn build_gateway_config(client: Option<Client>, metrics: metrics::Metrics) -> GatewayConfig {
     GatewayConfig {
         port: env::parse_port_env("DEVICE_GATEWAY_PORT", 8080),
-        db_path: env::env_or("CFGD_SERVER_DB_PATH", "/data/cfgd-gateway.db"),
+        db_path: cfgd_core::env_or("CFGD_SERVER_DB_PATH", "/data/cfgd-gateway.db"),
         kube_client: client,
         retention_days: env::parse_u32_env("CFGD_RETENTION_DAYS", 90),
         metrics: Some(metrics),
