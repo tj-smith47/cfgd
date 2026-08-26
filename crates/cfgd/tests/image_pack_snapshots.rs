@@ -191,9 +191,12 @@ fn image_pack_json() {
 
     let mut json = cap.json().expect("pack emits a data payload");
     json["artifact"] = serde_json::Value::String(artifact.replace(&registry, "<REGISTRY>"));
-    assert_snapshot!(
-        Path::new(SNAPSHOT_ROOT),
-        "image_pack/packed.json",
-        &serde_json::to_string_pretty(&json).expect("payload serializes"),
-    );
+    // The payload carries the same host-derived `platform` the human row
+    // reports when nothing passed `--platform`, and is folded the same way:
+    // a golden holding this runner's os/arch is a golden only this runner
+    // can pass.
+    let payload = serde_json::to_string_pretty(&json)
+        .expect("payload serializes")
+        .replace(&cfgd_core::oci::current_platform(), "<PLATFORM>");
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "image_pack/packed.json", &payload);
 }

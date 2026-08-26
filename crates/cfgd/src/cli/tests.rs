@@ -6133,10 +6133,23 @@ const SESSION_FILE_TARGETS: u32 = 1;
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 const SESSION_FILE_TARGETS: u32 = 0;
 
+/// The live-session publish, priced. It is PLANNED on every host but only
+/// COUNTED where a session manager exists to perform it: `pre_skip_reason`
+/// withholds it otherwise and `Phase::action_count` prices it out, so FreeBSD
+/// — which runs neither systemd, launchd nor `setx` — reports one action fewer
+/// than a host that can publish. Answered through the product's own predicate
+/// because the plan, the apply's skip detail and `status`'s session row all
+/// answer from that one function; a second opinion here would be asserting
+/// about a different host than the one the run saw.
+fn session_refresh_targets() -> u32 {
+    u32::from(cfgd_core::session_manager_available())
+}
+
 /// Shared body for the zsh-present / no-zsh env-target-count variants below.
 /// `expected_actions` is the exact `env_targets` count for the declared shape
 /// (see `EnvHostProbe`'s field docs for which target each flag adds/removes):
-/// `.cfgd.env` + interactive rc + `.profile` + live-session refresh (4), plus
+/// `.cfgd.env` + interactive rc + `.profile` (3), plus the live-session
+/// publish when this host can perform one (`session_refresh_targets`), plus
 /// the platform's session file when it has one (`SESSION_FILE_TARGETS`), plus
 /// `.zshenv` only when `zsh_present`.
 fn cmd_apply_with_env_vars_for_host(zsh_present: bool, expected_actions: u32) {
@@ -6215,22 +6228,22 @@ fn cmd_apply_with_env_vars_for_host(zsh_present: bool, expected_actions: u32) {
 #[test]
 #[cfg(unix)]
 fn cmd_apply_with_env_vars() {
-    cmd_apply_with_env_vars_for_host(true, 5 + SESSION_FILE_TARGETS);
+    cmd_apply_with_env_vars_for_host(true, 4 + SESSION_FILE_TARGETS + session_refresh_targets());
 }
 
 #[test]
 #[cfg(unix)]
 fn cmd_apply_with_env_vars_no_zsh() {
-    cmd_apply_with_env_vars_for_host(false, 4 + SESSION_FILE_TARGETS);
+    cmd_apply_with_env_vars_for_host(false, 3 + SESSION_FILE_TARGETS + session_refresh_targets());
 }
 
 // The Windows env plan never consults the probe's shell shape: its target set
-// is `.cfgd-env.ps1` + both PowerShell profile injections + the live-session
-// refresh, all under the test home — 4 actions on every Windows host.
+// is `.cfgd-env.ps1` + both PowerShell profile injections (3), all under the
+// test home, plus the live-session publish when `setx` is reachable.
 #[test]
 #[cfg(windows)]
 fn cmd_apply_with_env_vars_windows() {
-    cmd_apply_with_env_vars_for_host(false, 4);
+    cmd_apply_with_env_vars_for_host(false, 3 + session_refresh_targets());
 }
 
 #[test]
@@ -13876,32 +13889,14 @@ fn no_kv_row_sits_between_two_result_lines() {
     );
 }
 
-/// Every golden is a rendered surface, and every one of them keeps the one
-/// spacing: no blank line opens or closes a command's output, no two blank
-/// lines touch, a heading is never followed by a blank line before its own
-/// rows, and two sibling blocks never touch. The producers own the
-/// separators (a section close and a top-level group boundary arm ONE
-/// pending blank; a streamed child line consumes and re-arms it; a heading
-/// binds its rows), so a golden that breaks any of these names a composer
-/// that leaked, never a call site to patch.
-///
-/// Walked over `crates/cfgd/tests/output_snapshots/**` and every
-/// `snapshots/` directory under `cfgd-core/src`. An empty golden is a
-/// surface that rendered nothing and is skipped. "Heading" is read off the
-/// ANSI-free structure: a column-0 line that carries no row glyph and whose
-/// next non-blank line is indented. "Two blocks touch" is an indented line
-/// directly followed by such a heading — a status row after streamed child
-/// output is the announcing line's own finish and binds by design, and a
-/// column-0 line ending in `:` is a raw document's own key, not a heading.
-#[test]
-fn every_golden_separates_sibling_blocks_with_one_blank_line() {
-    const GLYPHS: &[char] = &[
-        '✓', '✗', '⚠', '◉', '→', '◐', '—', '•', '-', '·', '⊙', '│', '├', '└',
-    ];
+/// Every snapshot golden in the workspace with one of `exts`, sorted:
+/// `crates/cfgd/tests/output_snapshots/**` plus every `snapshots/` directory
+/// under `cfgd-core/src`. The two golden walks below read the same population
+/// through this, so a new golden tree is picked up by both or by neither.
+fn snapshot_goldens(exts: &[&str]) -> Vec<std::path::PathBuf> {
     let cfgd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut roots = vec![cfgd.join("tests/output_snapshots")];
-    let core = cfgd.join("../cfgd-core/src");
-    let mut stack = vec![core];
+    let mut stack = vec![cfgd.join("../cfgd-core/src")];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -13928,12 +13923,42 @@ fn every_golden_separates_sibling_blocks_with_one_blank_line() {
             let p = entry.path();
             if p.is_dir() {
                 stack.push(p);
-            } else if p.extension().is_some_and(|e| e == "txt") {
+            } else if p
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| exts.contains(&e))
+            {
                 goldens.push(p);
             }
         }
     }
     goldens.sort();
+    goldens
+}
+
+/// Every golden is a rendered surface, and every one of them keeps the one
+/// spacing: no blank line opens or closes a command's output, no two blank
+/// lines touch, a heading is never followed by a blank line before its own
+/// rows, and two sibling blocks never touch. The producers own the
+/// separators (a section close and a top-level group boundary arm ONE
+/// pending blank; a streamed child line consumes and re-arms it; a heading
+/// binds its rows), so a golden that breaks any of these names a composer
+/// that leaked, never a call site to patch.
+///
+/// Walked over `crates/cfgd/tests/output_snapshots/**` and every
+/// `snapshots/` directory under `cfgd-core/src`. An empty golden is a
+/// surface that rendered nothing and is skipped. "Heading" is read off the
+/// ANSI-free structure: a column-0 line that carries no row glyph and whose
+/// next non-blank line is indented. "Two blocks touch" is an indented line
+/// directly followed by such a heading — a status row after streamed child
+/// output is the announcing line's own finish and binds by design, and a
+/// column-0 line ending in `:` is a raw document's own key, not a heading.
+#[test]
+fn every_golden_separates_sibling_blocks_with_one_blank_line() {
+    const GLYPHS: &[char] = &[
+        '✓', '✗', '⚠', '◉', '→', '◐', '—', '•', '-', '·', '⊙', '│', '├', '└',
+    ];
+    let goldens = snapshot_goldens(&["txt"]);
 
     let is_row = |l: &str| l.trim_start().starts_with(GLYPHS);
     let mut offenders = Vec::new();
@@ -14004,6 +14029,93 @@ fn every_golden_separates_sibling_blocks_with_one_blank_line() {
          composer that leaked, never the golden:\n{}",
         offenders.join("\n")
     );
+}
+
+/// A golden holds ONE render for every machine that runs it, so no golden may
+/// carry a row the HOST decided. The env phase is where that bites twice:
+/// which rc files `env_targets` plans is read off `$SHELL` and `PATH`
+/// (`EnvHostProbe::detect`), and which session surfaces it plans is read off
+/// the platform — so a golden blessed on a zsh workstation cannot pass on a
+/// bash-only runner, and one blessed on Linux (`environment.d`) cannot pass
+/// on macOS (a LaunchAgent plist).
+///
+/// The rule: a golden carrying an env-target ACTION row must be listed here
+/// beside the test that DECLARES the host it was produced on, and that test
+/// must install an `EnvHostProbeOverride`. A new golden with such a row fails
+/// this walk until it is classified; a listed golden that stops carrying one
+/// fails it too, so the table cannot rot into a list of names.
+///
+/// A `~/.cfgd.env` mentioned in a HINT or a table cell is not an env-target
+/// row — those paths are fixture literals the test wrote itself — which is
+/// why the vocabulary below is the action subjects `reconciler::format`
+/// builds, not the file names.
+#[test]
+fn every_golden_with_an_env_target_row_declares_the_host_that_produced_it() {
+    /// (golden, the test source that produced it, that test's name).
+    const DECLARED: &[(&str, &str, &str)] = &[(
+        "tests/output_snapshots/plan/composed_source.txt",
+        "tests/plan_snapshots.rs",
+        "plan_composed_source_human",
+    )];
+    /// The env-target action subjects, as `action_display_subject` renders
+    /// them. `write` is qualified by the generated basenames so a fixture's
+    /// own file write cannot look like one.
+    const ROW_MARKERS: &[&str] = &[
+        "inject source line into",
+        "to the session manager",
+        "write ",
+    ];
+    const GENERATED_FILES: &[&str] = &[
+        "/.cfgd.env",
+        "/.cfgd-env.ps1",
+        "environment.d/cfgd.conf",
+        "conf.d/cfgd-env.fish",
+        "com.cfgd.user-environment.plist",
+    ];
+
+    let cfgd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut found: Vec<String> = Vec::new();
+    for path in snapshot_goldens(&["txt", "json"]) {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let carries = text.lines().any(|line| {
+            ROW_MARKERS.iter().any(|m| match *m {
+                "write " => {
+                    line.contains("write ") && GENERATED_FILES.iter().any(|f| line.contains(f))
+                }
+                other => line.contains(other),
+            })
+        });
+        if carries {
+            let rel = path.strip_prefix(cfgd).unwrap_or(&path);
+            found.push(cfgd_core::to_posix_string(rel));
+        }
+    }
+    found.sort();
+
+    let mut declared: Vec<String> = DECLARED.iter().map(|(g, _, _)| (*g).to_string()).collect();
+    declared.sort();
+    assert_eq!(
+        found, declared,
+        "a golden carrying an env-target row must be listed in DECLARED beside \
+         the test that pins its host shape (and a listed golden that no longer \
+         carries one must be delisted)"
+    );
+
+    for (golden, source, test_name) in DECLARED {
+        let body = std::fs::read_to_string(cfgd.join(source))
+            .unwrap_or_else(|e| panic!("read {source}: {e}"));
+        assert!(
+            body.contains(&format!("fn {test_name}(")),
+            "{source} no longer defines {test_name}, which {golden} is attributed to"
+        );
+        assert!(
+            body.contains("with_env_host_probe_override_guard"),
+            "{source} produces {golden}, which carries an env-target row, but \
+             declares no host shape — pin one with \
+             `with_env_host_probe_override_guard` or the golden only passes on \
+             the machine it was blessed on"
+        );
+    }
 }
 
 /// The string literal `expr` opens with, if it opens with one.

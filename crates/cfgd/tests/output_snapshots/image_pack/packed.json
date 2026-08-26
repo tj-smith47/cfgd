@@ -4,6 +4,6 @@
   "base": null,
   "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "locked": null,
-  "platform": "linux/amd64",
+  "platform": "<PLATFORM>",
   "signed": false
 }
