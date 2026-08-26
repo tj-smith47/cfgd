@@ -28,4 +28,4 @@ System
   ✓ State store: accessible
   ✓ Profiles directory: /home/test/.config/cfgd/profiles (2 profiles)
 
-✓ All checks passed
+✓ Passed every check

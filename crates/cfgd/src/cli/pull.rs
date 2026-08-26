@@ -43,6 +43,7 @@ fn pull_status_from_result(
 ) -> (Role, &'static str, &'static str, Option<String>) {
     match result {
         Ok(Some(_)) => (Role::Ok, "Pulled new changes from remote", "pulled", None),
+        // verdict-row-ok: nothing was fetched; this reports the checkout's state
         Ok(None) => (Role::Ok, "Already up to date", "up_to_date", None),
         Err(e) => (Role::Warn, "Pull failed", "failed", Some(e.clone())),
     }

@@ -1,1 +1,1 @@
-✓ Override set: packages.brew.ripgrep = true for source:team-config
+✓ Set override: packages.brew.ripgrep = true for source:team-config

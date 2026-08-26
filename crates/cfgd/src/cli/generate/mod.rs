@@ -303,7 +303,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
                 printer.status_simple(
                     Role::Warn,
                     format!(
-                        "git add failed: {}",
+                        "`git add` failed: {}",
                         cfgd_core::stderr_lossy_trimmed(&add_out)
                     ),
                 );
@@ -323,7 +323,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
                     printer.status_simple(
                         Role::Warn,
                         format!(
-                            "git commit failed: {}",
+                            "`git commit` failed: {}",
                             cfgd_core::stderr_lossy_trimmed(&commit_out)
                         ),
                     );
@@ -480,7 +480,7 @@ fn cmd_generate_scan_only(printer: &Printer, args: &GenerateArgs) -> anyhow::Res
         Doc::new()
             .status(
                 Role::Ok,
-                "Scan complete — use without --scan-only to generate config",
+                "Scanned this host — use without --scan-only to generate config",
             )
             .with_data(serde_json::json!({
                 "target": "scan_only",

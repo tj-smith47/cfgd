@@ -6,6 +6,12 @@ use crate::errors::{Result, StateError};
 
 impl StateStore {
     /// Insert or update module state.
+    ///
+    /// `installed_at` is re-stamped on every upsert, not only on the insert.
+    /// Every reader labels it `Last Applied` (`cfgd status <module>`,
+    /// `cfgd module show`, the `lastApplied` payload key), so a column frozen
+    /// at the first apply misdated the machine for the life of the row —
+    /// nothing in the workspace reads it as a first-install date.
     pub fn upsert_module_state(
         &self,
         module_name: &str,
@@ -21,6 +27,7 @@ impl StateStore {
                 "INSERT INTO module_state (module_name, installed_at, last_applied, packages_hash, files_hash, git_sources, status)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT(module_name) DO UPDATE SET
+                    installed_at = ?2,
                     last_applied = COALESCE(?3, last_applied),
                     packages_hash = ?4,
                     files_hash = ?5,

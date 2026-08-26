@@ -472,7 +472,7 @@ fn the_allow_scripts_disclosure_reaches_the_operator_at_default_verbosity() {
     let out = cap.human();
 
     assert!(
-        out.contains("source 'acme' scripts will run because allowScripts is set"),
+        out.contains("Source 'acme' scripts will run because `allowScripts` is set"),
         "the disclosure must print without -v: {out}"
     );
     assert!(

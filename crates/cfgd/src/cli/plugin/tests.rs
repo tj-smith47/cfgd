@@ -856,7 +856,7 @@ mod mock_kube {
         let json = cap.json().expect("success doc must carry data payload");
         assert_eq!(json["pod"], "mypod");
         assert_eq!(json["namespace"], "prod");
-        assert_eq!(json["verified"], true);
+        assert_eq!(json["mountPath"][0], "/cfgd-modules/nettools");
         assert_eq!(json["modules"][0], "nettools:1.0.0");
     }
 

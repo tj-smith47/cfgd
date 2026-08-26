@@ -483,6 +483,24 @@ impl Printer {
             .render_kv_block(self.sink_stderr.as_ref(), depth, &pairs);
     }
 
+    /// `kv_block` over hand-built [`KvPair`]s, so a top-level block can reach
+    /// the renderer-owned `annotated` / `nested` / `role_valued` slots.
+    ///
+    /// Without it a command with no section open had to hand-build
+    /// `format!("{value} ({note})")`, which paints the note the same weight as
+    /// the value and misaligns nothing the renderer can see.
+    ///
+    /// [`KvPair`]: crate::output::KvPair
+    pub fn kv_rows<I>(&self, rows: I)
+    where
+        I: IntoIterator<Item = crate::output::KvPair>,
+    {
+        let depth = self.renderer.enforce_structural_top_level(0);
+        let rows: Vec<crate::output::KvPair> = rows.into_iter().collect();
+        self.renderer
+            .render_kv_block(self.sink_stderr.as_ref(), depth, &rows);
+    }
+
     /// A "command — description" list — `kv_block`'s counterpart for a left
     /// column that is a shell command rather than a data-carrying key. See
     /// `Renderer::render_command_list` for why it needs its own layout.

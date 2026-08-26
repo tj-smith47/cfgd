@@ -97,6 +97,8 @@ pub fn cmd_rollback(
     }
 
     let registry = ProviderRegistry::new();
+    // recorded-scope-ok: a rollback restores a recorded file set and writes no
+    // `applies` row of its own
     let reconciler = Reconciler::new(&registry, &state);
     // A rollback restores a file set, so it reports under the phase name file
     // work carries everywhere else in cfgd.
@@ -181,7 +183,7 @@ pub fn build_rollback_doc(output: &RollbackOutput) -> Doc {
     let (role, subject) = if output.files_restored == 0 && output.files_removed == 0 {
         (Role::Info, "No files were changed during rollback")
     } else {
-        (Role::Ok, "Rollback complete")
+        (Role::Ok, "Rolled back")
     };
     Doc::new().status(role, subject).with_data(output)
 }

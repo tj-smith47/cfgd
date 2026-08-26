@@ -138,7 +138,7 @@ pub fn build_module_show_doc(
     rows.push(KvPair::new("Directory", &output.directory));
 
     if let Some(entry) = lock_entry {
-        rows.push(KvPair::new("Source", "remote (locked)"));
+        rows.push(KvPair::annotated("Source", "remote", "locked"));
         rows.push(KvPair::new("URL", &entry.url));
         rows.push(KvPair::new("Pinned Ref", &entry.pinned_ref));
         rows.push(KvPair::new("Commit", &entry.commit));

@@ -7,8 +7,10 @@ Local Repo
 
 Sources
   source:team-a
-    ✓ synced — commit: <COMMIT>
+    ✓ Synced — commit: <COMMIT>
   source:team-b
-    ✓ synced — commit: <COMMIT>
+    ✓ Synced — commit: <COMMIT>
+
+✓ Synced — 2 sources
 
 → Run `cfgd plan` to preview changes, then `cfgd apply`

@@ -5,4 +5,4 @@ Phase: Files
   ✓ 2 files processed
   ✓ 2 newly created files removed
 
-✓ Rollback complete
+✓ Rolled back

@@ -2,5 +2,5 @@ Pack Image
   Directory  <DIR>
   Artifact   <REGISTRY>/test/image:v1
   ✓ Packed and pushed image
-  Digest  sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-  Locked  <LOCKDIR>/cfgd-images.lock
+  Digest     sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  Locked     <LOCKDIR>/cfgd-images.lock

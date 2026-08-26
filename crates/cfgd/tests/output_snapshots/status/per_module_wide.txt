@@ -11,12 +11,12 @@ Deployed Files
   ✗ /home/user/.gitconfig            — missing
   ⚠ /home/user/.zshrc                — content differs
 
-Env
-  ✓ EDITOR
-  ✓ PAGER
-
-Aliases
-  ✓ gs
+Shell
+  Env
+    ✓ EDITOR
+    ✓ PAGER
+  Aliases
+    ✓ gs
 
 Scripts
   ✓ preApply: set -euo pipefail …

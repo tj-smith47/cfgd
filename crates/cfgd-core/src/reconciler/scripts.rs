@@ -986,7 +986,7 @@ fn execute_script_inner(
                     for line in rx.try_iter() {
                         st.push_line(&line);
                     }
-                    st.finish_fail("interrupted", Some(elapsed));
+                    st.finish_fail("Interrupted", Some(elapsed));
                     kill_script_child(&mut child, false);
                     let _ = stdout_handle.join();
                     let _ = stderr_handle.join();

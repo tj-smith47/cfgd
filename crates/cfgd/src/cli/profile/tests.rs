@@ -5079,7 +5079,7 @@ fn profile_migrate_git_mv_failure_warns_and_falls_back() {
         "manifest must be moved by the plain-rename fallback"
     );
     assert!(
-        output.contains("git mv failed for") && output.contains("plain rename"),
+        output.contains("`git mv` failed for") && output.contains("plain rename"),
         "tracked-file git mv failure must warn before falling back, got: {output}"
     );
     assert!(

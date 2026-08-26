@@ -907,6 +907,22 @@ pub fn title_cased_tier(tier: &str) -> String {
 pub const MSG_ANSWER_DECISIONS: &str =
     "Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer";
 
+/// [`MSG_ANSWER_DECISIONS`] with the bulk form folded in, for a surface that
+/// knows how many decisions are waiting.
+///
+/// `cfgd decide` printed the per-resource instruction and the bulk instruction
+/// as two hints whose first thirty characters were identical, so the second read
+/// as a wrapped continuation of the first. One line carries both, and the bulk
+/// half appears only where it can do something a single answer cannot — with one
+/// item pending, `--all` and naming the resource are the same operation.
+pub fn answer_decisions_hint(pending: usize) -> String {
+    if pending > 1 {
+        format!("{MSG_ANSWER_DECISIONS}; `cfgd decide accept --all` answers every item")
+    } else {
+        MSG_ANSWER_DECISIONS.to_string()
+    }
+}
+
 /// The same, for a decision already declined: the answer exists and reversing
 /// it is a different instruction, so it is a different constant rather than a
 /// second wording of [`MSG_ANSWER_DECISIONS`].

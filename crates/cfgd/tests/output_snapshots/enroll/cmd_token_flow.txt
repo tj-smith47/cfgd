@@ -8,7 +8,7 @@ Token Enrollment
 Team    platform
 Device  dev-abc-123
 
-✓ Credential saved to <CRED_PATH>
+✓ Saved credential to <CRED_PATH>
 
 Next Steps
   cfgd checkin --server-url <url> — report status to server

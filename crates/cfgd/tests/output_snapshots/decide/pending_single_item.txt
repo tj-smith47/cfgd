@@ -3,4 +3,3 @@ Pending Decisions (1 item)
     ◉ Required file/bashrc
 
 → Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer
-→ Run `cfgd decide accept --all` or `cfgd decide accept --source <name>` for bulk operations

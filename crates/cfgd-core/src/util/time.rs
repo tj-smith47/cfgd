@@ -97,12 +97,20 @@ pub fn parse_duration_str(s: &str) -> Result<std::time::Duration, String> {
 }
 
 /// Render the age of an ISO 8601 timestamp relative to `now` as a short
-/// "Xm ago" / "Xh ago" / "Xd ago" string, or `None` when `ts` or `now` fails
+/// "Xs ago" / "Xm ago" / "Xh ago" / "Xd ago" string, or `None` when `ts` or `now` fails
 /// to parse, or `ts` names an instant after `now` (clock skew) — the caller
 /// then omits the age line rather than showing a negative duration. `now` is
 /// a parameter (never read from the wall clock here) so a caller can pin it
 /// for a golden or unit test instead of the render depending on when the test
-/// happened to run. Both timestamps are strings — the callers of this
+/// happened to run.
+///
+/// The sub-minute bucket is `"{secs}s ago"`, not `"just now"`: a daemon
+/// advertising `sync every 5s` and stamping its own log to the second had a
+/// dashboard that could not resolve anything it did, because every field
+/// floored to one phrase. `just now` survives under five seconds, where the
+/// number would be noise and the reader means "this is happening".
+///
+/// Both timestamps are strings — the callers of this
 /// function (the `cfgd` binary crate's display paths) never hold a `chrono`
 /// type of their own, only the ISO 8601 strings `cfgd-core` already hands
 /// back from `utc_now_iso8601()` and the state store.
@@ -111,8 +119,10 @@ pub fn humanize_age_since(ts: &str, now: &str) -> Option<String> {
     if secs < 0 {
         return None;
     }
-    Some(if secs < 60 {
+    Some(if secs < 5 {
         "just now".to_string()
+    } else if secs < 60 {
+        format!("{secs}s ago")
     } else if secs < 3600 {
         format!("{}m ago", secs / 60)
     } else if secs < 86400 {
@@ -123,7 +133,9 @@ pub fn humanize_age_since(ts: &str, now: &str) -> Option<String> {
 }
 
 /// The forward counterpart of [`humanize_age_since`]: how long until `ts`,
-/// as `"in 5m"` / `"in 3h"` / `"in 2d"`, or `"due now"` inside the last minute.
+/// as `"in 40s"` / `"in 5m"` / `"in 3h"` / `"in 2d"`, or `"due now"` inside the
+/// last five seconds — the same buckets its backward twin reads, so one instant
+/// cannot be `59s ago` in one column and `due now` in another.
 ///
 /// `None` when `ts` or `now` fails to parse, or when `ts` is already PAST —
 /// "in -2h" is not a thing a schedule column may say, and a caller holding an
@@ -135,8 +147,10 @@ pub fn humanize_until(ts: &str, now: &str) -> Option<String> {
     if secs < 0 {
         return None;
     }
-    Some(if secs < 60 {
+    Some(if secs < 5 {
         "due now".to_string()
+    } else if secs < 60 {
+        format!("in {secs}s")
     } else if secs < 3600 {
         format!("in {}m", secs / 60)
     } else if secs < 86400 {
@@ -172,6 +186,38 @@ pub fn humanize_until_cell(ts: Option<&str>, now: &str) -> String {
     match ts {
         Some(ts) => humanize_until(ts, now).unwrap_or_else(|| ts.to_string()),
         None => "-".to_string(),
+    }
+}
+
+/// A MEASURED duration a human reads, as `"44s"` / `"1m 44s"` / `"2h 3m"` /
+/// `"3d 2h"` — the duration counterpart of [`humanize_age_cell`].
+///
+/// `cfgd daemon status` printed `Uptime 259200s` one row above
+/// `Last Reconcile 3d ago`, so one kv block answered the same kind of question
+/// in two vocabularies. Every measured duration a person reads goes through
+/// here; a DECLARED interval (`Reconcile Interval 30s`) is the operator's own
+/// literal and stays verbatim.
+///
+/// Two units at most, largest first, and the second is dropped when it is
+/// zero — `2h` rather than `2h 0m`. Zero itself renders `0s`, which is what a
+/// daemon that started this instant has been up.
+pub fn humanize_duration_secs(secs: u64) -> String {
+    const DAY: u64 = 86_400;
+    const HOUR: u64 = 3_600;
+    const MINUTE: u64 = 60;
+    let (major_div, major_unit, minor_div, minor_unit) = if secs >= DAY {
+        (DAY, 'd', HOUR, 'h')
+    } else if secs >= HOUR {
+        (HOUR, 'h', MINUTE, 'm')
+    } else if secs >= MINUTE {
+        (MINUTE, 'm', 1, 's')
+    } else {
+        return format!("{secs}s");
+    };
+    let major = secs / major_div;
+    match (secs % major_div) / minor_div {
+        0 => format!("{major}{major_unit}"),
+        minor => format!("{major}{major_unit} {minor}{minor_unit}"),
     }
 }
 
@@ -237,8 +283,12 @@ mod tests {
     fn humanize_age_since_buckets_by_magnitude() {
         let now = "2026-05-12T14:30:25Z";
         assert_eq!(
-            humanize_age_since("2026-05-12T14:30:00Z", now),
+            humanize_age_since("2026-05-12T14:30:23Z", now),
             Some("just now".to_string())
+        );
+        assert_eq!(
+            humanize_age_since("2026-05-12T14:30:00Z", now),
+            Some("25s ago".to_string())
         );
         assert_eq!(
             humanize_age_since("2026-05-12T14:25:25Z", now),
@@ -265,8 +315,12 @@ mod tests {
     fn humanize_until_buckets_forward_and_refuses_the_past() {
         let now = "2026-05-12T14:30:25Z";
         assert_eq!(
-            humanize_until("2026-05-12T14:31:00Z", now),
+            humanize_until("2026-05-12T14:30:27Z", now),
             Some("due now".to_string())
+        );
+        assert_eq!(
+            humanize_until("2026-05-12T14:31:00Z", now),
+            Some("in 35s".to_string())
         );
         assert_eq!(
             humanize_until("2026-05-12T14:35:25Z", now),
@@ -291,7 +345,9 @@ mod tests {
     fn the_two_directions_agree_on_every_bucket_boundary() {
         let now = "2026-05-12T14:30:25Z";
         for (secs, ago, until) in [
-            (59_i64, "just now", "due now"),
+            (4_i64, "just now", "due now"),
+            (5, "5s ago", "in 5s"),
+            (59, "59s ago", "in 59s"),
             (60, "1m ago", "in 1m"),
             (3_599, "59m ago", "in 59m"),
             (3_600, "1h ago", "in 1h"),
@@ -304,6 +360,18 @@ mod tests {
             assert_eq!(humanize_age_since(&past, now).as_deref(), Some(ago));
             assert_eq!(humanize_until(&future, now).as_deref(), Some(until));
         }
+    }
+
+    #[test]
+    fn humanize_duration_secs_renders_at_most_two_units() {
+        assert_eq!(humanize_duration_secs(0), "0s");
+        assert_eq!(humanize_duration_secs(44), "44s");
+        assert_eq!(humanize_duration_secs(104), "1m 44s");
+        assert_eq!(humanize_duration_secs(120), "2m");
+        assert_eq!(humanize_duration_secs(7_380), "2h 3m");
+        assert_eq!(humanize_duration_secs(7_200), "2h");
+        assert_eq!(humanize_duration_secs(266_400), "3d 2h");
+        assert_eq!(humanize_duration_secs(259_200), "3d");
     }
 
     #[test]

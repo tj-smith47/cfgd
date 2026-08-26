@@ -49,7 +49,7 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
     let mut changes_detected = false;
 
     if !cfg.spec.sources.is_empty() {
-        let sources_sec = printer.section("Sources");
+        let sources_sec = printer.section(super::source::list::SOURCES_SECTION);
         let cache_dir = source_cache_dir(cli)?;
         let mut mgr = SourceManager::new(&cache_dir);
         mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
@@ -62,7 +62,7 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
             Ok(state) => Some(state),
             Err(e) => {
                 sources_sec
-                    .status(Role::Warn, "source fetches will not be recorded")
+                    .status(Role::Warn, "Source fetches will not be recorded")
                     .detail(cfgd_core::output::collapse_to_subject_line(&e));
                 None
             }
@@ -143,7 +143,7 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
 
                         let had_perm_changes = perm_changes.is_some();
                         let proceed = if let Some(perm_changes) = perm_changes {
-                            sp.finish_warn("permission changes need approval");
+                            sp.finish_warn("Permission changes need approval");
                             {
                                 let perm_sec = owner.section("Permission Changes");
                                 for change in &perm_changes {
@@ -164,17 +164,17 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                                 Ok(false) => {
                                     owner.status_simple(
                                         Role::Info,
-                                        "skipped (permission changes rejected)",
+                                        "Skipped (permission changes rejected)",
                                     );
                                     false
                                 }
                                 Err(_) => {
-                                    owner.status_simple(Role::Info, "skipped (prompt cancelled)");
+                                    owner.status_simple(Role::Info, "Skipped (prompt cancelled)");
                                     false
                                 }
                             }
                         } else {
-                            sp.finish_ok("synced").detail(commit_detail.clone());
+                            sp.finish_ok("Synced").detail(commit_detail.clone());
                             true
                         };
 
@@ -208,7 +208,7 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                                 )
                             {
                                 owner
-                                    .status(Role::Warn, "could not record the fetch")
+                                    .status(Role::Warn, "Could not record the fetch")
                                     .detail(cfgd_core::output::collapse_to_subject_line(&e));
                             }
 
@@ -249,9 +249,13 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                         // `load_source` reported success but the cache holds
                         // nothing for this source — an internal inconsistency
                         // the spinner must still settle rather than leak.
-                        sp.finish_fail("sync failed").detail(
+                        sp.finish_fail("Sync failed").detail(
                             "load_source reported success but the source is not in the cache",
                         );
+                        owner.hint(format!(
+                            "Discard the cached checkout and retry with `cfgd source update {}`",
+                            source_spec.name
+                        ));
                         sync_payload.sources.push(SourceSyncOutput {
                             name: source_spec.name.clone(),
                             status: "failed".to_string(),
@@ -260,8 +264,12 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                     }
                 }
                 Err(e) => {
-                    sp.finish_fail("sync failed")
+                    sp.finish_fail("Sync failed")
                         .detail(crate::cli::source::source_failure_detail(&e));
+                    owner.hint(crate::cli::source::source_failure_next_step(
+                        &e,
+                        &source_spec.name,
+                    ));
                     sync_payload.sources.push(SourceSyncOutput {
                         name: source_spec.name.clone(),
                         status: "failed".to_string(),
@@ -270,6 +278,14 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                 }
             }
         }
+    }
+
+    let (verdict_role, verdict, verdict_detail) = sync_verdict(&sync_payload.sources);
+    match verdict_detail {
+        Some(detail) => {
+            printer.status(verdict_role, verdict).detail(detail);
+        }
+        None => printer.status_simple(verdict_role, verdict),
     }
 
     let doc = if changes_detected {
@@ -283,6 +299,48 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
     printer.emit(doc);
 
     Ok(())
+}
+
+/// The one line `cfgd sync` closes on, whichever way the run went.
+///
+/// A run whose sources all refused ended on the last `✗ Sync failed` row under
+/// the last owner heading and said nothing about the run as a whole, while a
+/// successful run closed with a verdict — so the only transcript with no
+/// summary was the one a reader most needs summarized. The counts come from the
+/// payload rows, which is the same set `-o json` carries, so the sentence and
+/// the machine answer cannot disagree.
+///
+/// A run with no subscribed sources has only the local pull to report, and
+/// there the verdict carries no count.
+fn sync_verdict(sources: &[SourceSyncOutput]) -> (Role, &'static str, Option<String>) {
+    let total = sources.len();
+    let failed = sources.iter().filter(|s| s.status == "failed").count();
+    let skipped = sources.iter().filter(|s| s.status == "skipped").count();
+    let synced = total - failed - skipped;
+    let noun = cfgd_core::plural_noun(total, "source");
+    if failed > 0 {
+        return (
+            // no-next-step: each failed source hinted its own next step above
+            Role::Fail,
+            "Sync failed",
+            Some(format!("{failed} of {total} {noun} refused")),
+        );
+    }
+    if skipped > 0 {
+        return (
+            Role::Warn,
+            "Synced",
+            Some(format!("{synced} of {total} {noun}, {skipped} skipped")),
+        );
+    }
+    if total == 0 {
+        return (Role::Ok, "Synced", None);
+    }
+    (
+        Role::Ok,
+        "Synced",
+        Some(cfgd_core::pluralize(total, "source")),
+    )
 }
 
 /// Build the buffered `Doc` that carries the final `SyncOutput` payload.

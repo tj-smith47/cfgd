@@ -161,7 +161,7 @@ pub fn cmd_profile_update(
                     if let Err(e) = state.delete_module_files(m) {
                         printer.status_simple(
                             Role::Warn,
-                            format!("rollback: failed to clean module files for {}: {}", m, e),
+                            format!("Rollback: failed to clean module files for {}: {}", m, e),
                         );
                     }
                 }

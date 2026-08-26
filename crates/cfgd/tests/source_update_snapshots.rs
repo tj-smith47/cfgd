@@ -138,8 +138,9 @@ fn source_update_no_sources_human() {
 
 /// A source that cannot be fetched settles ONE row under its own
 /// `source:<name>` owner heading, and the row's detail states the cause once —
-/// no `source error:` category prefix, and no second copy of the name the
-/// heading directly above it already carries.
+/// no `source error:` category prefix, and no copy of the name the heading
+/// directly above it already carries. The retry hint below the row is the one
+/// place the name comes back, because it is a command the operator runs.
 #[test]
 #[serial]
 fn source_update_source_failure_human() {
@@ -169,10 +170,20 @@ fn source_update_source_failure_human() {
         !stripped.contains("source error:"),
         "the category prefix must be gone: {stripped}"
     );
+    let failure_row = stripped
+        .lines()
+        .find(|l| l.contains("Update failed"))
+        .unwrap_or_default();
+    assert!(
+        !failure_row.contains("missing-team"),
+        "the failure row states the cause only; the heading above it names the source: {stripped}"
+    );
+    // The retry hint is a command the operator runs, so it carries the name
+    // even though the heading already did.
     assert_eq!(
         stripped.matches("missing-team").count(),
-        1,
-        "the source is named once, by its owner heading: {stripped}"
+        2,
+        "the source is named by its owner heading and by the retry command: {stripped}"
     );
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),

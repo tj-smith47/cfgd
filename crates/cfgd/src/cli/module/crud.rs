@@ -297,7 +297,12 @@ pub fn cmd_module_create(
         let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
         let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
             .with_config_dir(&config_dir)
-            .diffing_installed(&pkg_cx);
+            .diffing_installed(&pkg_cx)
+            // No profile was resolved, so the module this run is about is what
+            // the recorded apply names. Left unset, the row stores an empty
+            // scope and `cfgd status` shows no `Scope` until some later run
+            // happens to name one.
+            .recording_scope(cfgd_core::reconciler::Owner::module(name).token());
         // Survivor-gated pricing: only a package this plan will surface is
         // asked for the version its install action renders and persists.
         reconciler.fill_planned_versions(&mut resolved_modules, &mgr_map);
@@ -781,6 +786,7 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
             }
             Err(e) => {
                 printer.status_simple(
+                    // no-next-step: the prompt below IS the next step
                     Role::Fail,
                     format!(
                         "Module '{}' has errors: {}",
@@ -799,6 +805,7 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
     if valid {
         printer.emit(
             Doc::new()
+                // verdict-row-ok: a validation verdict, not an act cfgd performed
                 .status(Role::Ok, format!("Module '{}' is valid", name))
                 .with_data(serde_json::json!({
                     "name": name,

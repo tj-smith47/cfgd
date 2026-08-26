@@ -6,3 +6,5 @@ Files
     module content
 
 ⚠ Drift detected — 1 file (packages, shell clean)
+
+→ Run `cfgd apply --module diff-mod` to reconcile

@@ -91,11 +91,10 @@ Only the title differs, and the header gains a `Trigger` row naming what woke th
 
 ```console
 $ cfgd daemon
-Daemon
-◉ Starting cfgd daemon
+14:32:05  INFO daemon: starting cfgd 0.9.0
 14:32:05  INFO daemon: health endpoint at /run/user/0/cfgd/cfgd.sock
 14:32:05  INFO daemon: running — reconcile every 5s
-→ press Ctrl+C to stop
+→ Press Ctrl+C to stop
 14:32:10  INFO watch: config changed profiles/driftdemo.yaml
 14:32:10  INFO reconcile: drift detected in 1 resource
 

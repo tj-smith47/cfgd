@@ -101,6 +101,8 @@ pub fn cmd_plan(
     let pkg_cx = cfgd_core::providers::PackageContext::new(printer, state);
 
     let module_names: Vec<String> = resolved_modules.iter().map(|m| m.name.clone()).collect();
+    // recorded-scope-ok: a plan writes no `applies` row, so it has no scope
+    // column to fill
     let reconciler = Reconciler::new(&registry, state)
         .with_config_dir(&config_dir)
         .diffing_installed(&pkg_cx);

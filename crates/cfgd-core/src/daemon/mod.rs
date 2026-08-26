@@ -961,10 +961,6 @@ pub(super) async fn run_daemon_with(
     overrides: DaemonRunOverrides,
     cfgd_version: &str,
 ) -> Result<()> {
-    printer.heading("Daemon");
-    // name-row-ok: names the process this run IS, not a command to run
-    printer.status_simple(Role::Info, "Starting cfgd daemon");
-
     let ipc_path = overrides
         .ipc_path
         .clone()
@@ -999,7 +995,7 @@ pub(super) async fn run_daemon_with(
     let (daemon_state, state_dir_warning) =
         init_daemon_state_with_warning(resolved_state_dir.as_deref(), overrides.scope);
     if let Some(msg) = state_dir_warning {
-        printer.status_simple(Role::Warn, msg);
+        tracing::warn!("daemon: {msg}");
     }
     let state = Arc::new(Mutex::new(daemon_state));
 
@@ -1048,7 +1044,12 @@ pub(super) async fn run_daemon_with(
         setup.backup_timers.len(),
         setup.backup_timers.degraded_reason(),
     );
-    print_startup_banner(&printer, &intervals, &ipc_path.to_string_lossy());
+    print_startup_banner(
+        &printer,
+        &intervals,
+        &ipc_path.to_string_lossy(),
+        cfgd_version,
+    );
 
     // Initial server check-in at startup (skippable for offline tests).
     if setup.server_checkin_url.is_some() && !overrides.skip_startup_checkin {
@@ -1133,13 +1134,12 @@ pub(super) async fn run_daemon_with(
         };
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-        let shutdown_printer = Arc::clone(&printer);
         let shutdown_abort = Arc::clone(&abort);
         let signals = shutdown_signals.ok_or_else(|| DaemonError::WatchError {
             message: "internal: production path did not install shutdown signals".to_string(),
         })?;
         let shutdown_task = tokio::spawn(async move {
-            let code = signals.wait(shutdown_printer).await;
+            let code = signals.wait().await;
             // Raised BEFORE the trigger: the loop may be awaiting a blocking
             // backup hook, and the select! arm that observes the trigger cannot
             // run until that await returns. The flag is what lets it return.
@@ -1264,8 +1264,9 @@ pub(super) fn init_daemon_state_with_warning(
             None,
         ),
         Err(e) => {
-            tracing::warn!(error = %e, "daemon: cannot resolve default state dir — /drift endpoint disabled");
-            let banner = format!("Drift endpoint disabled: cannot resolve default state dir ({e})");
+            // The sentence the caller logs, not a second copy of it: the
+            // daemon's stream carries one statement per fact.
+            let banner = format!("drift endpoint disabled: cannot resolve default state dir ({e})");
             (DaemonState::new(), Some(banner))
         }
     }
@@ -1360,7 +1361,18 @@ pub(super) fn format_interval_lines(
 /// The Ctrl+C hint stays a `Printer` hint, and only where a human could press
 /// it: the key reaches a process through a controlling terminal's line
 /// discipline, which a service manager's child does not have.
-pub(super) fn print_startup_banner(printer: &Printer, intervals: &[String], ipc_path: &str) {
+///
+/// The version line is the banner's own, not a restatement of the cadence line
+/// under it: it is the only place on the stream that says WHICH build is
+/// running, and an operator reading a journal after an upgrade is asking
+/// exactly that.
+pub(super) fn print_startup_banner(
+    printer: &Printer,
+    intervals: &[String],
+    ipc_path: &str,
+    cfgd_version: &str,
+) {
+    tracing::info!("daemon: starting cfgd {cfgd_version}");
     tracing::info!("daemon: health endpoint at {ipc_path}");
     tracing::info!("daemon: running — {}", intervals.join(", "));
     if printer.can_prompt() {
@@ -1534,7 +1546,7 @@ impl ShutdownSignals {
     /// Block until the operator asks the daemon to stop, returning the POSIX
     /// `128 + signum` code for the signal that arrived — the value in-flight
     /// work sees through [`crate::AbortFlag::aborted`].
-    async fn wait(self, printer: Arc<Printer>) -> u8 {
+    async fn wait(self) -> u8 {
         async fn recv(signal: Option<tokio::signal::unix::Signal>) {
             match signal {
                 Some(mut s) => {
@@ -1545,11 +1557,11 @@ impl ShutdownSignals {
         }
         tokio::select! {
             _ = recv(self.sigterm) => {
-                printer.status_simple(Role::Info, "Received SIGTERM, shutting down daemon");
+                tracing::info!("daemon: received SIGTERM, shutting down");
                 143
             }
             _ = recv(self.sigint) => {
-                printer.status_simple(Role::Info, "Shutting down daemon");
+                tracing::info!("daemon: shutting down");
                 130
             }
         }
@@ -1579,14 +1591,14 @@ impl ShutdownSignals {
 
     /// Block until the operator asks the daemon to stop, returning the POSIX
     /// `128 + signum` code the rest of the daemon speaks in.
-    async fn wait(self, printer: Arc<Printer>) -> u8 {
+    async fn wait(self) -> u8 {
         match self.ctrl_c {
             Some(mut c) => {
                 c.recv().await;
             }
             None => std::future::pending::<()>().await,
         }
-        printer.status_simple(Role::Info, "Shutting down daemon");
+        tracing::info!("daemon: shutting down");
         130
     }
 }

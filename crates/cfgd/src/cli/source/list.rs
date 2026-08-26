@@ -19,19 +19,42 @@ pub fn build_source_list_doc(entries: &[SourceListEntry], wide: bool, now: &str)
         return doc.with_data(entries);
     }
 
-    // `Source`, not `URL`: the column names where the source comes FROM, which
-    // is what a reader scans for, and the value is not always a URL a browser
-    // would take. The `-o json` field stays `url`.
-    //
-    // `Last Sync` and `Signed` are on the DEFAULT table, not `--wide`: they are
-    // the two facts that change between one `cfgd source list` and the next,
-    // and a listing whose every column is a restatement of cfgd.yaml tells a
-    // reader nothing they could not read there.
+    doc = doc.table(sources_table(entries, wide, now));
+
+    doc.with_data(entries)
+}
+
+/// The `Sources` table, whichever surface renders it.
+///
+/// `cfgd source list` and `cfgd daemon status` printed two tables under one
+/// section name with disjoint columns — `Signed` missing exactly where a daemon
+/// operator wants it, `Drift` missing from the listing, and neither naming the
+/// revision the daemon had just pulled. One builder, one column set, so the two
+/// surfaces cannot answer the same question differently.
+///
+/// `Source`, not `URL`: the column names where the source comes FROM, which is
+/// what a reader scans for, and the value is not always a URL a browser would
+/// take. The `-o json` field stays `url`.
+///
+/// `Last Sync`, `Signed` and `Requires Signed` are on the DEFAULT table, not
+/// `--wide`: they are the facts that change between one listing and the next,
+/// and a listing whose every column restates cfgd.yaml tells a reader nothing
+/// they could not read there. `Signed` reports what the last fetch FOUND and
+/// `Requires Signed` what the subscription DEMANDS — a demanding source and a
+/// non-demanding one with signed HEADs rendered identically without both.
+pub fn sources_table(entries: &[SourceListEntry], wide: bool, now: &str) -> Table {
     let mut columns = vec!["Name", "Source", "Priority"];
     if wide {
         columns.push("Version");
     }
-    columns.extend(["Status", "Last Sync", "Signed"]);
+    columns.extend([
+        "Status",
+        "Drift",
+        "Commit",
+        "Last Sync",
+        "Signed",
+        "Requires Signed",
+    ]);
 
     let mut t = Table::new(columns);
     for e in entries {
@@ -46,14 +69,24 @@ pub fn build_source_list_doc(entries: &[SourceListEntry], wide: bool, now: &str)
         }
         row.extend([
             (status.to_string(), Some(role)),
+            (
+                e.drift_count.map_or_else(|| "-".into(), |n| n.to_string()),
+                None,
+            ),
+            (
+                e.last_commit.as_deref().map_or_else(
+                    || "-".to_string(),
+                    |c| cfgd_core::short_commit(c).to_string(),
+                ),
+                None,
+            ),
             (last_sync_display(e.last_fetched.as_deref(), now), None),
             (yes_no(e.signed).to_string(), None),
+            (yes_no(Some(e.require_signed_commits)).to_string(), None),
         ]);
         t = t.row_styled(row);
     }
-    doc = doc.table(t);
-
-    doc.with_data(entries)
+    t
 }
 
 /// The ONE human rendering of a config source's last fetch, shared by every
@@ -97,9 +130,22 @@ pub fn cmd_source_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     }
 
     let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+    let entries = configured_source_entries(&cfg, &state);
 
-    let entries: Vec<SourceListEntry> = cfg
-        .spec
+    printer.emit(build_source_list_doc(&entries, printer.is_wide(), &now));
+    Ok(())
+}
+
+/// Every `spec.sources[]` entry paired with what the state store recorded for
+/// it — the row set both `cfgd source list` and `cfgd daemon status` render.
+///
+/// `drift_count` is left `None` here: this read never scans, and the daemon,
+/// which holds live per-source drift, fills it on its own rows.
+pub fn configured_source_entries(
+    cfg: &cfgd_core::config::CfgdConfig,
+    state: &cfgd_core::state::StateStore,
+) -> Vec<SourceListEntry> {
+    cfg.spec
         .sources
         .iter()
         .map(|source| {
@@ -115,10 +161,10 @@ pub fn cmd_source_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                     .unwrap_or_else(|| "unknown".into()),
                 last_fetched: state_info.as_ref().and_then(|s| s.last_fetched.clone()),
                 signed: state_info.as_ref().and_then(|s| s.last_commit_signed),
+                require_signed_commits: source.subscription.require_signed_commits,
+                last_commit: state_info.as_ref().and_then(|s| s.last_commit.clone()),
+                drift_count: None,
             }
         })
-        .collect();
-
-    printer.emit(build_source_list_doc(&entries, printer.is_wide(), &now));
-    Ok(())
+        .collect()
 }

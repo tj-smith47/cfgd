@@ -11124,8 +11124,27 @@ async fn wait_for_daemon_log(needle: &str, timeout: std::time::Duration) {
 /// are seen. Sound because `run_scheduled_backups` is blocking and logs on
 /// the calling thread.
 fn capture_run_logs<F: FnOnce()>(f: F) -> String {
+    let (subscriber, buf) = log_capture();
+    tracing::subscriber::with_default(subscriber, f);
+    captured_logs(&buf)
+}
+
+/// The same capture over a future. `with_default` binds a thread-local, which
+/// an awaited future can leave behind the moment the runtime moves it to
+/// another worker; `with_subscriber` binds the dispatcher around every poll,
+/// wherever that poll happens.
+async fn capture_run_logs_async<F: std::future::Future<Output = ()>>(fut: F) -> String {
+    use tracing::instrument::WithSubscriber;
+    let (subscriber, buf) = log_capture();
+    fut.with_subscriber(subscriber).await;
+    captured_logs(&buf)
+}
+
+type LogBuf = std::sync::Arc<std::sync::Mutex<Vec<u8>>>;
+
+fn log_capture() -> (impl tracing::Subscriber + Send + Sync, LogBuf) {
     #[derive(Clone)]
-    struct LogCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    struct LogCapture(LogBuf);
     impl std::io::Write for LogCapture {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             self.0.lock().expect("lock").extend_from_slice(buf);
@@ -11142,7 +11161,7 @@ fn capture_run_logs<F: FnOnce()>(f: F) -> String {
         }
     }
 
-    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let buf: LogBuf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let subscriber = tracing_subscriber::fmt()
         // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
         .with_writer(LogCapture(buf.clone()))
@@ -11151,7 +11170,10 @@ fn capture_run_logs<F: FnOnce()>(f: F) -> String {
         // and its value, so an assertion on the pair could not match.
         .with_ansi(false)
         .finish();
-    tracing::subscriber::with_default(subscriber, f);
+    (subscriber, buf)
+}
+
+fn captured_logs(buf: &LogBuf) -> String {
     // raw-capture-ok: this buf is a tracing-log Arc<Mutex<Vec<u8>>>, not a Printer::for_test* text capture — captured_text doesn't type-check against it
     let bytes = buf.lock().expect("lock").clone();
     String::from_utf8(bytes).expect("utf8 logs")
@@ -11242,33 +11264,6 @@ mod harness {
         )
     }
 
-    /// Poll the shared printer buffer until it contains `needle`, or panic once
-    /// `timeout` elapses. Lets a `run_daemon_with` test synchronize on a daemon
-    /// printed line (e.g. "Reloading configuration") that is written from the spawned
-    /// daemon task before driving an action that would otherwise race the
-    /// daemon's own setup.
-    async fn wait_for_buffer_contains(
-        buf: &Arc<std::sync::Mutex<String>>,
-        needle: &str,
-        timeout: StdDuration,
-    ) {
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            let snapshot = crate::test_helpers::captured_text(buf);
-            if snapshot.contains(needle) {
-                return;
-            }
-            if std::time::Instant::now() >= deadline {
-                panic!(
-                    "timed out after {:?} waiting for buffer to contain {:?}; got: {}",
-                    timeout, needle, snapshot
-                );
-            }
-            // sleep-ok: this loop IS the observable — a bounded deadline poll, not a fixed-duration guess
-            tokio::time::sleep(StdDuration::from_millis(5)).await;
-        }
-    }
-
     #[allow(dead_code)]
     pub(super) struct TriggerSenders {
         pub file_tx: mpsc::Sender<PathBuf>,
@@ -11329,20 +11324,31 @@ mod harness {
         (ctx, buf)
     }
 
-    /// One SIGHUP reload against `config_path`, returning the captured output
-    /// and the reconcile/sync intervals it left behind (both start at 300s).
-    fn run_sighup(tmp: &tempfile::TempDir, config_path: &Path) -> (String, u64, u64) {
+    /// One SIGHUP reload against `config_path`: what it LOGGED, what it
+    /// PRINTED, and the reconcile/sync intervals it left behind (both start at
+    /// 300s). Two channels because the reload reports itself on the daemon's
+    /// journal while a config deprecation still reaches the terminal.
+    fn run_sighup(tmp: &tempfile::TempDir, config_path: &Path) -> SighupRun {
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
         let (ctx, buf) = sighup_ctx(tmp, config_path);
         let mut backup_timers = crate::daemon::BackupTimers::empty();
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_timers);
-        let captured = crate::test_helpers::captured_text(&buf);
-        (
-            captured,
-            reconcile_secs.load(Ordering::Relaxed),
-            sync_secs.load(Ordering::Relaxed),
-        )
+        let logged = super::capture_run_logs(|| {
+            runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut backup_timers);
+        });
+        SighupRun {
+            logged,
+            printed: crate::test_helpers::captured_text(&buf),
+            reconcile_secs: reconcile_secs.load(Ordering::Relaxed),
+            sync_secs: sync_secs.load(Ordering::Relaxed),
+        }
+    }
+
+    struct SighupRun {
+        logged: String,
+        printed: String,
+        reconcile_secs: u64,
+        sync_secs: u64,
     }
 
     #[test]
@@ -11350,15 +11356,15 @@ mod harness {
         let tmp = tempfile::TempDir::new().unwrap();
         let config_path = tmp.path().join("bad.yaml");
         std::fs::write(&config_path, "::: not yaml :::").unwrap();
-        let (captured, reconcile_secs, sync_secs) = run_sighup(&tmp, &config_path);
+        let run = run_sighup(&tmp, &config_path);
         assert!(
-            captured.contains("Config reload failed"),
+            run.logged.contains("daemon: config reload failed"),
             "expected reload-failed warning in: {}",
-            captured
+            run.logged
         );
         // Atomics untouched on failure
-        assert_eq!(reconcile_secs, 300);
-        assert_eq!(sync_secs, 300);
+        assert_eq!(run.reconcile_secs, 300);
+        assert_eq!(run.sync_secs, 300);
     }
 
     #[test]
@@ -11370,14 +11376,14 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 90s\n    sync:\n      interval: 2m\n",
         )
         .unwrap();
-        let (captured, reconcile_secs, sync_secs) = run_sighup(&tmp, &config_path);
+        let run = run_sighup(&tmp, &config_path);
         assert!(
-            captured.contains("Timer intervals reloaded"),
+            run.logged.contains("daemon: timer intervals reloaded"),
             "expected reload success in: {}",
-            captured
+            run.logged
         );
-        assert_eq!(reconcile_secs, 90);
-        assert_eq!(sync_secs, 120);
+        assert_eq!(run.reconcile_secs, 90);
+        assert_eq!(run.sync_secs, 120);
     }
 
     #[test]
@@ -11389,16 +11395,17 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 90s\n",
         )
         .unwrap();
-        let (captured, _, _) = run_sighup(&tmp, &config_path);
+        let run = run_sighup(&tmp, &config_path);
         assert!(
-            captured.contains("timer intervals and backup schedules only"),
+            run.logged
+                .contains("timer intervals and backup schedules only"),
             "SIGHUP start message must state scope: {}",
-            captured
+            run.logged
         );
         assert!(
-            captured.contains("other field changes require restart"),
+            run.logged.contains("other field changes require restart"),
             "SIGHUP completion line must mention restart for other fields: {}",
-            captured
+            run.logged
         );
     }
 
@@ -11411,14 +11418,14 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n",
         )
         .unwrap();
-        let (captured, reconcile_secs, sync_secs) = run_sighup(&tmp, &config_path);
+        let run = run_sighup(&tmp, &config_path);
         assert!(
-            captured.contains("no timer changes detected"),
+            run.logged.contains("no timer changes detected"),
             "expected no-changes message in: {}",
-            captured
+            run.logged
         );
-        assert_eq!(reconcile_secs, 300);
-        assert_eq!(sync_secs, 300);
+        assert_eq!(run.reconcile_secs, 300);
+        assert_eq!(run.sync_secs, 300);
     }
 
     #[test]
@@ -11443,10 +11450,12 @@ spec:
 ",
         )
         .unwrap();
-        let (captured, _reconcile_secs, _sync_secs) = run_sighup(&tmp, &config_path);
+        let run = run_sighup(&tmp, &config_path);
         assert!(
-            captured.contains("theme.overrides.iconSuccess is renamed to iconOk"),
-            "expected SIGHUP reload to drain the theme deprecation notice; got: {captured:?}"
+            run.printed
+                .contains("theme.overrides.iconSuccess is renamed to iconOk"),
+            "expected SIGHUP reload to drain the theme deprecation notice; got: {:?}",
+            run.printed
         );
     }
 
@@ -11532,6 +11541,53 @@ spec:
         assert!(
             !logs.contains("watch: config changed"),
             "a pull's own rewrite is folded into the pull: {logs}"
+        );
+    }
+
+    /// One pull, one reconcile. The pull that rewrote the file already runs its
+    /// own reconcile over what it pulled, so the watcher event it causes must
+    /// not schedule a second one — the echo that keeps the LINE off the log
+    /// keeps the TICK off the loop, or the daemon reconciles twice for one
+    /// change with the second run explained nowhere.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn a_pull_that_rewrites_a_watched_file_yields_one_reconcile() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, true, false, None);
+        ctx.config_path = write_happy_path_config(&tmp);
+        let watched = tmp.path().join("modules/nvim/init.lua");
+
+        let mut echoes = runner::PullEchoes::default();
+        echoes.note_pull(tmp.path());
+        runner::handle_file_change_tick(
+            &ctx,
+            &mut HashMap::new(),
+            &mut echoes,
+            StdDuration::from_millis(500),
+            watched.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            state.lock().await.last_reconcile.is_none(),
+            "the pull owns the reconcile for what it pulled"
+        );
+
+        // The same event with no pull behind it IS a reason to reconcile, so
+        // the suppression above is the echo rather than the fixture.
+        runner::handle_file_change_tick(
+            &ctx,
+            &mut HashMap::new(),
+            &mut runner::PullEchoes::default(),
+            StdDuration::from_millis(500),
+            watched,
+        )
+        .await
+        .unwrap();
+        assert!(
+            state.lock().await.last_reconcile.is_some(),
+            "an edit nobody pulled still reconciles"
         );
     }
 
@@ -11934,7 +11990,9 @@ spec:
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(daemon_log)]
     async fn loop_processes_sighup_then_shuts_down() {
+        reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         // Write a config that updates intervals.
@@ -11944,7 +12002,7 @@ spec:
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 77s\n",
         )
         .unwrap();
-        let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
         ctx.config_path = config_path;
         let (triggers, senders) = make_triggers();
         let reconcile_secs = Arc::new(AtomicU64::new(300));
@@ -11962,7 +12020,11 @@ spec:
         // Fire a SIGHUP-equivalent tick.
         senders.sighup_tx.send(()).await.unwrap();
         // Wait for the reload to actually land instead of guessing a duration.
-        wait_for_buffer_contains(&buf, "Timer intervals reloaded", StdDuration::from_secs(5)).await;
+        wait_for_daemon_log(
+            "daemon: timer intervals reloaded",
+            StdDuration::from_secs(5),
+        )
+        .await;
         senders.shutdown_tx.send(()).unwrap();
         tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
             .await
@@ -11970,11 +12032,11 @@ spec:
             .expect("join error")
             .expect("loop returned Err");
         assert_eq!(reconcile_secs_observe.load(Ordering::Relaxed), 77);
-        let captured = crate::test_helpers::captured_text(&buf);
+        let logged = daemon_log();
         assert!(
-            captured.contains("Timer intervals reloaded"),
+            logged.contains("daemon: timer intervals reloaded"),
             "expected reload message in: {}",
-            captured
+            logged
         );
     }
 
@@ -14020,10 +14082,9 @@ spec: {}
     #[test]
     #[serial_test::serial]
     fn init_daemon_state_with_warning_reports_message_on_resolve_failure() {
-        // The daemon used to only emit a `tracing::warn!` when state-dir
-        // resolution failed, leaving the
-        // /drift endpoint silently disabled. The variant exposes a banner
-        // message so the startup banner can surface it.
+        // Resolution failing leaves the /drift endpoint disabled, and the
+        // variant hands the sentence back so the caller states it once on the
+        // daemon's own stream — a sentence, not a second copy of one.
         //
         // Same deterministic-failure setup as the fallback test: unset every
         // tier above the home-based resolution and install no test-home
@@ -14037,7 +14098,7 @@ spec: {}
         let (st, warning) = super::super::init_daemon_state_with_warning(None, crate::Scope::User);
         let msg = warning.expect("resolve failure must surface an operator-facing warning");
         assert!(
-            msg.contains("Drift endpoint disabled"),
+            msg.contains("drift endpoint disabled"),
             "warning should be operator-facing; got {msg:?}"
         );
         assert!(
@@ -14299,8 +14360,13 @@ spec: {}
                     "compliance every 900s".to_string(),
                 ],
                 "/tmp/cfgd-banner-test.sock",
+                "9.9.0",
             );
         });
+        assert!(
+            logs.contains("daemon: starting cfgd 9.9.0"),
+            "the banner is the only line on the stream naming the build: {logs}"
+        );
         assert!(
             logs.contains("daemon: health endpoint at /tmp/cfgd-banner-test.sock"),
             "got: {logs}"
@@ -14772,7 +14838,7 @@ spec: {}
         // Start with the happy-path config (no daemon spec).
         let config_path = write_happy_path_config(&tmp);
         let (triggers, senders) = make_triggers();
-        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+        let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -14808,7 +14874,7 @@ spec: {}
         // Wait for the reload chatter instead of guessing a duration — a
         // fixed 200ms was already bumped once after this test lost the
         // printer-buffer race under llvm-cov instrumentation.
-        wait_for_buffer_contains(&buf, "Reloading configuration", StdDuration::from_secs(5)).await;
+        wait_for_daemon_log("daemon: reloading configuration", StdDuration::from_secs(5)).await;
         senders.shutdown_tx.send(()).unwrap();
 
         let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
@@ -14816,9 +14882,10 @@ spec: {}
             .expect("daemon should shut down in time")
             .expect("daemon join");
         assert!(result.is_ok(), "daemon Ok, got {:?}", result);
-        let out = crate::test_helpers::captured_text(&buf);
+        let out = daemon_log();
         assert!(
-            out.contains("Reloading configuration") || out.contains("Timer intervals reloaded"),
+            out.contains("daemon: reloading configuration")
+                || out.contains("daemon: timer intervals reloaded"),
             "expected sighup reload chatter, got: {}",
             out
         );
@@ -15120,10 +15187,8 @@ spec: {}
     #[serial_test::serial]
     async fn wait_for_shutdown_returns_on_sigterm() {
         // Driving the shutdown wait directly: register, raise SIGTERM at our
-        // own PID, and verify the wait returns AND the printer captured the
-        // SIGTERM message.
-        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
-        let printer = Arc::new(printer);
+        // own PID, and verify the wait returns the POSIX code that names the
+        // signal it woke on.
         // Registration is synchronous, so the signal cannot arrive before the
         // handler exists — no sleep is needed to make this deterministic, and
         // the delivery the assertions rely on is a latched pending
@@ -15133,18 +15198,16 @@ spec: {}
         unsafe {
             libc::kill(libc::getpid(), libc::SIGTERM);
         }
-        let handle = tokio::spawn(signals.wait(Arc::clone(&printer)));
+        let handle = tokio::spawn(signals.wait());
         let joined = tokio::time::timeout(StdDuration::from_secs(3), handle).await;
         assert!(
             joined.is_ok(),
             "wait_for_shutdown must return after SIGTERM"
         );
-        joined.unwrap().expect("task join");
-        let out = crate::test_helpers::captured_text(&buf);
-        assert!(
-            out.contains("Received SIGTERM"),
-            "shutdown printer should announce SIGTERM, got: {}",
-            out
+        assert_eq!(
+            joined.unwrap().expect("task join"),
+            143,
+            "SIGTERM is 128 + 15, and the code is what in-flight work reads"
         );
     }
 
@@ -15468,31 +15531,18 @@ spec: {}
         );
     }
 
-    // ----- Loop-surface snapshot floor -----
+    // ----- Loop-surface floor -----
     //
-    // These tests capture only what the daemon's own Printer writes:
-    // startup banner, SIGHUP reload chatter, shutdown messages. Per-action
-    // reconcile output is emitted by `daemon::reconcile` through separate
-    // short-lived printers and is invisible to the buffer below.
-
-    use crate::output::test_capture::assert_snapshot_at;
-
-    fn snapshot_dir() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/snapshots")
-    }
-
-    fn normalize_ipc(raw: &str, ipc_path: &Path) -> String {
-        crate::normalize_for_snapshot(raw, &[(ipc_path, "<IPC_PATH>")])
-    }
-
-    fn assert_snapshot(name: &str, actual: &str) {
-        assert_snapshot_at(&snapshot_dir(), name, actual);
-    }
+    // The reconcile loop has no terminal to report to: a service under
+    // systemd/launchd is read through its journal, so every sentence the loop
+    // says goes to `tracing` and its `Printer` stays silent. These two tests
+    // hold both halves — nothing on the printer, the run's own account in the
+    // journal.
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
     #[serial_test::serial(daemon_log)]
-    async fn snapshot_clean_reconcile_cycle() {
+    async fn the_reconcile_loop_reports_through_the_journal_and_never_the_printer() {
         reset_daemon_log();
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
@@ -15522,7 +15572,7 @@ spec: {}
 
         wait_for_daemon_log("daemon: running", StdDuration::from_secs(5)).await;
         senders.reconcile_tx.send(()).await.unwrap();
-        // sleep-ok: a clean reconcile tick prints nothing (see clean_reconcile_cycle.txt) — no signal exists to wait on before shutdown
+        // sleep-ok: a clean reconcile tick logs nothing of its own — no signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(150)).await;
         senders.shutdown_tx.send(()).unwrap();
 
@@ -15536,21 +15586,29 @@ spec: {}
         assert!(result.is_ok(), "daemon should exit Ok, got {:?}", result);
 
         drop(printer);
-        let actual = normalize_ipc(&crate::test_helpers::captured_text(&buf), &ipc_path);
-        assert_snapshot("clean_reconcile_cycle.txt", &actual);
+        let printed = crate::test_helpers::captured_text(&buf);
+        assert!(
+            printed.trim().is_empty(),
+            "the reconcile loop reports through the journal, never the printer: {printed}"
+        );
+        let logged = daemon_log();
+        for needle in ["daemon: starting", "daemon: running", "daemon: stopped"] {
+            assert!(
+                logged.contains(needle),
+                "the journal is the loop's account of itself, missing {needle:?}: {logged}"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
     #[serial_test::serial(daemon_log)]
-    async fn snapshot_drift_event() {
+    async fn a_drift_tick_leaves_the_printer_silent_and_names_the_change_in_the_journal() {
         reset_daemon_log();
         // A file-change tick walks handle_file_change_tick → drift recording →
-        // notifier path. The notifier writes via tracing/stdout, not through the
-        // loop's Printer, so this snapshot is shape-identical to the clean cycle.
-        // Its value is regression coverage that the drift path doesn't write to
-        // the loop's surface and that the daemon survives the drift codepath and
-        // shuts down cleanly.
+        // notifier path. The notifier reports through tracing like the rest of
+        // the loop, so the drift path must leave the printer as silent as a
+        // clean cycle does while still naming the file it saw change.
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
@@ -15579,8 +15637,7 @@ spec: {}
 
         wait_for_daemon_log("daemon: running", StdDuration::from_secs(5)).await;
         senders.file_tx.send(config_path).await.unwrap();
-        // sleep-ok: a drift-recording file tick prints nothing to the loop's Printer (see drift_event.txt) — no signal exists to wait on before shutdown
-        tokio::time::sleep(StdDuration::from_millis(80)).await;
+        wait_for_daemon_log("watch: ", StdDuration::from_secs(5)).await;
         senders.shutdown_tx.send(()).unwrap();
 
         let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
@@ -15590,8 +15647,20 @@ spec: {}
         assert!(result.is_ok(), "daemon Ok, got {:?}", result);
 
         drop(printer);
-        let actual = normalize_ipc(&crate::test_helpers::captured_text(&buf), &ipc_path);
-        assert_snapshot("drift_event.txt", &actual);
+        let printed = crate::test_helpers::captured_text(&buf);
+        assert!(
+            printed.trim().is_empty(),
+            "the drift path reports through the journal, never the printer: {printed}"
+        );
+        let logged = daemon_log();
+        assert!(
+            logged.contains("watch: "),
+            "the journal names the file change that drove the tick: {logged}"
+        );
+        assert!(
+            logged.contains("daemon: stopped"),
+            "the daemon must still shut down cleanly through the drift path: {logged}"
+        );
     }
 }
 
@@ -17859,7 +17928,7 @@ mod backup_timers {
                 "    - name: kept\n      source: {posix}\n      schedule: 1h\n    - name: dropped\n      source: {posix}\n      schedule: 1h\n"
             ),
         );
-        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
+        let (ctx, _buf) = sighup_ctx(&tmp, &config_path);
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
 
@@ -17876,7 +17945,9 @@ mod backup_timers {
                 "    - name: kept\n      source: {posix}\n      schedule: 15m\n    - name: added\n      source: {posix}\n      schedule: 1h\n"
             ),
         );
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        let logged = super::capture_run_logs(|| {
+            runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        });
         let names: Vec<&str> = set.tasks().iter().map(|t| t.spec.name.as_str()).collect();
         assert_eq!(names, vec!["kept", "added"]);
         assert_ne!(
@@ -17885,10 +17956,9 @@ mod backup_timers {
             "a changed schedule re-arms the timer"
         );
 
-        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
-            captured.contains("Backup schedules reloaded: 1 added, 1 removed, 1 rescheduled"),
-            "reload must report the timer-set delta: {captured}"
+            logged.contains("backup schedules reloaded: 1 added, 1 removed, 1 rescheduled"),
+            "reload must report the timer-set delta: {logged}"
         );
     }
 
@@ -18379,7 +18449,9 @@ mod backup_timers {
             "spec:\n  backups:\n   - name: [unclosed\n",
         )
         .unwrap();
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        let logged = super::capture_run_logs(|| {
+            runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        });
 
         assert_eq!(
             set.len(),
@@ -18391,14 +18463,13 @@ mod backup_timers {
             kept, armed,
             "the pending deadlines must survive the failure"
         );
-        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
-            captured.contains("Backup schedules NOT reloaded"),
-            "the operator must be told the reload was refused: {captured}"
+            logged.contains("backup schedules NOT reloaded"),
+            "the operator must be told the reload was refused: {logged}"
         );
         assert!(
-            !captured.contains("2 removed"),
-            "a refused reload must never report the running set as removed: {captured}"
+            !logged.contains("2 removed"),
+            "a refused reload must never report the running set as removed: {logged}"
         );
     }
 
@@ -18408,7 +18479,7 @@ mod backup_timers {
         let _g = crate::with_test_home_guard(tmp.path());
         let source = tmp.path().join("data.db");
         std::fs::write(&source, b"x").unwrap();
-        let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
         ctx.config_path = write_config_with_backups(
             &tmp,
             &format!(
@@ -18428,7 +18499,10 @@ mod backup_timers {
         );
         assert!(set.retry_due(Instant::now()));
 
-        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+        let logged = super::capture_run_logs_async(async {
+            runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+        })
+        .await;
 
         assert_eq!(
             set.len(),
@@ -18436,10 +18510,9 @@ mod backup_timers {
             "a healed config must restore the timers without a restart or a SIGHUP"
         );
         assert!(!set.is_degraded());
-        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
-            captured.contains("Backup schedules restored: 1 scheduled"),
-            "the recovery must be visible: {captured}"
+            logged.contains("backup schedules restored: 1 scheduled"),
+            "the recovery must be visible: {logged}"
         );
     }
 
@@ -18450,7 +18523,7 @@ mod backup_timers {
         // just an empty, healthy config — the zero case gets its own wording.
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
-        let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
         ctx.config_path = write_config_with_backups(&tmp, "");
 
         let mut set = BackupTimers::new(
@@ -18462,18 +18535,20 @@ mod backup_timers {
         );
         assert!(set.retry_due(Instant::now()));
 
-        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+        let logged = super::capture_run_logs_async(async {
+            runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+        })
+        .await;
 
         assert_eq!(set.len(), 0);
         assert!(!set.is_degraded());
-        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
-            captured.contains("Backup schedule resolved: no units configured"),
-            "the zero case must not say 'restored': {captured}"
+            logged.contains("backup schedule resolved: no units configured"),
+            "the zero case must not say 'restored': {logged}"
         );
         assert!(
-            !captured.contains("restored: 0 scheduled"),
-            "the odd zero-count phrasing must be gone: {captured}"
+            !logged.contains("restored: 0 scheduled"),
+            "the odd zero-count phrasing must be gone: {logged}"
         );
     }
 
@@ -18562,7 +18637,7 @@ mod backup_timers {
         let _g = crate::with_test_home_guard(tmp.path());
         let source = tmp.path().join("data.db");
         std::fs::write(&source, b"x").unwrap();
-        let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
         let (broken_config, _cache) = write_config_with_broken_source_cache(
             &tmp,
             &format!(
@@ -18575,7 +18650,10 @@ mod backup_timers {
         let mut set = BackupTimers::empty_with_retry(Instant::now() - StdDuration::from_secs(3600));
         assert!(set.retry_due(Instant::now()));
 
-        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+        let logged = super::capture_run_logs_async(async {
+            runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+        })
+        .await;
 
         assert_eq!(set.len(), 1, "the local set must be adopted");
         assert_eq!(
@@ -18584,20 +18662,17 @@ mod backup_timers {
             "adopting a partial set must not clear the degraded state"
         );
 
-        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
-            captured.contains(
-                "Backup schedules restored: 1 scheduled (source composition unavailable)"
+            logged.contains(
+                "backup schedules restored: 1 scheduled (source composition unavailable)"
             ),
-            "the line must name what is still missing: {captured}"
+            "the line must name what is still missing: {logged}"
         );
+        // The level carries what the glyph used to: a partial set is a WARN on
+        // the journal, so an operator grepping for warnings finds it.
         assert!(
-            !captured.contains("✓ Backup schedules restored"),
-            "an unqualified all-clear tick would report a healthy set that is not: {captured}"
-        );
-        assert!(
-            captured.contains("⚠ Backup schedules restored"),
-            "a partial set is a warning, not an Ok: {captured}"
+            logged.contains("WARN") && !logged.contains("INFO"),
+            "a partial set is a warning, not an all-clear: {logged}"
         );
     }
 
@@ -18618,32 +18693,32 @@ mod backup_timers {
                 crate::to_posix_string(&source)
             ),
         );
-        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
+        let (ctx, _buf) = sighup_ctx(&tmp, &config_path);
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
 
         let mut set = BackupTimers::empty();
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        let logged = super::capture_run_logs(|| {
+            runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        });
 
         assert_eq!(set.len(), 1);
         assert_eq!(
             set.degraded_reason(),
             Some(crate::daemon::backup::DegradedReason::SourcesUnavailable)
         );
-        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
-            captured.contains(
-                "Backup schedules reloaded: 1 added, 0 removed, 0 rescheduled (source composition unavailable)"
+            logged.contains(
+                "backup schedules reloaded: 1 added, 0 removed, 0 rescheduled (source composition unavailable)"
             ),
-            "the reload line must name what is still missing: {captured}"
+            "the reload line must name what is still missing: {logged}"
         );
+        // The level carries what the glyph used to.
         assert!(
-            !captured.contains("✓ Backup schedules reloaded"),
-            "an unqualified all-clear would tell the operator their edit landed in full: {captured}"
-        );
-        assert!(
-            captured.contains("⚠ Backup schedules reloaded"),
-            "a partial reload is a warning, not an Ok: {captured}"
+            logged
+                .lines()
+                .any(|l| l.contains("WARN") && l.contains("backup schedules reloaded")),
+            "a partial reload is a warning, not an all-clear: {logged}"
         );
     }
 
@@ -18662,22 +18737,26 @@ mod backup_timers {
                 crate::to_posix_string(&source)
             ),
         );
-        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
+        let (ctx, _buf) = sighup_ctx(&tmp, &config_path);
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
 
         let mut set = BackupTimers::empty();
-        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        let logged = super::capture_run_logs(|| {
+            runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+        });
 
         assert!(!set.is_degraded());
-        let captured = crate::test_helpers::captured_text(&buf);
         assert!(
-            captured.contains("✓ Backup schedules reloaded: 1 added, 0 removed, 0 rescheduled"),
-            "got: {captured}"
+            logged.lines().any(|l| {
+                l.contains("INFO")
+                    && l.contains("backup schedules reloaded: 1 added, 0 removed, 0 rescheduled")
+            }),
+            "got: {logged}"
         );
         assert!(
-            !captured.contains("unavailable") && !captured.contains("unresolved"),
-            "a clean reload must carry no qualifier: {captured}"
+            !logged.contains("unavailable") && !logged.contains("unresolved"),
+            "a clean reload must carry no qualifier: {logged}"
         );
     }
 
@@ -19893,7 +19972,7 @@ mod log_dialect {
         assert!(handle_sync(&work_dir, true, false, "local", &state, false, false).await);
 
         let expected = format!(
-            "sync: pulled local {} → {}",
+            "sync: pulled source local {} → {}",
             crate::short_commit(&from.to_string()),
             crate::short_commit(&to.to_string())
         );

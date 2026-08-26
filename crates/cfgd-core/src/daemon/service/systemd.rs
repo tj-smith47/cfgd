@@ -208,7 +208,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
         printer
             .status(Role::Warn, "systemctl not found")
             .detail(super::INSTALLED_NOT_STARTED);
-        printer.hint(format!("Start it later with: {}", hint_cmd));
+        printer.hint(format!("Start it later with `{hint_cmd}`"));
         return Ok(false);
     }
 
@@ -332,7 +332,7 @@ pub(crate) fn stop_systemd_service(printer: &Printer, scope: crate::Scope) {
         } else {
             "systemctl --user disable --now cfgd.service".to_string()
         };
-        printer.hint(format!("Stop it manually with: {}", hint_cmd));
+        printer.hint(format!("Stop it manually with `{hint_cmd}`"));
         return;
     }
 
@@ -719,7 +719,7 @@ mod tests {
             "expected not-found warning: {out}"
         );
         assert!(
-            out.contains("Start it later with: systemctl --user enable --now cfgd.service"),
+            out.contains("Start it later with `systemctl --user enable --now cfgd.service`"),
             "user-scope hint must carry the --user form: {out}"
         );
     }
@@ -740,7 +740,7 @@ mod tests {
 
         let out = crate::test_helpers::captured_text(&buf);
         assert!(
-            out.contains("Start it later with: systemctl enable --now cfgd.service"),
+            out.contains("Start it later with `systemctl enable --now cfgd.service`"),
             "system-scope hint must be the bare (no --user) form: {out}"
         );
         assert!(
@@ -788,7 +788,7 @@ mod tests {
             "expected not-found warning: {out}"
         );
         assert!(
-            out.contains("Stop it manually with: systemctl --user disable --now cfgd.service"),
+            out.contains("Stop it manually with `systemctl --user disable --now cfgd.service`"),
             "user-scope hint must carry the --user form: {out}"
         );
     }
@@ -808,7 +808,7 @@ mod tests {
 
         let out = crate::test_helpers::captured_text(&buf);
         assert!(
-            out.contains("Stop it manually with: systemctl disable --now cfgd.service"),
+            out.contains("Stop it manually with `systemctl disable --now cfgd.service`"),
             "system-scope hint must be the bare (no --user) form: {out}"
         );
         assert!(

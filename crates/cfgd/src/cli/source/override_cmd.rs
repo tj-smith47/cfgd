@@ -67,7 +67,7 @@ pub fn cmd_source_override(
                     .status(
                         Role::Ok,
                         format!(
-                            "Override set: {} = {} for {}",
+                            "Set override: {} = {} for {}",
                             path,
                             val,
                             OwnerLabel::new("source", source_name).plain()

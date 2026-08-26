@@ -18,6 +18,56 @@ fn source_not_found_error(name: &str) -> anyhow::Error {
     )
 }
 
+/// Where one source's rows go.
+///
+/// A run naming a single source is headed `Update source:team`, the spelling
+/// every other single-subject `source` verb uses — so an owner section under
+/// that heading would write `source:team` twice, two lines apart. A run over
+/// every subscribed source is headed with the plural and needs the owner
+/// heading to say which rows belong to which source.
+struct SourceRows<'a> {
+    printer: &'a Printer,
+    section: Option<&'a cfgd_core::output::SectionGuard<'a>>,
+}
+
+impl SourceRows<'_> {
+    fn status_simple(&self, role: Role, subject: impl Into<String>) {
+        match self.section {
+            Some(section) => {
+                section.status_simple(role, subject);
+            }
+            None => self.printer.status_simple(role, subject),
+        }
+    }
+
+    fn status(
+        &self,
+        role: Role,
+        subject: impl Into<String>,
+    ) -> cfgd_core::output::status_builder::StatusBuilder<'_> {
+        match self.section {
+            Some(section) => section.status(role, subject),
+            None => self.printer.status(role, subject),
+        }
+    }
+
+    fn hint(&self, text: impl Into<String>) {
+        match self.section {
+            Some(section) => {
+                section.hint(text);
+            }
+            None => self.printer.hint(text),
+        }
+    }
+
+    fn section(&self, name: impl Into<String>) -> cfgd_core::output::SectionGuard<'_> {
+        match self.section {
+            Some(section) => section.section(name),
+            None => self.printer.section(name),
+        }
+    }
+}
+
 /// The subscription knobs `source update` can set beside its fetch. `None` is
 /// "the caller said nothing about this knob", which has to stay distinct from
 /// `Some(false)`: a stored `true` must survive an ordinary `cfgd source update`.
@@ -122,7 +172,13 @@ pub fn run_source_update(
     name: Option<&str>,
     edits: SubscriptionEdits,
 ) -> anyhow::Result<usize> {
-    printer.heading("Update Sources");
+    // A run with one named subject is headed the way every other single-subject
+    // `source` verb is (`Add source:team`), so the family reads as one family;
+    // the plural stays for the form that really does update all of them.
+    match name {
+        Some(name) => printer.heading_owner_prefixed("Update", &OwnerLabel::new("source", name)),
+        None => printer.heading("Update Sources"),
+    }
 
     let config_path = cli.config.clone();
     let mut cfg = config::load_config(&config_path)?;
@@ -170,14 +226,25 @@ pub fn run_source_update(
     }
     let mut entries: Vec<UpdateEntry> = Vec::new();
     let mut knob_changes = serde_json::Map::new();
+    let solo = sources_to_update.len() == 1 && name.is_some();
 
     for source in &sources_to_update {
+        // Whether the fetch landed, held back until the knob rows below have
+        // had their say: a bare `√ Updated` beside a row that names the knob it
+        // changed is a word the reader already read. A fetch-only run has no
+        // knob row, and there the bare row IS the outcome.
+        let mut fetch_updated = false;
+        let mut knob_rows = 0usize;
         // ONE owner section per source per run: the fetch outcome and the knob
         // rows both belong to it, and opening a second heading for the same
         // source made one run report `source:team` twice. `_or_collapse` so a
         // source that says nothing at all leaves no empty heading behind.
-        let source_sec =
-            printer.section_owner_or_collapse(&OwnerLabel::new("source", &source.name));
+        let owner_sec = (!solo)
+            .then(|| printer.section_owner_or_collapse(&OwnerLabel::new("source", &source.name)));
+        let source_sec = SourceRows {
+            printer,
+            section: owner_sec.as_ref(),
+        };
         // `load_source` narrates the clone/fetch through `printer.run`, which
         // is a top-level emit: with the owner section open it must render at
         // the section's depth instead of tripping the structural assert.
@@ -289,7 +356,7 @@ pub fn run_source_update(
                             }
                         }
 
-                        source_sec.status_simple(Role::Ok, "Updated");
+                        fetch_updated = true;
                         entries.push(UpdateEntry {
                             name: source.name.clone(),
                             status: "updated".into(),
@@ -304,8 +371,9 @@ pub fn run_source_update(
                 // row says what failed, the heading says whose it is, and the
                 // cause is stated once.
                 source_sec
-                    .status(Role::Fail, "update failed")
+                    .status(Role::Fail, "Update failed")
                     .detail(super::source_failure_detail(&e));
+                source_sec.hint(super::source_failure_next_step(&e, &source.name));
                 state.update_config_source_status(&source.name, "error")?;
                 entries.push(UpdateEntry {
                     name: source.name.clone(),
@@ -334,10 +402,20 @@ pub fn run_source_update(
                     _ => before.1,
                 };
                 source_sec
-                    .status(Role::Ok, *key)
-                    .detail(format!("{old} {} {value}", printer.arrow()));
+                    .status(Role::Ok, super::subscription_knob_label(key))
+                    .detail(format!(
+                        "{} {} {}",
+                        cfgd_core::yes_no(Some(old)),
+                        printer.arrow(),
+                        cfgd_core::yes_no(Some(*value))
+                    ));
+                knob_rows += 1;
                 knob_changes.insert((*key).to_string(), serde_json::Value::Bool(*value));
             }
+        }
+
+        if fetch_updated && knob_rows == 0 {
+            source_sec.status_simple(Role::Ok, "Updated");
         }
     }
 

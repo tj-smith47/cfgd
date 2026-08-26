@@ -94,6 +94,22 @@ use cfgd_core::state::StateStore;
 
 const MSG_RUN_APPLY: &str = "Run `cfgd plan` to preview changes, then `cfgd apply`";
 
+/// The next step a drift report offers once it has FOUND drift, scoped the way
+/// the report was.
+///
+/// Every verdict surface — `diff`, `diff --module`, `status --scan`,
+/// `status --module --scan`, `verify` — described the divergence and then
+/// stopped, leaving the reader to know on their own which command heals it.
+/// One wording, one home, so the whole-machine and per-module forms cannot
+/// drift apart. Distinct from [`MSG_RUN_APPLY`], which invites a preview of
+/// changes the reader has not seen yet: here they have just read them.
+pub(in crate::cli) fn heal_drift_hint(module: Option<&str>) -> String {
+    match module {
+        Some(module) => format!("Run `cfgd apply --module {module}` to reconcile"),
+        None => "Run `cfgd apply` to reconcile".to_string(),
+    }
+}
+
 /// Collapse a `--flag` / `--no-flag` pair into the edit it asks for. `None` is
 /// "the caller said nothing", which must stay distinct from `Some(false)` — a
 /// stored `true` has to survive an invocation that never mentioned the knob.

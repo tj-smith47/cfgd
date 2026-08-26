@@ -545,14 +545,15 @@ impl<'a> ApplyRun<'a> {
             let unrecorded = withheld.pending.iter().any(|d| d.id == 0);
             let hint = if unrecorded && !self.decide_answerable {
                 "Not yet recorded — answer from the machine's own config, or pass --state-dir"
+                    .to_string()
             } else {
-                super::MSG_ANSWER_DECISIONS
+                super::answer_decisions_hint(withheld.pending.len())
             };
             block(
                 "Pending Decisions (not included in this plan)",
                 &withheld.pending,
                 Role::Info,
-                hint,
+                &hint,
             );
         }
         if !withheld.rejected.is_empty() {

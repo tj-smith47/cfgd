@@ -800,7 +800,7 @@ pub(in crate::cli) fn display_plan_preview(
                                 printer
                                     .status(
                                         Role::Warn,
-                                        format!("cannot preview {}", target.posix()),
+                                        format!("Cannot preview {}", target.posix()),
                                     )
                                     .detail(cfgd_core::output::collapse_to_subject_line(e));
                                 continue;

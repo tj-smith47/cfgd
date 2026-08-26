@@ -2,6 +2,6 @@ Show source:minimal
   URL                 https://github.com/team/minimal
   Branch              main
   Priority            500
-  Accept Recommended  false
+  Accept Recommended  no
   Sync Interval       1h
-  Auto Apply          false
+  Auto Apply          no

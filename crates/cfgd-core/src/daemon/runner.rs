@@ -231,7 +231,12 @@ pub(super) async fn handle_file_change_tick(
     // the file has in the repository the reader edits — an absolute cache path
     // names the same file in a directory they never opened.
     let config_dir = ctx.config_path.parent().unwrap_or(Path::new("."));
-    if pull_echoes.explains(&path) {
+    // A pull that rewrote this file already owns the reconcile for what it
+    // pulled (`handle_sync_tick`'s `apply_after_sync`), so the echo suppresses
+    // the TICK as well as the line. Suppressing only the line left the second
+    // reconcile on the log with no cause anywhere at info level.
+    let explained = pull_echoes.explains(&path);
+    if explained {
         tracing::debug!(path = %path.posix(), "watch: file rewritten by a pull");
     } else {
         match path.strip_prefix(config_dir) {
@@ -286,7 +291,7 @@ pub(super) async fn handle_file_change_tick(
         ctx.tick_cache.invalidate();
     }
 
-    if ctx.on_change_reconcile {
+    if ctx.on_change_reconcile && !explained {
         let cp = ctx.config_path.clone();
         let po = ctx.profile_override.clone();
         let st = Arc::clone(&ctx.state);
@@ -483,7 +488,7 @@ pub(super) async fn handle_sync_tick(
                 apply_after_sync.push(task.source_name.clone());
             } else {
                 tracing::info!(
-                    "sync: {} changed — auto-apply is off, run `cfgd sync` to apply",
+                    "sync: source {} changed — auto-apply is off, run `cfgd sync` to apply",
                     task.source_name
                 );
             }
@@ -620,11 +625,14 @@ pub(super) async fn handle_backup_tick(
                     let (role, note) = backup_timers.reload_line_qualifier();
                     let count = backup_timers.len();
                     let message = if count == 0 {
-                        format!("Backup schedule resolved: no units configured{note}")
+                        format!("backup schedule resolved: no units configured{note}")
                     } else {
-                        format!("Backup schedules restored: {count} scheduled{note}")
+                        format!("backup schedules restored: {count} scheduled{note}")
                     };
-                    ctx.printer.status_simple(role, message);
+                    match role {
+                        Role::Warn => tracing::warn!("daemon: {message}"),
+                        _ => tracing::info!("daemon: {message}"),
+                    }
                 }
             }
             Err(e) => {
@@ -759,9 +767,8 @@ pub(super) fn apply_sighup_reload(
     backup_timers: &mut BackupTimers,
 ) {
     let printer = &ctx.printer;
-    printer.status_simple(
-        Role::Info,
-        "Reloading configuration (SIGHUP) — timer intervals and backup schedules only; other fields require restart",
+    tracing::info!(
+        "daemon: reloading configuration (SIGHUP) — timer intervals and backup schedules only; other fields require restart"
     );
     // A SIGHUP is the operator saying the config changed. The fingerprint would
     // reach the same conclusion on the next tick, but only for the files the
@@ -794,9 +801,8 @@ pub(super) fn apply_sighup_reload(
             let reloaded = backups.as_ref().is_some_and(|b| !b.is_empty());
 
             if !refused && !reloaded && changed.is_empty() {
-                printer.status_simple(
-                    Role::Info,
-                    "Config validated; no timer changes detected (other field changes require restart)",
+                tracing::info!(
+                    "daemon: config validated; no timer changes detected (other field changes require restart)"
                 );
                 return;
             }
@@ -804,44 +810,34 @@ pub(super) fn apply_sighup_reload(
                 // Said out loud because the alternative — reporting "0 removed"
                 // — reads as "your edit had no effect" when what actually
                 // happened is that the daemon refused to act on half the inputs.
-                printer
-                    .status(
-                        Role::Warn,
-                        "Backup schedules NOT reloaded: config did not fully resolve",
-                    )
-                    .detail(format!(
-                        "keeping the {} running {}, retrying automatically",
-                        backup_timers.len(),
-                        crate::plural_noun(backup_timers.len(), "schedule")
-                    ));
+                tracing::warn!(
+                    "daemon: backup schedules NOT reloaded: config did not fully resolve — keeping the {} running {}, retrying automatically",
+                    backup_timers.len(),
+                    crate::plural_noun(backup_timers.len(), "schedule")
+                );
             }
             if !changed.is_empty() {
-                printer.status_simple(
-                    Role::Ok,
-                    format!(
-                        "Timer intervals reloaded: {} (other field changes require restart)",
-                        changed.join(", ")
-                    ),
+                tracing::info!(
+                    "daemon: timer intervals reloaded: {} (other field changes require restart)",
+                    changed.join(", ")
                 );
             }
             if let Some(b) = backups.filter(|b| !b.is_empty()) {
                 let (role, note) = backup_timers.reload_line_qualifier();
-                printer.status_simple(
-                    role,
-                    format!(
-                        "Backup schedules reloaded: {} added, {} removed, {} rescheduled{note}",
-                        b.added, b.removed, b.rescheduled
-                    ),
+                let message = format!(
+                    "backup schedules reloaded: {} added, {} removed, {} rescheduled{note}",
+                    b.added, b.removed, b.rescheduled
                 );
+                match role {
+                    Role::Warn => tracing::warn!("daemon: {message}"),
+                    _ => tracing::info!("daemon: {message}"),
+                }
             }
         }
         Err(e) => {
-            printer.status_simple(
-                Role::Warn,
-                format!(
-                    "Config reload failed: {}",
-                    crate::output::collapse_to_subject_line(&e),
-                ),
+            tracing::warn!(
+                "daemon: config reload failed: {}",
+                crate::output::collapse_to_subject_line(&e),
             );
         }
     }

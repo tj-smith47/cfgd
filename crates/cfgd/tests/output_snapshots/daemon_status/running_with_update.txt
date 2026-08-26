@@ -2,7 +2,7 @@ Daemon Status
 ✓ Daemon running
 
 PID                 4242
-Uptime              3600s
+Uptime              1h
 Reconcile Interval  300s
 Sync Interval       900s
 Drift Count         7
@@ -11,7 +11,7 @@ Last Reconcile      2d ago
 ⚠ Update available: 9.9.9 — run `cfgd upgrade` to install
 
 Sources
-  Name   Status  Drift  Last Sync
-  ───────────────────────────────
-  local  Active  0      never    
-  team   Failed  7      2d ago   
+  Name   Source                          Priority  Status  Drift  Commit        Last Sync  Signed  Requires Signed
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  local  /etc/cfgd/local                 50        Active  0      -             never      -       no             
+  team   https://github.com/team/config  100       Failed  7      abc123456789  2d ago     yes     yes            

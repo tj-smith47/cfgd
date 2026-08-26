@@ -945,7 +945,7 @@ pub(in crate::cli) fn preview_orphaned_custom_packages(
                 printer
                     .status(
                         Role::Warn,
-                        format!("orphaned {}/{}", orphan.manager, orphan.package),
+                        format!("Orphaned {}/{}", orphan.manager, orphan.package),
                     )
                     .detail("no persisted uninstall; manual removal needed");
             }
@@ -1007,7 +1007,7 @@ mod tests {
         );
         assert!(
             out.contains(
-                "orphaned legacymgr/legacypkg — no persisted uninstall; manual removal needed"
+                "Orphaned legacymgr/legacypkg — no persisted uninstall; manual removal needed"
             ),
             "no-persisted-script preview line missing, got: {out}"
         );

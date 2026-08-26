@@ -853,7 +853,7 @@ pub(in crate::cli) fn update_workflow_best_effort(cli: &Cli, printer: &Printer) 
         printer.status_simple(
             Role::Warn,
             format!(
-                "workflow regeneration failed ({}); the on-disk workflow is stale until this is resolved and the workflow is regenerated",
+                "Workflow regeneration failed ({}); the on-disk workflow is stale until this is resolved and the workflow is regenerated",
                 cfgd_core::output::collapse_to_subject_line(&*e)
             ),
         );
@@ -1244,7 +1244,7 @@ pub(in crate::cli) fn compose_with_sources(
             .status(
                 Role::Warn,
                 format!(
-                    "source '{}' violates its constraints",
+                    "Source '{}' violates its constraints",
                     violation.source_name
                 ),
             )
@@ -1284,7 +1284,7 @@ pub(in crate::cli) fn compose_with_sources(
                 .status(
                     Role::Warn,
                     format!(
-                        "source '{}' scripts will run because allowScripts is set",
+                        "Source '{}' scripts will run because `allowScripts` is set",
                         spec.name
                     ),
                 )

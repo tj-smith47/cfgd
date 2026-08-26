@@ -38,6 +38,9 @@ fn upgraded_doc(
     doc.with_data(serde_json::Value::Object(payload))
 }
 
+// constant-payload-ok: each branch of this command IS the verification outcome
+// it reports — the up-to-date arm ran no install to verify, and the applied arm
+// is reached only after `install_update` verified the downloaded artifact.
 pub fn cmd_upgrade(
     printer: &Printer,
     config_path: &std::path::Path,
@@ -98,6 +101,7 @@ pub fn cmd_upgrade(
         } else {
             printer.emit(
                 Doc::new()
+                    // verdict-row-ok: nothing was installed; this reports the version's state
                     .status(Role::Ok, format!("Up to date at {}", check.current))
                     .with_data(serde_json::json!({
                         "currentVersion": check.current.to_string(),
@@ -127,6 +131,7 @@ pub fn cmd_upgrade(
     if !check.update_available {
         printer.emit(
             Doc::new()
+                // verdict-row-ok: nothing was installed; this reports the version's state
                 .status(Role::Ok, format!("Up to date at {}", check.current))
                 .with_data(serde_json::json!({
                     "currentVersion": check.current.to_string(),

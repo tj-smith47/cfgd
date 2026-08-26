@@ -62,8 +62,11 @@ pub(crate) async fn handle_sync(
                 // off, to journald or to a file — so the relationship glyph is
                 // the default arrow rather than a preset's override.
                 let theme = crate::output::Theme::default();
+                // `source` before the name: a source called `local` reads as an
+                // adverb otherwise ("pulled locally, a → b"), and every sibling
+                // line on this stream marks its subject the same way.
                 tracing::info!(
-                    "sync: pulled {source_name} {} {} {}",
+                    "sync: pulled source {source_name} {} {} {}",
                     crate::short_commit(&movement.from),
                     theme.arrow(),
                     crate::short_commit(&movement.to)
@@ -83,7 +86,7 @@ pub(crate) async fn handle_sync(
         let push_result =
             crate::spawn_blocking_with_test_home(move || git_auto_commit_push(&repo)).await;
         match push_result {
-            Ok(Ok(true)) => tracing::info!("sync: pushed {source_name} to remote"),
+            Ok(Ok(true)) => tracing::info!("sync: pushed source {source_name} to remote"),
             Ok(Ok(false)) => tracing::debug!("sync: nothing to push"),
             Ok(Err(e)) => tracing::warn!(error = %e, "sync: push failed"),
             Err(e) => tracing::error!(error = %e, "sync: push task panicked"),

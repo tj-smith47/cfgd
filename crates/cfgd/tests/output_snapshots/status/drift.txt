@@ -13,9 +13,9 @@ Drift
   ⚠ package ripgrep source:team-config — want: 14.1.0, have: 13.0.0
 
 Sources
-  Source       Status  Version  Last Sync  Signed
-  ───────────────────────────────────────────────
-  team-config  Active  3.1.0    1h ago     yes   
+  Name         Source                          Priority  Status  Drift  Commit        Last Sync  Signed  Requires Signed
+  ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  team-config  https://github.com/team/config  100       Active  -      abc123456789  1h ago     yes     yes            
 
 Pending Decisions (1 item)
   source:team-config

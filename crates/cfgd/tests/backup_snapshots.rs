@@ -434,7 +434,7 @@ fn backup_list_still_reports_the_inventory_when_the_state_store_cannot_open() {
 
     let human = cfgd_core::output::strip_ansi(&cap.human());
     assert!(
-        human.contains("backup history unavailable"),
+        human.contains("Backup history unavailable"),
         "the degradation must be visible: {human}"
     );
     assert!(

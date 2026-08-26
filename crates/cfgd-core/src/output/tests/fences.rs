@@ -832,10 +832,24 @@ const DAEMON_SUBSYSTEMS: &[&str] = &["daemon: ", "sync: ", "reconcile: ", "watch
 /// a debugging detail goes; the info line spells its operands into the
 /// sentence.
 ///
+/// The third half is what may NOT speak: a `Printer` heading or status line
+/// from inside the loop lands on the same journal without the timestamp, the
+/// level or the subsystem every neighbouring line carries. `cfgd daemon run`
+/// opened with a bare `Daemon` heading and `Starting cfgd daemon` above a
+/// stream of `HH:MM:SS  INFO daemon: …`, which is two dialects in one log.
+/// `service/` is exempt: installing the unit is a one-shot command the user is
+/// watching, and its report belongs on the terminal.
+///
 /// Scoped to `daemon/`, because that is exactly the directory `audit.sh`
 /// exempts from the workspace-wide `tracing::info!` ban.
 #[test]
 fn every_daemon_info_event_names_its_subsystem() {
+    const PRINTER_LINES: &[&str] = &[
+        "printer.heading(",
+        "printer.status_simple(",
+        "printer.status(",
+        "printer.status_with(",
+    ];
     let mut offenders = Vec::new();
     let mut seen = 0usize;
     for path in workspace_rust_files() {
@@ -847,6 +861,22 @@ fn every_daemon_info_event_names_its_subsystem() {
         let Ok(body) = std::fs::read_to_string(&path) else {
             continue;
         };
+        // `service/` installs and uninstalls the unit from a one-shot command
+        // the user is watching, so those DO report through the printer. The
+        // loop itself has no terminal to report to.
+        if !path.components().any(|c| c.as_os_str() == "service") {
+            for (n, line) in body.lines().enumerate() {
+                if let Some(call) = PRINTER_LINES.iter().find(|c| line.contains(**c)) {
+                    offenders.push(format!(
+                        "{}:{}: `{call}` — the reconcile loop speaks through \
+                         `tracing`, whose events carry the timestamp and level \
+                         a journal reader reads",
+                        path.display(),
+                        n + 1
+                    ));
+                }
+            }
+        }
         for (line_no, args) in macro_invocations(&body, "tracing::info!(") {
             seen += 1;
             let where_ = format!("{}:{}", path.display(), line_no);

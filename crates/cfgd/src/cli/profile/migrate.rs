@@ -267,6 +267,7 @@ pub(crate) fn run_profile_migrate(
                     }
                     Err(e) => {
                         let reason = cfgd_core::output::collapse_to_subject_line(&e);
+                        // no-next-step: the run's closing hint names the retry
                         printer.status_simple(
                             Role::Fail,
                             format!("Failed to migrate '{}': {}", name, reason),
@@ -288,22 +289,24 @@ pub(crate) fn run_profile_migrate(
     let migrated = count_action(&records, "migrated");
     let failed = count_action(&records, "failed");
     let (role, summary) = match (migrated, failed) {
+        // verdict-row-ok: nothing was migrated; this reports the layout's state
         (0, 0) => (Role::Ok, "All profiles already canonical".to_string()),
         (m, 0) => (
             Role::Ok,
             format!("Migrated {}", cfgd_core::pluralize(m, "profile")),
         ),
+        // no-next-step: the run's closing hint names the retry
         (0, f) => (
             Role::Fail,
             format!("{} failed to migrate", cfgd_core::pluralize(f, "profile")),
         ),
         (m, f) => (Role::Warn, format!("Migrated {}, failed {}", m, f)),
     };
-    printer.emit(
-        Doc::new()
-            .status(role, summary)
-            .with_data(summary_payload(&records, false)),
-    );
+    let mut doc = Doc::new().status(role, summary);
+    if failed > 0 {
+        doc = doc.hint("Resolve the reasons above, then run `cfgd profile migrate` again");
+    }
+    printer.emit(doc.with_data(summary_payload(&records, false)));
 
     if migrated > 0 {
         update_workflow_best_effort(cli, printer);
@@ -317,6 +320,7 @@ pub(crate) fn run_profile_migrate(
 fn report_no_move(printer: &Printer, item: &PlanItem) -> MigrationRecord {
     match item {
         PlanItem::AlreadyCanonical { name } => {
+            // verdict-row-ok: nothing was migrated; this reports the layout's state
             printer.status_simple(Role::Ok, format!("Profile '{}' already canonical", name));
             MigrationRecord {
                 name: name.clone(),
@@ -328,6 +332,7 @@ fn report_no_move(printer: &Printer, item: &PlanItem) -> MigrationRecord {
         }
         PlanItem::Failed { name, reason } => {
             printer
+                // no-next-step: the run's closing hint names the retry
                 .status(Role::Fail, format!("Cannot migrate '{}'", name))
                 .qualifier(reason.clone());
             MigrationRecord {
@@ -379,7 +384,7 @@ fn execute_move(
                     .status(
                         Role::Warn,
                         format!(
-                            "git mv failed for {} ({})",
+                            "`git mv` failed for {} ({})",
                             from.posix(),
                             cfgd_core::output::collapse_to_subject_line(&stderr),
                         ),

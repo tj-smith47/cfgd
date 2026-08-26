@@ -558,6 +558,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
             Err(e) => {
                 let error = cfgd_core::output::collapse_to_subject_line(e);
                 env_sec
+                    // name-row-ok: the row names the profile surface, not an outcome
                     .status(Role::Warn, "profile")
                     .qualifier("could not resolve the active profile")
                     .detail(&error);
@@ -702,7 +703,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         env_check_failed,
     };
 
-    printer.emit(build_diff_doc(&diff_payload, DiffScope::Module));
+    printer.emit(build_diff_doc(&diff_payload, DiffScope::Module(mod_name)));
 
     if exit_code && let Some(code) = diff_exit_code(&diff_payload.summary) {
         code.exit();
@@ -895,10 +896,13 @@ pub(super) fn print_package_drift(
 /// call `system` clean — that would claim a check the run never made. Nothing
 /// in [`DiffSummary`] can tell the two apart: a module run and a machine run
 /// with no `spec.system` both report `has_system_drift: false`.
+/// The module name rides along because the report's closing next step is
+/// scoped the way the report was: a `--module` run that found drift heals with
+/// `cfgd apply --module <name>`, not with a whole-machine apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiffScope {
+pub enum DiffScope<'a> {
     Machine,
-    Module,
+    Module(&'a str),
 }
 
 /// The closing line's tally: what drifted, and which of the surfaces this run
@@ -907,7 +911,7 @@ pub enum DiffScope {
 /// A surface whose check could not RUN is named by neither half — the same
 /// line already carries the reason it could not, and calling it clean or
 /// drifted would both be claims the run cannot make.
-fn drift_tally(output: &DiffOutput, scope: DiffScope) -> String {
+fn drift_tally(output: &DiffOutput, scope: DiffScope<'_>) -> String {
     let s = &output.summary;
     // The payload keeps every finding; the REPORT drops the env file's own
     // freshness row when the item rows beneath it already explain it. The
@@ -963,7 +967,7 @@ fn drift_tally(output: &DiffOutput, scope: DiffScope) -> String {
     }
 }
 
-pub fn build_diff_doc(output: &DiffOutput, scope: DiffScope) -> Doc {
+pub fn build_diff_doc(output: &DiffOutput, scope: DiffScope<'_>) -> Doc {
     let any_drift = output.summary.has_file_drift
         || output.summary.has_pkg_drift
         || output.summary.has_system_drift
@@ -994,6 +998,10 @@ pub fn build_diff_doc(output: &DiffOutput, scope: DiffScope) -> Doc {
             .join("; ");
         return Doc::new()
             .status_with(role, "Drift detected", |f| f.detail(detail))
+            .hint(super::heal_drift_hint(match scope {
+                DiffScope::Machine => None,
+                DiffScope::Module(name) => Some(name),
+            }))
             .with_data(output);
     }
     if check_failed {

@@ -15,3 +15,5 @@ Warnings
   ⚠ package:ripgrep — version mismatch: want 14.0.0, have 13.0.0
 
 ✗ Summary: 1 compliant, 1 warning, 1 violation
+
+→ Run `cfgd apply` to reconcile

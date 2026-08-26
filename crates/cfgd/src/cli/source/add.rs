@@ -228,6 +228,7 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
                     if lines.is_empty() {
                         // Role::Ok marks the conflict-check step as having passed cleanly
                         // (consistent with other clean-state preview steps).
+                        // verdict-row-ok: a comparison verdict, not an act cfgd performed
                         printer.status_simple(Role::Ok, "No conflicts with current config");
                     } else {
                         let conflicts_sec = printer.section("Conflicts with Current Config");

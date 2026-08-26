@@ -2038,7 +2038,7 @@ fn check_prerequisites_with_test_printer() {
     let output = cap.human();
     assert!(!result, "should return false when git unavailable");
     assert!(
-        output.contains("git is not installed"),
+        output.contains("Git is not installed"),
         "should show error when git is missing, got: {output}"
     );
     assert!(

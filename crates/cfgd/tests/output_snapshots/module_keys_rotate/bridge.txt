@@ -4,4 +4,4 @@ Rotate Cosign Key Pair
 ✓ Generated new key pair
 ✓ Re-signed oci.example.com/m:v1
 
-✓ Key rotation complete
+✓ Rotated key

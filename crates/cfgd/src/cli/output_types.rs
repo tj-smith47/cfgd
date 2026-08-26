@@ -579,6 +579,18 @@ pub struct SourceListEntry {
     /// Whether the fetched commit carried a signature cfgd accepts. `None` is
     /// "not known", never "unsigned".
     pub signed: Option<bool>,
+    /// Whether the subscription DEMANDS a signed HEAD. Distinct from `signed`,
+    /// which reports what the last fetch found: two sources with signed HEADs,
+    /// one demanding signatures and one not, are not the same subscription.
+    pub require_signed_commits: bool,
+    /// The commit the cached checkout is at, full length. The human table
+    /// shortens it through `short_commit`; the payload keeps the whole id,
+    /// which is the only form a machine consumer can match against a remote.
+    pub last_commit: Option<String>,
+    /// Unresolved drift attributed to this source, when the surface rendering
+    /// the row knows it. `None` is "not known" — `cfgd source list` reads
+    /// config and source state and never scans — and renders `-`.
+    pub drift_count: Option<u32>,
 }
 
 /// One `spec.backups[]` entry plus its last recorded run, for
@@ -1865,6 +1877,9 @@ mod tests {
             status: "synced".to_string(),
             last_fetched: Some("2026-01-01T00:00:00Z".to_string()),
             signed: Some(true),
+            require_signed_commits: true,
+            last_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            drift_count: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["name"], json!("main"));
@@ -1873,6 +1888,13 @@ mod tests {
         assert_eq!(json["version"], Value::Null);
         assert_eq!(json["status"], json!("synced"));
         assert_eq!(json["lastFetched"], json!("2026-01-01T00:00:00Z"));
+        assert_eq!(json["requireSignedCommits"], json!(true));
+        assert_eq!(
+            json["lastCommit"],
+            json!("0123456789abcdef0123456789abcdef01234567"),
+            "the payload keeps the full id; only the column shortens it"
+        );
+        assert_eq!(json["driftCount"], Value::Null);
     }
 
     #[test]

@@ -3980,3 +3980,93 @@ fn a_nested_in_transaction_call_panics_naming_the_rule() {
         "panic message must name the rule: {message}"
     );
 }
+
+/// An upsert refreshes its own timestamp. `module_state` bound `installed_at`
+/// only on INSERT, so `Last Applied` on `cfgd status` reported the moment the
+/// module was FIRST seen and never moved again, however many applies ran over
+/// it — a row that looks stale on a machine that is perfectly current.
+///
+/// A conflict target whose timestamp is genuinely a first-seen instant says so
+/// with a `// stamp-ok: <why>` marker on the SQL or the line above it.
+#[test]
+fn every_upsert_refreshes_its_own_timestamp() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/state");
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .expect("the state module is checked out")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .filter(|p| p.file_name().is_some_and(|n| n != "tests.rs"))
+        .collect();
+    files.sort();
+    let mut upserts = 0usize;
+    let mut offenders = Vec::new();
+    for path in files {
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let lines: Vec<&str> = body.lines().collect();
+        for (at, _) in body.match_indices("ON CONFLICT") {
+            upserts += 1;
+            // The SET list runs to the end of the SQL string literal.
+            let set = body[at..]
+                .split_once('"')
+                .map(|(head, _)| head)
+                .unwrap_or(&body[at..]);
+            let stamped = set.contains("_at =")
+                || set.contains("timestamp =")
+                || set.contains("last_applied =")
+                || set.contains("last_fetched =");
+            let n = body[..at].matches('\n').count();
+            let hatched = lines[n].contains("// stamp-ok:")
+                || n.checked_sub(1)
+                    .is_some_and(|p| lines[p].contains("// stamp-ok:"));
+            if !stamped && !hatched {
+                offenders.push(format!("{}:{}", path.display(), n + 1));
+            }
+        }
+    }
+    assert!(
+        upserts >= 8,
+        "the walk no longer reaches the state store's upserts — it found {upserts}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "an upsert refreshes the timestamp its own readers report, or says why \
+         the stamp is a first-seen instant with a `// stamp-ok:` marker:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A second apply re-stamps `installed_at`, which is what `Last Applied`
+/// reports. Back-dating the row and upserting again is the only way to observe
+/// it: the stamp has second resolution, so two upserts in one test tick are
+/// indistinguishable however many times they run.
+#[test]
+fn a_second_apply_advances_the_module_stamp() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_module_state("nvim", None, "pkgh", "fileh", None, "installed")
+        .unwrap();
+    store
+        .conn
+        .execute(
+            "UPDATE module_state SET installed_at = '2020-01-01T00:00:00Z' WHERE module_name = 'nvim'",
+            [],
+        )
+        .unwrap();
+
+    store
+        .upsert_module_state("nvim", None, "pkgh2", "fileh2", None, "installed")
+        .unwrap();
+
+    let record = store
+        .module_states()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.module_name == "nvim")
+        .expect("the module was upserted twice");
+    assert_ne!(
+        record.installed_at, "2020-01-01T00:00:00Z",
+        "the second apply must re-stamp the row, not leave the first-seen instant"
+    );
+}

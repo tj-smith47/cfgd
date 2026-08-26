@@ -74,7 +74,7 @@ fn empty_fixture() -> VerifyOutput {
 fn verify_ok_human() {
     let output = ok_fixture();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_verify_doc(&output));
+    printer.emit(build_verify_doc(&output, None));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "verify/ok.txt");
 }
@@ -83,7 +83,7 @@ fn verify_ok_human() {
 fn verify_ok_json() {
     let output = ok_fixture();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_verify_doc(&output));
+    printer.emit(build_verify_doc(&output, None));
     drop(printer);
 
     let expected = serde_json::to_value(&output).unwrap();
@@ -100,7 +100,7 @@ fn verify_ok_json() {
 fn verify_drift_human() {
     let output = drift_fixture();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_verify_doc(&output));
+    printer.emit(build_verify_doc(&output, None));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "verify/drift.txt");
 }
@@ -109,7 +109,7 @@ fn verify_drift_human() {
 fn verify_empty_human() {
     let output = empty_fixture();
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_verify_doc(&output));
+    printer.emit(build_verify_doc(&output, None));
     drop(printer);
     let human = cap.human();
     assert!(

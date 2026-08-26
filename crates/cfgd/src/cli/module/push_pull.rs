@@ -405,7 +405,7 @@ pub fn cmd_module_pull(
                     serde_json::json!({ "artifact": artifact_ref, "step": "signature" }),
                 )
             })?;
-            printer.status_simple(Role::Ok, "Signature verified");
+            printer.status_simple(Role::Ok, "Verified signature");
         }
 
         if verify_attestation {
@@ -418,7 +418,7 @@ pub fn cmd_module_pull(
                         serde_json::json!({ "artifact": artifact_ref, "step": "attestation" }),
                     )
                 })?;
-            printer.status_simple(Role::Ok, "SLSA provenance attestation verified");
+            printer.status_simple(Role::Ok, "Verified SLSA provenance attestation");
         }
 
         cfgd_core::oci::pull_module(

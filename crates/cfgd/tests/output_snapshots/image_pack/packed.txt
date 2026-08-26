@@ -2,4 +2,4 @@ Pack Image
   Directory  <DIR>
   Artifact   <REGISTRY>/test/image:v1
   ✓ Packed and pushed image
-  Digest  sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  Digest     sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

@@ -7,9 +7,11 @@ Local Repo
 
 Sources
   source:perm-team
-    ⚠ permission changes need approval
+    ⚠ Permission changes need approval
     Permission Changes
       - Locked items increased from 0 to 2
     ✓ Synced — commit: <COMMIT> → <COMMIT>
+
+✓ Synced — 1 source
 
 → Run `cfgd plan` to preview changes, then `cfgd apply`

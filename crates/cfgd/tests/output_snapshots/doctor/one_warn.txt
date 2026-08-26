@@ -32,4 +32,4 @@ System
 Sources
   ⚠ team-base: not cached (run `cfgd source update`)
 
-✓ All checks passed
+✓ Passed every check

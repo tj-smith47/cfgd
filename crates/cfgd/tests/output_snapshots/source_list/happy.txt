@@ -1,4 +1,4 @@
 Sources
-Name         Source                          Priority  Status   Last Sync  Signed
-─────────────────────────────────────────────────────────────────────────────────
-team-config  https://github.com/team/config  100       Unknown  never      -     
+Name         Source                          Priority  Status   Drift  Commit  Last Sync  Signed  Requires Signed
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+team-config  https://github.com/team/config  100       Unknown  -      -       never      -       no             

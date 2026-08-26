@@ -5,4 +5,4 @@ Rotate Cosign Key Pair
 
 → No artifacts specified — re-sign manually with: `cfgd module push --sign --key cosign.key ...`
 
-✓ Key rotation complete
+✓ Rotated key

@@ -262,7 +262,7 @@ pub fn cmd_backup_list(
         Ok(state) => Some(state),
         Err(e) => {
             printer
-                .status(Role::Warn, "backup history unavailable")
+                .status(Role::Warn, "Backup history unavailable")
                 .detail(cfgd_core::output::collapse_to_subject_line(&e));
             None
         }

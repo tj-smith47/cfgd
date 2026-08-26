@@ -32,20 +32,20 @@ missing from the table.
 | daemon_service               | no                | internal service registration; no scripting consumer |
 | daemon_status                | yes               | daemon health queried by scripts                   |
 | daemon_uninstall             | no                | one-shot teardown; no scripting consumer           |
-| debug                        | no                | kubectl plugin dev-tooling                         |
+| debug                        | yes               | ephemeral-container facts (pod, modules, image)    |
 | decide                       | yes               | pending-decision listing + resolution records      |
 | deploy                       | yes               | image-volume pin rewrites consumed by CI           |
 | diff                         | yes               | drift reporting                                    |
 | diff_module                  | yes               | per-module drift reporting                         |
 | doctor                       | no                | dev-tooling                                        |
 | enroll                       | yes               | machine identity exposed to gateway                |
-| exec                         | no                | kubectl plugin; raw command execution              |
+| exec                         | yes               | the pod and modules the command runs against       |
 | explain                      | no                | dev-tooling                                        |
 | generate                     | yes               | generated module metadata                          |
 | generate_scan_only           | yes               | scan results consumed by scripts                   |
 | image_pack                   | yes               | packed-image artifact + digest records             |
 | init                         | no                | one-shot setup; no scripting consumer              |
-| inject                       | no                | kubectl plugin; pod mutation                       |
+| inject                       | yes               | patch result records consumed by CI                |
 | log                          | no                | already a streaming log surface                    |
 | log_show_output              | no                | streaming log display helper                       |
 | machineconfig_validate       | yes               | validation result consumed by scripts/CI           |

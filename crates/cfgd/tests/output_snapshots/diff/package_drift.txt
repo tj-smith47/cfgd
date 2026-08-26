@@ -7,3 +7,5 @@ Packages
     ⚠ drift-mgr: not installed — drifted-pkg
 
 ⚠ Drift detected — 1 package (files, shell, system clean)
+
+→ Run `cfgd apply` to reconcile

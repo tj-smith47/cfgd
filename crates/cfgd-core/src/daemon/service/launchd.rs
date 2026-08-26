@@ -307,9 +307,9 @@ pub(crate) fn stop_launchd_service(printer: &Printer, scope: crate::Scope) {
             .status(Role::Warn, "launchctl not found")
             .detail("plist removed but daemon may still be running");
         let hint = if scope == crate::Scope::System {
-            "Stop it later with: launchctl bootout system /Library/LaunchDaemons/com.cfgd.daemon.plist".to_string()
+            "Stop it later with `launchctl bootout system /Library/LaunchDaemons/com.cfgd.daemon.plist`".to_string()
         } else {
-            "Stop it later from a GUI login session with: launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.cfgd.daemon.plist".to_string()
+            "Stop it later from a GUI login session with `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.cfgd.daemon.plist`".to_string()
         };
         printer.hint(hint);
         return;

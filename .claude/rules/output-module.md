@@ -78,6 +78,20 @@ Three conventions about the SHAPE of a settled row, each with a walk-the-populat
 
 Both snapshot normalizers know the floor's spelling (`util/paths.rs::duration_span`, `output/test_capture.rs::strip_spinner_duration`), so a golden stays host-stable across it.
 
+## Rules every key/value block and shared table obeys
+
+| Rule | Shape | Pin |
+|---|---|---|
+| **One key column per section**, whatever else the section printed between the blocks | a section opening `Directory` / `Artifact`, printing a status row, then writing `Digest` pads the second block to the column the reader is already scanning. The width is carried on the open `SectionFrame` (`kv_key_col`) rather than computed at close, for the same reason `live_column` is: the rows in between are already on the terminal, and a live section cannot wait to learn its own width | `a_section_keeps_one_key_column_across_everything_it_prints` (`output/renderer/kv.rs`) |
+| A **kv value never hand-builds the annotation slot** | `KvPair::annotated(key, value, note)` owns the muted `value (note)` — never `KvPair::new("Source", "remote (locked)")`, which paints the note in the value's colour and hides it from anything reading the value | `no_kv_value_hand_builds_the_annotation_slot` (`crates/cfgd/src/cli/tests.rs`); table cells and status details are out of class and named in its doc |
+| Every surface listing config sources renders **the one `Sources` table** | `source list`, `status` and `daemon status` all build through `source::list::sources_table` under `SOURCES_SECTION`, so no two of them name the same source with different columns. A surface holding live facts merges them OVER a `configured_source_entries` row instead of building a narrower table | `both_sources_surfaces_render_through_the_one_table_builder` (`crates/cfgd/src/cli/tests.rs`) |
+
+## The reconcile loop has no printer to report to
+
+A daemon under systemd/launchd is read through its journal, so the loop's own account of itself — startup, each tick's outcome, shutdown — goes to `tracing` and NOTHING to the `Printer`. A printed duplicate is a second copy of the same sentence on the stream the live region repaints.
+
+`daemon/service/` is the exception at any depth: install and uninstall are one-shot commands run by somebody watching a terminal, so those DO report through the printer. `every_daemon_info_event_names_its_subsystem` (`output/tests/fences.rs`) walks the loop's own files and fails on a `heading` / `status_simple` / `status` / `status_with` call outside `service/`.
+
 ## Sanitizing text cfgd did not author
 
 `cursor_safe` (`output/mod.rs`) is the ONE renderer FOLD, and it covers every slot above that carries caller text. **A call site echoing a gateway field, a remote source's description or a tool's captured stderr through one of those slots does NOT sanitize it by hand.**

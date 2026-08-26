@@ -147,7 +147,10 @@ pub fn cmd_checkin(
     // cannot repaint the line describing it. The `-o json` payload below
     // carries the response verbatim; the fold is display-only.
     printer.kv("Server Status", &resp.status);
-    printer.kv("Config Changed", resp.config_changed.to_string());
+    printer.kv(
+        "Config Changed",
+        cfgd_core::yes_no(Some(resp.config_changed)),
+    );
 
     if let Some(ref desired) = resp.desired_config {
         printer.status_simple(Role::Warn, "Server pushed desired config");

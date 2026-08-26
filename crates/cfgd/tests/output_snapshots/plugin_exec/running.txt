@@ -1,0 +1,5 @@
+◉ Executing in demo/app with modules
+
+Modules      nettools:v1
+Mount Path   /cfgd-modules/nettools
+Path Prefix  /cfgd-modules/nettools/bin

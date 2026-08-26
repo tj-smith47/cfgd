@@ -442,6 +442,24 @@ fn per_module_clean_scanned_output() -> ModuleStatus {
     output
 }
 
+/// The declared catalog `cfgd status` renders its `Sources` table from — the
+/// same shape `cfgd source list` and `cfgd daemon status` build, so all three
+/// goldens pin one column set.
+fn declared_sources() -> Vec<cfgd::cli::output_types::SourceListEntry> {
+    vec![cfgd::cli::output_types::SourceListEntry {
+        name: "team-config".into(),
+        url: "https://github.com/team/config".into(),
+        priority: 100,
+        version: Some("3.1.0".into()),
+        status: cfgd_core::state::SOURCE_STATUS_ACTIVE.into(),
+        last_fetched: Some("2026-05-14T09:00:00Z".into()),
+        signed: Some(true),
+        require_signed_commits: true,
+        last_commit: Some("abc1234567890def".into()),
+        drift_count: None,
+    }]
+}
+
 #[test]
 fn status_clean_human() {
     let output = clean_output();
@@ -483,7 +501,7 @@ fn status_clean_json() {
 #[test]
 fn status_drift_human() {
     let output = drift_output();
-    let sources = vec!["team-config".to_string()];
+    let sources = declared_sources();
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_fleet_status_doc(
         &output,
@@ -500,7 +518,7 @@ fn status_drift_human() {
 #[test]
 fn status_drift_json() {
     let output = drift_output();
-    let sources = vec!["team-config".to_string()];
+    let sources = declared_sources();
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_fleet_status_doc(
         &output,

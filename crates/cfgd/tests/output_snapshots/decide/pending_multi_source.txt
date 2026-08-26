@@ -6,5 +6,4 @@ Pending Decisions (3 items)
   source:team-config
     ◉ Recommended packages.brew.curl
 
-→ Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer
-→ Run `cfgd decide accept --all` or `cfgd decide accept --source <name>` for bulk operations
+→ Run `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to answer; `cfgd decide accept --all` answers every item

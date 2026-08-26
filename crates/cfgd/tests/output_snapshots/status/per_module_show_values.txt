@@ -11,12 +11,12 @@ Deployed Files
   ✗ /home/user/.gitconfig            — missing
   ⚠ /home/user/.zshrc                — content differs
 
-Env
-  ✓ EDITOR=nvim
-  ✓ PAGER=less -R
-
-Aliases
-  ✓ gs=git status --short
+Shell
+  Env
+    ✓ EDITOR=nvim
+    ✓ PAGER=less -R
+  Aliases
+    ✓ gs=git status --short
 
 Scripts
   ✓ preApply: set -euo pipefail

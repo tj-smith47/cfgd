@@ -19,6 +19,7 @@ pub fn cmd_profile_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Res
             Err(e) => {
                 let msg = e.to_string();
                 printer.status_simple(
+                    // no-next-step: the prompt below IS the next step
                     Role::Fail,
                     format!("Profile '{}' has errors: {}", name, msg),
                 );
@@ -33,6 +34,7 @@ pub fn cmd_profile_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Res
 
     let doc = if valid {
         Doc::new()
+            // verdict-row-ok: a validation verdict, not an act cfgd performed
             .status(Role::Ok, format!("Profile '{}' is valid", name))
             .with_data(serde_json::json!({
                 "name": name,

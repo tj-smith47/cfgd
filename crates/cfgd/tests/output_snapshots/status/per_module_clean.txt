@@ -3,8 +3,9 @@ Status: dev-tools
   Last Applied  5m ago
   Packages      2
   Files         12
-  Env           2
-  Aliases       1
+  Shell         3
+    Env         2
+    Aliases     1
   Scripts       3
     preApply    1
     postApply   2

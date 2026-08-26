@@ -5,4 +5,4 @@ Phase: Files
   ✓ 1 file processed
   ✓ 1 file restored from backup
 
-✓ Rollback complete
+✓ Rolled back

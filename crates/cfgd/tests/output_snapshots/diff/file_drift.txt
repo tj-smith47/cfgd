@@ -8,3 +8,5 @@ Files
     hello world
 
 ⚠ Drift detected — 1 file (packages, shell, system clean)
+
+→ Run `cfgd apply` to reconcile

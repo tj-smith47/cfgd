@@ -1565,7 +1565,7 @@ fn source_update_all_failed_exits_1() {
     // The source is named ONCE, by the owner heading the failure rows hang
     // under; the row itself carries the cause the git layer reported.
     assert!(
-        out.contains("source:my-source") && out.contains("update failed —"),
+        out.contains("source:my-source") && out.contains("Update failed —"),
         "stderr must name the failed source and its cause, got:\n{out}"
     );
 }

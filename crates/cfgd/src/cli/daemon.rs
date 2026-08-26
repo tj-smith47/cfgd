@@ -1,6 +1,5 @@
 use super::source::list::last_sync_display;
 use super::*;
-use cfgd_core::output::renderer::Table;
 use cfgd_core::output::{Doc, Printer, Role};
 use serde::Serialize;
 
@@ -102,11 +101,30 @@ pub fn cmd_daemon_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 ));
             }
         };
+    // The daemon reports which sources it is tracking and how each is doing;
+    // the config and the state store hold everything else the shared `Sources`
+    // table shows. A machine with no readable config still renders the table —
+    // the daemon's own rows, with the config-side columns reading `-`.
+    let catalog = configured_source_catalog(cli);
     printer.emit(build_daemon_status_doc(
         status.as_ref(),
+        &catalog,
         &cfgd_core::utc_now_iso8601(),
     ));
     Ok(())
+}
+
+/// The `spec.sources[]` rows this machine declares, for the columns the daemon
+/// does not report. Empty when the config or the state store cannot be read:
+/// the daemon's status is still worth printing without them.
+fn configured_source_catalog(cli: &Cli) -> Vec<SourceListEntry> {
+    let Ok(cfg) = config::load_config(&cli.config) else {
+        return Vec::new();
+    };
+    let Ok(state) = open_state_store(cli.state_dir.as_deref(), cli.scope()) else {
+        return Vec::new();
+    };
+    super::source::list::configured_source_entries(&cfg, &state)
 }
 
 fn placeholder_status() -> cfgd_core::daemon::DaemonStatusResponse {
@@ -130,18 +148,32 @@ fn placeholder_status() -> cfgd_core::daemon::DaemonStatusResponse {
 ///
 /// `now` is a parameter rather than a clock read, so every stamp this render
 /// ages against is the caller's one instant and a captured render pins.
+///
+/// `catalog` supplies the `Sources` columns the daemon does not report (the
+/// origin, the priority, the checked-out commit, the signature demand), matched
+/// to the daemon's own rows by name. A running daemon tracks exactly the
+/// `spec.sources[]` it started with, so a row with no match is one the config
+/// lost since then: it keeps the daemon's live facts and reads `-` for the rest
+/// rather than disappearing from a dashboard that is reporting on it.
 pub fn build_daemon_status_doc(
     status: Option<&cfgd_core::daemon::DaemonStatusResponse>,
+    catalog: &[SourceListEntry],
     now: &str,
 ) -> Doc {
     let mut doc = Doc::new().heading("Daemon Status");
 
     match status {
         Some(s) => {
+            // verdict-row-ok: reports the service's state, not something this run did
             doc = doc.status(Role::Ok, "Daemon running");
             let mut rows = vec![
                 ("PID".to_string(), s.pid.to_string()),
-                ("Uptime".to_string(), format!("{}s", s.uptime_secs)),
+                // A measured duration, not a declared one: the intervals below
+                // are the operator's own literals and stay verbatim.
+                (
+                    "Uptime".to_string(),
+                    cfgd_core::humanize_duration_secs(s.uptime_secs),
+                ),
             ];
             // Omitted rather than guessed when the daemon did not report them:
             // the loop's cadence is whatever it reloaded last, and this command
@@ -178,22 +210,15 @@ pub fn build_daemon_status_doc(
                 );
             }
 
+            let rows: Vec<SourceListEntry> = s
+                .sources
+                .iter()
+                .map(|src| daemon_source_row(src, catalog))
+                .collect();
             doc = doc.section_if_nonempty(
                 super::source::list::SOURCES_SECTION,
-                &s.sources,
-                |sec, sources| {
-                    let mut table = Table::new(["Name", "Status", "Drift", "Last Sync"]);
-                    for src in sources {
-                        let (status, role) = cfgd_core::state::source_status_display(&src.status);
-                        table = table.row_styled([
-                            (src.name.clone(), None),
-                            (status.to_string(), Some(role)),
-                            (src.drift_count.to_string(), None),
-                            (last_sync_display(src.last_sync.as_deref(), now), None),
-                        ]);
-                    }
-                    sec.table(table)
-                },
+                &rows,
+                |sec, rows| sec.table(super::source::list::sources_table(rows, false, now)),
             );
             doc.with_data(s)
         }
@@ -204,6 +229,29 @@ pub fn build_daemon_status_doc(
                 .status(Role::Info, "Install as service: `cfgd daemon install`")
                 .with_data(&placeholder)
         }
+    }
+}
+
+/// One daemon-reported source as a `Sources` row: the daemon's live facts
+/// (status, drift, last sync) over the declared entry of the same name.
+fn daemon_source_row(
+    src: &cfgd_core::daemon::SourceStatus,
+    catalog: &[SourceListEntry],
+) -> SourceListEntry {
+    let declared = catalog.iter().find(|e| e.name == src.name);
+    SourceListEntry {
+        name: src.name.clone(),
+        url: declared
+            .map(|e| e.url.clone())
+            .unwrap_or_else(|| "-".into()),
+        priority: declared.map_or(0, |e| e.priority),
+        version: declared.and_then(|e| e.version.clone()),
+        status: src.status.clone(),
+        last_fetched: src.last_sync.clone(),
+        signed: declared.and_then(|e| e.signed),
+        require_signed_commits: declared.is_some_and(|e| e.require_signed_commits),
+        last_commit: declared.and_then(|e| e.last_commit.clone()),
+        drift_count: Some(src.drift_count),
     }
 }
 
@@ -223,8 +271,8 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
     let scope = cli.scope();
 
     if scope == cfgd_core::Scope::System && !cfgd_core::is_root() {
-        printer.status_simple(Role::Fail, "system-scope install requires root privileges");
-        printer.hint("Re-run with sudo: sudo cfgd --scope system daemon install");
+        printer.status_simple(Role::Fail, "System-scope install requires root privileges");
+        printer.hint("Re-run with `sudo cfgd --scope system daemon install`");
         return Err(anyhow::anyhow!(
             "insufficient privileges for system-scope install"
         ));
@@ -324,7 +372,7 @@ pub fn build_daemon_install_doc(payload: &DaemonInstallOutput) -> Doc {
                     )
                     .status(
                         Role::Info,
-                        "Start it with: sc start cfgd  (it is also set to auto-start on boot)",
+                        "Start it with `sc start cfgd` — it is also set to auto-start on boot",
                     );
             }
             doc = doc
@@ -349,7 +397,7 @@ pub fn build_daemon_install_doc(payload: &DaemonInstallOutput) -> Doc {
             if !payload.started {
                 doc = doc.status(
                     Role::Info,
-                    format!("Load with: launchctl load {}", payload.path),
+                    format!("Load with `launchctl load {}`", payload.path),
                 );
             }
         }
@@ -361,7 +409,7 @@ pub fn build_daemon_install_doc(payload: &DaemonInstallOutput) -> Doc {
                 doc = doc.status(
                     Role::Info,
                     format!(
-                        "Enable with: systemctl --user enable --now {}",
+                        "Enable with `systemctl --user enable --now {}`",
                         payload.service
                     ),
                 );
@@ -385,9 +433,9 @@ pub(super) fn cmd_daemon_uninstall(cli: &Cli, printer: &Printer) -> anyhow::Resu
     if scope == cfgd_core::Scope::System && !cfgd_core::is_root() {
         printer.status_simple(
             Role::Fail,
-            "system-scope uninstall requires root privileges",
+            "System-scope uninstall requires root privileges",
         );
-        printer.hint("Re-run with sudo: sudo cfgd --scope system daemon uninstall");
+        printer.hint("Re-run with `sudo cfgd --scope system daemon uninstall`");
         return Err(anyhow::anyhow!(
             "insufficient privileges for system-scope uninstall"
         ));
@@ -610,7 +658,7 @@ mod tests {
     #[test]
     fn build_daemon_status_doc_none_contains_not_running() {
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(None, DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(None, &[], DAEMON_STATUS_NOW);
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -622,7 +670,7 @@ mod tests {
     #[test]
     fn build_daemon_status_doc_none_json_payload() {
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(None, DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(None, &[], DAEMON_STATUS_NOW);
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["running"], false);
@@ -633,7 +681,7 @@ mod tests {
     fn build_daemon_status_doc_some_contains_pid() {
         let status = make_status(true);
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(Some(&status), &[], DAEMON_STATUS_NOW);
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -646,7 +694,7 @@ mod tests {
     fn build_daemon_status_doc_some_json_payload() {
         let status = make_status(true);
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(Some(&status), &[], DAEMON_STATUS_NOW);
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["running"], true);
@@ -660,7 +708,11 @@ mod tests {
         status.reconcile_interval_secs = Some(300);
         status.sync_interval_secs = Some(900);
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW));
+        printer.emit(build_daemon_status_doc(
+            Some(&status),
+            &[],
+            DAEMON_STATUS_NOW,
+        ));
         let human = cap.human();
         assert!(
             human.contains("Reconcile Interval") && human.contains("300s"),
@@ -676,7 +728,11 @@ mod tests {
     fn build_daemon_status_doc_omits_intervals_the_daemon_did_not_report() {
         let status = make_status(true);
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW));
+        printer.emit(build_daemon_status_doc(
+            Some(&status),
+            &[],
+            DAEMON_STATUS_NOW,
+        ));
         let human = cap.human();
         assert!(
             !human.contains("Reconcile Interval") && !human.contains("Sync Interval"),
@@ -689,7 +745,7 @@ mod tests {
         let mut status = make_status(true);
         status.update_available = Some("v1.2.3".to_string());
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(Some(&status), &[], DAEMON_STATUS_NOW);
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -1043,7 +1099,7 @@ mod tests {
             },
         ];
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(Some(&status), &[], DAEMON_STATUS_NOW);
         printer.emit(doc);
         let human = cap.human();
         assert!(human.contains("infra"), "infra source must appear: {human}");
@@ -1061,7 +1117,7 @@ mod tests {
         let mut status = make_status(true);
         status.last_reconcile = Some("2026-05-14T10:00:00Z".into());
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW);
+        let doc = build_daemon_status_doc(Some(&status), &[], DAEMON_STATUS_NOW);
         printer.emit(doc);
         let human = cap.human();
         let age = cfgd_core::humanize_age_since("2026-05-14T10:00:00Z", DAEMON_STATUS_NOW)
@@ -1084,7 +1140,11 @@ mod tests {
             status: "Active".into(),
         }];
         let (printer, cap) = Printer::for_test_doc();
-        printer.emit(build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW));
+        printer.emit(build_daemon_status_doc(
+            Some(&status),
+            &[],
+            DAEMON_STATUS_NOW,
+        ));
         let human = cap.human();
         assert_eq!(
             human.matches("Last Sync").count(),

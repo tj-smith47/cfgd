@@ -361,14 +361,10 @@ pub fn build_decide_list_doc(
     }
 
     warn_lines(
-        Doc::new().section(
-            reconciler::pending_decisions_title(decisions.len()),
-            |s| build_pending_decisions_table_section(s, decisions, contents),
-        ),
+        Doc::new().section(reconciler::pending_decisions_title(decisions.len()), |s| {
+            build_pending_decisions_table_section(s, decisions, contents)
+        }),
     )
-    .hint(reconciler::MSG_ANSWER_DECISIONS)
-    .hint(
-        "Run `cfgd decide accept --all` or `cfgd decide accept --source <name>` for bulk operations",
-    )
+    .hint(reconciler::answer_decisions_hint(decisions.len()))
     .with_data(payload)
 }

@@ -18,10 +18,10 @@ Profiles
       brew formulae  ripgrep
 
 Policy
-  Require Signed Commits  false
-  Scripts Allowed         false
-  Secrets Read Allowed    false
-  System Changes Allowed  false
+  Require Signed Commits  no
+  Scripts Allowed         no
+  Secrets Read Allowed    no
+  System Changes Allowed  no
 
 ✓ No conflicts with current config
 

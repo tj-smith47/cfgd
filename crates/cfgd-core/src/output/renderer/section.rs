@@ -56,6 +56,14 @@ pub(crate) struct SectionFrame {
     /// of buffering to close. A live stream cannot wait for a close to learn
     /// its own width, so the width is computed before the run and handed in.
     pub live_column: Option<usize>,
+    /// The key column every kv block written directly inside this section pads
+    /// to, and the depth it was measured at. A section that prints its header
+    /// facts, does its work, then prints the result rendered two key columns
+    /// one under the other — the second block measured only itself, so a
+    /// shorter key sat left of the rows above it. The width is remembered
+    /// rather than computed at close for the same reason `live_column` is:
+    /// the rows in between are already on the terminal.
+    pub kv_key_col: Option<(usize, usize)>,
 }
 
 impl Renderer {
@@ -90,6 +98,7 @@ impl Renderer {
             header_emitted: false,
             pending_statuses: Vec::new(),
             live_column: None,
+            kv_key_col: None,
         });
         s.indent_depth += 1;
     }

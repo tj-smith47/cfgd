@@ -588,11 +588,11 @@ pub(super) fn recorded_scope_row(recorded: &str) -> Option<(&'static str, &str)>
 const SCAN_STALENESS_SECS: i64 = cfgd_core::daemon::DEFAULT_RECONCILE_SECS as i64;
 
 /// Build the fleet-wide `cfgd status` Doc. Caller supplies the precomputed
-/// payload and the configured `SourceSpec` list so the renderer can show
-/// "not yet fetched" rows for sources without state records.
+/// payload and the declared source catalog, which carries the columns the
+/// status payload does not (priority, origin, signing demand).
 pub fn build_fleet_status_doc(
     output: &StatusOutput,
-    configured_sources: &[String],
+    configured_sources: &[SourceListEntry],
     config_path: &Path,
     profile_name: &str,
     now: &str,
@@ -661,33 +661,11 @@ pub fn build_fleet_status_doc(
 
     if !configured_sources.is_empty() {
         doc = doc.section(super::source::list::SOURCES_SECTION, |s| {
-            if output.sources.is_empty() {
-                configured_sources
-                    .iter()
-                    .fold(s, |s, name| s.kv(name, "not yet fetched"))
-            } else {
-                let mut t = Table::new(["Source", "Status", "Version", "Last Sync", "Signed"]);
-                for rec in &output.sources {
-                    let (status, role) = cfgd_core::state::source_status_display(&rec.status);
-                    t = t.row_styled([
-                        (rec.name.clone(), None),
-                        (status.to_string(), Some(role)),
-                        (
-                            rec.source_version.clone().unwrap_or_else(|| "-".into()),
-                            None,
-                        ),
-                        (
-                            super::source::list::last_sync_display(
-                                rec.last_fetched.as_deref(),
-                                now,
-                            ),
-                            None,
-                        ),
-                        (cfgd_core::yes_no(rec.last_commit_signed).to_string(), None),
-                    ]);
-                }
-                s.table(t)
-            }
+            s.table(super::source::list::sources_table(
+                configured_sources,
+                false,
+                now,
+            ))
         });
     }
 
@@ -697,7 +675,9 @@ pub fn build_fleet_status_doc(
         |s, rows| super::build_pending_decisions_table_section(s, rows, decision_contents),
     );
     if !output.pending_decisions.is_empty() {
-        doc = doc.hint(cfgd_core::reconciler::MSG_ANSWER_DECISIONS);
+        doc = doc.hint(cfgd_core::reconciler::answer_decisions_hint(
+            output.pending_decisions.len(),
+        ));
     }
 
     // Rendered beside the pending rows those batches would otherwise be:
@@ -743,7 +723,11 @@ pub fn build_fleet_status_doc(
         },
     );
 
-    if stale {
+    // A report that FOUND drift owes the reader the command that heals it, and
+    // that outranks the invitation to look again: the looking has been done.
+    if !output.drift.is_empty() && output.drift_checked_live {
+        doc = doc.hint(super::heal_drift_hint(None));
+    } else if stale {
         doc = doc.hint(SCAN_HINT);
     }
 
@@ -1048,11 +1032,21 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
     if view == ModuleStatusView::Compact {
         rows.push(KvPair::new("Packages", output.packages.to_string()));
         rows.push(KvPair::new("Files", output.files.to_string()));
-        if output.env > 0 {
-            rows.push(KvPair::new("Env", output.env.to_string()));
-        }
-        if output.aliases > 0 {
-            rows.push(KvPair::new("Aliases", output.aliases.to_string()));
+        // `Env` and `Aliases` are the two halves of the shell surface `diff`
+        // reports under `Shell` and the drift engine records as the `shell`
+        // kind, so the dashboard names them the same way: a total with the
+        // halves nested under it, the shape `Scripts` already uses.
+        if output.env > 0 || output.aliases > 0 {
+            rows.push(KvPair::new(
+                "Shell",
+                (output.env + output.aliases).to_string(),
+            ));
+            if output.env > 0 {
+                rows.push(KvPair::nested("Env", output.env.to_string()));
+            }
+            if output.aliases > 0 {
+                rows.push(KvPair::nested("Aliases", output.aliases.to_string()));
+            }
         }
         // A total with one row per declaring hook beneath it: a single-line
         // summary reads as the one hook that declares most and hides the rest.
@@ -1087,10 +1081,14 @@ pub fn build_module_status_doc(output: &ModuleStatus, view: ModuleStatusView, no
             // recorded, and the ONE hint about checking the machine closes the
             // report. This surface holds no scan timestamp, so "unchecked" is
             // the whole of its staleness.
-            if output.drift_checked_live {
+            if !output.drift_checked_live {
+                doc.hint(SCAN_HINT)
+            } else if output.drift.is_empty() {
                 doc
             } else {
-                doc.hint(SCAN_HINT)
+                // The scan found drift, so the report closes on the command
+                // that heals it, scoped to the module the report is about.
+                doc.hint(super::heal_drift_hint(Some(&output.name)))
             }
         }
         // No Drift section: every finding is already an inline verdict on the
@@ -1187,31 +1185,37 @@ fn render_module_inventories(doc: Doc, output: &ModuleStatus, show_values: bool)
         })
     });
 
-    doc = doc.section_if_nonempty("Env", &output.declared.env, |s, env| {
-        let mut sorted: Vec<&cfgd_core::config::EnvVar> = env.iter().collect();
-        sorted.sort_by(|a, b| a.name.cmp(&b.name));
-        sorted.into_iter().fold(s, |s, ev| {
-            let subject = if show_values {
-                format!("{}={}", ev.name, ev.value)
-            } else {
-                ev.name.clone()
-            };
-            s.status(Role::Ok, subject)
-        })
-    });
-
-    doc = doc.section_if_nonempty("Aliases", &output.declared.aliases, |s, aliases| {
-        let mut sorted: Vec<&cfgd_core::config::ShellAlias> = aliases.iter().collect();
-        sorted.sort_by(|a, b| a.name.cmp(&b.name));
-        sorted.into_iter().fold(s, |s, alias| {
-            let subject = if show_values {
-                format!("{}={}", alias.name, alias.command)
-            } else {
-                alias.name.clone()
-            };
-            s.status(Role::Ok, subject)
-        })
-    });
+    // The same grouping the compact header uses, and the one `diff` reports
+    // under: env vars and aliases are two halves of one surface, and listing
+    // them as siblings of `Files` said they were two.
+    if !output.declared.env.is_empty() || !output.declared.aliases.is_empty() {
+        doc = doc.section("Shell", |s| {
+            let s = s.subsection_if_nonempty("Env", &output.declared.env, |s, env| {
+                let mut sorted: Vec<&cfgd_core::config::EnvVar> = env.iter().collect();
+                sorted.sort_by(|a, b| a.name.cmp(&b.name));
+                sorted.into_iter().fold(s, |s, ev| {
+                    let subject = if show_values {
+                        format!("{}={}", ev.name, ev.value)
+                    } else {
+                        ev.name.clone()
+                    };
+                    s.status(Role::Ok, subject)
+                })
+            });
+            s.subsection_if_nonempty("Aliases", &output.declared.aliases, |s, aliases| {
+                let mut sorted: Vec<&cfgd_core::config::ShellAlias> = aliases.iter().collect();
+                sorted.sort_by(|a, b| a.name.cmp(&b.name));
+                sorted.into_iter().fold(s, |s, alias| {
+                    let subject = if show_values {
+                        format!("{}={}", alias.name, alias.command)
+                    } else {
+                        alias.name.clone()
+                    };
+                    s.status(Role::Ok, subject)
+                })
+            })
+        });
+    }
 
     // Execution order, never alphabetical: the order is the fact — a
     // `postApply` that runs after a `preApply` is the only thing the list says
@@ -1427,8 +1431,10 @@ pub(super) fn cmd_status(
         })
         .collect();
 
-    let configured_source_names: Vec<String> =
-        cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
+    // The declared catalog, not just the names: the shared `Sources` table
+    // carries columns (origin, priority, signing demand) the status payload
+    // never held.
+    let configured_sources = super::source::list::configured_source_entries(cfg, state);
 
     let mut output = StatusOutput {
         last_apply,
@@ -1554,7 +1560,7 @@ pub(super) fn cmd_status(
     );
     printer.emit(build_fleet_status_doc(
         &output,
-        &configured_source_names,
+        &configured_sources,
         &cli.config,
         profile_name,
         &cfgd_core::utc_now_iso8601(),
@@ -2774,8 +2780,9 @@ mod tests {
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
-            out.contains("\nEnv\n") && out.contains("EDITOR=nvim"),
-            "--show-values must itemize env and show the declared value: {out}"
+            out.contains("\nShell\n") && out.contains("\n  Env\n") && out.contains("EDITOR=nvim"),
+            "--show-values must itemize env under Shell and show the declared \
+             value: {out}"
         );
     }
 

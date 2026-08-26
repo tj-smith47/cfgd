@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use cfgd_core::output::{Doc, Printer, Role, Verbosity};
+use cfgd_core::output::{Doc, KvPair, Printer, Role, Verbosity};
 
 use crate::cli::{ColorWhen, OutputFormatArg};
 
@@ -222,9 +222,34 @@ fn build_volume_mount(name: &str) -> serde_json::Value {
     let safe = cfgd_core::sanitize_k8s_name(name);
     serde_json::json!({
         "name": format!("cfgd-module-{safe}"),
-        "mountPath": format!("/cfgd-modules/{name}"),
+        "mountPath": module_mount_dir(name),
         "readOnly": true
     })
+}
+
+/// Where a module is mounted inside the target container. The `bin/`
+/// directory under it is what goes on `PATH`, so a caller composing the PATH
+/// prefix appends `/bin` here rather than spelling the root a second time:
+/// `debug` writes the mount into the pod patch while `exec` writes it into an
+/// `export PATH=`, and a byte of divergence puts a module on a path nothing
+/// mounted.
+fn module_mount_dir(name: &str) -> String {
+    format!("/cfgd-modules/{name}")
+}
+
+/// The mount roots and the `PATH` prefix for the modules a caller named, in
+/// the order they named them.
+fn module_mounts(parsed: &[(&str, &str)]) -> (Vec<String>, String) {
+    let dirs: Vec<String> = parsed
+        .iter()
+        .map(|(name, _)| module_mount_dir(name))
+        .collect();
+    let path_prefix = dirs
+        .iter()
+        .map(|dir| format!("{dir}/bin"))
+        .collect::<Vec<_>>()
+        .join(":");
+    (dirs, path_prefix)
 }
 
 /// The ephemeral container `kubectl cfgd debug` adds to the pod: an
@@ -239,15 +264,11 @@ fn build_volume_mount(name: &str) -> serde_json::Value {
 /// over themselves, while busybox `ash` drops the markers and draws no
 /// brackets at all.
 fn debug_ephemeral_container(parsed: &[(&str, &str)], image: &str) -> serde_json::Value {
-    let mut volume_mounts = Vec::new();
-    let mut path_extensions = Vec::new();
-
-    for (name, _version) in parsed {
-        volume_mounts.push(build_volume_mount(name));
-        path_extensions.push(format!("/cfgd-modules/{name}/bin"));
-    }
-
-    let path_prefix = path_extensions.join(":");
+    let volume_mounts: Vec<_> = parsed
+        .iter()
+        .map(|(name, _version)| build_volume_mount(name))
+        .collect();
+    let (_, path_prefix) = module_mounts(parsed);
     let module_names: Vec<_> = parsed.iter().map(|(n, v)| format!("{n}:{v}")).collect();
     let ps1 = format!("[cfgd:{}] \\w $ ", module_names.join(","));
 
@@ -428,6 +449,7 @@ pub(crate) async fn cmd_debug_async(
     let pods: kube::Api<k8s_openapi::api::core::v1::Pod> = kube::Api::namespaced(client, namespace);
 
     let module_names: Vec<_> = parsed.iter().map(|(n, v)| format!("{n}:{v}")).collect();
+    let (mount_dirs, path_prefix) = module_mounts(parsed);
     let ec = debug_ephemeral_container(parsed, image);
 
     let patch = serde_json::json!({
@@ -451,26 +473,50 @@ pub(crate) async fn cmd_debug_async(
         )
     })?;
 
-    printer.emit(
-        Doc::new()
-            .status(
-                Role::Ok,
-                format!("Ephemeral debug container created on pod {namespace}/{pod}"),
-            )
-            .kv("Modules", module_names.join(", "))
-            .hint(format!(
-                "Attach with: kubectl attach -n {namespace} {pod} -c cfgd-debug -it"
-            ))
-            .with_data(serde_json::json!({
-                "namespace": namespace,
-                "pod": pod,
-                "modules": &module_names,
-                "image": image,
-                "verified": true,
-            })),
-    );
+    printer.emit(build_debug_doc(
+        namespace,
+        pod,
+        &module_names,
+        image,
+        &mount_dirs,
+        &path_prefix,
+    ));
 
     Ok(())
+}
+
+/// The render `kubectl cfgd debug` settles on: what was created, and the three
+/// facts a reader needs to use it — which modules went in, where they landed,
+/// and what the container's `PATH` now leads with.
+pub fn build_debug_doc(
+    namespace: &str,
+    pod: &str,
+    module_names: &[String],
+    image: &str,
+    mount_dirs: &[String],
+    path_prefix: &str,
+) -> Doc {
+    Doc::new()
+        .status(
+            Role::Ok,
+            format!("Created ephemeral debug container on pod {namespace}/{pod}"),
+        )
+        .kv_block([
+            ("Modules", module_names.join(", ")),
+            ("Mount Path", mount_dirs.join(", ")),
+            ("Path Prefix", path_prefix.to_string()),
+        ])
+        .hint(format!(
+            "Attach with `kubectl attach -n {namespace} {pod} -c cfgd-debug -it`"
+        ))
+        .with_data(serde_json::json!({
+            "namespace": namespace,
+            "pod": pod,
+            "modules": module_names,
+            "image": image,
+            "mountPath": mount_dirs,
+            "pathPrefix": path_prefix,
+        }))
 }
 
 pub fn cmd_exec(
@@ -502,11 +548,7 @@ pub fn cmd_exec(
         .map(|m| parse_module_arg(m))
         .collect::<Result<_, _>>()?;
 
-    let path_extensions: Vec<_> = parsed
-        .iter()
-        .map(|(name, _)| format!("/cfgd-modules/{name}/bin"))
-        .collect();
-    let path_prefix = path_extensions.join(":");
+    let (mount_dirs, path_prefix) = module_mounts(&parsed);
 
     // Wrap in sh -c so $PATH is expanded by the container's shell
     let inner_cmd = command
@@ -528,26 +570,51 @@ pub fn cmd_exec(
 
     let module_names: Vec<String> = parsed.iter().map(|(n, v)| format!("{n}:{v}")).collect();
 
-    printer.emit(
-        Doc::new()
-            .status(
-                Role::Info,
-                format!("Executing in {namespace}/{pod} with modules"),
-            )
-            .kv("Modules", module_names.join(", "))
-            .with_data(serde_json::json!({
-                "namespace": namespace,
-                "pod": pod,
-                "modules": &module_names,
-                "command": command,
-            })),
-    );
+    printer.emit(build_exec_doc(
+        namespace,
+        pod,
+        &module_names,
+        command,
+        &mount_dirs,
+        &path_prefix,
+    ));
 
     let code = super::kubectl::run_argv_inherit(&exec_args)?;
     if code != 0 {
         std::process::exit(code);
     }
     Ok(())
+}
+
+/// The render `kubectl cfgd exec` settles on before handing the terminal to
+/// `kubectl`: the same three module facts `debug` reports, so a reader moving
+/// between the two commands reads one shape.
+pub fn build_exec_doc(
+    namespace: &str,
+    pod: &str,
+    module_names: &[String],
+    command: &[String],
+    mount_dirs: &[String],
+    path_prefix: &str,
+) -> Doc {
+    Doc::new()
+        .status(
+            Role::Info,
+            format!("Executing in {namespace}/{pod} with modules"),
+        )
+        .kv_block([
+            ("Modules", module_names.join(", ")),
+            ("Mount Path", mount_dirs.join(", ")),
+            ("Path Prefix", path_prefix.to_string()),
+        ])
+        .with_data(serde_json::json!({
+            "namespace": namespace,
+            "pod": pod,
+            "modules": module_names,
+            "command": command,
+            "mountPath": mount_dirs,
+            "pathPrefix": path_prefix,
+        }))
 }
 
 pub fn cmd_inject(
@@ -968,7 +1035,7 @@ pub(crate) async fn cmd_status_async(
                 sb.status(Role::Info, "No modules found")
             } else {
                 module_rows.iter().fold(sb, |sb, row| {
-                    sb.kv(&row.name, format!("{} ({})", row.artifact, row.signature))
+                    sb.kv_rows([KvPair::annotated(&row.name, &row.artifact, &row.signature)])
                 })
             }
         })

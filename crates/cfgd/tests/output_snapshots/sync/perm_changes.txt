@@ -7,7 +7,9 @@ Local Repo
 
 Sources
   source:perm-team
-    ⚠ permission changes need approval
+    ⚠ Permission changes need approval
     Permission Changes
       - Locked items increased from 0 to 2
-    ◉ skipped (permission changes rejected)
+    ◉ Skipped (permission changes rejected)
+
+⚠ Synced — 0 of 1 source, 1 skipped

@@ -320,6 +320,7 @@ pub fn build_compliance_diff_doc(
         ]);
 
     if diff.added.is_empty() && diff.removed.is_empty() && diff.changed.is_empty() {
+        // verdict-row-ok: a comparison verdict, not an act cfgd performed
         doc = doc.status(Role::Ok, "No differences between snapshots");
     } else {
         doc = doc.section_if_nonempty("Added", &diff.added, |s, items| {
@@ -443,6 +444,9 @@ pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot, now: &str) ->
         )
     };
     doc = doc.status(role, summary_line);
+    if snapshot.summary.violation > 0 {
+        doc = doc.hint(crate::cli::heal_drift_hint(None));
+    }
 
     doc.with_data(ComplianceSnapshotOutput {
         snapshot: snapshot.clone(),
@@ -458,7 +462,7 @@ pub fn build_compliance_export_doc(
         .heading("Compliance Export")
         .status(
             Role::Ok,
-            format!("Compliance snapshot written to {}", export_path.posix()),
+            format!("Wrote compliance snapshot to {}", export_path.posix()),
         )
         .section("Summary", |s| {
             s.kv("Compliant", snapshot.summary.compliant.to_string())

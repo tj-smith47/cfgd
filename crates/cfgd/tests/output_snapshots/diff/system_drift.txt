@@ -1,1 +1,3 @@
 ⚠ Drift detected — 1 system setting (files, packages, shell clean)
+
+→ Run `cfgd apply` to reconcile

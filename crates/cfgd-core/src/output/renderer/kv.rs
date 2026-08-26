@@ -167,12 +167,26 @@ impl Emitting<'_> {
         // Measured over the INDENTED width, so a nested breakdown's values line
         // up with the values of the rows it sits under rather than starting two
         // columns to their right.
-        let key_col = rows
+        let measured = rows
             .iter()
             .map(|(k, _, indent)| indent + UnicodeWidthStr::width(k.as_str()))
             .max()
             .unwrap_or(0)
             .min(KEY_WIDTH_CAP);
+        // One key column per section, whatever else the section printed in
+        // between: the width is carried on the open frame, so a later block of
+        // shorter keys pads to the column the reader is already scanning.
+        let key_col = match self.state.section_stack.last_mut() {
+            Some(frame) => {
+                let width = match frame.kv_key_col {
+                    Some((at, width)) if at == depth => width.max(measured),
+                    _ => measured,
+                };
+                frame.kv_key_col = Some((depth, width));
+                width
+            }
+            None => measured,
+        };
         for (k, v, indent) in &rows {
             let pad = " ".repeat(*indent);
             if indent + UnicodeWidthStr::width(k.as_str()) <= KEY_WIDTH_CAP {
@@ -378,6 +392,73 @@ mod tests {
         // "Foo" padded to LongerKey.len() (= 9) + "  " gap + value.
         assert!(out.contains("Foo        1"), "got: {out:?}");
         assert!(out.contains("LongerKey  2"), "got: {out:?}");
+    }
+
+    /// One section, one key column — even when the section printed something
+    /// else between its two kv emissions. `cfgd module push` writes its header
+    /// facts, pushes (a spinner and a status line), then writes `Digest`; the
+    /// second emission measured only itself, so a six-character key sat left of
+    /// the nine-character ones above it.
+    #[test]
+    fn a_section_keeps_one_key_column_across_everything_it_prints() {
+        let (printer, buf) = crate::output::Printer::for_test_at(Verbosity::Normal);
+        {
+            let sec = printer.section("Push Module");
+            sec.kv_block([("Directory", "./mod"), ("Artifact", "ghcr.io/a/b:v1")]);
+            sec.status_simple(Role::Ok, "Pushed module");
+            sec.kv("Digest", "sha256:abc");
+        }
+        drop(printer);
+        let out = crate::test_helpers::captured_text(&buf);
+        let value_column = |value: &str| {
+            out.lines()
+                .find_map(|l| l.find(value))
+                .unwrap_or_else(|| panic!("{value} must be rendered: {out:?}"))
+        };
+        assert_eq!(
+            value_column("./mod"),
+            value_column("sha256:abc"),
+            "the result row pads to the header's column: {out:?}"
+        );
+
+        // The carrier IS the section frame: the same two emissions with no
+        // frame to hold the width measure themselves, which is the jog the
+        // frame removes.
+        let (r, sink, raw) = capture();
+        r.render_kv_block(
+            &sink,
+            0,
+            &[
+                KvPair::new("Directory", "./mod"),
+                KvPair::new("Artifact", "ghcr.io/a/b:v1"),
+            ],
+        );
+        r.render_status(
+            &sink,
+            0,
+            &StatusFields {
+                role: Role::Ok,
+                subject: "Pushed module",
+                detail: None,
+                duration: None,
+                target: None,
+                subject_style: None,
+                detail_style: None,
+            },
+        );
+        r.render_kv_block(&sink, 0, &[KvPair::new("Digest", "sha256:abc")]);
+        let unframed = crate::test_helpers::captured_text(&raw);
+        let unframed_column = |value: &str| {
+            unframed
+                .lines()
+                .find_map(|l| l.find(value))
+                .unwrap_or_else(|| panic!("{value} must be rendered: {unframed:?}"))
+        };
+        assert_ne!(
+            unframed_column("./mod"),
+            unframed_column("sha256:abc"),
+            "no frame, no shared column — the section is what carries it: {unframed:?}"
+        );
     }
 
     /// The key column is measured and filled in TERMINAL COLUMNS, not bytes

@@ -223,7 +223,7 @@ fn cmd_generate_scan_only_data_payload_has_expected_keys() {
     );
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Scan complete"),
+        output.contains("Scanned this host"),
         "should print completion line, got: {output}"
     );
     assert!(
@@ -255,7 +255,7 @@ fn cmd_generate_scan_only_path_additions_reported() {
     assert!(result.is_ok(), "should succeed: {:?}", result.err());
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Scan complete") || output.contains("PATH Additions"),
+        output.contains("Scanned this host") || output.contains("PATH Additions"),
         "should complete scan, got: {output}"
     );
 }
@@ -384,7 +384,7 @@ fn cmd_generate_scan_only_with_aliases_count_in_payload() {
     assert!(result.is_ok(), "should succeed: {:?}", result.err());
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Scan complete"),
+        output.contains("Scanned this host"),
         "should complete scan: {output}"
     );
     assert!(
@@ -415,7 +415,7 @@ fn cmd_generate_scan_only_exports_count_in_payload() {
     assert!(result.is_ok(), "should succeed: {:?}", result.err());
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Scan complete"),
+        output.contains("Scanned this host"),
         "should complete scan: {output}"
     );
     assert!(
@@ -695,8 +695,8 @@ fn cmd_generate_scan_only_with_empty_home() {
         "should show scanning header, got: {output}"
     );
     assert!(
-        output.contains("Scan complete"),
-        "should show scan complete, got: {output}"
+        output.contains("Scanned this host"),
+        "should show the scan verdict, got: {output}"
     );
 }
 
@@ -1030,7 +1030,7 @@ fn cmd_generate_scan_only_with_plugin_manager() {
     assert!(
         output.contains("Plugin Manager")
             || output.contains("oh-my-zsh")
-            || output.contains("Scan complete"),
+            || output.contains("Scanned this host"),
         "should complete scan, got: {output}"
     );
 }

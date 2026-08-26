@@ -1,9 +1,7 @@
-Update Sources
-
-source:upd-src
-  ◐ Fetching source:upd-src
-    From file://<BARE_ROOT>/upd-src-source
-     * branch            master     -> FETCH_HEAD
-  ✓ Updated
+Update source:upd-src
+◐ Fetching source:upd-src
+  From file://<BARE_ROOT>/upd-src-source
+   * branch            master     -> FETCH_HEAD
+✓ Updated
 
 ✓ Updated 1 source

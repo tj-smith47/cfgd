@@ -294,6 +294,21 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
         "the record must carry the fetch time and the resolved commit: {acme:?}"
     );
 
+    // The declared catalog carries the columns the status payload does not,
+    // so the shared `Sources` table has something to render.
+    let declared = vec![cfgd::cli::output_types::SourceListEntry {
+        name: "acme".to_string(),
+        url: acme.origin_url.clone(),
+        priority: 100,
+        version: acme.source_version.clone(),
+        status: acme.status.clone(),
+        last_fetched: acme.last_fetched.clone(),
+        signed: None,
+        require_signed_commits: false,
+        last_commit: acme.last_commit.clone(),
+        drift_count: None,
+    }];
+
     // The record is what keeps `status` off the "not yet fetched" branch.
     let output = cfgd::cli::status::StatusOutput {
         last_apply: None,
@@ -309,10 +324,11 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
         drift_checked_live: false,
         last_scan_at: None,
     };
+
     let (status_printer, status_cap) = Printer::for_test_doc();
     status_printer.emit(cfgd::cli::status::build_fleet_status_doc(
         &output,
-        &["acme".to_string()],
+        &declared,
         Path::new("/tmp/cfgd.yaml"),
         "default",
         "2026-05-14T10:05:00Z",
@@ -359,11 +375,11 @@ fn sync_source_failure_settles_the_spinner_exactly_once_never_via_drop() {
         "the owner header must be committed via commit_header before the settle line: {out}"
     );
     assert!(
-        out.contains("sync failed"),
+        out.contains("Sync failed — git error"),
         "the finish_fail line must be committed: {out}"
     );
     assert_eq!(
-        out.matches("sync failed").count(),
+        out.matches("Sync failed — git error").count(),
         1,
         "the failure must settle exactly once, never twice: {out}"
     );

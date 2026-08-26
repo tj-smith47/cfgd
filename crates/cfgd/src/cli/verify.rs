@@ -179,7 +179,7 @@ pub fn cmd_verify(
         pass_count,
         fail_count,
     };
-    printer.emit(build_verify_doc(&output));
+    printer.emit(build_verify_doc(&output, module_filter));
 
     if exit_code && has_drift {
         cfgd_core::exit::ExitCode::DriftDetected.exit();
@@ -189,7 +189,10 @@ pub fn cmd_verify(
 
 /// Pure builder: verify Doc from a collected `VerifyOutput`. Used by the live
 /// command and by snapshot tests under `tests/output_snapshots/verify/`.
-pub fn build_verify_doc(output: &VerifyOutput) -> Doc {
+///
+/// `module` is the `--module` filter the run carried, so a report that failed
+/// closes on a next step scoped the way the report was.
+pub fn build_verify_doc(output: &VerifyOutput, module: Option<&str>) -> Doc {
     let mut doc = Doc::new().heading("Verify");
 
     if output.results.is_empty() {
@@ -215,6 +218,7 @@ pub fn build_verify_doc(output: &VerifyOutput) -> Doc {
 
     doc = if output.fail_count == 0 {
         doc.status(
+            // verdict-row-ok: a match verdict, not an act cfgd performed
             Role::Ok,
             format!(
                 "All {} {} desired state",
@@ -227,6 +231,7 @@ pub fn build_verify_doc(output: &VerifyOutput) -> Doc {
             Role::Warn,
             format!("{} passed, {} failed", output.pass_count, output.fail_count),
         )
+        .hint(super::heal_drift_hint(module))
     };
 
     doc.with_data(output.clone())
@@ -496,7 +501,7 @@ mod tests {
             pass_count: 1,
             fail_count: 0,
         };
-        printer.emit(build_verify_doc(&output));
+        printer.emit(build_verify_doc(&output, None));
         drop(printer);
         let human = cap.human();
         assert!(
@@ -522,7 +527,7 @@ mod tests {
             pass_count: 0,
             fail_count: 1,
         };
-        printer.emit(build_verify_doc(&output));
+        printer.emit(build_verify_doc(&output, None));
         drop(printer);
         let human = cap.human();
         assert!(

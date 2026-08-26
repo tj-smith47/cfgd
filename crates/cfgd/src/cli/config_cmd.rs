@@ -25,11 +25,15 @@ pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
         })
     });
 
-    doc = doc.section_if_nonempty("Sources", &cfg.spec.sources, |s, sources| {
-        sources
-            .iter()
-            .fold(s, |s, src| s.kv(&src.name, &src.origin.url))
-    });
+    doc = doc.section_if_nonempty(
+        super::source::list::SOURCES_SECTION,
+        &cfg.spec.sources,
+        |s, sources| {
+            sources
+                .iter()
+                .fold(s, |s, src| s.kv(&src.name, &src.origin.url))
+        },
+    );
 
     if let Some(ref mods) = cfg.spec.modules {
         doc = doc.section_if_nonempty("Module Registries", &mods.registries, |s, regs| {
@@ -116,6 +120,7 @@ pub fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             }
             Err(e) => {
                 printer.status_simple(
+                    // no-next-step: the prompt below IS the next step
                     Role::Fail,
                     format!(
                         "Invalid configuration: {}",
@@ -133,6 +138,7 @@ pub fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     if valid {
         printer.emit(
             Doc::new()
+                // verdict-row-ok: a validation verdict, not an act cfgd performed
                 .status(Role::Ok, "Configuration is valid")
                 .with_data(serde_json::json!({
                     "path": cfgd_core::to_posix_string(config_path),

@@ -2,10 +2,10 @@ Show source:team-config
   URL                 https://github.com/team/config
   Branch              main
   Priority            100
-  Accept Recommended  true
+  Accept Recommended  yes
   Profile             team
   Sync Interval       1h
-  Auto Apply          false
+  Auto Apply          no
   Pin Version         v1.2.3
 
 State
@@ -38,10 +38,10 @@ Profiles
       brew formulae  ripgrep
 
 Policy
-  Require Signed Commits  true (bypassed: security.allowUnsigned)
-  Scripts Allowed         false
-  Secrets Read Allowed    false
-  System Changes Allowed  false
+  Require Signed Commits  yes (bypassed: security.allowUnsigned)
+  Scripts Allowed         no
+  Secrets Read Allowed    no
+  System Changes Allowed  no
   Allowed Target Paths    ~/.config/**, ~/.bashrc
   Encryption
     Required Targets  secrets/**

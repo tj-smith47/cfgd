@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, KvPair, Printer, Role};
 use serde::Serialize;
 
 use super::*;
@@ -163,10 +163,11 @@ pub(crate) fn cmd_enroll(
         }
     };
 
-    printer.kv(
+    printer.kv_rows([KvPair::annotated(
         "Signing with",
-        format!("{} ({})", key_type.as_str().to_uppercase(), key_ref),
-    );
+        key_type.as_str().to_uppercase(),
+        &key_ref,
+    )]);
 
     // Challenge-response
     let challenge = client
@@ -196,7 +197,7 @@ pub(crate) fn cmd_enroll(
         )
     })?;
 
-    printer.status_simple(Role::Ok, "Challenge signed");
+    printer.status_simple(Role::Ok, "Signed challenge");
 
     let resp = client
         .submit_verification(
@@ -228,7 +229,7 @@ fn finish_enrollment(
 
     match cfgd_core::server_client::save_credential(&credential) {
         Ok(path) => {
-            printer.status_simple(Role::Ok, format!("Credential saved to {}", path.posix()));
+            printer.status_simple(Role::Ok, format!("Saved credential to {}", path.posix()));
         }
         Err(e) => {
             printer.status_simple(

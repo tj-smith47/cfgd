@@ -74,6 +74,7 @@ pub(crate) fn restore_or_remove_deployed_files(
             // No backup recorded — just remove the deployed file.
             if let Err(e) = std::fs::remove_file(path) {
                 section
+                    // name-row-ok: the row names the phase, not an outcome
                     .status(Role::Warn, "rollback")
                     .qualifier(format!("failed to remove {file_path}: {e}"));
             } else {

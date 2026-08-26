@@ -178,7 +178,7 @@ fn collect_doctor_output(
             // dir, parse error). Surface so the user knows the package report
             // below is computed from a partial set.
             printer
-                .status(Role::Warn, "doctor: manifest resolution failed")
+                .status(Role::Warn, "Manifest resolution failed")
                 .qualifier(cfgd_core::output::collapse_to_subject_line(&e))
                 .detail("package report may be incomplete");
         }
@@ -237,7 +237,7 @@ fn collect_doctor_output(
                     .status(
                         Role::Warn,
                         format!(
-                            "custom manager '{}' contains '.' in its name: source-delivered packages under it cannot carry decisions (the decision path grammar splits on '.') and are withheld from every run",
+                            "Custom manager '{}' contains '.' in its name: source-delivered packages under it cannot carry decisions (the decision path grammar splits on '.') and are withheld from every run",
                             custom.name
                         ),
                     )
@@ -524,6 +524,7 @@ fn collect_doctor_output(
 /// Build the doctor `Doc` from a collected payload + display-only extras. Used
 /// by the live command and by snapshot tests under
 /// `tests/output_snapshots/doctor/`.
+// no-next-step: `doctor` is the diagnosis; every failing row below carries its own fix in its detail
 pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
     let mut doc = Doc::new().heading("Doctor");
 
@@ -545,7 +546,7 @@ pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
     );
 
     if all_passed(output) {
-        doc = doc.status(Role::Ok, "All checks passed");
+        doc = doc.status(Role::Ok, "Passed every check");
     } else {
         doc = doc.status_with(Role::Fail, "Some checks failed", |f| f.detail("see above"));
     }
@@ -553,9 +554,11 @@ pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
     doc.with_data(output)
 }
 
+// no-next-step: the row's detail names the file to fix
 fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBuilder {
     match cfg.state {
         DoctorConfigState::Valid => {
+            // name-row-ok: an inventory row naming what was checked
             let mut s = s.status_with(Role::Ok, "Config file", |f| {
                 f.qualifier(format!("{} (valid)", cfg.path))
             });
@@ -589,11 +592,13 @@ fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBu
     }
 }
 
+// no-next-step: the row's detail names the install to run
 fn build_tools_section(s: SectionBuilder, git_available: bool) -> SectionBuilder {
     if git_available {
         // name-row-ok: the row names the executable, not an outcome
         s.status_with(Role::Ok, "git", |f| f.qualifier("found"))
     } else {
+        // name-row-ok: the row names the executable, not an outcome
         s.status_with(Role::Fail, "git", |f| {
             f.qualifier(cfgd_core::Absence::NotFound.as_str())
                 .detail("install git to use cfgd")
@@ -609,6 +614,7 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
             f.qualifier(format!("found ({})", version_str))
         })
     } else {
+        // name-row-ok: the row names the executable, not an outcome
         s.status_with(Role::Warn, "sops", |f| {
             f.qualifier(cfgd_core::Absence::NotFound.as_str())
                 .detail("required for secrets (https://github.com/getsops/sops#install)")
@@ -618,6 +624,7 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
     s = match (secrets.age_key_exists, secrets.age_key_path.as_deref()) {
         // name-row-ok: the row names the key file, not an outcome
         (true, Some(path)) => s.status_with(Role::Ok, "age key", |f| f.qualifier(path.to_string())),
+        // name-row-ok: the row names the key file, not an outcome
         (false, Some(path)) => s.status_with(Role::Warn, "age key", |f| {
             f.qualifier(path.to_string()).detail(format!(
                 "{}; run `cfgd init` to generate",
@@ -632,8 +639,10 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
         secrets.sops_config_path.as_deref(),
     ) {
         (true, Some(path)) => {
+            // name-row-ok: an inventory row naming what was checked
             s.status_with(Role::Ok, ".sops.yaml", |f| f.qualifier(path.to_string()))
         }
+        // name-row-ok: an inventory row naming what was checked
         (true, None) => s.status_with(Role::Ok, ".sops.yaml", |f| f.qualifier("present")),
         (false, _) => s.status_with(Role::Warn, ".sops.yaml", |f| {
             f.qualifier(cfgd_core::Absence::NotFound.as_str())
@@ -643,6 +652,7 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
 
     for provider in &secrets.providers {
         s = if provider.available {
+            // name-row-ok: an inventory row naming the provider
             s.status_with(Role::Ok, format!("Provider {}", provider.name), |f| {
                 f.qualifier("available")
             })
@@ -655,6 +665,7 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
     s
 }
 
+// no-next-step: the row's detail names what the manager reported
 fn build_managers_section(s: SectionBuilder, managers: &[DoctorManagerCheck]) -> SectionBuilder {
     managers.iter().fold(s, |s, m| {
         if m.declared {
@@ -687,6 +698,7 @@ fn build_managers_section(s: SectionBuilder, managers: &[DoctorManagerCheck]) ->
     })
 }
 
+// no-next-step: the row's detail names what the module resolution reported
 fn build_modules_section(s: SectionBuilder, modules: &[DoctorModuleCheck]) -> SectionBuilder {
     modules.iter().fold(s, |s, m| {
         if !m.valid {
@@ -702,11 +714,13 @@ fn build_modules_section(s: SectionBuilder, modules: &[DoctorModuleCheck]) -> Se
     })
 }
 
+// no-next-step: the row's detail names the migrate command for a legacy profile
 fn build_profiles_section(
     s: SectionBuilder,
     profiles: &[DoctorProfileLayoutCheck],
 ) -> SectionBuilder {
     if profiles.iter().all(|p| !p.legacy && p.error.is_none()) {
+        // verdict-row-ok: a layout verdict, not an act cfgd performed
         return s.status(Role::Ok, "All profiles use the canonical bundle layout");
     }
     profiles.iter().fold(s, |s, p| {
@@ -715,6 +729,7 @@ fn build_profiles_section(
             // them errors), unlike the supported legacy form — Fail, not Warn.
             s.status(Role::Fail, cfgd_core::output::collapse_to_subject_line(err))
         } else if p.legacy {
+            // name-row-ok: the row names the profile, not an outcome
             s.status_with(Role::Warn, format!("profile '{}'", p.name), |sf| {
                 sf.qualifier("uses the legacy flat layout")
                     .detail(format!("run `cfgd profile migrate {}`", p.name))
@@ -725,6 +740,7 @@ fn build_profiles_section(
     })
 }
 
+// no-next-step: the row's detail names what the package query reported
 fn build_module_package_status(
     sub: SectionBuilder,
     pkg: &DoctorModulePackageCheck,
@@ -760,9 +776,11 @@ fn build_module_package_status(
     }
 }
 
+// no-next-step: the row's detail names the directory cfgd could not use
 fn build_system_section(mut s: SectionBuilder, extras: &DoctorExtras) -> SectionBuilder {
     if let Some(ss) = extras.state_store.as_ref() {
         s = if ss.accessible {
+            // name-row-ok: an inventory row naming what was checked
             s.status(Role::Ok, "State store: accessible")
         } else {
             let detail = ss.message.clone().unwrap_or_else(|| "unavailable".into());
@@ -778,6 +796,7 @@ fn build_system_section(mut s: SectionBuilder, extras: &DoctorExtras) -> Section
                     .detail(cfgd_core::output::collapse_to_subject_line(err))
             })
         } else if pd.exists {
+            // name-row-ok: an inventory row naming what was checked
             s.status_with(Role::Ok, "Profiles directory", |sf| {
                 sf.qualifier(format!("{} ({} profiles)", pd.path, pd.profile_count))
             })

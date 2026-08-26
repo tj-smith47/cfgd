@@ -461,12 +461,10 @@ for a CLI-driven one.
 
 ```console
 $ cfgd daemon
-Daemon
-◉ Starting cfgd daemon...
-✓ Health: /home/me/.cache/cfgd/runtime/cfgd.sock
-✓ Intervals: reconcile=300s, backups=2 scheduled
-◉ Daemon running — press Ctrl+C to stop
- INFO scheduled backup tick backup=notes-db
+09:00:00  INFO daemon: starting cfgd 0.9.0
+09:00:00  INFO daemon: health endpoint at /home/me/.cache/cfgd/runtime/cfgd.sock
+09:00:00  INFO daemon: running — reconcile every 300s, 2 scheduled backups
+→ Press Ctrl+C to stop
 
 Backup
   Config   /home/me/.config/cfgd/cfgd.yaml
@@ -485,13 +483,13 @@ Backups
     ✓ snapshot notes.db.20260813T061559Z                                                 — 8.0 KB
 
 ✓ Backup complete — 3 actions succeeded (0.2s)
- INFO scheduled backup completed backup=notes-db
+09:05:01  INFO daemon: scheduled backup notes-db completed
 ```
 
 A scheduled fire renders the same group a hand-run does, so the journal a background run leaves
 behind is what you would have seen on the terminal. Each unit also gets one `tracing` line naming
 its own outcome: `completed`, `completed with errors`, or
-`skipped: the unit is already running elsewhere` with the holder.
+`skipped — already running under <holder>`.
 
 Timer behaviour:
 

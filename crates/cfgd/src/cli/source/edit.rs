@@ -27,6 +27,7 @@ pub fn cmd_source_edit(printer: &Printer, dir: &Path) -> anyhow::Result<()> {
             Ok(_) => {
                 printer.emit(
                     Doc::new()
+                        // verdict-row-ok: a validation verdict, not an act cfgd performed
                         .status(Role::Ok, "Source manifest is valid")
                         .with_data(serde_json::json!({
                             "path": cfgd_core::to_posix_string(&source_path),
@@ -37,6 +38,7 @@ pub fn cmd_source_edit(printer: &Printer, dir: &Path) -> anyhow::Result<()> {
             }
             Err(e) => {
                 printer.status_simple(
+                    // no-next-step: the prompt below IS the next step
                     Role::Fail,
                     format!(
                         "Invalid source manifest: {}",

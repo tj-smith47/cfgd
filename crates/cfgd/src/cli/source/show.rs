@@ -50,14 +50,17 @@ pub fn build_source_show_doc(
         .kv("URL", &output.url)
         .kv("Branch", &output.branch)
         .kv("Priority", output.priority.to_string())
-        .kv("Accept Recommended", output.accept_recommended.to_string());
+        .kv(
+            "Accept Recommended",
+            cfgd_core::yes_no(Some(output.accept_recommended)),
+        );
 
     if let Some(ref profile) = output.profile {
         doc = doc.kv("Profile", profile);
     }
     doc = doc
         .kv("Sync Interval", &output.sync_interval)
-        .kv("Auto Apply", output.auto_apply.to_string());
+        .kv("Auto Apply", cfgd_core::yes_no(Some(output.auto_apply)));
     if let Some(ref pin) = output.pin_version {
         doc = doc.kv("Pin Version", pin);
     }
@@ -84,7 +87,17 @@ pub fn build_source_show_doc(
                 rows.push(KvPair::new("Signed", cfgd_core::yes_no(state_info.signed)));
             }
             if let Some(ref locked_commit) = state_info.locked_commit {
-                rows.push(KvPair::new("Locked Commit", short_commit(locked_commit)));
+                // The pair is here to be compared, and two identical SHAs two
+                // rows apart is the one case a reader cannot compare at a
+                // glance — the sameness is the fact, so the row states it.
+                let short = short_commit(locked_commit);
+                rows.push(
+                    if state_info.last_commit.as_deref() == Some(locked_commit.as_str()) {
+                        KvPair::annotated("Locked Commit", short, "same as last commit")
+                    } else {
+                        KvPair::new("Locked Commit", short)
+                    },
+                );
             }
             if let Some(ref locked_ref) = state_info.locked_ref {
                 rows.push(KvPair::new("Locked Ref", locked_ref));
@@ -211,11 +224,11 @@ pub fn source_manifest_doc_sections(
                         }
                         Some(Err(e)) if profile_is_absent(&e) => sub.status(
                             Role::Warn,
-                            "declared by the manifest but not found in the source",
+                            "Declared by the manifest but not found in the source",
                         ),
                         Some(Err(e)) => sub.status_with(
                             Role::Warn,
-                            format!("profile {name} could not be loaded"),
+                            format!("Profile {name} could not be loaded"),
                             |f| f.detail(cfgd_core::output::collapse_to_subject_line(&e)),
                         ),
                         None => sub,
@@ -248,24 +261,30 @@ pub fn source_manifest_doc_sections(
             // `allowUnsigned` bypasses the demand entirely — the screen must
             // say so beside the flag, or `true` reads as enforced when the
             // check never runs.
-            let require_signed_commits_value = if policy.signed_commits_bypassed {
-                format!(
-                    "{} (bypassed: security.allowUnsigned)",
-                    policy.require_signed_commits
+            let require_signed_commits =
+                cfgd_core::yes_no(Some(policy.require_signed_commits)).to_string();
+            let require_signed_commits_row = if policy.signed_commits_bypassed {
+                KvPair::annotated(
+                    "Require Signed Commits",
+                    require_signed_commits,
+                    "bypassed: security.allowUnsigned",
                 )
             } else {
-                policy.require_signed_commits.to_string()
+                KvPair::new("Require Signed Commits", require_signed_commits)
             };
             let mut rows = vec![
-                KvPair::new("Require Signed Commits", require_signed_commits_value),
-                KvPair::new("Scripts Allowed", policy.scripts_allowed.to_string()),
+                require_signed_commits_row,
+                KvPair::new(
+                    "Scripts Allowed",
+                    cfgd_core::yes_no(Some(policy.scripts_allowed)),
+                ),
                 KvPair::new(
                     "Secrets Read Allowed",
-                    policy.secrets_read_allowed.to_string(),
+                    cfgd_core::yes_no(Some(policy.secrets_read_allowed)),
                 ),
                 KvPair::new(
                     "System Changes Allowed",
-                    policy.system_changes_allowed.to_string(),
+                    cfgd_core::yes_no(Some(policy.system_changes_allowed)),
                 ),
             ];
             if !policy.allowed_target_paths.is_empty() {

@@ -29,9 +29,10 @@
 //! snapshots from this integration test. The reconcile loop is a
 //! never-returning happy path from the CLI boundary; the Windows service
 //! entry point is a background process with no user-facing emit. The
-//! foreground loop's own output surface (startup banner, drift events,
-//! shutdown) is snapshotted lib-side at
-//! `crates/cfgd-core/src/daemon/snapshots/`.
+//! foreground loop has no golden at all: it reports through the journal, and
+//! `the_reconcile_loop_reports_through_the_journal_and_never_the_printer`
+//! (`crates/cfgd-core/src/daemon/tests.rs`) holds both halves of that — a
+//! silent printer and the run's account in the log.
 //!
 //! Goldens live under `tests/output_snapshots/daemon_{status,install,uninstall}/`.
 //! Regenerate with:
@@ -107,6 +108,39 @@ fn sample_status_no_timestamps() -> DaemonStatusResponse {
     }
 }
 
+/// The declared catalog the daemon's live rows are merged over. Without it the
+/// shared `Sources` table can only render `-` in the columns the daemon never
+/// reports (origin, priority, commit, signing), which is a fact about the
+/// fixture rather than about the render.
+fn declared_sources() -> Vec<cfgd::cli::output_types::SourceListEntry> {
+    vec![
+        cfgd::cli::output_types::SourceListEntry {
+            name: "local".to_string(),
+            url: "/etc/cfgd/local".to_string(),
+            priority: 50,
+            version: None,
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.to_string(),
+            last_fetched: None,
+            signed: None,
+            require_signed_commits: false,
+            last_commit: None,
+            drift_count: None,
+        },
+        cfgd::cli::output_types::SourceListEntry {
+            name: "team".to_string(),
+            url: "https://github.com/team/config".to_string(),
+            priority: 100,
+            version: Some("3.1.0".to_string()),
+            status: cfgd_core::state::SOURCE_STATUS_ACTIVE.to_string(),
+            last_fetched: Some("2026-05-12T09:00:00Z".to_string()),
+            signed: Some(true),
+            require_signed_commits: true,
+            last_commit: Some("abc1234567890def".to_string()),
+            drift_count: None,
+        },
+    ]
+}
+
 // --- cfgd daemon status ----------------------------------------------------
 
 /// The instant every daemon-status render in this suite ages its stamps
@@ -139,7 +173,11 @@ fn daemon_status_not_running_json() {
 fn daemon_status_running_human() {
     let (printer, cap) = Printer::for_test_doc();
     let status = sample_status_basic();
-    printer.emit(build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW));
+    printer.emit(build_daemon_status_doc(
+        Some(&status),
+        &declared_sources(),
+        DAEMON_STATUS_NOW,
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "daemon_status/running.txt");
 }
@@ -148,7 +186,11 @@ fn daemon_status_running_human() {
 fn daemon_status_running_json() {
     let (printer, cap) = Printer::for_test_doc();
     let status = sample_status_basic();
-    printer.emit(build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW));
+    printer.emit(build_daemon_status_doc(
+        Some(&status),
+        &declared_sources(),
+        DAEMON_STATUS_NOW,
+    ));
     drop(printer);
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["pid"], 4242);
@@ -160,7 +202,11 @@ fn daemon_status_running_json() {
 fn daemon_status_running_no_timestamps_human() {
     let (printer, cap) = Printer::for_test_doc();
     let status = sample_status_no_timestamps();
-    printer.emit(build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW));
+    printer.emit(build_daemon_status_doc(
+        Some(&status),
+        &[],
+        DAEMON_STATUS_NOW,
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(
         Path::new(SNAPSHOT_ROOT),
@@ -172,7 +218,11 @@ fn daemon_status_running_no_timestamps_human() {
 fn daemon_status_running_with_update_human() {
     let (printer, cap) = Printer::for_test_doc();
     let status = sample_status_with_update();
-    printer.emit(build_daemon_status_doc(Some(&status), DAEMON_STATUS_NOW));
+    printer.emit(build_daemon_status_doc(
+        Some(&status),
+        &declared_sources(),
+        DAEMON_STATUS_NOW,
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(
         Path::new(SNAPSHOT_ROOT),

@@ -1255,7 +1255,7 @@ fn source_manifest_sections_render_policy_rows_in_one_polarity() {
     let out = manifest_sections_text(&manifest);
     assert!(out.contains("Policy"), "Policy header missing: {out}");
     assert!(
-        out.contains("Scripts Allowed") && out.contains("false"),
+        out.contains("Scripts Allowed") && out.contains("no"),
         "scripts row missing: {out}"
     );
     assert!(
@@ -1299,7 +1299,9 @@ fn source_manifest_sections_render_the_effective_policy_when_a_spec_is_given() {
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        out.contains("Scripts Allowed") && out.contains("true"),
+        out.lines().any(|l| {
+            l.trim_start().starts_with("Scripts Allowed") && l.trim_end().ends_with("yes")
+        }),
         "the subscriber's opt-in must win: {out}"
     );
 }
@@ -13508,11 +13510,194 @@ fn every_result_line_is_sentence_case() {
         }
     };
     sweep(&cli, "Role::Ok,");
+    sweep(&cli, "Role::Warn,");
+    sweep(&cli, "Role::Fail,");
+    sweep(&both, ".finish_ok(");
+    sweep(&both, ".finish_warn(");
+    sweep(&both, ".finish_fail(");
     sweep(&both, ".hint(");
     assert!(
         offenders.is_empty(),
         "a result line and a hint open in sentence case (a row that names a \
          thing takes a `// name-row-ok:` marker):\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A failure the reader can act on says how. `cfgd source update` printed
+/// `✗ Update failed` with the git error underneath and nothing about what to do
+/// with it — a signature the reader can accept, a ref they can correct and a
+/// transport they can retry all render the same dead end. The next step lives
+/// beside the failure, in the same `hint`, so the answer is on screen with the
+/// question.
+///
+/// Judged per FUNCTION, because the hint belongs to the failure's own report and
+/// not to the individual line: a function that renders several failure arms
+/// answers them with one hint composer. A failure with genuinely nothing to
+/// suggest — a name the reader already typed, a state cfgd is merely reporting —
+/// says so with `// no-next-step: <why>` on the line or the line above.
+#[test]
+fn every_failure_the_cli_renders_says_what_to_do_next() {
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (path, production) in cli_production_sources() {
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            // `=> Role::Fail,` maps a stored state onto a role; the render
+            // that reads the map is judged where it emits.
+            if !line.contains("Role::Fail,")
+                || line.contains("=> Role::Fail,")
+                || line.trim_start().starts_with("//")
+            {
+                continue;
+            }
+            judged += 1;
+            if label_hatched(&lines, n, "// no-next-step:") {
+                continue;
+            }
+            let Some((start, end)) = enclosing_fn_span(&lines, n) else {
+                continue;
+            };
+            if lines[start..end].iter().any(|l| l.contains(".hint(")) {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+        }
+    }
+    assert!(
+        judged >= 20,
+        "the sweep no longer reaches the CLI's failure lines — it judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a rendered failure carries the reader's next step, or says why it has \
+         none with a `// no-next-step:` marker:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The half-open line range of the function containing line `n`, found from the
+/// `fn` header's own indentation: rustfmt closes an item at the indent it opened
+/// at, which reads an extent without counting braces inside the string literals
+/// a render function is full of.
+fn enclosing_fn_span(lines: &[&str], n: usize) -> Option<(usize, usize)> {
+    let start = (0..=n).rev().find(|i| {
+        let code = lines[*i].trim_start();
+        code.starts_with("fn ") || code.starts_with("pub fn ") || code.contains(" fn ")
+    })?;
+    let indent = lines[start].len() - lines[start].trim_start().len();
+    let closer = format!("{}}}", " ".repeat(indent));
+    let end = (start + 1..lines.len())
+        .find(|i| lines[*i] == closer)
+        .unwrap_or(lines.len());
+    Some((start, end))
+}
+
+/// The past-tense verbs a successful result line opens with, seeded from the
+/// population that already complied. A new outcome adds its verb here; a line
+/// that reports a STATE rather than an act takes the marker instead.
+const RESULT_LINE_VERBS: &[&str] = &[
+    "Added",
+    "Applied",
+    "Attached",
+    "Auto-selected",
+    "Built",
+    "Checked",
+    "Cloned",
+    "Committed",
+    "Created",
+    "Decrypted",
+    "Deleted",
+    "Edited",
+    "Encrypted",
+    "Enrolled",
+    "Exported",
+    "Generated",
+    "Initialized",
+    "Injected",
+    "Installed",
+    "Locked",
+    "Migrated",
+    "Moved",
+    "Packed",
+    "Passed",
+    "Pulled",
+    "Pushed",
+    "Rejected",
+    "Removed",
+    "Renamed",
+    "Replaced",
+    "Restored",
+    "Rolled",
+    "Rotated",
+    "Saved",
+    "Scanned",
+    "Set",
+    "Signed",
+    "Subscribed",
+    "Switched",
+    "Synced",
+    "Unset",
+    "Updated",
+    "Upgraded",
+    "Verified",
+    "Wrote",
+];
+
+/// A result line says what cfgd DID, so it opens with the verb: `Created
+/// ephemeral debug container on pod demo/app`, never `Ephemeral debug container
+/// created on pod demo/app`. Subject-first is how a transcript stops scanning —
+/// the reader has to reach the end of each line to learn whether it reports an
+/// act, and two adjacent lines about the same subject read as one wrapped
+/// sentence.
+///
+/// A line reporting a STATE rather than an act (`Daemon running`, `Configuration
+/// is valid`, `Already up to date`) is not a result line and keeps its shape
+/// with a `// verdict-row-ok: <why>` marker; a row that NAMES a thing keeps its
+/// existing `// name-row-ok:` marker. A subject the command composes at runtime
+/// is unjudgeable from the source and is skipped.
+#[test]
+fn every_result_line_opens_with_a_past_tense_verb() {
+    let sources = cli_production_sources();
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (path, production) in &sources {
+        let lines: Vec<&str> = production.lines().collect();
+        for (at, _) in production.match_indices("Role::Ok,") {
+            let rest = production[at + "Role::Ok,".len()..].trim_start();
+            let rest = rest.strip_prefix("format!(").unwrap_or(rest).trim_start();
+            let Some(literal) = rest.strip_prefix('"').and_then(|r| r.split('"').next()) else {
+                continue;
+            };
+            let Some(opener) = literal.split_whitespace().next() else {
+                continue;
+            };
+            if opener.starts_with('{') {
+                continue;
+            }
+            judged += 1;
+            if RESULT_LINE_VERBS.contains(&opener) {
+                continue;
+            }
+            let n = production[..at].matches('\n').count();
+            if lines[n].trim_start().starts_with("//")
+                || label_hatched(&lines, n, "// name-row-ok:")
+                || label_hatched(&lines, n, "// verdict-row-ok:")
+            {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {literal:?}", path.display(), n + 1));
+        }
+    }
+    assert!(
+        judged >= 100,
+        "the sweep no longer reaches the result lines — it judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a result line opens with the verb of the act it reports (a state \
+         verdict takes a `// verdict-row-ok:` marker, a row that names a thing \
+         a `// name-row-ok:` one):\n{}",
         offenders.join("\n")
     );
 }
@@ -13686,8 +13871,17 @@ fn is_title_case(label: &str) -> bool {
 /// the line above, or on the doc block of the function that builds it — rows
 /// pushed in a loop are nowhere near the reason they keep their own spelling.
 fn label_hatched(lines: &[&str], n: usize, marker: &str) -> bool {
-    if lines[n].contains(marker) || n.checked_sub(1).is_some_and(|p| lines[p].contains(marker)) {
+    if lines[n].contains(marker) {
         return true;
+    }
+    // The whole comment run directly above the line, so a reason that needed
+    // two lines to say still hatches the line it was written for.
+    let mut above = n;
+    while above > 0 && lines[above - 1].trim_start().starts_with("//") {
+        above -= 1;
+        if lines[above].contains(marker) {
+            return true;
+        }
     }
     let mut i = n;
     while i > 0 {
@@ -13860,6 +14054,400 @@ fn every_rendered_label_is_title_case() {
     assert!(
         !is_title_case("Reconcile interval") && is_title_case("Reconcile Interval"),
         "the case rule itself must separate the two spellings it exists to judge"
+    );
+}
+
+/// A kv value carries its data and nothing else: the muted parenthetical about
+/// it is the renderer's own slot, reached through `KvPair::annotated`. A
+/// hand-built `"{value} ({note})"` paints the note in the value's colour, wraps
+/// with it, and lands in `-o json` as one string a consumer has to re-split.
+///
+/// Judged on kv emissions only. A `format!("{n} ({s} safety)")` feeding a TABLE
+/// cell (`backup::snapshots_cell`, `status::module_files_resource`) is a
+/// different surface with no annotation slot, and a status DETAIL composes
+/// through `StatusBuilder` instead.
+#[test]
+fn no_kv_value_hand_builds_the_annotation_slot() {
+    const KV_CALLS: &[&str] = &[".kv(", ".kv_block(", "KvPair::new("];
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !KV_CALLS.iter().any(|c| line.contains(c)) {
+                continue;
+            }
+            let end = (n..lines.len())
+                .find(|&i| {
+                    let t = lines[i].trim_end();
+                    t.ends_with(");") || t.ends_with("),") || t.ends_with(")")
+                })
+                .unwrap_or(n);
+            let stmt = lines[n..=end].join("\n");
+            judged += 1;
+            for (start, end) in string_literal_spans(&stmt) {
+                let literal = &stmt[start..end];
+                // The VALUE is the argument after the comma; a literal opening
+                // the call (or a tuple) is the KEY, where `Server (k8s)` is the
+                // thing's own name rather than a note about a value.
+                let value_position = stmt[..start]
+                    .trim_end_matches('"')
+                    .trim_end()
+                    .ends_with(',');
+                // `{value} ({note})` — the shape the annotation slot owns. A
+                // literal that merely CONTAINS parentheses (a label, a URL) is
+                // not one: the note is what closes the string.
+                if value_position && literal.ends_with(')') && literal.contains(" (") {
+                    offenders.push(format!(
+                        "{}:{}: {literal:?} — the note beside a kv value is                          `KvPair::annotated(key, value, note)`",
+                        path.display(),
+                        n + 1
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        judged >= 100,
+        "the walk no longer reaches the kv emissions — it judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a kv value is the value; its note is the renderer's slot:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The offset of the first `[` after `from` that opens an array whose first
+/// element is a quoted key — skipping the `&[(&str, &str)]` in a const's own
+/// type, whose bracket comes first and holds no data.
+fn array_of_pairs(body: &str, from: usize) -> usize {
+    body[from..]
+        .match_indices('[')
+        .find(|(i, _)| body[from + i + 1..].trim_start().starts_with("(\""))
+        .map(|(i, _)| from + i)
+        .expect("the list is a bracketed array of pairs")
+}
+
+/// A report that finds drift says how to heal it, and a report that finds none
+/// says nothing — the hint is the report's own answer to what it just found.
+/// Every drift surface had ended on the finding alone, leaving the reader to
+/// remember which of `apply`, `apply --module` or `sync` closes the gap.
+#[test]
+fn every_drift_verdict_offers_the_heal_and_only_when_it_reports_drift() {
+    use crate::cli::diff::{DiffScope, build_diff_doc};
+    use crate::cli::output_types::{DiffOutput, DiffSummary};
+    use crate::cli::verify::{VerifyOutput, build_verify_doc};
+
+    let rendered = |doc: cfgd_core::output::Doc| -> String {
+        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        printer.emit(doc);
+        drop(printer);
+        cap.human()
+    };
+    let drifted = DiffOutput {
+        summary: DiffSummary {
+            has_pkg_drift: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let machine = rendered(build_diff_doc(&drifted, DiffScope::Machine));
+    assert!(
+        machine.contains("Run `cfgd apply` to reconcile"),
+        "a machine-wide drift report offers the machine-wide heal: {machine}"
+    );
+    let module = rendered(build_diff_doc(&drifted, DiffScope::Module("nvim")));
+    assert!(
+        module.contains("Run `cfgd apply --module nvim` to reconcile"),
+        "a module-scoped drift report scopes its heal to that module: {module}"
+    );
+    let clean = rendered(build_diff_doc(&DiffOutput::default(), DiffScope::Machine));
+    assert!(
+        !clean.contains("to reconcile"),
+        "a converged report has nothing to heal: {clean}"
+    );
+
+    let failing = VerifyOutput {
+        results: vec![cfgd_core::reconciler::VerifyResult {
+            resource_type: "sysctl".into(),
+            resource_id: "net.ipv4.ip_forward".into(),
+            expected: "1".into(),
+            actual: "0".into(),
+            matches: false,
+            unmanaged: false,
+        }],
+        pass_count: 0,
+        fail_count: 1,
+    };
+    let verify = rendered(build_verify_doc(&failing, None));
+    assert!(
+        verify.contains("Run `cfgd apply` to reconcile"),
+        "a failing verify offers the same heal every other drift surface does: {verify}"
+    );
+    let verify_scoped = rendered(build_verify_doc(&failing, Some("nvim")));
+    assert!(
+        verify_scoped.contains("Run `cfgd apply --module nvim` to reconcile"),
+        "a `--module` verify scopes its heal: {verify_scoped}"
+    );
+    let verify_clean = rendered(build_verify_doc(
+        &VerifyOutput {
+            results: vec![cfgd_core::reconciler::VerifyResult {
+                resource_type: "package".into(),
+                resource_id: "curl".into(),
+                expected: "installed".into(),
+                actual: "installed".into(),
+                matches: true,
+                unmanaged: false,
+            }],
+            pass_count: 1,
+            fail_count: 0,
+        },
+        None,
+    ));
+    assert!(
+        !verify_clean.contains("to reconcile"),
+        "a passing verify has nothing to heal: {verify_clean}"
+    );
+}
+
+/// Every reconciler the binary builds names the scope its `applies` row is
+/// recorded under. `cfgd init --apply-module` and the module create/add apply
+/// built one over an empty profile and left the column `""`, so `cfgd status`
+/// showed no `Scope` row until some later `cfgd apply --module` happened to
+/// write one — the machine had applied a module and could not say under what.
+///
+/// A construction that writes no `applies` row of its own, or that resolved a
+/// real profile to name, says which with `// recorded-scope-ok: <why>`.
+#[test]
+fn every_reconciler_the_binary_builds_names_its_recording_scope() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = walk_rust_files(&src);
+    files.sort();
+    let mut built = 0usize;
+    let mut offenders = Vec::new();
+    for path in files {
+        if path.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = production_body(&body);
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            if !line.contains("Reconciler::new(") {
+                continue;
+            }
+            built += 1;
+            // The builder chains over the following lines; the unit judged is
+            // the STATEMENT, which ends at the first line closing with `;`.
+            let end = (n..lines.len())
+                .find(|i| lines[*i].trim_end().ends_with(';'))
+                .map_or(lines.len(), |i| i + 1);
+            let window = lines[n..end].join(" ");
+            if window.contains(".recording_scope(")
+                || label_hatched(&lines, n, "// recorded-scope-ok:")
+            {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+        }
+    }
+    assert!(
+        built >= 5,
+        "the walk no longer reaches the reconcilers the binary builds — it \
+         found {built}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a reconciler names the scope its `applies` row records, or says why it \
+         writes none with a `// recorded-scope-ok:` marker:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A `source` subcommand acting on ONE named source titles itself with the
+/// owner spelling — `Update source:team`, the same token every section and
+/// every other verb in the family uses — and only a run over several sources
+/// keeps a plural noun. The family had shipped `Add source:team`, `Update
+/// Sources` and `Show source:team` side by side, so the same command family
+/// named its subject three ways depending on which verb the reader reached for.
+#[test]
+fn every_single_subject_source_title_uses_the_owner_spelling() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/source");
+    let mut files = walk_rust_files(&dir);
+    files.sort();
+    let mut owner_titles = 0usize;
+    let mut plural_titles = 0usize;
+    let mut offenders = Vec::new();
+    for path in files {
+        if path.file_name().is_some_and(|n| n == "tests.rs") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let production = production_body(&body);
+        for (n, line) in production.lines().enumerate() {
+            owner_titles += line.matches("heading_owner_prefixed(").count();
+            let Some(at) = line.find(".heading(") else {
+                continue;
+            };
+            let arg = &line[at + ".heading(".len()..];
+            // The plural section constant and the plural literal are the two
+            // spellings a multi-subject run is allowed.
+            if arg.starts_with("SOURCES_SECTION") {
+                plural_titles += 1;
+                continue;
+            }
+            let Some(literal) = arg.strip_prefix('"').and_then(|r| r.split('"').next()) else {
+                continue;
+            };
+            if literal.ends_with("Sources") {
+                plural_titles += 1;
+                continue;
+            }
+            offenders.push(format!("{}:{}: {literal:?}", path.display(), n + 1));
+        }
+    }
+    assert!(
+        owner_titles >= 4 && plural_titles >= 2,
+        "the walk no longer reaches the `source` family's titles — it found \
+         {owner_titles} owner titles and {plural_titles} plural ones"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a `source` title naming one subject uses `heading_owner_prefixed` with \
+         the `source:<name>` owner; only a run over several sources keeps a \
+         plural noun:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every surface rendering the `Sources` section builds its rows through the
+/// ONE table builder. `cfgd source list` and `cfgd daemon status` had shipped
+/// two tables under one section name with disjoint columns, so the same
+/// question got two answers depending on which command a reader reached for.
+/// The section name is the shared constant too — a hand-written `"Sources"`
+/// literal is how the second table got there.
+#[test]
+fn both_sources_surfaces_render_through_the_one_table_builder() {
+    const OPENERS: &[&str] = &[".section(", ".section_if_nonempty(", ".heading("];
+    let mut tabled = Vec::new();
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources() {
+        let lines: Vec<&str> = body.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let opens_section = OPENERS.iter().any(|o| line.contains(o));
+            if opens_section
+                && line.contains("\"Sources\"")
+                && !line.contains("pub const SOURCES_SECTION")
+            {
+                offenders.push(format!(
+                    "{}:{}: the section name is `source::list::SOURCES_SECTION`",
+                    path.display(),
+                    n + 1
+                ));
+            }
+            if !opens_section {
+                continue;
+            }
+            // The section's own statement, so a table built elsewhere in the
+            // file — every one of these surfaces renders several — is not read
+            // as this section's. The name can sit a line below the opener, a
+            // long call being wrapped one argument per line.
+            let end = (n..lines.len())
+                .find(|&i| lines[i].trim_end().ends_with(");"))
+                .unwrap_or(lines.len() - 1);
+            let stmt = lines[n..=end].join("\n");
+            if !stmt.contains("SOURCES_SECTION") || !stmt.contains(".table(") {
+                continue;
+            }
+            tabled.push(format!("{}:{}", path.display(), n + 1));
+            if !stmt.contains("sources_table(") {
+                offenders.push(format!(
+                    "{}:{}: a Sources table builds through \
+                     `source::list::sources_table`",
+                    path.display(),
+                    n + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        tabled.len() >= 2,
+        "the walk no longer reaches the Sources tables — it found {tabled:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "one Sources section, one column set:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every subscription knob `source update` can write has a Title Case label,
+/// and `source update` renders that label rather than the wire key. `source
+/// show` had said `Require Signed Commits` while `source update` said
+/// `requireSignedCommits` for the same knob on the same source — two names for
+/// one thing, one of them a JSON field a reader never typed.
+///
+/// Read from the SOURCE of both lists, so a knob added to `SubscriptionEdits`
+/// without a label fails here rather than shipping its wire key to a terminal.
+#[test]
+fn every_subscription_knob_renders_a_title_case_label() {
+    let keys_of = |path: &str, marker: &str| -> Vec<String> {
+        let body =
+            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+                .expect("the source file is checked out");
+        let at = body.find(marker).expect("the list is where the pin says");
+        let open = array_of_pairs(&body, at);
+        let (_, span) = bracketed_span(&body, open);
+        let mut keys = Vec::new();
+        let mut rest = span;
+        while let Some(q) = rest.find("(\"") {
+            let Some(key) = rest[q + 2..].split('"').next() else {
+                break;
+            };
+            keys.push(key.to_string());
+            rest = &rest[q + 2 + key.len()..];
+        }
+        keys
+    };
+    let written = keys_of("src/cli/source/update.rs", "fn entries(&self)");
+    let labelled = keys_of("src/cli/source/mod.rs", "SUBSCRIPTION_KNOB_LABELS");
+    assert!(
+        written.contains(&"requireSignedCommits".to_string())
+            && written.contains(&"allowScripts".to_string()),
+        "the walk no longer reaches the knobs `source update` writes — it found \
+         {written:?}"
+    );
+    let unlabelled: Vec<&String> = written.iter().filter(|k| !labelled.contains(k)).collect();
+    assert!(
+        unlabelled.is_empty(),
+        "a subscription knob `source update` writes is rendered by its label, \
+         never by its wire key — these have none: {unlabelled:?}"
+    );
+    let body = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/source/mod.rs"),
+    )
+    .expect("the source file is checked out");
+    let at = body
+        .find("SUBSCRIPTION_KNOB_LABELS")
+        .expect("the table is where the pin says");
+    let open = array_of_pairs(&body, at);
+    let (_, span) = bracketed_span(&body, open);
+    let shouty: Vec<&str> = span
+        .split('"')
+        .skip(2)
+        .step_by(4)
+        .filter(|label| !is_title_case(label))
+        .collect();
+    assert!(
+        shouty.is_empty(),
+        "a subscription knob's label is Title Case like every other rendered \
+         label: {shouty:?}"
     );
 }
 
@@ -14127,6 +14715,93 @@ fn string_literal_spans(line: &str) -> Vec<(usize, usize)> {
 /// command (a `command_list` key, a next-step list entry) and everything after
 /// an `Examples:` marker in a clap `long_about`. Both are already a code slot,
 /// and a backtick there renders as a literal backtick.
+///
+/// The third half reads the commands cfgd is not: `kubectl`, `helm`, `brew`,
+/// `git`, `cosign`, `systemctl` and the rest of `INSTRUCTION_HEADS`. cfgd owns
+/// no verb list for those, so the anchor is the INSTRUCTION instead — a head
+/// the literal reaches through `Run `, `with `, `using ` or `via ` is a command
+/// the reader is being told to type, whoever ships it. That is also why
+/// narration is out of class and needs no marker: `Unloading: launchctl bootout
+/// …` in `build_daemon_uninstall_doc` reports the argv cfgd is running itself,
+/// so there is nothing for the reader to copy and a backtick span would style a
+/// sentence about cfgd's own work as if it were an invitation to run it.
+/// The payload keys that assert cfgd CHECKED something — a signature, an
+/// attestation, a digest. Every other boolean a payload carries reports a
+/// branch the code is standing in (`cancelled`, `alreadyConfigured`), which a
+/// literal states correctly; these three report an act, and a literal states an
+/// act that may never have happened.
+const VERIFICATION_PAYLOAD_KEYS: &[&str] = &["verified", "signed", "attested"];
+
+/// A payload key naming a verification carries the RESULT of one, never a
+/// literal. `kubectl cfgd debug` shipped `"verified": true` on every run while
+/// `cmd_debug_async` read no signature at all: it creates an ephemeral
+/// container, and a consumer gating a deploy on that field was gating on a
+/// constant. The fix is to answer the key or to drop it — a debug command that
+/// verifies nothing has nothing to say about verification.
+///
+/// A branch that IS the verification outcome says so with
+/// `// constant-payload-ok: <why>`, read like every other hatch in this file
+/// (the line, the line above, or the enclosing `fn`'s comment block).
+#[test]
+fn no_structured_payload_asserts_a_verification_it_never_ran() {
+    let mut checked = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, production) in cli_production_sources() {
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            for key in VERIFICATION_PAYLOAD_KEYS {
+                // Both payload spellings: a `json!` object member and the
+                // `(key, value)` pair form `upgraded_doc` takes.
+                let literal = trimmed.starts_with(&format!("\"{key}\":"))
+                    || trimmed.starts_with(&format!("(\"{key}\","));
+                if !literal {
+                    continue;
+                }
+                checked += 1;
+                if (trimmed.contains("true") || trimmed.contains("false"))
+                    && !label_hatched(&lines, n, "// constant-payload-ok:")
+                {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, trimmed));
+                }
+            }
+        }
+    }
+    assert!(
+        checked >= 3,
+        "the sweep no longer reaches the payload keys that name a verification \
+         — it found {checked}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a payload key naming a verification carries the result of one, never a \
+         literal:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The commands cfgd tells a reader to run that are not `cfgd` itself. The
+/// trailing space is part of the head: it is what makes `kubectl` the program
+/// rather than the first syllable of a longer word.
+const INSTRUCTION_HEADS: &[&str] = &[
+    "cfgd ",
+    "kubectl ",
+    "helm ",
+    "docker ",
+    "podman ",
+    "brew ",
+    "git ",
+    "cosign ",
+    "sops ",
+    "systemctl ",
+    "launchctl ",
+];
+
+/// What turns the mention of a program into an instruction to run it. A head
+/// the sentence reaches through one of these is addressed to the reader; one
+/// reached any other way is cfgd narrating its own work.
+const INSTRUCTION_CUES: &[&str] = &["Run ", "run ", "with ", "using ", "via "];
+
 #[test]
 fn every_command_a_message_names_is_quoted_in_backticks() {
     let walked: Vec<(std::path::PathBuf, String)> = cli_production_sources()
@@ -14155,6 +14830,7 @@ fn every_command_a_message_names_is_quoted_in_backticks() {
             .collect()
     };
     let mut named = 0usize;
+    let mut instructed = 0usize;
     let mut offenders: Vec<String> = Vec::new();
     for (path, production) in &walked {
         let lines: Vec<&str> = production.lines().collect();
@@ -14203,12 +14879,67 @@ fn every_command_a_message_names_is_quoted_in_backticks() {
                     offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
                 }
             }
+            for head in INSTRUCTION_HEADS {
+                for (at, _) in line.match_indices(head) {
+                    let Some(&(start, end)) = spans.iter().find(|(s, e)| *s <= at && at < *e)
+                    else {
+                        continue;
+                    };
+                    if line[..at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_ascii_alphanumeric() || "-/_.".contains(c))
+                    {
+                        continue;
+                    }
+                    // A head is an invocation only when a subcommand or a flag
+                    // follows it; `the git repository` names the tool, not a run.
+                    let rest = &line[at + head.len()..end.max(at + head.len())];
+                    if !rest.starts_with(|c: char| c.is_ascii_lowercase() || c == '-') {
+                        continue;
+                    }
+                    // cfgd's own verbs are known, so prose that merely mentions
+                    // the binary ("with cfgd modules mounted") is answerable.
+                    if *head == "cfgd " && !rest.starts_with('-') && !all.contains(&word(rest)) {
+                        continue;
+                    }
+                    // The cue reaches the head THROUGH the quoting a compliant
+                    // message already carries, and through `sudo`.
+                    let mut lead = &line[start..at];
+                    loop {
+                        let trimmed = lead.trim_end_matches('`').trim_end_matches("sudo ");
+                        if trimmed.len() == lead.len() {
+                            break;
+                        }
+                        lead = trimmed;
+                    }
+                    // "failed to run cosign attest" reports a run that already
+                    // happened; only a sentence addressed to the reader instructs.
+                    if lead.ends_with("to run ")
+                        || !INSTRUCTION_CUES.iter().any(|cue| lead.ends_with(cue))
+                    {
+                        continue;
+                    }
+                    named += 1;
+                    instructed += 1;
+                    if line[..at].matches('`').count() % 2 == 0
+                        && !label_hatched(&lines, n, "// name-row-ok:")
+                    {
+                        offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                    }
+                }
+            }
         }
     }
     assert!(
-        named >= 20,
+        named >= 100,
         "the sweep no longer reaches the messages that name a command — it \
          found {named}"
+    );
+    assert!(
+        instructed >= 40,
+        "the sweep no longer reaches the messages instructing a reader to run a \
+         command that is not cfgd — it found {instructed}"
     );
     assert!(
         offenders.is_empty(),
@@ -14244,29 +14975,98 @@ fn core_production_sources() -> Vec<(std::path::PathBuf, String)> {
 /// same as an unanswerable one on the very tables `Signed` had to join.
 #[test]
 fn no_column_hand_rolls_its_own_yes_no_rendering() {
-    let offenders: Vec<String> = cli_production_sources()
-        .into_iter()
-        .flat_map(|(path, production)| {
-            production
-                .lines()
-                .enumerate()
-                .filter(|(_, line)| {
-                    let code = line.trim_start();
-                    !code.starts_with("//")
-                        && code.contains(r#""yes""#)
-                        && code.contains("else")
-                        && !code.contains("yes_no")
-                })
-                .map(|(n, line)| format!("{}:{}: {}", path.display(), n + 1, line.trim()))
-                .collect::<Vec<_>>()
-        })
-        .collect();
+    let bools = bool_field_names();
+    let slots = [
+        ".kv(",
+        "KvPair::new(",
+        "KvPair::annotated(",
+        "KvPair::nested(",
+        "KvPair::role_valued(",
+    ];
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, production) in cli_production_sources() {
+        let lines: Vec<&str> = production.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            // rustfmt wraps a long call, so the value argument is judged with
+            // the two lines after the slot: a per-line scan sees the key on one
+            // line and the bool on the next, and matches neither.
+            let complete = code.matches('(').count() == code.matches(')').count();
+            let window = if complete {
+                code.to_string()
+            } else {
+                lines[n..lines.len().min(n + 3)].join(" ")
+            };
+            if window.contains("yes_no") {
+                continue;
+            }
+            let ternary = code.contains(r#""yes""#) && code.contains("else");
+            let poured = slots.iter().any(|slot| code.contains(slot))
+                && bools
+                    .iter()
+                    .any(|b| window.contains(&format!(".{b}.to_string()")));
+            if ternary || poured {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, code));
+            }
+        }
+    }
     assert!(
         offenders.is_empty(),
         "a yes/no cell renders through `cfgd_core::yes_no`, so `-` never means \
          `no`:\n{}",
         offenders.join("\n")
     );
+}
+
+/// Every field name declared `bool` in either crate, minus every name also
+/// declared as something else — so a cell rendering `.<name>.to_string()` can
+/// be judged from the call site alone, without resolving the type there. A name
+/// that is a bool in one struct and a `String` in another answers nothing, and
+/// is dropped rather than guessed at.
+fn bool_field_names() -> std::collections::BTreeSet<String> {
+    let mut bools = std::collections::BTreeSet::new();
+    let mut others = std::collections::BTreeSet::new();
+    for (_, production) in cli_production_sources()
+        .into_iter()
+        .chain(core_production_sources())
+    {
+        for line in production.lines() {
+            let code = line.trim_start().trim_end_matches(',');
+            let Some((name, ty)) = code.split_once(": ") else {
+                continue;
+            };
+            let name = name
+                .trim_start_matches("pub ")
+                .trim_start_matches("pub(crate) ");
+            if !name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                || name.is_empty()
+            {
+                continue;
+            }
+            // A struct LITERAL has the same `name: value` shape as a
+            // declaration; only a type-shaped right side is read as one, or
+            // every field name in the workspace is claimed by both sets.
+            if !ty.is_empty()
+                && ty.chars().all(|c| {
+                    c.is_ascii_alphanumeric()
+                        || matches!(c, '_' | ':' | '<' | '>' | ',' | ' ' | '&')
+                })
+            {
+                if ty == "bool" {
+                    bools.insert(name.to_string());
+                } else {
+                    others.insert(name.to_string());
+                }
+            }
+        }
+    }
+    bools.retain(|b| !others.contains(b));
+    bools
 }
 
 /// A `Last Sync` column carries an AGE, not the stored instant: the ISO 8601
@@ -14577,7 +15377,7 @@ fn cmd_source_override_set_succeeds() {
     drop(printer);
     let output = cap.human();
     assert!(
-        output.contains("Override set") && output.contains("packages.brew.ripgrep"),
+        output.contains("Set override") && output.contains("packages.brew.ripgrep"),
         "should confirm override set for packages.brew.ripgrep, got: {output}"
     );
 }
@@ -15657,7 +16457,7 @@ fn secret_init_prints_header_and_key_path() {
                 "expected key path in output, got: {output}"
             );
             assert!(
-                output.contains("Secrets setup complete") || output.contains("already initialized"),
+                output.contains("Set up secrets") || output.contains("already initialized"),
                 "expected completion message, got: {output}"
             );
         }
@@ -15847,13 +16647,14 @@ fn render_daemon_status_human_running_with_sources_and_update() {
     );
     printer.emit(super::daemon::build_daemon_status_doc(
         Some(&status),
+        &[],
         DAEMON_STATUS_NOW,
     ));
     drop(printer);
     let output = cap.human();
     assert!(output.contains("Daemon running"), "got: {output}");
     assert!(output.contains("4242"), "PID missing: {output}");
-    assert!(output.contains("3600s"), "uptime missing: {output}");
+    assert!(output.contains("1h"), "uptime missing: {output}");
     assert!(
         output.contains("Last Reconcile"),
         "last_reconcile row missing: {output}"
@@ -15892,6 +16693,7 @@ fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
     };
     printer.emit(super::daemon::build_daemon_status_doc(
         Some(&status),
+        &[],
         DAEMON_STATUS_NOW,
     ));
     drop(printer);
@@ -15917,6 +16719,7 @@ fn render_daemon_status_json_emits_some_status_shape() {
     let status = sample_daemon_status(99, 60, 1, vec![sample_source("s1", "ok", 0, None)], None);
     printer.emit(super::daemon::build_daemon_status_doc(
         Some(&status),
+        &[],
         DAEMON_STATUS_NOW,
     ));
     drop(printer);
@@ -15932,6 +16735,7 @@ fn render_daemon_status_json_emits_placeholder_when_none() {
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
     printer.emit(super::daemon::build_daemon_status_doc(
         None,
+        &[],
         DAEMON_STATUS_NOW,
     ));
     drop(printer);
@@ -17798,9 +18602,11 @@ fn cmd_status_with_sources_shows_source_section() {
         output.contains("team-config"),
         "should show source name, got: {output}"
     );
+    // The shared table words a never-fetched source the way `source list` and
+    // `daemon status` do, through `last_sync_display`.
     assert!(
-        output.contains("not yet fetched"),
-        "unfetched source should show 'not yet fetched', got: {output}"
+        output.contains("Last Sync") && output.contains("never"),
+        "an unfetched source reads `never` in the Last Sync column, got: {output}"
     );
 }
 
@@ -19513,7 +20319,7 @@ fn build_doctor_doc_module_package_installed_with_version_emits_ok() {
         "should show installed package with version and manager, got: {text}"
     );
     assert!(
-        text.contains("All checks passed"),
+        text.contains("Passed every check"),
         "all_passed should be true when package is installed, got: {text}"
     );
 }
@@ -19615,7 +20421,7 @@ fn build_doctor_doc_all_passed_true_when_everything_ok() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("All checks passed"),
+        text.contains("Passed every check"),
         "should show all-passed when output is clean, got: {text}"
     );
 }
@@ -19645,7 +20451,7 @@ fn build_doctor_doc_missing_config_does_not_fail_verdict() {
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("All checks passed"),
+        text.contains("Passed every check"),
         "missing config must not fail the doctor verdict, got: {text}"
     );
 }
@@ -20388,7 +21194,7 @@ fn cmd_compliance_export_writes_file_and_displays_path() {
     let output = h.output();
     // export writes a file and prints the path in a success message
     assert!(
-        output.contains("Compliance snapshot written to"),
+        output.contains("Wrote compliance snapshot to"),
         "should confirm file was written, got: {output}"
     );
     // The output should also include the export heading
@@ -20458,7 +21264,7 @@ spec:
     // The source sync will fail because the URL is non-existent — spinner
     // finishes with finish_fail("Failed to sync ...").
     h.assert_output_contains("source:team-config");
-    h.assert_output_contains("sync failed");
+    h.assert_output_contains("Sync failed");
 }
 
 // -----------------------------------------------------------------------
@@ -20578,7 +21384,7 @@ fn execute_dispatch_compliance_export() {
         command: Some(ComplianceCommand::Export),
     });
     super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
-    h.assert_output_contains("Compliance snapshot written to");
+    h.assert_output_contains("Wrote compliance snapshot to");
 }
 
 // ============================================================================
@@ -21620,7 +22426,7 @@ mod cmd_source_add_local {
             );
 
             h.assert_output_contains("source:doomed-src");
-            h.assert_output_contains("✗ update failed");
+            h.assert_output_contains("✗ Update failed");
 
             // The status update arm should have flipped the row to 'error'.
             let store =
@@ -22724,7 +23530,7 @@ fn build_doctor_doc_legacy_profile_warns_with_migrate_hint() {
         "should warn with the migrate remediation, got: {text}"
     );
     assert!(
-        text.contains("All checks passed"),
+        text.contains("Passed every check"),
         "legacy layout is supported — a WARN must not fail doctor, got: {text}"
     );
 }

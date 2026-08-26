@@ -223,7 +223,18 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
                 .with_config_dir(&target_dir)
-                .diffing_installed(&pkg_cx);
+                .diffing_installed(&pkg_cx)
+                // No profile was resolved, so the modules named on the command
+                // line are what the recorded apply was scoped to. Left unset,
+                // the row stores an empty scope and `cfgd status` shows no
+                // `Scope` until some later run happens to name one.
+                .recording_scope(
+                    args.apply_modules
+                        .iter()
+                        .map(|m| cfgd_core::reconciler::Owner::module(m).token())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
             // Survivor-gated pricing: only a package this plan will surface is
             // asked for the version its install action renders and persists.
             reconciler.fill_planned_versions(&mut resolved_modules, &mgr_map);
@@ -349,6 +360,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
             registry.file_manager = Some(Box::new(fm));
 
+            // recorded-scope-ok: this arm resolved a real profile, so the
+            // recorded scope is the profile name the reconciler already reads
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
                 .with_config_dir(&target_dir)
                 .diffing_installed(&pkg_cx);
@@ -906,7 +919,7 @@ pub(crate) fn regenerate_workflow(config_dir: &Path, printer: &Printer) -> anyho
 pub(super) fn check_prerequisites(printer: &Printer) -> bool {
     if !cfgd_core::command_available("git") {
         printer
-            .status(Role::Fail, "git is not installed")
+            .status(Role::Fail, "Git is not installed")
             .detail("cfgd requires git");
         if cfg!(target_os = "macos") {
             printer.hint("Install with: xcode-select --install");

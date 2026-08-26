@@ -58,8 +58,8 @@ pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> 
             ("Private Key", priv_path.clone()),
             ("Public Key", pub_path.clone()),
         ]);
-        printer.hint("Sign with: `cfgd module push --sign --key cosign.key ...`");
-        printer.hint("Verify with: cosign verify --key cosign.pub <artifact>");
+        printer.hint("Sign with `cfgd module push --sign --key cosign.key ...`");
+        printer.hint("Verify with `cosign verify --key cosign.pub <artifact>`");
         private_key = Some(priv_path);
         public_key = Some(pub_path);
     }
@@ -312,7 +312,7 @@ pub fn cmd_module_keys_rotate(
     };
     printer.emit(
         Doc::new()
-            .status(Role::Ok, "Key rotation complete")
+            .status(Role::Ok, "Rotated key")
             .with_data(serde_json::json!({
                 "dir": key_dir,
                 "backupPrivateKey": backup_key.display().to_string(),
