@@ -20,6 +20,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The escape a VT100 terminal shows its cursor on. Written from the signal
 /// hook with a raw `write(2)`, which is why it is bytes and not a `Term` call.
+/// The hook is the only writer and it is `cfg(unix)`, so on Windows the
+/// constant would be dead code — a `-D warnings` build error rather than a
+/// warning.
+#[cfg(unix)]
 const SHOW_CURSOR: &[u8] = b"\x1b[?25h";
 
 /// Whether the real terminal's cursor is hidden right now. Read from the
@@ -104,7 +108,8 @@ mod tests {
 
     /// The show sequence the hook writes is the one `console` itself writes,
     /// so a terminal that took the hide from `Term::hide_cursor` takes the
-    /// show from the raw bytes.
+    /// show from the raw bytes. Windows arms no hook and writes no sequence.
+    #[cfg(unix)]
     #[test]
     fn the_raw_show_sequence_is_consoles_own() {
         assert_eq!(SHOW_CURSOR, b"\x1b[?25h");
