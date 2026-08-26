@@ -72,6 +72,83 @@ fn init_happy_human() {
     assert_snapshot!(Path::new(SNAPSHOT_ROOT), "init/happy.txt", &normalized);
 }
 
+/// The `--from` path names its destination ONCE: the clone row is the verdict,
+/// and the `Initialized at` row a scaffold closes on would restate it one line
+/// down. The source repo is a local checkout so the clone is a real `git
+/// clone` with no network.
+#[test]
+fn init_from_a_local_repo_names_the_destination_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("upstream");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(
+        source.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: upstream\nspec: {}\n",
+    )
+    .unwrap();
+    let repo = git2::Repository::init(&source).unwrap();
+    {
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("cfgd.yaml")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("cfgd test", "test@cfgd.local").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+    }
+    let branch = repo.head().unwrap().shorthand().unwrap().to_string();
+    let target = tmp.path().join("from-cfg");
+    let target_str = target.to_string_lossy().into_owned();
+    let source_str = source.to_string_lossy().into_owned();
+    let args = InitArgs {
+        on_conflict: cfgd::cli::OnConflict::Ask,
+        path: Some(&target_str),
+        from: Some(&source_str),
+        branch: &branch,
+        name: None,
+        apply: false,
+        dry_run: false,
+        yes: true,
+        install_daemon: false,
+        theme: None,
+        apply_profile: None,
+        apply_modules: &[],
+        cache_dir: None,
+        state_dir: None,
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_init(&printer, &args).unwrap();
+    drop(printer);
+
+    let normalized = cfgd_core::normalize_for_snapshot(
+        &strip_ansi(&cap.human()),
+        &[(&target, "<TARGET_DIR>"), (&source, "<SOURCE_DIR>")],
+    );
+    // git's own passthrough (`Cloning into '…'…`, a local-clone warning that
+    // depends on the git version) sits one level under the clone row and is
+    // not cfgd's to word; the golden pins cfgd's rows.
+    let cfgd_rows: String = normalized
+        .lines()
+        .filter(|l| {
+            !(l.starts_with("    ") && l.trim_start().chars().next().is_some_and(|c| c.is_ascii()))
+        })
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert_eq!(
+        cfgd_rows.matches("<TARGET_DIR>").count(),
+        1,
+        "the destination is named once, on the clone row:\n{cfgd_rows}"
+    );
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "init/from_local_repo.txt",
+        &cfgd_rows
+    );
+}
+
 #[test]
 fn init_happy_json() {
     let tmp = tempfile::tempdir().unwrap();

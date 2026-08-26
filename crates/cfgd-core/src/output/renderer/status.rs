@@ -11,7 +11,7 @@ pub struct StatusFields<'a> {
     pub role: Role,
     pub subject: &'a str,
     pub detail: Option<&'a str>,
-    pub duration: Option<Duration>,
+    pub duration: Option<Elapsed>,
     pub target: Option<&'a Path>,
     /// Style for the SUBJECT only; the glyph always keeps the role's style.
     /// `None` = the subject is painted with the role style.
@@ -30,13 +30,41 @@ enum StatusRoute {
     Immediate,
 }
 
+/// What a status line's duration slot measures, beside how long it took.
+///
+/// A ROW's span is its own: the time that one action, spinner or command
+/// window ran. A run's closing total is WALL time — what the clock said —
+/// and the two are not the same quantity once anything ran in parallel:
+/// package lanes dispatched per manager sum to more than the run took, and a
+/// reader who adds a column of row spans against an unlabelled total reads
+/// the arithmetic as the numbers not being trustworthy. The total says which
+/// it is (` (278.2s wall)`); a row never does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Elapsed {
+    pub span: Duration,
+    /// Wall-clock, over work that may have overlapped.
+    pub wall: bool,
+}
+
+impl Elapsed {
+    /// One row's own span.
+    pub fn row(span: Duration) -> Self {
+        Self { span, wall: false }
+    }
+
+    /// A run's wall-clock total.
+    pub fn wall(span: Duration) -> Self {
+        Self { span, wall: true }
+    }
+}
+
 /// True when a status carries content after its subject, which is the only
 /// case either alignment path pads for. THE rule: `StatusFields` and
 /// `BufferedStatus` both answer through this, so the live column and the
 /// buffered close can never pad different sets of lines.
 pub(crate) fn has_trailing(
     detail: Option<&str>,
-    duration: Option<Duration>,
+    duration: Option<Elapsed>,
     target: Option<&Path>,
 ) -> bool {
     detail.is_some() || duration.is_some() || target.is_some()
@@ -132,24 +160,26 @@ pub(crate) fn compose_status(theme: &Theme, f: &StatusFields<'_>) -> (String, Ve
 /// Every duration slot on screen composes here — an action row's suffix, a
 /// spinner's settled line, the run rollup's total — so the floor below is the
 /// one place any of them can acquire it.
-fn duration_trailer(theme: &Theme, d: Duration) -> String {
-    theme.muted.apply_to(duration_text(d)).to_string()
+fn duration_trailer(theme: &Theme, e: Elapsed) -> String {
+    theme.muted.apply_to(duration_text(e)).to_string()
 }
 
 /// ` (12.1s)`, and ` (<0.1s)` for anything the one-decimal form would round to
-/// zero.
+/// zero; a wall-clock total closes on ` wall` (` (278.2s wall)`), the one word
+/// that tells a reader adding up the rows above it why they do not sum to it.
 ///
 /// "Took zero seconds" is the one thing the column can say that is certainly
 /// false, and it says it beside real measurements — a reader comparing rows
 /// reads it as a missing measurement rather than a fast one. The floor keeps
 /// the slot true at every magnitude: below the display resolution the column
 /// reports the resolution, not the value.
-fn duration_text(d: Duration) -> String {
-    let secs = d.as_secs_f64();
+fn duration_text(e: Elapsed) -> String {
+    let unit = if e.wall { "s wall" } else { "s" };
+    let secs = e.span.as_secs_f64();
     if secs < 0.05 {
-        return " (<0.1s)".to_string();
+        return format!(" (<0.1{unit})");
     }
-    format!(" ({secs:.1}s)")
+    format!(" ({secs:.1}{unit})")
 }
 
 /// Same composition as [`compose_status`], with the duration trailer held out
@@ -246,12 +276,20 @@ pub(crate) fn padded_for_column(
     f: &StatusFields<'_>,
     column: usize,
 ) -> Option<String> {
-    // A live group's rows arrive one at a time, so the only allowance knowable
-    // when its column is set is the glyph every row opens with. Reading this
-    // row's own trailing content instead would hand each row a different
-    // answer, which is the split this function exists to prevent.
-    let width = group_column(wrap_cols, depth, column, GLYPH_PREFIX_WIDTH);
+    let width = live_group_column(wrap_cols, depth, column);
     pad_subject(f.subject, width, f.has_trailing())
+}
+
+/// The column a LIVE group's rows settle against — the requested one, or none.
+///
+/// A live group's rows arrive one at a time, so the only allowance knowable
+/// when its column is set is the glyph every row opens with. Reading a row's
+/// own trailing content instead would hand each row a different answer, which
+/// is the split [`padded_for_column`] exists to prevent; the commit route
+/// reads the same answer so a wrapped row's trailer lands where the padded
+/// subjects do.
+pub(crate) fn live_group_column(wrap_cols: Option<usize>, depth: usize, column: usize) -> usize {
+    group_column(wrap_cols, depth, column, GLYPH_PREFIX_WIDTH)
 }
 
 impl Emitting<'_> {
@@ -305,7 +343,8 @@ impl Emitting<'_> {
                 }
             }
             StatusRoute::Live(width) => {
-                let padded = padded_for_column(self.wrap_cols, depth, f, width);
+                let column = live_group_column(self.wrap_cols, depth, width);
+                let padded = pad_subject(f.subject, column, f.has_trailing());
                 self.flush_section_headers();
                 self.drain_buffers();
                 match padded {
@@ -320,15 +359,16 @@ impl Emitting<'_> {
                             subject_style: f.subject_style.clone(),
                             detail_style: f.detail_style.clone(),
                         },
+                        column,
                     ),
-                    None => self.emit_status_line(depth, f),
+                    None => self.emit_status_line(depth, f, column),
                 }
             }
             StatusRoute::Immediate => {
                 self.open_top_group(super::TopGroup::Status);
                 self.flush_section_headers();
                 self.drain_buffers();
-                self.emit_status_line(depth, f);
+                self.emit_status_line(depth, f, 0);
                 self.mark_top_level_group(super::TopGroup::Status);
             }
         }
@@ -336,17 +376,27 @@ impl Emitting<'_> {
 
     /// Collect one composed status line and its continuation tails.
     ///
+    /// `column` is the group's settled alignment column — what
+    /// [`group_column`] answered for the set this row belongs to, `0` for a
+    /// row outside any aligned group — and is where a WRAPPED row lands its
+    /// duration. An unwrapped row never reads it: its subject was already
+    /// padded to that column by `pad_subject`, and the trailer follows the
+    /// detail. Threaded from the caller rather than re-derived here, because a
+    /// per-row anchor is what put one wrapped row's duration at the terminal
+    /// edge beside siblings that glued theirs.
+    ///
     /// Deliberately drains NOTHING: the pending-status drain emits through
     /// here, and a drain re-entered from inside itself would let a kv block
     /// written after these statuses render between them. Every other caller
     /// drains explicitly first.
-    pub(crate) fn emit_status_line(&mut self, depth: usize, f: &StatusFields<'_>) {
+    pub(crate) fn emit_status_line(&mut self, depth: usize, f: &StatusFields<'_>, column: usize) {
         let (line, trailer, detail_tail) = compose_status_split(self.theme, f);
-        self.push_line_undrained(depth, &line, trailer.as_deref());
+        let trailer_column = (column > 0).then(|| GLYPH_PREFIX_WIDTH + column);
+        self.push_line_undrained(depth, &line, trailer.as_deref(), trailer_column);
         // Continuation lines indent one level past the subject so they read as
         // belonging to this status rather than as new siblings.
         for tail in &detail_tail {
-            self.push_line_undrained(depth + 1, tail, None);
+            self.push_line_undrained(depth + 1, tail, None, None);
         }
     }
 }
@@ -393,7 +443,7 @@ impl Renderer {
         self.emit_with(w, |e| {
             e.flush_section_headers();
             e.drain_buffers();
-            e.emit_status_line(depth, f);
+            e.emit_status_line(depth, f, 0);
         });
     }
 
@@ -451,7 +501,7 @@ mod tests {
             role: Role::Ok,
             subject,
             detail: None,
-            duration: Some(Duration::from_millis(12_100)),
+            duration: Some(Elapsed::row(Duration::from_millis(12_100))),
             target: None,
             subject_style: None,
             detail_style: None,
@@ -569,7 +619,7 @@ mod tests {
                 role: Role::Ok,
                 subject: "done",
                 detail: None,
-                duration: Some(std::time::Duration::from_millis(1234)),
+                duration: Some(Elapsed::row(std::time::Duration::from_millis(1234))),
                 target: None,
                 subject_style: None,
                 detail_style: None,
@@ -745,35 +795,33 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_wrapped_statuss_duration_right_aligns_on_its_last_physical_line() {
-        // The apt-install shape from the brief this fix targets: a subject
-        // so long the whole composed line cannot fit even unpadded, so
-        // `pad_subject` gives up (`a_line_with_no_room_left_is_not_padded_at_all`)
-        // and the duration used to flow inline wherever the greedy word-wrap
-        // of the fully composed string happened to land it, reading as
-        // untimed in the duration column every other row aligns to.
-        let (r, sink, buf) = narrow(118);
-        let subject = "apt install build-essential, make, unzip, git, curl, ripgrep, xclip, \
+    /// The apt-install shape: a subject so long the whole composed line
+    /// cannot fit even unpadded, so it wraps and its duration has to land
+    /// somewhere on the last physical line.
+    const WRAPPING_SUBJECT: &str = "apt install build-essential, make, unzip, git, curl, ripgrep, xclip, \
                         wl-clipboard, xdg-utils, npm, python3, python3-pip, python3-venv, \
                         rustc, ruby-full, libyaml-dev";
-        r.render_status_immediate(
-            &sink,
-            1,
-            &StatusFields {
-                role: Role::Ok,
-                subject,
-                detail: None,
-                duration: Some(std::time::Duration::from_millis(23_600)),
-                target: None,
-                subject_style: None,
-                detail_style: None,
-            },
-        );
-        let out = crate::test_helpers::captured_text(&buf);
-        let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+
+    fn wrapping_row() -> StatusFields<'static> {
+        StatusFields {
+            role: Role::Ok,
+            subject: WRAPPING_SUBJECT,
+            detail: None,
+            duration: Some(Elapsed::row(std::time::Duration::from_millis(23_600))),
+            target: None,
+            subject_style: None,
+            detail_style: None,
+        }
+    }
+
+    fn wrapped_lines(out: &str) -> Vec<String> {
+        let lines: Vec<String> = out
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with("Phase"))
+            .map(str::to_string)
+            .collect();
         assert!(lines.len() > 1, "the subject needed to wrap: {lines:?}");
-        let last = *lines.last().unwrap_or(&"");
+        let last = lines.last().map(String::as_str).unwrap_or("");
         assert!(
             last.trim_end().ends_with("(23.6s)"),
             "the duration lands on the last wrapped line: {last:?}"
@@ -784,10 +832,60 @@ mod tests {
                 "the duration must not land mid-wrap: {lines:?}"
             );
         }
+        lines
+    }
+
+    #[test]
+    fn a_wrapped_row_outside_any_aligned_group_glues_its_duration_inline() {
+        // No group, no column: the duration follows the last word one space
+        // on, exactly as it does on a row short enough not to wrap. Anchoring
+        // it to the terminal edge instead was the one duration on the page in
+        // a column nothing else occupied.
+        let (r, sink, buf) = narrow(118);
+        r.render_status_immediate(&sink, 1, &wrapping_row());
+        let out = crate::test_helpers::captured_text(&buf);
+        let lines = wrapped_lines(&out);
+        let last = lines.last().map(String::as_str).unwrap_or("");
+        assert!(
+            last.ends_with("libyaml-dev (23.6s)"),
+            "the duration glues one space after the last word: {last:?}"
+        );
+    }
+
+    #[test]
+    fn a_wrapped_row_in_a_live_group_lands_its_duration_at_the_groups_column() {
+        // The report claimed a column its short rows pad their subjects to.
+        // The wrapped row cannot pad its subject — it is wider than the
+        // column — but its LAST line is short of it, so the duration opens at
+        // the same x every sibling's trailing content opens at.
+        let (r, sink, buf) = narrow(118);
+        r.render_section_open("Phase: Packages", /*keep_when_empty=*/ true);
+        r.render_section_live_column(70);
+        r.render_status(&sink, 1, &timed("brew install neovim"));
+        r.render_status(&sink, 1, &wrapping_row());
+        r.render_section_close(&sink);
+        let out = crate::test_helpers::captured_text(&buf);
+        // Columns, not byte offsets: the glyph is three bytes wide and one
+        // column, and the continuation line carries no glyph.
+        fn column_of(line: &str, needle: &str) -> Option<usize> {
+            line.find(needle)
+                .map(|at| console::measure_text_width(&line[..at]))
+        }
+        let short = out
+            .lines()
+            .find(|l| l.contains("brew install neovim"))
+            .unwrap_or_default();
+        let short_column = column_of(short, "(12.1s)");
+        assert!(
+            short_column.is_some(),
+            "the short row carries its duration: {out}"
+        );
+        let lines = wrapped_lines(&out);
+        let last = lines.last().map(String::as_str).unwrap_or("");
         assert_eq!(
-            console::measure_text_width(last),
-            118,
-            "the duration right-aligns to the shared duration column: {last:?}"
+            column_of(last, "(23.6s)"),
+            short_column,
+            "the wrapped row's duration opens where its sibling's does:\n{out}"
         );
     }
 
@@ -799,14 +897,42 @@ mod tests {
     #[test]
     fn a_sub_tick_duration_renders_the_floor_and_never_a_zero() {
         for millis in [0, 1, 20, 49] {
-            let text = duration_text(Duration::from_millis(millis));
+            let text = duration_text(Elapsed::row(Duration::from_millis(millis)));
             assert_eq!(text, " (<0.1s)", "{millis}ms must render the floor");
         }
         // The first measurement the one-decimal form can state truthfully is
         // the first one above the floor, so the two meet with no gap.
-        assert_eq!(duration_text(Duration::from_millis(50)), " (0.1s)");
-        assert_eq!(duration_text(Duration::from_millis(1600)), " (1.6s)");
-        assert_eq!(duration_text(Duration::from_secs(64)), " (64.0s)");
+        assert_eq!(
+            duration_text(Elapsed::row(Duration::from_millis(50))),
+            " (0.1s)"
+        );
+        assert_eq!(
+            duration_text(Elapsed::row(Duration::from_millis(1600))),
+            " (1.6s)"
+        );
+        assert_eq!(
+            duration_text(Elapsed::row(Duration::from_secs(64))),
+            " (64.0s)"
+        );
+    }
+
+    /// A wall-clock total names itself, at every magnitude the floor included,
+    /// and a row's own span never does: the word is what lets a reader add
+    /// the rows above a total and see why they do not sum to it.
+    #[test]
+    fn a_wall_clock_total_says_wall_and_a_row_span_does_not() {
+        assert_eq!(
+            duration_text(Elapsed::wall(Duration::from_millis(278_200))),
+            " (278.2s wall)"
+        );
+        assert_eq!(
+            duration_text(Elapsed::wall(Duration::ZERO)),
+            " (<0.1s wall)"
+        );
+        assert_eq!(
+            duration_text(Elapsed::row(Duration::from_millis(278_200))),
+            " (278.2s)"
+        );
     }
 
     /// Every duration slot on screen — an action row, a settled spinner, the
@@ -815,7 +941,7 @@ mod tests {
     #[test]
     fn every_duration_slot_composes_through_the_one_trailer() {
         let theme = Theme::default();
-        let d = Duration::from_millis(3);
+        let d = Elapsed::row(Duration::from_millis(3));
         let (line, _) = compose_status(
             &theme,
             &StatusFields {

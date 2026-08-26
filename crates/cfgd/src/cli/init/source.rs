@@ -74,9 +74,16 @@ pub(super) fn clone_into(
     branch: &str,
     printer: &Printer,
 ) -> anyhow::Result<()> {
-    // If target already has .git, it's already cloned — nothing to do.
+    // If target already has .git, it's already cloned — nothing to do. Named
+    // here because this is the one row the clone path prints about it.
     if target_dir.join(".git").exists() {
-        printer.status_simple(Role::Info, "Repository already exists, skipping clone");
+        printer.status_simple(
+            Role::Info,
+            format!(
+                "Repository already exists at {}, skipping clone",
+                target_dir.posix()
+            ),
+        );
         return Ok(());
     }
 

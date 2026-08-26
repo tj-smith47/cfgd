@@ -54,7 +54,7 @@ pub(crate) struct RowStatus<'a> {
     /// The detail states what the plan expected rather than what happened, so
     /// it renders muted — the same distinction `detail_muted_opt` draws.
     pub(crate) detail_muted: bool,
-    pub(crate) duration: Option<std::time::Duration>,
+    pub(crate) duration: Option<super::renderer::Elapsed>,
 }
 
 /// One line of the live region. Build with [`super::Printer::live_row_at`],

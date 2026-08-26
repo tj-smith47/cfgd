@@ -48,7 +48,9 @@ graph, described below. Everywhere else, execution follows the displayed order.
 Those three tiers are also a barrier: a tier starts only once every action in the tier
 above it has *finished*. Inside a tier, package work runs **concurrently, one lane per
 package manager family**, so `brew install` and `apt install` proceed at the same time
-while a single manager still runs one operation at a time. A *family* is the managers
+while a single manager still runs one operation at a time. Each row's `(23.8s)` is that
+lane's own span; the closing line's total is wall-clock time and says so (`(278.2s wall)`),
+which is why the rows of a concurrent phase can add up to more than the run took. A *family* is the managers
 sharing one binary: `brew`, `brew-tap` and `brew-cask` are three names for one `brew`, so
 they share a lane and cfgd never runs two `brew` processes at once. Three more rules narrow
 that:

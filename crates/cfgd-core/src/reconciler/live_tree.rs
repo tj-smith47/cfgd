@@ -292,7 +292,7 @@ impl<'p, 'g> PhaseTree<'p, 'g> {
                     subject: &outcome.subject,
                     detail: outcome.detail.as_deref(),
                     detail_muted: outcome.detail_muted,
-                    duration: outcome.duration,
+                    duration: outcome.duration.map(crate::output::renderer::Elapsed::row),
                 },
                 self.width,
             );

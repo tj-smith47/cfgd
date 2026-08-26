@@ -15786,6 +15786,185 @@ fn every_command_a_message_names_is_quoted_in_backticks() {
     );
 }
 
+/// Every note a provider emits under an action row takes its role from ONE
+/// axis — must the reader act? — and the walk reads that axis off the message.
+///
+/// `ActionNote`'s contract: a caveat or a degraded fallback is `Role::Warn`, a
+/// report of work done on the side is `Role::Info`, an instruction is
+/// `next_step`, and nothing is `Role::Ok` — a second `✓` under a row the
+/// reconciler already settled claims a second success. The Caveats block
+/// once rendered `⚠` over "Bash completion has been installed to:" beside `◉`
+/// over "npm has no writable global prefix; installing into …": the report
+/// wore the triangle and the fallback the dot, and the block read as though
+/// the install had gone wrong at exactly the row that had gone right.
+///
+/// Judged on the literal only: a message built from a variable is judged by
+/// its own producer's unit test. A brew caveat body is classified at runtime
+/// (`brew_caveat_asks_the_reader_to_act`) and pinned there.
+#[test]
+fn every_provider_note_takes_its_role_from_whether_the_reader_must_act() {
+    // What makes a message a degraded outcome the reader has to act on.
+    const DEGRADED: &[&str] = &[
+        "fail",
+        "could not",
+        "cannot",
+        "unable",
+        "no writable",
+        "retry",
+        "trying the next",
+        "ignored",
+        "missing",
+        "deferred",
+        "not installed",
+        "not supported",
+        "restoring previous",
+        "expired",
+    ];
+    // What makes a message a report of work done on the side.
+    const REPORT_OPENERS: &[&str] = &[
+        "Updated ",
+        "Created ",
+        "Creating ",
+        "Started ",
+        "Stopped ",
+        "Set ",
+        "Setting ",
+        "Installed ",
+        "Installing ",
+        "Writing ",
+        "Wrote ",
+        "Loading ",
+        "Restarting ",
+        "Managing ",
+        "Generated ",
+        "created ",
+        "removing ",
+        "sysctl ",
+        "systemctl ",
+        "modprobe ",
+        "gsettings ",
+        "xfconf",
+        "git config",
+        "containerd: setting",
+    ];
+    // What makes a message an instruction to the reader.
+    const INSTRUCTION_OPENERS: &[&str] = &[
+        "Add ",
+        "Run ",
+        "Source ",
+        "Open a",
+        "Log out",
+        "Restart your",
+        "Re-login",
+        "You ",
+    ];
+    let providers_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let sources: Vec<(std::path::PathBuf, String)> = ["packages", "system"]
+        .iter()
+        .flat_map(|dir| {
+            let mut files = walk_rust_files(&providers_root.join(dir));
+            files.sort();
+            files
+        })
+        .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+        .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+        .filter(|p| {
+            p.file_name()
+                .is_none_or(|n| n != "tests_snapshot_bridge.rs")
+        })
+        .filter_map(|path| {
+            let body = std::fs::read_to_string(&path).ok()?;
+            Some((path, production_body(&body)))
+        })
+        .collect();
+
+    /// The first string literal in `args`, and what follows it.
+    fn leading_literal(args: &str) -> Option<(&str, &str)> {
+        let rest = args.trim_start();
+        let rest = rest.strip_prefix("format!(").unwrap_or(rest).trim_start();
+        let body = rest.strip_prefix('"')?;
+        let end = body.find('"')?;
+        Some((&body[..end], &body[end + 1..]))
+    }
+
+    let mut judged = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, body) in &sources {
+        // A package manager's report carries its tag between the role and
+        // the message; a configurator's does not.
+        let tagged = path.components().any(|c| c.as_os_str() == "packages");
+        let mut rest = body.as_str();
+        while let Some(at) = rest.find(".report(") {
+            let call = &rest[at + ".report(".len()..];
+            let line = body.len() - rest.len() + at;
+            let line_no = body[..line].lines().count();
+            let head: String = call.chars().take(400).collect();
+            let head = head.split_whitespace().collect::<Vec<_>>().join(" ");
+            rest = &rest[at + ".report(".len()..];
+            let Some(role) = head
+                .strip_prefix("Role::")
+                .and_then(|r| r.split(',').next())
+            else {
+                continue;
+            };
+            let where_ = format!("{}:{}", path.display(), line_no);
+            if role == "Ok" {
+                offenders.push(format!(
+                    "{where_}: Role::Ok — a note under a settled row never claims a second ✓; a side report is Role::Info"
+                ));
+                continue;
+            }
+            let mut args = head[head.find(',').map_or(0, |i| i + 1)..].trim_start();
+            if tagged {
+                // Past the tag, literal or bound.
+                args = match leading_literal(args) {
+                    Some((_, after)) => after,
+                    None => &args[args.find(',').map_or(args.len(), |i| i + 1)..],
+                };
+                args = args
+                    .trim_start()
+                    .strip_prefix(',')
+                    .unwrap_or(args)
+                    .trim_start();
+            }
+            let Some((literal, _)) = leading_literal(args) else {
+                continue;
+            };
+            // A bare interpolation carries its words elsewhere.
+            if literal.trim_start().starts_with('{') {
+                continue;
+            }
+            judged += 1;
+            let lower = literal.to_lowercase();
+            let degraded = DEGRADED.iter().any(|m| lower.contains(m));
+            let report = REPORT_OPENERS.iter().any(|o| literal.starts_with(o));
+            let instruction = INSTRUCTION_OPENERS.iter().any(|o| literal.starts_with(o));
+            if instruction {
+                offenders.push(format!(
+                    "{where_}: {literal:?} instructs the reader — route it through `next_step`, not `report`"
+                ));
+            } else if role == "Info" && degraded {
+                offenders.push(format!(
+                    "{where_}: {literal:?} is a degraded outcome reported as Role::Info"
+                ));
+            } else if role == "Warn" && report && !degraded {
+                offenders.push(format!(
+                    "{where_}: {literal:?} reports work done, but warns about it"
+                ));
+            }
+        }
+    }
+    assert!(
+        judged >= 30,
+        "the walk must reach the provider population, judged {judged}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "every provider note's role answers one question — must the reader act?:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// The same walk over `cfgd-core`'s production sources: the messages a library
 /// surface composes reach the same terminal as the binary crate's.
 fn core_production_sources() -> Vec<(std::path::PathBuf, String)> {

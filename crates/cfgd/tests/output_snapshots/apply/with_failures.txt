@@ -11,4 +11,4 @@ Phase: Files
 
 ⚠ Apply partial — 1 of 2 applied
 ✓ 1 action succeeded
-1 action failed (XXs)
+1 action failed (XXs wall)

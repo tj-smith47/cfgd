@@ -72,6 +72,10 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
         .from
         .map(|f| cfgd_core::resolve_repo_reference(f).into_owned());
     let from_used = from.is_some();
+    // A clonable `--from` names the directory itself, on the clone row or the
+    // `Already initialized` one `resolve_from` prints; the closing row below
+    // is for the run that scaffolded, not a restatement of the row above it.
+    let destination_named_by_clone = from.as_deref().is_some_and(is_clonable_source);
     let target_dir = if let Some(from) = from.as_deref() {
         let explicit_path = args.path.map(|p| cfgd_core::expand_tilde(Path::new(p)));
         resolve_from(from, explicit_path.as_deref(), args.branch, printer)?
@@ -153,7 +157,9 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
         }
     }
 
-    printer.status_simple(Role::Ok, format!("Initialized at {}", target_dir.posix()));
+    if !destination_named_by_clone {
+        printer.status_simple(Role::Ok, format!("Initialized at {}", target_dir.posix()));
+    }
 
     // Close the section explicitly, here, rather than letting it fall out of
     // scope at function end: the phases that follow (`Apply` / `Plan` /

@@ -25,7 +25,7 @@ pub(crate) mod wrap;
 pub(crate) use glyphs::{
     action_detail_is_muted, action_subject_style, finalize_subject, role_glyph,
 };
-pub use status::StatusFields;
+pub use status::{Elapsed, StatusFields};
 pub use table::Table;
 
 /// The ONE `"  ".repeat(depth)` in the workspace. Every surface that indents
@@ -651,23 +651,24 @@ impl Emitting<'_> {
     /// statuses a section holds back for column alignment would render *after*
     /// this line, inverting the call order.
     pub(crate) fn push_line(&mut self, depth: usize, body: &str) {
-        self.push_line_with_trailer(depth, body, None);
+        self.push_line_with_trailer(depth, body, None, None);
     }
 
     /// Same as [`Self::push_line`], but with `trailer` — a status line's
-    /// duration suffix — anchored to the shared duration column on the LAST
-    /// physical line a wrap produces (`wrap::wrap_body_with_trailer`)
-    /// instead of flowing inline with the rest of the wrapped body, where a
-    /// long enough subject strands it off the column every other row in the
-    /// section pads its own duration to.
+    /// duration suffix — landed on the LAST physical line a wrap produces
+    /// (`wrap::wrap_body_with_trailer`) at `trailer_column`, the group's
+    /// settled alignment column measured from the glyph, instead of flowing
+    /// inline with the rest of the wrapped body. `None` is a group with no
+    /// column, where the trailer glues inline as it does on every sibling.
     pub(crate) fn push_line_with_trailer(
         &mut self,
         depth: usize,
         body: &str,
         trailer: Option<&str>,
+        trailer_column: Option<usize>,
     ) {
         self.drain_buffers();
-        self.push_line_undrained(depth, body, trailer);
+        self.push_line_undrained(depth, body, trailer, trailer_column);
     }
 
     /// Empty both deferred buffers, oldest content first.
@@ -685,7 +686,13 @@ impl Emitting<'_> {
     /// [`Self::push_line_with_trailer`] without the drain, for the drains
     /// themselves: a status flushed out of a section's pending buffer must not
     /// re-enter the drain, or a kv block written after it slips in first.
-    pub(crate) fn push_line_undrained(&mut self, depth: usize, body: &str, trailer: Option<&str>) {
+    pub(crate) fn push_line_undrained(
+        &mut self,
+        depth: usize,
+        body: &str,
+        trailer: Option<&str>,
+        trailer_column: Option<usize>,
+    ) {
         // The sink appends its own trailing newline per line, so a trailing
         // newline already in `body` would smuggle a physical line break past
         // the blank-line accounting (a Status subject ending with `\n` would
@@ -706,7 +713,12 @@ impl Emitting<'_> {
         // sets the flag back true after this call returns.
         self.state.last_was_top_heading = false;
         let prefix = indent_prefix(depth);
-        for physical in wrap::wrap_body_with_trailer(trimmed, &prefix, self.wrap_cols, trailer) {
+        // The group measures its column from the glyph; the wrap measures a
+        // row from the margin.
+        let column = trailer_column.map(|c| prefix.len() + c);
+        for physical in
+            wrap::wrap_body_with_trailer(trimmed, &prefix, self.wrap_cols, trailer, column)
+        {
             self.out.push(physical);
         }
     }

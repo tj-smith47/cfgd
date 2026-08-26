@@ -798,3 +798,24 @@ fn strip_windows_verbatim_is_a_noop_without_the_prefix() {
         "/etc/cfgd/cfgd.yaml"
     );
 }
+
+/// A run's wall-clock total keeps its word through the normalizer, so a
+/// golden pins that the closing line says `wall` and a row does not.
+#[test]
+fn normalize_snapshot_durations_keeps_the_wall_clock_word() {
+    assert_eq!(
+        super::normalize_snapshot_durations(
+            "✓ brew install jq (35.9s)\n✓ Apply complete — 21 actions succeeded (278.2s wall)\n"
+        ),
+        "✓ brew install jq (XXs)\n✓ Apply complete — 21 actions succeeded (XXs wall)\n"
+    );
+    assert_eq!(
+        super::normalize_snapshot_durations("— Backup did not run — 3 not attempted (<0.1s wall)"),
+        "— Backup did not run — 3 not attempted (XXs wall)"
+    );
+    assert_eq!(
+        super::normalize_snapshot_durations("(1.0s wal)"),
+        "(1.0s wal)",
+        "a near miss is not a duration"
+    );
+}

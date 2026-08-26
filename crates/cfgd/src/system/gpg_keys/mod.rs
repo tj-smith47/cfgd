@@ -500,7 +500,7 @@ impl SystemConfigurator for GpgKeysConfigurator {
 
             if let Some(k) = new_key {
                 cx.report(
-                    Role::Ok,
+                    Role::Info,
                     format!(
                         "gpgKeys: generated key for {} <{}> — fingerprint {}",
                         spec.real_name, spec.email, k.fingerprint

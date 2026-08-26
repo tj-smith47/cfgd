@@ -243,11 +243,11 @@ Phase: Prerequisites
   cfgd:session
     ✓ publish 1 var to the session manager
 
-✓ Apply complete — 6 actions succeeded (0.3s)
+✓ Apply complete — 6 actions succeeded (0.3s wall)
 
 Caveats
   cfgd:env
-    ⚠ run `source ~/.cfgd.env`, or open a new shell
+    → Run `source ~/.cfgd.env`, or open a new shell
 
 # Now every entry point sees it, no re-login:
 $ ssh localhost 'echo $EDITOR'            # non-interactive ssh command
@@ -264,13 +264,14 @@ vars and aliases, while `environment.d` and the macOS LaunchAgent carry env vars
 A host with no session manager to publish to (a container, a Linux box without a systemd
 user manager) still lists the `cfgd:session` row, with the reason in place of a result, and
 prices it outside the run's count at both ends: the header's `Actions` row never promised
-it, and the closing line names it only in its parenthetical:
+it, and the closing line names it as the last clause of its count list, with the reason after
+a colon (the one parenthetical on that line is the elapsed):
 
 ```console
   cfgd:session
     ∅ publish 1 var to the session manager — no session manager
 
-✓ Apply complete — 5 actions succeeded (1 not attempted — no session manager) (0.3s)
+✓ Apply complete — 5 actions succeeded, 1 not attempted: no session manager (0.3s wall)
 ```
 
 `-o json` carries the same split as `succeeded` / `skipped` / `notAttempted`; the stored

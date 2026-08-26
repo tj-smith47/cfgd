@@ -22477,7 +22477,7 @@ fn platform_skip_renders_as_header_annotation_not_a_phase() {
             // LAST parenthesis on the line — a skip reason has parentheses of
             // its own that must survive.
             match l.rfind(" (") {
-                Some(i) if l.ends_with("s)") && l.starts_with('\u{2713}') => l[..i].to_string(),
+                Some(i) if l.ends_with(" wall)") && l.starts_with('\u{2713}') => l[..i].to_string(),
                 _ => l.to_string(),
             }
         })

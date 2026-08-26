@@ -428,8 +428,8 @@ fn rollup_attaches_elapsed_to_the_last_line_emitted() {
         .find(|l| l.contains("1 action failed"))
         .unwrap_or_default();
     assert!(
-        failed_line.contains("(0.4s)"),
-        "duration must ride the failure line: {out:?}"
+        failed_line.contains("(0.4s wall)"),
+        "the run's total rides the failure line, and names itself wall time: {out:?}"
     );
     assert!(
         !out.lines()
@@ -529,18 +529,23 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
     );
     assert_eq!(
         outcome_counts(&tally),
-        "2 actions succeeded, 1 skipped (1 not attempted — no session manager)"
+        "2 actions succeeded, 1 skipped, 1 not attempted: no session manager"
     );
 
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    render_run_rollup(&tally, RunTitle::Apply, &printer, None);
+    render_run_rollup(
+        &tally,
+        RunTitle::Apply,
+        &printer,
+        Some(Duration::from_millis(278_200)),
+    );
     drop(printer);
     let out = crate::test_helpers::captured_text(&buf);
     assert!(
         out.contains(
-            "Apply complete — 2 actions succeeded, 1 skipped (1 not attempted — no session manager)"
+            "Apply complete — 2 actions succeeded, 1 skipped, 1 not attempted: no session manager (278.2s wall)"
         ),
-        "the verdict prices the withheld action in its parenthetical only: {out:?}"
+        "the verdict prices the withheld action as one more clause of the count list: {out:?}"
     );
     assert_eq!(
         out.matches("not attempted").count(),
@@ -551,8 +556,49 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
     // A second reason is a second clause, not a second count; one reason twice
     // is one clause over a count of two.
     tally_with_reasons(&["a", "a", "b"], |counts| {
-        assert_eq!(counts, "2 actions succeeded (3 not attempted — a, b)");
+        assert_eq!(counts, "2 actions succeeded, 3 not attempted: a, b");
     });
+}
+
+/// The closing line carries ONE em-dash — the title's join to its detail — and
+/// ONE trailing parenthetical, the elapsed. The withheld clause used to bring a
+/// second of each: `(1 not attempted — no session manager) (278.2s)` nested an
+/// em-dash under the detail's and set a caveat's parenthetical beside a
+/// measurement's, on the line a reader stops on.
+#[test]
+fn the_closing_line_holds_one_em_dash_and_one_trailing_parenthetical() {
+    let tally = RunTally {
+        succeeded: 21,
+        skipped: 0,
+        not_attempted: vec![crate::NO_SESSION_MANAGER.to_string()],
+        failed: 0,
+        planned_total: 21,
+        status: ApplyStatus::Success,
+        aborted: None,
+    };
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    render_run_rollup(
+        &tally,
+        RunTitle::Apply,
+        &printer,
+        Some(Duration::from_millis(278_200)),
+    );
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+    let line = out
+        .lines()
+        .find(|l| l.contains("complete"))
+        .unwrap_or_default();
+    assert_eq!(line.matches(" — ").count(), 1, "one em-dash: {line:?}");
+    assert_eq!(line.matches('(').count(), 1, "one parenthetical: {line:?}");
+    assert!(
+        !line.contains(") ("),
+        "never two parentheticals back to back: {line:?}"
+    );
+    assert!(
+        line.ends_with(" wall)"),
+        "the one parenthetical is the wall-clock total: {line:?}"
+    );
 }
 
 fn tally_with_reasons(reasons: &[&str], check: impl FnOnce(String)) {

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use super::Role;
 use super::component::StatusLabel;
-use super::renderer::{Renderer, StatusFields, Writer, finalize_subject};
+use super::renderer::{Elapsed, Renderer, StatusFields, Writer, finalize_subject};
 use super::theme::ThemedStyle;
 
 /// Builder for one Status line. Commits on Drop.
@@ -26,7 +26,7 @@ pub struct StatusBuilder<'p> {
     pub(crate) role: Role,
     pub(crate) subject: String,
     pub(crate) detail: Option<String>,
-    pub(crate) duration: Option<Duration>,
+    pub(crate) duration: Option<Elapsed>,
     pub(crate) target: Option<PathBuf>,
     pub(crate) qualifier: Option<String>,
     pub(crate) label: Option<StatusLabel>,
@@ -123,8 +123,17 @@ impl<'p> StatusBuilder<'p> {
         self
     }
 
+    /// This row's own span.
     pub fn duration(mut self, d: Duration) -> Self {
-        self.duration = Some(d);
+        self.duration = Some(Elapsed::row(d));
+        self
+    }
+
+    /// A run's wall-clock total — renders ` (278.2s wall)`, so a reader adding
+    /// up the rows above it is told why concurrent lanes sum to more. For the
+    /// closing rollup only; a row is never wall time.
+    pub fn wall_duration(mut self, d: Duration) -> Self {
+        self.duration = Some(Elapsed::wall(d));
         self
     }
 

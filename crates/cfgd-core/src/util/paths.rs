@@ -1239,8 +1239,8 @@ pub fn normalize_snapshot_durations(raw: &str) -> String {
     let mut i = 0;
     while i < chars.len() {
         match duration_span(&chars[i..]) {
-            Some(len) => {
-                out.push_str(" (XXs)");
+            Some((len, wall)) => {
+                out.push_str(if wall { " (XXs wall)" } else { " (XXs)" });
                 i += len;
             }
             None => {
@@ -1253,8 +1253,9 @@ pub fn normalize_snapshot_durations(raw: &str) -> String {
 }
 
 /// Length in chars of a ` (N.Ns)` or ` (<0.1s)` suffix opening at `window`, if
-/// there is one.
-fn duration_span(window: &[char]) -> Option<usize> {
+/// there is one, and whether it is the wall-clock form (` (N.Ns wall)`) — a
+/// golden keeps the word, so the vocabulary of a run's total stays pinned.
+fn duration_span(window: &[char]) -> Option<(usize, bool)> {
     if window.len() < 7 || window[0] != ' ' || window[1] != '(' {
         return None;
     }
@@ -1271,10 +1272,18 @@ fn duration_span(window: &[char]) -> Option<usize> {
     if window.get(i) != Some(&'.') || !window.get(i + 1).is_some_and(char::is_ascii_digit) {
         return None;
     }
-    if window.get(i + 2) != Some(&'s') || window.get(i + 3) != Some(&')') {
+    if window.get(i + 2) != Some(&'s') {
         return None;
     }
-    Some(i + 4)
+    let wall = [' ', 'w', 'a', 'l', 'l']
+        .iter()
+        .enumerate()
+        .all(|(k, c)| window.get(i + 3 + k) == Some(c));
+    let close = if wall { i + 8 } else { i + 3 };
+    if window.get(close) != Some(&')') {
+        return None;
+    }
+    Some((close + 1, wall))
 }
 
 /// Composite normalizer for snapshot tests: CRLF→LF, fold `\`→`/`, then

@@ -77,7 +77,7 @@ backup:notes-db
 backup:journal
   ✓ snapshot journal.20260813T061306Z                                                  — 24 B
 
-✓ Backup complete — 4 actions succeeded (0.2s)
+✓ Backup complete — 4 actions succeeded (0.2s wall)
 
 $ cfgd backup run missing-name
 ✗ Backup 'missing-name' not found
@@ -437,7 +437,7 @@ Backup
 backup:notes-db
   — snapshot                           — already running (pid 3349308)
 
-— Backup did not run — 3 actions not attempted (<0.1s)
+— Backup did not run — 3 actions not attempted (<0.1s wall)
 $ echo $?
 1
 ```
@@ -481,7 +481,7 @@ backup:notes-db
   ✓ postBackup: sqlite3 ~/.local/share/notes/notes.db "PRAGMA quick_check"             (0.1s)
   ✓ snapshot notes.db.20260813T061559Z                                                 — 8.0 KB
 
-✓ Backup complete — 3 actions succeeded (0.2s)
+✓ Backup complete — 3 actions succeeded (0.2s wall)
 09:05:01  INFO daemon: scheduled backup notes-db completed
 ```
 
@@ -559,7 +559,7 @@ backup:notes-db
   Destination  /home/me/.local/share/notes/notes.db
   → Previous contents saved to /home/me/.local/state/cfgd/backups/notes-db/notes.db.20260813T061347Z
 
-✓ Restore complete — 1 action succeeded (0.3s)
+✓ Restore complete — 1 action succeeded (0.3s wall)
 ```
 
 ```bash

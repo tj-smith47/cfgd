@@ -16,4 +16,4 @@ Phase: Files
   profile:tiny
     ✓ create <TARGET> (XXs)
 
-✓ Apply complete — 3 actions succeeded (XXs)
+✓ Apply complete — 3 actions succeeded (XXs wall)

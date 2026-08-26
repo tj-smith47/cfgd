@@ -511,6 +511,21 @@ impl NoteSink {
         self.report_tagged(printer, role, None, message);
     }
 
+    /// The same routing for a NEXT STEP — [`ActionNote::next_step`] under a
+    /// collecting sink, a `Printer::hint` standalone — so an instruction never
+    /// goes out through [`report`](Self::report) wearing a report's glyph.
+    pub fn next_step(&self, printer: &Printer, message: impl Into<String>) {
+        let message = message.into();
+        if message.trim().is_empty() {
+            return;
+        }
+        if self.collecting {
+            self.push(ActionNote::next_step(message));
+        } else {
+            printer.hint(message);
+        }
+    }
+
     /// Drain — called by the reconciler once per action, after its status.
     pub fn take(&self) -> Vec<ActionNote> {
         std::mem::take(&mut *self.notes.lock().unwrap_or_else(|e| e.into_inner()))
@@ -924,6 +939,15 @@ impl<'a> SystemContext<'a> {
     /// that action's line; standalone it settles on its own.
     pub fn report(&self, role: Role, message: impl Into<String>) {
         self.notes.report(self.printer, role, message);
+    }
+
+    /// A NEXT STEP for the reader — source a file, open a new shell — which
+    /// is an instruction, never a report, and renders as a hint. The role of
+    /// every note a configurator emits is settled on one axis: must the reader
+    /// act? A caveat or a degraded fallback is [`Role::Warn`]; a report of
+    /// work done on the side is [`Role::Info`]; an instruction is this.
+    pub fn next_step(&self, message: impl Into<String>) {
+        self.notes.next_step(self.printer, message);
     }
 
     /// Run a command with a live output window that collapses WITHOUT settling a
@@ -2607,5 +2631,36 @@ mod tests {
         let parsed: PackageInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.name, info.name);
         assert_eq!(parsed.version, info.version);
+    }
+
+    /// A configurator's next step reaches the reader as a HINT on both
+    /// routes: pushed as `ActionNote::next_step` under a collecting sink, and
+    /// settled through `Printer::hint` standalone — never as a `report` line
+    /// wearing a report's glyph over a sentence that reports nothing.
+    #[test]
+    fn a_configurator_next_step_is_a_hint_on_both_routes() {
+        let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+        let sink = NoteSink::default();
+        SystemContext::with_notes(&printer, &sink)
+            .next_step("Add `. ~/.config/cfgd/env.sh` to your shell rc");
+        SystemContext::with_notes(&printer, &sink).next_step("   ");
+        let notes = sink.take();
+        assert_eq!(notes.len(), 1, "a blank next step is refused: {notes:?}");
+        assert_eq!(
+            notes[0],
+            ActionNote::next_step("Add `. ~/.config/cfgd/env.sh` to your shell rc")
+        );
+        assert!(
+            crate::test_helpers::captured_text(&buf).is_empty(),
+            "a collected next step settles nothing on the printer"
+        );
+
+        SystemContext::new(&printer).next_step("Open a new shell");
+        drop(printer);
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("→ Open a new shell"),
+            "standalone, the next step settles as a hint: {out:?}"
+        );
     }
 }

@@ -173,7 +173,7 @@ Phase: Packages
     ✓ slowbox install epsilon (6.0s)
 
 ⚠ apply aborted by signal — 2 of 3 actions applied; no partial writes, rerun to converge
-◉ 1 action not attempted (6.0s)
+◉ 1 action not attempted (6.0s wall)
 $ echo $?
 130
 ```

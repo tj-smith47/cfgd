@@ -676,9 +676,11 @@ impl PackageManager for NpmManager {
             // directory under this prefix is reported through
             // `created_path_dirs` and written into the generated env file, so
             // an instruction to add it by hand would be stale the moment the
-            // env layer runs.
+            // env layer runs. `Warn`, not `Info`: the configured prefix was
+            // refused and the install went somewhere else, which is a
+            // degraded fallback whatever the packages did afterwards.
             cx.report(
-                Role::Info,
+                Role::Warn,
                 "npm",
                 format!(
                     "npm has no writable global prefix; installing into {}",

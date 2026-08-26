@@ -178,11 +178,86 @@ fn npm_warn_parts(line: &str) -> Option<(&str, &str)> {
 /// blank body paints a lone glyph beside an owner tag and tells a reader
 /// nothing — see `no_manager_can_emit_an_empty_caveat`.
 pub(super) fn extract_caveats(manager: &str, output: &CommandOutput) -> Vec<ActionNote> {
+    let brew = cfgd_core::manager_family(manager) == "brew";
     extract_caveat_bodies(manager, output)
         .into_iter()
         .filter(|body| !body.trim().is_empty())
-        .map(|body| ActionNote::warn(manager, body.trim_end()))
+        .map(|body| {
+            let body = body.trim_end();
+            // A line a tool itself labelled `warning:` / `WARNING:` / `npm
+            // warn` keeps that severity. Brew's `==> Caveats` is a SECTION,
+            // not a severity — it holds "installed to:" reports beside "run
+            // `brew link`" instructions — so a brew body is read for which.
+            if brew && !brew_caveat_asks_the_reader_to_act(body) {
+                ActionNote::info(manager, body)
+            } else {
+                ActionNote::warn(manager, body)
+            }
+        })
         .collect()
+}
+
+/// Whether a brew caveat body tells the reader to DO something, rather than
+/// reporting where something went. `⚠` means "act on this"; a "here is where
+/// it went" note is `◉` whatever section of brew's output it was scraped from.
+///
+/// Read off the markers brew's own caveat templates use for an instruction —
+/// second person (`you`, `your`), an imperative opening (`Add`, `Run`,
+/// `Restart`, `Set`, `Source`, `Edit`), a purpose clause (`To start`, `To
+/// use`), a service line (`brew services`), or a shell prompt line — none of
+/// which a bare "X has been installed to:\n  <path>" carries. A body this
+/// cannot classify stays a warning: a missed instruction costs the reader a
+/// step they had to take, a missed report costs them a glance.
+fn brew_caveat_asks_the_reader_to_act(body: &str) -> bool {
+    const INSTRUCTION_MARKERS: &[&str] = &[
+        "you ",
+        "you'",
+        "your ",
+        "brew services",
+        "brew link",
+        "to start ",
+        "to use ",
+        "to enable ",
+        "to activate ",
+        "to run ",
+        "to have ",
+        "to load ",
+        "need to",
+        "needs to",
+        "must ",
+        "should ",
+        "please ",
+        "$ ",
+        "echo ",
+        "export ",
+        "source ",
+    ];
+    const IMPERATIVE_OPENERS: &[&str] = &[
+        "add ",
+        "run ",
+        "restart ",
+        "set ",
+        "source ",
+        "edit ",
+        "install ",
+        "open ",
+        "use ",
+        "make sure",
+        "ensure ",
+        "consider ",
+        "see ",
+        "enable ",
+        "put ",
+        "create ",
+    ];
+    let lower = body.to_lowercase();
+    if INSTRUCTION_MARKERS.iter().any(|m| lower.contains(m)) {
+        return true;
+    }
+    lower.lines().any(|line| {
+        let line = line.trim_start();
+        IMPERATIVE_OPENERS.iter().any(|o| line.starts_with(o))
+    })
 }
 
 fn extract_caveat_bodies(manager: &str, output: &CommandOutput) -> Vec<String> {

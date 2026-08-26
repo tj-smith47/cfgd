@@ -109,7 +109,7 @@ Phase: Files
   profile:driftdemo
     ✓ update /home/you/.gitconfig
 
-✓ Reconcile complete — 1 action succeeded (0.1s)
+✓ Reconcile complete — 1 action succeeded (0.1s wall)
 14:32:10  INFO reconcile: complete — 1 action succeeded
 ```
 

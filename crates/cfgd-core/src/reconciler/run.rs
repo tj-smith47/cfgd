@@ -1139,9 +1139,12 @@ pub fn outcome_counts(tally: &RunTally) -> String {
         }
     };
     // The withheld actions are OUTSIDE the counted rollup — the header never
-    // promised them — so they close the line as a parenthetical with the reason
-    // the row above already gave, never as a third count beside the two that
-    // reconcile against `planned_total`.
+    // promised them, and they never reconcile against `planned_total` — but
+    // they close the count list as one more comma clause, with the reason the
+    // row above already gave after a colon. A parenthetical here sat beside
+    // the elapsed parenthetical, and an em-dash inside it nested under the
+    // detail's own: two `(…)` groups back to back holding a caveat and a
+    // measurement, on the one line a reader stops on.
     if tally.not_attempted.is_empty() {
         return counts;
     }
@@ -1152,7 +1155,7 @@ pub fn outcome_counts(tally: &RunTally) -> String {
         }
     }
     format!(
-        "{counts} ({} not attempted — {})",
+        "{counts}, {} not attempted: {}",
         tally.not_attempted.len(),
         reasons.join(", ")
     )
@@ -1266,7 +1269,7 @@ pub fn render_run_rollup(
                 printer
                     .status(role, subject)
                     .detail_opt(detail.as_deref())
-                    .duration(d);
+                    .wall_duration(d);
             }
             _ => match detail {
                 Some(detail) => {

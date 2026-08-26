@@ -219,7 +219,7 @@ impl SystemConfigurator for WindowsRegistryConfigurator {
                 let desired_str = yaml_value_with_numeric_bools(desired_val);
                 Self::write_reg_value(key_path, name, &desired_str, &snapshot, cx)?;
                 cx.report(
-                    Role::Ok,
+                    Role::Info,
                     format!("Set {}\\{} = {}", key_path, name, desired_str),
                 );
             }

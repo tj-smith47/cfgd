@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::time::Duration;
 
 use super::{Renderer, Writer};
 use crate::output::theme::ThemedStyle;
@@ -11,7 +10,7 @@ pub(crate) struct BufferedStatus {
     pub role: Role,
     pub subject: String,
     pub detail: Option<String>,
-    pub duration: Option<Duration>,
+    pub duration: Option<super::status::Elapsed>,
     pub target: Option<PathBuf>,
     /// The depth at which the line should ultimately render (matches the
     /// section's child depth at the time the status was emitted).
@@ -329,6 +328,7 @@ impl super::Emitting<'_> {
                     subject: padded.as_deref().unwrap_or(&s.subject),
                     ..fields
                 },
+                column,
             );
         }
     }
@@ -385,11 +385,11 @@ impl super::Emitting<'_> {
         };
         let split = headers.partition_point(|(_, depth)| *depth < rows_written_at);
         for (styled, depth) in &headers[..split] {
-            self.push_line_undrained(*depth, styled, None);
+            self.push_line_undrained(*depth, styled, None, None);
         }
         self.drain_kv_buffer();
         for (styled, depth) in &headers[split..] {
-            self.push_line_undrained(*depth, styled, None);
+            self.push_line_undrained(*depth, styled, None, None);
         }
     }
 

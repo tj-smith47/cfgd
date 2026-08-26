@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use super::component::Component;
 use super::doc::{Doc, HeadingKind};
-use super::renderer::{Renderer, StatusFields, Table, Writer, finalize_subject};
+use super::renderer::{Elapsed, Renderer, StatusFields, Table, Writer, finalize_subject};
 
 pub(crate) fn render_doc(renderer: &Renderer, sink: &dyn Writer, doc: &Doc) {
     renderer.enter_doc();
@@ -77,7 +77,7 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
                     role: *role,
                     subject: &subject_owned,
                     detail: detail.as_deref(),
-                    duration: duration_ms.map(|ms| Duration::from_millis(ms as u64)),
+                    duration: duration_ms.map(|ms| Elapsed::row(Duration::from_millis(ms as u64))),
                     target: target_pb.as_deref(),
                     subject_style: None,
                     detail_style: None,

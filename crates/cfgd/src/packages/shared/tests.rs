@@ -81,6 +81,43 @@ fn extract_caveats_brew_section() {
     assert!(notes[0].message.contains("Restart terminal."));
 }
 
+/// A brew caveat's role is read off its body: `⚠` means "act on this", and a
+/// "here is where it went" report is `◉` whatever section it was scraped
+/// from. Every other manager's caveat is a line the tool itself labelled a
+/// warning, and keeps that severity.
+#[test]
+fn a_brew_caveat_is_a_warning_only_when_it_asks_the_reader_to_act() {
+    let report = test_cmd_output(
+        "==> Caveats\nBash completion has been installed to:\n  /home/linuxbrew/.linuxbrew/etc/bash_completion.d\n",
+        "",
+    );
+    let notes = extract_caveats("brew", &report);
+    assert_eq!(notes.len(), 1);
+    assert_eq!(
+        notes[0].role,
+        Role::Info,
+        "a side-effect report wears the info glyph: {:?}",
+        notes[0].message
+    );
+
+    for body in [
+        "To start postgresql now and restart at login:\n  brew services start postgresql",
+        "If you need to have openssl first in your PATH, run:\n  echo 'export PATH=...' >> ~/.zshrc",
+        "The formula built, but is not symlinked into /usr/local\nYou can try again using:\n  brew link foo",
+        "Add to PATH: /opt/homebrew/bin\nRestart terminal.",
+    ] {
+        let output = test_cmd_output(&format!("==> Caveats\n{body}\n"), "");
+        let notes = extract_caveats("brew", &output);
+        assert_eq!(notes.len(), 1, "{body:?}");
+        assert_eq!(notes[0].role, Role::Warn, "an instruction warns: {body:?}");
+    }
+
+    let npm = test_cmd_output("", "npm warn deprecated foo@1.0\n");
+    assert_eq!(extract_caveats("npm", &npm)[0].role, Role::Warn);
+    let pip = test_cmd_output("WARNING: pip is out of date\n", "");
+    assert_eq!(extract_caveats("pip", &pip)[0].role, Role::Warn);
+}
+
 #[test]
 fn extract_caveats_brew_no_caveats() {
     let output = test_cmd_output("==> Installing ripgrep\n==> Summary\nDone.", "");

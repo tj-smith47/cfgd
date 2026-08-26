@@ -8,4 +8,4 @@ backup:docs
   Destination  <SOURCE>
   → Previous contents saved to <STATE_DIR>/backups/docs/notes.txt.<TIMESTAMP>
 
-✓ Restore complete — 1 action succeeded (XXs)
+✓ Restore complete — 1 action succeeded (XXs wall)
