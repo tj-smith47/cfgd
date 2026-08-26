@@ -133,6 +133,16 @@ pub(in crate::cli) enum Mutation<'a> {
     /// the CLUSTER resolves by its own. A completed invocation is never
     /// re-spelled, and a reference resolved on this side of the network is
     /// never interpolated into an instruction for the other.
+    ///
+    /// It names no FILE either. `kubectl apply -f <module>.yaml` substitutes to
+    /// `module.yaml` — this verb's own required input, `kind: Module` with the
+    /// pushed module's `metadata.name`, and on screen two lines above the hint.
+    /// Applying it succeeds and replaces the Module with one carrying no
+    /// `ociArtifact` and no signature, silently undoing the push and the
+    /// signing the rows above just reported. The resource to register does not
+    /// exist yet — that is what `--apply` is for — so the hint names the
+    /// resource, and the qualifier hangs off the MODULE (which points at the
+    /// address) rather than off `Register` (which happens at the API server).
     ModulePushed { applied: Option<&'a str> },
     /// `module pull` extracted a module; `name` is what its manifest said,
     /// when it had one.
@@ -185,8 +195,8 @@ pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> String {
             ..
         } => format!("Check it with `kubectl get module {name}`"),
         Mutation::ModulePushed { applied: None } => {
-            "Register it as a Module at the cluster's registry address: \
-             `kubectl apply -f <module>.yaml`, or `--apply` next time"
+            "Register it as a Module pointing at the cluster's registry address: \
+             `kubectl apply`, or `--apply` next time"
                 .to_string()
         }
         Mutation::ModulePulled { name: Some(name) } => {

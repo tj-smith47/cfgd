@@ -15285,6 +15285,19 @@ fn no_artifact_verb_serializes_its_platform_flag_as_the_platform_it_resolved() {
     );
 }
 
+/// The files a verb REQUIRES to already exist in the directory it is handed —
+/// the ones it refuses to run without. A hint closing that verb may not name
+/// one: the reader is looking at it on screen, and a `kubectl apply` of the
+/// module manifest is a different resource wearing the same name.
+fn required_input_files(verb: &str) -> &'static [&'static str] {
+    match verb {
+        // `cmd_module_push` / `cmd_module_build` refuse a directory holding no
+        // `module.yaml`, which is itself `kind: Module`.
+        "cfgd module push" | "cfgd module build" => &["module.yaml"],
+        _ => &[],
+    }
+}
+
 /// Every hint `success_next_step` composes names the command that comes next,
 /// in backticks — the same shape `every_closing_hint_names_a_command` holds
 /// literal hints to, which cannot see a text built here. Walks every variant,
@@ -15297,6 +15310,14 @@ fn no_artifact_verb_serializes_its_platform_flag_as_the_platform_it_resolved() {
 /// fresh digest the cosign signature did not cover. Each variant names the
 /// verbs that produce it; a backticked command opening on one of them must
 /// carry a placeholder rather than the arguments the reader already typed.
+///
+/// Nor may a hint name a FILE the verb that just ran consumes, in any spelling
+/// its placeholder substitutes to. `module push`'s hint read `kubectl apply -f
+/// <module>.yaml`, and `module.yaml` is this verb's own required input —
+/// `kind: Module`, carrying the pushed module's `metadata.name`, and on screen
+/// two lines above the hint. Applying it succeeds and replaces the Module with
+/// one holding no `ociArtifact` and no signature, silently undoing the push and
+/// the signing the rows above just reported.
 #[test]
 fn every_composed_next_step_names_a_command() {
     let mutations: &[(Mutation<'_>, &[&str])] = &[
@@ -15399,6 +15420,19 @@ fn every_composed_next_step_names_a_command() {
             "{mutation:?} closes on a hint naming no command: {hint}"
         );
         for command in commands {
+            // A placeholder is read by substituting its own name, which is how
+            // `<module>.yaml` becomes the file the verb requires. Judge the
+            // substituted spelling, not the template.
+            let substituted = command.replace(['<', '>'], "");
+            for input in own_verbs.iter().flat_map(|v| required_input_files(v)) {
+                assert!(
+                    !substituted
+                        .split_whitespace()
+                        .any(|token| token.ends_with(input)),
+                    "{mutation:?} names `{input}` — the file the verb that just ran REQUIRES — \
+                     so following the hint overwrites what the run produced: {hint}"
+                );
+            }
             if own_verbs.iter().any(|verb| command.starts_with(verb)) {
                 assert!(
                     command.contains('<'),
