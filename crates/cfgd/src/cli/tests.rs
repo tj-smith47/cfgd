@@ -15203,39 +15203,56 @@ fn every_mutating_verb_closes_on_a_next_step() {
     );
 }
 
-/// The verbs that put an artifact in a registry, each with the payload key
-/// naming the platform it PUSHED for and the `Option` flag that merely
-/// REQUESTS one. The two are never the same value: the flag is what the caller
-/// typed, the key is what the run resolved and stamped into the manifest.
-fn platform_resolving_artifact_verbs() -> Vec<(
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-)> {
+/// A verb that puts an artifact in a registry, as this walk judges it.
+struct ArtifactVerb {
+    /// The command as a person types it.
+    verb: &'static str,
+    /// Its source file under `src/cli`, and the handler in it.
+    file: &'static str,
+    handler: &'static str,
+    /// The payload key naming the platform the run PUSHED for, and the
+    /// `Option` flag that merely REQUESTS one. The two are never the same
+    /// value: the flag is what the caller typed, the key is what the run
+    /// resolved and stamped into the manifest.
+    key: &'static str,
+    flag: &'static str,
+    /// The header kv key whose value the settled row's detail already carries,
+    /// when there is one. `None` where the repetition is structural rather
+    /// than two spellings of one fact in one block.
+    echoed_header_key: Option<&'static str>,
+}
+
+fn platform_resolving_artifact_verbs() -> Vec<ArtifactVerb> {
     vec![
-        (
-            "module push",
-            "module/push_pull.rs",
-            "cmd_module_push",
-            "platform",
-            "platform",
-        ),
-        (
-            "module build",
-            "module/build.rs",
-            "cmd_module_build",
-            "targets",
-            "target",
-        ),
-        (
-            "image pack",
-            "image/pack.rs",
-            "cmd_image_pack",
-            "platform",
-            "platform",
-        ),
+        ArtifactVerb {
+            verb: "module push",
+            file: "module/push_pull.rs",
+            handler: "cmd_module_push",
+            key: "platform",
+            flag: "platform",
+            echoed_header_key: Some("Platform"),
+        },
+        ArtifactVerb {
+            verb: "module build",
+            file: "module/build.rs",
+            handler: "cmd_module_build",
+            key: "targets",
+            flag: "target",
+            // `Targets` repeats through the owner group `target:linux/amd64`
+            // and the per-target `✓ Built linux/amd64 to …` row — one
+            // occurrence per rendering LEVEL, not two spellings of one fact in
+            // one block.
+            echoed_header_key: None,
+        },
+        ArtifactVerb {
+            verb: "image pack",
+            file: "image/pack.rs",
+            handler: "cmd_image_pack",
+            key: "platform",
+            flag: "platform",
+            // `Base` stays a row: nothing else in the block reports it.
+            echoed_header_key: Some("Platform"),
+        },
     ]
 }
 
@@ -15248,12 +15265,29 @@ fn platform_resolving_artifact_verbs() -> Vec<(
 /// about a platform that exists is a wrong value, not a silence: the producer
 /// returns what it resolved (`PushOutcome` / `PackOutcome`), and the handler
 /// serializes that.
+///
+/// The RENDER half is the same fact from the other side. Once the detail
+/// carries the resolved platform, the conditional `Platform` header row became
+/// a second spelling of it in the same five-line block, and one the two halves
+/// can never disagree about — `resolve_platform` is `flag.unwrap_or_else(…)`,
+/// so whenever the row rendered its value WAS the parenthetical. No artifact
+/// verb's header block carries a key whose value the settled row's detail
+/// already prints; `image pack`'s `Base` keeps its row precisely because
+/// nothing else reports it.
 #[test]
 fn no_artifact_verb_serializes_its_platform_flag_as_the_platform_it_resolved() {
     let cli_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli");
     let mut offenders = Vec::new();
     let mut judged = 0usize;
-    for (verb, file, handler, key, flag) in platform_resolving_artifact_verbs() {
+    for ArtifactVerb {
+        verb,
+        file,
+        handler,
+        key,
+        flag,
+        echoed_header_key,
+    } in platform_resolving_artifact_verbs()
+    {
         let source =
             std::fs::read_to_string(cli_dir.join(file)).expect("the verb's source is checked out");
         let source = production_body(&source);
@@ -15273,6 +15307,14 @@ fn no_artifact_verb_serializes_its_platform_flag_as_the_platform_it_resolved() {
                 "cli/{file}: `{verb}` serializes `{key}` from the `{flag}` flag — emit what the push resolved"
             ));
         }
+        if let Some(echoed) = echoed_header_key
+            && body.contains(&format!("(\"{echoed}\".to_string()"))
+        {
+            offenders.push(format!(
+                "cli/{file}: `{verb}` pushes a `{echoed}` header row whose value the settled \
+                 row's detail already prints — drop the row, the detail states it unconditionally"
+            ));
+        }
     }
     assert_eq!(
         judged, 3,
@@ -15280,7 +15322,8 @@ fn no_artifact_verb_serializes_its_platform_flag_as_the_platform_it_resolved() {
     );
     assert!(
         offenders.is_empty(),
-        "a payload key names what the run resolved, not what the flag asked for:\n{}",
+        "a payload key names what the run resolved, not what the flag asked for, and a header \
+         row never restates the detail:\n{}",
         offenders.join("\n")
     );
 }

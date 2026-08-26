@@ -36,13 +36,15 @@ pub fn cmd_module_push(
         ));
     }
 
-    let mut header = vec![
+    // No `Platform` row: `resolve_platform` is the flag or this host, so
+    // whenever a row keyed on the flag would render, its value IS the string
+    // the settled row's detail already carries — the same fact twice in one
+    // five-line block. The detail states the resolved platform whether or not
+    // `--platform` was given, so the block reads the same either way.
+    let header = vec![
         ("Directory".to_string(), dir.to_string()),
         ("Artifact".to_string(), artifact.to_string()),
     ];
-    if let Some(p) = platform {
-        header.push(("Platform".to_string(), p.to_string()));
-    }
 
     // ONE section, named for the command, holding everything the run produced:
     // what is being pushed, the push verdict (carrying the digest as its
@@ -862,11 +864,16 @@ mod tests {
             crate::cli::test_support::assert_nests_under(&output, "Push Module", "Pushed module");
         }
 
+        /// A `--platform` push states the platform ONCE, in the settled row's
+        /// detail. The conditional `Platform` header row spelled the same
+        /// value a second time in the same five-line block, and the two could
+        /// never differ: `resolve_platform` is the flag or this host, so
+        /// whenever the row rendered its value WAS the parenthetical.
         #[test]
         #[serial]
-        fn push_with_platform_kv_includes_platform_in_output() {
+        fn push_states_a_named_platform_once_in_the_settled_row() {
             // Mock a successful push (no sign / attest) so we reach the
-            // happy-path doc emit and the platform kv entry is added.
+            // happy-path doc emit and the settled row's detail.
             let dir = tempfile::tempdir().expect("tempdir");
             write_module_yaml(dir.path());
             let (_server, registry) = mock_push_registry();
@@ -891,12 +898,13 @@ mod tests {
 
             let output = cap.lock().unwrap();
             assert!(
-                output.contains("Platform"),
-                "platform kv label must appear in human output: {output}"
+                !output.contains("Platform"),
+                "a `Platform` header row restates the settled row's detail: {output}"
             );
-            assert!(
-                output.contains("linux/amd64"),
-                "platform value must appear in human output: {output}"
+            assert_eq!(
+                output.matches("linux/amd64").count(),
+                1,
+                "the resolved platform is stated once, in the row that produced it: {output}"
             );
         }
 

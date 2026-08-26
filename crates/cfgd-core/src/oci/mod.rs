@@ -219,11 +219,13 @@ impl OciReference {
 ///
 /// One wording over both producers ([`push_module`] and [`pack_image`]), so the
 /// two artifact-pushing rows cannot spell the same pair of facts two ways. The
-/// platform belongs to the row rather than to a header kv row: a header row
-/// echoes what the CALLER asked for, and is why `--platform` given renders
-/// `Platform` while a defaulted one does not — the resolved value is ground
-/// truth the run produced, and the operator reads it back off the manifest into
-/// a Module's `PLATFORMS` column whether or not a flag named it.
+/// platform belongs HERE and nowhere else: `resolve_platform` is the flag or
+/// this host, so a header kv row echoing `--platform` could only ever restate
+/// this parenthetical — the same fact twice in one five-line block, and never
+/// able to differ. The resolved value is ground truth the run produced, and the
+/// operator reads it back off the manifest into a Module's `PLATFORMS` column
+/// whether or not a flag named it, so the detail states it unconditionally and
+/// both verbs read the same either way.
 pub(crate) fn artifact_row_detail(digest: &str, platform: &str) -> String {
     format!("{digest} ({platform})")
 }

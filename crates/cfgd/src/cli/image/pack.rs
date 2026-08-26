@@ -99,11 +99,12 @@ pub fn cmd_image_pack(
         ("Directory".to_string(), dir.posix().to_string()),
         ("Artifact".to_string(), artifact.to_string()),
     ];
+    // `Base` earns its row: nothing else in the block reports it. `Platform`
+    // does not — the settled row's detail carries the resolved value
+    // unconditionally, and `resolve_platform` is the flag or this host, so a
+    // row keyed on the flag could only ever restate the parenthetical.
     if let Some(b) = base {
         header.push(("Base".to_string(), b.to_string()));
-    }
-    if let Some(p) = platform {
-        header.push(("Platform".to_string(), p.to_string()));
     }
 
     // ONE section, named for the command, holding everything the run produced:
