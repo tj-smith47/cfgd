@@ -96,32 +96,29 @@ impl RestoreOutcome {
 /// halves had to learn two layouts. Returns the [`RunTally`] the caller closes
 /// with, so the verdict counts the line that was actually printed.
 ///
-/// The role split is [`super::report_backup_record`]'s, because the two
-/// outcomes are the same three: a clean restore is Ok, a restore whose overlay
-/// landed but whose hooks failed is Warn (the data is back, something still
-/// needs attention), and a restore that did not happen is Fail. `Partial` on
-/// the tally for the middle case likewise matches what a dirty backup run
-/// rolls up to.
+/// The role and the detail slot are [`super::outcome_role`]'s and
+/// [`super::outcome_detail`]'s — the same two [`super::report_backup_record`]
+/// settles a backup through, because the two outcomes are the same three: a
+/// clean restore is Ok, a restore whose overlay landed but whose hooks failed
+/// is Warn (the data is back, something still needs attention), and a restore
+/// that did not happen is Fail. `Partial` on the tally for the middle case
+/// likewise matches what a dirty backup run rolls up to.
 pub fn report_restore(printer: &Printer, outcome: &RestoreOutcome) -> crate::reconciler::RunTally {
     let group = printer.section_owner(&crate::output::OwnerLabel::new("backup", &outcome.name));
-    let role = if outcome.is_clean() {
-        crate::output::Role::Ok
-    } else if outcome.restored {
-        crate::output::Role::Warn
-    } else {
-        crate::output::Role::Fail
-    };
-    let size = crate::format_bytes(outcome.size_bytes);
-    // The error leads and the size joins it, the same order
-    // `report_backup_record` puts them in: the failure is what the reader must
-    // act on, and the size is the evidence the payload itself was intact.
-    let detail = match &outcome.error {
-        Some(e) => format!("{} ({size})", collapse_to_subject_line(e)),
-        None => size,
-    };
-    group
-        .status(role, format!("Restored from {}", outcome.snapshot))
-        .detail(detail);
+    let role = super::outcome_role(outcome.is_clean(), outcome.restored);
+    let subject = format!("Restored from {}", outcome.snapshot);
+    let detail = super::outcome_detail(
+        outcome.error.as_deref(),
+        Some(crate::format_bytes(outcome.size_bytes)),
+    );
+    match detail {
+        Some(detail) => {
+            group.status(role, subject).detail(detail);
+        }
+        None => {
+            group.status_simple(role, subject);
+        }
+    }
     // A row, not a clause after the detail dash: where the bytes went is a
     // `Label: value` fact, and a detail slot already carrying a size or an
     // error cannot also carry it without two em-dashes at two semantic levels.

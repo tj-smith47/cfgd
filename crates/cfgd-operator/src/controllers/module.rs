@@ -444,8 +444,8 @@ async fn verify_module_signature(
     let now = std::time::Instant::now();
     if ctx.registry_backoff.cooling(&key, now) {
         return cannot_verify(
-            "VerificationUnavailable",
-            "Signature could not be checked",
+            VERIFICATION_UNAVAILABLE,
+            CHECK_UNAVAILABLE,
             &name,
             config.signature_digest,
             Some(
@@ -496,8 +496,8 @@ async fn verify_module_signature(
         Ok(SignatureCheck::Undetermined(why)) => {
             ctx.registry_backoff.record_failure(key, now);
             cannot_verify(
-                "VerificationUnavailable",
-                "Signature could not be checked",
+                VERIFICATION_UNAVAILABLE,
+                CHECK_UNAVAILABLE,
                 &name,
                 config.signature_digest,
                 Some(why),
@@ -506,8 +506,8 @@ async fn verify_module_signature(
         Err(e) => {
             ctx.registry_backoff.record_failure(key, now);
             cannot_verify(
-                "VerificationUnavailable",
-                "Signature could not be checked",
+                VERIFICATION_UNAVAILABLE,
+                CHECK_UNAVAILABLE,
                 &name,
                 config.signature_digest,
                 Some(format!("the check did not complete: {e}")),
@@ -515,6 +515,16 @@ async fn verify_module_signature(
         }
     }
 }
+
+/// The reason token every "the check did not run" outcome carries, on the
+/// Verified condition and on the event alike.
+const VERIFICATION_UNAVAILABLE: &str = "VerificationUnavailable";
+
+/// The Verified condition's message whenever the check itself could not run —
+/// the cooldown, an undetermined verdict and a verifier that never returned all
+/// say this one sentence, distinct from a rejection, which says the signature is
+/// bad.
+const CHECK_UNAVAILABLE: &str = "Signature could not be checked";
 
 /// The Verified condition for a check that did not happen.
 ///
@@ -535,7 +545,7 @@ fn cannot_verify(
         status: "Unknown",
         reason,
         message,
-        event: (EventType::Warning, "VerificationUnavailable", announced),
+        event: (EventType::Warning, VERIFICATION_UNAVAILABLE, announced),
         signature_digest,
         verdict: cfgd_crd::SIGNATURE_UNKNOWN,
         detail,

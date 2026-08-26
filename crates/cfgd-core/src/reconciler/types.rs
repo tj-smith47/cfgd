@@ -926,16 +926,27 @@ impl Phase {
     /// listed by the tree but never counted, so the plan's promise and the
     /// apply's tally are one number.
     pub fn action_count(&self) -> usize {
-        self.groups
-            .iter()
-            .flat_map(|g| g.actions.iter())
-            .filter(|a| a.pre_skip_reason().is_none())
-            .count()
+        attempted_count(self.groups.iter().flat_map(|g| g.actions.iter()))
     }
 
     pub fn is_empty(&self) -> bool {
         self.groups.iter().all(|g| g.actions.is_empty())
     }
+}
+
+/// How many of `actions` an apply will ATTEMPT.
+///
+/// An action [`Action::pre_skip_reason`] answers for is still LISTED — its row
+/// says why it cannot run here — and is never counted. This is the ONE spelling
+/// of that filter: [`Phase::action_count`] (and through it
+/// [`Plan::total_actions`]) counts a whole plan with it, and a caller holding a
+/// scoped subtree counts the same subset the same way, so a plan's footer, its
+/// `-o json` total and the apply's tally cannot price one plan three ways.
+pub fn attempted_count<'a>(actions: impl IntoIterator<Item = &'a Action>) -> usize {
+    actions
+        .into_iter()
+        .filter(|a| a.pre_skip_reason().is_none())
+        .count()
 }
 
 /// The `Packages` phase's two dispatch tiers, in the order they are released.

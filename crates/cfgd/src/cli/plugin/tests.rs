@@ -1052,6 +1052,91 @@ mod mock_kube {
         );
     }
 
+    /// `unknown` — a check that could not run — is the fourth verdict word, and
+    /// the controller is the only thing that can name it: the bool pair
+    /// [`cfgd_crd::ModuleStatus::signature_verdict`] derives from cannot express
+    /// it. The plugin therefore passes a written `status.signature` through
+    /// untouched and derives only when the field is absent. Fails on a surface
+    /// that re-derives over the controller's own word, which would report a
+    /// module whose registry was unreachable as plainly `unsigned`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn cmd_status_surfaces_the_controllers_unknown_verdict() {
+        let client = mock_client(|req| {
+            let path = req.uri().path().to_string();
+            if path.contains("/modules") {
+                let list = serde_json::json!({
+                    "apiVersion": "cfgd.io/v1alpha1",
+                    "kind": "ModuleList",
+                    "metadata": {"resourceVersion": "1"},
+                    "items": [
+                        {
+                            "apiVersion": "cfgd.io/v1alpha1",
+                            "kind": "Module",
+                            "metadata": {"name": "unreachable"},
+                            "spec": {
+                                "ociArtifact": "ghcr.io/cfgd/unreachable:1.0.0",
+                                "signature": {"cosign": {"keyless": true}}
+                            },
+                            "status": {"verified": false, "signature": "unknown"}
+                        },
+                        {
+                            "apiVersion": "cfgd.io/v1alpha1",
+                            "kind": "Module",
+                            "metadata": {"name": "not-reconciled"},
+                            "spec": {
+                                "ociArtifact": "ghcr.io/cfgd/not-reconciled:1.0.0",
+                                "signature": {"cosign": {"keyless": true}}
+                            },
+                            "status": {"verified": false}
+                        },
+                        {
+                            "apiVersion": "cfgd.io/v1alpha1",
+                            "kind": "Module",
+                            "metadata": {"name": "bare"},
+                            "spec": {"ociArtifact": "ghcr.io/cfgd/bare:1.0.0"}
+                        }
+                    ]
+                });
+                json_response(200, &list)
+            } else if path.contains("/pods") {
+                json_response(200, &pod_list_response(vec![]))
+            } else {
+                json_response(404, &serde_json::json!({"message": "not found"}))
+            }
+        });
+
+        let (printer, cap) = Printer::for_test_doc();
+
+        let result = cmd_status_async(&printer, Some(client), "kind-cfgd", "demo").await;
+        drop(printer);
+
+        assert!(result.is_ok(), "cmd_status should succeed, got: {result:?}");
+        let json = cap.json().expect("status doc must carry data payload");
+        let modules = json["modules"].as_array().expect("modules should be array");
+        assert_eq!(
+            modules[0]["signature"],
+            cfgd_crd::SIGNATURE_UNKNOWN,
+            "the controller's own word reaches the payload unchanged"
+        );
+        assert_eq!(
+            modules[1]["signature"],
+            cfgd_crd::SIGNATURE_UNVERIFIED,
+            "no verdict written yet, but the spec declares a signature"
+        );
+        assert_eq!(
+            modules[2]["signature"],
+            cfgd_crd::SIGNATURE_UNSIGNED,
+            "no verdict written and nothing declared"
+        );
+
+        let human = cfgd_core::output::strip_ansi(&cap.human());
+        assert!(
+            human.contains("unreachable") && human.contains("unknown"),
+            "the row a person reads carries the fourth word:\n{human}"
+        );
+        crate::cli::test_support::assert_nests_under(&human, "Modules", "unreachable");
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn cmd_status_empty_module_list() {
         let client = mock_client(|req| {

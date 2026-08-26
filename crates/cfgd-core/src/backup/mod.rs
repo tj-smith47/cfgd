@@ -458,23 +458,48 @@ pub fn run_backup_group(
     report
 }
 
-/// Join a run's failures, write its record, and prune to `spec.retention`.
-///
-/// Report a completed run on the status line every surface shares.
+/// The role a completed backup-engine outcome settles as.
 ///
 /// `is_clean()` is the exit-code predicate, and the human line uses the same
-/// three-way split: a fully clean run is Ok, a Success run with a failed
-/// `postBackup` hook is Warn (the snapshot is fine, but something needs
-/// attention), and no artifact at all is Fail. `cfgd apply`, `cfgd backup run`,
-/// and the daemon's scheduled fire all render through here so a run cannot look
-/// different depending on which surface produced it.
+/// three-way split: a fully clean outcome is Ok, one whose artifact landed but
+/// whose hooks failed is Warn (the data is there, but something needs
+/// attention), and one that produced no artifact at all is Fail. `run_backup`
+/// and `restore_backup` are the two mutating verbs of one command and both
+/// settle here, so a fourth outcome cannot be worded twice.
+pub(super) fn outcome_role(clean: bool, produced_artifact: bool) -> Role {
+    if clean {
+        Role::Ok
+    } else if produced_artifact {
+        Role::Warn
+    } else {
+        Role::Fail
+    }
+}
+
+/// The one detail slot a completed backup-engine outcome carries.
 ///
-/// **Size versus error in the one detail slot — the error wins, and the size
-/// joins it.** Both can be present at once: `record_run` sets `Success`
-/// whenever an artifact exists and still joins any hook failures into `error`,
-/// so a `postBackup` failure after a good snapshot carries both. The error
-/// leads because it is what the reader must act on; the size stays because it
-/// is the evidence that the snapshot itself landed.
+/// **Size versus error — the error wins, and the size joins it.** Both can be
+/// present at once: `record_run` sets `Success` whenever an artifact exists and
+/// still joins any hook failures into `error`, so a `postBackup` failure after a
+/// good snapshot carries both. The error leads because it is what the reader
+/// must act on; the size stays because it is the evidence that the payload
+/// itself landed. `None` is a row with nothing to qualify it, which renders as
+/// a bare status line.
+pub(super) fn outcome_detail(error: Option<&str>, size: Option<String>) -> Option<String> {
+    match (error, size) {
+        (Some(e), Some(size)) => Some(format!("{} ({size})", collapse_to_subject_line(e))),
+        (Some(e), None) => Some(collapse_to_subject_line(e)),
+        (None, size) => size,
+    }
+}
+
+/// Join a run's failures, write its record, and prune to `spec.retention`.
+///
+/// Report a completed run on the status line every surface shares. `cfgd
+/// apply`, `cfgd backup run`, and the daemon's scheduled fire all render
+/// through here so a run cannot look different depending on which surface
+/// produced it; the role and the detail are [`outcome_role`]'s and
+/// [`outcome_detail`]'s.
 ///
 /// Returns the [`BackupItem`] for the line it just emitted, so the rollup counts
 /// from the same value the screen was written from. A recorded run always
@@ -484,20 +509,11 @@ pub fn run_backup_group(
 #[must_use = "the item is what the rollup counts; push it onto the report"]
 pub fn report_backup_record(printer: &Printer, record: &BackupRunRecord) -> BackupItem {
     let subject = snapshot_subject(record.destination_path.as_deref().map(Path::new));
-    let role = if record.is_clean() {
-        Role::Ok
-    } else if record.status == BackupRunStatus::Success {
-        Role::Warn
-    } else {
-        Role::Fail
-    };
-    let size = record.size_bytes.map(crate::format_bytes);
-    let detail = match (&record.error, size) {
-        (Some(e), Some(size)) => Some(format!("{} ({size})", collapse_to_subject_line(e))),
-        (Some(e), None) => Some(collapse_to_subject_line(e)),
-        (None, Some(size)) => Some(size),
-        (None, None) => None,
-    };
+    let role = outcome_role(record.is_clean(), record.status == BackupRunStatus::Success);
+    let detail = outcome_detail(
+        record.error.as_deref(),
+        record.size_bytes.map(crate::format_bytes),
+    );
     match detail {
         Some(detail) => {
             printer.status(role, subject.as_str()).detail(detail);

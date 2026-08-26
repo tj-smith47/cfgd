@@ -2862,3 +2862,41 @@ fn a_store_failure_counts_only_the_lines_it_rendered() {
     );
     assert_eq!(status, crate::state::ApplyStatus::Partial);
 }
+
+/// The three-way split and the detail slot both mutating verbs settle through.
+/// Fails on a fourth outcome worded in only one of them.
+#[test]
+fn a_completed_outcome_settles_as_one_of_three_roles() {
+    assert_eq!(outcome_role(true, true), Role::Ok);
+    assert_eq!(
+        outcome_role(false, true),
+        Role::Warn,
+        "the artifact landed; the hooks are what still need attention"
+    );
+    assert_eq!(
+        outcome_role(false, false),
+        Role::Fail,
+        "nothing was produced"
+    );
+}
+
+#[test]
+fn the_error_leads_the_detail_slot_and_the_size_joins_it() {
+    assert_eq!(
+        outcome_detail(Some("hook failed\nline two"), Some("1.0 KB".to_string())),
+        Some("hook failed — line two (1.0 KB)".to_string())
+    );
+    assert_eq!(
+        outcome_detail(Some("hook failed"), None),
+        Some("hook failed".to_string())
+    );
+    assert_eq!(
+        outcome_detail(None, Some("1.0 KB".to_string())),
+        Some("1.0 KB".to_string())
+    );
+    assert_eq!(
+        outcome_detail(None, None),
+        None,
+        "a row with nothing to qualify it renders bare"
+    );
+}

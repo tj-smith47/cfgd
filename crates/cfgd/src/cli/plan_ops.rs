@@ -493,10 +493,12 @@ pub(in crate::cli) enum DecisionWrites<'a> {
 /// consumer diffing plans across hosts is exactly who needs to see the
 /// `Modules` phase of platform-gated skips that the tree folds into its header.
 ///
-/// `total_actions` prices what the apply will actually attempt: an action
-/// [`reconciler::Action::pre_skip_reason`] answers for is still LISTED — the row
-/// says why it cannot run — and is not counted, the same filter
-/// [`reconciler::Plan::total_actions`] and the apply header's own count apply. A
+/// `total_actions` prices what the apply will actually attempt, through
+/// [`reconciler::attempted_count`] — the same counter
+/// [`reconciler::Plan::total_actions`] and the apply header's own count are
+/// built from, applied to the scoped tree so a `--phase` run prices what it
+/// listed. An action [`reconciler::Action::pre_skip_reason`] answers for is
+/// still LISTED — the row says why it cannot run — and is not counted. A plain
 /// sum over the rendered rows counted it, so the plan's footer promised one more
 /// action than the apply performed.
 pub(in crate::cli) fn build_plan_output(
@@ -508,12 +510,11 @@ pub(in crate::cli) fn build_plan_output(
     sources: &[reconciler::ComposedSource],
 ) -> PlanOutput {
     let tree = reconciler::in_scope_tree(plan, phase_filter, reconciler::PhaseCoverage::Complete);
-    let total_actions = tree
-        .iter()
-        .flat_map(|(_, groups)| groups.iter())
-        .flat_map(|(_, actions)| actions.iter())
-        .filter(|action| action.pre_skip_reason().is_none())
-        .count();
+    let total_actions = reconciler::attempted_count(
+        tree.iter()
+            .flat_map(|(_, groups)| groups.iter())
+            .flat_map(|(_, actions)| actions.iter().copied()),
+    );
     let phases: Vec<PlanPhaseOutput> = tree
         .into_iter()
         .map(|(phase_item, groups)| PlanPhaseOutput {

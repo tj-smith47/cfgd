@@ -77,6 +77,7 @@ pub use types::{
     Action, ActionResult, ApplyResult, CFGD_GROUP_ORDER, EnvAction, MANAGERS_GROUP, ManagerAction,
     ModuleAction, ModuleActionKind, Owner, OwnerGroup, OwnerKind, Phase, PhaseFilter, PhaseName,
     Plan, ReconcileContext, RollbackResult, ScriptAction, ScriptPhase, SystemAction, Tier,
+    attempted_count,
 };
 pub use verify::{MergedEnvItems, VerifyResult, env_verify_results, verify};
 

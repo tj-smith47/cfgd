@@ -3741,6 +3741,32 @@ fn the_payload_total_matches_the_plans_own_count_over_a_pre_skipped_action() {
     );
 }
 
+/// `--phase` is a predicate the payload is built through, not a prune of the
+/// plan, so the total belongs to the scope the payload LISTED. Fails on a
+/// footer wired to the whole plan's count, which would promise a `--phase
+/// files` run the packages it never showed.
+#[test]
+fn a_phase_scoped_payload_prices_only_the_scope_it_listed() {
+    let plan = make_plan(vec![
+        (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
+        (PhaseName::Files, vec![file_create("/etc/foo")]),
+    ]);
+    let filter = reconciler::PhaseFilter::Phase(PhaseName::Files);
+    let output = build_plan_output(&plan, "ctx", Some(&filter), &[], &no_decisions(), &[]);
+
+    assert_eq!(plan.total_actions(), 2, "the plan itself holds both phases");
+    assert_eq!(output.total_actions, 1);
+    assert_eq!(
+        output
+            .phases
+            .iter()
+            .map(|p| p.phase.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Files"],
+        "only the scoped phase is listed, so only it is priced"
+    );
+}
+
 /// A resolved profile whose one local layer declares `spec` as YAML.
 fn local_resolved(spec_yaml: &str) -> cfgd_core::config::ResolvedProfile {
     use cfgd_core::config::{LOCAL_LAYER, LayerPolicy, ProfileLayer, ProfileSpec, merge_layers};

@@ -46,20 +46,36 @@ pub fn run_with_stdin(args: &[&str], stdin_data: &str) -> std::io::Result<i32> {
     run_with_stdin_at("kubectl", args, stdin_data)
 }
 
+/// Feed `stdin_data` to a spawned child, then close the pipe so it sees EOF.
+///
+/// A closed pipe is the CHILD's answer, not an error of ours: a kubectl that
+/// rejects the invocation exits before reading the manifest, and propagating
+/// the resulting `BrokenPipe` reports `Broken pipe (os error 32)` — a sentence
+/// that says nothing about what kubectl objected to, while discarding the exit
+/// code and the stderr that do. Swallowed here so the caller's non-zero-code
+/// arm speaks instead.
+fn feed_stdin(child: &mut std::process::Child, stdin_data: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    // Taken, so the handle drops at the end of this function.
+    let Some(mut stdin) = child.stdin.take() else {
+        return Ok(());
+    };
+    match stdin.write_all(stdin_data.as_bytes()) {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        other => other,
+    }
+}
+
 /// Inner of [`run_with_stdin`] parameterized on the binary so the success path
 /// is testable (drive it through `/usr/bin/cat`) without kubectl on PATH.
 fn run_with_stdin_at(bin: &str, args: &[&str], stdin_data: &str) -> std::io::Result<i32> {
-    use std::io::Write;
     let mut child = Command::new(bin)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()?;
-    // Drop of the borrowed handle after write closes the pipe → the child sees EOF.
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(stdin_data.as_bytes())?;
-    }
+    feed_stdin(&mut child, stdin_data)?;
     let status = child.wait()?;
     Ok(status.code().unwrap_or(1))
 }
@@ -81,17 +97,13 @@ fn run_with_stdin_capture_stdout_at(
     args: &[&str],
     stdin_data: &str,
 ) -> std::io::Result<(i32, String)> {
-    use std::io::Write;
     let mut child = Command::new(bin)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()?;
-    // Drop of the borrowed handle after write closes the pipe → the child sees EOF.
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(stdin_data.as_bytes())?;
-    }
+    feed_stdin(&mut child, stdin_data)?;
     let out = child.wait_with_output()?;
     let code = out.status.code().unwrap_or(1);
     Ok((code, String::from_utf8_lossy(&out.stdout).into_owned()))
