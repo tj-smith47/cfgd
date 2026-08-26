@@ -19,7 +19,7 @@ use crate::reconciler::{
     ReconcileContext, ScriptEnvContext, ScriptPhase, ScriptReport, ScriptSubject, build_script_env,
     effective_continue_on_error, execute_script, script_default_workdir,
 };
-use crate::state::{BackupRunDraft, BackupRunKind, BackupRunRecord, BackupRunStatus, StateStore};
+use crate::state::{BackupRunDraft, BackupRunRecord, BackupRunStatus, StateStore};
 
 pub mod restore;
 pub mod schedule;
@@ -159,8 +159,8 @@ impl BackupRunReport {
 /// branch on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackupOperation {
-    /// A snapshot is being taken (`cfgd backup run`, apply, the daemon timer,
-    /// and the safety snapshot a restore takes).
+    /// A snapshot is being taken (`cfgd backup run`, apply, and the daemon
+    /// timer).
     Backup,
     /// A snapshot is being put back (`cfgd backup restore`).
     Restore,
@@ -269,7 +269,6 @@ pub fn run_backup(
         unit,
         printer,
         &source,
-        BackupRunKind::Run,
         started_at,
         RunOutcome {
             pre_error,
@@ -288,45 +287,6 @@ struct RunOutcome {
     post_error: Option<BackupError>,
 }
 
-/// Take the snapshot, record the run, and prune — with **no hooks**, and with
-/// the unit's lock already held by the caller.
-///
-/// The safety snapshot [`restore::restore_backup`] takes needs exactly this half
-/// of [`run_backup`]: a row and an ordinary retention prune, inside
-/// the lock and inside the hook envelope the restore already holds open. The row
-/// is recorded as [`BackupRunKind::Safety`], which is the one thing that makes
-/// it not an ordinary run: it still lists, still restores and still counts
-/// against retention, but it is never the unit's Last Run and never re-anchors
-/// its schedule.
-/// Re-entering [`run_backup`] would do neither — the `flock` is per open file
-/// description, so the nested acquire would report the restore as the holder of
-/// the unit it is restoring, and the unit's hooks would run a second time around
-/// a source the restore has already quiesced.
-fn snapshot_and_record(
-    unit: &BackupUnit<'_>,
-    store: &StateStore,
-    printer: &Printer,
-) -> Result<BackupRunRecord> {
-    let started_at = crate::utc_now_iso8601();
-    let source = unit.source();
-    let copy = Some(take_snapshot(unit, &source));
-    // No items out-parameter: a restore's safety snapshot renders no owner
-    // group, so there is no pseudo-phase rollup to count its lines.
-    record_run(
-        store,
-        unit,
-        printer,
-        &source,
-        BackupRunKind::Safety,
-        started_at,
-        RunOutcome {
-            pre_error: None,
-            copy,
-            post_error: None,
-        },
-    )
-}
-
 /// The snapshot line's subject: `snapshot <destination file name>`, or the bare
 /// `snapshot` when nothing was captured.
 ///
@@ -343,7 +303,7 @@ fn snapshot_subject(destination: Option<&Path>) -> String {
     }
 }
 
-/// The restore line's subject: `restore from <snapshot name>`.
+/// The restore line's subject: `restore <target> from <snapshot name>`.
 ///
 /// Sited beside [`snapshot_subject`] because the two rows are the two mutating
 /// verbs of one command settling in one slot, and they already share their
@@ -353,8 +313,14 @@ fn snapshot_subject(destination: Option<&Path>) -> String {
 /// subject is a lowercase verb head — `create`, `skip`, `brew install`,
 /// `snapshot` — and the sentence-case, past-tense grammar belongs to the
 /// result line a run CLOSES on, never to the rows its body is made of.
-pub(super) fn restore_subject(snapshot: &str) -> String {
-    format!("restore from {snapshot}")
+///
+/// The target is IN the subject, the way `create ~/.zshrc` names what it
+/// writes: a `Destination` row hung under the action put the one fact a
+/// reader checks first on a muted line below the verdict about it. The unit's
+/// declared source is the run header's (`Source`), never a row under the
+/// action either.
+pub(super) fn restore_subject(target: &str, snapshot: &str) -> String {
+    format!("restore {target} from {snapshot}")
 }
 
 /// The width the snapshot line will occupy, derived before the run.
@@ -540,15 +506,13 @@ pub fn report_backup_record(printer: &Printer, record: &BackupRunRecord) -> Back
     }
 }
 
-/// The shared tail of every path that produces a `backup_runs` row, so the
-/// hook-carrying [`run_backup`] and the hook-free [`snapshot_and_record`] can
-/// never disagree about a run's recorded status, error joining, or pruning.
+/// The tail of [`run_backup`] that produces the `backup_runs` row: status,
+/// error joining, and the retention prune that follows every recorded run.
 fn record_run(
     store: &StateStore,
     unit: &BackupUnit<'_>,
     printer: &Printer,
     source: &Path,
-    kind: BackupRunKind,
     started_at: String,
     outcome: RunOutcome,
 ) -> Result<BackupRunRecord> {
@@ -576,7 +540,6 @@ fn record_run(
 
     let draft = BackupRunDraft {
         name: unit.spec.name.clone(),
-        kind,
         source: crate::to_posix_string(source),
         destination_path: artifact
             .as_ref()

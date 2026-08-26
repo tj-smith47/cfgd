@@ -3,26 +3,25 @@
 use rusqlite::params;
 
 use super::StateStore;
-use super::types::{BackupRunDraft, BackupRunKind, BackupRunRecord, BackupRunStatus};
+use super::types::{BackupRunDraft, BackupRunRecord, BackupRunStatus};
 use crate::errors::{Result, StateError};
 
 /// Column list shared by every `backup_runs` read, so the `row.get` indices
 /// below can never drift from the projection.
 const BACKUP_RUN_COLUMNS: &str =
-    "id, name, kind, source, destination_path, size_bytes, status, error, started_at, finished_at";
+    "id, name, source, destination_path, size_bytes, status, error, started_at, finished_at";
 
 fn map_backup_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<BackupRunRecord> {
     Ok(BackupRunRecord {
         id: row.get(0)?,
         name: row.get(1)?,
-        kind: BackupRunKind::from_str(&row.get::<_, String>(2)?),
-        source: row.get(3)?,
-        destination_path: row.get(4)?,
-        size_bytes: row.get::<_, Option<i64>>(5)?.map(|v| v.max(0) as u64),
-        status: BackupRunStatus::from_str(&row.get::<_, String>(6)?),
-        error: row.get(7)?,
-        started_at: row.get(8)?,
-        finished_at: row.get(9)?,
+        source: row.get(2)?,
+        destination_path: row.get(3)?,
+        size_bytes: row.get::<_, Option<i64>>(4)?.map(|v| v.max(0) as u64),
+        status: BackupRunStatus::from_str(&row.get::<_, String>(5)?),
+        error: row.get(6)?,
+        started_at: row.get(7)?,
+        finished_at: row.get(8)?,
     })
 }
 
@@ -30,11 +29,10 @@ impl StateStore {
     /// Persist one backup run and return it with its assigned id.
     pub fn record_backup_run(&self, draft: &BackupRunDraft) -> Result<BackupRunRecord> {
         self.conn.execute(
-            "INSERT INTO backup_runs (name, kind, source, destination_path, size_bytes, status, error, started_at, finished_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO backup_runs (name, source, destination_path, size_bytes, status, error, started_at, finished_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 draft.name,
-                draft.kind.as_str(),
                 draft.source,
                 draft.destination_path,
                 draft.size_bytes.map(|v| v as i64),
@@ -47,7 +45,6 @@ impl StateStore {
         Ok(BackupRunRecord {
             id: self.conn.last_insert_rowid(),
             name: draft.name.clone(),
-            kind: draft.kind,
             source: draft.source.clone(),
             destination_path: draft.destination_path.clone(),
             size_bytes: draft.size_bytes,
@@ -69,20 +66,13 @@ impl StateStore {
         Ok(records)
     }
 
-    /// The most recent BACKUP of `name`, if any.
-    ///
-    /// A restore's safety snapshot is not a run: it is the copy taken of what
-    /// the restore is about to overwrite, so answering with it would make a
-    /// restore read as the unit's last backup — and re-anchor an interval
-    /// schedule on the restore's clock. [`Self::backup_runs`] is the read that
-    /// still returns every row of every kind, which is what retention pruning
-    /// and the snapshot list walk.
+    /// The most recent run of `name`, if any: the row `backup list`'s Last Run
+    /// reads and an interval schedule anchors on. A restore writes no row, so
+    /// nothing here can answer with the restore's clock.
     pub fn latest_backup_run(&self, name: &str) -> Result<Option<BackupRunRecord>> {
         let result = self.conn.query_row(
-            &format!(
-                "SELECT {BACKUP_RUN_COLUMNS} FROM backup_runs WHERE name = ?1 AND kind = ?2 ORDER BY id DESC LIMIT 1"
-            ),
-            params![name, BackupRunKind::Run.as_str()],
+            &format!("SELECT {BACKUP_RUN_COLUMNS} FROM backup_runs WHERE name = ?1 ORDER BY id DESC LIMIT 1"),
+            params![name],
             map_backup_run,
         );
         match result {

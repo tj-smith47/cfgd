@@ -84,7 +84,6 @@ pub fn build_source_show_doc(
             }
             if let Some(ref commit) = state_info.last_commit {
                 rows.push(KvPair::new("Last Commit", short_commit(commit)));
-                rows.push(KvPair::new("Signed", cfgd_core::yes_no(state_info.signed)));
             }
             if let Some(ref locked_commit) = state_info.locked_commit {
                 // The pair is here to be compared, and two identical SHAs two
@@ -101,6 +100,11 @@ pub fn build_source_show_doc(
             }
             if let Some(ref locked_ref) = state_info.locked_ref {
                 rows.push(KvPair::new("Locked Ref", locked_ref));
+            }
+            // Signed is a fact ABOUT the checked-out commit, but it follows the
+            // lock rows rather than sitting between the two SHAs it would split.
+            if state_info.last_commit.is_some() {
+                rows.push(KvPair::new("Signed", cfgd_core::yes_no(state_info.signed)));
             }
             // Version lives in the Manifest block, which states what the source
             // DECLARES; repeating the same string here made one fact look like

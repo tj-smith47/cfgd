@@ -478,6 +478,7 @@ pub fn run_apply(
         modules: &module_names,
         trigger: None,
         subject: None,
+        unit_source: None,
     };
 
     if dry_run {

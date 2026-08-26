@@ -18301,7 +18301,6 @@ mod backup_timers {
         store
             .record_backup_run(&crate::state::BackupRunDraft {
                 name: "db".to_string(),
-                kind: crate::state::BackupRunKind::Run,
                 source: crate::to_posix_string(&source),
                 destination_path: Some("/snap".to_string()),
                 size_bytes: Some(1),
@@ -19048,6 +19047,7 @@ mod backup_timers {
             modules: &[],
             trigger: None,
             subject: None,
+            unit_source: None,
         };
 
         // `cfgd backup run`

@@ -114,7 +114,11 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
                 None,
             ),
             (e.retention.to_string(), None),
-            (snapshots_cell(e.snapshots, e.safety_snapshots), None),
+            (
+                e.snapshots
+                    .map_or_else(|| cfgd_core::ABSENT.to_string(), |n| n.to_string()),
+                None,
+            ),
             (status, role),
             (
                 cfgd_core::humanize_age_cell(e.last_run_at.as_deref(), now),
@@ -133,30 +137,13 @@ pub fn build_backup_list_doc(entries: &[BackupListEntry], now: &str) -> Doc {
     doc.with_data(entries)
 }
 
-/// The Snapshots cell: the total, with the safety-snapshot share called out
-/// when there is one (`2 (1 safety)`).
-///
-/// A safety snapshot occupies the destination and counts against retention like
-/// any other, so the cell leads with the total a reader compares to `Retention`.
-/// The parenthetical is what stops the total reading as "this unit backed up
-/// twice" after a single run and a restore. `-` when the count is unknown,
-/// unchanged: an unreadable store is not a count of zero.
-fn snapshots_cell(total: Option<usize>, safety: Option<usize>) -> String {
-    match (total, safety) {
-        (Some(n), Some(s)) if s > 0 => format!("{n} ({s} safety)"),
-        (Some(n), _) => n.to_string(),
-        (None, _) => cfgd_core::ABSENT.to_string(),
-    }
-}
-
 /// Build the `cfgd backup list <name> --snapshots` Doc. Pure; the caller
 /// assembles the entries from the unit's recorded runs.
 ///
 /// Columns and payload keys are the snapshot analogue of
-/// [`build_backup_list_doc`]: `Created` carries the age, `Kind` the display
-/// word, and `Size` goes through the CLI's one byte renderer so it reads the
-/// same as `cfgd upgrade`'s asset size. The payload keeps the ISO 8601 stamp and
-/// the wire token.
+/// [`build_backup_list_doc`]: `Created` carries the age, and `Size` goes
+/// through the CLI's one byte renderer so it reads the same as `cfgd
+/// upgrade`'s asset size. The payload keeps the ISO 8601 stamp.
 ///
 /// `Created` earns its column only as an age: a snapshot's NAME is its stamp
 /// (`BACKUP_TIMESTAMP_FORMAT`), so the instant restated the row's own first cell
@@ -173,11 +160,10 @@ pub fn build_backup_snapshot_list_doc(
         return doc.with_data(entries);
     }
 
-    let mut t = Table::new(["Snapshot", "Kind", "Created", "Size"]);
+    let mut t = Table::new(["Snapshot", "Created", "Size"]);
     for e in entries {
         t = t.row([
             e.name.clone(),
-            e.kind.display_str().to_string(),
             cfgd_core::humanize_age_cell(Some(&e.created), now),
             format_bytes(e.size_bytes),
         ]);
@@ -287,7 +273,7 @@ pub fn cmd_backup_list(
         .iter()
         .map(|spec| {
             let last = state.and_then(|state| state.latest_backup_run(&spec.name).ok().flatten());
-            let counts =
+            let snapshots =
                 unit_dirs
                     .as_ref()
                     .zip(state)
@@ -295,7 +281,7 @@ pub fn cmd_backup_list(
                         let unit = BackupUnit::new(spec, config_dir, profile_name, state_dir);
                         cfgd_core::backup::list_snapshots(&unit, state)
                             .ok()
-                            .map(|s| (s.len(), s.iter().filter(|i| i.kind.is_safety()).count()))
+                            .map(|s| s.len())
                     });
             BackupListEntry {
                 name: spec.name.clone(),
@@ -314,8 +300,7 @@ pub fn cmd_backup_list(
                         last.as_ref().map(|r| r.finished_at.as_str()),
                     )
                 }),
-                snapshots: counts.map(|(total, _)| total),
-                safety_snapshots: counts.map(|(_, safety)| safety),
+                snapshots,
             }
         })
         .collect();
@@ -454,6 +439,10 @@ pub fn run_backup_restore(
     // live data is agreeing under a config and a profile, and the header is
     // where a run states them. `run_ctx`, not a second `ctx` — `cli::RunContext`
     // is already bound above.
+    // The declared path as `backup list`'s Source column spells it: the run
+    // header states what the unit READS, the action row what the restore
+    // WRITES, so a `--to` or a followed link shows as the two disagreeing.
+    let unit_source = spec.source.posix().to_string();
     let run_ctx = cfgd_core::reconciler::RunContext {
         title: cfgd_core::reconciler::RunTitle::Restore,
         config_path: Some(cli.config.as_path()),
@@ -462,6 +451,7 @@ pub fn run_backup_restore(
         modules: &[],
         trigger: None,
         subject: Some(args.name),
+        unit_source: Some(&unit_source),
     };
     cfgd_core::reconciler::ApplyRun::unplanned(run_ctx, cfgd_core::backup::RESTORE_ACTION_COUNT)
         .header(printer);
@@ -638,6 +628,11 @@ pub fn run_backup_run(
         .map(|spec| BackupUnit::new(spec, &config_dir, profile_name, &state_dir))
         .collect();
 
+    // A run of ONE named unit is titled and sourced like its restore
+    // (`Backup: docs` / `Source …`); a run over every declared unit names them
+    // in its owner groups and has no one source to state.
+    let named = name.and_then(|n| targets.iter().find(|spec| spec.name == n));
+    let unit_source = named.map(|spec| spec.source.posix().to_string());
     // `run_ctx`, not a second `ctx`: `cli::RunContext` (bound above) and
     // `reconciler::RunContext` are both in scope in this module, and one name
     // for both makes the reader check which is which at every use.
@@ -648,7 +643,8 @@ pub fn run_backup_run(
         sources: &sources,
         modules: &[],
         trigger: None,
-        subject: None,
+        subject: named.map(|spec| spec.name.as_str()),
+        unit_source: unit_source.as_deref(),
     };
     let (_status, reports) = cfgd_core::reconciler::ApplyRun::backups(run_ctx, &units, state)
         .execute_backups(printer)?;
@@ -678,7 +674,7 @@ mod tests {
             restored_to: "/home/u/notes.txt".to_string(),
             restored,
             size_bytes: 12,
-            safety_snapshot: None,
+            safety_copy: None,
             error: error.map(str::to_string),
         }
     }
@@ -697,29 +693,27 @@ mod tests {
     fn restore_row(human: &str) -> String {
         human
             .lines()
-            .find(|l| l.contains("restore from"))
+            .find(|l| l.contains("restore /home"))
             .unwrap_or_else(|| panic!("no restore row in:\n{human}"))
             .to_string()
     }
 
     #[test]
-    fn a_restore_settles_under_its_owner_with_the_destination_on_a_row_of_its_own() {
+    fn a_restore_settles_under_its_owner_naming_its_target_in_the_action_row() {
         let (human, tally) = rendered(&outcome(None, true));
         assert!(human.contains("backup:docs"), "{human}");
         let row = restore_row(&human);
         assert!(
-            row.contains("restore from notes.txt.20260101T000000Z") && row.contains("12 B"),
+            row.contains("restore /home/u/notes.txt from notes.txt.20260101T000000Z")
+                && row.contains("12 B"),
             "{row}"
         );
-        // The destination is a `Label: value` fact, not a clause hung off the
-        // detail dash the size already occupies.
+        // The target is IN the subject, the way every file action names what it
+        // writes; a `Destination` row under the action is the shape this pins
+        // against.
         assert!(
-            !row.contains("/home/u/notes.txt"),
-            "the destination belongs on its own row: {row}"
-        );
-        assert!(
-            human.contains("Destination") && human.contains("/home/u/notes.txt"),
-            "{human}"
+            !human.contains("Destination"),
+            "the target belongs in the action row, not on a row under it: {human}"
         );
         assert_eq!(tally.status, cfgd_core::state::ApplyStatus::Success);
         assert_eq!(

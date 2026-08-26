@@ -91,7 +91,7 @@ impl ApplyStatus {
 
 #[cfg(test)]
 mod apply_status_tests {
-    use super::{ApplyStatus, BackupRunKind};
+    use super::ApplyStatus;
 
     #[test]
     fn from_str_round_trips_known_and_defaults_unknown_to_failed() {
@@ -174,33 +174,6 @@ mod apply_status_tests {
                 "stored token no longer round-trips"
             );
         }
-    }
-
-    /// Same contract for `backup_runs.kind`: the stored token, the `-o json`
-    /// token every snapshot entry carries, and the column default a
-    /// pre-migration row reads back as. Break this only on purpose — a reword
-    /// here silently reclassifies every safety snapshot already on disk.
-    #[test]
-    fn backup_run_kind_literals_are_a_pinned_wire_contract() {
-        let pins = [
-            (BackupRunKind::Run, "run"),
-            (BackupRunKind::Safety, "safety"),
-        ];
-        for (variant, stored) in pins {
-            assert_eq!(variant.as_str(), stored, "stored token drifted");
-            assert_eq!(
-                serde_json::to_value(variant).expect("serialize BackupRunKind"),
-                serde_json::Value::String(stored.to_string()),
-                "json token drifted"
-            );
-            assert_eq!(
-                BackupRunKind::from_str(stored),
-                variant,
-                "stored token no longer round-trips"
-            );
-        }
-        // The column default, and what an unreadable token folds to.
-        assert_eq!(BackupRunKind::from_str("unknown"), BackupRunKind::Run);
     }
 }
 
@@ -805,68 +778,6 @@ pub fn backup_run_status_display(stored: &str) -> (&str, Role) {
     }
 }
 
-/// What produced a `backup_runs` row.
-///
-/// The ledger holds both, because retention prunes and
-/// [`crate::backup::list_snapshots`] restores from every payload on disk
-/// whatever wrote it. What the two kinds are NOT interchangeable for is the
-/// question "when did this unit last back up": a restore's safety snapshot is a
-/// side effect of putting data back, so counting it as the unit's last run
-/// re-anchors an interval schedule on the restore's clock.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum BackupRunKind {
-    /// A backup of the unit: `cfgd backup run`, an apply's pending backups, or
-    /// the daemon's timer.
-    Run,
-    /// The pre-restore copy `cfgd backup restore` takes of what it is about to
-    /// overwrite.
-    Safety,
-}
-
-impl BackupRunKind {
-    /// The persisted token, and the one every `-o json` payload reports — the
-    /// DB spelling and the wire spelling are the same string by construction.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            BackupRunKind::Run => "run",
-            BackupRunKind::Safety => "safety",
-        }
-    }
-
-    /// The word a person reads in the `Kind` column, the display counterpart of
-    /// [`BackupRunKind::as_str`] — which stays the untouched DB and `-o json`
-    /// token, exactly as [`super::ApplyStatus`] and
-    /// [`super::backup_run_status_display`] split the two.
-    ///
-    /// Without it the human table printed the wire token `run` beside a `Last
-    /// Run` cell that already said `Success`: two stored enums, adjacent
-    /// surfaces of one command, two policies.
-    pub fn display_str(&self) -> &'static str {
-        match self {
-            BackupRunKind::Run => "Run",
-            BackupRunKind::Safety => "Safety",
-        }
-    }
-
-    /// Whether this row is a restore's safety copy rather than a backup of the
-    /// unit.
-    pub fn is_safety(&self) -> bool {
-        matches!(self, BackupRunKind::Safety)
-    }
-
-    /// Parse the persisted form. An unrecognized token reads as `Run`, matching
-    /// the column default every pre-migration row reads back as: a row cfgd
-    /// cannot interpret is history it must not silently hide from the unit's
-    /// last-run answer.
-    pub(in crate::state) fn from_str(s: &str) -> Self {
-        match s {
-            "safety" => BackupRunKind::Safety,
-            _ => BackupRunKind::Run,
-        }
-    }
-}
-
 /// The values a backup run supplies when it is recorded — every column of
 /// `backup_runs` except the autoincrement `id`.
 ///
@@ -875,7 +786,6 @@ impl BackupRunKind {
 #[derive(Debug, Clone)]
 pub struct BackupRunDraft {
     pub name: String,
-    pub kind: BackupRunKind,
     /// Source path, posix-folded so a run recorded on Windows compares equal to
     /// the same source recorded on Unix.
     pub source: String,
@@ -899,7 +809,6 @@ pub struct BackupRunDraft {
 pub struct BackupRunRecord {
     pub id: i64,
     pub name: String,
-    pub kind: BackupRunKind,
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub destination_path: Option<String>,

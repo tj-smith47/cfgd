@@ -21313,6 +21313,7 @@ fn an_apply_with_a_skipped_action_renders_and_stores_the_split() {
             modules: &[],
             trigger: None,
             subject: None,
+            unit_source: None,
         },
         &plan,
     )
@@ -22402,6 +22403,7 @@ fn platform_skip_renders_as_header_annotation_not_a_phase() {
             modules: &module_names,
             trigger: None,
             subject: None,
+            unit_source: None,
         },
         &plan,
     )
@@ -22463,6 +22465,7 @@ fn platform_skip_renders_as_header_annotation_not_a_phase() {
             modules: &only_names,
             trigger: None,
             subject: None,
+            unit_source: None,
         },
         &skip_only,
     )

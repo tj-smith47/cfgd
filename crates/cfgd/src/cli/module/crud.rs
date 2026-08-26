@@ -327,6 +327,7 @@ pub fn cmd_module_create(
             modules: &module_names,
             trigger: None,
             subject: None,
+            unit_source: None,
         };
         let run = cfgd_core::reconciler::ApplyRun::new(ctx, &plan);
 

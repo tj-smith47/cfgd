@@ -10,16 +10,19 @@
 //!
 //! Restores are not recorded in the state DB. The `backup_runs` table is the
 //! ledger retention pruning walks, and a restore produces no artifact for it to
-//! prune — the safety snapshot a restore-to-source takes IS recorded, under
-//! [`BackupRunKind::Safety`] so it lists and restores like any other snapshot
-//! without standing in for the unit's last backup.
+//! prune. The safety copy a restore-to-source takes of what it overwrites is
+//! not a snapshot of the unit either: it lands beside the source as the same
+//! `.cfgd-backup` sidecar cfgd leaves beside every target it displaces
+//! ([`crate::reconciler::backup_file`]), outside the unit's destination, its
+//! counts, its retention and its ledger. A restore is an event, and an event's
+//! side effect must not read as a run.
 
 use std::path::{Path, PathBuf};
 
 use crate::errors::{BackupError, CfgdError, Result};
 use crate::output::{Printer, collapse_to_subject_line};
 use crate::reconciler::ScriptPhase;
-use crate::state::{BackupRunKind, StateStore};
+use crate::state::StateStore;
 
 use super::{BackupOperation, BackupUnit};
 
@@ -47,10 +50,6 @@ pub struct SnapshotInfo {
     pub created: String,
     /// Size recorded for the snapshot when it was taken.
     pub size_bytes: u64,
-    /// What wrote it: a backup of the unit, or the safety copy a restore took
-    /// of what it was about to overwrite. Both are listed and both restore —
-    /// the kind is what stops a safety copy being read as the unit's last run.
-    pub kind: BackupRunKind,
     /// `backup_runs` row id of the run that wrote it. Selection happens before
     /// the restore takes the unit's lock, so [`restore_backup`] re-resolves the
     /// chosen snapshot by this id once the lock is held.
@@ -76,10 +75,10 @@ pub struct RestoreOutcome {
     pub restored: bool,
     /// Size recorded for the restored snapshot.
     pub size_bytes: u64,
-    /// Path of the safety snapshot taken of the target's previous contents,
+    /// Path of the sidecar copy taken of the source's previous contents,
     /// posix-folded. `None` when the restore was redirected away from the live
     /// source (the source was never touched) or the source did not exist yet.
-    pub safety_snapshot: Option<String>,
+    pub safety_copy: Option<String>,
     /// Every failure of the restore, joined with `; ` — the same shape
     /// [`crate::state::BackupRunRecord::error`] carries.
     pub error: Option<String>,
@@ -96,7 +95,7 @@ impl RestoreOutcome {
 
 /// Report a completed restore in the shape [`super::run_backup_group`] reports
 /// a completed backup: an owner section headed `backup:<name>`, one status row
-/// for the restore itself, and the facts that qualify it as rows of their own.
+/// for the restore itself, and the one hint a regretted restore needs.
 ///
 /// `backup run` and `backup restore` are the two mutating verbs of one command,
 /// and the restore used to settle as a bare title plus a single status line —
@@ -114,7 +113,7 @@ impl RestoreOutcome {
 pub fn report_restore(printer: &Printer, outcome: &RestoreOutcome) -> crate::reconciler::RunTally {
     let group = printer.section_owner(&crate::output::OwnerLabel::new("backup", &outcome.name));
     let role = super::outcome_role(outcome.is_clean(), outcome.restored);
-    let subject = super::restore_subject(&outcome.snapshot);
+    let subject = super::restore_subject(&outcome.restored_to, &outcome.snapshot);
     let detail = super::outcome_detail(
         outcome.error.as_deref(),
         Some(crate::format_bytes(outcome.size_bytes)),
@@ -127,11 +126,7 @@ pub fn report_restore(printer: &Printer, outcome: &RestoreOutcome) -> crate::rec
             group.status_simple(role, subject);
         }
     }
-    // A row, not a clause after the detail dash: where the bytes went is a
-    // `Label: value` fact, and a detail slot already carrying a size or an
-    // error cannot also carry it without two em-dashes at two semantic levels.
-    group.kv("Destination", &outcome.restored_to);
-    if let Some(safety) = &outcome.safety_snapshot {
+    if let Some(safety) = &outcome.safety_copy {
         // `hint`, not `note`: where the overwritten data went is the one thing
         // an operator needs after a restore they regret, and `note` is
         // Verbose-only.
@@ -246,7 +241,6 @@ pub fn list_snapshots(unit: &BackupUnit<'_>, store: &StateStore) -> Result<Vec<S
             path: path.to_path_buf(),
             created: run.finished_at,
             size_bytes: run.size_bytes.unwrap_or(0),
-            kind: run.kind,
             run_id: run.id,
         });
     }
@@ -315,25 +309,24 @@ pub fn select_snapshot<'s>(
 ///    underneath the restore, and re-resolve the selected snapshot inside it —
 ///    selection happened before the lock, so a concurrent run may have pruned
 ///    it in between;
-/// 2. stage the snapshot into a temp directory beside the target — **before**
-///    the safety snapshot, because that prunes to `spec.retention` and the
-///    snapshot being restored can be the one it evicts;
+/// 2. stage the snapshot into a temp directory beside the target, so the
+///    overlay is a local copy whatever happens to the snapshot store meanwhile;
 /// 3. `preBackup` hooks;
-/// 4. a safety snapshot of the target's current contents, taken through
-///    `snapshot_and_record` so it gets a `backup_runs` row that
-///    ordinary retention prunes, marked [`BackupRunKind::Safety`] rather than
-///    standing in as the unit's last run. Skipped when the target is not the
-///    live source (nothing of the unit's is being overwritten) or the source
-///    does not exist yet (there is nothing to protect). A safety snapshot that
-///    produces no artifact aborts the restore;
+/// 4. a safety copy of the source's current contents, taken through the
+///    sidecar writer ([`crate::reconciler::backup_file`]) so it lands beside
+///    the source as `<source>.cfgd-backup`: not in the unit's destination, not
+///    in `backup_runs`, not counted or pruned as one of its snapshots. Skipped
+///    when the target is not the live source (nothing of the unit's is being
+///    overwritten) or the source does not exist yet (there is nothing to
+///    protect). A safety copy that cannot be written aborts the restore;
 /// 5. the overlay, then `postBackup` hooks;
 /// 6. staging is removed on every path, success or failure.
 ///
-/// The hooks wrap the safety snapshot rather than the safety snapshot running
-/// its own pair: the unit declares one `preBackup`/`postBackup` list, and
-/// running it twice around a source the restore has already quiesced is both
-/// surprising and, for a hook that is not idempotent, wrong. Hooks can tell the
-/// two operations apart through `$CFGD_OPERATION` (`backup` or `restore`).
+/// The hooks wrap the safety copy rather than it running its own pair: the
+/// unit declares one `preBackup`/`postBackup` list, and running it twice
+/// around a source the restore has already quiesced is both surprising and,
+/// for a hook that is not idempotent, wrong. Hooks can tell the two operations
+/// apart through `$CFGD_OPERATION` (`backup` or `restore`).
 ///
 /// # Overlay semantics
 ///
@@ -342,18 +335,18 @@ pub fn select_snapshot<'s>(
 /// alone. Modes come across with the copy. A target entry whose kind differs
 /// from the snapshot's — most importantly a **symlink** — is removed and
 /// replaced rather than written through, so a restore can never modify a file
-/// outside the target that the safety snapshot did not capture. The overlay is
+/// outside the target that the safety copy did not capture. The overlay is
 /// not atomic as a whole: individual files are replaced atomically, but an
 /// interrupted directory restore leaves the target part old and part new, and
-/// the safety snapshot is what recovers it.
+/// the safety copy is what recovers it.
 ///
 /// # Failure semantics
 ///
 /// Mirrors [`super::run_backup`]: an operational failure is reported through
 /// the returned [`RestoreOutcome`], and `Err` is reserved for failures that
 /// stop the restore before it can begin (a held lock, a vanished snapshot, a
-/// failed safety snapshot). A `preBackup` failure skips both the safety
-/// snapshot and the overlay; `postBackup` hooks run on every path, including
+/// failed safety copy). A `preBackup` failure skips both the safety copy and
+/// the overlay; `postBackup` hooks run on every path, including
 /// the one that ends in `Err`, because they are the counterpart that restarts
 /// whatever `preBackup` stopped.
 pub fn restore_backup(
@@ -418,8 +411,8 @@ pub fn restore_backup(
     if pre_error.is_none() {
         // Retired silently: every outcome below already has its own line —
         // the restore status, or the fatal error the caller renders.
-        let mut sp = printer.spinner(format!("Restoring {name}: safety snapshot"));
-        match take_safety_snapshot(unit, store, printer, &target, &mut failures) {
+        let mut sp = printer.spinner(format!("Restoring {name}: safety copy"));
+        match take_safety_copy(unit, &target) {
             Ok(taken) => {
                 safety = taken;
                 sp.set_message(format!("Restoring {name}: overlaying files"));
@@ -474,7 +467,7 @@ pub fn restore_backup(
         restored_to: report_path(&target),
         restored,
         size_bytes: snapshot.size_bytes,
-        safety_snapshot: safety,
+        safety_copy: safety,
         error: (!failures.is_empty()).then(|| failures.join("; ")),
     })
 }
@@ -533,50 +526,45 @@ fn report_path(path: &Path) -> String {
     crate::strip_windows_verbatim(&crate::to_posix_string(path)).to_string()
 }
 
-/// Snapshot the target's current contents before it is overwritten, returning
-/// the artifact's posix path.
+/// Copy the source's current contents aside before it is overwritten,
+/// returning the sidecar's posix path.
 ///
-/// `Ok(None)` means no safety snapshot was warranted: the restore was
-/// redirected away from the live source, or the source does not exist yet (a
-/// bare-metal restore has nothing to protect). Anything else that fails to
-/// produce an artifact is an `Err` — the restore must not proceed over data that
-/// was not captured.
+/// The sidecar writer, not the snapshot writer: a restore is cfgd about to
+/// displace data it did not write, which is exactly what the `.cfgd-backup`
+/// beside an adopted target already preserves, and a copy stored as one of the
+/// unit's snapshots was a copy that counted, listed, pruned and re-anchored
+/// like a backup of the unit. Copied from the RESOLVED source (the tree the
+/// overlay actually writes into) rather than the target, so `--to` aimed at a
+/// path inside the source still captures the whole of what the unit owns.
 ///
-/// A safety snapshot that *did* write its payload but hit a retention problem on
-/// the way out is not fatal: the protection is on disk. Its failure is pushed
-/// onto the restore's own failure list so the caller still reports an unclean
-/// restore.
-fn take_safety_snapshot(
-    unit: &BackupUnit<'_>,
-    store: &StateStore,
-    printer: &Printer,
-    target: &Path,
-    failures: &mut Vec<String>,
-) -> Result<Option<String>> {
+/// `Ok(None)` means no safety copy was warranted: the restore was redirected
+/// away from the live source, or the source does not exist yet (a bare-metal
+/// restore has nothing to protect). Anything else that fails to produce the
+/// copy is an `Err` — the restore must not proceed over data that was not
+/// captured.
+///
+/// The sidecar writer reads a regular file whole to verify the copy's hash.
+/// ponytail: a multi-gigabyte single-file unit is held in memory here;
+/// stream-and-hash it if one ever turns up.
+fn take_safety_copy(unit: &BackupUnit<'_>, target: &Path) -> Result<Option<String>> {
     if !overwrites_source(unit, target) {
         return Ok(None);
     }
-    let record = super::snapshot_and_record(unit, store, printer)?;
-    let Some(path) = record.destination_path.clone() else {
-        return Err(BackupError::SafetyBackupFailed {
+    let source = resolve_target_link(&unit.source());
+    let outcome = crate::reconciler::backup_file(&source).map_err(|e| {
+        CfgdError::Backup(BackupError::SafetyBackupFailed {
             name: unit.spec().name.clone(),
-            message: record
-                .error
-                .unwrap_or_else(|| "no snapshot was written".to_string()),
-        }
-        .into());
-    };
-    if let Some(e) = record.error {
-        failures.push(e);
-    }
-    Ok(Some(path))
+            message: collapse_to_subject_line(&e),
+        })
+    })?;
+    Ok(Some(report_path(&outcome.path)))
 }
 
 /// Whether restoring into `target` overwrites data the unit's own source owns.
 ///
 /// Keyed on the resolved paths, not on whether `--to` was passed: `--to` aimed
 /// back at the source (or at a directory inside it) overwrites exactly what a
-/// plain restore would, and skipping the safety snapshot there would destroy
+/// plain restore would, and skipping the safety copy there would destroy
 /// live data on the operator's behalf. A source that does not exist yet has
 /// nothing to protect.
 fn overwrites_source(unit: &BackupUnit<'_>, target: &Path) -> bool {
@@ -602,11 +590,10 @@ struct StagedSnapshot {
 
 /// Copy the snapshot into a temp directory beside `target`.
 ///
-/// Beside the target rather than beside the snapshot for two reasons: the
-/// staging copy must survive the retention prune the safety snapshot runs (which
-/// only ever deletes inside the unit's destination), and landing it on the
+/// Beside the target rather than beside the snapshot, so landing it on the
 /// target's filesystem keeps the overlay a local copy rather than a
-/// cross-device one.
+/// cross-device one, and so nothing walking the unit's destination can take it
+/// for a snapshot.
 ///
 /// Staging goes in the nearest ancestor of `target` that already exists.
 /// Creating the missing ones here would leave an empty tree behind on every
@@ -688,7 +675,7 @@ fn overlay_restore(
 /// just created, so following a link on the way in is impossible; a restore
 /// writes into **live user data**, where a link at a name the snapshot owns is
 /// entirely ordinary. `std::fs::copy` through such a link would truncate the
-/// file it points at — outside the target, and outside what the safety snapshot
+/// file it points at — outside the target, and outside what the safety copy
 /// captured — and descending into a linked directory would write a whole subtree
 /// there. Every destination entry is therefore stat'd unfollowed and replaced
 /// when its kind does not match, which is the same rule the writer applies to

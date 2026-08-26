@@ -515,12 +515,12 @@ pub enum BackupError {
         target_kind: &'static str,
     },
 
-    /// The safety snapshot taken immediately before a restore-to-source did not
-    /// produce a snapshot. The restore is abandoned: overwriting live data
+    /// The safety copy taken immediately before a restore-to-source could not
+    /// be written. The restore is abandoned: overwriting live data
     /// whose current contents were NOT captured is the failure mode the safety
-    /// snapshot exists to prevent.
+    /// copy exists to prevent.
     #[error(
-        "backup '{name}': the safety snapshot of the current source failed ({message}); \
+        "backup '{name}': the safety copy of the current source failed ({message}); \
          refusing to overwrite data that is not backed up — fix the failure, or pass --to to restore elsewhere"
     )]
     SafetyBackupFailed { name: String, message: String },

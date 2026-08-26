@@ -714,10 +714,10 @@ Show source:acme-corp
 State
   Status         Active
   Last Sync      2h ago
-  Last Commit    9f3c1ab2c4d  (truncated)
-  Signed         yes
-  Locked Commit  9f3c1ab2c4d  (same: the tag's commit)
+  Last Commit    9f3c1ab2c4d0
+  Locked Commit  9f3c1ab2c4d0 (same as last commit)
   Locked Ref     v2.1.0
+  Signed         yes
 ```
 
 When a source has been added but never synced, `source show` still surfaces the lockfile entry (with `Status: pending`) so you can confirm the intended SHA before the first apply.

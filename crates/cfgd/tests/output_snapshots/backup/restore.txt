@@ -1,11 +1,11 @@
 Restore: docs
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  withbackups
+  Source   <SOURCE>
   Actions  1 planned
 
 backup:docs
-  ✓ restore from notes.txt.<TIMESTAMP> — 12 B
-  Destination  <SOURCE>
-  → Previous contents saved to <STATE_DIR>/backups/docs/notes.txt.<TIMESTAMP>
+  ✓ restore <SOURCE> from notes.txt.<TIMESTAMP> — 12 B
+  → Previous contents saved to <SOURCE>.cfgd-backup
 
 ✓ Restore complete — 1 action succeeded (XXs wall)

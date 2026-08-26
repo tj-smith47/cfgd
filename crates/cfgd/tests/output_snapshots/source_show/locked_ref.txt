@@ -11,7 +11,7 @@ State
   Status         Active
   Last Sync      2h ago
   Last Commit    aabbccddeeff
-  Signed         no
   Locked Commit  aabbccddeeff (same as last commit)
   Locked Ref     v2.0.0
+  Signed         no
   Version        2.0.0

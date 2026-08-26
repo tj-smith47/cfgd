@@ -639,14 +639,10 @@ pub struct BackupListEntry {
     /// How many snapshots this unit currently holds on disk. `None` when the
     /// state store could not be read — an unknown count must not be reported
     /// as zero, which is a unit whose snapshots have all been pruned away.
+    /// Backups of the unit only: the safety copy a restore leaves beside the
+    /// source is a sidecar, not a snapshot, and is never counted here.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshots: Option<usize>,
-    /// How many of `snapshots` a restore took as a safety copy rather than a
-    /// backup of the unit. A subset of the total, never a second population:
-    /// they occupy the same destination and count against the same retention.
-    /// `None` alongside a `None` total, for the same reason.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub safety_snapshots: Option<usize>,
 }
 
 /// One snapshot on disk, for `cfgd backup list <name> --snapshots`.
@@ -658,15 +654,6 @@ pub struct BackupListEntry {
 #[serde(rename_all = "camelCase")]
 pub struct BackupSnapshotEntry {
     pub name: String,
-    /// `run` for a backup of the unit, `safety` for the copy a restore took of
-    /// what it was about to overwrite. Both restore; only a `run` is the unit's
-    /// last run.
-    ///
-    /// Typed rather than a pre-stringified token so the human table can reach
-    /// [`cfgd_core::state::BackupRunKind::display_str`] while this payload keeps
-    /// the wire spelling: the enum's `Serialize` and its `as_str` are the same
-    /// string by construction.
-    pub kind: cfgd_core::state::BackupRunKind,
     /// ISO 8601 UTC time the run that wrote the snapshot finished, on the same
     /// scale as `BackupListEntry::last_run_at`.
     pub created: String,
@@ -677,7 +664,6 @@ impl From<&cfgd_core::backup::SnapshotInfo> for BackupSnapshotEntry {
     fn from(info: &cfgd_core::backup::SnapshotInfo) -> Self {
         Self {
             name: info.name.clone(),
-            kind: info.kind,
             created: info.created.clone(),
             size_bytes: info.size_bytes,
         }
@@ -701,11 +687,13 @@ pub struct BackupRestoreOutput {
     /// Size recorded for the snapshot that was restored, matching
     /// `BackupSnapshotEntry::size_bytes` for the same snapshot.
     pub size_bytes: u64,
-    /// Snapshot of the target's previous contents, taken immediately before
-    /// the overlay. Omitted when the restore was redirected away from the live
-    /// source or the source did not exist yet.
+    /// The `.cfgd-backup` sidecar holding the source's previous contents,
+    /// written beside it immediately before the overlay. Omitted when the
+    /// restore was redirected away from the live source or the source did not
+    /// exist yet. Not one of the unit's snapshots: it lists under neither
+    /// `backup list` nor `--snapshots`, and no retention prunes it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub safety_snapshot: Option<String>,
+    pub safety_copy: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -719,7 +707,7 @@ impl From<&cfgd_core::backup::RestoreOutcome> for BackupRestoreOutput {
             restored: outcome.restored,
             clean: outcome.is_clean(),
             size_bytes: outcome.size_bytes,
-            safety_snapshot: outcome.safety_snapshot.clone(),
+            safety_copy: outcome.safety_copy.clone(),
             error: outcome.error.clone(),
         }
     }

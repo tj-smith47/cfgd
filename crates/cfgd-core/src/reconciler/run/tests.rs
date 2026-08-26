@@ -75,6 +75,7 @@ fn ctx(title: RunTitle) -> RunContext<'static> {
         modules: &[],
         trigger: None,
         subject: None,
+        unit_source: None,
     }
 }
 
@@ -724,6 +725,7 @@ fn an_unplanned_run_heads_itself_with_every_row_it_can_state() {
             modules: &[],
             trigger: None,
             subject: Some("notes"),
+            unit_source: Some("~/notes.md"),
         },
         crate::backup::RESTORE_ACTION_COUNT,
     );
@@ -737,14 +739,48 @@ fn an_unplanned_run_heads_itself_with_every_row_it_can_state() {
         out.starts_with("Restore: notes"),
         "the unit belongs in the title, not in a row: {out:?}"
     );
+    // `Source` is the unit's declared path — a header fact, the counterpart of
+    // the target the action row names — and sits with the other facts about
+    // the run, above the count of what it will do.
     for row in [
         "Config   /home/me/.config/cfgd/cfgd.yaml",
         "Profile  work",
         "Sources  team (profile shared)",
+        "Source   ~/notes.md",
         "Actions  1 planned",
     ] {
         assert!(out.contains(row), "missing {row:?} in: {out:?}");
     }
+    let source_at = out.find("Source   ").expect("Source row");
+    let actions_at = out.find("Actions  ").expect("Actions row");
+    assert!(
+        source_at < actions_at,
+        "the unit's source is a fact about the run, stated before its count: {out:?}"
+    );
+}
+
+/// A run acting on no one unit renders no `Source` row: `backup run` over
+/// every declared unit, an apply, a plan.
+#[test]
+fn a_run_with_no_unit_source_prints_no_source_row() {
+    let run = ApplyRun::unplanned(
+        RunContext {
+            title: RunTitle::Backup,
+            config_path: None,
+            profile: Some("work"),
+            sources: &[],
+            modules: &[],
+            trigger: None,
+            subject: None,
+            unit_source: None,
+        },
+        1,
+    );
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    run.header(&printer);
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(!out.contains("Source "), "{out:?}");
 }
 
 /// The header's count is the same in-scope predicate `Reconciler::apply` uses
@@ -874,6 +910,7 @@ fn header_omits_every_empty_row_and_skips_the_modules_phase() {
             modules: &modules,
             trigger: Some("drift (3 resources)"),
             subject: None,
+            unit_source: None,
         },
         &plan,
     );
@@ -1432,6 +1469,7 @@ fn header_names_the_sources_a_run_composed() {
             modules: &[],
             trigger: None,
             subject: None,
+            unit_source: None,
         },
         &plan,
     );

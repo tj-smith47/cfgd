@@ -237,7 +237,7 @@ pub fn config() -> Config {
     cfg = cfg.annotation("backup run", write(true, false, true));
 
     // `backup restore` overwrites live data with a snapshot of it, is not
-    // idempotent (each call takes a fresh safety snapshot and prunes), and runs
+    // idempotent (each call leaves a fresh safety copy beside the source), and runs
     // the same arbitrary `preBackup`/`postBackup` hooks. Same hint set as
     // `backup run`, for the same three reasons.
     cfg = cfg.annotation("backup restore", write(true, false, true));

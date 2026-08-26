@@ -28,8 +28,8 @@ pub use pending_config::{
 };
 pub use sources::ConfigSourceUpsert;
 pub use types::{
-    ApplyRecord, ApplyStatus, ApplySummary, BackupRunDraft, BackupRunKind, BackupRunRecord,
-    BackupRunStatus, ComplianceHistoryRow, ConfigSourceRecord, DriftEvent, ENV_SESSION_RESOURCE_ID,
+    ApplyRecord, ApplyStatus, ApplySummary, BackupRunDraft, BackupRunRecord, BackupRunStatus,
+    ComplianceHistoryRow, ConfigSourceRecord, DriftEvent, ENV_SESSION_RESOURCE_ID,
     FileBackupRecord, JournalEntry, MODULE_STATUS_ERROR, MODULE_STATUS_INSTALLED, ManagedResource,
     ModuleFileRecord, ModuleStateRecord, PendingDecision, SOURCE_STATUS_ACTIVE,
     SOURCE_STATUS_ERROR, SourceConfigHash, SourceConflictRecord, backup_run_status_display,
@@ -457,14 +457,13 @@ const MIGRATIONS: &[&str] = &[
         id INTEGER PRIMARY KEY CHECK (id = 1),
         timestamp TEXT NOT NULL
     );",
-    // Migration 16: say what wrote a `backup_runs` row. `cfgd backup restore`
-    // records the safety copy it takes of the target through the same recording
-    // tail an ordinary run uses, so without this column `latest_backup_run`
-    // answers the restore's row — the unit's Last Run reads the restore's clock
-    // and an interval schedule re-anchors on it. Every existing row is a real
-    // run, which is exactly what the DEFAULT says, so no backfill is needed.
-    // The ledger still holds both kinds: retention prunes and `list_snapshots`
-    // restores from every payload on disk, whichever wrote it.
+    // Migration 16: a column no longer read. It once told a restore's safety
+    // copy apart from a run of the unit, back when the copy was stored as one
+    // of the unit's snapshots; the copy now lives beside the source as a
+    // `.cfgd-backup` sidecar and writes no row at all. A legacy `safety` row
+    // still names a payload inside the unit's destination, and reads as the
+    // ordinary snapshot it physically is. Migrations are append-only, so the
+    // column stays.
     "ALTER TABLE backup_runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'run';",
     // Migration 17: what the source declared for the item this row asks
     // about. Without it the only change signal was a hash over the source's

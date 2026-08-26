@@ -13725,7 +13725,7 @@ fn every_action_row_subject_opens_on_a_lowercase_verb() {
         judged.len() >= 15,
         "the walk no longer reaches the subject slots — it judged {judged:?}"
     );
-    for witness in ["snapshot", "restore from", "create ", "run "] {
+    for witness in ["snapshot", "restore ", "create ", "run "] {
         assert!(
             judged.iter().any(|l| l.starts_with(witness)),
             "the walk no longer reaches the producer that renders {witness:?}: {judged:?}"
@@ -15397,11 +15397,11 @@ fn every_run_that_renders_the_rollup_also_renders_the_run_header() {
 /// Every stored enum whose wire token a human surface could reach has a DISPLAY
 /// counterpart beside it.
 ///
-/// `cfgd backup list --snapshots` printed `run` in its `Kind` column — the
+/// `cfgd backup list --snapshots` once printed `run` in a `Kind` column — the
 /// database token — one column away from a `Status` cell reading `Success`, so
 /// two stored enums of one command answered with two policies.
-/// [`cfgd_core::state::ApplyStatus`] had had the split since it shipped;
-/// `BackupRunKind` simply never grew the other half.
+/// [`cfgd_core::state::ApplyStatus`] had had the split since it shipped; the
+/// kind enum simply never grew the other half.
 ///
 /// The population is every enum in `cfgd-core/src/state/types.rs` defining an
 /// `as_str` at any visibility — the stored-state vocabulary; `ApplyStatus`
@@ -15446,7 +15446,7 @@ fn every_stored_enum_has_a_display_counterpart() {
             "{name}: no display_str/human_str and no {free_form}"
         ));
     }
-    for witness in ["ApplyStatus", "BackupRunStatus", "BackupRunKind"] {
+    for witness in ["ApplyStatus", "BackupRunStatus"] {
         assert!(
             checked.iter().any(|n| n == witness),
             "the walk no longer reaches {witness} — it checked {checked:?}"
@@ -15460,7 +15460,7 @@ fn every_stored_enum_has_a_display_counterpart() {
     );
 }
 
-/// `BackupRunKind` -> `backup_run_kind`, for the free-function display form.
+/// `BackupRunStatus` -> `backup_run_status`, for the free-function display form.
 fn to_snake_case(name: &str) -> String {
     let mut out = String::with_capacity(name.len() + 4);
     for (i, c) in name.chars().enumerate() {

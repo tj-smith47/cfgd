@@ -254,6 +254,7 @@ pub fn cmd_plan(
             modules: &module_names,
             trigger: None,
             subject: None,
+            unit_source: None,
         },
         &plan,
     )

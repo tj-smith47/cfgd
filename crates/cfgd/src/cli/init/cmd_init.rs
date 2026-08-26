@@ -638,6 +638,7 @@ pub(super) fn apply_plan(
         modules: &module_names,
         trigger: None,
         subject: None,
+        unit_source: None,
     };
     let run = cfgd_core::reconciler::ApplyRun::new(ctx, plan);
 

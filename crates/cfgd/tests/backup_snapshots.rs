@@ -482,7 +482,6 @@ fn build_backup_list_doc_json_matches_serde_roundtrip() {
         last_run_clean: Some(true),
         next_run_at: None,
         snapshots: Some(2),
-        safety_snapshots: Some(1),
     }];
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_backup_list_doc(&entries, "2026-01-01T02:00:00Z"));
@@ -806,11 +805,8 @@ fn backup_timestamp_span(window: &[char]) -> Option<usize> {
         return None;
     }
     // The engine appends `-N` when two snapshots of one unit render the same
-    // second. Whether a restore's safety snapshot collides with the snapshot it
-    // is restoring depends on which side of a second boundary the test lands
-    // on, so the suffix is absorbed into the placeholder rather than left to
-    // flip a golden at random. That the two payloads stay distinct is pinned
-    // deterministically by the engine's own collision test.
+    // second, so the suffix is absorbed into the placeholder rather than left
+    // to flip a golden on a fast host.
     let mut len = 16;
     if window.len() > 17 && window[16] == '-' && window[17].is_ascii_digit() {
         len = 18;
@@ -1075,34 +1071,70 @@ fn docs_last_run_at(cli: &cfgd::cli::Cli) -> String {
         .to_string()
 }
 
+/// The pin for the safety copy's home: after a restore, `backup list` counts
+/// exactly the snapshots the operator asked for, `--snapshots` lists exactly
+/// those, the unit's Last Run is still the run's, and the copy of what the
+/// restore overwrote exists at its own path beside the source — a
+/// `.cfgd-backup` sidecar, outside the unit's destination.
 #[test]
-fn backup_list_after_a_restore_counts_the_safety_copy_without_calling_it_the_last_run() {
+fn backup_list_after_a_restore_counts_only_the_requested_snapshots() {
     let (config_dir, state_dir, source) = backup_profile_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     run_docs(&cli);
     let last_run_at = docs_last_run_at(&cli);
 
     std::fs::write(&source, "clobbered").unwrap();
-    let (printer, _cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
     run_backup_restore(&cli, &printer, &restore_args("docs"))
         .unwrap()
         .expect("a --yes restore is never declined");
     drop(printer);
+    let restore = cap.json().expect("restore payload");
+    let safety = restore["safetyCopy"]
+        .as_str()
+        .expect("restoring over the live source reports where its contents went");
+    assert_eq!(
+        safety,
+        cfgd_core::to_posix_string(cfgd_core::reconciler::cfgd_backup_path(&source, "")),
+        "the safety copy is the sidecar beside the source: {restore}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(safety).unwrap(),
+        "clobbered",
+        "the sidecar holds what the restore overwrote"
+    );
+    assert!(
+        !Path::new(safety).starts_with(state_dir.path()),
+        "the safety copy must not live under the unit's destination: {safety}"
+    );
 
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
     cmd_backup_list(&cli, &printer, None, false).unwrap();
     drop(printer);
     let payload = cap.json().expect("payload");
     let docs = &payload.as_array().expect("array payload")[0];
-    assert_eq!(docs["snapshots"], 2, "payload: {payload}");
     assert_eq!(
-        docs["safetySnapshots"], 1,
-        "the safety copy is a subset of the total: {payload}"
+        docs["snapshots"], 1,
+        "one run was requested, so one snapshot is counted: {payload}"
+    );
+    assert!(
+        docs.get("safetySnapshots").is_none(),
+        "there is no safety share of a count that never includes one: {payload}"
     );
     assert_eq!(
         docs["lastRunAt"].as_str(),
         Some(last_run_at.as_str()),
         "a restore must not become the unit's last run: {payload}"
+    );
+
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_backup_list(&cli, &printer, Some("docs"), true).unwrap();
+    drop(printer);
+    let listed = cap.json().expect("payload");
+    assert_eq!(
+        listed.as_array().expect("array payload").len(),
+        1,
+        "--snapshots lists the unit's own snapshots and never the safety copy: {listed}"
     );
 
     let (printer, cap) = Printer::for_test_doc();
@@ -1114,55 +1146,12 @@ fn backup_list_after_a_restore_counts_the_safety_copy_without_calling_it_the_las
         .find(|l| l.starts_with("docs"))
         .unwrap_or_else(|| panic!("no docs row in:\n{human}"));
     assert!(
-        row.contains("2 (1 safety)"),
-        "the count must say how many are safety copies: {row}"
-    );
-    assert!(
-        !row.contains(&last_run_at),
-        "Last Run reads as an age, never the raw instant the payload carries: {row}"
+        !row.contains("safety"),
+        "the count is a plain number, with no safety share to annotate: {row}"
     );
     assert!(
         row.contains("Success") && row.contains("just now"),
         "the row carries the run's verdict and how long ago it ran: {row}"
-    );
-}
-
-#[test]
-fn backup_list_snapshots_names_the_safety_copy_a_restore_took() {
-    let (config_dir, state_dir, source) = backup_profile_setup();
-    let cli = cli_for(config_dir.path(), state_dir.path());
-    run_docs(&cli);
-    std::fs::write(&source, "clobbered").unwrap();
-    let (printer, _cap) = Printer::for_test_doc();
-    run_backup_restore(&cli, &printer, &restore_args("docs"))
-        .unwrap()
-        .expect("a --yes restore is never declined");
-    drop(printer);
-
-    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_backup_list(&cli, &printer, Some("docs"), true).unwrap();
-    drop(printer);
-    let payload = cap.json().expect("payload");
-    let kinds: Vec<&str> = payload
-        .as_array()
-        .expect("array payload")
-        .iter()
-        .map(|e| e["kind"].as_str().expect("kind field"))
-        .collect();
-    assert_eq!(
-        kinds,
-        vec!["safety", "run"],
-        "newest first: the restore's safety copy, then the run it restored: {payload}"
-    );
-
-    let (printer, cap) = Printer::for_test_doc();
-    cmd_backup_list(&cli, &printer, Some("docs"), true).unwrap();
-    drop(printer);
-    let human = cfgd_core::output::strip_ansi(&cap.human());
-    assert!(
-        human.contains("Kind") && human.contains("Safety"),
-        "the table must say which snapshot a restore took, in the display word \
-         rather than the stored token: {human}"
     );
 }
 
@@ -1314,7 +1303,7 @@ fn backup_restore_at_unknown_snapshot_is_a_snapshot_not_found_error() {
 }
 
 #[test]
-fn backup_restore_to_redirects_and_omits_the_safety_snapshot() {
+fn backup_restore_to_redirects_and_omits_the_safety_copy() {
     let (config_dir, state_dir, source) = backup_profile_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     run_docs(&cli);
@@ -1339,8 +1328,8 @@ fn backup_restore_to_redirects_and_omits_the_safety_snapshot() {
     let payload = cap.json().expect("payload");
     assert_eq!(payload["restored"], true);
     assert!(
-        payload.get("safetySnapshot").is_none(),
-        "--to leaves the live source alone, so no safety snapshot is taken: {payload}"
+        payload.get("safetyCopy").is_none(),
+        "--to leaves the live source alone, so no safety copy is taken: {payload}"
     );
     assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "hello backup");
     assert_eq!(
@@ -1527,7 +1516,7 @@ fn backup_restore_declined_at_the_prompt_changes_nothing() {
             .unwrap()
             .count(),
         before,
-        "declining must not take a safety snapshot either"
+        "declining must not take a safety copy either"
     );
 
     let payload = cap

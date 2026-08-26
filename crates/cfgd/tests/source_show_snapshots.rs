@@ -414,6 +414,25 @@ fn source_show_state_with_locked_ref_and_commit() {
         human.contains("Locked Commit"),
         "Locked Commit kv must appear: {human}"
     );
+    // The two SHAs are there to be compared, so the rows sit adjacent and the
+    // fact ABOUT the checked-out commit follows the pair instead of splitting it.
+    let lines: Vec<&str> = human.lines().map(str::trim_start).collect();
+    let last = lines
+        .iter()
+        .position(|l| l.starts_with("Last Commit"))
+        .expect("Last Commit row");
+    assert!(
+        lines[last + 1].starts_with("Locked Commit"),
+        "Locked Commit must directly follow Last Commit: {human}"
+    );
+    let signed = lines
+        .iter()
+        .position(|l| l.starts_with("Signed"))
+        .expect("Signed row");
+    assert!(
+        signed > last + 1,
+        "Signed must follow the commit pair, never sit between it: {human}"
+    );
     // Commit is truncated by `short_commit` (12 chars); check the prefix.
     assert!(
         human.contains("aabbccddeeff"),

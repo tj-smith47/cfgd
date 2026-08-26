@@ -1,6 +1,7 @@
-Backup
+Backup: docs
   Config   <CONFIG_DIR>/cfgd.yaml
   Profile  withbackups
+  Source   <SOURCE>
   Actions  1 planned
 
 backup:docs

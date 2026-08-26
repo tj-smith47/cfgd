@@ -3315,17 +3315,8 @@ fn migrate_state_db_preserves_sidecars_when_checkpoint_fails() {
 // ---------------------------------------------------------------------------
 
 fn backup_run_draft(name: &str, artifact: Option<&str>) -> BackupRunDraft {
-    backup_run_draft_of_kind(name, artifact, BackupRunKind::Run)
-}
-
-fn backup_run_draft_of_kind(
-    name: &str,
-    artifact: Option<&str>,
-    kind: BackupRunKind,
-) -> BackupRunDraft {
     BackupRunDraft {
         name: name.to_string(),
-        kind,
         source: "/var/lib/app/data.db".to_string(),
         destination_path: artifact.map(|s| s.to_string()),
         size_bytes: artifact.map(|_| 42),
@@ -3419,82 +3410,6 @@ fn latest_backup_run_reports_the_newest_or_none() {
     let latest = store.latest_backup_run("db").expect("query").expect("row");
     assert_eq!(latest.id, newest.id);
     assert_eq!(latest.destination_path.as_deref(), Some("/two"));
-}
-
-#[test]
-fn latest_backup_run_skips_a_newer_safety_snapshot() {
-    let store = StateStore::open_in_memory().expect("store");
-    let run = store
-        .record_backup_run(&backup_run_draft("db", Some("/one")))
-        .expect("insert");
-    let safety = store
-        .record_backup_run(&backup_run_draft_of_kind(
-            "db",
-            Some("/safety"),
-            BackupRunKind::Safety,
-        ))
-        .expect("insert");
-
-    let latest = store.latest_backup_run("db").expect("query").expect("row");
-    assert_eq!(
-        latest.id, run.id,
-        "a restore's safety snapshot is not the unit's last run"
-    );
-    assert_eq!(
-        store.backup_runs("db").expect("history").len(),
-        2,
-        "the ledger retention walks still holds both rows"
-    );
-    assert!(
-        store
-            .backup_runs("db")
-            .expect("history")
-            .iter()
-            .any(|r| r.id == safety.id && r.kind == BackupRunKind::Safety)
-    );
-}
-
-#[test]
-fn a_unit_whose_only_row_is_a_safety_snapshot_has_no_last_run() {
-    let store = StateStore::open_in_memory().expect("store");
-    store
-        .record_backup_run(&backup_run_draft_of_kind(
-            "db",
-            Some("/safety"),
-            BackupRunKind::Safety,
-        ))
-        .expect("insert");
-
-    assert!(
-        store.latest_backup_run("db").expect("query").is_none(),
-        "a bare-metal restore leaves no run for a schedule to anchor on"
-    );
-}
-
-#[test]
-fn a_backup_run_row_written_before_the_kind_column_reads_as_a_run() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("state.db");
-    {
-        let store = StateStore::open(&path).expect("store");
-        // Hardcoded: this test means "replay the kind column's migration".
-        rewind_schema_version(&store, 15);
-        store
-            .conn
-            .execute_batch(
-                "INSERT INTO backup_runs (name, source, destination_path, size_bytes, status, started_at, finished_at)
-                 VALUES ('db', '/src', '/snap', 1, 'success', 't0', 't1');",
-            )
-            .expect("legacy row");
-    }
-
-    let store = StateStore::open(&path).expect("reopen runs the kind migration");
-    let latest = store.latest_backup_run("db").expect("query").expect("row");
-    assert_eq!(
-        latest.kind,
-        BackupRunKind::Run,
-        "history predating the column is real backup history, not safety copies"
-    );
 }
 
 #[test]

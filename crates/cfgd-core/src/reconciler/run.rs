@@ -100,6 +100,14 @@ pub struct RunContext<'a> {
     /// a `Restore: notes` title; `None` leaves the title bare, which is what
     /// every run naming its subject in the tree below already does.
     pub subject: Option<&'a str>,
+    /// The declared source path of the ONE `spec.backups[]` unit this run acts
+    /// on, for a run whose subject is such a unit (`backup run <name>`,
+    /// `backup restore <name>`). Renders as a `Source` row: the action row
+    /// names what it WRITES (`snapshot <name>`, `restore <target> from …`),
+    /// and what the unit reads from is the header's fact, never a row hung
+    /// under the action. `None` for every other run, and for a `backup run`
+    /// over every declared unit, which has no one source to name.
+    pub unit_source: Option<&'a str>,
 }
 
 /// One source a run's composition drew from, as the header names it and as the
@@ -507,6 +515,9 @@ impl<'a> ApplyRun<'a> {
         }
         if let Some(trigger) = self.ctx.trigger {
             rows.push(KvPair::new("Trigger", trigger.to_string()));
+        }
+        if let Some(source) = self.ctx.unit_source {
+            rows.push(KvPair::new("Source", source.to_string()));
         }
         // The `Phases` row names exactly the blocks the tree will print, so it
         // is read off the tree rather than recomputed from the plan.

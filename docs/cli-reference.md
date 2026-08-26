@@ -1815,9 +1815,9 @@ too and lists every available snapshot. A run that recorded a failure (a bad cop
 
 `backup restore` overlays the snapshot onto the target (names only in the target are left alone;
 a target entry whose kind differs from the snapshot's (a symlink, or a directory where the
-snapshot holds a file) is removed and replaced, never written through), takes a safety snapshot of the current contents first, and requires confirmation
+snapshot holds a file) is removed and replaced, never written through), leaves a safety copy of the current contents beside the source first (the same `<path>.cfgd-backup` sidecar cfgd leaves beside any file it displaces; not a snapshot of the unit), and requires confirmation
 unless `--yes` (`CFGD_YES`) is given. `--to <path>` redirects the restore; a path outside the
-backup's source also skips the safety snapshot, while a path at or inside the source still takes
+backup's source also skips the safety copy, while a path at or inside the source still takes
 one. The unit's `preBackup` / `postBackup` hooks wrap the whole restore exactly once and see
 `CFGD_OPERATION=restore`. Where cfgd cannot prompt (piped stdin, CI, or `-o json`) a restore
 without `--yes` is an error rather than a silent no-op. See [Restoring](backups.md#restoring).
@@ -1832,13 +1832,12 @@ Structured output (`-o json`) payload for `backup run`: an array of
 `skipped` (the unit was already running). A refused unit does not add a second document to stdout:
 the payload is always one JSON value and the nonzero exit code carries the failure. For
 `backup list`: an array of
-`{ name, source, schedule?, retention, snapshots?, safetySnapshots?, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`,
-where `snapshots` is the total and `safetySnapshots` the share of it a restore wrote.
-For `backup list <name> --snapshots`: an array of `{ name, kind, created, sizeBytes }`, newest first,
-where `name` is the snapshot's path relative to the backup's `destination` and `kind` is `run` or
-`safety`. A safety snapshot lists, restores and counts against retention like any other, but is
-never the unit's `lastRunAt` and never re-anchors `nextRunAt`. For `backup restore`:
-a single `{ name, snapshot, restoredTo, restored, clean, sizeBytes, safetySnapshot?, error? }`;
+`{ name, source, schedule?, retention, snapshots?, lastRunStatus?, lastRunAt?, lastRunClean?, nextRunAt? }`.
+For `backup list <name> --snapshots`: an array of `{ name, created, sizeBytes }`, newest first,
+where `name` is the snapshot's path relative to the backup's `destination`. A restore's safety
+copy is a sidecar beside the source, so it appears in neither list and is never the unit's
+`lastRunAt`. For `backup restore`:
+a single `{ name, snapshot, restoredTo, restored, clean, sizeBytes, safetyCopy?, error? }`;
 when the operator declines at the confirmation prompt,
 `{ name, snapshot, restoredTo, restored: false, declined: true }`. The declined payload omits
 `clean` deliberately: a decline exits `0`, and reporting `clean: false` beside a zero exit would

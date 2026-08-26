@@ -985,7 +985,7 @@ pub enum Command {
 
     /// Run declarative backups (`spec.backups[]`)
     #[command(
-        long_about = "Run, inspect, or restore declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs on the daemon's timer, and on demand via this command.\n\n`backup restore` overlays a snapshot back onto the backup's source, taking a safety snapshot of the current contents first (skipped when --to points outside the source).\n\nExamples:\n  cfgd backup run\n  cfgd backup run notes-db\n  cfgd backup list\n  cfgd backup list notes-db --snapshots\n  cfgd backup restore notes-db\n  cfgd backup restore notes-db --at 20260730T120000Z\n  cfgd backup restore notes-db --to /tmp/inspect --yes\n  cfgd --output json backup list"
+        long_about = "Run, inspect, or restore declarative backups declared in `spec.backups[]`.\n\nA schedule-less backup (no `schedule`) also runs automatically during `cfgd apply`, after the reconciler's file/package/module phases (skipped in --dry-run). A scheduled backup runs on the daemon's timer, and on demand via this command.\n\n`backup restore` overlays a snapshot back onto the backup's source, leaving a safety copy of the current contents beside it first (skipped when --to points outside the source).\n\nExamples:\n  cfgd backup run\n  cfgd backup run notes-db\n  cfgd backup list\n  cfgd backup list notes-db --snapshots\n  cfgd backup restore notes-db\n  cfgd backup restore notes-db --at 20260730T120000Z\n  cfgd backup restore notes-db --to /tmp/inspect --yes\n  cfgd --output json backup list"
     )]
     Backup {
         #[command(subcommand)]
@@ -1489,7 +1489,7 @@ pub enum BackupCommand {
 
     /// Restore a snapshot back over the backup's source
     #[command(
-        long_about = "Restore a snapshot back over the backup's source.\n\nThe newest snapshot is restored unless --at names another one; --at matches a\nfull snapshot name or just the timestamp portion of one. A directory snapshot\nis overlaid, so files present only in the target survive; a target entry whose\nkind differs from the snapshot's is replaced.\n\nA safety snapshot of the current contents is taken first and recorded as an\nordinary run, unless --to points outside the source (nothing of the backup's is\nbeing overwritten) or the source does not exist yet. The unit's preBackup /\npostBackup hooks wrap the whole restore once, with CFGD_OPERATION=restore.\n\ncfgd asks before overwriting live data; --yes (or CFGD_YES=1) skips the prompt,\nand is required when stdin is not a terminal.\n\nExamples:\n  cfgd backup restore notes-db\n  cfgd backup restore notes-db --at 20260730T120000Z\n  cfgd backup restore notes-db --at notes.db.20260730T120000Z\n  cfgd backup restore notes-db --to /tmp/inspect --yes\n  cfgd --output json backup restore notes-db --yes"
+        long_about = "Restore a snapshot back over the backup's source.\n\nThe newest snapshot is restored unless --at names another one; --at matches a\nfull snapshot name or just the timestamp portion of one. A directory snapshot\nis overlaid, so files present only in the target survive; a target entry whose\nkind differs from the snapshot's is replaced.\n\nA safety copy of the current contents is left beside the source first (the\nsame <path>.cfgd-backup sidecar cfgd leaves beside any file it displaces; not a\nsnapshot of the unit), unless --to points outside the source (nothing of the\nbackup's is being overwritten) or the source does not exist yet. The unit's preBackup /\npostBackup hooks wrap the whole restore once, with CFGD_OPERATION=restore.\n\ncfgd asks before overwriting live data; --yes (or CFGD_YES=1) skips the prompt,\nand is required when stdin is not a terminal.\n\nExamples:\n  cfgd backup restore notes-db\n  cfgd backup restore notes-db --at 20260730T120000Z\n  cfgd backup restore notes-db --at notes.db.20260730T120000Z\n  cfgd backup restore notes-db --to /tmp/inspect --yes\n  cfgd --output json backup restore notes-db --yes"
     )]
     Restore {
         /// Backup name
@@ -1502,7 +1502,7 @@ pub enum BackupCommand {
 
         /// Restore into this path instead of the backup's source; a path
         /// outside the source leaves the live source untouched and skips the
-        /// safety snapshot
+        /// safety copy
         #[arg(long, value_hint = clap::ValueHint::AnyPath)]
         to: Option<PathBuf>,
 

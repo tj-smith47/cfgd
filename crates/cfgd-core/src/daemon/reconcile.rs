@@ -920,6 +920,7 @@ fn reconcile_tick(
             modules: &module_names,
             trigger: Some(&trigger),
             subject: None,
+            unit_source: None,
         };
 
         match drift_policy {
