@@ -370,8 +370,47 @@ impl<'x> PackageExec<'x> {
         }
     }
 
+    /// What `pm` reports installed at THIS moment, or `None` when it cannot be
+    /// asked.
+    ///
+    /// The planner elided every entry the manager already carried, but it did so
+    /// before the `Prerequisites` phase ran, and that phase installs packages:
+    /// `apt install npm pipx` provisions two managers and lands two apt packages
+    /// a module is free to declare as well. Re-reading the machine is what keeps
+    /// the two phases from installing one package twice — the truth, rather than
+    /// a comparison against the names a provision happened to mention.
+    ///
+    /// One listing per manager per action, and never a stale one: the memo
+    /// behind [`PackageContext::installed_for`] is keyed on
+    /// [`crate::command_resolution_generation`], which every install, uninstall
+    /// and provision this run performed has already moved.
+    ///
+    /// Fail-OPEN, exactly as the planner's own elision does: a manager cfgd
+    /// cannot query is one whose declared entries must still be installed.
+    fn installed_now(
+        &self,
+        pm: &dyn PackageManager,
+        cx: &PackageContext<'_>,
+    ) -> Option<std::sync::Arc<crate::providers::InstalledPackages>> {
+        match cx.installed_for(pm) {
+            Ok(installed) => Some(installed),
+            Err(e) => {
+                tracing::warn!(
+                    manager = pm.name(),
+                    error = %e,
+                    "cannot re-read installed packages; installing the planned set in full"
+                );
+                None
+            }
+        }
+    }
+
     /// Apply one profile-owned package action.
-    pub(super) fn apply_package_action(&self, action: &PackageAction) -> Result<String> {
+    ///
+    /// The `bool` is whether the action CHANGED anything: an install whose every
+    /// entry an earlier phase already landed ran and did nothing, which is a
+    /// skip rather than a success.
+    pub(super) fn apply_package_action(&self, action: &PackageAction) -> Result<(String, bool)> {
         let cx = self.cx();
         match action {
             PackageAction::Install {
@@ -383,13 +422,27 @@ impl<'x> PackageExec<'x> {
                         // module path), but build the tracking description from
                         // IDENTITIES so the tracked key matches what prune later
                         // compares against (`go/2fa`, not `go/rsc.io/2fa`).
-                        self.install_recording_created(pm, packages, &cx)?;
+                        let pending: Vec<String> = match self.installed_now(pm, &cx) {
+                            Some(installed) => packages
+                                .iter()
+                                .filter(|p| !installed.contains(&pm.package_identity(p)))
+                                .cloned()
+                                .collect(),
+                            None => packages.clone(),
+                        };
+                        let changed = !pending.is_empty();
+                        if changed {
+                            self.install_recording_created(pm, &pending, &cx)?;
+                        }
+                        // The description names the whole DECLARED set either
+                        // way: the entries this run did not have to install are
+                        // on the machine and are still this action's managed
+                        // resources.
                         let identities: Vec<String> =
                             packages.iter().map(|p| pm.package_identity(p)).collect();
-                        return Ok(format!(
-                            "package:{}:install:{}",
-                            manager,
-                            identities.join(",")
+                        return Ok((
+                            format!("package:{}:install:{}", manager, identities.join(",")),
+                            changed,
                         ));
                     }
                 }
@@ -408,16 +461,17 @@ impl<'x> PackageExec<'x> {
                         // uninstall has already deleted what it deleted.
                         crate::invalidate_command_resolution();
                         removed?;
-                        return Ok(format!(
-                            "package:{}:uninstall:{}",
-                            manager,
-                            packages.join(",")
+                        return Ok((
+                            format!("package:{}:uninstall:{}", manager, packages.join(",")),
+                            true,
                         ));
                     }
                 }
                 Err(self.package_manager_missing_error(manager))
             }
-            PackageAction::Skip { manager, .. } => Ok(format!("package:{}:skip", manager)),
+            // A planned skip ran nothing by construction, so it neither counts
+            // as a change nor triggers the onChange scripts a change gates.
+            PackageAction::Skip { manager, .. } => Ok((format!("package:{}:skip", manager), false)),
         }
     }
 
@@ -454,7 +508,15 @@ impl<'x> PackageExec<'x> {
             // the cause attached beneath it.
             ManagerAction::RefreshIndex { manager } => {
                 let pm = lookup(manager)?;
-                if let Err(e) = pm.refresh_index(&cx) {
+                let refreshed = pm.refresh_index(&cx);
+                // A refreshed index changes what the manager OFFERS, and the
+                // available-version memo is keyed on the resolution generation
+                // alone — so without this, every offer taken before the refresh
+                // would still be answered to every caller after it. Reported
+                // whether or not the refresh succeeded: a partial `apt-get
+                // update` has already rewritten the lists it managed to fetch.
+                crate::invalidate_command_resolution();
+                if let Err(e) = refreshed {
                     cx.report(
                         crate::output::Role::Warn,
                         manager,
@@ -559,10 +621,14 @@ impl<'x> PackageExec<'x> {
         // unchanged rather than a re-run. Without guards the script runs
         // every apply (changed=true), which is the author's responsibility.
         let mut script_changed = false;
-        // A manager-backed install always counts as changed: the planner
-        // already dropped every entry the manager reports installed
-        // (`Reconciler::diffing_installed`), so an action that survived to here
-        // names packages the machine does not have.
+        // A manager-backed install counts as changed only for the entries the
+        // machine still lacks. The planner dropped everything the manager
+        // reported installed (`Reconciler::diffing_installed`), but it did so
+        // BEFORE the `Prerequisites` phase ran, and that phase installs
+        // packages — `apt install npm pipx` provisions two managers and lands
+        // two apt packages this module may declare itself. The set is re-read
+        // below; an action left with nothing to install ran and changed
+        // nothing, which is a skip.
         let mut manager_changed = false;
 
         if let Some(first) = pkgs.first() {
@@ -662,8 +728,24 @@ impl<'x> PackageExec<'x> {
 
                 if let Some(pm) = pm {
                     let cx = self.cx();
-                    self.install_recording_created(pm.as_ref(), &pkg_names, &cx)?;
-                    manager_changed = true;
+                    let pending: Vec<String> = match self.installed_now(pm.as_ref(), &cx) {
+                        Some(installed) => pkgs
+                            .iter()
+                            .filter(|pkg| {
+                                super::Reconciler::package_survives_elision(
+                                    pm.as_ref(),
+                                    &installed,
+                                    pkg,
+                                )
+                            })
+                            .map(|pkg| pkg.resolved_name.clone())
+                            .collect(),
+                        None => pkg_names.clone(),
+                    };
+                    if !pending.is_empty() {
+                        self.install_recording_created(pm.as_ref(), &pending, &cx)?;
+                        manager_changed = true;
+                    }
                 }
             }
         }
@@ -717,7 +799,7 @@ impl super::Reconciler<'_> {
         action: &PackageAction,
         printer: &Printer,
         notes: &NoteSink,
-    ) -> Result<String> {
+    ) -> Result<(String, bool)> {
         let exec = PackageExec::new(self.registry, self.state, printer, notes);
         let result = exec.apply_package_action(action);
         self.persist_bootstraps(exec.take_bootstrapped());

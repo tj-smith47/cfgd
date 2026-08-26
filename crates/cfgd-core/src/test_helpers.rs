@@ -2951,6 +2951,14 @@ pub struct MockPackageManager {
     /// Whether this mock's entries register package SOURCES for its family,
     /// the `brew-tap` shape — the flag every tap-first ordering surface reads.
     registers_sources: bool,
+    /// Everything `install()` has landed, folded into `installed_packages`
+    /// alongside `installed`.
+    ///
+    /// A real manager reports a package it just installed, and a mock that did
+    /// not was the only reason a run could install one package twice without a
+    /// test noticing: the `Prerequisites` phase provisions `npm` with `apt
+    /// install npm`, and the `Packages` phase then asked apt for `npm` again.
+    landed: std::sync::Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 impl MockPackageManager {
@@ -2973,6 +2981,7 @@ impl MockPackageManager {
             mediated: std::collections::BTreeMap::new(),
             availability: None,
             raises: None,
+            landed: std::sync::Arc::default(),
             install_log: None,
             enumerations: std::sync::Arc::default(),
             folds_case: false,
@@ -3188,7 +3197,9 @@ impl crate::providers::PackageManager for MockPackageManager {
     ) -> crate::errors::Result<std::collections::HashSet<String>> {
         self.enumerations
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(self.installed.clone())
+        let mut reported = self.installed.clone();
+        reported.extend(self.landed.lock().unwrap().iter().cloned());
+        Ok(reported)
     }
 
     fn package_identity(&self, entry: &str) -> String {
@@ -3218,6 +3229,7 @@ impl crate::providers::PackageManager for MockPackageManager {
             std::thread::sleep(delay);
         }
         self.install_calls.lock().unwrap().push(packages.to_vec());
+        self.landed.lock().unwrap().extend(packages.iter().cloned());
         if let Some(log) = &self.install_log {
             log.lock().unwrap().push(packages.to_vec());
         }

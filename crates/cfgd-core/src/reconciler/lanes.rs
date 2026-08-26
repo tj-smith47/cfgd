@@ -1363,7 +1363,7 @@ fn run_one_action(
     // every bootstrap the action performed just before failing.
     let exec = PackageExec::new(registry, &proxy, run.printer, &notes).in_lane(lane);
     let executed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match action {
-        Action::Package(pkg) => exec.apply_package_action(pkg).map(|desc| (desc, true)),
+        Action::Package(pkg) => exec.apply_package_action(pkg),
         Action::Manager(node) => exec.apply_manager_action(node),
         Action::Module(
             module @ ModuleAction {

@@ -945,10 +945,12 @@ impl<'a> super::Reconciler<'a> {
 
     /// Whether `pkg` survives the installed-state elision: not installed under
     /// `mgr`'s identity fold, or installed short of its declared `minVersion`
-    /// floor. The ONE predicate [`Self::retain_uninstalled`] and
-    /// [`Self::fill_planned_versions`] both read, so a package can never be
-    /// planned-but-unpriced or priced-but-elided.
-    fn package_survives_elision(
+    /// floor. The ONE predicate [`Self::retain_uninstalled`],
+    /// [`Self::fill_planned_versions`] and the execute-time re-read in
+    /// `PackageExec::install_module_packages` all read, so a package can never
+    /// be planned-but-unpriced, priced-but-elided, or installed by the
+    /// `Packages` phase after the `Prerequisites` phase already landed it.
+    pub(super) fn package_survives_elision(
         mgr: &dyn PackageManager,
         installed: &crate::providers::InstalledPackages,
         pkg: &crate::modules::ResolvedPackage,

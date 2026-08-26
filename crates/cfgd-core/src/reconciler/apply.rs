@@ -2022,7 +2022,7 @@ impl<'a> super::Reconciler<'a> {
                 .map(|d| ActionRun::new(d, true)),
             Action::Package(pkg) => self
                 .apply_package_action(pkg, printer, notes)
-                .map(|d| ActionRun::new(d, true)),
+                .map(|(d, c)| ActionRun::new(d, c)),
             Action::File(file) => self
                 .apply_file_action(file, resolved.profile_name(), config_dir, printer, sidecars)
                 .map(|d| ActionRun::new(d, true)),

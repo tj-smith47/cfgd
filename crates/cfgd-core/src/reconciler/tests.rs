@@ -10241,6 +10241,145 @@ fn apply_module_install_packages_provisions_manager_when_needed() {
     );
 }
 
+/// A package a PREREQUISITE landed is not installed again by the `Packages`
+/// phase.
+///
+/// The hero recording's own shape: `Phase: Prerequisites` runs `provision npm,
+/// pipx via apt` — one `apt install npm pipx` — and `Phase: Packages` then
+/// carried `npm` in the module's apt list, because the plan was priced before
+/// the provision ran and the elision that dropped every other already-present
+/// entry could not see this one. The cost was never cosmetic: an action with
+/// nothing left to do still counted as a change, and that is what re-ran the
+/// module's postApply hooks.
+///
+/// Both halves are pinned here: the surviving entry settles as a skip (RAN,
+/// changed nothing) rather than as an install, and no `module:` result carries
+/// `changed`, which is the exact predicate the postApply gate reads.
+#[test]
+fn a_package_a_prerequisite_landed_is_not_installed_again_by_the_packages_phase() {
+    let installs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let provisioned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("sys")
+            .recording_installs(std::sync::Arc::clone(&installs))
+            .raising(std::sync::Arc::clone(&provisioned)),
+    ));
+    for mediated in ["npm", "pipx"] {
+        registry.add_package_manager(Box::new(
+            crate::test_helpers::MockPackageManager::new(mediated)
+                .mediated_by("sys", &[mediated])
+                .available_when(std::sync::Arc::clone(&provisioned)),
+        ));
+    }
+
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    // The module declares `npm` under the SYSTEM manager on purpose — apt's
+    // nodejs package does not always carry npm — which is exactly the entry the
+    // provision's own `apt install npm pipx` lands.
+    let declared = || ResolvedPackage {
+        canonical_name: "npm".to_string(),
+        resolved_name: "npm".to_string(),
+        manager: "sys".to_string(),
+        version: None,
+        script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
+        min_version: None,
+    };
+    let modules = vec![ResolvedModule {
+        name: "tools".to_string(),
+        packages: vec![declared()],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: BTreeMap::new(),
+        depends: vec![],
+        dir: PathBuf::from("."),
+        origin: None,
+        platform_skip_reason: None,
+    }];
+
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Prerequisites,
+                &Owner::profile("test"),
+                vec![Action::Manager(ManagerAction::Provision {
+                    manager: "npm".to_string(),
+                    via: "sys".to_string(),
+                    batched: vec!["pipx".to_string()],
+                    depends_on: Vec::new(),
+                })],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![Action::Module(ModuleAction {
+                    module_name: "tools".to_string(),
+                    kind: ModuleActionKind::InstallPackages {
+                        resolved: vec![declared()],
+                    },
+                    origin: None,
+                })],
+            ),
+        ],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply");
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert_eq!(
+        installs.lock().unwrap().as_slice(),
+        [vec!["npm".to_string(), "pipx".to_string()]],
+        "the provision is the only `sys` install the run performs"
+    );
+
+    let packages = result
+        .action_results
+        .iter()
+        .find(|r| r.description.starts_with("module:tools:packages:"))
+        .expect("the module's package action settles a result");
+    assert!(packages.success, "the action ran and did not fail");
+    assert!(
+        !packages.changed && packages.skipped,
+        "an install whose every entry a prerequisite already landed is a skip: {packages:?}"
+    );
+    assert!(
+        !result
+            .action_results
+            .iter()
+            .any(|r| r.changed && r.description.starts_with("module:tools:")),
+        "nothing marks the module changed, so its postApply hooks do not re-run"
+    );
+}
+
 // --- rollback_apply: symlink restore (restore to state after target apply) ---
 
 #[test]
