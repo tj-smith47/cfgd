@@ -935,6 +935,37 @@ mod tests {
         );
     }
 
+    /// `normalize_snapshot_durations` folds every duration this renderer can
+    /// emit. `duration_text` is the ONE producer, so the population is
+    /// enumerable: two kinds — a row's own span and a wall-clock total —
+    /// each crossing the display floor. A spelling the fold misses is not a
+    /// golden that fails: it is two captures of one run comparing a folded
+    /// duration against an unfolded one, agreeing on a fast host and
+    /// disagreeing on the host slow enough to cross the floor.
+    #[test]
+    fn the_snapshot_normalizer_folds_every_duration_this_renderer_emits() {
+        for span in [
+            Duration::ZERO,
+            Duration::from_millis(1),
+            Duration::from_millis(49),
+            Duration::from_millis(50),
+            Duration::from_millis(1_600),
+            Duration::from_secs(64),
+            Duration::from_secs(3_600),
+        ] {
+            assert_eq!(
+                crate::normalize_snapshot_durations(&duration_text(Elapsed::row(span))),
+                " (XXs)",
+                "a row span of {span:?} must fold to one token"
+            );
+            assert_eq!(
+                crate::normalize_snapshot_durations(&duration_text(Elapsed::wall(span))),
+                " (XXs wall)",
+                "a wall-clock total of {span:?} must fold to one token"
+            );
+        }
+    }
+
     /// Every duration slot on screen — an action row, a settled spinner, the
     /// run rollup — composes through `duration_trailer`, so the floor cannot
     /// hold on one of them and not the others.

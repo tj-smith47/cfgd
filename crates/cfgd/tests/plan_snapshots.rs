@@ -462,6 +462,18 @@ fn strip_ansi(s: &str) -> String {
 /// A run that composed a source names it in the header, so the reader can tell
 /// which of the rows below arrived from a subscription rather than from their
 /// own profile.
+///
+/// Every fact under that header is DECLARED rather than probed, because a
+/// golden holds one render for every machine that runs it. The delivered
+/// profile pins `envScope: Interactive`, which leaves the login and
+/// session surfaces (`~/.profile`, `~/.zshenv`, `environment.d`, the macOS
+/// LaunchAgent, the live-session publish) out of the plan — those are the
+/// rows whose presence is a property of the *platform* — and the host probe
+/// is pinned to a bash-only host with no fish, which is the row set's other
+/// free variable. What is left is byte-identical on Linux, macOS and
+/// FreeBSD. Windows renders a PowerShell surface instead of a POSIX one, so
+/// the golden cannot cover it and the test is Unix-only.
+#[cfg(unix)]
 #[test]
 fn plan_composed_source_human() {
     let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
@@ -469,10 +481,20 @@ fn plan_composed_source_human() {
     // unguarded test home is named after the pid and would not be host-stable.
     let home = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(home.path());
+    let _probe = cfgd_core::reconciler::with_env_host_probe_override_guard(
+        cfgd_core::reconciler::EnvHostProbeOverride {
+            shell: "/bin/bash".to_string(),
+            fish_present: false,
+            bash_profile_exists: false,
+            bash_login_exists: false,
+            git_bash_present: false,
+            zsh_present: false,
+        },
+    );
     let (workspace, config_dir, state_dir) = common::local_source_setup("", |_workspace| {
         (
             "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n".to_string(),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: ACME_EDITOR\n      value: vim\n".to_string(),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Interactive\n  env:\n    - name: ACME_EDITOR\n      value: vim\n".to_string(),
         )
     });
 
