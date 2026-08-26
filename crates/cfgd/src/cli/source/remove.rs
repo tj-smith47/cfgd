@@ -55,7 +55,7 @@ pub fn cmd_source_remove(
     yes: bool,
     ignore_not_found: bool,
 ) -> anyhow::Result<()> {
-    remove_source(
+    run_source_remove(
         cli,
         printer,
         name,
@@ -71,7 +71,7 @@ pub fn cmd_source_remove(
 /// whole command — a `source replace` runs one mid-report and closes on its own
 /// verdict, so only a closing removal carries the next-step hint.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn remove_source(
+pub(super) fn run_source_remove(
     cli: &Cli,
     printer: &Printer,
     name: &str,

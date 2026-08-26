@@ -54,10 +54,10 @@ pub fn cmd_source_replace(
     // Remove old source (keeping resources). Confirmation-free: a re-home
     // purges nothing, so there is no forget-my-edits question to ask, and a
     // replace must not stop mid-way to pose one.
-    remove::remove_source(cli, printer, old_name, true, false, true, false, false)?;
+    remove::run_source_remove(cli, printer, old_name, true, false, true, false, false)?;
 
     // Add new source with same name, carrying over the whole subscription
-    add::add_source(
+    add::run_source_add(
         cli,
         printer,
         &SourceAddArgs {
